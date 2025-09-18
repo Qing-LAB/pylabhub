@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pylabhub"
+version = "0.0.1"
+description = "Modular hub for lab data acquisition, control, and reproducible persistence"
+readme = "README.md"
+authors = [{name = "Quan Qing"}]
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+dependencies = ["pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/YOUR-USERNAME/pylabhub"
+
+[project.scripts]
+pylabhub-manifest = "pylabhub.hub.manifest:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pylabhub*"]
