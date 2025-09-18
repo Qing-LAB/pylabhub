@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pylabhub"
-version = "0.0.1"
+version = "0.0.1a0"
 description = "Modular hub for lab data acquisition, control, and reproducible persistence"
 readme = "README.md"
 authors = [{name = "Quan Qing"}]
@@ -13,7 +13,7 @@ requires-python = ">=3.9"
 dependencies = ["pyyaml>=6.0"]
 
 [project.urls]
-Homepage = "https://github.com/YOUR-USERNAME/pylabhub"
+Homepage = "https://github.com/Qing-LAB/pylabhub"
 
 [project.scripts]
 pylabhub-manifest = "pylabhub.hub.manifest:main"
