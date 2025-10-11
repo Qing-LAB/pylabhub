@@ -1,244 +1,174 @@
-# pyLabHub — Hub Design & Architecture
+# Hub Design and Architecture
 
-> Draft status: **Core Function Set (CFS) established**, details will evolve through **RFCs (Requests for Comments)**.
-
-## 0. Context & Goals
-
-The **Hub** is envisioned as the **central coordinator** within pyLabHub. Its primary function is to act as a communication, orchestration, and gatekeeping layer that both provides controlled ways to instruct hardware during experiments (via customized scripts or protocols for real‑time actuation or processing, with these instructions recorded alongside raw data) and isolates direct manipulation of source data between experiment hardware, software clients, and data services. In practice, this means:
-
-* Providing a **low-latency single‑authorized‑client session** with deterministic command→ack and data channels, strict FIFO delivery, bounded buffers, and precise timestamps for all control and data.
-* Acting as a **gatekeeper broker** that isolates raw data from downstream analysis while allowing controlled actuation/processing to be executed and recorded alongside acquisition.
-* Serving as a **registry and coordination point** for adapters (hardware), connectors (external software), and services (e.g., persistence, scheduling, provenance).
-* Enforcing consistent **session lifecycle management**, capturing both experiment instructions and outcomes so that runs can be replayed, audited, and shared with full provenance.
-
-### Primary Goals
-
-* A **hub** is the coordinator for a group of tasks or operations that need to run within the same time frame—either driven by real-time instructions from a client through the hub, or automatically following a client-defined plan or protocol.
-* Deliver a **minimal but extensible hub core** where each hub handles one coordinated experiment or task set, identified by a unique **hub ID** (distinct from experiment/task IDs) to trace the source and delegation of data and inform clients where information originates. Clients may connect to multiple hubs, but hubs do not talk directly to each other.
-* Define a **stable, language-agnostic messaging protocol** that distinguishes between **three classes**: (1) **control** messages (JSON, strict UTF‑8, schema‑validated) for commands/acks/config; (2) **context & event** messages (JSON) for metadata, logs, and slow/structured data with mixed units/types; and (3) **data stream** messages with a small JSON header plus an efficient binary payload (NumPy/Zarr/Arrow). In-memory transport is used for the Core Function Set (CFS), with IPC/network modes to follow later.
-* Implement a **single‑client session router** with two prioritized channels: (1) control/commands (high priority) with acknowledgements, and (2) data/telemetry (high throughput). Internal services (e.g., persistence) attach to the hub, but additional external clients are not allowed concurrently in CFS.
-* Provide **first-class persistence hooks** for Zarr (arrays) and Parquet (events), tied together with a manifest.
-* Establish a **plugin system** to register and extend adapters, connectors, and services.
-
-#### Message Classes & Formats (for protocol clarity)
-
-We distinguish **four** kinds of messages with different format priorities:
-
-1. **Control messages** — run/control commands, acknowledgements, configuration changes.
-
-   * **Goal:** deterministic behaviour and easy debugging; high priority.
-   * **Suggested format (CFS):** JSON (strict UTF‑8, schema‑validated) with explicit `schema` and `content-type` fields; carried on the `control` channel.
-   * **Future option:** MsgPack (same schema) for compactness if needed.
-
-2. **Context & Event messages** — experiment context, metadata, logs, and **slow/structured data** where fields are heterogeneous (mixed units/types) and human readability is valuable.
-
-   * **Goal:** human‑readable, easy to debug, broadly compatible; suitable for **low‑rate, non‑uniform data**.
-   * **Suggested format (CFS):** JSON (strict UTF‑8, schema‑validated) with `schema` and `content-type`. Carried on the `events` channel.
-
-3. **State messages** — mark the condition of acquired data, including instrument state, calibration status, and any post‑acquisition processing (user‑defined or standard operations/scripts).
-
-   * **Goal:** document the quality, transformations, or conditions of data for provenance and reproducibility.
-   * **Suggested format (CFS):** JSON with clear `state` and `provenance` fields, carried on the `events` channel (or a dedicated `state` channel if separation is desired).
-
-4. **Data Stream messages** — **high‑rate** streams or bulk blocks (e.g., waveforms, images).
-
-   * **Goal:** efficiency and precise binary interpretation.
-   * **Suggested format (CFS):** a small JSON header (topic, schema id, dtype/shape/units, chunk index, timestamps) + a **binary payload** buffer. The payload is encoded according to the stream spec (e.g., NumPy-compatible dtype layout; Zarr chunk bytes; Arrow IPC for tabular/event batches).
-   * **Client/adapter responsibility:** encode/decode the payload per the declared schema and `content-type`.
+The Hub module is the **core coordination point** for pyLabHub, responsible for orchestrating communication, ensuring data integrity, and enabling extensibility. It is a critical component of the pyLabHub framework, which focuses on laboratory data acquisition, hardware control, and experiment management.
 
 ---
 
-## 1. Messaging Needs & Initial Implementation Proposal (CFS)
+## Context and Goals
 
-**Scope of this proposal:** Define the **needs** for hub messaging and present an **initial implementation** approach suitable for the Core Function Set. Details can evolve via RFCs.
+The Hub acts as a communication, orchestration, and gatekeeping layer to:
 
-### 1.1 Messaging Needs
+- Provide controlled ways to instruct hardware during experiments through customized scripts or protocols for real-time actuation or processing, with these instructions recorded alongside raw data.
+- Isolate direct manipulation of source data between experiment hardware, software clients, and data services.
+- Define how messages are exchanged between producers (e.g., adapters, instruments) and consumers (e.g., services, persistence, analysis), with explicit rules for **queueing, acknowledgments, and message structure**.
 
-* **Channels & Addressing**: a small, fixed set of channels per session — `control`, `data`, and `events` — addressed to the current client and internal services. Each hub also exposes `hub.health` for liveness/metrics.
-* **Envelope & Schemas**: every message carries a small header with `schema` and `content-type` so clients know how to parse payloads.
-* **Ordering**: per-topic FIFO delivery within a hub.
-* **Backpressure**: bounded ring buffers per channel with strict flow control; default policy is pause writers when the buffer is full, preventing data loss. Control channel preempts data channel when needed.
-* **Timing**: timestamps that record both the actual date/time of day (wall-clock) and a steadily increasing internal counter (monotonic), with optional device clock information for alignment.
-* **Shared memory path**: optional zero‑copy data/control via hub-managed shared memory (ring buffers, explicit slot ownership, bounded, timestamped).
-* **Provenance hooks**: trace IDs and run IDs for auditability.
-* **Errors**: structured error messages with `code`, `message`, `data`.
-* **Interoperability**: language-agnostic formats; forward-compatible schema versioning.
+The design is deliberately narrow: the Hub is not a general framework but the minimal component that guarantees consistency, determinism, and extensibility.
 
-### 1.2 Initial Implementation (CFS)
+### Primary Goals
 
-* **Transport (CFS)**: In‑process Python (asyncio queues). IPC/UDS/TCP can be added later without changing message schemas or channel priorities.
-* **Serialization**:
+1. **Deterministic Behavior**: Ensure bounded queues with blocking puts, explicit acknowledgments, and ordered delivery.
+2. **Channel Separation**: Provide dedicated bounded queues for control, events, and data, each with distinct priorities.
+3. **Extensibility**: Enable registration of adapters and services, ensuring they receive messages synchronously.
+4. **Persistence Hooks**: Allow services to record events and state to Parquet, and data streams to Zarr.
+5. **Future-Proofing**: Stub shared-memory APIs for later high-speed transport extensions.
 
-  * **Control & Events (slow/structured data):** JSON (UTF‑8). Fields: `msg_id`, `kind`, `channel: "control"|"events"`, `schema`, `content-type`, `ts`, `trace_id`, `payload`.
-  * **Data**: JSON header + binary payload buffer. `channel: "data"`. `content-type` advertises payload encoding such as:
+---
 
-    * `application/x-numpy` (raw ndarray bytes with dtype/shape in header)
-    * `application/vnd.zarr.chunk` (compressed chunk bytes)
-    * `application/vnd.apache.arrow.stream` (Arrow IPC)
-* **Backpressure**: single authorized client; no subscriber credits. Use per-channel queue depth and blocking puts; optional drop policy only under explicit configuration.
-* **Reliability**: at-least-once within a process; no persistence of the bus itself in CFS (persistence handled by services).
-* **Security**: not in CFS beyond process-local trust; add in RFCs for IPC/network modes.
+## Messaging Model
 
-#### 1.2.a In‑memory transport design (CFS) — single‑client session
+The Hub formalizes the separation of information types by exposing **three channels** with different queueing semantics and delivery priorities:
 
-1. **ClientSession**
+1. **Control Channel**: Priority channel for commands and acknowledgments. Queue size = 128. Blocking put on full.
+2. **Events Channel**: For logs, diagnostics, and state reports. Queue size = 512. Blocking put on full.
+3. **Data Channel**: For high-volume data streams (e.g., arrays, waveforms). Queue size = 1024. Blocking put on full.
 
-   * Holds two channels: `control_q` and `data_q` (asyncio Queues with distinct priorities).
-   * Maintains **session token** and **hub ID** for authorization and tracing.
+### Message Envelope
 
-2. **Router**
+All messages share a standard envelope:
 
-   * `send_control(cmd)`: high‑priority path; preempts data when necessary; waits for explicit **ack** message.
-   * `send_data(shard)`: high‑throughput path; blocks when `data_q` is full (prevents data loss).
+```json
+{
+  "header": {
+    "msg_id": "uuid",
+    "trace_id": "uuid",
+    "hub_id": "hub-1",
+    "kind": "command | ack | event | state | data",
+    "channel": "control | events | data",
+    "schema": "pylabhub/...@version",
+    "content-type": "application/json | application/octet-stream | application/x-numpy",
+    "ts": {
+      "wall_clock": 1737763335.123,
+      "monotonic": 83291.44
+    }
+  },
+  "buffer": "<binary payload, optional>"
+}
+```
 
-3. **Timestamps**
+The Hub automatically stamps missing fields:
 
-   * Attach both wall‑clock and monotonic timestamps to every message; devices may include source‑clock info.
+- `msg_id` (unique per message)
+- `trace_id` (defaults to `msg_id`)
+- `ts.wall_clock` and `ts.monotonic`
 
-4. **Persistence service (internal)**
+---
 
-   * Attached directly to the hub; receives data synchronously from the hub (not via external subscription) to minimize copies and ensure ordering.
+## Implementation Details
 
-**Sketch (Python, simplified):**
+### Control Channel
+
+- Commands are sent with `send_control(header, payload)`.
+- Each command has a unique `msg_id`.
+- The Hub registers a **waiter** keyed by `msg_id`.
+- A handler must call `post_ack(Ack)` with the same `msg_id`.
+- `await_ack(msg_id)` resolves deterministically to that Ack.
+
+Ack example:
+
+```json
+{
+  "msg_id": "uuid",
+  "ok": true,
+  "code": "ok",
+  "message": "",
+  "data": {}
+}
+```
+
+### Events Channel
+
+Two message kinds:
+
+- **Events**: `emit_event(name, payload)` → `kind="event"`, schema default `pylabhub/events.log@1`
+- **State**: `emit_state(scope, fields)` → `kind="state"`, schema default `pylabhub/state.instrument@1`
+
+Events and state are typically persisted to **Parquet** by a service.
+
+### Data Channel
+
+- Declare streams with `create_stream(name, StreamSpec)` (dtype, shape, encoding).
+- Append data with `send_data(stream, header, buffer)` or `append(stream, shard)`.
+- Buffers are blocking on full queue, ensuring no silent loss.
+- Each message should specify `dtype` and `shape` in its header.
+
+Data is typically persisted to **Zarr arrays**, one sample per append.
+
+---
+
+## Services and Adapters
+
+- **Adapters**: Handle control commands and post acknowledgments.
+- **Services**: Receive all messages synchronously; used for persistence, monitoring, and logging.
+
+---
+
+## Shared Memory (Future Extension)
+
+For high-demand real-time tasks, the client and hardware adapter may exchange data/control via **managed shared memory**:
+
+- **Allocation & Layout**: Hub creates named shared memory regions (e.g., `/pylabhub/<hub_id>/<run_id>/<stream>`), with one or more **ring buffers** of fixed-size slots.
+- **Ownership & Lifetimes**: Slots cycle through states: `free → writing(adapter) → readable(client) → free`. The Hub arbitrates state transitions to avoid races.
+- **Zero-Copy**: Adapters write directly into shared memory; clients read by mapping the same segment. Only headers/indices traverse the control channel for acknowledgments.
+- **Backpressure**: When the ring is full, the adapter **pauses** until space is available (default) or drops by explicit policy. Control messages still preempt via the control channel.
+
+---
+
+## Health and Timebase
+
+- `get_health()` → queue sizes and status.
+- `get_timebase()` → wall-clock, monotonic time, device offsets (for future sync).
+
+---
+
+## Quick Start Example
+
+Example of Hub + PersistenceService:
 
 ```python
-@dataclass
-class Message:
-    header: dict  # msg_id, kind, channel, schema, ts, content-type, trace_id
-    buffer: memoryview | None = None
+import asyncio
+import numpy as np
+from api import Hub, StreamSpec
+from persistence_service import PersistenceService
 
-class ClientSession:
-    def __init__(self, hub_id: str, token: str, max_data: int = 1024):
-        self.hub_id = hub_id
-        self.token = token
-        self.control_q: asyncio.Queue[Message] = asyncio.Queue(maxsize=128)
-        self.data_q: asyncio.Queue[Message] = asyncio.Queue(maxsize=max_data)
+async def main():
+    hub = Hub("hub-1")
+    svc = PersistenceService(base_dir="./persist_out")
+    hub.register_service(svc)
 
-class Hub:
-    def __init__(self, hub_id: str):
-        self.hub_id = hub_id
-        self.session: ClientSession | None = None
+    await hub.open_session(token="dev")
 
-    async def open_session(self, token: str):
-        if self.session is not None:
-            raise RuntimeError("session-already-open")
-        self.session = ClientSession(self.hub_id, token)
+    await hub.create_stream(
+        "camera_raw",
+        StreamSpec(name="camera_raw", dtype="uint8", shape=(480, 640), encoding="application/x-numpy")
+    )
 
-    async def send_control(self, msg: Message) -> Message:
-        await self.session.control_q.put(msg)   # higher priority lane
-        ack = await self._wait_for_ack(msg.header["msg_id"])  # deterministic
-        return ack
+    await hub.emit_state("instrument/camera", {"exposure_ms": 10, "gain": 2})
+    await hub.emit_event("capture_started", {"sequence": 1})
 
-    async def send_data(self, msg: Message):
-        await self.session.data_q.put(msg)      # blocks when full to prevent loss
-```
-### 1.2.b Messaging Protocol Goals (CFS)
+    frame = np.random.randint(0, 255, size=(480, 640), dtype=np.uint8)
+    await hub.send_data("camera_raw", {"dtype": "uint8", "shape": (480, 640)}, frame.tobytes())
 
-* Ensure **deterministic control**: every command receives an acknowledgement in order.
-* **Prevent data loss**: use bounded queues with blocking behavior; control messages always take priority.
-* Maintain **timestamp integrity**: all messages include wall‑clock and monotonic time, with device offsets when available.
-* Provide a **clear separation** between acquisition and analysis: only one authorized client per session; internal services (like persistence) connect directly.
-* **State reporting**: emit explicit state messages (instrument condition, calibration status, post‑acquisition processing) to document data condition alongside acquisition.
-* Support **future extensibility**: allow for a future offline/replay mode where multiple clients can attach safely without affecting acquisition. Use JSON on the `events` channel for low‑rate, non‑uniform streams; reserve the `data` channel for high‑throughput binary blocks.
+    await asyncio.sleep(0.05)
 
-#### 1.2.c Managed Shared Memory (CFS option)
+    await svc.close()
+    await hub.close_session()
 
-For **high‑demand real‑time tasks**, the client and hardware adapter may exchange data/control via **managed shared memory**:
-
-* **Allocation & layout**: hub creates named shared memory regions (e.g., `/pylabhub/<hub_id>/<run_id>/<stream>`), with one or more **ring buffers** of fixed‑size slots. Each slot holds a small JSON header (timestamps, dtype/shape, seqno) and a binary payload region.
-* **Ownership & lifetimes**: slots cycle through states: `free → writing(adapter) → readable(client) → free`. The hub arbitrates state transitions to avoid races.
-* **Zero‑copy**: adapters write directly into shared memory; clients read by mapping the same segment. Only headers/indices traverse the control channel for acks.
-* **Timestamps & ordering**: each slot carries wall‑clock + monotonic timestamps and a sequence number; readers verify monotonicity.
-* **Backpressure**: when the ring is full, the adapter **pauses** until space is available (default) or drops by explicit policy. Control messages still preempt via the control channel.
-* **Safety**: memory is zeroed on allocation; segments are reference‑counted and cleaned on session close or crash recovery; access is limited to the single authorized client.
-* **API sketch**:
-
-  * `shm_create(stream, slots, slot_bytes) -> ShmHandle`
-  * `shm_write(handle, hdr, payload_ptr)` (adapter)
-  * `shm_read(handle) -> (hdr, payload_ptr)` (client)
-  * `shm_close(handle)`
-
-### 1.3 Sample Envelopes
-
-**(A) Control (JSON)**
-
-```json
-{
-  "msg_id": "550e8400-e29b-41d4-a716-446655440000",
-  "kind": "command",
-  "channel": "control",
-  "schema": "pylabhub/run.open@1",
-  "content-type": "application/json",
-  "ts": "2025-09-23T19:00:00Z",
-  "trace_id": "a1b2c3d4",
-  "payload": {
-    "run_id": "run-2025-09-23-001",
-    "base_dir": "./runs",
-    "description": "DAQ step test"
-  }
-}
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-**(B) Events — slow/structured data (JSON)**
+**Result:**
 
-```json
-{
-  "msg_id": "0a1b2c3d-1111-2222-3333-444455556666",
-  "kind": "event",
-  "channel": "events",
-  "schema": "pylabhub/events.log@1",
-  "content-type": "application/json",
-  "ts": "2025-09-23T19:00:05.123456Z",
-  "trace_id": "a1b2c3d4",
-  "payload": {
-    "name": "gain_change",
-    "params": {"gain_db": 20, "units": "dB"},
-    "notes": "Applied during step test"
-  }
-}
-```
-
-**(C) State (JSON)**
-
-```json
-{
-  "msg_id": "77778888-9999-aaaa-bbbb-ccccdddd0000",
-  "kind": "state",
-  "channel": "events",
-  "schema": "pylabhub/state.instrument@1",
-  "content-type": "application/json",
-  "ts": "2025-09-23T19:00:06.000000Z",
-  "trace_id": "a1b2c3d4",
-  "payload": {
-    "instrument_id": "ni6321-01",
-    "calibration": {"file": "cal/ni6321-2025-09-01.yaml", "status": "valid"},
-    "processing": [{"name": "baseline_subtract", "version": "1.0", "kind": "post-acq"}]
-  }
-}
-```
-
-**(D) Data (header + binary payload)**
-
-```json
-{
-  "msg_id": "f1d2d2f9-2a7b-4b2c-9a12-123456789abc",
-  "kind": "data",
-  "channel": "data",
-  "schema": "pylabhub/stream.append@1",
-  "content-type": "application/x-numpy",
-  "ts": "2025-09-23T19:00:05.123456Z",
-  "trace_id": "a1b2c3d4",
-  "payload": {
-    "dtype": "int16",
-    "shape": [2000000, 4],
-    "units": "V",
-    "t0": "2025-09-23T19:00:05Z",
-    "dt": 5e-06,
-    "chunk_index": 42
-  },
-  "buffer": "<bytes>"
-}
-```
-
-**Notes:** The `buffer` is transported as raw bytes by the transport; the header remains JSON for readability and compatibility.
+- Events and state saved to `persist_out/events.parquet`
+- Data saved to `persist_out/zarr/camera_raw`
 
