@@ -1,0 +1,82 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTS": "ON",
+        "PREFER_VENDOR_NLOHMANN": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "default",
+      "description": "Ninja + Debug (Linux/macOS)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "inherits": "default",
+      "description": "Ninja + Release (Linux/macOS)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_SANITIZERS": "OFF"
+      }
+    },
+    {
+      "name": "msvc-x64-debug",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/vs-x64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON",
+        "PREFER_VENDOR_NLOHMANN": "ON"
+      },
+      "architecture": "x64"
+    },
+    {
+      "name": "msvc-x64-release",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/vs-x64-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTS": "ON",
+        "PREFER_VENDOR_NLOHMANN": "ON"
+      },
+      "architecture": "x64"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build",
+      "configurePreset": "default",
+      "description": "Build default configure preset"
+    },
+    {
+      "name": "build-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "build-msvc-debug",
+      "configurePreset": "msvc-x64-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "test",
+      "configurePreset": "default"
+    }
+  ]
+}
