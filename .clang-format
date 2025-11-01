@@ -6,6 +6,4 @@ AllowShortFunctionsOnASingleLine: Inline
 DerivePointerBinding: false
 PointerBindsToType: false
 BreakBeforeBraces: Allman
-Standard: Cpp17
-SortIncludes: # if you want clang-format to sort includes; otherwise remove
-  - Determine
+SortIncludes: true
