@@ -30,3 +30,12 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Ignore CMake build output directory
+**/_build*/
+**/build*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+
