@@ -64,38 +64,15 @@ endif()
 
 # ---------------------------------------------------------
 # Third-party modules
-#
-# NOTE:
-#  - We intentionally do NOT auto-scan third_party/ and call add_subdirectory()
-#    for every folder. Different submodules often require different CMake cache
-#    variables and special handling (options, dependency wiring, disabling tests).
-#  - Add each third-party module explicitly here, with the required set(...) calls
-#    to configure the subproject before add_subdirectory().
-#  - Example below implements libzmq integration if the submodule is present.
+# (unchanged) - libzmq integration retained if present
 # ---------------------------------------------------------
-
 set(ZMQ_LIB_TARGET "")  # will hold the target name if libzmq is added
-
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-# set a consistent directory under the main binary dir for all third-party builds
 set(THIRD_PARTY_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party" CACHE PATH "Where to build third-party subprojects")
-
-# when adding libzmq subproject:
-add_subdirectory("${THIRD_PARTY_DIR}/libzmq" "${THIRD_PARTY_BUILD_DIR}/libzmq_build")
 
 if(EXISTS "${THIRD_PARTY_DIR}/libzmq/CMakeLists.txt")
   message(STATUS "Found libzmq submodule: adding to build")
 
-  # Configure libzmq build options BEFORE add_subdirectory.
-  # See libzmq CMake options; these are safe defaults for embedding:
-  #   BUILD_ZMQ_SHARED      - build shared libzmq (ON/OFF)  (some versions)
-  #   BUILD_SHARED          - sometimes used by subprojects
-  #   BUILD_TESTS           - turn off tests
-  #   BUILD_PERF            - turn off perf tests
-  #   ENABLE_CURVE          - enable CURVE (requires libsodium)
-  # Adjust variables as needed if your libzmq version uses different names.
-  #
-  # Provide a cache-variable toggle so users can control shared vs static:
   option(LIBZMQ_BUILD_SHARED "Build libzmq as shared library (default OFF)" OFF)
   if(LIBZMQ_BUILD_SHARED)
     set(LIBZMQ_SHARED_OPT ON CACHE BOOL "Build libzmq shared" FORCE)
@@ -103,17 +80,14 @@ if(EXISTS "${THIRD_PARTY_DIR}/libzmq/CMakeLists.txt")
     set(LIBZMQ_SHARED_OPT OFF CACHE BOOL "Build libzmq static" FORCE)
   endif()
 
-  # Recommended: disable tests/perf to avoid long submodule builds
   set(BUILD_TESTS OFF CACHE BOOL "Disable libzmq tests" FORCE)
   set(BUILD_PERF OFF CACHE BOOL "Disable libzmq perf" FORCE)
-  # If you need CURVE support, set ENABLE_CURVE to ON and provide libsodium as dependency
   set(ENABLE_CURVE OFF CACHE BOOL "Disable libzmq CURVE by default" FORCE)
 
-  # Now add libzmq subdirectory into a dedicated third_party build dir
-  add_subdirectory("${THIRD_PARTY_DIR}/libzmq" "${CMAKE_CURRENT_BINARY_DIR}/third_party/libzmq_build")
+  set(ZMQ_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party/libzmq_build-${CMAKE_SYSTEM_NAME}-${CMAKE_CXX_COMPILER_ID}-${CMAKE_BUILD_TYPE}")
+  file(MAKE_DIRECTORY "${ZMQ_BUILD_DIR}")
+  add_subdirectory("${THIRD_PARTY_DIR}/libzmq" "${ZMQ_BUILD_DIR}")
 
-  # After add_subdirectory, try to detect the target name exported by libzmq.
-  # Different libzmq versions/projects may register different target names.
   if(TARGET zmq::libzmq)
     set(ZMQ_LIB_TARGET "zmq::libzmq")
   elseif(TARGET libzmq)
@@ -130,12 +104,14 @@ endif()
 # ---------------------------------------------------------
 # Build library target pylabhub-util
 # ---------------------------------------------------------
+# include both src/util and src/fileutil to pick up the current sources layout
 file(GLOB_RECURSE UTIL_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp"
 )
 
 if(NOT UTIL_SOURCES)
-  message(WARNING "No sources found in ${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp — check your source path.")
+  message(WARNING "No sources found in src/util or src/fileutil — check your source path.")
 endif()
 
 add_library(pylabhub-util ${UTIL_SOURCES})
@@ -148,40 +124,38 @@ target_include_directories(pylabhub-util
 )
 
 if(NLOHMANN_VENDORED)
-    target_include_directories(pylabhub-util PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
-    )
+  target_include_directories(pylabhub-util
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/include>
+      $<INSTALL_INTERFACE:include>
+  )
 endif()
 
 if(TARGET nlohmann_json::nlohmann_json)
     target_link_libraries(pylabhub-util PUBLIC nlohmann_json::nlohmann_json)
 endif()
 
-# If libzmq was built and we detected a target, link it privately so tests or consumers get it via pylabhub::util if desired.
 if(ZMQ_LIB_TARGET)
   message(STATUS "Linking pylabhub-util against ${ZMQ_LIB_TARGET}")
   target_link_libraries(pylabhub-util PRIVATE ${ZMQ_LIB_TARGET})
 endif()
 
-# Link threads
 target_link_libraries(pylabhub-util PUBLIC Threads::Threads)
 target_compile_features(pylabhub-util PUBLIC cxx_std_17)
 
-# Optional sanitizer flags
 if(ENABLE_SANITIZERS AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
     message(STATUS "Enabling ASAN/UBSAN sanitizers for pylabhub-util")
     target_compile_options(pylabhub-util PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(pylabhub-util PUBLIC -fsanitize=address,undefined)
 endif()
 
-# Installation rules (optional)
 include(GNUInstallDirs)
 install(TARGETS pylabhub-util EXPORT pylabhub-utilTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT pylabhub-utilTargets FILE pylabhub-utilTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub-util)
 
 # ---------------------------------------------------------
-# Tests (delegated to tests/CMakeLists.txt)
+# Tests
 # ---------------------------------------------------------
 if(BUILD_TESTS)
   enable_testing()

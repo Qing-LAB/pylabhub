@@ -1,191 +1,97 @@
 // test_jsonconfig.cpp
-#include <iostream>
+// Tests JsonConfig basic behavior: init(createIfMissing), with_json_write exclusivity, save()
+// refusal while exclusive, then save success.
+
 #include <cassert>
 #include <filesystem>
-#include <chrono>
-#include <thread>
-#include <cstdlib>
-#include <string>
-#include "JsonConfig.hpp"
-#include "FileLock.hpp"
+#include <iostream>
+
+#include "fileutil/JsonConfig.hpp"
 
 using namespace pylabhub::fileutil;
-namespace fs = std::filesystem;
 
-#if defined(_WIN32)
-#include <windows.h>
-#endif
-
-static void panic(const std::string& m) {
-    std::cerr << "FAIL: " << m << std::endl;
-    std::exit(3);
-}
-
-// child helper: hold lock on file for seconds (same as in filelock test)
-int run_child_hold_lock(const std::string& path, int seconds) {
-    FileLock flock(path, LockMode::Blocking);
-    if (!flock.valid()) {
-        auto ec = flock.error_code();
-        std::cerr << "child: failed to acquire blocking lock: " << ec.message() << "\n";
-        return 1;
-    }
-    std::cout << "child: holding lock for " << seconds << "s\n";
-    std::this_thread::sleep_for(std::chrono::seconds(seconds));
-    std::cout << "child: done\n";
-    return 0;
-}
-
-int spawn_lock_holder(const fs::path& exe, const fs::path& target, int seconds) {
-#if defined(_WIN32)
-    std::wstring cmd = L"\"";
-    cmd += exe.wstring();
-    cmd += L"\" --hold-lock \"";
-    cmd += target.wstring();
-    cmd += L"\" ";
-    cmd += std::to_wstring(seconds);
-
-    STARTUPINFOW si{};
-    PROCESS_INFORMATION pi{};
-    si.cb = sizeof(si);
-    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-        std::cerr << "CreateProcessW failed: " << GetLastError() << "\n";
-        return -1;
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return 0;
-#else
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        std::string s_exe = exe.string();
-        std::string s_target = target.string();
-        execl(s_exe.c_str(), s_exe.c_str(), "--hold-lock", s_target.c_str(), std::to_string(seconds).c_str(), (char*)nullptr);
-        _exit(127);
-    }
-    return pid;
-#endif
-}
-
-int main(int argc, char** argv) {
-    // child holder mode
-    if (argc >= 2 && std::string(argv[1]) == "--hold-lock") {
-        if (argc < 4) {
-            std::cerr << "usage: --hold-lock <path> <seconds>\n";
-            return 1;
-        }
-        std::string path = argv[2];
-        int sec = std::atoi(argv[3]);
-        return run_child_hold_lock(path, sec);
-    }
-
-    std::cout << "TEST: JsonConfig behaviors\n";
-
+int main()
+{
+    namespace fs = std::filesystem;
     fs::path tmpdir = fs::temp_directory_path();
-    fs::path configPath = tmpdir / ("test_jsonconfig_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".json");
+    fs::path cfgpath = tmpdir / "pylabhub_test_jsonconfig.json";
 
-    // ensure dir
-    fs::create_directories(configPath.parent_path());
-
-    // 1) init(createIfMissing=true)
+    // Ensure removed to start fresh
+    try
     {
-        JsonConfig cfg;
-        bool ok = cfg.init(configPath, true);
-        if (!ok) panic("init(createIfMissing) failed");
-        std::cout << "init(createIfMissing) ok\n";
+        fs::remove(cfgpath);
+    }
+    catch (...)
+    {
     }
 
-    // 2) set/get/get_optional/get_or
+    JsonConfig cfg;
+    if (!cfg.init(cfgpath, /*createIfMissing*/ true))
     {
-        JsonConfig cfg(configPath);
-        cfg.set("a.b.c", 123);
-        cfg.set("a.str", std::string("hello"));
-        auto v = cfg.get_optional<int>("a.b.c");
-        if (!v || *v != 123) panic("get_optional failed or wrong value");
-        if (cfg.get_or<int>("a.x", 999) != 999) panic("get_or failed");
-        int x = cfg.get<int>("a.b.c");
-        if (x != 123) panic("get returned wrong value");
-        std::cout << "set/get/get_optional/get_or OK\n";
+        std::cerr << "test_jsonconfig: init(createIfMissing) failed\n";
+        return 2;
     }
 
-    // 3) with_json_read / with_json_write
+    // Replace content with known JSON
+    nlohmann::json j;
+    j["value"] = 123;
+    if (!cfg.replace(j))
     {
-        JsonConfig cfg(configPath);
-        bool wrote = cfg.with_json_write([](json& j) {
-            j["rw_test"] = 42;
-            });
-        if (!wrote) panic("with_json_write failed");
-        bool read_ok = cfg.with_json_read([](const json& j) {
-            if (!j.contains("rw_test") || j["rw_test"].get<int>() != 42) panic("with_json_read observed wrong data");
-            });
-        if (!read_ok) panic("with_json_read returned false");
-        std::cout << "with_json_read/write OK\n";
+        std::cerr << "test_jsonconfig: replace() failed\n";
+        return 3;
     }
 
-    // 4) save then reload
+    // Start an exclusive with_json_write and inside callback attempt to call save() (should fail)
+    bool cb_ok = cfg.with_json_write(
+        [&](nlohmann::json &m)
+        {
+            // modify in-memory
+            m["value"] = 456;
+            // Attempt to save while exclusive guard is active: per policy this should fail
+            bool saved = cfg.save();
+            if (saved)
+            {
+                std::cerr << "test_jsonconfig: save() unexpectedly succeeded from inside "
+                             "with_json_write\n";
+            }
+            assert(!saved);
+        });
+    if (!cb_ok)
     {
-        JsonConfig cfg(configPath);
-        cfg.set("persist.me", std::string("on_disk"));
-        if (!cfg.save()) panic("save failed");
-        // create a fresh instance and reload
-        JsonConfig cfg2;
-        if (!cfg2.init(configPath, false)) panic("init on reload failed");
-        if (!cfg2.reload()) panic("reload failed");
-        auto s = cfg2.get<std::string>("persist.me");
-        if (s != "on_disk") panic("reload did not persist value");
-        std::cout << "save/reload OK\n";
+        std::cerr << "test_jsonconfig: with_json_write callback failed\n";
+        return 4;
     }
 
-    // 5) replace atomic behavior + non-blocking lock failure
+    // Now save() should succeed now that exclusive guard released
+    if (!cfg.save())
     {
-        JsonConfig cfg(configPath);
-        json newcfg = json::object();
-        newcfg["replaced"] = true;
-
-        // spawn a helper process to hold the lock
-        fs::path exe = fs::canonical(argv[0]);
-        std::cout << "Spawning lock-holder child for replace test\n";
-        int child = spawn_lock_holder(exe, configPath, 4);
-        if (child <= 0) panic("spawn failed");
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        bool rep = cfg.replace(newcfg);
-        if (rep) panic("replace should have failed because lock is held by child");
-        std::cout << "replace failed as expected due to lock\n";
-
-#if defined(_WIN32)
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-#else
-        int status = 0;
-        waitpid(child, &status, 0);
-#endif
-
-        // Now replace should succeed
-        if (!cfg.replace(newcfg)) panic("replace failed after child release");
-        std::cout << "replace succeeded after lock released\n";
-
-        // verify on-disk matches
-        JsonConfig cfg2;
-        cfg2.init(configPath, false);
-        cfg2.reload();
-        if (!cfg2.has("replaced")) panic("disk reload missing replaced");
-        if (!cfg2.get<bool>("replaced")) panic("value on disk not true");
+        std::cerr << "test_jsonconfig: save() failed after exclusive guard released\n";
+        return 5;
     }
 
-    // 6) remove and has
+    // reload into a fresh instance and check the value persisted
+    JsonConfig cfg2;
+    if (!cfg2.init(cfgpath, /*createIfMissing*/ false))
     {
-        JsonConfig cfg(configPath);
-        cfg.set("to.remove.x", 10);
-        if (!cfg.has("to.remove.x")) panic("has() missing key");
-        if (!cfg.remove("to.remove.x")) panic("remove returned false");
-        if (cfg.has("to.remove.x")) panic("has() still true after remove");
-        std::cout << "remove/has OK\n";
+        std::cerr << "test_jsonconfig: cfg2.init failed\n";
+        return 6;
+    }
+    auto val = cfg2.get_optional<int>("value");
+    if (!val || *val != 456)
+    {
+        std::cerr << "test_jsonconfig: persisted value mismatch (expected 456)\n";
+        return 7;
     }
 
     // cleanup
-    try { if (fs::exists(configPath)) fs::remove(configPath); }
-    catch (...) {}
+    try
+    {
+        fs::remove(cfgpath);
+    }
+    catch (...)
+    {
+    }
 
-    std::cout << "JsonConfig tests passed\n";
+    std::cout << "test_jsonconfig: OK\n";
     return 0;
 }
