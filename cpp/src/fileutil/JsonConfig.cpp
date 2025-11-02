@@ -1,27 +1,13 @@
 // JsonConfig.cpp
 // Implementation of non-template JsonConfig methods and atomic_write_json.
 //
-// Design / critical notes:
-//  - The header `JsonConfig.hpp` contains template helpers and the Impl struct.
-//  - This file implements init(), save(), reload(), replace(), as_json(), and atomic_write_json()
-//    to avoid including OS-specific headers in every translation unit that includes the header.
-//  - Write policy:
-//      * with_json_write() obtains an in-process exclusive guard (AtomicGuard.try_acquire_if_zero).
-//        Only one writer may hold that guard at a time.
-//      * save() will refuse to run while the exclusive guard is active (fail-fast) to avoid races.
-//      * All write operations to disk acquire a non-blocking FileLock to avoid blocking other
-//      processes.
-//  - atomic_write_json will write to a temp file in same directory and then atomically replace
-//    the target (POSIX: rename + fsync(dir), Windows: ReplaceFileW).
-//
-// Important failure semantics:
-//  - Functions return bool indicating success; failure details are logged via JC_LOG_* macros.
-//  - FileLock errors are logged with their std::error_code messages.
+// See header for design notes and concurrency model.
 
 #include "fileutil/JsonConfig.hpp"
 #include "fileutil/PathUtil.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <system_error>
 
@@ -41,6 +27,19 @@ namespace pylabhub::fileutil
 
 using json = nlohmann::json;
 
+// thread_local storage definition for header-declared symbol
+thread_local std::vector<const void *> JsonConfig::g_with_json_write_stack;
+
+// Definition of Impl (private)
+struct JsonConfig::Impl
+{
+    std::filesystem::path configPath;
+    json data;
+    std::shared_mutex rwMutex; // protects data for readers/writers
+    std::atomic<bool> dirty{false}; // true if memory may be newer than disk
+};
+
+// Constructors / dtor
 JsonConfig::JsonConfig() noexcept = default;
 JsonConfig::JsonConfig(const std::filesystem::path &configFile)
 {
@@ -98,44 +97,27 @@ bool JsonConfig::save() noexcept
 {
     try
     {
+        // Fast-path: if we're currently inside with_json_write (same thread & instance),
+        // then the thread-local stack contains this pointer and we are already inside the
+        // _initMutex-protected region. Call save_locked directly to avoid re-locking.
+        const void *key = static_cast<const void *>(this);
+        bool in_with_json_write =
+            (std::find(g_with_json_write_stack.begin(), g_with_json_write_stack.end(), key) !=
+             g_with_json_write_stack.end());
+
+        if (in_with_json_write)
+        {
+            std::error_code ec;
+            return save_locked(ec);
+        }
+
+        // Normal public save path: take _initMutex then call save_locked()
         std::lock_guard<std::mutex> g(_initMutex);
         if (!_impl)
             return false;
 
-        if (_impl->configPath.empty())
-        {
-            JC_LOG_ERROR("JsonConfig::save: configPath not initialized (call init() first)");
-            return false;
-        }
-
-        // If an exclusive with_json_write is active, refuse to save (policy: fail-fast).
-        if (_impl->exclusive_guard.load(std::memory_order_acquire) != 0)
-        {
-            JC_LOG_ERROR("JsonConfig::save: refusing to save while with_json_write exclusive guard "
-                         "is active");
-            return false;
-        }
-
-        // Acquire cross-process lock in non-blocking mode
-        FileLock flock(_impl->configPath, LockMode::NonBlocking);
-        if (!flock.valid())
-        {
-            auto ec = flock.error_code();
-            JC_LOG_ERROR("JsonConfig::save: failed to acquire lock for "
-                         << _impl->configPath << " code=" << ec.value() << " msg=\"" << ec.message()
-                         << "\"");
-            return false;
-        }
-
-        // Copy data under shared lock, then write outside memory lock
-        json toWrite;
-        {
-            std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-            toWrite = _impl->data;
-        }
-
-        atomic_write_json(_impl->configPath, toWrite);
-        return true;
+        std::error_code ec;
+        return save_locked(ec);
     }
     catch (const std::exception &e)
     {
@@ -149,13 +131,77 @@ bool JsonConfig::save() noexcept
     }
 }
 
+bool JsonConfig::save_locked(std::error_code &ec)
+{
+    // Caller MUST hold _initMutex (unless called from with_json_write fast-path).
+    ec.clear();
+    if (!_impl)
+    {
+        ec = std::make_error_code(std::errc::not_connected);
+        return false;
+    }
+
+    if (_impl->configPath.empty())
+    {
+        JC_LOG_ERROR("JsonConfig::save_locked: configPath not initialized (call init() first)");
+        ec = std::make_error_code(std::errc::no_such_file_or_directory);
+        return false;
+    }
+
+    // If nothing changed (dirty == false) skip writing to disk.
+    if (!_impl->dirty.load(std::memory_order_acquire))
+    {
+        // nothing to do
+        return true;
+    }
+
+    // Acquire cross-process lock in non-blocking mode (policy: fail-fast)
+    FileLock flock(_impl->configPath, LockMode::NonBlocking);
+    if (!flock.valid())
+    {
+        ec = flock.error_code();
+        JC_LOG_ERROR("JsonConfig::save_locked: failed to acquire lock for "
+                     << _impl->configPath << " code=" << ec.value() << " msg=\"" << ec.message()
+                     << "\"");
+        return false;
+    }
+
+    // Copy data under shared lock, then write outside memory lock (we snapshot)
+    json toWrite;
+    {
+        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
+        toWrite = _impl->data;
+    }
+
+    try
+    {
+        atomic_write_json(_impl->configPath, toWrite);
+    }
+    catch (const std::exception &ex)
+    {
+        JC_LOG_ERROR("JsonConfig::save_locked: atomic_write_json failed: " << ex.what());
+        ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+    catch (...)
+    {
+        JC_LOG_ERROR("JsonConfig::save_locked: atomic_write_json unknown failure");
+        ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+
+    // Success -> clear dirty flag
+    _impl->dirty.store(false, std::memory_order_release);
+    return true;
+}
+
 bool JsonConfig::reload() noexcept
 {
     try
     {
         std::lock_guard<std::mutex> g(_initMutex);
         if (!_impl)
-            return false;
+            _impl = std::make_unique<Impl>();
 
         if (_impl->configPath.empty())
         {
@@ -178,8 +224,6 @@ bool JsonConfig::reload() noexcept
         std::ifstream in(_impl->configPath);
         if (!in.is_open())
         {
-            // If file doesn't exist that's a recoverable state only if createIfMissing was used
-            // earlier
             JC_LOG_ERROR("JsonConfig::reload: cannot open file: " << _impl->configPath);
             return false;
         }
@@ -195,6 +239,8 @@ bool JsonConfig::reload() noexcept
         {
             std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
             _impl->data = std::move(newdata);
+            // memory now matches disk -> clear dirty
+            _impl->dirty.store(false, std::memory_order_release);
         }
 
         return true;
@@ -239,10 +285,11 @@ bool JsonConfig::replace(const json &newData) noexcept
         // Persist newData to disk atomically (may throw)
         atomic_write_json(_impl->configPath, newData);
 
-        // Update in-memory data under write lock
+        // Update in-memory data under write lock; memory == disk so clear dirty.
         {
             std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
             _impl->data = newData;
+            _impl->dirty.store(false, std::memory_order_release);
         }
 
         return true;

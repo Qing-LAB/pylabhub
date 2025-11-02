@@ -107,7 +107,7 @@ endif()
 # include both src/util and src/fileutil to pick up the current sources layout
 file(GLOB_RECURSE UTIL_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp"
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp"
+#     "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp"
 )
 
 if(NOT UTIL_SOURCES)
