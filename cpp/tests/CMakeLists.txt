@@ -54,16 +54,10 @@ foreach(src IN LISTS TEST_SOURCES)
     #   pylabhub-fileutil   (fileutil code)
     #
     # If your top-level CMake uses different target names, adjust these accordingly.
-    if(TARGET pylabhub-util)
-        target_link_libraries(${test_name} PRIVATE pylabhub-util)
+    if(TARGET pylabhub)
+        target_link_libraries(${test_name} PRIVATE pylabhub)
     else()
-        message(WARNING "Target 'pylabhub-util' not found. Ensure the top-level CMake defines it.")
-    endif()
-
-    if(TARGET pylabhub-fileutil)
-        target_link_libraries(${test_name} PRIVATE pylabhub-fileutil)
-    else()
-        message(STATUS "Target 'pylabhub-fileutil' not found. If tests require fileutil, add that target.")
+        message(WARNING "Target 'pylabhub' not found. Ensure the top-level CMake defines it.")
     endif()
 
     # Link threads

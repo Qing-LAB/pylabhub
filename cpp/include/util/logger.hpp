@@ -8,13 +8,13 @@
 // Usage:
 //   // host initializes
 //   get_global_logger()->init_file("/tmp/myapp.log");
-//   LOG_INFO("started: pid=%d", getpid());
-//   LOG_DEBUG_LOC("debug value=%d", x); // includes file:line:function
+//   LOGGER_INFO("started: pid=%d", getpid());
+//   LOGGER_DEBUG_LOC("debug value=%d", x); // includes file:line:function
 //
 // Build-time control:
 //   - By default in non-NDEBUG (debug) builds, TRACE..ERROR enabled
 //   - In NDEBUG builds, only ERROR enabled by default
-//   - Override by adding -DLOG_COMPILE_LEVEL=<n> where n maps below.
+//   - Override by adding -DLOGGER_COMPILE_LEVEL=<n> where n maps below.
 //
 // Note: Consumers should NOT delete or shutdown the global logger; host owns lifecycle.
 // Example:
@@ -25,10 +25,10 @@
 //     lg->init_file("/tmp/myapp.log", true);
 //     lg->set_level(Logger::Level::DEBUG);
 //
-//     LOG_INFO("Started pid=%d", getpid());
-//     LOG_DEBUG_LOC("debugging value=%d", 42);
-//     LOG_TRACE("trace: this might be verbose");
-//     LOG_ERROR("fatal: %s", "something broke");
+//     LOGGER_INFO("Started pid=%d", getpid());
+//     LOGGER_DEBUG_LOC("debugging value=%d", 42);
+//     LOGGER_TRACE("trace: this might be verbose");
+//     LOGGER_ERROR("fatal: %s", "something broke");
 //     lg->shutdown();
 // }
 
@@ -101,8 +101,8 @@ should be kept minimal and synchronized with implementation comments.
    - Some platforms behave differently: test on your target OS.
 
 8) Compile-time log disabling
-   - Use LOG_COMPILE_LEVEL to reduce log code compiled into production:
-       * Set LOG_COMPILE_LEVEL to LOG_COMPILE_LEVEL_INFO to remove DEBUG/TRACE,
+   - Use LOGGER_COMPILE_LEVEL to reduce log code compiled into production:
+       * Set LOGGER_COMPILE_LEVEL to LOGGER_COMPILE_LEVEL_INFO to remove DEBUG/TRACE,
          but keep INFO+.
        * By default NDEBUG builds compile out verbose logs (leaving ERROR).
    - Even when a log macro is compiled out, do not rely on it for side effects.
@@ -121,33 +121,42 @@ If you are unsure about any of these, talk to the platform owner before shipping
 ===============================================================================
 */
 
-#include <string>
 #include <atomic>
+#include <string>
 
 #if defined(_WIN32) || defined(_WIN64)
-  #if defined(LOGGER_EXPORTS)
-    #define LOGGER_API __declspec(dllexport)
-  #else
-    #define LOGGER_API __declspec(dllimport)
-  #endif
+#if defined(LOGGER_EXPORTS)
+#define LOGGER_API __declspec(dllexport)
 #else
-  #if __GNUC__ >= 4
-    #define LOGGER_API __attribute__((visibility("default")))
-  #else
-    #define LOGGER_API
-  #endif
+#define LOGGER_API __declspec(dllimport)
+#endif
+#else
+#if __GNUC__ >= 4
+#define LOGGER_API __attribute__((visibility("default")))
+#else
+#define LOGGER_API
+#endif
 #endif
 
-class LOGGER_API Logger {
-public:
-    enum class Level { TRACE = 0, DEBUG = 1, INFO = 2, WARNING = 3, ERROR = 4, NONE = 5 };
+class LOGGER_API Logger
+{
+  public:
+    enum class Level
+    {
+        TRACE = 0,
+        DEBUG = 1,
+        INFO = 2,
+        WARNING = 3,
+        ERROR = 4,
+        NONE = 5
+    };
 
     // single-instance accessor (definition in logger.cpp)
-    static Logger& instance();
+    static Logger &instance();
 
     // Simple init APIs (return codes kept consistent with earlier design)
-    bool init_file(const std::string& path, bool use_flock = false, int mode = 0644);
-    void init_syslog(const char* ident = nullptr, int option = 0, int facility = 0);
+    bool init_file(const std::string &path, bool use_flock = false, int mode = 0644);
+    void init_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
     void shutdown();
 
     void set_level(Level lvl);
@@ -156,35 +165,35 @@ public:
     void set_fsync_per_write(bool v);
 
     // Logging API (printf-style)
-    void log(Level lvl, const char* fmt, ...);
-    void trace(const char* fmt, ...); // convenience for TRACE
-    void debug(const char* fmt, ...);
-    void info(const char* fmt, ...);
-    void warn(const char* fmt, ...);
-    void error(const char* fmt, ...);
+    void log(Level lvl, const char *fmt, ...);
+    void trace(const char *fmt, ...); // convenience for TRACE
+    void debug(const char *fmt, ...);
+    void info(const char *fmt, ...);
+    void warn(const char *fmt, ...);
+    void error(const char *fmt, ...);
 
     int last_errno() const;
 
     // Non-copyable
-    Logger(const Logger&) = delete;
-    Logger& operator=(const Logger&) = delete;
+    Logger(const Logger &) = delete;
+    Logger &operator=(const Logger &) = delete;
 
-private:
+  private:
     Logger();
     ~Logger();
     struct Impl;
-    Impl* pImpl;
+    Impl *pImpl;
 };
 
 // Exported C symbol for consumers (host defines and exports it in logger.cpp).
 // Plugins and other modules call this to obtain the pointer.
 // Keep the name stable across versions.
-extern "C" LOGGER_API Logger* get_global_logger();
+extern "C" LOGGER_API Logger *get_global_logger();
 
 // -----------------------------------------------------------------------------
 // Compile-time control of which macros are enabled
 //
-// LOG_COMPILE_LEVEL numeric mapping (lower -> more verbose):
+// LOGGER_COMPILE_LEVEL numeric mapping (lower -> more verbose):
 //   0 = TRACE
 //   1 = DEBUG
 //   2 = INFO
@@ -193,26 +202,26 @@ extern "C" LOGGER_API Logger* get_global_logger();
 //   5 = NONE
 //
 // Default behavior:
-//   - If user defines LOG_COMPILE_LEVEL explicitly (via -D), that value is used.
+//   - If user defines LOGGER_COMPILE_LEVEL explicitly (via -D), that value is used.
 //   - Else when NDEBUG is defined (release), default = 4 (ERROR only).
 //   - Else (debug build) default = 0 (TRACE+).
 //
-// Example to force info+ in any build: -DLOG_COMPILE_LEVEL=2
-#ifndef LOG_COMPILE_LEVEL
-  #ifdef NDEBUG
-    #define LOG_COMPILE_LEVEL 4
-  #else
-    #define LOG_COMPILE_LEVEL 0
-  #endif
+// Example to force info+ in any build: -DLOGGER_COMPILE_LEVEL=2
+#ifndef LOGGER_COMPILE_LEVEL
+#ifdef NDEBUG
+#define LOGGER_COMPILE_LEVEL 4
+#else
+#define LOGGER_COMPILE_LEVEL 0
+#endif
 #endif
 
 // Helper compile-level constants
-#define LOG_COMPILE_LEVEL_TRACE   0
-#define LOG_COMPILE_LEVEL_DEBUG   1
-#define LOG_COMPILE_LEVEL_INFO    2
-#define LOG_COMPILE_LEVEL_WARNING 3
-#define LOG_COMPILE_LEVEL_ERROR   4
-#define LOG_COMPILE_LEVEL_NONE    5
+#define LOGGER_COMPILE_LEVEL_TRACE 0
+#define LOGGER_COMPILE_LEVEL_DEBUG 1
+#define LOGGER_COMPILE_LEVEL_INFO 2
+#define LOGGER_COMPILE_LEVEL_WARNING 3
+#define LOGGER_COMPILE_LEVEL_ERROR 4
+#define LOGGER_COMPILE_LEVEL_NONE 5
 
 // -----------------------------------------------------------------------------
 // Macro utilities
@@ -224,72 +233,90 @@ extern "C" LOGGER_API Logger* get_global_logger();
 //  LVL_ENUM: Logger::Level::DEBUG etc
 //  METHOD: method name on Logger pointer (debug/info/)
 //  FMT_AND_ARGS: format and variadic args
-#define LOG_AT_LEVEL_RUNTIME(LVL_ENUM, METHOD, fmt, ...)                     \
-    do {                                                                     \
-        Logger* LOGGER_UNIQUE_NAME(_lg_) = get_global_logger();              \
-        if (LOGGER_UNIQUE_NAME(_lg_) != nullptr) {                           \
-            if (static_cast<int>(LOGGER_UNIQUE_NAME(_lg_)->level()) <=      \
-                static_cast<int>(LVL_ENUM)) {                                \
-                LOGGER_UNIQUE_NAME(_lg_)->METHOD(fmt, ##__VA_ARGS__);        \
-            }                                                                \
-        }                                                                    \
+#define LOGGER_AT_LEVEL_RUNTIME(LVL_ENUM, METHOD, fmt, ...)                                           \
+    do                                                                                             \
+    {                                                                                              \
+        Logger *LOGGER_UNIQUE_NAME(_lg_) = get_global_logger();                                    \
+        if (LOGGER_UNIQUE_NAME(_lg_) != nullptr)                                                   \
+        {                                                                                          \
+            if (static_cast<int>(LOGGER_UNIQUE_NAME(_lg_)->level()) <= static_cast<int>(LVL_ENUM)) \
+            {                                                                                      \
+                LOGGER_UNIQUE_NAME(_lg_)->METHOD(fmt, ##__VA_ARGS__);                              \
+            }                                                                                      \
+        }                                                                                          \
     } while (0)
 
 // Variant with location prefix: the macro will prepend "[file:line:function] " to the message.
-#define LOG_AT_LEVEL_RUNTIME_LOC(LVL_ENUM, METHOD, fmt, ...)                 \
-    do {                                                                     \
-        Logger* LOGGER_UNIQUE_NAME(_lg_) = get_global_logger();              \
-        if (LOGGER_UNIQUE_NAME(_lg_) != nullptr) {                           \
-            if (static_cast<int>(LOGGER_UNIQUE_NAME(_lg_)->level()) <=      \
-                static_cast<int>(LVL_ENUM)) {                                \
-                LOGGER_UNIQUE_NAME(_lg_)->METHOD("[%s:%d:%s] " fmt,          \
-                   __FILE__, __LINE__, __func__, ##__VA_ARGS__);             \
-            }                                                                \
-        }                                                                    \
+#define LOGGER_AT_LEVEL_RUNTIME_LOC(LVL_ENUM, METHOD, fmt, ...)                                       \
+    do                                                                                             \
+    {                                                                                              \
+        Logger *LOGGER_UNIQUE_NAME(_lg_) = get_global_logger();                                    \
+        if (LOGGER_UNIQUE_NAME(_lg_) != nullptr)                                                   \
+        {                                                                                          \
+            if (static_cast<int>(LOGGER_UNIQUE_NAME(_lg_)->level()) <= static_cast<int>(LVL_ENUM)) \
+            {                                                                                      \
+                LOGGER_UNIQUE_NAME(_lg_)->METHOD("[%s:%d:%s] " fmt, __FILE__, __LINE__, __func__,  \
+                                                 ##__VA_ARGS__);                                   \
+            }                                                                                      \
+        }                                                                                          \
     } while (0)
 
 // -----------------------------------------------------------------------------
-// Public macros: compile-time enable/disable based on LOG_COMPILE_LEVEL.
-// If a macro is disabled at compile-time, expand to (void)0 so it's compiled out.
+// Public macros: compile-time enable/disable based on LOGGER_COMPILE_LEVEL.
+// If a macro is disabled at compile-time, expand to ((void)(0)) so it's compiled out.
 
-#if LOG_COMPILE_LEVEL <= LOG_COMPILE_LEVEL_TRACE
-  #define LOG_TRACE(fmt, ...) LOG_AT_LEVEL_RUNTIME(Logger::Level::TRACE, trace, fmt, ##__VA_ARGS__)
+#if LOGGER_COMPILE_LEVEL <= LOGGER_COMPILE_LEVEL_TRACE
+#define LOGGER_TRACE(fmt, ...) LOGGER_AT_LEVEL_RUNTIME(Logger::Level::TRACE, trace, fmt, ##__VA_ARGS__)
 #else
-  #define LOG_TRACE(fmt, ...) (void)0
+#define LOGGER_TRACE(fmt, ...) ((void)(0))
 #endif
 
-#if LOG_COMPILE_LEVEL <= LOG_COMPILE_LEVEL_DEBUG
-  #define LOG_DEBUG(fmt, ...) LOG_AT_LEVEL_RUNTIME(Logger::Level::DEBUG, debug, fmt, ##__VA_ARGS__)
-  #define LOG_DEBUG_LOC(fmt, ...) LOG_AT_LEVEL_RUNTIME_LOC(Logger::Level::DEBUG, debug, fmt, ##__VA_ARGS__)
+#if LOGGER_COMPILE_LEVEL <= LOGGER_COMPILE_LEVEL_DEBUG
+#define LOGGER_DEBUG(fmt, ...) LOGGER_AT_LEVEL_RUNTIME(Logger::Level::DEBUG, debug, fmt, ##__VA_ARGS__)
+#define LOGGER_DEBUG_LOC(fmt, ...)                                                                    \
+    LOGGER_AT_LEVEL_RUNTIME_LOC(Logger::Level::DEBUG, debug, fmt, ##__VA_ARGS__)
 #else
-  #define LOG_DEBUG(fmt, ...) (void)0
-  #define LOG_DEBUG_LOC(fmt, ...) (void)0
+#define LOGGER_DEBUG(fmt, ...) ((void)(0))
+#define LOGGER_DEBUG_LOC(fmt, ...) ((void)(0))
 #endif
 
-#if LOG_COMPILE_LEVEL <= LOG_COMPILE_LEVEL_INFO
-  #define LOG_INFO(fmt, ...) LOG_AT_LEVEL_RUNTIME(Logger::Level::INFO, info, fmt, ##__VA_ARGS__)
-  #define LOG_INFO_LOC(fmt, ...) LOG_AT_LEVEL_RUNTIME_LOC(Logger::Level::INFO, info, fmt, ##__VA_ARGS__)
+#if LOGGER_COMPILE_LEVEL <= LOGGER_COMPILE_LEVEL_INFO
+#define LOGGER_INFO(fmt, ...) LOGGER_AT_LEVEL_RUNTIME(Logger::Level::INFO, info, fmt, ##__VA_ARGS__)
+#define LOGGER_INFO_LOC(fmt, ...)                                                                     \
+    LOGGER_AT_LEVEL_RUNTIME_LOC(Logger::Level::INFO, info, fmt, ##__VA_ARGS__)
 #else
-  #define LOG_INFO(fmt, ...) (void)0
-  #define LOG_INFO_LOC(fmt, ...) (void)0
+#define LOGGER_INFO(fmt, ...) ((void)(0))
+#define LOGGER_INFO_LOC(fmt, ...) ((void)(0))
 #endif
 
-#if LOG_COMPILE_LEVEL <= LOG_COMPILE_LEVEL_WARNING
-  #define LOG_WARN(fmt, ...) LOG_AT_LEVEL_RUNTIME(Logger::Level::WARNING, warn, fmt, ##__VA_ARGS__)
+#if LOGGER_COMPILE_LEVEL <= LOGGER_COMPILE_LEVEL_WARNING
+#define LOGGER_WARN(fmt, ...) LOGGER_AT_LEVEL_RUNTIME(Logger::Level::WARNING, warn, fmt, ##__VA_ARGS__)
 #else
-  #define LOG_WARN(fmt, ...) (void)0
+#define LOGGER_WARN(fmt, ...) ((void)(0))
 #endif
 
 // Errors are always available (do not compile out) even in release builds by default,
 // but they still respect runtime null-check for get_global_logger.
-#if LOG_COMPILE_LEVEL <= LOG_COMPILE_LEVEL_ERROR
-  #define LOG_ERROR(fmt, ...) LOG_AT_LEVEL_RUNTIME(Logger::Level::ERROR, error, fmt, ##__VA_ARGS__)
+#if LOGGER_COMPILE_LEVEL <= LOGGER_COMPILE_LEVEL_ERROR
+#define LOGGER_ERROR(fmt, ...) LOGGER_AT_LEVEL_RUNTIME(Logger::Level::ERROR, error, fmt, ##__VA_ARGS__)
 #else
-  // If LOG_COMPILE_LEVEL > ERROR then even ERROR macros are disabled at compile time:
-  #define LOG_ERROR(fmt, ...) (void)0
+// If LOGGER_COMPILE_LEVEL > ERROR then even ERROR macros are disabled at compile time:
+#define LOGGER_ERROR(fmt, ...)                                                                        \
+    do                                                                                             \
+    {                                                                                              \
+    } while (0)
 #endif
 
 // Conditional/log-if macros (compile-time aware)
-#define LOG_DEBUG_IF(cond, fmt, ...) do { if (cond) LOG_DEBUG(fmt, ##__VA_ARGS__); } while (0)
-#define LOG_INFO_IF(cond, fmt, ...)  do { if (cond) LOG_INFO(fmt, ##__VA_ARGS__); } while (0)
-
+#define LOGGER_DEBUG_IF(cond, fmt, ...)                                                               \
+    do                                                                                             \
+    {                                                                                              \
+        if (cond)                                                                                  \
+            LOGGER_DEBUG(fmt, ##__VA_ARGS__);                                                         \
+    } while (0)
+#define LOGGER_INFO_IF(cond, fmt, ...)                                                                \
+    do                                                                                             \
+    {                                                                                              \
+        if (cond)                                                                                  \
+            LOGGER_INFO(fmt, ##__VA_ARGS__);                                                          \
+    } while (0)

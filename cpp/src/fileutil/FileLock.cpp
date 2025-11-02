@@ -20,7 +20,7 @@
 
 #include "fileutil/FileLock.hpp"
 #include "fileutil/PathUtil.hpp"
-#include "util/logger.hpp"                // <--- added
+#include "util/logger.hpp" // <--- added
 
 #include <filesystem>
 #include <string>
@@ -180,8 +180,8 @@ void FileLock::open_and_lock(LockMode mode)
     {
         _ec = std::error_code(GetLastError(), std::system_category());
         // log using new logger API
-        LOG_WARN("FileLock: CreateFileW failed for %s err=%d",
-                 lockpath.string().c_str(), _ec.value());
+        LOGGER_WARN("FileLock: CreateFileW failed for %s err=%d", lockpath.string().c_str(),
+                 _ec.value());
         _handle = nullptr;
         _valid = false;
         return;
@@ -198,7 +198,7 @@ void FileLock::open_and_lock(LockMode mode)
     {
         DWORD err = GetLastError();
         _ec = std::error_code(static_cast<int>(err), std::system_category());
-        LOG_WARN("FileLock: LockFileEx failed for %s err=%d", lockpath.string().c_str(), err);
+        LOGGER_WARN("FileLock: LockFileEx failed for %s err=%d", lockpath.string().c_str(), err);
         CloseHandle(h);
         _handle = nullptr;
         _valid = false;
@@ -219,7 +219,8 @@ void FileLock::open_and_lock(LockMode mode)
     if (fd == -1)
     {
         _ec = std::error_code(errno, std::generic_category());
-        LOG_WARN("FileLock: open failed for %s err=%s", lockpath.string().c_str(), _ec.message().c_str());
+        LOGGER_WARN("FileLock: open failed for %s err=%s", lockpath.string().c_str(),
+                 _ec.message().c_str());
         _fd = -1;
         _valid = false;
         return;
@@ -232,7 +233,8 @@ void FileLock::open_and_lock(LockMode mode)
     if (flock(fd, op) != 0)
     {
         _ec = std::error_code(errno, std::generic_category());
-        LOG_WARN("FileLock: flock failed for %s err=%s", lockpath.string().c_str(), _ec.message().c_str());
+        LOGGER_WARN("FileLock: flock failed for %s err=%s", lockpath.string().c_str(),
+                 _ec.message().c_str());
         ::close(fd);
         _fd = -1;
         _valid = false;

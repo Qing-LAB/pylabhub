@@ -1,10 +1,8 @@
 // JsonConfig.cpp
 // Implementation of non-template JsonConfig methods and atomic_write_json.
 // (modified to use new logger macros from logger.hpp)
-
 #include "fileutil/JsonConfig.hpp"
 #include "fileutil/PathUtil.hpp"
-#include "util/logger.hpp"             // <--- added
 
 #include <fstream>
 #include <iostream>
@@ -30,15 +28,6 @@ using json = nlohmann::json;
 // thread_local storage definition for header-declared symbol
 thread_local std::vector<const void *> JsonConfig::g_with_json_write_stack;
 
-// Definition of Impl (private)
-struct JsonConfig::Impl
-{
-    std::filesystem::path configPath;
-    json data;
-    std::shared_mutex rwMutex; // protects data for readers/writers
-    std::atomic<bool> dirty{false}; // true if memory may be newer than disk
-};
-
 // Constructors / dtor
 JsonConfig::JsonConfig() noexcept = default;
 JsonConfig::JsonConfig(const std::filesystem::path &configFile)
@@ -46,8 +35,6 @@ JsonConfig::JsonConfig(const std::filesystem::path &configFile)
     init(configFile, false);
 }
 JsonConfig::~JsonConfig() = default;
-JsonConfig::JsonConfig(JsonConfig &&) noexcept = default;
-JsonConfig &JsonConfig::operator=(JsonConfig &&) noexcept = default;
 
 bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMissing)
 {
@@ -63,7 +50,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         if (!flock.valid())
         {
             auto e = flock.error_code();
-            LOG_ERROR("JsonConfig::init: cannot acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::init: cannot acquire lock for %s code=%d msg=\"%s\"",
                       configFile.string().c_str(), e.value(), e.message().c_str());
             return false;
         }
@@ -77,12 +64,12 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
             }
             catch (const std::exception &ex)
             {
-                LOG_ERROR("JsonConfig::init: failed to create file: %s", ex.what());
+                LOGGER_ERROR("JsonConfig::init: failed to create file: %s", ex.what());
                 return false;
             }
             catch (...)
             {
-                LOG_ERROR("JsonConfig::init: unknown error creating file");
+                LOGGER_ERROR("JsonConfig::init: unknown error creating file");
                 return false;
             }
         }
@@ -120,12 +107,12 @@ bool JsonConfig::save() noexcept
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("JsonConfig::save: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::save: exception: %s", e.what());
         return false;
     }
     catch (...)
     {
-        LOG_ERROR("JsonConfig::save: unknown exception");
+        LOGGER_ERROR("JsonConfig::save: unknown exception");
         return false;
     }
 }
@@ -142,7 +129,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
 
     if (_impl->configPath.empty())
     {
-        LOG_ERROR("JsonConfig::save_locked: configPath not initialized (call init() first)");
+        LOGGER_ERROR("JsonConfig::save_locked: configPath not initialized (call init() first)");
         ec = std::make_error_code(std::errc::no_such_file_or_directory);
         return false;
     }
@@ -159,7 +146,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     if (!flock.valid())
     {
         ec = flock.error_code();
-        LOG_ERROR("JsonConfig::save_locked: failed to acquire lock for %s code=%d msg=\"%s\"",
+        LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for %s code=%d msg=\"%s\"",
                   _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
         return false;
     }
@@ -177,13 +164,13 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
     catch (const std::exception &ex)
     {
-        LOG_ERROR("JsonConfig::save_locked: atomic_write_json failed: %s", ex.what());
+        LOGGER_ERROR("JsonConfig::save_locked: atomic_write_json failed: %s", ex.what());
         ec = std::make_error_code(std::errc::io_error);
         return false;
     }
     catch (...)
     {
-        LOG_ERROR("JsonConfig::save_locked: atomic_write_json unknown failure");
+        LOGGER_ERROR("JsonConfig::save_locked: atomic_write_json unknown failure");
         ec = std::make_error_code(std::errc::io_error);
         return false;
     }
@@ -203,7 +190,7 @@ bool JsonConfig::reload() noexcept
 
         if (_impl->configPath.empty())
         {
-            LOG_ERROR("JsonConfig::reload: configPath not initialized (call init() first)");
+            LOGGER_ERROR("JsonConfig::reload: configPath not initialized (call init() first)");
             return false;
         }
 
@@ -212,7 +199,7 @@ bool JsonConfig::reload() noexcept
         if (!flock.valid())
         {
             auto ec = flock.error_code();
-            LOG_ERROR("JsonConfig::reload: failed to acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for %s code=%d msg=\"%s\"",
                       _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
@@ -221,7 +208,8 @@ bool JsonConfig::reload() noexcept
         std::ifstream in(_impl->configPath);
         if (!in.is_open())
         {
-            LOG_ERROR("JsonConfig::reload: cannot open file: %s", _impl->configPath.string().c_str());
+            LOGGER_ERROR("JsonConfig::reload: cannot open file: %s",
+                      _impl->configPath.string().c_str());
             return false;
         }
 
@@ -229,7 +217,8 @@ bool JsonConfig::reload() noexcept
         in >> newdata;
         if (!in && !in.eof())
         {
-            LOG_ERROR("JsonConfig::reload: parse/read error for %s", _impl->configPath.string().c_str());
+            LOGGER_ERROR("JsonConfig::reload: parse/read error for %s",
+                      _impl->configPath.string().c_str());
             return false;
         }
 
@@ -244,12 +233,12 @@ bool JsonConfig::reload() noexcept
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("JsonConfig::reload: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::reload: exception: %s", e.what());
         return false;
     }
     catch (...)
     {
-        LOG_ERROR("JsonConfig::reload: unknown exception");
+        LOGGER_ERROR("JsonConfig::reload: unknown exception");
         return false;
     }
 }
@@ -264,7 +253,7 @@ bool JsonConfig::replace(const json &newData) noexcept
 
         if (_impl->configPath.empty())
         {
-            LOG_ERROR("JsonConfig::replace: configPath not initialized (call init() first)");
+            LOGGER_ERROR("JsonConfig::replace: configPath not initialized (call init() first)");
             return false;
         }
 
@@ -273,7 +262,7 @@ bool JsonConfig::replace(const json &newData) noexcept
         if (!flock.valid())
         {
             auto ec = flock.error_code();
-            LOG_ERROR("JsonConfig::replace: failed to acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for %s code=%d msg=\"%s\"",
                       _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
@@ -292,12 +281,12 @@ bool JsonConfig::replace(const json &newData) noexcept
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("JsonConfig::replace: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::replace: exception: %s", e.what());
         return false;
     }
     catch (...)
     {
-        LOG_ERROR("JsonConfig::replace: unknown exception");
+        LOGGER_ERROR("JsonConfig::replace: unknown exception");
         return false;
     }
 }
