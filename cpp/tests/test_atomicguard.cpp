@@ -6,7 +6,7 @@
 #include <thread>
 #include <vector>
 
-#include "AtomicGuard.hpp"
+#include "util/AtomicGuard.hpp"
 
 using namespace pylabhub::util;
 
