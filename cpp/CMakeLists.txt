@@ -27,18 +27,65 @@ else()
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# ------------------------ Enforce Win64 policy -----------------------------
-# We are intentionally dropping legacy 32-bit Windows support.
-# If the generator/host is Windows but pointer size != 8 => fail early.
-if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-  message(FATAL_ERROR "32-bit Windows (x86) is not supported. Please configure a 64-bit toolchain (x64).")
+# ------------------------ Platform detection & compile-time macros ----------
+# We want exactly one PLATFORM_* macro defined and visible to all targets. Use add_compile_definitions()
+# so the macros are globally visible (also will be applied to targets created later).
+#
+# The macro set is:
+#   PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
+#
+# For Windows we require 64-bit; if a 32-bit Windows generator/toolchain is selected we fail early.
+
+# Start by clearing any of these (safe-guard)
+# (CMake doesn't provide a direct "undefine" for compile definitions, but we control what we add below)
+
+set(_platform_macro_defined FALSE)
+
+# Windows 64-bit (CMake variable WIN32 is true for any Windows; check pointer size to ensure x64)
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  add_compile_definitions(PLATFORM_WIN64=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Windows x64")
+elseif(APPLE) # Apple / macOS
+  add_compile_definitions(PLATFORM_APPLE=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Apple / macOS")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+  add_compile_definitions(PLATFORM_FREEBSD=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "FreeBSD")
+elseif(UNIX) # Non-Apple UNIX-like -> treat as Linux by default
+  add_compile_definitions(PLATFORM_LINUX=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Unix-like (assumed Linux)")
 endif()
 
-# Optionally error out on any use of the older WIN32 C-preprocessor macro in source:
-# (can't auto-detect usage in source here; just warn)
-if(WIN32)
-  message(STATUS "Configuring for Windows (64-bit). We will expose PLATFORM_WIN64 to sources.")
+if(NOT _platform_macro_defined)
+  # fallback
+  add_compile_definitions(PLATFORM_UNKNOWN=1)
+  set(_platform_name "Unknown")
 endif()
+
+# Enforce that we don't try to configure 32-bit Windows - fail early rather than produce subtle bugs
+if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "32-bit Windows toolchain detected. This project only supports 64-bit Windows. Please configure a 64-bit (x64) generator/toolchain.")
+endif()
+
+# Provide an informational summary
+message(STATUS "")
+message(STATUS "Platform compile-time macros summary:")
+if(DEFINED PLATFORM_WIN64)
+  message(STATUS "  Defined: PLATFORM_WIN64 (Windows x64)")
+elseif(DEFINED PLATFORM_APPLE)
+  message(STATUS "  Defined: PLATFORM_APPLE (macOS / Apple)")
+elseif(DEFINED PLATFORM_FREEBSD)
+  message(STATUS "  Defined: PLATFORM_FREEBSD (FreeBSD)")
+elseif(DEFINED PLATFORM_LINUX)
+  message(STATUS "  Defined: PLATFORM_LINUX (Linux)")
+elseif(DEFINED PLATFORM_UNKNOWN)
+  message(STATUS "  Defined: PLATFORM_UNKNOWN (Unknown platform)")
+endif()
+message(STATUS "")
 
 # ------------------------ Basic deps --------------------------------------
 find_package(Threads REQUIRED)
@@ -166,14 +213,6 @@ target_compile_features(pylabhub PUBLIC cxx_std_17)
 # define LOGGER_EXPORTS while building the pylabhub target so logger.hpp exports correctly
 target_compile_definitions(pylabhub PRIVATE LOGGER_EXPORTS)
 
-# Expose platform macros to sources: PLATFORM_WINDOWS and PLATFORM_WIN64 (only on Win64)
-if(WIN32)
-  target_compile_definitions(pylabhub PRIVATE PLATFORM_WINDOWS=1)
-  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    target_compile_definitions(pylabhub PRIVATE PLATFORM_WIN64=1)
-  endif()
-endif()
-
 # If building shared on Windows (and on a 64-bit toolchain), export all symbols optionally
 if(PYLABHUB_BUILD_SHARED AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set_target_properties(pylabhub PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
@@ -236,11 +275,7 @@ message(STATUS "  Using vendored nlohmann: ${NLOHMANN_VENDORED}")
 message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
-if(WIN32)
-  message(STATUS "  Platform:           Windows (64-bit assumed)")
-elseif(APPLE)
-  message(STATUS "  Platform:           Apple")
-else()
-  message(STATUS "  Platform:           Other/Unix-like")
+if(DEFINED _platform_name)
+  message(STATUS "  Platform detected:  ${_platform_name}")
 endif()
 message(STATUS "")
