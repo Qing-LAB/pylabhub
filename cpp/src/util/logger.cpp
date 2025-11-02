@@ -20,8 +20,7 @@
 #include <errno.h>
 #include <string.h>
 
-namespace pylabhub::util {
-
+// Implementation details hidden behind Impl
 struct Logger::Impl {
     enum class Destination { NONE = 0, FILE, SYSLOG };
     Destination dest = Destination::NONE;
@@ -42,6 +41,7 @@ Logger& Logger::instance() {
     return inst;
 }
 
+// Exported C symbol
 extern "C" LOGGER_API Logger* get_global_logger() {
     return &Logger::instance();
 }
@@ -90,6 +90,7 @@ int Logger::last_errno() const { return pImpl->last_errno; }
 
 static const char* level_to_string(Logger::Level lvl) {
     switch (lvl) {
+    case Logger::Level::TRACE: return "TRACE";
     case Logger::Level::DEBUG: return "DEBUG";
     case Logger::Level::INFO: return "INFO";
     case Logger::Level::WARNING: return "WARN";
@@ -99,6 +100,7 @@ static const char* level_to_string(Logger::Level lvl) {
 }
 static int level_to_syslog_priority(Logger::Level lvl) {
     switch (lvl) {
+    case Logger::Level::TRACE: return LOG_DEBUG;
     case Logger::Level::DEBUG: return LOG_DEBUG;
     case Logger::Level::INFO: return LOG_INFO;
     case Logger::Level::WARNING: return LOG_WARNING;
@@ -177,9 +179,24 @@ void Logger::log(Level lvl, const char* fmt, ...) {
     }
 }
 
-void Logger::debug(const char* fmt, ...) { if (static_cast<int>(Logger::Level::DEBUG) >= pImpl->level.load(std::memory_order_relaxed)) { va_list ap; va_start(ap, fmt); log(Logger::Level::DEBUG, fmt, ap); va_end(ap); } }
-void Logger::info(const char* fmt, ...)  { va_list ap; va_start(ap, fmt); log(Logger::Level::INFO, fmt, ap); va_end(ap); }
-void Logger::warn(const char* fmt, ...)  { va_list ap; va_start(ap, fmt); log(Logger::Level::WARNING, fmt, ap); va_end(ap); }
-void Logger::error(const char* fmt, ...) { va_list ap; va_start(ap, fmt); log(Logger::Level::ERROR, fmt, ap); va_end(ap); }
-
+// Convenience wrappers
+void Logger::trace(const char* fmt, ...) {
+    if (static_cast<int>(Logger::Level::TRACE) < pImpl->level.load(std::memory_order_relaxed)) return;
+    va_list ap; va_start(ap, fmt); log(Logger::Level::TRACE, fmt, ap); va_end(ap);
+}
+void Logger::debug(const char* fmt, ...) {
+    if (static_cast<int>(Logger::Level::DEBUG) < pImpl->level.load(std::memory_order_relaxed)) return;
+    va_list ap; va_start(ap, fmt); log(Logger::Level::DEBUG, fmt, ap); va_end(ap);
+}
+void Logger::info(const char* fmt, ...) {
+    if (static_cast<int>(Logger::Level::INFO) < pImpl->level.load(std::memory_order_relaxed)) return;
+    va_list ap; va_start(ap, fmt); log(Logger::Level::INFO, fmt, ap); va_end(ap);
+}
+void Logger::warn(const char* fmt, ...) {
+    if (static_cast<int>(Logger::Level::WARNING) < pImpl->level.load(std::memory_order_relaxed)) return;
+    va_list ap; va_start(ap, fmt); log(Logger::Level::WARNING, fmt, ap); va_end(ap);
+}
+void Logger::error(const char* fmt, ...) {
+    // Always allow error path to be called if compiled in (still subject to compile-time macro)
+    va_list ap; va_start(ap, fmt); log(Logger::Level::ERROR, fmt, ap); va_end(ap);
 }
