@@ -8,10 +8,7 @@ option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_SANITIZERS "Enable Address/Undefined sanitizers (Linux/GNU Clang only)" OFF)
 option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/include if present" ON)
 
-# Build pylabhub as shared library? (default: OFF -> build static library)
 option(PYLABHUB_BUILD_SHARED "Build the pylabhub library as SHARED instead of STATIC" OFF)
-
-# Install headers during "make install"?
 option(PYLABHUB_INSTALL_HEADERS "Install headers under ${CMAKE_INSTALL_INCLUDEDIR}" ON)
 
 # ------------------------ Language / flags --------------------------------
@@ -28,6 +25,19 @@ if(MSVC)
   add_compile_options(/W4 /MP)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# ------------------------ Enforce Win64 policy -----------------------------
+# We are intentionally dropping legacy 32-bit Windows support.
+# If the generator/host is Windows but pointer size != 8 => fail early.
+if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "32-bit Windows (x86) is not supported. Please configure a 64-bit toolchain (x64).")
+endif()
+
+# Optionally error out on any use of the older WIN32 C-preprocessor macro in source:
+# (can't auto-detect usage in source here; just warn)
+if(WIN32)
+  message(STATUS "Configuring for Windows (64-bit). We will expose PLATFORM_WIN64 to sources.")
 endif()
 
 # ------------------------ Basic deps --------------------------------------
@@ -74,7 +84,6 @@ if(EXISTS "${THIRD_PARTY_DIR}/libzmq/CMakeLists.txt")
     set(LIBZMQ_SHARED_OPT OFF CACHE BOOL "Build libzmq static" FORCE)
   endif()
 
-  # Use ZMQ_BUILD_TESTS so we don't override the top-level BUILD_TESTS
   if(NOT DEFINED ZMQ_BUILD_TESTS)
     set(ZMQ_BUILD_TESTS OFF CACHE BOOL "Disable libzmq tests" )
   endif()
@@ -157,8 +166,16 @@ target_compile_features(pylabhub PUBLIC cxx_std_17)
 # define LOGGER_EXPORTS while building the pylabhub target so logger.hpp exports correctly
 target_compile_definitions(pylabhub PRIVATE LOGGER_EXPORTS)
 
-# If building shared on Windows, export all symbols optionally
-if(PYLABHUB_BUILD_SHARED AND MSVC)
+# Expose platform macros to sources: PLATFORM_WINDOWS and PLATFORM_WIN64 (only on Win64)
+if(WIN32)
+  target_compile_definitions(pylabhub PRIVATE PLATFORM_WINDOWS=1)
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(pylabhub PRIVATE PLATFORM_WIN64=1)
+  endif()
+endif()
+
+# If building shared on Windows (and on a 64-bit toolchain), export all symbols optionally
+if(PYLABHUB_BUILD_SHARED AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set_target_properties(pylabhub PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
@@ -185,7 +202,6 @@ set_target_properties(pylabhub PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ------------------------ install & export --------------------------------
 include(GNUInstallDirs)
 
-# Install library and export targets (always)
 install(TARGETS pylabhub
         EXPORT pylabhubTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -194,7 +210,6 @@ install(TARGETS pylabhub
         PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-# Conditionally install headers (controlled by PYLABHUB_INSTALL_HEADERS)
 if(PYLABHUB_INSTALL_HEADERS)
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 else()
@@ -221,4 +236,11 @@ message(STATUS "  Using vendored nlohmann: ${NLOHMANN_VENDORED}")
 message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
+if(WIN32)
+  message(STATUS "  Platform:           Windows (64-bit assumed)")
+elseif(APPLE)
+  message(STATUS "  Platform:           Apple")
+else()
+  message(STATUS "  Platform:           Other/Unix-like")
+endif()
 message(STATUS "")
