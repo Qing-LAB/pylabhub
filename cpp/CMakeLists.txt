@@ -4,7 +4,7 @@ project(pylabhub-shell
         LANGUAGES CXX)
 
 # ---------------------------------------------------------
-# Options
+# Options (preserve original ones)
 # ---------------------------------------------------------
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_SANITIZERS "Enable Address/Undefined sanitizers (Linux/macOS only)" OFF)
@@ -63,8 +63,7 @@ if(NOT NLOHMANN_VENDORED)
 endif()
 
 # ---------------------------------------------------------
-# Third-party modules
-# (unchanged) - libzmq integration retained if present
+# Third-party modules (libzmq integration retained if present)
 # ---------------------------------------------------------
 set(ZMQ_LIB_TARGET "")  # will hold the target name if libzmq is added
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
@@ -101,19 +100,31 @@ else()
   message(STATUS "libzmq submodule not present under ${THIRD_PARTY_DIR}/libzmq - skipping libzmq build")
 endif()
 
-# ---------------------------------------------------------
-# Build library target pylabhub-util
-# ---------------------------------------------------------
-# include both src/util and src/fileutil to pick up the current sources layout
+# ---------------------------------------------------------------------------
+# Source discovery
+# ---------------------------------------------------------------------------
+# Util sources (logger and other util files)
 file(GLOB_RECURSE UTIL_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp"
-#     "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp"
+)
+
+# Fileutil sources
+file(GLOB_RECURSE FILEUTIL_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp"
 )
 
 if(NOT UTIL_SOURCES)
-  message(WARNING "No sources found in src/util or src/fileutil — check your source path.")
+  message(WARNING "No sources found in src/util — check your source path.")
 endif()
 
+if(NOT FILEUTIL_SOURCES)
+  message(WARNING "No sources found in src/fileutil — check your source path.")
+endif()
+
+# ---------------------------------------------------------------------------
+# Build pylabhub-util
+# ---------------------------------------------------------------------------
+# Keep the same target name as before for compatibility
 add_library(pylabhub-util ${UTIL_SOURCES})
 add_library(pylabhub::util ALIAS pylabhub-util)
 
@@ -123,6 +134,7 @@ target_include_directories(pylabhub-util
       $<INSTALL_INTERFACE:include>
 )
 
+# If vendored nlohmann exists, add include path so header is found
 if(NLOHMANN_VENDORED)
   target_include_directories(pylabhub-util
     PUBLIC
@@ -131,17 +143,23 @@ if(NLOHMANN_VENDORED)
   )
 endif()
 
+# If FetchContent provided target, link it so consumers don't need to include directly
 if(TARGET nlohmann_json::nlohmann_json)
     target_link_libraries(pylabhub-util PUBLIC nlohmann_json::nlohmann_json)
 endif()
 
+# Link zmq if available
 if(ZMQ_LIB_TARGET)
   message(STATUS "Linking pylabhub-util against ${ZMQ_LIB_TARGET}")
   target_link_libraries(pylabhub-util PRIVATE ${ZMQ_LIB_TARGET})
 endif()
 
+# Threads and features
 target_link_libraries(pylabhub-util PUBLIC Threads::Threads)
 target_compile_features(pylabhub-util PUBLIC cxx_std_17)
+
+# Define LOGGER_EXPORTS only when building the util target so logger.hpp exports correctly on Windows
+target_compile_definitions(pylabhub-util PRIVATE LOGGER_EXPORTS)
 
 if(ENABLE_SANITIZERS AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
     message(STATUS "Enabling ASAN/UBSAN sanitizers for pylabhub-util")
@@ -149,22 +167,57 @@ if(ENABLE_SANITIZERS AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
     target_link_options(pylabhub-util PUBLIC -fsanitize=address,undefined)
 endif()
 
-include(GNUInstallDirs)
-install(TARGETS pylabhub-util EXPORT pylabhub-utilTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(EXPORT pylabhub-utilTargets FILE pylabhub-utilTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub-util)
+# ---------------------------------------------------------------------------
+# Build pylabhub-fileutil (depends on pylabhub-util)
+# ---------------------------------------------------------------------------
+add_library(pylabhub-fileutil ${FILEUTIL_SOURCES})
+add_library(pylabhub::fileutil ALIAS pylabhub-fileutil)
 
-# ---------------------------------------------------------
+target_include_directories(pylabhub-fileutil
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:include>
+)
+
+# fileutil uses util (logger macros) so link to pylabhub-util
+target_link_libraries(pylabhub-fileutil
+    PRIVATE
+      pylabhub-util
+      Threads::Threads
+)
+
+# If nlohmann is available as CMake target, ensure fileutil can use it as well
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(pylabhub-fileutil PRIVATE nlohmann_json::nlohmann_json)
+endif()
+
+# ---------------------------------------------------------------------------
+# Install/export (preserve previous behavior)
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+install(TARGETS pylabhub-util pylabhub-fileutil
+        EXPORT pylabhubTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(EXPORT pylabhubTargets FILE pylabhubTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub)
+
+# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
 
-# ---------------------------------------------------------
-# Summary
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Summary messages
+# ---------------------------------------------------------------------------
 message(STATUS "")
 message(STATUS "CMake summary:")
 message(STATUS "  Project:            ${PROJECT_NAME} (${PROJECT_VERSION})")

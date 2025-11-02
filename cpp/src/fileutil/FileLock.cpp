@@ -1,5 +1,6 @@
 // FileLock.cpp
 // Implementation of FileLock (cross-platform)
+// (modified to use new logger macros from logger.hpp)
 //
 // Design / critical notes:
 //  - Purpose: provide a small RAII wrapper for a cross-process file lock used by JsonConfig.
@@ -19,6 +20,7 @@
 
 #include "fileutil/FileLock.hpp"
 #include "fileutil/PathUtil.hpp"
+#include "util/logger.hpp"                // <--- added
 
 #include <filesystem>
 #include <string>
@@ -177,8 +179,9 @@ void FileLock::open_and_lock(LockMode mode)
     if (h == INVALID_HANDLE_VALUE)
     {
         _ec = std::error_code(GetLastError(), std::system_category());
-        JC_LOG_WARN("FileLock: CreateFileW failed for " << lockpath.string()
-                                                        << " err=" << _ec.value());
+        // log using new logger API
+        LOG_WARN("FileLock: CreateFileW failed for %s err=%d",
+                 lockpath.string().c_str(), _ec.value());
         _handle = nullptr;
         _valid = false;
         return;
@@ -195,7 +198,7 @@ void FileLock::open_and_lock(LockMode mode)
     {
         DWORD err = GetLastError();
         _ec = std::error_code(static_cast<int>(err), std::system_category());
-        JC_LOG_WARN("FileLock: LockFileEx failed for " << lockpath.string() << " err=" << err);
+        LOG_WARN("FileLock: LockFileEx failed for %s err=%d", lockpath.string().c_str(), err);
         CloseHandle(h);
         _handle = nullptr;
         _valid = false;
@@ -216,7 +219,7 @@ void FileLock::open_and_lock(LockMode mode)
     if (fd == -1)
     {
         _ec = std::error_code(errno, std::generic_category());
-        JC_LOG_WARN("FileLock: open failed for " << lockpath.string() << " err=" << _ec.message());
+        LOG_WARN("FileLock: open failed for %s err=%s", lockpath.string().c_str(), _ec.message().c_str());
         _fd = -1;
         _valid = false;
         return;
@@ -229,7 +232,7 @@ void FileLock::open_and_lock(LockMode mode)
     if (flock(fd, op) != 0)
     {
         _ec = std::error_code(errno, std::generic_category());
-        JC_LOG_WARN("FileLock: flock failed for " << lockpath.string() << " err=" << _ec.message());
+        LOG_WARN("FileLock: flock failed for %s err=%s", lockpath.string().c_str(), _ec.message().c_str());
         ::close(fd);
         _fd = -1;
         _valid = false;
