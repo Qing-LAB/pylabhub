@@ -188,8 +188,9 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn)
     if (std::find(g_with_json_write_stack.begin(), g_with_json_write_stack.end(), key) !=
         g_with_json_write_stack.end())
     {
-        LOGGER_WARN("JsonConfig::with_json_write - nested call detected on same instance; refusing to "
-                 "re-enter.");
+        LOGGER_WARN(
+            "JsonConfig::with_json_write - nested call detected on same instance; refusing to "
+            "re-enter.");
         return false;
     }
     WithJsonWriteReentrancyGuard guard(key);
