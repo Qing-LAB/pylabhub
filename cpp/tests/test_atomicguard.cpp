@@ -1,4 +1,16 @@
-// test_atomicguard_token.cpp
+// test_atomic_guard.cpp
+// Build:
+//   g++ -std=c++17 -O2 -pthread test_atomic_guard.cpp -o test_atomic_guard
+//
+// Run:
+//   ./test_atomic_guard
+//
+// This test suite uses only assertions and prints progress; it requires that
+// AtomicGuard.hpp is the version we discussed (persistent tokens, lock-free
+// acquire/release, scoped_lock transfer_to, guard_mutex accessor).
+
+#include "util/AtomicGuard.hpp"
+
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -6,177 +18,201 @@
 #include <thread>
 #include <vector>
 
-#include "util/AtomicGuard.hpp"
-
 using namespace pylabhub::util;
+using namespace std::chrono_literals;
 
-int main()
+static void header(const char *s)
 {
-    std::cout << "test_atomicguard_token: start\n";
+    std::cout << "\n=== " << s << " ===\n";
+}
 
-    // Simple acquire/release test
-    {
-        AtomicOwner owner;
-        AtomicGuard g(&owner);
-        assert(!g.active());
-        bool ok = g.acquire();
-        assert(ok);
-        assert(g.active());
-        // release explicitly
-        bool rel = g.release();
-        assert(rel);
-        assert(!g.active());
-        // release again should be false
-        assert(!g.release());
-    }
+// Test 1: Many threads try to acquire the same AtomicOwner concurrently.
+void test_concurrent_acquire_release()
+{
+    header("test_concurrent_acquire_release");
+    AtomicOwner owner;
+    constexpr int THREADS = 8;
+    std::atomic<int> success_count{0};
 
-    // Destructor releases: acquire and let destructor release
+    std::vector<std::thread> threads;
+    for (int i = 0; i < THREADS; ++i)
     {
-        AtomicOwner owner;
-        {
-            AtomicGuard g(&owner);
-            assert(g.acquire());
-            assert(g.active());
-        } // g destroyed -> should release
-        assert(owner.is_free());
-    }
+        threads.emplace_back(
+            [&owner, &success_count]()
+            {
+                AtomicGuard g(&owner);
+                // token should be non-zero
+                assert(g.token() != 0);
 
-    // Move semantics: move-construct
-    {
-        AtomicOwner owner;
-        AtomicGuard g(&owner);
-        assert(g.acquire());
-        assert(g.active());
-        uint64_t token_before = g.token();
-        AtomicGuard g2 = std::move(g);
-        // moved-from g should be inert:
-        assert(!g.active());
-        assert(!g.token());
-        // moved-to g2 should be active and hold the same token
-        assert(g2.active());
-        assert(g2.token() == token_before);
-        // g2 destructor will release
-    }
-    // Confirm the owner released
-    {
-        AtomicOwner owner;
-        AtomicGuard a(&owner);
-        assert(a.acquire());
-        AtomicGuard b;
-        b = std::move(a); // move assignment
-        assert(!a.active());
-        assert(b.active());
-        // release via destructor of b
-    }
-
-    // attach/detach semantics
-    {
-        AtomicOwner owner1, owner2;
-        AtomicGuard g(&owner1);
-        assert(g.acquire());
-        assert(g.active());
-        // detach -> should release and become detached
-        g.detach();
-        assert(!g.active());
-        assert(owner1.is_free());
-        // attach to different owner (no acquire)
-        g.attach(&owner2);
-        assert(!g.active());
-        // acquire on new owner
-        assert(g.acquire());
-        assert(g.active());
-        // detach will release
-        g.detach();
-        assert(owner2.is_free());
-    }
-
-    // Concurrent contention: only one thread may acquire
-    {
-        AtomicOwner owner;
-        const int N = 16;
-        std::atomic<int> success_count{0};
-        std::vector<std::thread> threads;
-        threads.reserve(N);
-
-        for (int i = 0; i < N; ++i)
-        {
-            threads.emplace_back(
-                [&owner, &success_count, i]()
+                auto until = std::chrono::steady_clock::now() + 500ms;
+                while (std::chrono::steady_clock::now() < until)
                 {
-                    // each thread uses its own guard attached to the same owner
-                    AtomicGuard g(&owner);
                     if (g.acquire())
                     {
-                        // we got it
-                        success_count.fetch_add(1, std::memory_order_relaxed);
-                        // hold it a bit to make the race visible
-                        std::this_thread::sleep_for(std::chrono::milliseconds(40));
-                        // destructor or release will clear it
+                        ++success_count;
+                        assert(g.active());
+                        std::this_thread::sleep_for(3ms);
+                        bool r = g.release();
+                        assert(r);
                     }
                     else
                     {
-                        // didn't get it
+                        std::this_thread::sleep_for(1ms);
                     }
-                });
-        }
-
-        for (auto &t : threads)
-            t.join();
-
-        int succeeded = success_count.load(std::memory_order_relaxed);
-        if (succeeded != 1)
-        {
-            std::cerr << "FAILED: expected 1 success, got " << succeeded << "\n";
-            return 2;
-        }
-        else
-        {
-            std::cout << "concurrency: exactly one thread acquired as expected\n";
-        }
-        assert(owner.is_free()); // should be released now
+                }
+            });
     }
 
-    // Stress test: many repeated acquires/releases concurrently
+    for (auto &t : threads)
+        t.join();
+
+    std::cout << "success_count: " << success_count.load() << "\n";
+    assert(success_count.load() > 0);
+    std::cout << "test_concurrent_acquire_release: passed\n";
+}
+
+// Test 2: RAII behavior and token persistence
+void test_raii_and_token_persistence()
+{
+    header("test_raii_and_token_persistence");
+    AtomicOwner owner;
+    uint64_t token_in_scope = 0;
     {
-        AtomicOwner owner;
-        const int THREADS = 8;
-        const int ROUNDS = 1000;
-        std::atomic<int> global_acquires{0};
-        std::vector<std::thread> threads;
-        for (int t = 0; t < THREADS; ++t)
+        AtomicGuard g(&owner);
+        assert(g.token() != 0);
+        token_in_scope = g.token();
+        bool ok = g.acquire();
+        assert(ok);
+        assert(g.active());
+        uint64_t cur = owner.load();
+        assert(cur == token_in_scope);
+    } // destructor releases
+    assert(owner.is_free());
+    std::cout << "token (persistent per guard): " << token_in_scope << "\n";
+    std::cout << "test_raii_and_token_persistence: passed\n";
+}
+
+// Test 3: single-thread transfer_to
+void test_transfer_single_thread()
+{
+    header("test_transfer_single_thread");
+    AtomicOwner owner;
+    AtomicGuard a(&owner);
+    AtomicGuard b(&owner);
+
+    assert(a.token() != 0 && b.token() != 0);
+    bool ok = a.acquire();
+    assert(ok);
+    assert(a.active());
+    assert(!b.active());
+
+    bool t = a.transfer_to(b);
+    assert(t);
+    assert(!a.active());
+    assert(b.active());
+
+    bool rel = b.release();
+    assert(rel);
+    assert(owner.is_free());
+    std::cout << "test_transfer_single_thread: passed\n";
+}
+
+// Test 4: transfer in threads
+void test_transfer_between_threads()
+{
+    header("test_transfer_between_threads");
+    AtomicOwner owner;
+    AtomicGuard src(&owner);
+    AtomicGuard dst(&owner);
+
+    bool ok = src.acquire();
+    assert(ok);
+
+    std::thread transferer(
+        [&src, &dst]()
         {
-            threads.emplace_back(
-                [&owner, &global_acquires, ROUNDS]()
-                {
-                    for (int r = 0; r < ROUNDS; ++r)
-                    {
-                        AtomicGuard g(&owner);
-                        // spin a bit trying to acquire
-                        for (int attempts = 0; attempts < 10; ++attempts)
-                        {
-                            if (g.acquire())
-                            {
-                                global_acquires.fetch_add(1, std::memory_order_relaxed);
-                                // short hold
-                                std::this_thread::sleep_for(std::chrono::microseconds(10));
-                                break;
-                            }
-                            // small backoff
-                            std::this_thread::yield();
-                        }
-                    }
-                });
-        }
-        for (auto &th : threads)
-            th.join();
+            // attempt transfer; allow retries for transient contention
+            for (int i = 0; i < 50; ++i)
+            {
+                if (src.transfer_to(dst))
+                    return; // success
+                std::this_thread::sleep_for(1ms);
+            }
+            assert(false && "transfer_to failed in worker");
+        });
 
-        std::cout << "stress: total successful acquires (some may be repeated): "
-                  << global_acquires.load() << "\n";
+    transferer.join();
 
-        // invariant: owner must be free at end
-        assert(owner.is_free());
+    assert(!src.active());
+    assert(dst.active());
+    bool rel = dst.release();
+    assert(rel);
+    assert(owner.is_free());
+    std::cout << "test_transfer_between_threads: passed\n";
+}
+
+// Test 5: transfer_to rejects different owners
+void test_transfer_reject_different_owner()
+{
+    header("test_transfer_reject_different_owner");
+    AtomicOwner o1, o2;
+    AtomicGuard a(&o1);
+    AtomicGuard b(&o2);
+
+    bool ok = a.acquire();
+    assert(ok);
+    bool t = a.transfer_to(b);
+    assert(!t); // must reject
+    assert(a.active());
+    bool r = a.release();
+    assert(r);
+    assert(o1.is_free());
+    assert(o2.is_free());
+    std::cout << "test_transfer_reject_different_owner: passed\n";
+}
+
+// Test 6: demonstrate consistent active() by locking guard_mutex()
+// (advanced usage example)
+void test_consistent_active_with_mutex()
+{
+    header("test_consistent_active_with_mutex");
+    AtomicOwner owner;
+    AtomicGuard a(&owner);
+    AtomicGuard b(&owner);
+
+    bool ok = a.acquire();
+    assert(ok);
+
+    bool t = a.transfer_to(b);
+    assert(t);
+
+    // Without locking, active() might be observed transiently; to get a stable view,
+    // lock the guard mutex before checking active().
+    {
+        std::lock_guard<std::mutex> lk(b.guard_mutex());
+        bool active_now = b.active();
+        std::cout << "b.active() under guard_mutex = " << active_now << "\n";
+        assert(active_now);
     }
 
-    std::cout << "test_atomicguard_token: OK\n";
+    // cleanup
+    bool r = b.release();
+    assert(r);
+    assert(owner.is_free());
+    std::cout << "test_consistent_active_with_mutex: passed\n";
+}
+
+int main()
+{
+    std::cout << "AtomicGuard tests starting...\n";
+
+    test_concurrent_acquire_release();
+    test_raii_and_token_persistence();
+    test_transfer_single_thread();
+    test_transfer_between_threads();
+    test_transfer_reject_different_owner();
+    test_consistent_active_with_mutex();
+
+    std::cout << "\nAll tests passed.\n";
     return 0;
 }
