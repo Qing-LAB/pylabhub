@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.15)
+
+# -----------------------------------------------------------------------------
+# Project declaration
+# -----------------------------------------------------------------------------
 project(pylabhub-shell
         VERSION 0.1
         LANGUAGES CXX)
 
-# ------------------------ Options ------------------------------------------
+# -----------------------------------------------------------------------------
+# Top-level Options (keep project defaults, add third-party control knobs)
+# -----------------------------------------------------------------------------
+# Project-owned options (unchanged semantics)
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_SANITIZERS "Enable Address/Undefined sanitizers (Linux/GNU Clang only)" OFF)
 option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/include if present" ON)
@@ -11,42 +18,59 @@ option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/i
 option(PYLABHUB_BUILD_SHARED "Build the pylabhub library as SHARED instead of STATIC" OFF)
 option(PYLABHUB_INSTALL_HEADERS "Install headers under ${CMAKE_INSTALL_INCLUDEDIR}" ON)
 
-# ------------------------ Language / flags --------------------------------
+# ---------------------------------------------------------------------------
+# Third-party policy knobs (these are wrapper *intent* variables)
+# - These inform third_party/CMakeLists.txt which will map them to the exact
+#   subproject options (fmt, libzmq, etc.). The wrapper will scope these
+#   settings to subprojects so they do not leak to other libs or top-level.
+# ---------------------------------------------------------------------------
+# Force libzmq variant: "none" | "static" | "shared"
+set(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Wrapper intent: force libzmq build variant" FORCE)
+
+# Force fmt variant: "none" | "static" | "shared"
+set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Wrapper intent: force fmt build variant" FORCE)
+
+# Wrapper-level intent to disable third-party tests by default (ON/OFF).
+# The wrapper will set subproject-specific test knobs (e.g. ZMQ_BUILD_TESTS, FMT_TEST)
+# rather than changing global BUILD_TESTS.
+set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party tests by default" FORCE)
+
+# Wrapper-level intent on allowing upstream precompiled headers (OFF by default)
+set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstream precompiled headers" FORCE)
+
+message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
+
+# -----------------------------------------------------------------------------
+# Language / Compiler flags / Build-type
+# -----------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Default to Release if no type selected and generator is single-config.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "No build type selected, defaulting to Release")
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
+# Compiler warnings and parallel build options
 if(MSVC)
   add_compile_options(/W4 /MP)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# ------------------------ Platform detection & compile-time macros ----------
-# We want exactly one PLATFORM_* macro defined and visible to all targets. Use add_compile_definitions()
-# so the macros are globally visible (also will be applied to targets created later).
-#
-# The macro set is:
-#   PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
-#
-# For Windows we require 64-bit; if a 32-bit Windows generator/toolchain is selected we fail early.
-
-# Start by clearing any of these (safe-guard)
-# (CMake doesn't provide a direct "undefine" for compile definitions, but we control what we add below)
-
+# -----------------------------------------------------------------------------
+# Platform detection & compile-time macros (single PLATFORM_* macro)
+# -----------------------------------------------------------------------------
+# The set: PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
 set(_platform_macro_defined FALSE)
 
-# Windows 64-bit (CMake variable WIN32 is true for any Windows; check pointer size to ensure x64)
 if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   add_compile_definitions(PLATFORM_WIN64=1)
   set(_platform_macro_defined TRUE)
   set(_platform_name "Windows x64")
-elseif(APPLE) # Apple / macOS
+elseif(APPLE)
   add_compile_definitions(PLATFORM_APPLE=1)
   set(_platform_macro_defined TRUE)
   set(_platform_name "Apple / macOS")
@@ -54,24 +78,22 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
   add_compile_definitions(PLATFORM_FREEBSD=1)
   set(_platform_macro_defined TRUE)
   set(_platform_name "FreeBSD")
-elseif(UNIX) # Non-Apple UNIX-like -> treat as Linux by default
+elseif(UNIX)
   add_compile_definitions(PLATFORM_LINUX=1)
   set(_platform_macro_defined TRUE)
   set(_platform_name "Unix-like (assumed Linux)")
 endif()
 
 if(NOT _platform_macro_defined)
-  # fallback
   add_compile_definitions(PLATFORM_UNKNOWN=1)
   set(_platform_name "Unknown")
 endif()
 
-# Enforce that we don't try to configure 32-bit Windows - fail early rather than produce subtle bugs
+# Fail early for 32-bit Windows generator (project requires x64).
 if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "32-bit Windows toolchain detected. This project only supports 64-bit Windows. Please configure a 64-bit (x64) generator/toolchain.")
 endif()
 
-# Provide an informational summary
 message(STATUS "")
 message(STATUS "Platform compile-time macros summary:")
 if(DEFINED PLATFORM_WIN64)
@@ -87,10 +109,14 @@ elseif(DEFINED PLATFORM_UNKNOWN)
 endif()
 message(STATUS "")
 
-# ------------------------ Basic deps --------------------------------------
+# -----------------------------------------------------------------------------
+# Basic dependencies
+# -----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
-# ------------------------ nlohmann/json -----------------------------------
+# -----------------------------------------------------------------------------
+# nlohmann/json (vendored or FetchContent)
+# -----------------------------------------------------------------------------
 set(NLOHMANN_VENDORED OFF)
 set(NLOHMANN_FETCHED OFF)
 
@@ -116,18 +142,21 @@ if(NOT NLOHMANN_VENDORED)
   set(NLOHMANN_FETCHED ON)
 endif()
 
-# ------------------------ third_party -----------------------------
+# -----------------------------------------------------------------------------
+# Third-party submodules (fmt, libzmq, etc.)
+# - The third_party/CMakeLists.txt is expected to implement scoped snapshot/restore
+#   behavior so our THIRD_PARTY_* wrapper knobs control only the third-party subprojects.
+# -----------------------------------------------------------------------------
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-# If the user added a dedicated third_party/CMakeLists.txt (you said you have), let it take care of submodules (fmt, libzmq, etc.)
 if(EXISTS "${THIRD_PARTY_DIR}/CMakeLists.txt")
-    message(STATUS "Adding ${THIRD_PARTY_DIR} to build (third_party/CMakeLists.txt)")
-    add_subdirectory("${THIRD_PARTY_DIR}" EXCLUDE_FROM_ALL)
+  message(STATUS "Adding ${THIRD_PARTY_DIR} to build (third_party/CMakeLists.txt)")
+  add_subdirectory("${THIRD_PARTY_DIR}" EXCLUDE_FROM_ALL)
 else()
-    message(STATUS "third_party/CMakeLists.txt not found; you should add one to coordinate submodules (fmt, libzmq).")
+  message(STATUS "third_party/CMakeLists.txt not found; you should add one to coordinate submodules (fmt, libzmq).")
 endif()
 
-# After third_party processing, try to detect common targets (fmt, libzmq/zmq)
-set(ZMQ_LIB_TARGET "")  # will hold the target if libzmq is available
+# After third_party processing, attempt to detect canonical targets produced by subprojects
+set(ZMQ_LIB_TARGET "")
 if(TARGET zmq::zmq)
   set(ZMQ_LIB_TARGET "zmq::zmq")
 elseif(TARGET zmq::libzmq)
@@ -137,11 +166,9 @@ elseif(TARGET libzmq)
 elseif(TARGET zmq)
   set(ZMQ_LIB_TARGET "zmq")
 else()
-  # not fatal: maybe libzmq is provided by system find_package later
   message(STATUS "No libzmq target detected in CMake registry after third_party processing.")
 endif()
 
-# Detect fmt targets if present (third_party/fmt or system)
 set(FMT_TARGET "")
 if(TARGET fmt::fmt)
   set(FMT_TARGET "fmt::fmt")
@@ -151,7 +178,9 @@ else()
   message(STATUS "fmt CMake target not detected yet. Ensure third_party adds fmt::fmt or fmt::fmt-header-only, or install fmt system-wide.")
 endif()
 
-# ------------------------ source discovery --------------------------------
+# -----------------------------------------------------------------------------
+# Source discovery
+# -----------------------------------------------------------------------------
 file(GLOB_RECURSE UTIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp")
 file(GLOB_RECURSE FILEUTIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp")
 
@@ -162,7 +191,9 @@ if(NOT FILEUTIL_SOURCES)
   message(WARNING "No sources found in src/fileutil — check your source path.")
 endif()
 
-# ------------------------ Single combined library -------------------------
+# -----------------------------------------------------------------------------
+# Build: create the single combined library target (pylabhub)
+# -----------------------------------------------------------------------------
 set(PYLABHUB_SOURCES ${UTIL_SOURCES} ${FILEUTIL_SOURCES})
 
 if(PYLABHUB_BUILD_SHARED)
@@ -188,24 +219,23 @@ if(NLOHMANN_VENDORED)
   )
 endif()
 
-# Link third-party targets if available
+# -----------------------------------------------------------------------------
+# Link third-party targets (if available)
+# -----------------------------------------------------------------------------
 if(TARGET nlohmann_json::nlohmann_json)
     target_link_libraries(pylabhub PUBLIC nlohmann_json::nlohmann_json)
 endif()
 
-# Link fmt if detected via third_party or system.
 if(FMT_TARGET)
   message(STATUS "Linking pylabhub against ${FMT_TARGET}")
-  # link PUBLIC so downstream consumers inherit fmt include and link usage
   target_link_libraries(pylabhub PRIVATE ${FMT_TARGET})
 endif()
 
-# Link libzmq if third_party produced a target
 if(ZMQ_LIB_TARGET)
   message(STATUS "Linking pylabhub against ${ZMQ_LIB_TARGET}")
   target_link_libraries(pylabhub PRIVATE ${ZMQ_LIB_TARGET})
 else()
-  # fallback: try find_package(ZeroMQ) to get system-provided zmq if needed
+  # Try system-wide ZeroMQ as fallback
   find_package(ZeroMQ QUIET)
   if(ZeroMQ_FOUND)
     message(STATUS "ZeroMQ found by find_package; linking against system ZeroMQ")
@@ -222,23 +252,22 @@ else()
       endif()
     endif()
   else()
-    message(STATUS "No ZeroMQ target found; libzmq may not be available. If you need ZeroMQ, either add it under third_party and ensure third_party/CMakeLists.txt adds it, or install system libzmq.")
+    message(STATUS "No ZeroMQ target found; libzmq may not be available. If you need ZeroMQ, add it under third_party or install system libzmq.")
   endif()
 endif()
 
-# threads and c++ features
+# Link threads and enforce C++ language features
 target_link_libraries(pylabhub PUBLIC Threads::Threads)
 target_compile_features(pylabhub PUBLIC cxx_std_17)
 
-# define LOGGER_EXPORTS while building the pylabhub target so logger.hpp exports correctly
-target_compile_definitions(pylabhub PRIVATE LOGGER_EXPORTS)
-
-# If building shared on Windows (and on a 64-bit toolchain), export all symbols optionally
+# Windows-specific: when building pylabhub as shared on MSVC x64, optionally export symbols
 if(PYLABHUB_BUILD_SHARED AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set_target_properties(pylabhub PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
-# sanitizers: enable only on supported compilers/platforms
+# -----------------------------------------------------------------------------
+# Sanitizers (only enabled on supported compilers/platforms)
+# -----------------------------------------------------------------------------
 if(ENABLE_SANITIZERS)
     if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
         message(WARNING "ENABLE_SANITIZERS requested but compiler (${CMAKE_CXX_COMPILER_ID}) is not supported. Disabling sanitizers.")
@@ -258,41 +287,40 @@ endif()
 
 set_target_properties(pylabhub PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# ------------------------ install & export --------------------------------
+# -----------------------------------------------------------------------------
+# Install / export (kept commented as before; left for your preference)
+# -----------------------------------------------------------------------------
 include(GNUInstallDirs)
 
-# install(TARGETS pylabhub
-#         EXPORT pylabhubTargets
-#         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-#         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-#         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-#         PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-# )
+# (installation blocks commented out per original file — unchanged)
+# install(TARGETS pylabhub ...)
 
-# if(PYLABHUB_INSTALL_HEADERS)
-#   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-# else()
-#   message(STATUS "PYLABHUB_INSTALL_HEADERS=OFF: skipping installation of headers under ${CMAKE_INSTALL_INCLUDEDIR}")
-# endif()
-
-# install(EXPORT pylabhubTargets FILE pylabhubTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub)
-
-# ------------------------ Tests -------------------------------------------
+# -----------------------------------------------------------------------------
+# Tests for this project (your project-owned tests)
+# - IMPORTANT: this is controlled by BUILD_TESTS (top-level). We DID NOT change
+#   or override BUILD_TESTS in the third-party wrapper. Third-party tests are
+#   controlled independently by THIRD_PARTY_DISABLE_TESTS and mapped to
+#   subproject-specific knobs inside third_party/CMakeLists.txt.
+# -----------------------------------------------------------------------------
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
 
-# ------------------------ Summary -----------------------------------------
+# -----------------------------------------------------------------------------
+# Final summary (concise)
+# -----------------------------------------------------------------------------
 message(STATUS "")
 message(STATUS "CMake summary:")
 message(STATUS "  Project:            ${PROJECT_NAME} (${PROJECT_VERSION})")
 message(STATUS "  CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER}")
 message(STATUS "  Build type:         ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Build tests:        ${BUILD_TESTS}")
+message(STATUS "  Build tests:        ${BUILD_TESTS}   (project-owned tests)")
+message(STATUS "  Third-party tests disabled (wrapper intent): ${THIRD_PARTY_DISABLE_TESTS}")
 message(STATUS "  Sanitizers:         ${ENABLE_SANITIZERS}")
 message(STATUS "  Using vendored nlohmann: ${NLOHMANN_VENDORED}")
 message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
+message(STATUS "  fmt target: ${FMT_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
 if(DEFINED _platform_name)

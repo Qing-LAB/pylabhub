@@ -39,6 +39,14 @@
 
 #endif
 
+#ifndef LOGGER_COMPILE_LEVEL
+#ifdef NDEBUG
+#define LOGGER_COMPILE_LEVEL pylabhub::util::Logger::Level::DEBUG
+#else
+#define LOGGER_COMPILE_LEVEL pylabhub::util::Logger::Level::ERROR
+#endif
+#endif
+
 namespace pylabhub::util {
 
 class LOGGER_API Logger {
@@ -151,8 +159,33 @@ void Logger::log_fmt(Level lvl, std::string_view fmt_str, Args &&... args) noexc
 } // namespace pylabhub::util
 
 // macros for convenience (fmt-style)
+#if LOGGER_COMPILE_LEVEL >= 0 // pylabhub::util::Logger::Level::TRACE
 #define LOG_TRACE(fmt_str, ...) ::pylabhub::util::Logger::instance().trace_fmt(fmt_str, ##__VA_ARGS__)
+#else
+#define LOG_TRACE(fmt_str, ...) ((void)0)
+#endif
+
+#if LOGGER_COMPILE_LEVEL >= 1 // pylabhub::util::Logger::Level::DEBUG
 #define LOG_DEBUG(fmt_str, ...) ::pylabhub::util::Logger::instance().debug_fmt(fmt_str, ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(fmt_str, ...) ((void)0)
+#endif
+
+#if LOGGER_COMPILE_LEVE >= 2 // pylabhub::util::Logger::Level::INFO
 #define LOG_INFO(fmt_str, ...)  ::pylabhub::util::Logger::instance().info_fmt(fmt_str, ##__VA_ARGS__)
+#else
+#define LOG_INFO(fmt_str, ...) ((void)0)
+#endif
+
+#if LOGGER_COMPILE_LEVEL >= 3 // pylabhub::util::Logger::Level::WARNING
 #define LOG_WARN(fmt_str, ...)  ::pylabhub::util::Logger::instance().warn_fmt(fmt_str, ##__VA_ARGS__)
+#else
+#define LOG_WARN(fmt_str, ...) ((void)0)
+#endif
+
+#if LOGGER_COMPILE_LEVEL >= 4 // pylabhub::util::Logger::Level::ERROR
 #define LOG_ERROR(fmt_str, ...) ::pylabhub::util::Logger::instance().error_fmt(fmt_str, ##__VA_ARGS__)
+#else
+#define LOG_ERROR(fmt_str, ...) ((void)0)
+#endif
+
