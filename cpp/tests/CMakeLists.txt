@@ -32,9 +32,9 @@ endif()
 # ---------------------------------------------------------------------------
 set(TEST_SOURCES
     test_atomicguard.cpp
+    test_logger.cpp
     test_filelock.cpp
     test_jsonconfig.cpp
-    test_logger.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,24 @@ foreach(src IN LISTS TEST_SOURCES)
         target_link_libraries(${test_name} PRIVATE pylabhub)
     else()
         message(WARNING "Target 'pylabhub' not found. Ensure the top-level CMake defines it.")
+    endif()
+    # Make sure tests link fmt if pylabhub hides it (PRIVATE) ---
+    # If pylabhub did not expose fmt via PUBLIC, tests still need fmt available because
+    # Logger headers include <fmt/format.h>. Detect common fmt targets and link them.
+    if(TARGET fmt::fmt)
+        target_link_libraries(${test_name} PRIVATE fmt::fmt)
+    elseif(TARGET fmt::fmt-header-only)
+        # header-only variant: define FMT_HEADER_ONLY so fmt behaves as header-only if needed
+        target_compile_definitions(${test_name} PRIVATE FMT_HEADER_ONLY=1)
+        target_link_libraries(${test_name} PRIVATE fmt::fmt-header-only)
+    else()
+        # If fmt isn't a CMake target (e.g. not added as submodule), try to find it with find_package
+        find_package(fmt QUIET CONFIG)
+        if(TARGET fmt::fmt)
+            target_link_libraries(${test_name} PRIVATE fmt::fmt)
+        else()
+            message(WARNING "fmt target not found for test '${test_name}'. If pylabhub links fmt PRIVATE, tests will fail to compile. Add fmt as a submodule or install it system-wide.")
+        endif()
     endif()
 
     # Link threads

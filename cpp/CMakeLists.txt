@@ -116,47 +116,39 @@ if(NOT NLOHMANN_VENDORED)
   set(NLOHMANN_FETCHED ON)
 endif()
 
-# ------------------------ third_party / libzmq -----------------------------
-set(ZMQ_LIB_TARGET "")  # will hold the target if libzmq is added
+# ------------------------ third_party -----------------------------
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-set(THIRD_PARTY_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party" CACHE PATH "Where to build third-party subprojects")
-
-if(EXISTS "${THIRD_PARTY_DIR}/libzmq/CMakeLists.txt")
-  message(STATUS "Found libzmq submodule: adding to build")
-
-  option(LIBZMQ_BUILD_SHARED "Build libzmq as shared library (default OFF)" OFF)
-  if(LIBZMQ_BUILD_SHARED)
-    set(LIBZMQ_SHARED_OPT ON CACHE BOOL "Build libzmq shared" FORCE)
-  else()
-    set(LIBZMQ_SHARED_OPT OFF CACHE BOOL "Build libzmq static" FORCE)
-  endif()
-
-  if(NOT DEFINED ZMQ_BUILD_TESTS)
-    set(ZMQ_BUILD_TESTS OFF CACHE BOOL "Disable libzmq tests" )
-  endif()
-
-  if(NOT DEFINED BUILD_PERF)
-    set(BUILD_PERF OFF CACHE BOOL "Disable libzmq perf")
-  endif()
-  if(NOT DEFINED ENABLE_CURVE)
-    set(ENABLE_CURVE OFF CACHE BOOL "Disable libzmq CURVE by default")
-  endif()
-
-  set(ZMQ_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party/libzmq_build-${CMAKE_SYSTEM_NAME}-${CMAKE_CXX_COMPILER_ID}-${CMAKE_BUILD_TYPE}")
-  file(MAKE_DIRECTORY "${ZMQ_BUILD_DIR}")
-  add_subdirectory("${THIRD_PARTY_DIR}/libzmq" "${ZMQ_BUILD_DIR}")
-
-  if(TARGET zmq::libzmq)
-    set(ZMQ_LIB_TARGET "zmq::libzmq")
-  elseif(TARGET libzmq)
-    set(ZMQ_LIB_TARGET "libzmq")
-  elseif(TARGET zmq)
-    set(ZMQ_LIB_TARGET "zmq")
-  else()
-    message(WARNING "libzmq added but no known CMake target found (expected zmq::libzmq or libzmq).")
-  endif()
+# If the user added a dedicated third_party/CMakeLists.txt (you said you have), let it take care of submodules (fmt, libzmq, etc.)
+if(EXISTS "${THIRD_PARTY_DIR}/CMakeLists.txt")
+    message(STATUS "Adding ${THIRD_PARTY_DIR} to build (third_party/CMakeLists.txt)")
+    add_subdirectory("${THIRD_PARTY_DIR}" EXCLUDE_FROM_ALL)
 else()
-  message(STATUS "libzmq submodule not present under ${THIRD_PARTY_DIR}/libzmq - skipping libzmq build")
+    message(STATUS "third_party/CMakeLists.txt not found; you should add one to coordinate submodules (fmt, libzmq).")
+endif()
+
+# After third_party processing, try to detect common targets (fmt, libzmq/zmq)
+set(ZMQ_LIB_TARGET "")  # will hold the target if libzmq is available
+if(TARGET zmq::zmq)
+  set(ZMQ_LIB_TARGET "zmq::zmq")
+elseif(TARGET zmq::libzmq)
+  set(ZMQ_LIB_TARGET "zmq::libzmq")
+elseif(TARGET libzmq)
+  set(ZMQ_LIB_TARGET "libzmq")
+elseif(TARGET zmq)
+  set(ZMQ_LIB_TARGET "zmq")
+else()
+  # not fatal: maybe libzmq is provided by system find_package later
+  message(STATUS "No libzmq target detected in CMake registry after third_party processing.")
+endif()
+
+# Detect fmt targets if present (third_party/fmt or system)
+set(FMT_TARGET "")
+if(TARGET fmt::fmt)
+  set(FMT_TARGET "fmt::fmt")
+elseif(TARGET fmt::fmt-header-only)
+  set(FMT_TARGET "fmt::fmt-header-only")
+else()
+  message(STATUS "fmt CMake target not detected yet. Ensure third_party adds fmt::fmt or fmt::fmt-header-only, or install fmt system-wide.")
 endif()
 
 # ------------------------ source discovery --------------------------------
@@ -201,9 +193,37 @@ if(TARGET nlohmann_json::nlohmann_json)
     target_link_libraries(pylabhub PUBLIC nlohmann_json::nlohmann_json)
 endif()
 
+# Link fmt if detected via third_party or system.
+if(FMT_TARGET)
+  message(STATUS "Linking pylabhub against ${FMT_TARGET}")
+  # link PUBLIC so downstream consumers inherit fmt include and link usage
+  target_link_libraries(pylabhub PRIVATE ${FMT_TARGET})
+endif()
+
+# Link libzmq if third_party produced a target
 if(ZMQ_LIB_TARGET)
   message(STATUS "Linking pylabhub against ${ZMQ_LIB_TARGET}")
   target_link_libraries(pylabhub PRIVATE ${ZMQ_LIB_TARGET})
+else()
+  # fallback: try find_package(ZeroMQ) to get system-provided zmq if needed
+  find_package(ZeroMQ QUIET)
+  if(ZeroMQ_FOUND)
+    message(STATUS "ZeroMQ found by find_package; linking against system ZeroMQ")
+    if(TARGET ZeroMQ::ZeroMQ)
+      target_link_libraries(pylabhub PRIVATE ZeroMQ::ZeroMQ)
+    elseif(TARGET ZeroMQ::zmq)
+      target_link_libraries(pylabhub PRIVATE ZeroMQ::zmq)
+    else()
+      if(DEFINED ZeroMQ_LIBRARIES)
+        target_link_libraries(pylabhub PRIVATE ${ZeroMQ_LIBRARIES})
+      endif()
+      if(DEFINED ZeroMQ_INCLUDE_DIRS)
+        target_include_directories(pylabhub PRIVATE ${ZeroMQ_INCLUDE_DIRS})
+      endif()
+    endif()
+  else()
+    message(STATUS "No ZeroMQ target found; libzmq may not be available. If you need ZeroMQ, either add it under third_party and ensure third_party/CMakeLists.txt adds it, or install system libzmq.")
+  endif()
 endif()
 
 # threads and c++ features
@@ -241,21 +261,21 @@ set_target_properties(pylabhub PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ------------------------ install & export --------------------------------
 include(GNUInstallDirs)
 
-install(TARGETS pylabhub
-        EXPORT pylabhubTargets
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+# install(TARGETS pylabhub
+#         EXPORT pylabhubTargets
+#         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+#         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+#         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+#         PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+# )
 
-if(PYLABHUB_INSTALL_HEADERS)
-  install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-else()
-  message(STATUS "PYLABHUB_INSTALL_HEADERS=OFF: skipping installation of headers under ${CMAKE_INSTALL_INCLUDEDIR}")
-endif()
+# if(PYLABHUB_INSTALL_HEADERS)
+#   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# else()
+#   message(STATUS "PYLABHUB_INSTALL_HEADERS=OFF: skipping installation of headers under ${CMAKE_INSTALL_INCLUDEDIR}")
+# endif()
 
-install(EXPORT pylabhubTargets FILE pylabhubTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub)
+# install(EXPORT pylabhubTargets FILE pylabhubTargets.cmake NAMESPACE pylabhub:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub)
 
 # ------------------------ Tests -------------------------------------------
 if(BUILD_TESTS)

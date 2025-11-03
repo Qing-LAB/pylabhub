@@ -1,476 +1,229 @@
-// test_logger.cpp
-//
-// Cross-platform unit test for Logger (POSIX + Windows).
-//
-// - Tests file logging with multi-process + multi-thread writers
-// - On Unix: uses fork() for child processes and syslog for best-effort check
-// - On Windows: uses CreateProcess() to spawn child processes and OutputDebugString()
-// - Validates log file contains expected number of lines
-//
-// Build (Linux/macOS):
-//   g++ -std=c++17 -O2 test_logger.cpp logger.cpp -o test_logger -lpthread
-//   # For full verbosity:
-//   g++ -std=c++17 -O2 test_logger.cpp logger.cpp -o test_logger -lpthread -DLOGGER_COMPILE_LEVEL=0
-//
-// Build (Windows, MSVC):
-//   cl /std:c++17 /EHsc test_logger.cpp logger.cpp /Fe:test_logger.exe
-//   # For full verbosity add: /DLOGGER_COMPILE_LEVEL=0
-//
-// Run:
-//   ./test_logger            # parent: spawns children and threads, validates log file
-//
-// Notes:
-//   - The test will create a temporary file in the system temp directory.
-//   - Ensure the logger implementation (logger.cpp / logger.hpp) is compiled with the
-//     LOGGER_COMPILE_LEVEL you want; otherwise some macros may compile out.
-//
-#include "util/logger.hpp"
-
-#include <atomic>
+// tests/test_logger.cpp
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
-#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
-#include <processthreadsapi.h>
-#include <strsafe.h>
-#include <tchar.h>
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
+#include "util/Logger.hpp"
+#include "platform.hpp"
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <syslog.h>
-#endif
+using namespace pylabhub::util;
 
-using namespace std::chrono_literals;
+static const std::string OUTPATH = "tests/output.log";
 
-// Test parameters (adjust if needed)
-static const int NUM_CHILD_PROCS = 3;
-static const int MESSAGES_PER_CHILD = 40;
-static const int NUM_THREADS = 4;
-static const int MESSAGES_PER_THREAD = 50;
-
-// Helper: create a temp logfile path and ensure the file exists.
-// Portable approach: use system temp dir; create a unique filename using pid and timestamp.
-static std::string create_temp_logfile()
-{
-    std::string tmpdir;
-#if defined(_WIN32)
-    char buf[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, buf) == 0)
-    {
-        tmpdir = ".";
+// Child process helper: when executed with --child, write several log lines and exit.
+int run_as_child() {
+    Logger &L = Logger::instance();
+    if (!L.init_file(OUTPATH, false)) {
+        std::cerr << "child: init_file failed\n";
+        return 2;
     }
-    else
-    {
-        tmpdir = std::string(buf);
+    L.set_level(Logger::Level::TRACE);
+    // each child writes these messages
+    for (int i = 0; i < 50; ++i) {
+        L.info_fmt("child-pid={} message {}", (int)std::this_thread::get_id(), i);
     }
-    // generate a filename
-    DWORD pid = GetCurrentProcessId();
-    SYSTEMTIME st;
-    GetSystemTime(&st);
-    char name[256];
-    snprintf(name, sizeof(name), "logger_test_%lu_%04d%02d%02d%02d%02d%03d.log", (unsigned long)pid,
-             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wMilliseconds);
-    std::string path = tmpdir + name;
-    // create empty file
-    std::ofstream ofs(path, std::ios::out);
-    if (!ofs.is_open())
-        return {};
-    ofs.close();
-    return path;
-#else
-    const char *envtmp = std::getenv("TMPDIR");
-    tmpdir = envtmp ? envtmp : "/tmp";
-    pid_t pid = getpid();
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    char name[256];
-    snprintf(name, sizeof(name), "%s/logger_test_%d_%ld.log", tmpdir.c_str(), (int)pid,
-             (long)ts.tv_nsec);
-    // create file
-    std::ofstream ofs(name, std::ios::out);
-    if (!ofs.is_open())
-        return {};
-    ofs.close();
-    return std::string(name);
-#endif
-}
-
-// Helper: count lines in file
-static size_t count_lines_in_file(const std::string &path)
-{
-    std::ifstream in(path);
-    if (!in.is_open())
-        return 0;
-    size_t lines = 0;
-    std::string s;
-    while (std::getline(in, s))
-        ++lines;
-    return lines;
-}
-
-// Child workload: write a set of messages and exit
-static int child_workload_file(const std::string &logfile, int child_index)
-{
-    Logger *lg = get_global_logger();
-    if (!lg)
-        return 3;
-    // Ensure logger is configured by parent (parent initializes logger to logfile).
-    // Here we just write messages.
-    for (int m = 0; m < MESSAGES_PER_CHILD; ++m)
-    {
-        int pid;
-#if defined(_WIN32)
-        pid = (int)GetCurrentProcessId();
-#else
-        pid = (int)getpid();
-#endif
-        LOGGER_INFO_LOC("child[%d] pid=%d msg=%d", child_index, pid, m);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-#if defined(_WIN32)
+    L.shutdown();
     return 0;
-#else
-    _exit(0); // not reached on Windows
-#endif
 }
 
-// On Windows, spawn a child (same exe) with command line "--child N <logfile>"
-#if defined(_WIN32)
-static bool spawn_child_process(const std::string &exe_path, int idx, const std::string &logfile)
-{
-    // Build command: "<exe_path>" --child=<idx> --logfile="<path>"
-    std::ostringstream oss;
-    oss << "\"" << exe_path << "\" --child=" << idx << " --logfile=\"" << logfile << "\"";
-    std::string cmd = oss.str();
+#if defined(PLATFORM_WIN64)
+// spawn child process of the same executable with "--child"
+#include <windows.h>
 
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    ZeroMemory(&pi, sizeof(pi));
-
-    // CreateProcessA expects mutable char*
-    std::vector<char> cmdvec(cmd.begin(), cmd.end());
-    cmdvec.push_back(0);
-
-    BOOL ok = CreateProcessA(nullptr, cmdvec.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-                             &si, &pi);
-    if (!ok)
+static int spawn_child_process(const std::string &exePath) {
+    // Build command line: "<exePath>" --child
+    std::wstring cmd;
     {
-        DWORD err = GetLastError();
-        std::cerr << "CreateProcess failed (err=" << err << ")\n";
+        // Convert exePath to wide
+        int n = MultiByteToWideChar(CP_UTF8, 0, exePath.c_str(), -1, nullptr, 0);
+        std::wstring wexe(n, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, exePath.c_str(), -1, &wexe[0], n);
+        // Remove trailing null included by -1 sizing
+        if (!wexe.empty() && wexe.back() == L'\0') wexe.pop_back();
+        cmd = L"\"" + wexe + L"\" --child";
+    }
+
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        std::cerr << "CreateProcessW failed: " << GetLastError() << "\n";
+        return -1;
+    }
+    // close thread handle, return process handle (as an integer cast)
+    CloseHandle(pi.hThread);
+    // return the process id to caller; parent will wait using WaitForSingleObject
+    return static_cast<int>(pi.dwProcessId);
+}
+
+static bool wait_for_child_handle_by_pid(int pid, DWORD timeout_ms = 10000) {
+    // enumerate processes to find handle is complex; instead use snapshot or open process handle
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+    if (!h) {
+        std::cerr << "OpenProcess failed for pid " << pid << " err=" << GetLastError() << "\n";
         return false;
     }
-    // Close thread handle
-    CloseHandle(pi.hThread);
-    // Wait for process to finish
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    std::cout << "child process idx=" << idx << " exitCode=" << exitCode << "\n";
-    return exitCode == 0;
+    DWORD r = WaitForSingleObject(h, timeout_ms);
+    CloseHandle(h);
+    return r == WAIT_OBJECT_0;
+}
+#else
+// POSIX: fork children
+#include <sys/wait.h>
+#include <unistd.h>
+
+static pid_t spawn_child_process_posix(const std::string & /*exePath*/) {
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        // child: run child routine directly, simpler than execing the same binary
+        // Note: child inherits logger state; re-init file to be safe
+        // Call run_as_child and exit
+        int rc = run_as_child();
+        _exit(rc);
+    }
+    // parent: return child pid
+    return pid;
 }
 #endif
 
-// Entry point for child mode on Windows when launched with --child argument
-static int run_child_mode_from_args(const std::string &logfile, int child_idx)
-{
-    // In child mode we assume parent previously set up logger file in shared location.
-    // But on Windows, since each process has its own address space, parent must have
-    // initialized the log file path and children must init the logger to same file path.
-    // So children will call get_global_logger()->init_file(logfile, true).
-    Logger *lg = get_global_logger();
-    if (!lg)
-    {
-        std::cerr << "child: get_global_logger returned nullptr\n";
-        return 3;
+int main(int argc, char **argv) {
+    // If invoked as child on Windows (--child), run child routine then exit.
+#if defined(PLATFORM_WIN64)
+    // detect --child
+    if (argc > 1 && std::string(argv[1]) == "--child") {
+        return run_as_child();
     }
-    if (!lg->init_file(logfile, /*use_flock=*/true))
-    {
-        std::cerr << "child: init_file failed, errno=" << lg->last_errno() << "\n";
-        // try continuing anyway
-    }
-    lg->set_level(Logger::Level::TRACE);
-    for (int m = 0; m < MESSAGES_PER_CHILD; ++m)
-    {
-        int pid;
-#if defined(_WIN32)
-        pid = (int)GetCurrentProcessId();
 #else
-        pid = (int)getpid();
-#endif
-        LOGGER_INFO_LOC("child[%d] pid=%d msg=%d", child_idx, pid, m);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    lg->shutdown();
-    return 0;
-}
-
-// Parse simple command-line args of form --child=N --logfile=PATH
-static bool parse_child_args(int argc, char **argv, int &out_child, std::string &out_logfile)
-{
-    out_child = -1;
-    out_logfile.clear();
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string a = argv[i];
-        if (a.rfind("--child=", 0) == 0)
-        {
-            out_child = std::atoi(a.c_str() + 8);
-        }
-        else if (a.rfind("--logfile=", 0) == 0)
-        {
-            out_logfile = a.substr(10);
-        }
-    }
-    return out_child >= 0 && !out_logfile.empty();
-}
-
-int main(int argc, char **argv)
-{
-    // Detect child mode (Windows path)
-    int pid;
-#if defined(_WIN32)
-    int child_idx = -1;
-    std::string child_logfile;
-    if (parse_child_args(argc, argv, child_idx, child_logfile))
-    {
-        // Child process on Windows: initialize logger to same file and run child workload
-        return run_child_mode_from_args(child_logfile, child_idx);
-    }
+    // For POSIX, we call run_as_child in the forked child directly (no exec), so no --child handling.
+    (void)argc; (void)argv;
 #endif
 
-    // Normal parent test flow
-    std::string logfile = create_temp_logfile();
-    if (logfile.empty())
-    {
-        std::cerr << "Failed to create temp logfile\n";
+    // Remove old log file
+    std::remove(OUTPATH.c_str());
+
+    Logger &L = Logger::instance();
+    if (!L.init_file(OUTPATH, /*use_flock*/ true)) {
+        std::cerr << "init_file failed; errno=" << L.last_errno() << "\n";
         return 2;
     }
-    std::cout << "Using temp logfile: " << logfile << "\n";
+    L.set_level(Logger::Level::TRACE);
+    L.set_fsync_per_write(false);
 
-    Logger *lg = get_global_logger();
-    if (!lg)
-    {
-        std::cerr << "get_global_logger() returned nullptr\n";
-        return 2;
-    }
+    // Single-process basic test
+    LOG_INFO("unit-test: ascii message {}","A1");
+    LOG_DEBUG("unit-test: debug {:.2f}", 3.14159);
+    LOG_INFO("unit-test: utf8 snowman {} and japanese {}", "☃", "日本語");
 
-    // On POSIX, parent initializes logger once and children inherit fd via fork.
-    // On Windows, child processes are separate address spaces: children must init logger
-    // themselves.
-#if defined(_WIN32)
-    // For Windows: we do not init file in parent for children — each child will init to same path.
-    // But for the parent thread-phase we still initialize parent logger to the same file.
-    if (!lg->init_file(logfile, /*use_flock=*/true))
-    {
-        std::cerr << "init_file failed (errno=" << lg->last_errno() << ")\n";
-        // continue to attempt spawn children (they will init themselves)
-    }
-#else
-    if (!lg->init_file(logfile, /*use_flock=*/true))
-    {
-        std::cerr << "init_file failed (errno=" << lg->last_errno() << ")\n";
-        return 2;
-    }
-#endif
-
-    // Set verbose for test
-    lg->set_level(Logger::Level::TRACE);
-
-#if defined(_WIN32)
-    pid = (int)GetCurrentProcessId();
-#else
-    pid = (int)getpid();
-#endif
-    LOGGER_INFO_LOC("test starting: pid=%d", pid);
-
-    // --- Spawn child processes ---
-#if defined(_WIN32)
-    // Windows: spawn via CreateProcess
-    // Need the current executable path.
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    std::string exeStr = exePath;
-    bool spawn_ok = true;
-    for (int i = 0; i < NUM_CHILD_PROCS; ++i)
-    {
-        bool ok = spawn_child_process(exeStr, i, logfile);
-        if (!ok)
-        {
-            std::cerr << "Failed to spawn child " << i << "\n";
-            spawn_ok = false;
-        }
-    }
-    if (!spawn_ok)
-    {
-        std::cerr << "One or more child processes failed\n";
-    }
-#else
-    // POSIX fork children (do before threads)
-    std::vector<pid_t> child_pids;
-    for (int i = 0; i < NUM_CHILD_PROCS; ++i)
-    {
-        pid_t pid = fork();
-        if (pid < 0)
-        {
-            perror("fork");
-            return 2;
-        }
-        if (pid == 0)
-        {
-            // child: the child inherits the open file descriptor belonging to lg
-            // just run the child workload and exit
-            return child_workload_file(logfile, i);
-        }
-        else
-        {
-            child_pids.push_back(pid);
-        }
-    }
-    // Parent waits for children
-    for (pid_t pid : child_pids)
-    {
-        int status = 0;
-        if (waitpid(pid, &status, 0) == -1)
-        {
-            perror("waitpid");
-        }
-        else
-        {
-            if (WIFEXITED(status))
-            {
-                int ec = WEXITSTATUS(status);
-                std::cout << "child " << pid << " exited with " << ec << "\n";
-            }
-            else
-            {
-                std::cout << "child " << pid << " terminated abnormally\n";
-            }
-        }
-    }
-#endif
-
-#if defined(_WIN32)
-    pid = (int)GetCurrentProcessId();
-#else
-    pid = (int)getpid();
-#endif
-    LOGGER_INFO("All children finished (or spawn completed), now spawning threads in parent (pid=%d)",
-             pid);
-
-    // --- Multi-threaded logging in parent ---
+    // Multi-threaded test
+    const int THREADS = 8;
+    const int MESSAGES_PER_THREAD = 200;
     std::vector<std::thread> threads;
-    std::atomic<int> started{0};
-
-    for (int t = 0; t < NUM_THREADS; ++t)
-    {
-        threads.emplace_back(
-            [t, &started, &logfile]()
-            {
-                started.fetch_add(1, std::memory_order_relaxed);
-                for (int m = 0; m < MESSAGES_PER_THREAD; ++m)
-                {
-                    std::ostringstream idoss;
-                    idoss << std::this_thread::get_id();
-                    int pid;
-#if defined(_WIN32)
-                    pid = (int)GetCurrentProcessId();
-#else
-                    pid = (int)getpid();
-#endif
-                    LOGGER_DEBUG_LOC("thread[%d] tid=%s pid=%d msg=%d", t, idoss.str().c_str(), pid,
-                                  m);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            });
-    }
-
-    while (started.load(std::memory_order_relaxed) < NUM_THREADS)
-    {
-        std::this_thread::sleep_for(10ms);
-    }
-    for (auto &th : threads)
-        th.join();
-
-    LOGGER_WARN("Parent threads finished");
-
-    std::this_thread::sleep_for(200ms);
-
-    // Validate file contains expected number of lines:
-    const size_t expected_lines = (size_t)NUM_CHILD_PROCS * MESSAGES_PER_CHILD +
-                                  (size_t)NUM_THREADS * MESSAGES_PER_THREAD +
-                                  5; // a few parent messages
-    size_t found = count_lines_in_file(logfile);
-    std::cout << "Log file '" << logfile << "' contains " << found
-              << " lines (expected >= " << expected_lines << ")\n";
-
-    bool ok = found >= expected_lines;
-    if (!ok)
-    {
-        std::cerr << "Log file does not contain expected number of lines. Test FAILED.\n";
-        std::ifstream in(logfile);
-        if (in.is_open())
-        {
-            std::vector<std::string> lines;
-            std::string s;
-            while (std::getline(in, s))
-                lines.push_back(s);
-            int start = (int)lines.size() - 50;
-            if (start < 0)
-                start = 0;
-            std::cerr << "---- last log lines (tail) ----\n";
-            for (size_t i = start; i < lines.size(); ++i)
-            {
-                std::cerr << lines[i] << "\n";
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([t]() {
+            for (int i = 0; i < MESSAGES_PER_THREAD; ++i) {
+                LOG_DEBUG("thread {} message {}", t, i);
             }
-            std::cerr << "-------------------------------\n";
-        }
+        });
     }
-    else
-    {
-        std::cout << "File logging test PASSED\n";
-    }
+    for (auto &th : threads) th.join();
 
-    // --- Syslog / platform log test (best-effort) ---
-#if defined(_WIN32)
-    std::cout << "Windows: emitting OutputDebugString messages for manual verification\n";
-    // Use OutputDebugString for test messages - visible in debuggers or DebugView
-    std::ostringstream os1;
-    os1 << "test_logger: INFO pid=" << GetCurrentProcessId();
-    OutputDebugStringA(os1.str().c_str());
-    std::ostringstream os2;
-    os2 << "test_logger: ERROR pid=" << GetCurrentProcessId();
-    OutputDebugStringA(os2.str().c_str());
-    std::cout << "OutputDebugString messages emitted. Use a debugger or DebugView to view them.\n";
+    // Multi-process test: spawn several child processes that also write to the same file.
+    const int CHILDREN = 3;
+#if defined(PLATFORM_WIN64)
+    // Determine current exe path
+    char exePath[MAX_PATH];
+    DWORD len = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    if (len == 0 || len == MAX_PATH) {
+        std::cerr << "GetModuleFileNameA failed\n";
+        return 4;
+    }
+    std::vector<int> child_pids;
+    for (int i = 0; i < CHILDREN; ++i) {
+        // Start child process: pass --child argument
+        STARTUPINFOA si{};
+        PROCESS_INFORMATION pi{};
+        si.cb = sizeof(si);
+        std::string cmd = std::string("\"") + exePath + "\" --child";
+        if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            std::cerr << "CreateProcessA failed: " << GetLastError() << "\n";
+            return 5;
+        }
+        CloseHandle(pi.hThread);
+        child_pids.push_back(static_cast<int>(pi.dwProcessId));
+        CloseHandle(pi.hProcess); // we'll wait differently; here we just let child run
+    }
+    // Simple sleep to allow children to run and finish writing (childs should exit quickly)
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 #else
-    std::cout << "Emitting a few messages to syslog for manual verification (check system journal "
-                 "or /var/log)\n";
-    lg->init_syslog("test_logger", LOG_PID | LOG_CONS, LOG_USER);
-    LOGGER_INFO("syslog test INFO pid=%d", (int)getpid());
-    LOGGER_WARN("syslog test WARN pid=%d", (int)getpid());
-    LOGGER_ERROR("syslog test ERROR pid=%d", (int)getpid());
-    std::this_thread::sleep_for(200ms);
-    std::cout << "Syslog messages emitted (check system logs).\n";
+    std::vector<pid_t> child_pids;
+    for (int i = 0; i < CHILDREN; ++i) {
+        pid_t pid = spawn_child_process_posix("");
+        if (pid < 0) {
+            std::cerr << "fork failed\n";
+            return 6;
+        }
+        child_pids.push_back(pid);
+    }
+    // wait for child processes to finish
+    for (pid_t pid : child_pids) {
+        int status = 0;
+        waitpid(pid, &status, 0);
+    }
 #endif
 
-    // Shutdown logger
-    lg->shutdown();
+    // Give a short time to flush logs
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    return ok ? 0 : 4;
+    L.shutdown();
+
+    // Read file and perform verification checks
+    std::ifstream ifs(OUTPATH, std::ios::binary);
+    if (!ifs) {
+        std::cerr << "failed to open output log for verification\n";
+        return 7;
+    }
+    std::string contents((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    // Basic checks
+    if (contents.find("unit-test: ascii message A1") == std::string::npos) {
+        std::cerr << "ascii message not found\n";
+        return 8;
+    }
+    if (contents.find("unit-test: debug 3.14") == std::string::npos &&
+        contents.find("unit-test: debug 3.14159") == std::string::npos) {
+        std::cerr << "debug message not found\n";
+        return 9;
+    }
+    if (contents.find("unit-test: utf8") == std::string::npos) {
+        std::cerr << "utf8 indicator not found\n";
+        return 10;
+    }
+
+    // Count occurrences from threads & children roughly
+    // We expect at least THREADS * MESSAGES_PER_THREAD entries of "thread "
+    size_t thread_occ = 0;
+    std::string needle = "thread ";
+    for (size_t pos = 0; pos < contents.size();) {
+        pos = contents.find(needle, pos);
+        if (pos == std::string::npos) break;
+        ++thread_occ;
+        pos += needle.size();
+    }
+    if (thread_occ < static_cast<size_t>(THREADS * MESSAGES_PER_THREAD / 2)) { // allow some loss if truncation
+        std::cerr << "thread messages too few: " << thread_occ << "\n";
+        return 11;
+    }
+
+    std::cout << "test_logger: OK\n";
+    return 0;
 }

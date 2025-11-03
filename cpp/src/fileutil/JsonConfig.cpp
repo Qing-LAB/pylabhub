@@ -51,7 +51,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         {
             auto e = flock.error_code();
             LOGGER_ERROR("JsonConfig::init: cannot acquire lock for %s code=%d msg=\"%s\"",
-                      configFile.string().c_str(), e.value(), e.message().c_str());
+                         configFile.string().c_str(), e.value(), e.message().c_str());
             return false;
         }
 
@@ -147,7 +147,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     {
         ec = flock.error_code();
         LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for %s code=%d msg=\"%s\"",
-                  _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                     _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
         return false;
     }
 
@@ -200,7 +200,7 @@ bool JsonConfig::reload() noexcept
         {
             auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for %s code=%d msg=\"%s\"",
-                      _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                         _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
 
@@ -209,7 +209,7 @@ bool JsonConfig::reload() noexcept
         if (!in.is_open())
         {
             LOGGER_ERROR("JsonConfig::reload: cannot open file: %s",
-                      _impl->configPath.string().c_str());
+                         _impl->configPath.string().c_str());
             return false;
         }
 
@@ -218,7 +218,7 @@ bool JsonConfig::reload() noexcept
         if (!in && !in.eof())
         {
             LOGGER_ERROR("JsonConfig::reload: parse/read error for %s",
-                      _impl->configPath.string().c_str());
+                         _impl->configPath.string().c_str());
             return false;
         }
 
@@ -263,7 +263,7 @@ bool JsonConfig::replace(const json &newData) noexcept
         {
             auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for %s code=%d msg=\"%s\"",
-                      _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                         _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
 
