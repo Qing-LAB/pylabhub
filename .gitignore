@@ -26,6 +26,8 @@ htmlcov/
 # IDEs
 .vscode/
 .idea/
+.vs/
+*.sublime-project
 
 # OS files
 .DS_Store
