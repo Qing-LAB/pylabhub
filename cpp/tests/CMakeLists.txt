@@ -15,16 +15,16 @@ find_package(Threads REQUIRED)
 # - numeric mapping: 0=TRACE,1=DEBUG,2=INFO,3=WARNING,4=ERROR,5=NONE
 # - default: verbose in Debug builds, ERROR-only in Release builds
 # You may override this from the top-level cmake command:
-#   cmake -DLOG_COMPILE_LEVEL=0 .. 
+#   cmake -DLOGGER_COMPILE_LEVEL=0 .. 
 # ---------------------------------------------------------------------------
-if(NOT DEFINED LOG_COMPILE_LEVEL)
+if(NOT DEFINED LOGGER_COMPILE_LEVEL)
   if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set(LOG_COMPILE_LEVEL 0 CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)")
+    set(LOGGER_COMPILE_LEVEL 0 CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)")
   else()
-    set(LOG_COMPILE_LEVEL 4 CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)")
+    set(LOGGER_COMPILE_LEVEL 4 CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)")
   endif()
 else()
-  set(LOG_COMPILE_LEVEL ${LOG_COMPILE_LEVEL} CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)" FORCE)
+  set(LOGGER_COMPILE_LEVEL ${LOGGER_COMPILE_LEVEL} CACHE STRING "Compile-time log level for tests (0=TRACE...4=ERROR)" FORCE)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ foreach(src IN LISTS TEST_SOURCES)
     target_compile_features(${test_name} PRIVATE cxx_std_17)
 
     # Pass compile-time log level to the test target
-    target_compile_definitions(${test_name} PRIVATE LOG_COMPILE_LEVEL=${LOG_COMPILE_LEVEL})
+    target_compile_definitions(${test_name} PRIVATE LOGGER_COMPILE_LEVEL=${LOGGER_COMPILE_LEVEL})
 
     # Compiler-specific options
     if(MSVC)
@@ -101,4 +101,4 @@ endforeach()
 # ---------------------------------------------------------------------------
 # Extra: friendly summary
 # ---------------------------------------------------------------------------
-message(STATUS "Tests CMake: LOG_COMPILE_LEVEL=${LOG_COMPILE_LEVEL}")
+message(STATUS "Tests CMake: LOGGER_COMPILE_LEVEL=${LOGGER_COMPILE_LEVEL}")
