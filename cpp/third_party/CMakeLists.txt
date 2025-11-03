@@ -248,6 +248,37 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     endif()
   endif()
 
+  # --- Begin: additional libzmq minimalization knobs (insert BEFORE add_subdirectory) ---
+  #
+  # Snapshot any extra vars we will set so we can restore them and avoid leakage.
+  snapshot_cache_var(WITH_PERF_TOOL)
+  snapshot_cache_var(WITH_DOCS)
+  snapshot_cache_var(WITH_DOC)
+  snapshot_cache_var(ZMQ_BUILD_FRAMEWORK)
+  snapshot_cache_var(WITH_OPENPGM)
+  snapshot_cache_var(WITH_NORM)
+  snapshot_cache_var(WITH_VMCI)
+  snapshot_cache_var(ZMQ_BUILD_EXAMPLES)
+  snapshot_cache_var(ZMQ_BUILD_TOOLS)
+
+  # Force libzmq to build *only* the library (static by default per wrapper).
+  # Turn off perf tools / docs / examples / optional transports / packaging that
+  # generate extra targets and VS projects.
+  set(WITH_PERF_TOOL OFF CACHE BOOL "Wrapper: disable libzmq perf tools" FORCE)
+  set(WITH_DOCS OFF CACHE BOOL "Wrapper: disable libzmq docs" FORCE)
+  set(WITH_DOC OFF CACHE BOOL "Wrapper: disable libzmq docs (alt)" FORCE)
+  set(ZMQ_BUILD_FRAMEWORK OFF CACHE BOOL "Wrapper: disable libzmq framework packaging" FORCE)
+
+  # Disable optional transports that bring extra targets.
+  set(WITH_OPENPGM OFF CACHE BOOL "Wrapper: disable OpenPGM support" FORCE)
+  set(WITH_NORM OFF CACHE BOOL "Wrapper: disable NORM support" FORCE)
+  set(WITH_VMCI OFF CACHE BOOL "Wrapper: disable VMCI support" FORCE)
+
+  # Disable example/tool targets that upstream sometimes creates.
+  set(ZMQ_BUILD_EXAMPLES OFF CACHE BOOL "Wrapper: disable libzmq example binaries" FORCE)
+  set(ZMQ_BUILD_TOOLS OFF CACHE BOOL "Wrapper: disable libzmq helper tools" FORCE)
+  # --- End: additional libzmq minimalization knobs ---
+
   add_subdirectory(libzmq EXCLUDE_FROM_ALL)
 
   restore_cache_var(BUILD_SHARED BOOL)
