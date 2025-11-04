@@ -215,7 +215,7 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn)
     bool saved = save_locked(ec);
     if (!saved)
     {
-        LOGGER_ERROR("JsonConfig::with_json_write: save_locked failed: %s", ec.message());
+        LOGGER_ERROR("JsonConfig::with_json_write: save_locked failed: {}", ec.message());
     }
     return callback_ok && saved;
 }
