@@ -51,7 +51,7 @@ int run_as_child_main()
     }
 
     // Use trace level so everything is logged
-    L.set_level(Logger::Level::TRACE);
+    L.set_level(Logger::Level::L_TRACE);
 
     // Each child writes a small set of messages
     for (int i = 0; i < 50; ++i)
@@ -163,7 +163,7 @@ int main(int argc, char **argv)
     L.init_eventlog(L"TestLoggerSource");
 #endif
 
-    L.set_level(Logger::Level::TRACE);
+    L.set_level(Logger::Level::L_TRACE);
 
     // Basic single-process messages
     LOGGER_INFO("unit-test: ascii message {}", 42);
