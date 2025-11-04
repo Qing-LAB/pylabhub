@@ -26,6 +26,7 @@
 #include <sstream>
 #include <thread>
 #include <vector>
+#include <cstdarg>
 
 #include <fmt/format.h>
 
@@ -41,6 +42,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 #endif
 
 namespace pylabhub::util

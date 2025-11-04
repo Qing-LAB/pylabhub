@@ -20,7 +20,7 @@
 
 #include "fileutil/FileLock.hpp"
 #include "fileutil/PathUtil.hpp"
-#include "util/logger.hpp" // <--- added
+#include "util/Logger.hpp" // <--- added
 
 #include <filesystem>
 #include <string>
