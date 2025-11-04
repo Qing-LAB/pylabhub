@@ -4,7 +4,7 @@ project(pylabhub-tests NONE)
 # ---------------------------------------------------------------------------
 # Requirements
 # ---------------------------------------------------------------------------
-# Expect parent project to provide pylabhub-util and pylabhub-fileutil targets.
+# Expect parent project to provide pylabhub-corelib targets.
 # If those targets are not present, this file will still attempt to build tests,
 # but linking will fail — that's intentional to make missing dependencies obvious.
 
@@ -50,17 +50,16 @@ foreach(src IN LISTS TEST_SOURCES)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 
     # Link with project libraries. Expect the root CMake to have defined these targets:
-    #   pylabhub-util       (contains logger, utils)
-    #   pylabhub-fileutil   (fileutil code)
+    #   pylabhub-corelib       (contains utils, fileutil code)
     #
     # If your top-level CMake uses different target names, adjust these accordingly.
-    if(TARGET pylabhub)
-        target_link_libraries(${test_name} PRIVATE pylabhub)
+    if(TARGET pylabhub-corelib)
+        target_link_libraries(${test_name} PRIVATE pylabhub-corelib)
     else()
-        message(WARNING "Target 'pylabhub' not found. Ensure the top-level CMake defines it.")
+        message(WARNING "Target 'pylabhub-corelib' not found. Ensure the top-level CMake defines it.")
     endif()
-    # Make sure tests link fmt if pylabhub hides it (PRIVATE) ---
-    # If pylabhub did not expose fmt via PUBLIC, tests still need fmt available because
+    # Make sure tests link fmt if pylabhub-core hides it (PRIVATE) ---
+    # If pylabhub-corelib did not expose fmt via PUBLIC, tests still need fmt available because
     # Logger headers include <fmt/format.h>. Detect common fmt targets and link them.
     if(TARGET fmt::fmt)
         target_link_libraries(${test_name} PRIVATE fmt::fmt)
@@ -74,7 +73,7 @@ foreach(src IN LISTS TEST_SOURCES)
         if(TARGET fmt::fmt)
             target_link_libraries(${test_name} PRIVATE fmt::fmt)
         else()
-            message(WARNING "fmt target not found for test '${test_name}'. If pylabhub links fmt PRIVATE, tests will fail to compile. Add fmt as a submodule or install it system-wide.")
+            message(WARNING "fmt target not found for test '${test_name}'. If pylabhub-corelib links fmt PRIVATE, tests will fail to compile. Add fmt as a submodule or install it system-wide.")
         endif()
     endif()
 
