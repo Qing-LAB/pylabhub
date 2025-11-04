@@ -1,6 +1,6 @@
 // JsonConfig.cpp
 // Implementation of non-template JsonConfig methods and atomic_write_json.
-// (modified to use new logger macros from logger.hpp)
+// (modified to use new Logger macros from Logger.hpp)
 #include "fileutil/JsonConfig.hpp"
 #include "fileutil/PathUtil.hpp"
 
@@ -50,7 +50,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         if (!flock.valid())
         {
             auto e = flock.error_code();
-            LOGGER_ERROR("JsonConfig::init: cannot acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::init: cannot acquire lock for {} code={} msg=\"{}\"",
                          configFile.string().c_str(), e.value(), e.message().c_str());
             return false;
         }
@@ -64,7 +64,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
             }
             catch (const std::exception &ex)
             {
-                LOGGER_ERROR("JsonConfig::init: failed to create file: %s", ex.what());
+                LOGGER_ERROR("JsonConfig::init: failed to create file: {}", ex.what());
                 return false;
             }
             catch (...)
@@ -107,7 +107,7 @@ bool JsonConfig::save() noexcept
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("JsonConfig::save: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::save: exception: {}", e.what());
         return false;
     }
     catch (...)
@@ -146,7 +146,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     if (!flock.valid())
     {
         ec = flock.error_code();
-        LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for %s code=%d msg=\"%s\"",
+        LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for {} code={} msg=\"{}\"",
                      _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
         return false;
     }
@@ -164,7 +164,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
     catch (const std::exception &ex)
     {
-        LOGGER_ERROR("JsonConfig::save_locked: atomic_write_json failed: %s", ex.what());
+        LOGGER_ERROR("JsonConfig::save_locked: atomic_write_json failed: {}", ex.what());
         ec = std::make_error_code(std::errc::io_error);
         return false;
     }
@@ -199,7 +199,7 @@ bool JsonConfig::reload() noexcept
         if (!flock.valid())
         {
             auto ec = flock.error_code();
-            LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for {} code={} msg=\"{}\"",
                          _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
@@ -208,7 +208,7 @@ bool JsonConfig::reload() noexcept
         std::ifstream in(_impl->configPath);
         if (!in.is_open())
         {
-            LOGGER_ERROR("JsonConfig::reload: cannot open file: %s",
+            LOGGER_ERROR("JsonConfig::reload: cannot open file: {}",
                          _impl->configPath.string().c_str());
             return false;
         }
@@ -217,7 +217,7 @@ bool JsonConfig::reload() noexcept
         in >> newdata;
         if (!in && !in.eof())
         {
-            LOGGER_ERROR("JsonConfig::reload: parse/read error for %s",
+            LOGGER_ERROR("JsonConfig::reload: parse/read error for {}",
                          _impl->configPath.string().c_str());
             return false;
         }
@@ -233,7 +233,7 @@ bool JsonConfig::reload() noexcept
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("JsonConfig::reload: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::reload: exception: {}", e.what());
         return false;
     }
     catch (...)
@@ -262,7 +262,7 @@ bool JsonConfig::replace(const json &newData) noexcept
         if (!flock.valid())
         {
             auto ec = flock.error_code();
-            LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for %s code=%d msg=\"%s\"",
+            LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for {} code={} msg=\"{}\"",
                          _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
@@ -281,7 +281,7 @@ bool JsonConfig::replace(const json &newData) noexcept
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("JsonConfig::replace: exception: %s", e.what());
+        LOGGER_ERROR("JsonConfig::replace: exception: {}", e.what());
         return false;
     }
     catch (...)
