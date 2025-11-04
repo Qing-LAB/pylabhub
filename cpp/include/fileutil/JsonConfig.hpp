@@ -65,7 +65,7 @@ then save().
 
 #include "fileutil/FileLock.hpp"
 #include "nlohmann/json.hpp"
-#include "util/logger.hpp"
+#include "util/Logger.hpp"
 
 namespace pylabhub::fileutil
 {
