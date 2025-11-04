@@ -1,263 +1,272 @@
 // tests/test_logger.cpp
+//
+// Unit test for pylabhub::util::Logger
+//
+// This test exercises:
+//  - basic single-process logging (ASCII + UTF-8)
+//  - multi-threaded logging (multiple threads writing concurrently)
+//  - multi-process logging: POSIX forks; Windows spawn same exe with "--child"
+//  - file sink verification by reading back the produced file.
+//
+// Behavior:
+//  - When invoked as the child process (Windows), it does child-only logging and exits.
+//  - Otherwise the parent runs the full test: spawns threads, spawns children, waits,
+//    then shuts down the logger and verifies the file contains expected log lines.
+//
+// Notes:
+//  - The test uses the Logger API and LOG_* macros you defined in Logger.hpp.
+//  - The test expects the test binary to run from the build directory so CreateProcess
+//    (Windows) can exec the same binary by path returned from GetModuleFileNameA.
+//  - If your project places tests elsewhere, adjust OUTPATH accordingly.
+
 #include <cassert>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+#include <cstdio>
 
-#include "platform.hpp"
 #include "util/Logger.hpp"
+#include "platform.hpp"
 
 using namespace pylabhub::util;
 
 static const std::string OUTPATH = "tests/output.log";
 
-// Child process helper: when executed with --child, write several log lines and exit.
-int run_as_child()
-{
+// Child entrypoint used on Windows (parent will spawn the same exe with "--child")
+// On POSIX we fork and run this logic in child directly.
+int run_as_child_main() {
     Logger &L = Logger::instance();
-    if (!L.init_file(OUTPATH, false))
-    {
-        std::cerr << "child: init_file failed\n";
+
+    // Make sure child writes to same file (append)
+    if (!L.init_file(OUTPATH, /*use_flock*/ true)) {
+        std::cerr << "child: init_file failed (errno=" << L.last_errno() << ")\n";
         return 2;
     }
+
+    // Use trace level so everything is logged
     L.set_level(Logger::Level::TRACE);
-    // each child writes these messages
-    for (int i = 0; i < 50; ++i)
-    {
-        L.info_fmt("child-pid={} message {}", (int)std::this_thread::get_id(), i);
+
+    // Each child writes a small set of messages
+    for (int i = 0; i < 50; ++i) {
+        L.info_fmt("child-msg pid={} idx={}", static_cast<int>(std::hash<std::thread::id>()(std::this_thread::get_id())), i);
     }
+
+    // UTF-8 sanity message
+    L.info_fmt("child utf8 {}", "☃");
+
     L.shutdown();
     return 0;
 }
 
 #if defined(PLATFORM_WIN64)
-// spawn child process of the same executable with "--child"
 #include <windows.h>
 
-static int spawn_child_process(const std::string &exePath)
-{
-    // Build command line: "<exePath>" --child
-    std::wstring cmd;
-    {
-        // Convert exePath to wide
-        int n = MultiByteToWideChar(CP_UTF8, 0, exePath.c_str(), -1, nullptr, 0);
-        std::wstring wexe(n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, exePath.c_str(), -1, &wexe[0], n);
-        // Remove trailing null included by -1 sizing
-        if (!wexe.empty() && wexe.back() == L'\0')
-            wexe.pop_back();
-        cmd = L"\"" + wexe + L"\" --child";
-    }
-
-    STARTUPINFOW si{};
+// Spawn the same executable with "--child" argument. Returns child process handle or nullptr on error.
+static PROCESS_INFORMATION spawn_child_windows(const std::string &exePath) {
+    STARTUPINFOA si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
-    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
-                        nullptr, &si, &pi))
-    {
-        std::cerr << "CreateProcessW failed: " << GetLastError() << "\n";
-        return -1;
-    }
-    // close thread handle, return process handle (as an integer cast)
-    CloseHandle(pi.hThread);
-    // return the process id to caller; parent will wait using WaitForSingleObject
-    return static_cast<int>(pi.dwProcessId);
-}
 
-static bool wait_for_child_handle_by_pid(int pid, DWORD timeout_ms = 10000)
-{
-    // enumerate processes to find handle is complex; instead use snapshot or open process handle
-    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
-    if (!h)
-    {
-        std::cerr << "OpenProcess failed for pid " << pid << " err=" << GetLastError() << "\n";
-        return false;
+    std::string cmd = std::string("\"") + exePath + "\" --child";
+    // CreateProcess modifies the command buffer, so we need a mutable char array
+    std::vector<char> cmdbuf(cmd.begin(), cmd.end());
+    cmdbuf.push_back('\0');
+
+    BOOL ok = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+    if (!ok) {
+        std::cerr << "CreateProcessA failed: " << GetLastError() << "\n";
+        // Return zeroed PROCESS_INFORMATION
+        PROCESS_INFORMATION empty{};
+        return empty;
     }
-    DWORD r = WaitForSingleObject(h, timeout_ms);
-    CloseHandle(h);
-    return r == WAIT_OBJECT_0;
+    // parent: close thread handle but keep process handle to wait on it
+    CloseHandle(pi.hThread);
+    return pi;
 }
 #else
-// POSIX: fork children
 #include <sys/wait.h>
 #include <unistd.h>
 
-static pid_t spawn_child_process_posix(const std::string & /*exePath*/)
-{
+static pid_t spawn_child_posix() {
     pid_t pid = fork();
-    if (pid == -1)
-    {
+    if (pid == -1) {
         perror("fork");
         return -1;
     }
-    if (pid == 0)
-    {
-        // child: run child routine directly, simpler than execing the same binary
-        // Note: child inherits logger state; re-init file to be safe
-        // Call run_as_child and exit
-        int rc = run_as_child();
+    if (pid == 0) {
+        // child: run child logic
+        int rc = run_as_child_main();
         _exit(rc);
     }
-    // parent: return child pid
+    // parent: return child's pid
     return pid;
 }
 #endif
 
-int main(int argc, char **argv)
-{
-    // If invoked as child on Windows (--child), run child routine then exit.
+// Read file contents into a string (binary mode)
+static bool read_file_contents(const std::string &path, std::string &out) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return false;
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+int main(int argc, char **argv) {
+    // Windows child runner: invoked as "<exe> --child"
 #if defined(PLATFORM_WIN64)
-    // detect --child
-    if (argc > 1 && std::string(argv[1]) == "--child")
-    {
-        return run_as_child();
+    if (argc > 1 && std::string(argv[1]) == "--child") {
+        return run_as_child_main();
     }
-#else
-    // For POSIX, we call run_as_child in the forked child directly (no exec), so no --child
-    // handling.
-    (void)argc;
-    (void)argv;
 #endif
 
-    // Remove old log file
+    // Remove any previous test file
     std::remove(OUTPATH.c_str());
 
     Logger &L = Logger::instance();
-    if (!L.init_file(OUTPATH, /*use_flock*/ true))
-    {
-        std::cerr << "init_file failed; errno=" << L.last_errno() << "\n";
+
+    // Try to init several sinks to ensure those code paths are covered.
+    // Primary verification will be done on file sink which is cross-platform.
+    if (!L.init_file(OUTPATH, /*use_flock*/ true)) {
+        std::cerr << "parent: init_file failed (errno=" << L.last_errno() << ")\n";
         return 2;
     }
-    L.set_level(Logger::Level::TRACE);
-    L.set_fsync_per_write(false);
 
-    // Single-process basic test
-    LOG_INFO("unit-test: ascii message {}", "A1");
+#if !defined(PLATFORM_WIN64)
+    // POSIX: try opening syslog to exercise that path (no failure if not allowed)
+    L.init_syslog("test_logger", LOG_PID | LOG_CONS, LOG_USER);
+#else
+    // Windows: try register event log source (non-fatal if fails)
+    // Note: we avoid requiring admin rights; if init_eventlog fails, continue.
+    L.init_eventlog(L"TestLoggerSource");
+#endif
+
+    L.set_level(Logger::Level::TRACE);
+
+    // Basic single-process messages
+    LOG_INFO("unit-test: ascii message {}", 42);
     LOG_DEBUG("unit-test: debug {:.2f}", 3.14159);
-    LOG_INFO("unit-test: utf8 snowman {} and japanese {}", "☃", "日本語");
+    LOG_INFO("unit-test: utf8 test {} {}", "☃", "日本語");
 
     // Multi-threaded test
     const int THREADS = 8;
     const int MESSAGES_PER_THREAD = 200;
     std::vector<std::thread> threads;
-    for (int t = 0; t < THREADS; ++t)
-    {
-        threads.emplace_back(
-            [t]()
-            {
-                for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
-                {
-                    LOG_DEBUG("thread {} message {}", t, i);
-                }
-            });
+    threads.reserve(THREADS);
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([t]() {
+            for (int i = 0; i < MESSAGES_PER_THREAD; ++i) {
+                LOG_DEBUG("thread {} message {}", t, i);
+            }
+        });
     }
-    for (auto &th : threads)
-        th.join();
+    for (auto &th : threads) th.join();
 
     // Multi-process test: spawn several child processes that also write to the same file.
     const int CHILDREN = 3;
 #if defined(PLATFORM_WIN64)
-    // Determine current exe path
+    // Determine exe path
     char exePath[MAX_PATH];
     DWORD len = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    if (len == 0 || len == MAX_PATH)
-    {
+    if (len == 0 || len == MAX_PATH) {
         std::cerr << "GetModuleFileNameA failed\n";
-        return 4;
+        return 3;
     }
-    std::vector<int> child_pids;
-    for (int i = 0; i < CHILDREN; ++i)
-    {
-        // Start child process: pass --child argument
-        STARTUPINFOA si{};
-        PROCESS_INFORMATION pi{};
-        si.cb = sizeof(si);
-        std::string cmd = std::string("\"") + exePath + "\" --child";
-        if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
-                            &pi))
-        {
-            std::cerr << "CreateProcessA failed: " << GetLastError() << "\n";
-            return 5;
+
+    std::vector<PROCESS_INFORMATION> procs;
+    for (int i = 0; i < CHILDREN; ++i) {
+        PROCESS_INFORMATION pi = spawn_child_windows(std::string(exePath));
+        if (pi.hProcess == nullptr) {
+            std::cerr << "spawn_child_windows failed\n";
+            return 4;
         }
-        CloseHandle(pi.hThread);
-        child_pids.push_back(static_cast<int>(pi.dwProcessId));
-        CloseHandle(pi.hProcess); // we'll wait differently; here we just let child run
+        procs.push_back(pi);
     }
-    // Simple sleep to allow children to run and finish writing (childs should exit quickly)
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Wait for each child to finish
+    for (auto &pi : procs) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        // retrieve exit code (optional)
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        (void)code;
+    }
 #else
     std::vector<pid_t> child_pids;
-    for (int i = 0; i < CHILDREN; ++i)
-    {
-        pid_t pid = spawn_child_process_posix("");
-        if (pid < 0)
-        {
-            std::cerr << "fork failed\n";
-            return 6;
+    for (int i = 0; i < CHILDREN; ++i) {
+        pid_t pid = spawn_child_posix();
+        if (pid < 0) {
+            std::cerr << "fork/spawn failed\n";
+            return 5;
         }
         child_pids.push_back(pid);
     }
-    // wait for child processes to finish
-    for (pid_t pid : child_pids)
-    {
+    // wait for all children
+    for (pid_t pid : child_pids) {
         int status = 0;
         waitpid(pid, &status, 0);
     }
 #endif
 
-    // Give a short time to flush logs
+    // Give small time to flush writes
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     L.shutdown();
 
-    // Read file and perform verification checks
-    std::ifstream ifs(OUTPATH, std::ios::binary);
-    if (!ifs)
-    {
+    // Read file and verify content
+    std::string contents;
+    if (!read_file_contents(OUTPATH, contents)) {
         std::cerr << "failed to open output log for verification\n";
+        return 6;
+    }
+
+    // Basic content checks (fuzzy)
+    if (contents.find("unit-test: ascii message 42") == std::string::npos) {
+        std::cerr << "ascii message not found\n";
         return 7;
     }
-    std::string contents((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-
-    // Basic checks
-    if (contents.find("unit-test: ascii message A1") == std::string::npos)
-    {
-        std::cerr << "ascii message not found\n";
+    if (contents.find("unit-test: debug 3.14") == std::string::npos &&
+        contents.find("unit-test: debug 3.14159") == std::string::npos) {
+        std::cerr << "debug message not found\n";
         return 8;
     }
-    if (contents.find("unit-test: debug 3.14") == std::string::npos &&
-        contents.find("unit-test: debug 3.14159") == std::string::npos)
-    {
-        std::cerr << "debug message not found\n";
+    if (contents.find("unit-test: utf8") == std::string::npos) {
+        std::cerr << "utf8 indicator not found\n";
         return 9;
     }
-    if (contents.find("unit-test: utf8") == std::string::npos)
-    {
-        std::cerr << "utf8 indicator not found\n";
+
+    // Check for snowman UTF-8 (either literal or UTF-8 bytes)
+    if (contents.find("☃") == std::string::npos &&
+        contents.find(std::string("\xE2\x98\x83")) == std::string::npos) {
+        std::cerr << "utf8 snowman not found\n";
         return 10;
     }
 
-    // Count occurrences from threads & children roughly
-    // We expect at least THREADS * MESSAGES_PER_THREAD entries of "thread "
+    // Count thread messages occurrences (fuzzy)
     size_t thread_occ = 0;
-    std::string needle = "thread ";
-    for (size_t pos = 0; pos < contents.size();)
-    {
-        pos = contents.find(needle, pos);
-        if (pos == std::string::npos)
-            break;
+    const std::string thread_needle = "thread ";
+    for (size_t pos = 0; pos < contents.size();) {
+        pos = contents.find(thread_needle, pos);
+        if (pos == std::string::npos) break;
         ++thread_occ;
-        pos += needle.size();
+        pos += thread_needle.size();
     }
-    if (thread_occ < static_cast<size_t>(THREADS * MESSAGES_PER_THREAD / 2))
-    { // allow some loss if truncation
-        std::cerr << "thread messages too few: " << thread_occ << "\n";
+    size_t expected_thread_msgs = THREADS * MESSAGES_PER_THREAD;
+    if (thread_occ < expected_thread_msgs / 2) { // allow some loss or truncation
+        std::cerr << "thread messages too few: found " << thread_occ << " expected ~" << expected_thread_msgs << "\n";
         return 11;
+    }
+
+    // Roughly ensure children wrote something
+    if (contents.find("child-msg") == std::string::npos) {
+        std::cerr << "child messages not found\n";
+        return 12;
     }
 
     std::cout << "test_logger: OK\n";
