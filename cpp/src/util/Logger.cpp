@@ -16,38 +16,39 @@
 
 #include "util/Logger.hpp"
 
+#include <cerrno>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <thread>
 #include <vector>
-#include <cstring>
-#include <cerrno>
-#include <cstdio>
 
 #include <fmt/format.h>
 
 #if defined(PLATFORM_WIN64)
 #define NOMINMAX
-#include <windows.h>
-#include <io.h>
 #include <fcntl.h>
+#include <io.h>
+#include <windows.h>
 #else
-#include <sys/types.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/file.h>
-#include <syslog.h>
+#include <sys/types.h>
 #include <unistd.h>
-#include <fcntl.h>
 #endif
 
-namespace pylabhub::util {
+namespace pylabhub::util
+{
 
 // Forward declare helpers (Impl defined below)
-struct Impl {
+struct Impl
+{
     // Public members for this TU-local struct (we are in the .cpp).
     std::mutex mtx;
 
@@ -84,11 +85,13 @@ struct Impl {
 // This helper assumes the caller will use it to capture state and call callback
 // outside the critical section. It does NOT attempt to lock the Impl mutex itself
 // unless needed by a member function.
-struct ImplAccessorLocal {
+struct ImplAccessorLocal
+{
     explicit ImplAccessorLocal(Impl *impl) : p(impl) {}
 
     // Atomically update counters and store the message under lock.
-    void capture_error(int errcode, const std::string &msg) {
+    void capture_error(int errcode, const std::string &msg)
+    {
         p->write_failure_count.fetch_add(1);
         p->last_write_errcode.store(errcode);
         {
@@ -98,7 +101,8 @@ struct ImplAccessorLocal {
     }
 
     // Copy the callback under lock so we can call it outside the lock.
-    std::function<void(const std::string &)> copy_callback_and_update_notice() {
+    std::function<void(const std::string &)> copy_callback_and_update_notice()
+    {
         std::function<void(const std::string &)> cb;
         {
             std::lock_guard<std::mutex> g(p->mtx);
@@ -106,7 +110,8 @@ struct ImplAccessorLocal {
             // update the last_stderr_notice if the interval elapsed
             // (we will print outside the lock if needed)
             auto now = std::chrono::steady_clock::now();
-            if (now - p->last_stderr_notice > std::chrono::seconds(5)) {
+            if (now - p->last_stderr_notice > std::chrono::seconds(5))
+            {
                 p->last_stderr_notice = now;
                 should_warn = true;
             }
@@ -116,13 +121,14 @@ struct ImplAccessorLocal {
 
     bool should_warn_now() const noexcept { return should_warn; }
 
-private:
+  private:
     Impl *p;
     bool should_warn{false};
 };
 
 // Helper: get a platform-native thread id
-static uint64_t get_native_thread_id() noexcept {
+static uint64_t get_native_thread_id() noexcept
+{
 #if defined(PLATFORM_WIN64)
     return static_cast<uint64_t>(::GetCurrentThreadId());
 #elif defined(PLATFORM_APPLE)
@@ -132,7 +138,8 @@ static uint64_t get_native_thread_id() noexcept {
 #elif defined(__linux__)
     // try syscall to get kernel thread id
     long tid = syscall(SYS_gettid);
-    if (tid > 0) return static_cast<uint64_t>(tid);
+    if (tid > 0)
+        return static_cast<uint64_t>(tid);
     return std::hash<std::thread::id>()(std::this_thread::get_id());
 #else
     return std::hash<std::thread::id>()(std::this_thread::get_id());
@@ -140,7 +147,8 @@ static uint64_t get_native_thread_id() noexcept {
 }
 
 // Helper: formatted local time with millisecond resolution (UTC/local depending on system)
-static std::string formatted_time() {
+static std::string formatted_time()
+{
 #if defined(PLATFORM_WIN64)
     using namespace std::chrono;
     auto now = system_clock::now();
@@ -150,9 +158,9 @@ static std::string formatted_time() {
     localtime_s(&tm_buf, &t);
     auto ms = duration_cast<milliseconds>(now - secs).count();
     char buf[64];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03lld",
-             tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
-             tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, static_cast<long long>(ms));
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03lld", tm_buf.tm_year + 1900,
+             tm_buf.tm_mon + 1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
+             static_cast<long long>(ms));
     return std::string(buf);
 #else
     struct timeval tv;
@@ -169,26 +177,42 @@ static std::string formatted_time() {
 #endif
 }
 
-static const char *level_to_string(Logger::Level lvl) noexcept {
-    switch (lvl) {
-    case Logger::Level::TRACE: return "TRACE";
-    case Logger::Level::DEBUG: return "DEBUG";
-    case Logger::Level::INFO:  return "INFO";
-    case Logger::Level::WARNING: return "WARN";
-    case Logger::Level::ERROR: return "ERROR";
-    default: return "UNK";
+static const char *level_to_string(Logger::Level lvl) noexcept
+{
+    switch (lvl)
+    {
+    case Logger::Level::TRACE:
+        return "TRACE";
+    case Logger::Level::DEBUG:
+        return "DEBUG";
+    case Logger::Level::INFO:
+        return "INFO";
+    case Logger::Level::WARNING:
+        return "WARN";
+    case Logger::Level::ERROR:
+        return "ERROR";
+    default:
+        return "UNK";
     }
 }
 
 #if !defined(PLATFORM_WIN64)
-static int level_to_syslog_priority(Logger::Level lvl) noexcept {
-    switch (lvl) {
-    case Logger::Level::TRACE: return LOG_DEBUG;
-    case Logger::Level::DEBUG: return LOG_DEBUG;
-    case Logger::Level::INFO: return LOG_INFO;
-    case Logger::Level::WARNING: return LOG_WARNING;
-    case Logger::Level::ERROR: return LOG_ERR;
-    default: return LOG_INFO;
+static int level_to_syslog_priority(Logger::Level lvl) noexcept
+{
+    switch (lvl)
+    {
+    case Logger::Level::TRACE:
+        return LOG_DEBUG;
+    case Logger::Level::DEBUG:
+        return LOG_DEBUG;
+    case Logger::Level::INFO:
+        return LOG_INFO;
+    case Logger::Level::WARNING:
+        return LOG_WARNING;
+    case Logger::Level::ERROR:
+        return LOG_ERR;
+    default:
+        return LOG_INFO;
     }
 }
 #endif
@@ -198,88 +222,117 @@ static int level_to_syslog_priority(Logger::Level lvl) noexcept {
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger() = default;
 
-Logger &Logger::instance() {
+Logger &Logger::instance()
+{
     static Logger inst;
     return inst;
 }
 
 // ---- small accessors used by header-only templates ----
-bool Logger::should_log(Logger::Level lvl) const noexcept {
-    if (!pImpl) return false;
+bool Logger::should_log(Logger::Level lvl) const noexcept
+{
+    if (!pImpl)
+        return false;
     return static_cast<int>(lvl) >= pImpl->level.load(std::memory_order_relaxed);
 }
 
-size_t Logger::max_log_line_length() const noexcept {
-    if (!pImpl) return 0;
+size_t Logger::max_log_line_length() const noexcept
+{
+    if (!pImpl)
+        return 0;
     return pImpl->max_log_line_length.load(std::memory_order_relaxed);
 }
 
 // ---- lifecycle / configuration ----
-void Logger::set_level(Logger::Level lvl) {
-    if (!pImpl) return;
+void Logger::set_level(Logger::Level lvl)
+{
+    if (!pImpl)
+        return;
     pImpl->level.store(static_cast<int>(lvl), std::memory_order_relaxed);
 }
-Logger::Level Logger::level() const {
-    if (!pImpl) return Logger::Level::INFO;
+Logger::Level Logger::level() const
+{
+    if (!pImpl)
+        return Logger::Level::INFO;
     return static_cast<Logger::Level>(pImpl->level.load(std::memory_order_relaxed));
 }
-void Logger::set_fsync_per_write(bool v) {
-    if (!pImpl) return;
+void Logger::set_fsync_per_write(bool v)
+{
+    if (!pImpl)
+        return;
     pImpl->fsync_per_write.store(v);
 }
-void Logger::set_write_error_callback(std::function<void(const std::string &)> cb) {
-    if (!pImpl) return;
+void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
+{
+    if (!pImpl)
+        return;
     std::lock_guard<std::mutex> g(pImpl->mtx);
     pImpl->write_error_callback = std::move(cb);
 }
 
-int Logger::last_errno() const {
-    if (!pImpl) return 0;
+int Logger::last_errno() const
+{
+    if (!pImpl)
+        return 0;
     return pImpl->last_errno.load();
 }
-int Logger::last_write_error_code() const {
-    if (!pImpl) return 0;
+int Logger::last_write_error_code() const
+{
+    if (!pImpl)
+        return 0;
     return pImpl->last_write_errcode.load();
 }
-std::string Logger::last_write_error_message() const {
-    if (!pImpl) return std::string();
+std::string Logger::last_write_error_message() const
+{
+    if (!pImpl)
+        return std::string();
     std::lock_guard<std::mutex> g(pImpl->mtx);
     return pImpl->last_write_errmsg;
 }
-int Logger::write_failure_count() const {
-    if (!pImpl) return 0;
+int Logger::write_failure_count() const
+{
+    if (!pImpl)
+        return 0;
     return pImpl->write_failure_count.load();
 }
 
-void Logger::set_max_log_line_length(size_t bytes) {
-    if (!pImpl) return;
+void Logger::set_max_log_line_length(size_t bytes)
+{
+    if (!pImpl)
+        return;
     pImpl->max_log_line_length.store(bytes ? bytes : 1);
 }
 
 // ---- sinks initialization ----
-bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode) {
-    if (!pImpl) return false;
+bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
+{
+    if (!pImpl)
+        return false;
     std::lock_guard<std::mutex> g(pImpl->mtx);
 #if defined(PLATFORM_WIN64)
     // Convert UTF-8 path to wide and CreateFileW
     int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
-    if (needed == 0) {
+    if (needed == 0)
+    {
         pImpl->last_errno.store(GetLastError());
         return false;
     }
     std::wstring wpath(needed, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, &wpath[0], needed);
     // remove trailing null
-    if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
+    if (!wpath.empty() && wpath.back() == L'\0')
+        wpath.pop_back();
 
-    HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE,
-                           FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
+    HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE, FILE_SHARE_READ,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+    {
         pImpl->last_errno.store(GetLastError());
         return false;
     }
     SetFilePointer(h, 0, nullptr, FILE_END);
-    if (pImpl->file_handle != INVALID_HANDLE_VALUE) CloseHandle(pImpl->file_handle);
+    if (pImpl->file_handle != INVALID_HANDLE_VALUE)
+        CloseHandle(pImpl->file_handle);
     pImpl->file_handle = h;
     pImpl->file_path = utf8_path;
     pImpl->use_flock = use_flock;
@@ -287,12 +340,14 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode) {
     return true;
 #else
     // POSIX open with O_APPEND
-    if (pImpl->file_fd != -1) {
+    if (pImpl->file_fd != -1)
+    {
         ::close(pImpl->file_fd);
         pImpl->file_fd = -1;
     }
     int fd = ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
-    if (fd == -1) {
+    if (fd == -1)
+    {
         pImpl->last_errno.store(errno);
         return false;
     }
@@ -304,22 +359,32 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode) {
 #endif
 }
 
-void Logger::init_syslog(const char *ident, int option, int facility) {
+void Logger::init_syslog(const char *ident, int option, int facility)
+{
 #if !defined(PLATFORM_WIN64)
     std::lock_guard<std::mutex> g(pImpl->mtx);
-    openlog(ident ? ident : "app", option ? option : (LOG_PID | LOG_CONS), facility ? facility : LOG_USER);
+    openlog(ident ? ident : "app", option ? option : (LOG_PID | LOG_CONS),
+            facility ? facility : LOG_USER);
     pImpl->dest = Logger::Destination::SYSLOG;
 #else
-    (void)ident; (void)option; (void)facility;
+    (void)ident;
+    (void)option;
+    (void)facility;
 #endif
 }
 
-bool Logger::init_eventlog(const wchar_t *source_name) {
+bool Logger::init_eventlog(const wchar_t *source_name)
+{
 #if defined(PLATFORM_WIN64)
     std::lock_guard<std::mutex> g(pImpl->mtx);
-    if (pImpl->evt_handle) { DeregisterEventSource(pImpl->evt_handle); pImpl->evt_handle = nullptr; }
+    if (pImpl->evt_handle)
+    {
+        DeregisterEventSource(pImpl->evt_handle);
+        pImpl->evt_handle = nullptr;
+    }
     HANDLE h = RegisterEventSourceW(nullptr, source_name);
-    if (!h) {
+    if (!h)
+    {
         pImpl->last_errno.store(GetLastError());
         return false;
     }
@@ -332,20 +397,37 @@ bool Logger::init_eventlog(const wchar_t *source_name) {
 #endif
 }
 
-void Logger::set_destination(Logger::Destination dest) {
-    if (!pImpl) return;
+void Logger::set_destination(Logger::Destination dest)
+{
+    if (!pImpl)
+        return;
     std::lock_guard<std::mutex> g(pImpl->mtx);
     pImpl->dest = dest;
 }
 
-void Logger::shutdown() {
-    if (!pImpl) return;
+void Logger::shutdown()
+{
+    if (!pImpl)
+        return;
     std::lock_guard<std::mutex> g(pImpl->mtx);
 #if defined(PLATFORM_WIN64)
-    if (pImpl->file_handle != INVALID_HANDLE_VALUE) { CloseHandle(pImpl->file_handle); pImpl->file_handle = INVALID_HANDLE_VALUE; }
-    if (pImpl->evt_handle) { DeregisterEventSource(pImpl->evt_handle); pImpl->evt_handle = nullptr; }
+    if (pImpl->file_handle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(pImpl->file_handle);
+        pImpl->file_handle = INVALID_HANDLE_VALUE;
+    }
+    if (pImpl->evt_handle)
+    {
+        DeregisterEventSource(pImpl->evt_handle);
+        pImpl->evt_handle = nullptr;
+    }
 #else
-    if (pImpl->file_fd != -1) { ::close(pImpl->file_fd); pImpl->file_fd = -1; pImpl->file_path.clear(); }
+    if (pImpl->file_fd != -1)
+    {
+        ::close(pImpl->file_fd);
+        pImpl->file_fd = -1;
+        pImpl->file_path.clear();
+    }
     // closelog is safe even if not previously opened
     closelog();
 #endif
@@ -357,24 +439,22 @@ void Logger::shutdown() {
 //  - body is UTF-8 (no trailing newline expected)
 //  - appropriate header (timestamp, level, tid) is prepended
 //  - on write failure, record_write_error(...) is called outside of any write lock
-void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
-    if (!pImpl) return;
-    // Build header and full message (utf-8)
-    std::string header = formatted_time();
-    header += " [";
-    header += level_to_string(lvl);
-    header += "] ";
-    header += "[tid=" + std::to_string(get_native_thread_id()) + "] ";
-
-    std::string full = header + body + "\n";
+void Logger::write_formatted(Level lvl, std::string &&body) noexcept
+{
+    if (!pImpl)
+        return;
+    std::string full = fmt::format(FMT_STRING("{} [{}] [tid={}] {}"), formatted_time(), level_to_string(lvl), std::to_string(get_native_thread_id()), body);
+    std::string full_ln = full + "\n";
 
     // Acquire lock to protect sink handles while writing.
     std::unique_lock<std::mutex> lk(pImpl->mtx);
 
-    if (pImpl->dest == Logger::Destination::CONSOLE) {
+    if (pImpl->dest == Logger::Destination::CONSOLE)
+    {
         // write to stderr
-        size_t wrote = fwrite(full.data(), 1, full.size(), stderr);
-        if (wrote != full.size()) {
+        size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
+        if (wrote != full_ln.size())
+        {
 #if defined(PLATFORM_WIN64)
             int err = static_cast<int>(GetLastError());
             std::string msg = "fwrite to stderr failed on Windows";
@@ -387,26 +467,36 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
             lk.unlock();
             record_write_error(err, msg.c_str());
 #endif
-        } else {
+        }
+        else
+        {
             fflush(stderr);
         }
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::FILE) {
+    if (pImpl->dest == Logger::Destination::FILE)
+    {
 #if defined(PLATFORM_WIN64)
-        if (pImpl->file_handle != INVALID_HANDLE_VALUE) {
+        if (pImpl->file_handle != INVALID_HANDLE_VALUE)
+        {
             // prefer single WriteFile call
             DWORD written = 0;
-            BOOL ok = WriteFile(pImpl->file_handle, full.data(), static_cast<DWORD>(full.size()), &written, nullptr);
-            if (!ok || written != full.size()) {
+            BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(), static_cast<DWORD>(full_ln.size()),
+                                &written, nullptr);
+            if (!ok || written != full_ln.size())
+            {
                 DWORD err = GetLastError();
                 std::string msg = "WriteFile failed";
                 lk.unlock();
                 record_write_error(static_cast<int>(err), msg.c_str());
-            } else {
-                if (pImpl->fsync_per_write.load()) {
-                    if (!FlushFileBuffers(pImpl->file_handle)) {
+            }
+            else
+            {
+                if (pImpl->fsync_per_write.load())
+                {
+                    if (!FlushFileBuffers(pImpl->file_handle))
+                    {
                         DWORD err2 = GetLastError();
                         std::string msg = "FlushFileBuffers failed";
                         lk.unlock();
@@ -414,58 +504,80 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
                     }
                 }
             }
-        } else {
+        }
+        else
+        {
             // fallback to OutputDebugString if no file handle
-            std::wstring w = [](const std::string &s)->std::wstring {
-                if (s.empty()) return {};
-                int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-                if (needed <= 0) return {};
+            std::wstring w = [](const std::string &s) -> std::wstring
+            {
+                if (s.empty())
+                    return {};
+                int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                                                 nullptr, 0);
+                if (needed <= 0)
+                    return {};
                 std::wstring out(needed, L'\0');
-                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0], needed);
+                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0],
+                                    needed);
                 return out;
-            }(full);
+            }(full_ln);
             OutputDebugStringW(w.c_str());
         }
 #else
-        if (pImpl->file_fd != -1) {
+        if (pImpl->file_fd != -1)
+        {
             // If use_flock is requested, obtain file lock first (advisory)
-            if (pImpl->use_flock) flock(pImpl->file_fd, LOCK_EX);
+            if (pImpl->use_flock)
+                flock(pImpl->file_fd, LOCK_EX);
             // Attempt single write; loop to handle EINTR / partial writes
-            ssize_t total = static_cast<ssize_t>(full.size());
+            ssize_t total = static_cast<ssize_t>(full_ln.size());
             ssize_t off = 0;
-            const char *data = full.data();
-            while (off < total) {
+            const char *data = full_ln.data();
+            while (off < total)
+            {
                 ssize_t w = ::write(pImpl->file_fd, data + off, static_cast<size_t>(total - off));
-                if (w < 0) {
-                    if (errno == EINTR) continue;
+                if (w < 0)
+                {
+                    if (errno == EINTR)
+                        continue;
                     int err = errno;
                     std::string msg = std::string("write() failed: ") + strerror(err);
-                    if (pImpl->use_flock) flock(pImpl->file_fd, LOCK_UN);
+                    if (pImpl->use_flock)
+                        flock(pImpl->file_fd, LOCK_UN);
                     lk.unlock();
                     record_write_error(err, msg.c_str());
                     return;
                 }
                 off += w;
             }
-            if (pImpl->fsync_per_write.load()) {
-                if (::fsync(pImpl->file_fd) != 0) {
+            if (pImpl->fsync_per_write.load())
+            {
+                if (::fsync(pImpl->file_fd) != 0)
+                {
                     int err = errno;
                     std::string msg = std::string("fsync failed: ") + strerror(err);
-                    if (pImpl->use_flock) flock(pImpl->file_fd, LOCK_UN);
+                    if (pImpl->use_flock)
+                        flock(pImpl->file_fd, LOCK_UN);
                     lk.unlock();
                     record_write_error(err, msg.c_str());
                     return;
                 }
             }
-            if (pImpl->use_flock) flock(pImpl->file_fd, LOCK_UN);
-        } else {
-            size_t wrote = fwrite(full.data(), 1, full.size(), stderr);
-            if (wrote != full.size()) {
+            if (pImpl->use_flock)
+                flock(pImpl->file_fd, LOCK_UN);
+        }
+        else
+        {
+            size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
+            if (wrote != full_ln.size())
+            {
                 int err = errno;
                 std::string msg = std::string("fwrite to stderr failed: ") + strerror(err);
                 lk.unlock();
                 record_write_error(err, msg.c_str());
-            } else {
+            }
+            else
+            {
                 fflush(stderr);
             }
         }
@@ -473,63 +585,83 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::SYSLOG) {
+    if (pImpl->dest == Logger::Destination::SYSLOG)
+    {
 #if defined(PLATFORM_WIN64)
         // On Windows default to debug output
-        std::wstring w = [](const std::string &s)->std::wstring {
-            if (s.empty()) return {};
-            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-            if (needed <= 0) return {};
+        std::wstring w = [](const std::string &s) -> std::wstring
+        {
+            if (s.empty())
+                return {};
+            int needed =
+                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+            if (needed <= 0)
+                return {};
             std::wstring out(needed, L'\0');
             MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0], needed);
             return out;
         }(header + body);
         OutputDebugStringW(w.c_str());
 #else
-        syslog(level_to_syslog_priority(lvl), "%s", (header + body).c_str());
+        syslog(level_to_syslog_priority(lvl), "%s", full.c_str());
 #endif
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::EVENTLOG) {
+    if (pImpl->dest == Logger::Destination::EVENTLOG)
+    {
 #if defined(PLATFORM_WIN64)
-        if (pImpl->evt_handle) {
+        if (pImpl->evt_handle)
+        {
             std::wstring wmsg;
             {
                 // convert utf8 to wstring
-                int needed = MultiByteToWideChar(CP_UTF8, 0, (header + body).c_str(), -1, nullptr, 0);
-                if (needed > 0) {
+                int needed =
+                    MultiByteToWideChar(CP_UTF8, 0, (header + body).c_str(), -1, nullptr, 0);
+                if (needed > 0)
+                {
                     wmsg.resize(needed);
                     MultiByteToWideChar(CP_UTF8, 0, (header + body).c_str(), -1, &wmsg[0], needed);
-                    if (!wmsg.empty() && wmsg.back() == L'\0') wmsg.pop_back();
+                    if (!wmsg.empty() && wmsg.back() == L'\0')
+                        wmsg.pop_back();
                 }
             }
-            LPCWSTR strings[1] = { wmsg.c_str() };
-            if (!ReportEventW(pImpl->evt_handle, EVENTLOG_INFORMATION_TYPE, 0, 0, nullptr, 1, 0, strings, nullptr)) {
+            LPCWSTR strings[1] = {wmsg.c_str()};
+            if (!ReportEventW(pImpl->evt_handle, EVENTLOG_INFORMATION_TYPE, 0, 0, nullptr, 1, 0,
+                              strings, nullptr))
+            {
                 DWORD err = GetLastError();
                 std::string msg = "ReportEventW failed";
                 lk.unlock();
                 record_write_error(static_cast<int>(err), msg.c_str());
             }
-        } else {
+        }
+        else
+        {
             std::wstring w;
-            int needed = MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, nullptr, 0);
-            if (needed > 0) {
+            int needed = MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, nullptr, 0);
+            if (needed > 0)
+            {
                 w.resize(needed);
-                MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, &w[0], needed);
-                if (!w.empty() && w.back() == L'\0') w.pop_back();
+                MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, &w[0], needed);
+                if (!w.empty() && w.back() == L'\0')
+                    w.pop_back();
             }
             OutputDebugStringW(w.c_str());
         }
 #else
         // fallback to stderr
-        size_t wrote = fwrite(full.data(), 1, full.size(), stderr);
-        if (wrote != full.size()) {
+        size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
+        if (wrote != full_ln.size())
+        {
             int err = errno;
-            std::string msg = std::string("fwrite to stderr failed (eventlog fallback): ") + strerror(err);
+            std::string msg =
+                std::string("fwrite to stderr failed (eventlog fallback): ") + strerror(err);
             lk.unlock();
             record_write_error(err, msg.c_str());
-        } else {
+        }
+        else
+        {
             fflush(stderr);
         }
 #endif
@@ -537,8 +669,9 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
     }
 
     // default fallback: console
-    size_t wrote = fwrite(full.data(), 1, full.size(), stderr);
-    if (wrote != full.size()) {
+    size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
+    if (wrote != full_ln.size())
+    {
 #if defined(PLATFORM_WIN64)
         int err = static_cast<int>(GetLastError());
         std::string msg = "fwrite to stderr failed (fallback)";
@@ -550,7 +683,9 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
         lk.unlock();
         record_write_error(err, msg.c_str());
 #endif
-    } else {
+    }
+    else
+    {
         fflush(stderr);
     }
 }
@@ -559,8 +694,10 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept {
 // - Atomically updates counters and stores last error message under lock
 // - Copies the user callback under lock
 // - Calls the user callback outside the lock and performs optional rate-limited stderr notice
-void Logger::record_write_error(int errcode, const char *msg) noexcept {
-    if (!pImpl) return;
+void Logger::record_write_error(int errcode, const char *msg) noexcept
+{
+    if (!pImpl)
+        return;
     std::string saved_msg = msg ? msg : std::string();
 
     // update counters and store message under lock
@@ -578,31 +715,40 @@ void Logger::record_write_error(int errcode, const char *msg) noexcept {
         std::lock_guard<std::mutex> g(pImpl->mtx);
         cb = pImpl->write_error_callback;
         auto now = std::chrono::steady_clock::now();
-        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5)) {
+        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5))
+        {
             pImpl->last_stderr_notice = now;
             should_warn = true;
         }
     }
 
     // Invoke callback outside the lock (safe)
-    if (cb) {
-        try {
+    if (cb)
+    {
+        try
+        {
             cb(saved_msg);
-        } catch (...) {
+        }
+        catch (...)
+        {
             // swallow user exceptions - logging should never throw
         }
     }
 
     // Rate-limited warning printed outside the lock
-    if (should_warn) {
-        fprintf(stderr, "logger: write failure (count=%d): %s\n", pImpl->write_failure_count.load(), saved_msg.c_str());
+    if (should_warn)
+    {
+        fprintf(stderr, "logger: write failure (count=%d): %s\n", pImpl->write_failure_count.load(),
+                saved_msg.c_str());
         fflush(stderr);
     }
 }
 
 // Minimal printf-style compatibility wrapper using vsnprintf fallback
-void Logger::log_printf(const char *fmt, ...) noexcept {
-    if (!fmt) return;
+void Logger::log_printf(const char *fmt, ...) noexcept
+{
+    if (!fmt)
+        return;
     // vsnprintf to compute size then format
     va_list ap;
     va_start(ap, fmt);
@@ -612,9 +758,12 @@ void Logger::log_printf(const char *fmt, ...) noexcept {
     va_end(ap_copy);
 
     std::string body;
-    if (needed < 0) {
+    if (needed < 0)
+    {
         body = "[FORMAT ERROR]";
-    } else {
+    }
+    else
+    {
         size_t sz = static_cast<size_t>(needed) + 1;
         std::vector<char> buf(sz);
         va_list ap2;

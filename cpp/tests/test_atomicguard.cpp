@@ -52,7 +52,7 @@ void test_concurrent_acquire_release()
                         ++success_count;
                         assert(g.active());
                         std::this_thread::sleep_for(3ms);
-                        bool r = g.release();
+                        [[maybe_unused]] bool r = g.release();
                         assert(r);
                     }
                     else
@@ -81,10 +81,10 @@ void test_raii_and_token_persistence()
         AtomicGuard g(&owner);
         assert(g.token() != 0);
         token_in_scope = g.token();
-        bool ok = g.acquire();
+        [[maybe_unused]] bool ok = g.acquire();
         assert(ok);
         assert(g.active());
-        uint64_t cur = owner.load();
+        [[maybe_unused]] uint64_t cur = owner.load();
         assert(cur == token_in_scope);
     } // destructor releases
     assert(owner.is_free());
@@ -101,17 +101,17 @@ void test_transfer_single_thread()
     AtomicGuard b(&owner);
 
     assert(a.token() != 0 && b.token() != 0);
-    bool ok = a.acquire();
+    [[maybe_unused]] bool ok = a.acquire();
     assert(ok);
     assert(a.active());
     assert(!b.active());
 
-    bool t = a.transfer_to(b);
+    [[maybe_unused]] bool t = a.transfer_to(b);
     assert(t);
     assert(!a.active());
     assert(b.active());
 
-    bool rel = b.release();
+    [[maybe_unused]] bool rel = b.release();
     assert(rel);
     assert(owner.is_free());
     std::cout << "test_transfer_single_thread: passed\n";
@@ -125,7 +125,7 @@ void test_transfer_between_threads()
     AtomicGuard src(&owner);
     AtomicGuard dst(&owner);
 
-    bool ok = src.acquire();
+    [[maybe_unused]] bool ok = src.acquire();
     assert(ok);
 
     std::thread transferer(
@@ -145,7 +145,7 @@ void test_transfer_between_threads()
 
     assert(!src.active());
     assert(dst.active());
-    bool rel = dst.release();
+    [[maybe_unused]] bool rel = dst.release();
     assert(rel);
     assert(owner.is_free());
     std::cout << "test_transfer_between_threads: passed\n";
@@ -159,12 +159,12 @@ void test_transfer_reject_different_owner()
     AtomicGuard a(&o1);
     AtomicGuard b(&o2);
 
-    bool ok = a.acquire();
+    [[maybe_unused]] bool ok = a.acquire();
     assert(ok);
-    bool t = a.transfer_to(b);
+    [[maybe_unused]] bool t = a.transfer_to(b);
     assert(!t); // must reject
     assert(a.active());
-    bool r = a.release();
+    [[maybe_unused]] bool r = a.release();
     assert(r);
     assert(o1.is_free());
     assert(o2.is_free());
@@ -180,10 +180,10 @@ void test_consistent_active_with_mutex()
     AtomicGuard a(&owner);
     AtomicGuard b(&owner);
 
-    bool ok = a.acquire();
+    [[maybe_unused]] bool ok = a.acquire();
     assert(ok);
 
-    bool t = a.transfer_to(b);
+    [[maybe_unused]] bool t = a.transfer_to(b);
     assert(t);
 
     // Without locking, active() might be observed transiently; to get a stable view,
@@ -196,7 +196,7 @@ void test_consistent_active_with_mutex()
     }
 
     // cleanup
-    bool r = b.release();
+    [[maybe_unused]] bool r = b.release();
     assert(r);
     assert(owner.is_free());
     std::cout << "test_consistent_active_with_mutex: passed\n";
