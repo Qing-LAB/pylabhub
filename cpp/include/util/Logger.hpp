@@ -30,7 +30,7 @@
 // Default initial reserve for fmt::memory_buffer used by Logger::log_fmt.
 // Can be overridden by -DLOGGER_FMT_BUFFER_RESERVE=N on the compiler command line.
 #ifndef LOGGER_FMT_BUFFER_RESERVE
-#define LOGGER_FMT_BUFFER_RESERVE 1024u
+#define LOGGER_FMT_BUFFER_RESERVE (1024u)
 #endif
 
 namespace pylabhub::util
@@ -42,19 +42,19 @@ class Logger
   public:
     enum class Level : int
     {
-        TRACE = 0,
-        DEBUG = 1,
-        INFO = 2,
-        WARNING = 3,
-        ERROR = 4
+        L_TRACE = 0,
+        L_DEBUG = 1,
+        L_INFO = 2,
+        L_WARNING = 3,
+        L_ERROR = 4,
     };
 
     enum class Destination
     {
-        CONSOLE,
-        FILE,
-        SYSLOG,
-        EVENTLOG
+        L_CONSOLE,
+        L_FILE,
+        L_SYSLOG,
+        L_EVENTLOG,
     };
 
     // Singleton accessor
@@ -110,23 +110,23 @@ class Logger
 
     template <typename... Args> void trace_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::TRACE, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Logger::Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args> void debug_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::DEBUG, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Logger::Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args> void info_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::INFO, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Logger::Level::L_INFO, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args> void warn_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::WARNING, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Logger::Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args> void error_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::ERROR, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Logger::Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }
 
     // Minimal compatibility printf-style helper (kept for legacy sites).
@@ -205,7 +205,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 
 // macros for convenience (fmt-style)
 #if LOGGER_COMPILE_LEVEL >= 0
-// pylabhub::util::Logger::Level::TRACE
+// pylabhub::util::Logger::Level::L_TRACE
 #define LOGGER_TRACE(fmt_str, ...)                                                                 \
     ::pylabhub::util::Logger::instance().trace_fmt(fmt_str, ##__VA_ARGS__)
 #else
@@ -213,7 +213,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 1
-// pylabhub::util::Logger::Level::DEBUG
+// pylabhub::util::Logger::Level::L_DEBUG
 #define LOGGER_DEBUG(fmt_str, ...)                                                                 \
     ::pylabhub::util::Logger::instance().debug_fmt(fmt_str, ##__VA_ARGS__)
 #else
@@ -221,7 +221,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #endif
 
 #if LOGGER_COMPILE_LEVE >= 2
-// pylabhub::util::Logger::Level::INFO
+// pylabhub::util::Logger::Level::L_INFO
 #define LOGGER_INFO(fmt_str, ...)                                                                  \
     ::pylabhub::util::Logger::instance().info_fmt(fmt_str, ##__VA_ARGS__)
 #else
@@ -229,7 +229,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 3
-// pylabhub::util::Logger::Level::WARNING
+// pylabhub::util::Logger::Level::L_WARNING
 #define LOGGER_WARN(fmt_str, ...)                                                                  \
     ::pylabhub::util::Logger::instance().warn_fmt(fmt_str, ##__VA_ARGS__)
 #else
@@ -237,7 +237,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 4
-// pylabhub::util::Logger::Level::ERROR
+// pylabhub::util::Logger::Level::L_ERROR
 #define LOGGER_ERROR(fmt_str, ...)                                                                 \
     ::pylabhub::util::Logger::instance().error_fmt(fmt_str, ##__VA_ARGS__)
 #else

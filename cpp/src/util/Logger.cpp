@@ -54,7 +54,7 @@ struct Impl
     // Public members for this TU-local struct (we are in the .cpp).
     std::mutex mtx;
 
-    Logger::Destination dest = Logger::Destination::CONSOLE;
+    Logger::Destination dest = Logger::Destination::L_CONSOLE;
 
     // file sink
 #if defined(PLATFORM_WIN64)
@@ -67,7 +67,7 @@ struct Impl
     bool use_flock = false;
 
     // configuration + diagnostics
-    std::atomic<int> level{static_cast<int>(Logger::Level::DEBUG)};
+    std::atomic<int> level{static_cast<int>(Logger::Level::L_DEBUG)};
     std::atomic<bool> fsync_per_write{false};
 
     std::atomic<size_t> max_log_line_length{256 * 1024};
@@ -183,15 +183,15 @@ static const char *level_to_string(Logger::Level lvl) noexcept
 {
     switch (lvl)
     {
-    case Logger::Level::TRACE:
+    case Logger::Level::L_TRACE:
         return "TRACE";
-    case Logger::Level::DEBUG:
+    case Logger::Level::L_DEBUG:
         return "DEBUG";
-    case Logger::Level::INFO:
+    case Logger::Level::L_INFO:
         return "INFO";
-    case Logger::Level::WARNING:
+    case Logger::Level::L_WARNING:
         return "WARN";
-    case Logger::Level::ERROR:
+    case Logger::Level::L_ERROR:
         return "ERROR";
     default:
         return "UNK";
@@ -203,15 +203,15 @@ static int level_to_syslog_priority(Logger::Level lvl) noexcept
 {
     switch (lvl)
     {
-    case Logger::Level::TRACE:
+    case Logger::Level::L_TRACE:
         return LOG_DEBUG;
-    case Logger::Level::DEBUG:
+    case Logger::Level::L_DEBUG:
         return LOG_DEBUG;
-    case Logger::Level::INFO:
+    case Logger::Level::L_INFO:
         return LOG_INFO;
-    case Logger::Level::WARNING:
+    case Logger::Level::L_WARNING:
         return LOG_WARNING;
-    case Logger::Level::ERROR:
+    case Logger::Level::L_ERROR:
         return LOG_ERR;
     default:
         return LOG_INFO;
@@ -255,7 +255,7 @@ void Logger::set_level(Logger::Level lvl)
 Logger::Level Logger::level() const
 {
     if (!pImpl)
-        return Logger::Level::INFO;
+        return Logger::Level::L_INFO;
     return static_cast<Logger::Level>(pImpl->level.load(std::memory_order_relaxed));
 }
 void Logger::set_fsync_per_write(bool v)
@@ -338,7 +338,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     pImpl->file_handle = h;
     pImpl->file_path = utf8_path;
     pImpl->use_flock = use_flock;
-    pImpl->dest = Logger::Destination::FILE;
+    pImpl->dest = Logger::Destination::L_FILE;
     return true;
 #else
     // POSIX open with O_APPEND
@@ -356,7 +356,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     pImpl->file_fd = fd;
     pImpl->file_path = utf8_path;
     pImpl->use_flock = use_flock;
-    pImpl->dest = Logger::Destination::FILE;
+    pImpl->dest = Logger::Destination::L_FILE;
     return true;
 #endif
 }
@@ -367,7 +367,7 @@ void Logger::init_syslog(const char *ident, int option, int facility)
     std::lock_guard<std::mutex> g(pImpl->mtx);
     openlog(ident ? ident : "app", option ? option : (LOG_PID | LOG_CONS),
             facility ? facility : LOG_USER);
-    pImpl->dest = Logger::Destination::SYSLOG;
+    pImpl->dest = Logger::Destination::L_SYSLOG;
 #else
     (void)ident;
     (void)option;
@@ -391,7 +391,7 @@ bool Logger::init_eventlog(const wchar_t *source_name)
         return false;
     }
     pImpl->evt_handle = h;
-    pImpl->dest = Logger::Destination::EVENTLOG;
+    pImpl->dest = Logger::Destination::L_EVENTLOG;
     return true;
 #else
     (void)source_name;
@@ -433,7 +433,7 @@ void Logger::shutdown()
     // closelog is safe even if not previously opened
     closelog();
 #endif
-    pImpl->dest = Logger::Destination::CONSOLE;
+    pImpl->dest = Logger::Destination::L_CONSOLE;
 }
 
 // ---- write sink ----
@@ -451,7 +451,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
     // Acquire lock to protect sink handles while writing.
     std::unique_lock<std::mutex> lk(pImpl->mtx);
 
-    if (pImpl->dest == Logger::Destination::CONSOLE)
+    if (pImpl->dest == Logger::Destination::L_CONSOLE)
     {
         // write to stderr
         size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
@@ -477,7 +477,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::FILE)
+    if (pImpl->dest == Logger::Destination::L_FILE)
     {
 #if defined(PLATFORM_WIN64)
         if (pImpl->file_handle != INVALID_HANDLE_VALUE)
@@ -587,7 +587,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::SYSLOG)
+    if (pImpl->dest == Logger::Destination::L_SYSLOG)
     {
 #if defined(PLATFORM_WIN64)
         // On Windows default to debug output
@@ -602,7 +602,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             std::wstring out(needed, L'\0');
             MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0], needed);
             return out;
-        }(header + body);
+        }(full);
         OutputDebugStringW(w.c_str());
 #else
         syslog(level_to_syslog_priority(lvl), "%s", full.c_str());
@@ -610,7 +610,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         return;
     }
 
-    if (pImpl->dest == Logger::Destination::EVENTLOG)
+    if (pImpl->dest == Logger::Destination::L_EVENTLOG)
     {
 #if defined(PLATFORM_WIN64)
         if (pImpl->evt_handle)
@@ -619,11 +619,11 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             {
                 // convert utf8 to wstring
                 int needed =
-                    MultiByteToWideChar(CP_UTF8, 0, (header + body).c_str(), -1, nullptr, 0);
+                    MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, nullptr, 0);
                 if (needed > 0)
                 {
                     wmsg.resize(needed);
-                    MultiByteToWideChar(CP_UTF8, 0, (header + body).c_str(), -1, &wmsg[0], needed);
+                    MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, &wmsg[0], needed);
                     if (!wmsg.empty() && wmsg.back() == L'\0')
                         wmsg.pop_back();
                 }
@@ -776,7 +776,7 @@ void Logger::log_printf(const char *fmt, ...) noexcept
     }
     va_end(ap);
 
-    write_formatted(Logger::Level::INFO, std::move(body));
+    write_formatted(Logger::Level::L_INFO, std::move(body));
 }
 
 } // namespace pylabhub::util
