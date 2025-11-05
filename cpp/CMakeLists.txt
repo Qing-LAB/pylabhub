@@ -8,6 +8,13 @@ project(pylabhub-shell
         LANGUAGES CXX)
 
 # -----------------------------------------------------------------------------
+# CMake module path (for Find*.cmake files)
+# -----------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
+include(FindXOPSupport.cmake)
+
+# -----------------------------------------------------------------------------
 # Top-level Options (keep project defaults, add third-party control knobs)
 # -----------------------------------------------------------------------------
 # Project-owned options (unchanged semantics)
@@ -39,6 +46,28 @@ set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party
 set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstream precompiled headers" FORCE)
 
 message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
+
+# -----------------------------------------------------------------------------
+# Find XOPSupport (vendored or system)
+# -----------------------------------------------------------------------------
+cmake_minimum_required(VERSION 3.15)
+project(pylabhub-xop LANGUAGES C CXX)
+
+# Allow override from command line:
+option(USE_SYSTEM_XOP "Use system-installed XOP (headers/libs) instead of third_party vendor" OFF)
+set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Local XOPSupport tree")
+
+# expose include dir if vendor present
+find_xopsupport(_xop_found)
+if(_xop_found)
+  message(STATUS "XOPSupport found; XOP::XOPSupport target is available.")
+else()
+  if(NOT USE_SYSTEM_XOP)
+    message(WARNING "XOPSupport not found under ${XOP_VENDOR_DIR}. You can set -DUSE_SYSTEM_XOP=ON to use system headers/libs.")
+  endif()
+endif()
+
+add_subdirectory(src/IgorXOP)
 
 # -----------------------------------------------------------------------------
 # Language / Compiler flags / Build-type
