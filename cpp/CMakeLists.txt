@@ -1,55 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
 # -----------------------------------------------------------------------------
-# Platform detection & compile-time macros (single PLATFORM_* macro)
-# -----------------------------------------------------------------------------
-# The set: PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
-set(_platform_macro_defined FALSE)
-
-if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-  add_compile_definitions(PLATFORM_WIN64=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Windows x64")
-elseif(APPLE)
-  add_compile_definitions(PLATFORM_APPLE=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Apple / macOS")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
-  add_compile_definitions(PLATFORM_FREEBSD=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "FreeBSD")
-elseif(UNIX)
-  add_compile_definitions(PLATFORM_LINUX=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Unix-like (assumed Linux)")
-endif()
-
-if(NOT _platform_macro_defined)
-  add_compile_definitions(PLATFORM_UNKNOWN=1)
-  set(_platform_name "Unknown")
-endif()
-
-# Fail early for 32-bit Windows generator (project requires x64).
-if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-  message(FATAL_ERROR "32-bit Windows toolchain detected. This project only supports 64-bit Windows. Please configure a 64-bit (x64) generator/toolchain.")
-endif()
-
-message(STATUS "")
-message(STATUS "Platform compile-time macros summary:")
-if(DEFINED PLATFORM_WIN64)
-  message(STATUS "  Defined: PLATFORM_WIN64 (Windows x64)")
-elseif(DEFINED PLATFORM_APPLE)
-  message(STATUS "  Defined: PLATFORM_APPLE (macOS / Apple)")
-elseif(DEFINED PLATFORM_FREEBSD)
-  message(STATUS "  Defined: PLATFORM_FREEBSD (FreeBSD)")
-elseif(DEFINED PLATFORM_LINUX)
-  message(STATUS "  Defined: PLATFORM_LINUX (Linux)")
-elseif(DEFINED PLATFORM_UNKNOWN)
-  message(STATUS "  Defined: PLATFORM_UNKNOWN (Unknown platform)")
-endif()
-message(STATUS "")
-
-# -----------------------------------------------------------------------------
 # Language / Compiler flags / Build-type
 # -----------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
@@ -136,26 +87,46 @@ set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstrea
 message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
 
 # -----------------------------------------------------------------------------
-# Find XOPSupport (vendored or system)
+# Find XOPSupport (vendored or system) - UPDATED
 # -----------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.15)
-project(pylabhub-xop LANGUAGES C CXX)
+# Control whether we attempt an XOP build at all:
+option(BUILD_XOP "Attempt to build Igor XOP addon (only supported on Windows x64 and macOS)" ON)
 
 # Allow override from command line:
 option(USE_SYSTEM_XOP "Use system-installed XOP (headers/libs) instead of third_party vendor" OFF)
+
+# Default vendor path (can be overridden via -DXOP_VENDOR_DIR=/path/to/XOPSupport)
 set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Local XOPSupport tree")
 
-# expose include dir if vendor present
+# FindXOPSupport.cmake will:
+#  - set XOP_SUPPORT_FOUND (cached BOOL)
+#  - create imported target XOP::XOPSupport (and XOP::IGOR if available)
+#  - also expose a local variable _xop_found for backwards compatibility
+set(USE_SYSTEM_XOP ${USE_SYSTEM_XOP} CACHE BOOL "Allow system XOP instead of vendored" FORCE)
+
+# Ask the find helper to locate XOPSupport (uses XOP_VENDOR_DIR and USE_SYSTEM_XOP)
 find_xopsupport(_xop_found)
+
 if(_xop_found)
   message(STATUS "XOPSupport found; XOP::XOPSupport target is available.")
 else()
   if(NOT USE_SYSTEM_XOP)
-    message(WARNING "XOPSupport not found under ${XOP_VENDOR_DIR}. You can set -DUSE_SYSTEM_XOP=ON to use system headers/libs.")
+    message(WARNING "XOPSupport not found under ${XOP_VENDOR_DIR}. You can set -DUSE_SYSTEM_XOP=ON to search for system-installed headers/libs.")
+  else()
+    message(STATUS "XOPSupport not found in vendor or system locations.")
   endif()
 endif()
 
-add_subdirectory(src/IgorXOP)
+# Only add the IgorXOP subdirectory if we intend to build XOP and XOP support exists.
+if(BUILD_XOP AND _xop_found)
+  add_subdirectory(src/IgorXOP)
+else()
+  if(NOT BUILD_XOP)
+    message(STATUS "Top-level: BUILD_XOP=OFF; IgorXOP subproject skipped.")
+  else()
+    message(STATUS "Top-level: IgorXOP subproject skipped because XOPSupport not available.")
+  endif()
+endif()
 
 # -----------------------------------------------------------------------------
 # Basic dependencies
@@ -335,8 +306,6 @@ endif()
 
 set_target_properties(pylabhub-corelib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-
-
 # -----------------------------------------------------------------------------
 # Build: create the main executable target (pylabhub-shell)
 # -----------------------------------------------------------------------------
@@ -349,7 +318,6 @@ add_executable(pylabhub-shell
 target_link_libraries(pylabhub-shell
   PRIVATE pylabhub-corelib
 )
-
 
 # -----------------------------------------------------------------------------
 # Install / export (kept commented as before; left for your preference)
@@ -376,6 +344,9 @@ endif()
 # -----------------------------------------------------------------------------
 message(STATUS "")
 message(STATUS "CMake summary:")
+if(DEFINED _platform_name)
+  message(STATUS "  Platform detected:  ${_platform_name}")
+endif()
 message(STATUS "  Project:            ${PROJECT_NAME} (${PROJECT_VERSION})")
 message(STATUS "  CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER}")
 message(STATUS "  Build type:         ${CMAKE_BUILD_TYPE}")
@@ -387,7 +358,10 @@ message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
 message(STATUS "  fmt target: ${FMT_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
-if(DEFINED _platform_name)
-  message(STATUS "  Platform detected:  ${_platform_name}")
+message(STATUS "")
+message(STATUS "  XOP build added:    ${_build_xop_final}")
+if(_build_xop_final)
+  message(STATUS "  XOP vendor present: ${_xop_vendor_present}")
 endif()
 message(STATUS "")
+
