@@ -1,43 +1,20 @@
 cmake_minimum_required(VERSION 3.15)
+# -----------------------------------------------------------------------------
+# CMake module path (for Find*.cmake files)
+# -----------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # -----------------------------------------------------------------------------
-# Language / Compiler flags / Build-type
+# Top level options and policies
 # -----------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+include(cmake/PlatformAndCompiler.cmake)
+include(cmake/ToplevelOptions.cmake)
+include(cmake/ToplevelThirdPartyPolicy.cmake)
 
-# Default to Release if no type selected and generator is single-config.
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "No build type selected, defaulting to Release")
-  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
-endif()
-
-# Compiler warnings and parallel build options
-if(MSVC)
-  add_compile_options(/W4 /MP)
-else()
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
-# -------------------------
-# Force MSVC CRT globally
-# -------------------------
-# Vendor XOPSupport uses static CRT (LIBCMT). Force project to use static CRT (/MT)
-if(MSVC)
-  # Modern CMake: set global MSVC runtime library and force it into the cache.
-  # MultiThreaded => /MT (Release), MultiThreadedDebug => /MTd (Debug)
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "CRT library" FORCE)
-
-  # As a redundancy for older CMake versions or generators that respect CMAKE_CXX_FLAGS_*
-  # set the initial flags so targets created later will pick them up.
-  if(NOT DEFINED CMAKE_C_FLAGS_INIT)
-    set(CMAKE_C_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
-  endif()
-  if(NOT DEFINED CMAKE_CXX_FLAGS_INIT)
-    set(CMAKE_CXX_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
-  endif()
-endif()
+# -----------------------------------------------------------------------------
+# Helper function to find XOPSupport
+# -----------------------------------------------------------------------------
+include(cmake/FindXOPSupport.cmake)
 
 # -----------------------------------------------------------------------------
 # Project declaration
@@ -47,66 +24,10 @@ project(pylabhub-shell
         LANGUAGES C CXX)
 
 # -----------------------------------------------------------------------------
-# CMake module path (for Find*.cmake files)
-# -----------------------------------------------------------------------------
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-
-include(cmake/FindXOPSupport.cmake)
-
-# -----------------------------------------------------------------------------
-# Top-level Options (keep project defaults, add third-party control knobs)
-# -----------------------------------------------------------------------------
-# Project-owned options (unchanged semantics)
-option(BUILD_TESTS "Build unit tests" ON)
-option(ENABLE_SANITIZERS "Enable Address/Undefined sanitizers (Linux/GNU Clang only)" OFF)
-option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/include if present" ON)
-
-option(PYLABHUB_BUILD_SHARED "Build the pylabhub library as SHARED instead of STATIC" OFF)
-option(PYLABHUB_INSTALL_HEADERS "Install headers under ${CMAKE_INSTALL_INCLUDEDIR}" ON)
-
-# ---------------------------------------------------------------------------
-# Third-party policy knobs (these are wrapper *intent* variables)
-# - These inform third_party/CMakeLists.txt which will map them to the exact
-#   subproject options (fmt, libzmq, etc.). The wrapper will scope these
-#   settings to subprojects so they do not leak to other libs or top-level.
-# ---------------------------------------------------------------------------
-# Force libzmq variant: "none" | "static" | "shared"
-set(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Wrapper intent: force libzmq build variant" FORCE)
-
-# Force fmt variant: "none" | "static" | "shared"
-set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Wrapper intent: force fmt build variant" FORCE)
-
-# Wrapper-level intent to disable third-party tests by default (ON/OFF).
-# The wrapper will set subproject-specific test knobs (e.g. ZMQ_BUILD_TESTS, FMT_TEST)
-# rather than changing global BUILD_TESTS.
-set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party tests by default" FORCE)
-
-# Wrapper-level intent on allowing upstream precompiled headers (OFF by default)
-set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstream precompiled headers" FORCE)
-
-message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
-
-# -----------------------------------------------------------------------------
 # Find XOPSupport (vendored or system) - UPDATED
 # -----------------------------------------------------------------------------
-# Control whether we attempt an XOP build at all:
-option(BUILD_XOP "Attempt to build Igor XOP addon (only supported on Windows x64 and macOS)" ON)
-
-# Allow override from command line:
-option(USE_SYSTEM_XOP "Use system-installed XOP (headers/libs) instead of third_party vendor" OFF)
-
-# Default vendor path (can be overridden via -DXOP_VENDOR_DIR=/path/to/XOPSupport)
-set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Local XOPSupport tree")
-
-# FindXOPSupport.cmake will:
-#  - set XOP_SUPPORT_FOUND (cached BOOL)
-#  - create imported target XOP::XOPSupport (and XOP::IGOR if available)
-#  - also expose a local variable _xop_found for backwards compatibility
-set(USE_SYSTEM_XOP ${USE_SYSTEM_XOP} CACHE BOOL "Allow system XOP instead of vendored" FORCE)
-
 # Ask the find helper to locate XOPSupport (uses XOP_VENDOR_DIR and USE_SYSTEM_XOP)
 find_xopsupport(_xop_found)
-
 if(_xop_found)
   message(STATUS "XOPSupport found; XOP::XOPSupport target is available.")
 else()
