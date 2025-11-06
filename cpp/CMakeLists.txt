@@ -1,5 +1,74 @@
 cmake_minimum_required(VERSION 3.15)
 
+# -----------------------------------------------------------------------------
+# Platform detection & compile-time macros (single PLATFORM_* macro)
+# -----------------------------------------------------------------------------
+# The set: PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
+set(_platform_macro_defined FALSE)
+
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  add_compile_definitions(PLATFORM_WIN64=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Windows x64")
+elseif(APPLE)
+  add_compile_definitions(PLATFORM_APPLE=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Apple / macOS")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+  add_compile_definitions(PLATFORM_FREEBSD=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "FreeBSD")
+elseif(UNIX)
+  add_compile_definitions(PLATFORM_LINUX=1)
+  set(_platform_macro_defined TRUE)
+  set(_platform_name "Unix-like (assumed Linux)")
+endif()
+
+if(NOT _platform_macro_defined)
+  add_compile_definitions(PLATFORM_UNKNOWN=1)
+  set(_platform_name "Unknown")
+endif()
+
+# Fail early for 32-bit Windows generator (project requires x64).
+if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "32-bit Windows toolchain detected. This project only supports 64-bit Windows. Please configure a 64-bit (x64) generator/toolchain.")
+endif()
+
+message(STATUS "")
+message(STATUS "Platform compile-time macros summary:")
+if(DEFINED PLATFORM_WIN64)
+  message(STATUS "  Defined: PLATFORM_WIN64 (Windows x64)")
+elseif(DEFINED PLATFORM_APPLE)
+  message(STATUS "  Defined: PLATFORM_APPLE (macOS / Apple)")
+elseif(DEFINED PLATFORM_FREEBSD)
+  message(STATUS "  Defined: PLATFORM_FREEBSD (FreeBSD)")
+elseif(DEFINED PLATFORM_LINUX)
+  message(STATUS "  Defined: PLATFORM_LINUX (Linux)")
+elseif(DEFINED PLATFORM_UNKNOWN)
+  message(STATUS "  Defined: PLATFORM_UNKNOWN (Unknown platform)")
+endif()
+message(STATUS "")
+
+# -----------------------------------------------------------------------------
+# Language / Compiler flags / Build-type
+# -----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Default to Release if no type selected and generator is single-config.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "No build type selected, defaulting to Release")
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+endif()
+
+# Compiler warnings and parallel build options
+if(MSVC)
+  add_compile_options(/W4 /MP)
+else()
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
 # -------------------------
 # Force MSVC CRT globally
 # -------------------------
@@ -25,7 +94,6 @@ endif()
 project(pylabhub-shell
         VERSION 0.1
         LANGUAGES C CXX)
-
 
 # -----------------------------------------------------------------------------
 # CMake module path (for Find*.cmake files)
@@ -88,75 +156,6 @@ else()
 endif()
 
 add_subdirectory(src/IgorXOP)
-
-# -----------------------------------------------------------------------------
-# Language / Compiler flags / Build-type
-# -----------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# Default to Release if no type selected and generator is single-config.
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "No build type selected, defaulting to Release")
-  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
-endif()
-
-# Compiler warnings and parallel build options
-if(MSVC)
-  add_compile_options(/W4 /MP)
-else()
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
-# -----------------------------------------------------------------------------
-# Platform detection & compile-time macros (single PLATFORM_* macro)
-# -----------------------------------------------------------------------------
-# The set: PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD, PLATFORM_LINUX, PLATFORM_UNKNOWN
-set(_platform_macro_defined FALSE)
-
-if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-  add_compile_definitions(PLATFORM_WIN64=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Windows x64")
-elseif(APPLE)
-  add_compile_definitions(PLATFORM_APPLE=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Apple / macOS")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
-  add_compile_definitions(PLATFORM_FREEBSD=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "FreeBSD")
-elseif(UNIX)
-  add_compile_definitions(PLATFORM_LINUX=1)
-  set(_platform_macro_defined TRUE)
-  set(_platform_name "Unix-like (assumed Linux)")
-endif()
-
-if(NOT _platform_macro_defined)
-  add_compile_definitions(PLATFORM_UNKNOWN=1)
-  set(_platform_name "Unknown")
-endif()
-
-# Fail early for 32-bit Windows generator (project requires x64).
-if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-  message(FATAL_ERROR "32-bit Windows toolchain detected. This project only supports 64-bit Windows. Please configure a 64-bit (x64) generator/toolchain.")
-endif()
-
-message(STATUS "")
-message(STATUS "Platform compile-time macros summary:")
-if(DEFINED PLATFORM_WIN64)
-  message(STATUS "  Defined: PLATFORM_WIN64 (Windows x64)")
-elseif(DEFINED PLATFORM_APPLE)
-  message(STATUS "  Defined: PLATFORM_APPLE (macOS / Apple)")
-elseif(DEFINED PLATFORM_FREEBSD)
-  message(STATUS "  Defined: PLATFORM_FREEBSD (FreeBSD)")
-elseif(DEFINED PLATFORM_LINUX)
-  message(STATUS "  Defined: PLATFORM_LINUX (Linux)")
-elseif(DEFINED PLATFORM_UNKNOWN)
-  message(STATUS "  Defined: PLATFORM_UNKNOWN (Unknown platform)")
-endif()
-message(STATUS "")
 
 # -----------------------------------------------------------------------------
 # Basic dependencies
