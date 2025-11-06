@@ -1,246 +1,219 @@
-# cmake/FindXOPSupport.cmake
+# FindXOPSupport.cmake - locate XOPToolkit/XOPSupport headers and libraries
 #
-# Function: find_xopsupport(<out_var>)
-# - Searches for a local XOP Toolkit vendor tree (default: ${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport)
-# - If found, creates imported targets:
-#     XOP::XOPSupport  (library: .lib / .a)
-#     XOP::IGOR        (import lib: IGOR64.lib / IGOR.lib)  [Windows only if present]
-# - Sets INTERFACE_INCLUDE_DIRECTORIES to point at the vendor include dir
-# - Returns boolean in <out_var> (TRUE if at least header dir found; target presence is indicated by TARGET)
+# Provides:
+#   - variable: XOP_SUPPORT_FOUND (ON / OFF)
+#   - imported target: XOP::XOPSupport (if found)
+#   - imported target: XOP::IGOR (if IGOR import lib found)
 #
-# Usage in top-level CMakeLists.txt:
-#   include(cmake/FindXOPSupport.cmake)
-#   find_xopsupport(_xop_found)
-#   if(_xop_found)
-#     message(STATUS "XOPSupport available")
-#   endif()
+# Behavior:
+#   * Prefers a vendored tree at XOP_VENDOR_DIR (cache variable set by top-level).
+#   * If USE_SYSTEM_XOP=ON will search system include and lib paths.
+#   * Caller may call find_xopsupport(<outvar>) - <outvar> will be set to TRUE/FALSE.
+#
+# Usage:
+#   set(XOP_VENDOR_DIR ".../third_party/XOPToolkit/XOPSupport" CACHE PATH "...")
+#   option(USE_SYSTEM_XOP "Use system-installed XOP" OFF)
+#   include(cm/FindXOPSupport.cmake)  or call find_xopsupport(<var>)
+#
+cmake_minimum_required(VERSION 3.0)
 
-function(find_xopsupport out_var)
-  # default vendor dir; allow override by cache var from the caller
-  if(NOT DEFINED XOP_VENDOR_DIR)
-    set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Path to local XOPSupport vendor tree")
-  endif()
+# Guard to avoid multiple inclusion
+if(DEFINED XOP_SUPPORT_FIND_INCLUDED)
+  return()
+endif()
+set(XOP_SUPPORT_FIND_INCLUDED TRUE)
 
-  set(_found FALSE)
-  set(_vendor "${XOP_VENDOR_DIR}")
-
-  # Basic existence check for vendor directory
-  if(EXISTS "${_vendor}")
-    message(STATUS "XOPSupport vendor directory exists: ${_vendor}")
-    set(_found TRUE)
-  else()
-    message(STATUS "XOPSupport vendor directory NOT found at: ${_vendor}")
-  endif()
-
-  # Helper: set INTERFACE_INCLUDE_DIR value (headers live directly in XOPSupport/)
-  set(_include_dir "${_vendor}")
-
-  # Clear any previously-created imported targets of same names to avoid redefinition warnings
-  if(TARGET XOP::XOPSupport)
-    # keep it; do not redefine
-  endif()
-
-  # Platform-specific detection and imported-target creation
-  if(EXISTS "${_vendor}")
-    if(WIN32)
-      # prefer VC subdirectory (Visual C++ import libs)
-      set(_vc_dir "${_vendor}/VC")
-      if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        # 64-bit
-        if(EXISTS "${_vc_dir}/XOPSupport64.lib")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport UNKNOWN IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_vc_dir}/XOPSupport64.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_vc_dir}/XOPSupport64.lib")
-          endif()
-        elseif(EXISTS "${_vendor}/XOPSupport64.lib")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport UNKNOWN IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_vendor}/XOPSupport64.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_vendor}/XOPSupport64.lib")
-          endif()
-        endif()
-
-        # IGOR import lib (resolves tokens like MemError/NewPtr/etc.)
-        if(EXISTS "${_vc_dir}/IGOR64.lib")
-          if(NOT TARGET XOP::IGOR)
-            add_library(XOP::IGOR UNKNOWN IMPORTED)
-            set_target_properties(XOP::IGOR PROPERTIES
-              IMPORTED_LOCATION "${_vc_dir}/IGOR64.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::IGOR -> ${_vc_dir}/IGOR64.lib")
-          endif()
-        elseif(EXISTS "${_vendor}/IGOR64.lib")
-          if(NOT TARGET XOP::IGOR)
-            add_library(XOP::IGOR UNKNOWN IMPORTED)
-            set_target_properties(XOP::IGOR PROPERTIES
-              IMPORTED_LOCATION "${_vendor}/IGOR64.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::IGOR -> ${_vendor}/IGOR64.lib")
-          endif()
-        endif()
-
-      else()
-        # 32-bit
-        if(EXISTS "${_vc_dir}/XOPSupport.lib")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport UNKNOWN IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_vc_dir}/XOPSupport.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_vc_dir}/XOPSupport.lib")
-          endif()
-        elseif(EXISTS "${_vendor}/XOPSupport.lib")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport UNKNOWN IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_vendor}/XOPSupport.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_vendor}/XOPSupport.lib")
-          endif()
-        endif()
-
-        if(EXISTS "${_vc_dir}/IGOR.lib")
-          if(NOT TARGET XOP::IGOR)
-            add_library(XOP::IGOR UNKNOWN IMPORTED)
-            set_target_properties(XOP::IGOR PROPERTIES
-              IMPORTED_LOCATION "${_vc_dir}/IGOR.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::IGOR -> ${_vc_dir}/IGOR.lib")
-          endif()
-        elseif(EXISTS "${_vendor}/IGOR.lib")
-          if(NOT TARGET XOP::IGOR)
-            add_library(XOP::IGOR UNKNOWN IMPORTED)
-            set_target_properties(XOP::IGOR PROPERTIES
-              IMPORTED_LOCATION "${_vendor}/IGOR.lib"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::IGOR -> ${_vendor}/IGOR.lib")
-          endif()
-        endif()
-      endif()
-
-    elseif(APPLE)
-      #
-      # macOS: XOPSupport typically provides a static lib under Xcode/ or libXOPSupport64.a in vendor root.
-      # Also check for architecture-specific names (arm64 vs x86_64) if present.
-      #
-      set(_xcode_dir "${_vendor}/Xcode")
-      # prefer lib under Xcode/
-      if(EXISTS "${_xcode_dir}/libXOPSupport64.a")
-        if(NOT TARGET XOP::XOPSupport)
-          add_library(XOP::XOPSupport STATIC IMPORTED)
-          set_target_properties(XOP::XOPSupport PROPERTIES
-            IMPORTED_LOCATION "${_xcode_dir}/libXOPSupport64.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-          )
-          message(STATUS "Imported XOP::XOPSupport -> ${_xcode_dir}/libXOPSupport64.a")
-        endif()
-      elseif(EXISTS "${_vendor}/libXOPSupport64.a")
-        if(NOT TARGET XOP::XOPSupport)
-          add_library(XOP::XOPSupport STATIC IMPORTED)
-          set_target_properties(XOP::XOPSupport PROPERTIES
-            IMPORTED_LOCATION "${_vendor}/libXOPSupport64.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-          )
-          message(STATUS "Imported XOP::XOPSupport -> ${_vendor}/libXOPSupport64.a")
-        endif()
-      else()
-        # Check for architecture-specific filenames that some distributions might use
-        if(EXISTS "${_xcode_dir}/libXOPSupport_arm64.a")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport STATIC IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_xcode_dir}/libXOPSupport_arm64.a"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_xcode_dir}/libXOPSupport_arm64.a")
-          endif()
-        endif()
-        if(EXISTS "${_xcode_dir}/libXOPSupport_x86_64.a")
-          if(NOT TARGET XOP::XOPSupport)
-            add_library(XOP::XOPSupport STATIC IMPORTED)
-            set_target_properties(XOP::XOPSupport PROPERTIES
-              IMPORTED_LOCATION "${_xcode_dir}/libXOPSupport_x86_64.a"
-              INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-            )
-            message(STATUS "Imported XOP::XOPSupport -> ${_xcode_dir}/libXOPSupport_x86_64.a")
-          endif()
-        endif()
-      endif()
-
-      # macOS doesn't supply IGOR import lib in the same way; usually libXOPSupport is self-contained.
-      # If vendor provides an IGOR import library, check and import it as well:
-      if(EXISTS "${_vendor}/IGOR64.lib" OR EXISTS "${_xcode_dir}/IGOR64.lib")
-        set(_maybe_igor "${_vendor}/IGOR64.lib")
-        if(EXISTS "${_xcode_dir}/IGOR64.lib")
-          set(_maybe_igor "${_xcode_dir}/IGOR64.lib")
-        endif()
-        if(NOT TARGET XOP::IGOR)
-          add_library(XOP::IGOR UNKNOWN IMPORTED)
-          set_target_properties(XOP::IGOR PROPERTIES
-            IMPORTED_LOCATION "${_maybe_igor}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-          )
-          message(STATUS "Imported XOP::IGOR -> ${_maybe_igor}")
-        endif()
-      endif()
-
-    else()
-      # Linux / other Unices: check for libXOPSupport64.a or libXOPSupport.a at vendor root
-      if(EXISTS "${_vendor}/libXOPSupport64.a")
-        if(NOT TARGET XOP::XOPSupport)
-          add_library(XOP::XOPSupport STATIC IMPORTED)
-          set_target_properties(XOP::XOPSupport PROPERTIES
-            IMPORTED_LOCATION "${_vendor}/libXOPSupport64.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-          )
-          message(STATUS "Imported XOP::XOPSupport -> ${_vendor}/libXOPSupport64.a")
-        endif()
-      elseif(EXISTS "${_vendor}/libXOPSupport.a")
-        if(NOT TARGET XOP::XOPSupport)
-          add_library(XOP::XOPSupport STATIC IMPORTED)
-          set_target_properties(XOP::XOPSupport PROPERTIES
-            IMPORTED_LOCATION "${_vendor}/libXOPSupport.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-          )
-          message(STATUS "Imported XOP::XOPSupport -> ${_vendor}/libXOPSupport.a")
-        endif()
-      endif()
-    endif()
-  endif()  # vendor exists
-
-  #
-  # Finalize: If we set any imported target, ensure they carry the include dir
-  #
-  if(TARGET XOP::XOPSupport)
-    get_target_property(_loc XOP::XOPSupport IMPORTED_LOCATION)
-    if(_loc)
-      message(STATUS "XOP::XOPSupport mapped to: ${_loc}")
-    endif()
-    # Ensure include dir is set even if some imported libs didn't set it
-    set_target_properties(XOP::XOPSupport PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}")
-  endif()
-
-  if(TARGET XOP::IGOR)
-    set_target_properties(XOP::IGOR PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}")
-  endif()
-
-  # Output boolean result to caller
-  if(TARGET XOP::XOPSupport OR EXISTS "${_include_dir}")
-    set(${out_var} TRUE PARENT_SCOPE)
-  else()
-    set(${out_var} FALSE PARENT_SCOPE)
+# Allow caller to call find_xopsupport(outvar)
+function(find_xopsupport outvar)
+  # internally call the implementation
+  _find_xopsupport_impl()
+  if(outvar)
+    set(${outvar} ${XOP_SUPPORT_FOUND} PARENT_SCOPE)
   endif()
 endfunction()
+
+# Implementation - separate so direct include still configures detection immediately
+function(_find_xopsupport_impl)
+  # Default exported variable names (top-level may have set these)
+  if(NOT DEFINED XOP_VENDOR_DIR)
+    set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Local XOPSupport tree")
+  endif()
+
+  if(NOT DEFINED USE_SYSTEM_XOP)
+    set(USE_SYSTEM_XOP OFF)
+  endif()
+
+  set(XOP_SUPPORT_FOUND OFF)
+  unset(XOP::XOPSupport CACHE)   # ensure not leftover
+  unset(XOP::IGOR CACHE)
+
+  # Helper: check vendor layout heuristics
+  function(_check_vendor_tree vendor_dir result_var)
+    # vendor dir should contain include/ and lib/ (or similar). We'll check common markers.
+    set(_found_vendor FALSE)
+    if(EXISTS "${vendor_dir}")
+      # check for any header files or include dir
+      if(EXISTS "${vendor_dir}/include" OR EXISTS "${vendor_dir}/XOPSupport.h" OR EXISTS "${vendor_dir}/XOPSupport.hpp")
+        set(_found_vendor TRUE)
+      endif()
+    endif()
+    set(${result_var} ${_found_vendor} PARENT_SCOPE)
+  endfunction()
+
+  # 1) Try vendor tree (unless user specifically requested system)
+  set(_vendor_ok FALSE)
+  if(NOT USE_SYSTEM_XOP)
+    _check_vendor_tree("${XOP_VENDOR_DIR}" _vendor_ok)
+  endif()
+
+  if(_vendor_ok)
+    message(STATUS "FindXOPSupport: using vendored XOPSupport at ${XOP_VENDOR_DIR}")
+    # include dir candidates
+    set(_inc_candidates
+      "${XOP_VENDOR_DIR}"
+      "${XOP_VENDOR_DIR}/include"
+      "${XOP_VENDOR_DIR}/Headers"
+    )
+
+    # library candidates (common names)
+    set(_lib_candidates
+      "${XOP_VENDOR_DIR}/lib"
+      "${XOP_VENDOR_DIR}/lib64"
+      "${XOP_VENDOR_DIR}/lib/Debug"
+      "${XOP_VENDOR_DIR}/lib/Release"
+      "${XOP_VENDOR_DIR}/lib/x64"
+      "${XOP_VENDOR_DIR}/VC"
+      "${XOP_VENDOR_DIR}/VC/Release"
+    )
+
+    # prefer .lib for Windows, .a/.dylib/.so on other systems
+    # Try to find a library file under vendor dir; if none, still provide include path (headers-only case)
+    # Find include:
+    foreach(_p IN LISTS _inc_candidates)
+      if(EXISTS "${_p}")
+        set(_xop_include "${_p}")
+        break()
+      endif()
+    endforeach()
+
+    # Find a library file (best-effort)
+    set(_xop_lib "")
+    foreach(_p IN LISTS _lib_candidates)
+      if(IS_DIRECTORY "${_p}")
+        file(GLOB _candidates LIST_DIRECTORIES FALSE
+             "${_p}/*.lib" "${_p}/*.a" "${_p}/*.so" "${_p}/*.dylib" "${_p}/*.dll"
+             "${_p}/*XOPSupport*.lib" "${_p}/*XOPSupport*.a" "${_p}/*XOPSupport*.so" "${_p}/*XOPSupport*.dylib")
+        if(_candidates)
+          list(SORT _candidates)
+          list(GET _candidates 0 _xop_lib)
+          break()
+        endif()
+      endif()
+    endforeach()
+
+    # Create imported target if possible
+    if(DEFINED _xop_include)
+      add_library(XOP::XOPSupport UNKNOWN IMPORTED GLOBAL)
+      set_target_properties(XOP::XOPSupport PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_xop_include}"
+      )
+      if(_xop_lib)
+        # set imported location for the single-configuration generator case
+        set_target_properties(XOP::XOPSupport PROPERTIES
+          IMPORTED_LOCATION "${_xop_lib}"
+        )
+      endif()
+      set(XOP_SUPPORT_FOUND ON)
+    else()
+      message(WARNING "FindXOPSupport: vendored tree found but no include directory detected under ${XOP_VENDOR_DIR}. Will fall back to system search (if allowed).")
+      set(XOP_SUPPORT_FOUND OFF)
+    endif()
+  endif()
+
+  # 2) If not vendored or USE_SYSTEM_XOP, try system paths
+  if(NOT XOP_SUPPORT_FOUND AND (USE_SYSTEM_XOP OR NOT _vendor_ok))
+    message(STATUS "FindXOPSupport: searching system paths for XOPSupport (USE_SYSTEM_XOP=${USE_SYSTEM_XOP})")
+    # common header name; allow override by XOP_HEADER_NAME
+    if(NOT DEFINED XOP_HEADER_NAME)
+      set(XOP_HEADER_NAME "XOPSupport.h")
+    endif()
+
+    find_path(_sys_xop_include
+      NAMES ${XOP_HEADER_NAME}
+      PATHS
+        ENV CPATH
+        ENV CPLUS_INCLUDE_PATH
+        /usr/local/include /usr/include /opt/local/include
+      NO_DEFAULT_PATH
+    )
+
+    # try default search (allow default paths)
+    if(NOT _sys_xop_include)
+      find_path(_sys_xop_include NAMES ${XOP_HEADER_NAME})
+    endif()
+
+    # find library (heuristic)
+    find_library(_sys_xop_lib
+      NAMES XOPSupport xopsupport XOPSupport64
+      PATHS /usr/local/lib /usr/lib /opt/local/lib
+      NO_DEFAULT_PATH
+    )
+    if(NOT _sys_xop_lib)
+      find_library(_sys_xop_lib NAMES XOPSupport xopsupport XOPSupport64)
+    endif()
+
+    if(_sys_xop_include)
+      add_library(XOP::XOPSupport UNKNOWN IMPORTED GLOBAL)
+      set_target_properties(XOP::XOPSupport PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_sys_xop_include}"
+      )
+      if(_sys_xop_lib)
+        set_target_properties(XOP::XOPSupport PROPERTIES
+          IMPORTED_LOCATION "${_sys_xop_lib}"
+        )
+      endif()
+      set(XOP_SUPPORT_FOUND ON)
+      message(STATUS "FindXOPSupport: found system XOPSupport include: ${_sys_xop_include} lib: ${_sys_xop_lib}")
+    else()
+      message(STATUS "FindXOPSupport: system XOPSupport headers not found.")
+      set(XOP_SUPPORT_FOUND OFF)
+    endif()
+  endif()
+
+  # 3) Optional: try to locate IGOR import lib (Windows) and provide XOP::IGOR target
+  unset(_igor_lib)
+  if(MSVC OR WIN32)
+    # well-known IGOR import lib names
+    find_library(_igor_lib
+      NAMES IGOR IGOR64 Igor64
+      PATHS
+        "${XOP_VENDOR_DIR}/lib" "${XOP_VENDOR_DIR}/Lib" "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit"
+        /usr/local/lib /usr/lib
+      NO_DEFAULT_PATH
+    )
+    if(NOT _igor_lib)
+      find_library(_igor_lib NAMES IGOR IGOR64 Igor64)
+    endif()
+    if(_igor_lib)
+      add_library(XOP::IGOR UNKNOWN IMPORTED GLOBAL)
+      set_target_properties(XOP::IGOR PROPERTIES IMPORTED_LOCATION "${_igor_lib}")
+      message(STATUS "FindXOPSupport: found IGOR import lib: ${_igor_lib}")
+    endif()
+  endif()
+
+  # Expose cached result
+  set(XOP_SUPPORT_FOUND ${XOP_SUPPORT_FOUND} CACHE BOOL "XOP support found" FORCE)
+
+  # Provide backward compatible variable if caller used _xop_found previously
+  set(_xop_found ${XOP_SUPPORT_FOUND} PARENT_SCOPE)
+endfunction()
+
+# Automatically run detection at include time so top-level include(...) is sufficient.
+_find_xopsupport_impl()
+
+# Also set an exported alias variable for easier checks
+if(XOP_SUPPORT_FOUND)
+  set(XOP_SUPPORT_FOUND TRUE)
+else()
+  set(XOP_SUPPORT_FOUND FALSE)
+endif()
