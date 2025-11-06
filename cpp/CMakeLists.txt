@@ -1,18 +1,38 @@
 cmake_minimum_required(VERSION 3.15)
 
+# -------------------------
+# Force MSVC CRT globally
+# -------------------------
+# Vendor XOPSupport uses static CRT (LIBCMT). Force project to use static CRT (/MT)
+if(MSVC)
+  # Modern CMake: set global MSVC runtime library and force it into the cache.
+  # MultiThreaded => /MT (Release), MultiThreadedDebug => /MTd (Debug)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "CRT library" FORCE)
+
+  # As a redundancy for older CMake versions or generators that respect CMAKE_CXX_FLAGS_*
+  # set the initial flags so targets created later will pick them up.
+  if(NOT DEFINED CMAKE_C_FLAGS_INIT)
+    set(CMAKE_C_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
+  endif()
+  if(NOT DEFINED CMAKE_CXX_FLAGS_INIT)
+    set(CMAKE_CXX_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
+  endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # Project declaration
 # -----------------------------------------------------------------------------
 project(pylabhub-shell
         VERSION 0.1
-        LANGUAGES CXX)
+        LANGUAGES C CXX)
+
 
 # -----------------------------------------------------------------------------
 # CMake module path (for Find*.cmake files)
 # -----------------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-include(FindXOPSupport.cmake)
+include(cmake/FindXOPSupport.cmake)
 
 # -----------------------------------------------------------------------------
 # Top-level Options (keep project defaults, add third-party control knobs)
