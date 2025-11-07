@@ -19,3 +19,20 @@ set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party
 set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstream precompiled headers" FORCE)
 
 message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
+
+
+# ----------------------------------------------------------------------------
+# XOPToolkit / XOPSupport build options
+# ----------------------------------------------------------------------------
+# Prefer the project vendor copy; override by setting USE_SYSTEM_XOPSUPPORT to a path.
+# Example to force system XOPSupport:
+#   cmake -D USE_SYSTEM_XOPSUPPORT="/opt/XOPSupport" ...
+#
+# If vendor directory exists at the provided default, prefer it.
+set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Vendor XOPSupport tree (preferred when available).")
+# Single override path: if non-empty, FindXOPSupport will use this path and bypass vendor.
+set(USE_SYSTEM_XOPSUPPORT "" CACHE PATH "Optional: path to system-installed XOPSupport (overrides vendor tree when set).")
+
+# Option to enable/disable building the XOP plugin entirely (user-visible)
+option(BUILD_XOP "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" ON)
+

@@ -24,7 +24,7 @@
 #include "platform.hpp" // use your canonical platform macros
 
 #if !defined(PLATFORM_WIN64)
-#include <syslog.h>   // provides LOG_PID, LOG_CONS, LOG_USER, etc.
+#include <syslog.h> // provides LOG_PID, LOG_CONS, LOG_USER, etc.
 #endif
 
 // Default initial reserve for fmt::memory_buffer used by Logger::log_fmt.
@@ -106,7 +106,7 @@ class Logger
     // Uses fmt-style format strings. These are convenience wrappers that format the message
     // into a UTF-8 buffer and hand it to write_formatted() (non-template sink).
     template <typename... Args>
-    void log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &... args) noexcept;
+    void log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &...args) noexcept;
 
     template <typename... Args> void trace_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
@@ -148,7 +148,7 @@ class Logger
 
 // ----------------- Template implementation (must be in header) -----------------
 template <typename... Args>
-void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &... args) noexcept
+void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &...args) noexcept
 {
     // Fast path: check level without locking. should_log is implemented in .cpp.
     if (!this->should_log(lvl))
@@ -159,15 +159,15 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
         fmt::memory_buffer mb;
         mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
         fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), args...);
-        //the following has been tried.
-        //fmt::format_to(mb, fmt::runtime(fmt_str), std::forward<const Args>(args)...);
-        //fmt::vformat_to(mb, fmt::string_view(fmt_str), fmt::make_format_args(args...));
+        // the following has been tried.
+        // fmt::format_to(mb, fmt::runtime(fmt_str), std::forward<const Args>(args)...);
+        // fmt::vformat_to(mb, fmt::string_view(fmt_str), fmt::make_format_args(args...));
 
-        //std::string formatted = fmt::vformat(fmt::string_view(fmt_str), fmt::make_format_args(args...));
-        //std::string mb=formatted;
-        // fmt::vformat_to(std::back_inserter(mb),
-        //         fmt::string_view(fmt_str),
-        //         fmt::make_format_args(args...));
+        // std::string formatted = fmt::vformat(fmt::string_view(fmt_str),
+        // fmt::make_format_args(args...)); std::string mb=formatted;
+        //  fmt::vformat_to(std::back_inserter(mb),
+        //          fmt::string_view(fmt_str),
+        //          fmt::make_format_args(args...));
 
         // enforce configured cap (max_log_line_length() defined in .cpp)
         const size_t max_line = max_log_line_length();
@@ -197,7 +197,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
     }
     catch (...)
     {
-       this->write_formatted(lvl, std::string("[UNKNOWN FORMAT ERROR]"));
+        this->write_formatted(lvl, std::string("[UNKNOWN FORMAT ERROR]"));
     }
 }
 

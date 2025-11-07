@@ -1,7 +1,16 @@
 cmake_minimum_required(VERSION 3.15)
+
+# -----------------------------------------------------------------------------
+# Project declaration
+# -----------------------------------------------------------------------------
+project(pylabhub-shell
+        VERSION 0.1
+        LANGUAGES C CXX)
+
 # -----------------------------------------------------------------------------
 # CMake module path (for Find*.cmake files)
 # -----------------------------------------------------------------------------
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # -----------------------------------------------------------------------------
@@ -17,24 +26,24 @@ include(cmake/ToplevelThirdPartyPolicy.cmake)
 include(cmake/FindXOPSupport.cmake)
 
 # -----------------------------------------------------------------------------
-# Project declaration
-# -----------------------------------------------------------------------------
-project(pylabhub-shell
-        VERSION 0.1
-        LANGUAGES C CXX)
-
-# -----------------------------------------------------------------------------
 # Find XOPSupport (vendored or system) - UPDATED
 # -----------------------------------------------------------------------------
+message(STATUS "==============================================")
+message(STATUS "Setting up BUILD_XOP and locating XOPSupport...")
+if(NOT (DEFINED PLATFORM_WIN64 OR DEFINED PLATFORM_APPLE))
+  set(BUILD_XOP OFF CACHE BOOL "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" FORCE)
+  message(STATUS "XOP only supported on Windows x64 or macOS; disabling BUILD_XOP.")
+endif()
+
+if(BUILD_XOP)
 # Ask the find helper to locate XOPSupport (uses XOP_VENDOR_DIR and USE_SYSTEM_XOP)
-find_xopsupport(_xop_found)
-if(_xop_found)
-  message(STATUS "XOPSupport found; XOP::XOPSupport target is available.")
-else()
-  if(NOT USE_SYSTEM_XOP)
-    message(WARNING "XOPSupport not found under ${XOP_VENDOR_DIR}. You can set -DUSE_SYSTEM_XOP=ON to search for system-installed headers/libs.")
+  find_xopsupport(_xop_found)
+  if(NOT _xop_found)
+    message(WARNING "XOPSupport not found; BUILD_XOP will be ignored.")
+    set(BUILD_XOP OFF CACHE BOOL "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" FORCE)
   else()
-    message(STATUS "XOPSupport not found in vendor or system locations.")
+    message(STATUS "XOPSupport available; XOP build enabled.")
+    # XOP::XOPSupport target is now available for linking
   endif()
 endif()
 
@@ -43,11 +52,12 @@ if(BUILD_XOP AND _xop_found)
   add_subdirectory(src/IgorXOP)
 else()
   if(NOT BUILD_XOP)
-    message(STATUS "Top-level: BUILD_XOP=OFF; IgorXOP subproject skipped.")
+    message(STATUS "IgorXOP: BUILD_XOP=OFF; IgorXOP subproject skipped.")
   else()
-    message(STATUS "Top-level: IgorXOP subproject skipped because XOPSupport not available.")
+    message(STATUS "IgorXOP: IgorXOP subproject skipped because XOPSupport not available.")
   endif()
 endif()
+message(STATUS "==============================================")
 
 # -----------------------------------------------------------------------------
 # Basic dependencies
@@ -263,7 +273,7 @@ endif()
 # -----------------------------------------------------------------------------
 # Final summary (concise)
 # -----------------------------------------------------------------------------
-message(STATUS "")
+message(STATUS "==============================================")
 message(STATUS "CMake summary:")
 if(DEFINED _platform_name)
   message(STATUS "  Platform detected:  ${_platform_name}")
@@ -279,10 +289,15 @@ message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
 message(STATUS "  fmt target: ${FMT_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
-message(STATUS "")
-message(STATUS "  XOP build added:    ${_build_xop_final}")
+message(STATUS "==============================================")
+
 if(_build_xop_final)
+  message(STATUS "  XOP build added:    ${_build_xop_final}")
   message(STATUS "  XOP vendor present: ${_xop_vendor_present}")
+  message(STATUS "==============================================")
+else()
+  message(STATUS "  XOP build:    OFF (IgorXOP subproject skipped)")
+  message(STATUS "==============================================")
 endif()
-message(STATUS "")
+
 
