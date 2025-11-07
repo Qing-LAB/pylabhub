@@ -18,6 +18,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -26,7 +27,6 @@
 #include <sstream>
 #include <thread>
 #include <vector>
-#include <cstdarg>
 
 #include <fmt/format.h>
 
@@ -39,10 +39,10 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <sys/syscall.h>
 #endif
 
 namespace pylabhub::util
@@ -445,7 +445,9 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 {
     if (!pImpl)
         return;
-    std::string full = fmt::format(FMT_STRING("{} [{}] [tid={}] {}"), formatted_time(), level_to_string(lvl), std::to_string(get_native_thread_id()), body);
+    std::string full =
+        fmt::format(FMT_STRING("{} [{}] [tid={}] {}"), formatted_time(), level_to_string(lvl),
+                    std::to_string(get_native_thread_id()), body);
     std::string full_ln = full + "\n";
 
     // Acquire lock to protect sink handles while writing.
@@ -484,8 +486,8 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         {
             // prefer single WriteFile call
             DWORD written = 0;
-            BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(), static_cast<DWORD>(full_ln.size()),
-                                &written, nullptr);
+            BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(),
+                                static_cast<DWORD>(full_ln.size()), &written, nullptr);
             if (!ok || written != full_ln.size())
             {
                 DWORD err = GetLastError();
@@ -618,8 +620,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             std::wstring wmsg;
             {
                 // convert utf8 to wstring
-                int needed =
-                    MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, nullptr, 0);
+                int needed = MultiByteToWideChar(CP_UTF8, 0, full.c_str(), -1, nullptr, 0);
                 if (needed > 0)
                 {
                     wmsg.resize(needed);
