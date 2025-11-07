@@ -1,5 +1,6 @@
 # -----------------------------------------------------------------------------
 # Language / Compiler flags / Build-type
+# You must define project() before including this file.
 # -----------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,7 +22,7 @@ message(STATUS "  CMAKE_VS_PLATFORM_NAME....: ${CMAKE_VS_PLATFORM_NAME}")
 message(STATUS "  CMAKE_SIZEOF_VOID_P.......: ${CMAKE_SIZEOF_VOID_P}")
 message(STATUS "  CMAKE_HOST_SYSTEM_PROCESSOR: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 message(STATUS "  CMAKE_SYSTEM_NAME.........: ${CMAKE_SYSTEM_NAME}")
-message(STATUS "")
+message(STATUS "============================================================")
 
 # Helper: robust predicate for "windows x64"
 set(_is_windows FALSE)
@@ -107,7 +108,7 @@ elseif(DEFINED PLATFORM_LINUX)
 elseif(DEFINED PLATFORM_UNKNOWN)
   message(STATUS "  Defined: PLATFORM_UNKNOWN (Unknown platform)")
 endif()
-message(STATUS "")
+message(STATUS "============================================================")
 
 
 # Default to Release if no type selected and generator is single-config.

@@ -1,5 +1,5 @@
 /*
-	WaveAccess.h -- equates for WaveAccess XOP
+        WaveAccess.h -- equates for WaveAccess XOP
 */
 
 /* WaveAccess custom error codes */
@@ -10,4 +10,3 @@
 
 /* Prototypes */
 HOST_IMPORT int XOPMain(IORecHandle ioRecHandle);
-
