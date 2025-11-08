@@ -73,6 +73,14 @@ set(XOP_SOURCES
 add_library(${XOP_TARGET} SHARED ${XOP_SOURCES})
 add_library(pylabhub::${XOP_TARGET} ALIAS ${XOP_TARGET})
 
+if(XOPSUPPORT_INCLUDE_DIR)
+    include_directories(${XOPSUPPORT_INCLUDE_DIR})
+endif()
+
+if(XOPSUPPORT_LIBRARY)
+    target_link_libraries(${XOP_TARGET} ${XOPSUPPORT_LIBRARY})
+endif()
+
 # Windows-specific output name/extension adjustments (produce .xop instead of .dll)
 if(WIN32)
   # produce pylabhub-xop64.xop (consistent)

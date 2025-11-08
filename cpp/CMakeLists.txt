@@ -18,7 +18,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 # -----------------------------------------------------------------------------
 include(cmake/PlatformAndCompiler.cmake)
 include(cmake/ToplevelOptions.cmake)
-include(cmake/ToplevelThirdPartyPolicy.cmake)
+include(cmake/ThirdPartyPolicy.cmake)
 
 # -----------------------------------------------------------------------------
 # Helper function to find XOPSupport
@@ -26,7 +26,7 @@ include(cmake/ToplevelThirdPartyPolicy.cmake)
 include(cmake/FindXOPSupport.cmake)
 
 # -----------------------------------------------------------------------------
-# Find XOPSupport (vendored or system) - UPDATED
+# Find XOPSupport (vendored or system)
 # -----------------------------------------------------------------------------
 message(STATUS "==============================================")
 message(STATUS "Setting up BUILD_XOP and locating XOPSupport...")
@@ -37,6 +37,7 @@ endif()
 
 if(BUILD_XOP)
 # Ask the find helper to locate XOPSupport (uses XOP_VENDOR_DIR and USE_SYSTEM_XOP)
+  message(STATUS "BUILD_XOP=ON; attempting to locate XOPSupport...")
   find_xopsupport(_xop_found)
   if(NOT _xop_found)
     message(WARNING "XOPSupport not found; BUILD_XOP will be ignored.")
