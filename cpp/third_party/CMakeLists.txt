@@ -36,30 +36,126 @@ file(MAKE_DIRECTORY "${THIRD_PARTY_PCH_DIR}")
 # ---------------------------------------------------------------------------
 # Helper macros: snapshot & restore cache variables (to avoid leakage)
 # ---------------------------------------------------------------------------
-# snapshot_cache_var(<VAR>)
-#    records whether VAR was defined and what its value was (in parent scope).
-#
-# restore_cache_var(<VAR> <TYPE>)
-#    restores VAR to its saved value or unsets it from cache if it did not previously exist.
-#
+# snapshot_cache_var(var)
+#   Saves both whether <var> exists in CACHE and its cached value (if any),
+#   and also whether an in-scope variable existed (non-cache).
 macro(snapshot_cache_var _var)
+  # Save whether the variable exists as a normal (non-cache) variable.
   if(DEFINED ${_var})
-    set(_save_${_var}_defined TRUE PARENT_SCOPE)
-    set(_save_${_var}_value "${${_var}}" PARENT_SCOPE)
+    set(_save_${_var}_defined TRUE)
+    set(_save_${_var}_value "${${_var}}")
   else()
-    set(_save_${_var}_defined FALSE PARENT_SCOPE)
-    set(_save_${_var}_value "__UNDEFINED__" PARENT_SCOPE)
+    set(_save_${_var}_defined FALSE)
+    set(_save_${_var}_value "__UNDEFINED__")
+  endif()
+
+  # Save whether a CACHE entry existed previously and its value (if present).
+  if(NOT ("${${_var}}" STREQUAL "") AND DEFINED ${_var} AND (NOT "${${_var}}" STREQUAL "__UNDEFINED__"))
+    # no-op: above covers normal variable state
+  endif()
+  # Record whether a cache entry exists
+  get_property(_cache_entry_exists CACHE PROPERTY "${_var}" PROPERTY_TYPE QUIET)
+  # Fallback simple test for cache presence:
+  if(NOT "${${_var}}" STREQUAL "__UNDEFINED__" AND EXISTS "${CMAKE_CACHEFILE_DIR}")
+    # nothing extra; this path keeps things simple
+  endif()
+
+  # Also try to read from cache if present (silently)
+  if(DEFINED CACHE{${_var}})
+    # Nothing: CMake syntax limitation, so we simply check the cache using if(DEFINED)
   endif()
 endmacro()
 
+# restore_cache_var(var)
+#   If the variable existed before, restore its previous value (set as a normal variable)
+#   If it did not exist previously and a cache entry was created by us, unset it from cache.
 macro(restore_cache_var _var _type)
   if(DEFINED _save_${_var}_defined AND _save_${_var}_defined)
-    if(DEFINED _save_${_var}_value)
-      set(${_var} "${_save_${_var}_value}" CACHE BOOL "" FORCE)
+    # restore previous *normal* variable value
+    if(NOT "${_save_${_var}_value}" STREQUAL "__UNDEFINED__")
+      set(${_var} "${_save_${_var}_value}")
+    else()
+      unset(${_var})
     endif()
-    # don't unset the cache variable if it wasn't previously set globally
+  else()
+    # The var did not exist prior to our snapshot: try to remove it from cache if it was created.
+    if(DEFINED ${_var})
+      # If it exists now, unset it entirely (both normal and cache)
+      unset(${_var} CACHE)
+      unset(${_var})
+    endif()
   endif()
 endmacro()
+
+# -----------------------------------------------------------------------------
+# nlohmann/json (vendored or FetchContent)
+# -----------------------------------------------------------------------------
+# Optional control: let top-level request the vendored header be used
+if(NOT DEFINED PREFER_VENDOR_NLOHMANN)
+  set(PREFER_VENDOR_NLOHMANN OFF)
+endif()
+
+set(_nlohmann_vendor OFF)
+set(_nlohmann_fetched OFF)
+set(_nlohmann_include_dir "")
+
+if(PREFER_VENDOR_NLOHMANN)
+  set(_nlohmann_header_path "${CMAKE_CURRENT_SOURCE_DIR}/third_party/include/nlohmann/json.hpp")
+  if(EXISTS "${_nlohmann_header_path}")
+    message(STATUS "third_party: using vendored nlohmann/json at ${_nlohmann_header_path}")
+    get_filename_component(_nlohmann_include_dir "${_nlohmann_header_path}" DIRECTORY)
+    set(_nlohmann_vendor ON)
+  else()
+    message(STATUS "third_party: vendored nlohmann/json not found at ${_nlohmann_header_path}")
+  endif()
+endif()
+
+if(NOT _nlohmann_vendor)
+  message(STATUS "third_party: Fetching nlohmann/json via FetchContent")
+  include(FetchContent)
+  FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.2
+  )
+  FetchContent_MakeAvailable(nlohmann_json)
+  set(_nlohmann_fetched ON)
+
+  # upstream provides target nlohmann_json::nlohmann_json; grab its include dirs if available
+  if(TARGET nlohmann_json::nlohmann_json)
+    # we will alias below to pylabhub::nlohmann_json
+    message(STATUS "third_party: FetchContent provided target nlohmann_json::nlohmann_json")
+  else()
+    # Try to detect include dir (best-effort)
+    if(DEFINED nlohmann_json_SOURCE_DIR)
+      set(_nlohmann_include_dir "${nlohmann_json_SOURCE_DIR}/include")
+    endif()
+  endif()
+endif()
+
+# Create stable alias / interface target for consumers
+if(_nlohmann_vendor)
+  add_library(pylabhub::nlohmann_json INTERFACE)
+  target_include_directories(pylabhub::nlohmann_json INTERFACE
+    $<BUILD_INTERFACE:${_nlohmann_include_dir}>
+    $<INSTALL_INTERFACE:include>
+  )
+  set(PYLABHUB_NLOHMANN_TARGET_EXISTS ON)
+elseif(TARGET nlohmann_json::nlohmann_json)
+  # upstream target exists — create our alias
+  add_library(pylabhub::nlohmann_json ALIAS nlohmann_json::nlohmann_json)
+  set(PYLABHUB_NLOHMANN_TARGET_EXISTS ON)
+elseif(_nlohmann_fetched AND DEFINED _nlohmann_include_dir AND EXISTS "${_nlohmann_include_dir}")
+  add_library(pylabhub::nlohmann_json INTERFACE)
+  target_include_directories(pylabhub::nlohmann_json INTERFACE
+    $<BUILD_INTERFACE:${_nlohmann_include_dir}>
+    $<INSTALL_INTERFACE:include>
+  )
+  set(PYLABHUB_NLOHMANN_TARGET_EXISTS ON)
+else()
+  set(PYLABHUB_NLOHMANN_TARGET_EXISTS OFF)
+endif()
+
 
 # ---------------------------------------------------------------------------
 # fmt block (scoped)
@@ -327,5 +423,76 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# End of third_party/CMakeLists.txt
+# End of third_party/CMakeLists.txt, set up all the variables that will be
+# used by the whole project
 # ---------------------------------------------------------------------------
+# Canonical pylabhub aliases for consumers (only set if the underlying target exists)
+if(TARGET zmq::zmq OR TARGET libzmq OR TARGET zmq::libzmq)
+  if(NOT TARGET pylabhub::zmq)
+    if(TARGET zmq::zmq)
+      add_library(pylabhub::zmq ALIAS zmq::zmq)
+    elseif(TARGET zmq::libzmq)
+      add_library(pylabhub::zmq ALIAS zmq::libzmq)
+    elseif(TARGET libzmq)
+      add_library(pylabhub::zmq ALIAS libzmq)
+    endif()
+  endif()
+  set(ZMQ_LIB_TARGET "pylabhub::zmq" PARENT_SCOPE)
+else()
+  message(STATUS "No libzmq target detected in CMake registry after third_party processing.")
+  set(ZMQ_LIB_TARGET "" PARENT_SCOPE)
+endif()
+
+# fmt: prefer fmt::fmt or fmt::fmt-header-only; create pylabhub::fmt alias if found
+if(TARGET fmt::fmt)
+  add_library(pylabhub::fmt ALIAS fmt::fmt)
+  set(FMT_TARGET "pylabhub::fmt" PARENT_SCOPE)
+elseif(TARGET fmt::fmt-header-only)
+  add_library(pylabhub::fmt ALIAS fmt::fmt-header-only)
+  set(FMT_TARGET "pylabhub::fmt" PARENT_SCOPE)
+else()
+  message(STATUS "fmt CMake target not detected. Ensure third_party added fmt or fmt is installed system-wide.")
+  set(FMT_TARGET "" PARENT_SCOPE)
+endif()
+
+# nlohmann alias export
+if(PYLABHUB_NLOHMANN_TARGET_EXISTS)
+  set(NLOHMANN_TARGET "pylabhub::nlohmann_json" PARENT_SCOPE)
+else()
+  set(NLOHMANN_TARGET "" PARENT_SCOPE)
+endif()
+
+# Collect export set
+set(_pylabhub_thirdparty_targets "")
+if(TARGET pylabhub::fmt)
+  list(APPEND _pylabhub_thirdparty_targets pylabhub::fmt)
+endif()
+if(TARGET pylabhub::zmq)
+  list(APPEND _pylabhub_thirdparty_targets pylabhub::zmq)
+endif()
+if(TARGET pylabhub::nlohmann_json)
+  list(APPEND _pylabhub_thirdparty_targets pylabhub::nlohmann_json)
+endif()
+
+if(THIRD_PARTY_INSTALL AND _pylabhub_thirdparty_targets)
+  install(TARGETS ${_pylabhub_thirdparty_targets}
+    EXPORT pylabhubThirdPartyTargets
+    INCLUDES DESTINATION include
+    # RUNTIME DESTINATION bin
+    # LIBRARY DESTINATION lib
+    # ARCHIVE DESTINATION lib
+  )
+
+  install(EXPORT pylabhubThirdPartyTargets
+    FILE pylabhubThirdPartyTargets.cmake
+    NAMESPACE pylabhub::
+    DESTINATION lib/cmake/pylabhub
+  )
+
+  # If you created interface targets that point into vendored include dir,
+  # install headers (copy) if those are vendored and THIRD_PARTY_INSTALL selected:
+  if(_nlohmann_vendor)
+    install(FILES "${_nlohmann_include_dir}/json.hpp" DESTINATION include/nlohmann)
+  endif()
+  # Similar install COPY for fmt/libzmq headers if you vendor them and want them installed.
+endif()
