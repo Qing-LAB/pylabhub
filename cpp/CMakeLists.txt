@@ -14,7 +14,7 @@ project(pylabhub-shell
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # -----------------------------------------------------------------------------
-# Top level options and policies
+# Top level options and global third party module policies
 # -----------------------------------------------------------------------------
 include(cmake/PlatformAndCompiler.cmake)
 include(cmake/ToplevelOptions.cmake)
@@ -24,34 +24,6 @@ include(cmake/ThirdPartyPolicy.cmake)
 # Basic dependencies for the whole project
 # -----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
-
-# -----------------------------------------------------------------------------
-# nlohmann/json (vendored or FetchContent)
-# -----------------------------------------------------------------------------
-set(NLOHMANN_VENDORED OFF)
-set(NLOHMANN_FETCHED OFF)
-
-if(PREFER_VENDOR_NLOHMANN)
-  set(NLOHMANN_HEADER_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/include/nlohmann/json.hpp")
-  if(EXISTS "${NLOHMANN_HEADER_PATH}")
-    message(STATUS "Using vendored nlohmann/json at ${NLOHMANN_HEADER_PATH}")
-    set(NLOHMANN_VENDORED ON)
-  else()
-    message(STATUS "Vendored nlohmann/json not found at ${NLOHMANN_HEADER_PATH}")
-  endif()
-endif()
-
-if(NOT NLOHMANN_VENDORED)
-  message(STATUS "Fetching nlohmann/json (header-only) via FetchContent")
-  include(FetchContent)
-  FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.2
-  )
-  FetchContent_MakeAvailable(nlohmann_json)
-  set(NLOHMANN_FETCHED ON)
-endif()
 
 # -----------------------------------------------------------------------------
 # Third-party submodules (fmt, libzmq, etc.)
@@ -66,28 +38,6 @@ else()
   message(STATUS "third_party/CMakeLists.txt not found; you should add one to coordinate submodules (fmt, libzmq).")
 endif()
 
-# After third_party processing, attempt to detect canonical targets produced by subprojects
-set(ZMQ_LIB_TARGET "")
-if(TARGET zmq::zmq)
-  set(ZMQ_LIB_TARGET "zmq::zmq")
-elseif(TARGET zmq::libzmq)
-  set(ZMQ_LIB_TARGET "zmq::libzmq")
-elseif(TARGET libzmq)
-  set(ZMQ_LIB_TARGET "libzmq")
-elseif(TARGET zmq)
-  set(ZMQ_LIB_TARGET "zmq")
-else()
-  message(STATUS "No libzmq target detected in CMake registry after third_party processing.")
-endif()
-
-set(FMT_TARGET "")
-if(TARGET fmt::fmt)
-  set(FMT_TARGET "fmt::fmt")
-elseif(TARGET fmt::fmt-header-only)
-  set(FMT_TARGET "fmt::fmt-header-only")
-else()
-  message(STATUS "fmt CMake target not detected yet. Ensure third_party adds fmt::fmt or fmt::fmt-header-only, or install fmt system-wide.")
-endif()
 
 # -----------------------------------------------------------------------------
 # Source discovery
