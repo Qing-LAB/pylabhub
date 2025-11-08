@@ -50,22 +50,25 @@ function(_find_xopsupport_impl out_var)
   # Helper to check candidate root for both header and lib
   function(_check_root_for_xop root)
     # search header(s)
+    set(_header_names XOPSupport.h XOPSupport/XOPSupport.h)
+    message(STATUS "  ** Looking for head file [${_header_names}] in ${root}")
     find_path(_try_include
-      NAMES XOPSupport.h XOPSupport/XOPSupport.h
-      HINTS "${root}" "${root}/include" "${root}/Headers"
+      NAMES ${_header_names}
+      HINTS "${root}" "${root}/include" "${root}/Headers" "${root}/VC" "${root}/XCode"
       NO_DEFAULT_PATH
     )
 
-    # search library names common on Windows/Mac/Linux
-    if(WIN32)
-      set(_names XOPSupport XOPSupport64 XOPSupportLib)
-    else()
-      set(_names XOPSupport XOPSupport64)
+    # search library names common on Windows/Mac
+    if(DEFINED PLATFORM_WIN64)
+      set(_lib_names XOPSupport.lib XOPSupport64.lib)
+    elseif(DEFINE PLATFORM_APPLE)
+      set(_lib_names libXOPSupport.a libXOPSupport64.a)
     endif()
 
+    message(STATUS "  ** Looking for library file [${_lib_names}] in ${root}")
     find_library(_try_lib
-      NAMES ${_names}
-      HINTS "${root}/lib" "${root}/lib64" "${root}"
+      NAMES ${_lib_names}
+      HINTS "${root}/lib" "${root}/lib64" "${root}/VC" "${root}/XCode" "${root}"
       NO_DEFAULT_PATH
     )
 
@@ -81,11 +84,16 @@ function(_find_xopsupport_impl out_var)
     endif()
 
     if(_try_include AND _try_lib)
+      message(STATUS "  ** Both include heads and library found in ${root}")
+      message(STATUS "     Include path: ${_try_include}")
+      message(STATUS "     Library file: ${_try_lib}")
       set(_include_dir "${_try_include}" PARENT_SCOPE)
       set(_lib_path "${_try_lib}" PARENT_SCOPE)
       set(_igor_lib_path "${_try_igor}" PARENT_SCOPE)
       set(_found TRUE PARENT_SCOPE)
       return()
+    else()
+      message(STATUS "  ** XOPSupport not found in ${root}")
     endif()
 
     # leave _found unchanged if not both found
@@ -127,9 +135,8 @@ function(_find_xopsupport_impl out_var)
     find_library(_try_lib_sys NAMES XOPSupport XOPSupport64)
     if(_try_include_sys AND _try_lib_sys)
       set(_found TRUE)
-      set(_include_dir "${_try_include_sys}")
-      set(_lib_path "${_try_lib_sys}")
-      set(_root_used "system_paths")
+      set(XOPSUPPORT_INCLUDE_DIR "${_try_include}" PARENT_SCOPE)
+      set(XOPSUPPORT_LIBRARY "${_try_lib}" PARENT_SCOPE)
     endif()
   endif()
 
@@ -182,6 +189,19 @@ endfunction()
 # Public function: wrapper that callers use
 # Usage: find_xopsupport(<result-var>)
 function(find_xopsupport out_var)
+    message("  Trying to configure XOP::XOPSupport and XOP::IGOR with the following settings")
+    message("    XOP_VENDOR_DIR='${XOP_VENDOR_DIR}'")
+    message("    USE_SYSTEM_XOPSUPPORT='${USE_SYSTEM_XOPSUPPORT}'")
+    message("    BUILD_XOP='${BUILD_XOP}'")
+    if(DEFINED PLATFORM_WIN64)
+      message(STATUS "  Configure for PLATFORM_WIN64 (Windows x64)")
+    elseif(DEFINED PLATFORM_APPLE)
+      message(STATUS "  Configure for PLATFORM_APPLE (macOS / Apple)")
+    else()
+      message(STATUS "  The current platform is not supported. Will not continue")
+      return()
+    endif()
+    message("")
   if(NOT out_var)
     message(FATAL_ERROR "find_xopsupport requires a variable name to return the boolean result")
   endif()

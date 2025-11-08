@@ -18,8 +18,13 @@ set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party
 # Wrapper-level intent on allowing upstream precompiled headers (OFF by default)
 set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF CACHE BOOL "Wrapper intent: allow upstream precompiled headers" FORCE)
 
-message(STATUS "Top-level third-party policy: THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}, THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}, THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
-
+message(STATUS "----------------------------------------")
+message(STATUS "Top-level third-party policy: ")
+message(STATUS "THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}")
+message(STATUS "THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}")
+message(STATUS "THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
+message(STATUS "THIRD_PARTY_ALLOW_UPSTREAM_PCH=${THIRD_PARTY_ALLOW_UPSTREAM_PCH}")
+message(STATUS "-----------------------------------------")
 
 # ----------------------------------------------------------------------------
 # XOPToolkit / XOPSupport build options
@@ -36,3 +41,6 @@ set(USE_SYSTEM_XOPSUPPORT "" CACHE PATH "Optional: path to system-installed XOPS
 # Option to enable/disable building the XOP plugin entirely (user-visible)
 option(BUILD_XOP "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" ON)
 
+# ----------------------------------------------------------------------------
+# End of ThirddParty Policy
+# ----------------------------------------------------------------------------
