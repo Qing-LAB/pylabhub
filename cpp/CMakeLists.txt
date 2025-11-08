@@ -21,47 +21,7 @@ include(cmake/ToplevelOptions.cmake)
 include(cmake/ThirdPartyPolicy.cmake)
 
 # -----------------------------------------------------------------------------
-# Helper function to find XOPSupport
-# -----------------------------------------------------------------------------
-include(cmake/FindXOPSupport.cmake)
-
-# -----------------------------------------------------------------------------
-# Find XOPSupport (vendored or system)
-# -----------------------------------------------------------------------------
-message(STATUS "==============================================")
-message(STATUS "Setting up BUILD_XOP and locating XOPSupport...")
-if(NOT (DEFINED PLATFORM_WIN64 OR DEFINED PLATFORM_APPLE))
-  set(BUILD_XOP OFF CACHE BOOL "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" FORCE)
-  message(STATUS "XOP only supported on Windows x64 or macOS; disabling BUILD_XOP.")
-endif()
-
-if(BUILD_XOP)
-# Ask the find helper to locate XOPSupport (uses XOP_VENDOR_DIR and USE_SYSTEM_XOP)
-  message(STATUS "BUILD_XOP=ON; attempting to locate XOPSupport...")
-  find_xopsupport(_xop_found)
-  if(NOT _xop_found)
-    message(WARNING "XOPSupport not found; BUILD_XOP will be ignored.")
-    set(BUILD_XOP OFF CACHE BOOL "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" FORCE)
-  else()
-    message(STATUS "XOPSupport available; XOP build enabled.")
-    # XOP::XOPSupport target is now available for linking
-  endif()
-endif()
-
-# Only add the IgorXOP subdirectory if we intend to build XOP and XOP support exists.
-if(BUILD_XOP AND _xop_found)
-  add_subdirectory(src/IgorXOP)
-else()
-  if(NOT BUILD_XOP)
-    message(STATUS "IgorXOP: BUILD_XOP=OFF; IgorXOP subproject skipped.")
-  else()
-    message(STATUS "IgorXOP: IgorXOP subproject skipped because XOPSupport not available.")
-  endif()
-endif()
-message(STATUS "==============================================")
-
-# -----------------------------------------------------------------------------
-# Basic dependencies
+# Basic dependencies for the whole project
 # -----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
