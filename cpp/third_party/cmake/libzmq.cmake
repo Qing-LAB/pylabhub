@@ -138,6 +138,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   message("=========================================================")
   message("")
   
+  # Suppose upstream provides zmq::zmq (might be an ALIAS).
+# Create a simple wrapper interface target in our namespace that links to it.
+
   # ----- additional robustness for ZeroMQ target names -----
   # (place after the existing libzmq-static / libzmq-shared aliasing)
   # Accept a few more candidate names (some packaging / forks use these).
@@ -172,6 +175,36 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
       message(STATUS "third_party: created alias zmq::zmq -> libzmq") 
     endif() 
   endif()
+
+  if (TARGET zmq::zmq)
+    # create a local interface target that forwards to upstream target
+    if (NOT TARGET pylabhub_zmq)
+      add_library(pylabhub_zmq INTERFACE)
+      target_link_libraries(pylabhub_zmq INTERFACE zmq::zmq)
+    endif()
+
+    if (NOT TARGET pylabhub::zmq)
+      add_library(pylabhub::zmq ALIAS pylabhub_zmq)
+    endif()
+
+    # Installation: only install when we built libzmq ourselves,
+    # and ensure we don't call install() on an alias.
+    get_target_property(_zmq_type zmq::zmq TYPE)
+    if (NOT _zmq_type STREQUAL "ALIAS")
+      # upstream provided a real target name (rare). Install that instead.
+      install(TARGETS zmq::zmq ...)
+    else()
+      # upstream target is an ALIAS (e.g. system-provided). Skip install or
+      # install headers manually from vendored path.
+      message(STATUS "libzmq: upstream zmq::zmq is an ALIAS; skipping install(TARGETS zmq::zmq)")
+    endif()
+  else()
+    # Fallback: if we build the subproject, it will produce a concrete target
+    # like libzmq-static or similar. Create alias to that real target after add_subdirectory.
+    # Example (run after add_subdirectory):
+    # add_library(pylabhub::zmq ALIAS libzmq-static)
+  endif()
+  ######################################################################
 
   # Provide stable pylabhub::zmq alias for consumers
   if(NOT TARGET pylabhub::zmq)

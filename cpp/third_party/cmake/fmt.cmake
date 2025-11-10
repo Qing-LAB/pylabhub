@@ -1,37 +1,47 @@
 # ---------------------------------------------------------------------------
 # third_party/cmake/fmt.cmake
-# Setup fmt library
-# Set up an INTERFACE target 'pylabhub::fmt' that uses the fmt submodule.
-# ---------------------------------------------------------------------------
-# The upstream fmt project defines and uses:
-#   - options: FMT_TEST, FMT_INSTALL, FMT_DOC, FMT_MODULE, FMT_HEADER_ONLY, FMT_UNICODE, ...
-#   - it honors BUILD_SHARED_LIBS to choose shared/static behavior.
-# See fmt/CMakeLists.txt for exact option names. :contentReference[oaicite:2]{index=2}
 #
+# Wrapper for fmt (third_party/fmt)
+#
+# Purpose & high-level policy:
+#  - Provide a stable handle pylabhub::fmt for downstream linkage.
+#  - Avoid creating aliases that point to upstream aliases (alias-of-alias).
+#    Instead, always create a local concrete wrapper target (pylabhub_fmt)
+#    and link that wrapper to any upstream fmt target (fmt, fmt::fmt, etc.).
+#  - The wrapper *owns* installation into the project's install tree when
+#    THIRD_PARTY_INSTALL (global intent) and FMT_INSTALL (wrapper intent) are set.
+#    We will not rely on the fmt subproject to run its own install rules.
+#  - Preserve your original wrapper flags (THIRD_PARTY_FMT_FORCE_VARIANT,
+#    THIRD_PARTY_DISABLE_TESTS, THIRD_PARTY_ALLOW_UPSTREAM_PCH, etc.)
+# ---------------------------------------------------------------------------
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
   message(STATUS "third_party: fmt submodule found (scoped handling)")
 
-  # Snapshot cache variables we may touch for fmt.
+  # ---------------------------
+  # Snapshot cache variables we may touch for fmt so we can restore them later.
+  # snapshot_cache_var/restore_cache_var are assumed to be provided by your helper
+  # infrastructure (they were present in original file).
+  # ---------------------------
   snapshot_cache_var(BUILD_SHARED)
   snapshot_cache_var(BUILD_STATIC)
   snapshot_cache_var(BUILD_SHARED_LIBS)
   snapshot_cache_var(BUILD_TESTS)
   snapshot_cache_var(ENABLE_PRECOMPILED)
 
-  # fmt-specific variables (match upstream names)
   snapshot_cache_var(FMT_TEST)
-  snapshot_cache_var(FMT_INSTALL)
+  snapshot_cache_var(FMT_INSTALL)       # NOTE: in this wrapper FMT_INSTALL means "wrapper should install"
   snapshot_cache_var(FMT_HEADER_ONLY)
 
-  # Map wrapper-level variant intent to variables upstream expects.
+  # ---------------------------
+  # Variant / build options (preserve original semantics)
+  # ---------------------------
   if(NOT DEFINED THIRD_PARTY_FMT_FORCE_VARIANT)
     set(THIRD_PARTY_FMT_FORCE_VARIANT "none")
   endif()
 
   if(THIRD_PARTY_FMT_FORCE_VARIANT STREQUAL "static")
-    # fmt uses BUILD_SHARED_LIBS as canonical way to select shared/static
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "Wrapper: prefer static libs for fmt (generic hint)" FORCE)
-    # also set BUILD_SHARED / BUILD_STATIC for downstreams that check them
     set(BUILD_SHARED OFF CACHE BOOL "Wrapper: prefer static libs for fmt" FORCE)
     set(BUILD_STATIC ON CACHE BOOL "Wrapper: prefer static libs for fmt" FORCE)
     message(STATUS "third_party wrapper: forcing fmt variant = static (BUILD_SHARED_LIBS=OFF)")
@@ -44,8 +54,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message(STATUS "third_party wrapper: not forcing fmt variant (none)")
   endif()
 
-  # Honor top-level USE_FMT_HEADER_ONLY if present: map to FMT_HEADER_ONLY for upstream.
-  # Note: upstream fmt uses FMT_HEADER_ONLY internally to build and expose the header-only interface.
+  # Honor top-level USE_FMT_HEADER_ONLY if present (map to upstream FMT_HEADER_ONLY).
   if(DEFINED USE_FMT_HEADER_ONLY AND USE_FMT_HEADER_ONLY)
     set(FMT_HEADER_ONLY ON CACHE BOOL "Wrapper: honor USE_FMT_HEADER_ONLY (scoped to fmt)" FORCE)
     message(STATUS "third_party wrapper: honoring USE_FMT_HEADER_ONLY => FMT_HEADER_ONLY=ON")
@@ -53,28 +62,32 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
 
   # Optionally disable only fmt's tests (do NOT set global BUILD_TESTS).
   if(THIRD_PARTY_DISABLE_TESTS)
-    # upstream fmt uses FMT_TEST to control test generation
     set(FMT_TEST OFF CACHE BOOL "Wrapper: disable fmt tests only" FORCE)
-    # Also set generic hints (harmless) so other naming styles are covered.
     set(FMT_TEST OFF CACHE BOOL "Wrapper: disable fmt tests only (duplicate safe set)" FORCE)
     message(STATUS "third_party wrapper: disabling fmt tests only (FMT_TEST=OFF)")
   endif()
 
-  # Map installation intent for fmt to upstream variable to keep behavior consistent.
-  # If wrapper-level THIRD_PARTY_INSTALL is ON, enable fmt install; otherwise turn it off.
+  # Map installation intent for fmt to wrapper-level variable FMT_INSTALL.
+  # Important: In this wrapper, FMT_INSTALL means "we (the wrapper) should
+  # install fmt headers/libs into our project's install tree".
+  # It does NOT mean "ask the fmt subproject to run its own install() rules".
   if(THIRD_PARTY_INSTALL)
+    # If top-level install intent is true, enable wrapper-managed install by default.
+    # (This matches original logic where FMT_INSTALL was mapped from THIRD_PARTY_INSTALL.)
     set(FMT_INSTALL ON CACHE BOOL "Wrapper: enable fmt install because THIRD_PARTY_INSTALL=ON" FORCE)
   else()
     set(FMT_INSTALL OFF CACHE BOOL "Wrapper: disable fmt install (wrapper default)" FORCE)
   endif()
 
-  # Scope precompiled-header handling to fmt-specific variables (do not alter others)
+  # ---------------------------
+  # Precompiled header handling (preserve original intent)
+  # ---------------------------
   if(NOT DEFINED THIRD_PARTY_ALLOW_UPSTREAM_PCH)
     set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF)
   endif()
+
   if(NOT THIRD_PARTY_ALLOW_UPSTREAM_PCH)
     set(ENABLE_PRECOMPILED OFF CACHE BOOL "Wrapper: disable fmt precompiled headers (scoped)" FORCE)
-    # fmt upstream does not use ZMQ-specific PCH vars; set common alternates if present
     set(FMT_USE_PRECOMPILED_HEADER OFF CACHE BOOL "Wrapper: disable fmt precompiled header (alt)" FORCE)
     set(FMT_USE_PCH OFF CACHE BOOL "Wrapper: disable fmt precompiled header (alt2)" FORCE)
     message(STATUS "third_party wrapper: attempted to disable fmt PCH (scoped)")
@@ -82,76 +95,84 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message(STATUS "third_party wrapper: allowing fmt upstream PCH if upstream requests it")
   endif()
 
-  # Add fmt subproject. It will read the variables we set above.
-  # Use EXCLUDE_FROM_ALL to avoid pulling fmt into default builds unless explicitly used.
+  # ---------------------------
+  # Add fmt subproject (scoped)
+  # ---------------------------
   add_subdirectory(fmt EXCLUDE_FROM_ALL)
 
-  # ----------------------------------------------------------
-  # Create canonical pylabhub::fmt alias or INTERFACE target for consumers
-  #
-  # Prefer upstream-provided CMake targets (common)
-  if(TARGET fmt)
-    if(NOT TARGET pylabhub::fmt)
-      add_library(pylabhub::fmt ALIAS fmt)
-      message(STATUS "third_party: created alias pylabhub::fmt -> fmt")
-    endif()
-  # Older fmt versions used fmt::fmt
-  elseif(TARGET fmt::fmt)
-    if(NOT TARGET pylabhub::fmt)
-      add_library(pylabhub::fmt ALIAS fmt::fmt)
-      message(STATUS "third_party: created alias pylabhub::fmt -> fmt::fmt")
-    endif()
-  elseif(TARGET fmt::fmt-header-only)
-    if(NOT TARGET pylabhub::fmt)
-      add_library(pylabhub::fmt ALIAS fmt::fmt-header-only)
-      message(STATUS "third_party: created alias pylabhub::fmt -> fmt::fmt-header-only")
-    endif()
-  else()
-    # Defensive fallback: if fmt was configured header-only but upstream
-    # did not create a target, create an INTERFACE target with include dirs.
-    # Upstream fmt sometimes sets FMT_HEADER_ONLY and FMT_INCLUDE_DIR or FMT_INSTALL.
-    if(DEFINED FMT_HEADER_ONLY AND FMT_HEADER_ONLY)
-      if(NOT TARGET pylabhub::fmt)
-        add_library(pylabhub::fmt INTERFACE)
+  # ---------------------------
+  # Create a stable local wrapper and public alias
+  # ---------------------------
+  # Always create a concrete local wrapper target (no '::' in the real target name).
+  # Downstream will use pylabhub::fmt which is an alias to this wrapper.
+  # This pattern avoids alias-of-alias issues and lets us control include dirs.
+  if(NOT TARGET pylabhub_fmt)
+    add_library(pylabhub_fmt INTERFACE)
+  endif()
 
-        # Prefer an upstream-provided include dir variable if available.
-        if(DEFINED FMT_INCLUDE_DIR AND EXISTS "${FMT_INCLUDE_DIR}")
-          target_include_directories(pylabhub::fmt INTERFACE
-            $<BUILD_INTERFACE:${FMT_INCLUDE_DIR}>
+  # Prefer to link our wrapper to any upstream-provided fmt target rather than aliasing
+  # directly to avoid alias-of-alias problems.
+  if(TARGET fmt) # some fmt versions export a plain "fmt" target
+    message(STATUS "third_party: upstream provided target 'fmt' detected; linking pylabhub_fmt -> fmt")
+    target_link_libraries(pylabhub_fmt INTERFACE fmt)
+    set(_upstream_fmt_candidate "fmt")
+  elseif(TARGET fmt::fmt) # common modern exported name
+    message(STATUS "third_party: upstream provided target 'fmt::fmt' detected; linking pylabhub_fmt -> fmt::fmt")
+    target_link_libraries(pylabhub_fmt INTERFACE fmt::fmt)
+    set(_upstream_fmt_candidate "fmt::fmt")
+  elseif(TARGET fmt::fmt-header-only)
+    message(STATUS "third_party: upstream provided target 'fmt::fmt-header-only' detected; linking pylabhub_fmt -> fmt::fmt-header-only")
+    target_link_libraries(pylabhub_fmt INTERFACE fmt::fmt-header-only)
+    set(_upstream_fmt_candidate "fmt::fmt-header-only")
+  else()
+    # Fallback: if fmt was configured header-only but didn't create a target,
+    # attempt to find include dir variables or vendored include layout and set includes.
+    if(DEFINED FMT_HEADER_ONLY AND FMT_HEADER_ONLY)
+      if(DEFINED FMT_INCLUDE_DIR AND EXISTS "${FMT_INCLUDE_DIR}")
+        target_include_directories(pylabhub_fmt INTERFACE
+          $<BUILD_INTERFACE:${FMT_INCLUDE_DIR}>
+          $<INSTALL_INTERFACE:include>
+        )
+        message(STATUS "third_party: created pylabhub_fmt INTERFACE -> FMT_INCLUDE_DIR (${FMT_INCLUDE_DIR})")
+      else()
+        set(_fmt_include_guess "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include")
+        if(EXISTS "${_fmt_include_guess}")
+          target_include_directories(pylabhub_fmt INTERFACE
+            $<BUILD_INTERFACE:${_fmt_include_guess}>
             $<INSTALL_INTERFACE:include>
           )
-          message(STATUS "third_party: created INTERFACE pylabhub::fmt -> FMT_INCLUDE_DIR (${FMT_INCLUDE_DIR})")
+          message(STATUS "third_party: created pylabhub_fmt INTERFACE -> ${_fmt_include_guess}")
         else()
-          # best-effort detection: common include layout under fmt source tree
-          set(_fmt_include_guess "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include")
-          if(EXISTS "${_fmt_include_guess}")
-            target_include_directories(pylabhub::fmt INTERFACE
-              $<BUILD_INTERFACE:${_fmt_include_guess}>
-              $<INSTALL_INTERFACE:include>
-            )
-            message(STATUS "third_party: created INTERFACE pylabhub::fmt -> ${_fmt_include_guess}")
-          endif()
+          message(STATUS "third_party: no upstream fmt target and no include dir found for header-only fallback")
         endif()
       endif()
     endif()
   endif()
 
-  # Export a variable for legacy/explicit consumers (only if target created)
+  # Expose the public alias to our wrapper so downstream consumers can use pylabhub::fmt
+  if(NOT TARGET pylabhub::fmt)
+    add_library(pylabhub::fmt ALIAS pylabhub_fmt)
+    message(STATUS "third_party: created alias pylabhub::fmt -> pylabhub_fmt")
+  else()
+    message(STATUS "third_party: pylabhub::fmt already exists")
+  endif()
+
+  # Export a variable for legacy/explicit consumers (only if alias exists)
   if(TARGET pylabhub::fmt)
     set(FMT_TARGET "pylabhub::fmt" PARENT_SCOPE)
   else()
-    # do not export an invalid name — provide empty value to indicate missing target
     set(FMT_TARGET "" PARENT_SCOPE)
     message(STATUS "third_party: pylabhub::fmt target not available; FMT_TARGET set empty")
   endif()
 
+  # Print summary of fmt configuration (useful for debugging)
   if(TARGET pylabhub::fmt)
     message("")
     message("==========================================================")
-    message("third_party: build ${FMT_TARGET} with the following settings:")
+    message("third_party: build pylabhub::fmt with the following settings:")
     message(STATUS "  BUILD_SHARED_LIBS=${BUILD_SHARED_LIBS}")
     message(STATUS "  FMT_HEADER_ONLY=${FMT_HEADER_ONLY}")
-    message(STATUS "  FMT_INSTALL=${FMT_INSTALL}")
+    message(STATUS "  FMT_INSTALL=${FMT_INSTALL}  # wrapper-managed install intent")
     message(STATUS "  FMT_TEST=${FMT_TEST}")
     message(STATUS "  ENABLE_PRECOMPILED=${ENABLE_PRECOMPILED}")
     message(STATUS "  BUILD_STATIC=${BUILD_STATIC}")
@@ -161,67 +182,228 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message("")
   endif()
 
-  # ----------------------------------------------------------
-  # Setup installation
-  # fmt install handler: install headers or trust upstream
-  # ----------------------------------------------------------
-  if(THIRD_PARTY_INSTALL)
-    # If upstream fmt produced install rules (we set FMT_INSTALL), prefer that.
-    if(DEFINED FMT_INSTALL AND FMT_INSTALL)
-      message(STATUS "third_party: relying on upstream fmt install (FMT_INSTALL=ON).")
+  # ---------------------------
+  # Installation handling (wrapper-managed)
+  # Invariant: FMT_INSTALL in this wrapper means "we will install fmt headers/libs
+  # into our project's install tree". We do not rely on fmt subproject calling install().
+  # ---------------------------
+  if(THIRD_PARTY_INSTALL AND FMT_INSTALL)
+    # --- 1) Install headers (always attempt to install headers) ---
+    # Preference order for header location:
+    #  1. FMT_INCLUDE_DIR (upstream-provided variable)
+    #  2. vendored include under third_party/fmt/include
+    #  3. FetchContent source include (fmt_SOURCE_DIR or FMT_SOURCE_DIR)
+    set(_fmt_header_installed FALSE)
+
+    if(DEFINED FMT_INCLUDE_DIR AND EXISTS "${FMT_INCLUDE_DIR}")
+      message(STATUS "third_party: installing fmt headers from FMT_INCLUDE_DIR (${FMT_INCLUDE_DIR})")
+      install(DIRECTORY "${FMT_INCLUDE_DIR}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+      set(_fmt_header_installed TRUE)
     else()
-      # Upstream didn't create install rules — if we made an INTERFACE target
-      # from a vendored include dir, install that include tree.
-      if(TARGET pylabhub::fmt)
-        # If pylabhub::fmt is INTERFACE and we have an include dir variable, install it
-        if(TARGET pylabhub::fmt AND NOT TARGET fmt::fmt AND DEFINED FMT_INCLUDE_DIR AND EXISTS "${FMT_INCLUDE_DIR}")
-          message(STATUS "third_party: installing fmt headers from ${FMT_INCLUDE_DIR}")
-          install(DIRECTORY "${FMT_INCLUDE_DIR}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+      set(_fmt_vendored_include "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include")
+      if(EXISTS "${_fmt_vendored_include}")
+        message(STATUS "third_party: installing vendored fmt headers from ${_fmt_vendored_include}")
+        install(DIRECTORY "${_fmt_vendored_include}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+        set(_fmt_header_installed TRUE)
+      else()
+        # Try FetchContent-style variables if present
+        if(DEFINED fmt_SOURCE_DIR AND EXISTS "${fmt_SOURCE_DIR}/include")
+          set(_fmt_fc_include "${fmt_SOURCE_DIR}/include")
+        elseif(DEFINED FMT_SOURCE_DIR AND EXISTS "${FMT_SOURCE_DIR}/include")
+          set(_fmt_fc_include "${FMT_SOURCE_DIR}/include")
         else()
-          # Best-effort fallback: vendored layout under third_party/fmt/include
-          set(_fmt_vendored_include "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include")
-          if(EXISTS "${_fmt_vendored_include}")
-            message(STATUS "third_party: installing vendored fmt headers from ${_fmt_vendored_include}")
-            install(DIRECTORY "${_fmt_vendored_include}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
-          endif()
+          set(_fmt_fc_include "")
+        endif()
+
+        if(_fmt_fc_include)
+          message(STATUS "third_party: installing fmt headers from fetched source ${_fmt_fc_include}")
+          install(DIRECTORY "${_fmt_fc_include}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+          set(_fmt_header_installed TRUE)
         endif()
       endif()
     endif()
 
-    # Export the third-party targets into an export set so we can provide pylabhubThirdPartyTargets
-    # (collect only real targets that are installable)
-    set(_thirdparty_targets_to_install "")
-    # If upstream provided an installable fmt target (fmt::fmt) and FMT_INSTALL was used, include it
-    if(TARGET fmt)
-      list(APPEND _thirdparty_targets_to_install fmt)
-    elseif(TARGET fmt::fmt)
-      list(APPEND _thirdparty_targets_to_install fmt::fmt)
-    elseif(TARGET fmt::fmt-header-only)
-      list(APPEND _thirdparty_targets_to_install fmt::fmt-header-only)
-    elseif(TARGET pylabhub::fmt AND (NOT TARGET fmt::fmt) AND (NOT TARGET fmt::fmt-header-only))
-      # Can't install ALIAS; but if pylabhub::fmt is INTERFACE (headers only), we already installed headers above.
-      # Nothing else to add here.
+    if(NOT _fmt_header_installed)
+      message(STATUS "third_party: warning: no fmt headers found to install (no FMT_INCLUDE_DIR, vendored include, or fetched include).")
+      # We continue: libraries might still be present, but headers are missing (unlikely).
     endif()
 
-    if(_thirdparty_targets_to_install)
-      install(TARGETS ${_thirdparty_targets_to_install}
+    # --- 2) Attempt to install library artifacts ---
+    # We prefer install(TARGETS ...) when a concrete (non-ALIAS, non-INTERFACE) target exists.
+    # Otherwise, fall back to searching the build tree for library artifacts and install them with install(FILES ...).
+    set(_thirdparty_fmt_targets_to_install "")
+
+    # Robust detection whether a target is a concrete installable target.
+    # This version first checks ALIASED_TARGET (reliable for detecting aliases),
+    # then falls back to TYPE. It returns TRUE only for concrete, non-alias,
+    # non-interface targets.
+    function(_is_target_installable tgt_name result_var)
+      # Default result = FALSE
+      set(${result_var} FALSE PARENT_SCOPE)
+
+      if (NOT tgt_name)
+        message(STATUS "third_party: _is_target_installable called with empty name")
+        return()
+      endif()
+
+      if(TARGET ${tgt_name})
+        # 1) Check if this is an ALIAS target. ALIASED_TARGET property is set for alias targets.
+        get_target_property(_aliased ${tgt_name} ALIASED_TARGET)
+        if(NOT _aliased OR _aliased STREQUAL "NOTFOUND")
+          # No ALIASED_TARGET property -> not an alias (or property unavailable)
+          set(_aliased "")
+        endif()
+
+        if(_aliased)
+          message(STATUS "third_party: target ${tgt_name} is an ALIAS of ${_aliased} -> not safe for install(TARGETS ...)")
+          set(${result_var} FALSE PARENT_SCOPE)
+          return()
+        endif()
+
+        # 2) Not an alias (or alias property unavailable). Query TYPE as a secondary check.
+        get_target_property(_tgt_type ${tgt_name} TYPE)
+        if(NOT _tgt_type OR _tgt_type STREQUAL "NOTFOUND")
+          set(_tgt_type "UNKNOWN")
+        endif()
+
+        message(STATUS "third_party: debug: target ${tgt_name} TYPE='${_tgt_type}'")
+
+        if(_tgt_type STREQUAL "INTERFACE_LIBRARY")
+          message(STATUS "third_party: target ${tgt_name} is INTERFACE -> not safe for install(TARGETS ...)")
+          set(${result_var} FALSE PARENT_SCOPE)
+        else()
+          # Conservative: treat STATIC/SHARED/MODULE/OBJECT/EXECUTABLE/UNKNOWN as installable.
+          set(${result_var} TRUE PARENT_SCOPE)
+        endif()
+      else()
+        message(STATUS "third_party: target ${tgt_name} not found")
+        set(${result_var} FALSE PARENT_SCOPE)
+      endif()
+    endfunction()
+
+
+    # Candidate upstream target names to check (common variations)
+    foreach(_cand IN ITEMS fmt fmt::fmt fmt::fmt-header-only)
+      if(_cand)
+        _is_target_installable("${_cand}" _cand_installable)
+        if(_cand_installable)
+          list(APPEND _thirdparty_fmt_targets_to_install ${_cand})
+        endif()
+      endif()
+    endforeach()
+
+    # If we found concrete upstream targets, install them (with PUBLIC_HEADER DESTINATION).
+    if(_thirdparty_fmt_targets_to_install)
+      # install(TARGETS ...) on concrete targets; add PUBLIC_HEADER DESTINATION to silence CMake dev warning.
+      install(TARGETS ${_thirdparty_fmt_targets_to_install}
         EXPORT pylabhubThirdPartyTargets
         INCLUDES DESTINATION include
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
+        PUBLIC_HEADER DESTINATION include/fmt
       )
+      message(STATUS "third_party: installed fmt targets via install(TARGETS ...): ${_thirdparty_fmt_targets_to_install}")
+    else()
+      # No concrete target available. Fallback: search common build output locations for libfmt artifacts
+      # and install them into lib/ (so your project's install layout is satisfied even when upstream
+      # did not provide concrete, installable CMake targets).
+      set(_fmt_lib_found_files "")
+
+      # Search patterns (adjust if your build layout is different).
+      # Use CMAKE_CURRENT_BINARY_DIR as primary search root; also look in "fmt" subfolder outputs.
+      file(GLOB _fmt_search_a RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmt/**/libfmt*.a"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/libfmt*.a"
+        "${CMAKE_CURRENT_BINARY_DIR}/libfmt*.a"
+      )
+      foreach(_f IN LISTS _fmt_search_a)
+        list(APPEND _fmt_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      file(GLOB _fmt_search_so RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmt/**/libfmt*.so"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/libfmt*.so"
+        "${CMAKE_CURRENT_BINARY_DIR}/libfmt*.so"
+      )
+      foreach(_f IN LISTS _fmt_search_so)
+        list(APPEND _fmt_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      # Versioned so (libfmt.so.1.2.3)
+      file(GLOB _fmt_search_so_ver RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmt/**/libfmt*.so.*"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/libfmt*.so.*"
+      )
+      foreach(_f IN LISTS _fmt_search_so_ver)
+        list(APPEND _fmt_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      # Windows-ish names / import libs / dlls
+      file(GLOB _fmt_search_lib RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmt/**/fmt*.lib"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/fmt*.lib"
+        "${CMAKE_CURRENT_BINARY_DIR}/*.lib"
+      )
+      foreach(_f IN LISTS _fmt_search_lib)
+        list(APPEND _fmt_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      file(GLOB _fmt_search_dll RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmt/**/fmt*.dll"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/fmt*.dll"
+      )
+      foreach(_f IN LISTS _fmt_search_dll)
+        list(APPEND _fmt_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      # Deduplicate and filter out non-existent entries (just in case)
+      list(REMOVE_DUPLICATES _fmt_lib_found_files)
+      set(_fmt_lib_files_existing "")
+      foreach(_f IN LISTS _fmt_lib_found_files)
+        if(EXISTS "${_f}")
+          list(APPEND _fmt_lib_files_existing "${_f}")
+        endif()
+      endforeach()
+      set(_fmt_lib_found_files ${_fmt_lib_files_existing})
+
+      if(_fmt_lib_found_files)
+        message(STATUS "third_party: found fmt library files to install: ${_fmt_lib_found_files}")
+        install(FILES ${_fmt_lib_found_files} DESTINATION lib COMPONENT devel)
+      else()
+        message(STATUS "third_party: no fmt library artifacts found in build tree; nothing to install for libs")
+      endif()
     endif()
 
+    # Print final install summary for visibility
     message("")
     message("=========================================================")
-    message(STATUS "INSTALL setup for fmt:")
-    message(STATUS "third_party: ${_thirdparty_targets_to_install} install enabled")
+    message(STATUS "INSTALL setup for fmt (wrapper-managed):")
+    if(_fmt_header_installed)
+      message(STATUS "  headers: installed to <install-prefix>/include")
+    else()
+      message(STATUS "  headers: NOT installed (none found)")
+    endif()
+    if(_thirdparty_fmt_targets_to_install)
+      message(STATUS "  libraries: installed via install(TARGETS ...) -> lib/")
+    elseif(_fmt_lib_found_files)
+      message(STATUS "  libraries: installed via file fallback -> lib/")
+    else()
+      message(STATUS "  libraries: none installed")
+    endif()
     message("=========================================================")
-  endif() # THIRD_PARTY_INSTALL
+  else()
+    # Either global wrapper-level install intent disabled or wrapper decided not to install.
+    if(NOT THIRD_PARTY_INSTALL)
+      message(STATUS "third_party: THIRD_PARTY_INSTALL is OFF; wrapper will not install fmt into project.")
+    elseif(NOT FMT_INSTALL)
+      message(STATUS "third_party: FMT_INSTALL is OFF (wrapper-managed); wrapper will not install fmt into project.")
+    endif()
+  endif() # if(THIRD_PARTY_INSTALL AND FMT_INSTALL)
 
-
-  # Restore previously-snapshotted cache variables so fmt's forced values do not leak.
+  # ---------------------------
+  # Restore previously-snapshotted cache variables so we do not leak settings
+  # ---------------------------
   restore_cache_var(BUILD_SHARED BOOL)
   restore_cache_var(BUILD_STATIC BOOL)
   restore_cache_var(BUILD_SHARED_LIBS BOOL)
@@ -232,15 +414,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
   restore_cache_var(FMT_INSTALL BOOL)
   restore_cache_var(FMT_HEADER_ONLY BOOL)
 
-else() #if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt")
+else() # if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt")
   message(WARNING "third_party: fmt submodule not found at ${CMAKE_CURRENT_SOURCE_DIR}/fmt")
 endif()
 
 # ---------------------------------------------------------------------------
 # pylabhub::fmt is the canonical target to use fmt
-# as a fallback, FMT_TARGET variable is set to the target name or empty if not available
-# the following is an example of how to use this target:
 #
+# Usage example:
 #   if(TARGET pylabhub::fmt)
 #     target_link_libraries(myexe PRIVATE pylabhub::fmt)
 #   elseif(DEFINED FMT_TARGET AND FMT_TARGET)
