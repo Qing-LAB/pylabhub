@@ -46,7 +46,7 @@ inline std::wstring win32_to_long_path(const std::filesystem::path &p_in)
     {
         return ws;
     }
-    if(ws.rfind(L"\\\\?\\UNC\\", 0)== 0)
+    if (ws.rfind(L"\\\\?\\UNC\\", 0) == 0)
     {
         return ws;
     }
