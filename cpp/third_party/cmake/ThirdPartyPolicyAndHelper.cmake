@@ -1,6 +1,4 @@
-
-cmake(MINIMUM_REQUIRED(VERSION 3.18))
-
+cmake_minimum_required(VERSION 3.18)
 # ---------------------------------------------------------------------------
 # ThirdPartyPolicy.cmake
 # General policies for third-party subprojects (fmt, libzmq, etc.)
@@ -17,8 +15,8 @@ set(THIRD_PARTY_PCH_DIR "${CMAKE_CURRENT_BINARY_DIR}/pchs")
 file(MAKE_DIRECTORY "${THIRD_PARTY_PCH_DIR}")
 
 # Per-library variant controls. Values: "none" | "shared" | "static"
-option(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Force libzmq build variant: none|shared|static")
-option(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Force fmt build variant: none|shared|static")
+set(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Force libzmq build variant: none|shared|static")
+set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Force fmt build variant: none|shared|static")
 
 # Wrapper-level intent to disable third-party tests by default (ON/OFF).
 # The wrapper will set subproject-specific test knobs (e.g. ZMQ_BUILD_TESTS, FMT_TEST)
@@ -89,7 +87,7 @@ macro(restore_cache_var _var _cache_type)
 endmacro()
 
 
-message(STATUS "========================================================="
+message(STATUS "=========================================================")
 message(STATUS "General top-level third-party policy: ")
 message(STATUS "THIRD_PARTY_INSTALL=${THIRD_PARTY_INSTALL}")
 message(STATUS "THIRD_PARTY_ALLOW_UPSTREAM_PCH=${THIRD_PARTY_ALLOW_UPSTREAM_PCH}")
@@ -98,7 +96,7 @@ message(STATUS "THIRD_PARTY_PCH_DIR=${THIRD_PARTY_PCH_DIR}")
 message(STATUS "THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}")
 message(STATUS "THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}")
 message(STATUS "THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
-message(STATUS "========================================================="
+message(STATUS "=========================================================")
 
 # ----------------------------------------------------------------------------
 # XOPToolkit / XOPSupport build options
@@ -122,7 +120,7 @@ message("  XOP_VENDOR_DIR=${XOP_VENDOR_DIR}")
 message("  USE_SYSTEM_XOPSUPPORT=${USE_SYSTEM_XOPSUPPORT}")
 message("  BUILD_XOP=${BUILD_XOP}")
 message("===============================================================")
-message(")
+message("")
 
 # ----------------------------------------------------------------------------
 # End of ThirddParty Policy
