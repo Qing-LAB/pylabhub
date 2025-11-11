@@ -17,3 +17,10 @@ option(BUILD_XOP "Build the pylabhub XOP plugin (only supported on macOS and Win
 # XOPToolKit on the user's system.
 # The use of the XOPToolKit is handled in src/IgorXOP/CMakeLists.txt
 # and src/IgorXOP/cmake/FindXOPSupport.cmake.
+
+message(STATUS "=============================================================")
+message(STATUS "XOPToolkit / XOPSupport build options:")
+message(STATUS "  XOP_VENDOR_DIR=${XOP_VENDOR_DIR}")
+message(STATUS "  USE_SYSTEM_XOPSUPPORT=${USE_SYSTEM_XOPSUPPORT}")
+message(STATUS "  BUILD_XOP=${BUILD_XOP}")
+message(STATUS "=============================================================")
