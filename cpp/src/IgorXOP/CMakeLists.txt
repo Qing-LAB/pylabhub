@@ -241,6 +241,18 @@ elseif(DEFINED XOP_SUPPORT_IGOR_LIB_PATH AND EXISTS "${XOP_SUPPORT_IGOR_LIB_PATH
   message(STATUS "IgorXOP: linking to IGOR import lib ${XOP_SUPPORT_IGOR_LIB_PATH}")
 endif()
 
+if(DEFINED PLATFORM_APPLE)
+  # macOS frameworks required by libXOPSupport64.a
+  # Cocoa (AppKit + Foundation), CoreFoundation, CoreServices, Carbon, AudioToolbox, and Security if needed.
+  target_link_libraries(${XOP_TARGET} PRIVATE
+    "-framework Cocoa"          # AppKit + Foundation (UI classes like NSAlert, NSOpenPanel)
+    "-framework CoreFoundation" # CFString, CFURL, CFRelease, etc.
+    "-framework CoreServices"   # FS* / other legacy APIs
+    "-framework Carbon"         # some old Carbon APIs used by XOPSupport
+    "-framework AudioToolbox"   # AudioServicesPlayAlertSound
+  )
+endif()
+
 # -------------------------------------------------------------------------
 # Compiler flags and Debug/Release handling
 # - Consolidated MSVC handling (no duplicate blocks)
@@ -289,19 +301,51 @@ if(DEFINED PLATFORM_APPLE)
   # We only build for macOS x86_64 (above we ensured _macos_x86_64)
   if(_macos_x86_64)
     target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
-    # Allow Apple's block syntax in system headers (blocks '^' token).
-    # Clang supports blocks via -fblocks; add it for the XOP target so system headers compile.
-    target_compile_options(${XOP_TARGET} PRIVATE
-      $<$<C_COMPILER_ID:Clang>:-fblocks>
-      $<$<CXX_COMPILER_ID:Clang>:-fblocks>
-    )
-    # (Optional) Make sure libc++ is used on modern macOS:
-    target_compile_options(${XOP_TARGET} PRIVATE -stdlib=libc++)
     message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
-    message(STATUS "IgorXOP: adding -fblocks option to allow Apple's block syntax in system headers")
-    message(STATUS "IgorXOP: adding -stdlib=libc++ to ensure libc++ is used on modern macOS")
   else()
     message(WARNING "IgorXOP: PLATFORM_APPLE set but macOS x86_64 detection failed; not adding MACIGOR/IGOR64")
+  endif()
+endif()
+
+# --- macOS blocks handling: enable -fblocks for Clang; handle GCC cautiously ---
+if(DEFINED PLATFORM_APPLE)
+  include(CheckCXXCompilerFlag)
+
+  # Test whether the current C++ compiler accepts -fblocks
+  check_cxx_compiler_flag("-fblocks" CXX_HAS_FBLOCKS)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "AppleClang")
+    if(CXX_HAS_FBLOCKS)
+      message(STATUS "IgorXOP: enabling -fblocks for Clang/AppleClang so Apple headers with '^' compile")
+      target_compile_options(${XOP_TARGET} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fblocks>
+      )
+    else()
+      message(WARNING "IgorXOP: Clang on this host does not accept -fblocks (unexpected). System headers using '^' may fail.")
+    endif()
+
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC on macOS is uncommon. Try best-effort fallback, but warn strongly.
+    if(CXX_HAS_FBLOCKS)
+      message(WARNING "IgorXOP: GCC detected on macOS and -fblocks is supported. This is uncommon; proceed with caution.")
+      # Safer: compile the specific TU(s) that include macOS frameworks as Objective-C++.
+      # This avoids C++ parser issues and allows blocks/ObjC++ constructs.
+      set(_wa_cpp "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.cpp")
+      if(EXISTS "${_wa_cpp}")
+        message(STATUS "IgorXOP: compiling ${_wa_cpp} as Objective-C++ (OBJCXX) and enabling -fblocks")
+        set_source_files_properties(${_wa_cpp} PROPERTIES LANGUAGE OBJCXX)
+        target_compile_options(${XOP_TARGET} PRIVATE
+          $<$<COMPILE_LANGUAGE:OBJCXX>:-fblocks>
+        )
+      else()
+        message(WARNING "IgorXOP: WaveAccess.cpp not found; cannot set OBJCXX fallback.")
+      endif()
+    else()
+      message(WARNING "IgorXOP: GCC detected and -fblocks not supported. Building may fail when system headers with '^' are included. Recommend using AppleClang.")
+    endif()
+
+  else()
+    message(WARNING "IgorXOP: Unrecognized compiler '${CMAKE_CXX_COMPILER_ID}' on macOS. If you see '^' token errors, try building with AppleClang.")
   endif()
 endif()
 

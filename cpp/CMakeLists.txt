@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.18)
 
+# Optionally allow explicit override:
+option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts" ON)
+
+if(FORCE_USE_CLANG_ON_APPLE)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    find_program(_clang_path clang)
+    find_program(_clangpp_path clang++)
+    if(_clang_path AND _clangpp_path)
+      set(CMAKE_C_COMPILER "${_clang_path}" CACHE FILEPATH "C compiler" FORCE)
+      set(CMAKE_CXX_COMPILER "${_clangpp_path}" CACHE FILEPATH "C++ compiler" FORCE)
+      message(STATUS "Top-level: forcing clang/clang++ on macOS: ${_clang_path}, ${_clangpp_path}")
+    else()
+      message(WARNING "Top-level: clang not found on PATH. Consider installing Xcode or CommandLineTools.")
+    endif()
+  endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # Project declaration
 # -----------------------------------------------------------------------------
