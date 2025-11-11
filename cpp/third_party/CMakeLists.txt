@@ -16,6 +16,17 @@ project(third_party NONE)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/ThirdPartyPolicyAndHelper.cmake)
 
+# ---------------------------------------------------------------------------
+# Begin third_party subproject setups
+# Individual third-party subprojects are handled in their own cmake/*.cmake files.
+# These files should use the helper macros snapshot_cache_var / restore_cache_var
+# to avoid leaking cache variable changes outside their scope.
+# The scripts should respect the variables and options defined in
+# cmake/ThirdPartyPolicyAndHelper.cmake.
+# Both building and installation should be properly handled according to the
+# wrapper-level intent variables.
+# ---------------------------------------------------------------------------
+
 # setup nlohmann_json target
 include(cmake/nlohmann_json.cmake)
 
@@ -26,6 +37,5 @@ include(cmake/fmt.cmake)
 include(cmake/libzmq.cmake)
 
 # ---------------------------------------------------------------------------
-# End of third_party/CMakeLists.txt, set up all the variables that will be
-# used by the whole project
+# End of third_party/CMakeLists.txt
 # ---------------------------------------------------------------------------
