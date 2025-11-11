@@ -855,7 +855,7 @@ static int DoFunction()
 {
     int funcIndex;
     void *p; // Pointer to structure containing function parameters and result.
-    int err;
+    int err = 0;
 
     funcIndex = (int)GetXOPItem(0); // Which function is being invoked ?
     p = (void *)GetXOPItem(1);      // Get pointer to params/result.
