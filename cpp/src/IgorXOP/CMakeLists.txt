@@ -5,20 +5,14 @@
 # Responsibilities:
 #  - Detect XOPSupport via FindXOPSupport.cmake (find_xopsupport)
 #  - Configure target sources & flags according to XOP Toolkit guidance
-#    (Windows: Visual C++ settings; macOS: bundle/.xop packaging).
-#  - Produce final artifact with .xop extension and correct internal executable name.
-#  - Install only the final .xop and copy any .ipf/.iph/.ihf files from the src dir
-#    into <install_prefix>/xop/.
-#  - Publish the following CACHE INTERNAL variables for top-level summary:
-#      BUILD_XOP_FINAL_ENABLED (ON/OFF)
-#      XOP_TARGET_NAME         (string)
-#      XOPTOOLKIT_DIR         (path used)
-#      XOP_SUPPORT_FOUND      (ON/OFF)
+#  - Produce final artifact with .xop extension and correct internal executable name
+#  - Install the final .xop and copy any Igor procedure/help files (.ipf/.ihf)
+#  - Publish CACHE INTERNAL variables for top-level summary:
+#      BUILD_XOP_FINAL_ENABLED, XOP_TARGET_NAME, XOPTOOLKIT_DIR, XOP_SUPPORT_FOUND
 #
-# Notes:
-#  - Top-level should define option(BUILD_XOP ...) and call add_subdirectory(src/IgorXOP)
-#  - This file intentionally performs detection itself so the top-level need only
-#    add the subdir when BUILD_XOP is ON.
+# Assumptions (per your instruction):
+#  - PLATFORM_WIN64 and PLATFORM_APPLE are correctly set by higher-level CMake.
+#  - Only Windows x64 and macOS x64 are supported for this XOP.
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 project(IgorXOP LANGUAGES C CXX)
@@ -46,21 +40,20 @@ if(NOT BUILD_XOP)
   return()
 endif()
 
-# Ensure find_xopsupport is available (define include path fallback)
+# Ensure find_xopsupport is available (include fallback)
 if(NOT COMMAND find_xopsupport)
   include(cmake/FindXOPSupport.cmake OPTIONAL)
 endif()
 
 if(NOT COMMAND find_xopsupport)
   message(WARNING "IgorXOP: find_xopsupport() not available (FindXOPSupport.cmake not found). Skipping XOP.")
-  # ensure cache variables reflect skip
   set(BUILD_XOP_FINAL_ENABLED OFF CACHE INTERNAL "Final: IgorXOP will be built")
   set(XOP_SUPPORT_FOUND OFF CACHE INTERNAL "XOPSupport found (vendor or system)")
   message(STATUS "==============================================")
   return()
 endif()
 
-# Call the find helper. It sets imported targets (XOP::XOPSupport / XOP::IGOR) and publishes XOP_SUPPORT_ROOT_USED.
+# Call find helper. It may create imported targets XOP::XOPSupport and XOP::IGOR
 find_xopsupport(_xop_found)
 
 if(NOT _xop_found)
@@ -85,30 +78,75 @@ else()
 endif()
 
 message(STATUS "IgorXOP: XOPSupport detected; XOPSupport root: ${XOPTOOLKIT_DIR}")
-message(STATUS "IgorXOP: configuring XOP target (platform specific behavior follows; see XOPMan8-devtools).")
+message(STATUS "IgorXOP: configuring XOP target (platform specific behavior follows).")
 
 # -------------------------------------------------------------------------
-# Platform support check: only WIN x64 and APPLE (Intel x64) are supported.
+# Platform check (use PLATFORM_* values supplied by top-level)
+# - We assume PLATFORM_WIN64 and PLATFORM_APPLE are set by top-level.
+# - Additionally, for macOS we must verify x86_64 (Intel) target; do robust detection.
 # -------------------------------------------------------------------------
-if(DEFINED CMAKE_OSX_ARCHITECTURES)
-  list(FIND CMAKE_OSX_ARCHITECTURES "x86_64" _found_osx_x64)
-  if(_found_osx_x64 EQUAL -1)
-    message(WARNING "IgorXOP: CMAKE_OSX_ARCHITECTURES does not include x86_64; build may fail for this xop.")
-  endif()
-endif()
-if(NOT PLATFORM_WIN64 AND NOT (PLATFORM_APPLE AND _found_osx_x64))
-  message(WARNING "IgorXOP: only Windows x64 and macOS (x64) are supported. Skipping.")
+if(NOT (DEFINED PLATFORM_WIN64 OR DEFINED PLATFORM_APPLE))
+  message(WARNING "IgorXOP: top-level did not provide PLATFORM_WIN64 or PLATFORM_APPLE. Skipping.")
   set(BUILD_XOP_FINAL_ENABLED OFF CACHE INTERNAL "Final: IgorXOP will be built")
   message(STATUS "==============================================")
   return()
 endif()
 
+# Detect macOS x86_64 target robustly:
+#  - If CMAKE_OSX_ARCHITECTURES defined, check it for x86_64
+#  - Else check CMAKE_HOST_SYSTEM_PROCESSOR / CMAKE_SYSTEM_PROCESSOR
+#  - Else, fall back to pointer-size heuristic (64-bit implies x86_64 on macOS host), with warning.
+set(_macos_x86_64 OFF)
+if(DEFINED PLATFORM_APPLE)
+  if(DEFINED CMAKE_OSX_ARCHITECTURES)
+    list(FIND CMAKE_OSX_ARCHITECTURES "x86_64" _idx)
+    if(NOT _idx EQUAL -1)
+      set(_macos_x86_64 ON)
+    endif()
+  endif()
+
+  if(NOT _macos_x86_64)
+    if(DEFINED CMAKE_HOST_SYSTEM_PROCESSOR)
+      string(TOLOWER "${CMAKE_HOST_SYSTEM_PROCESSOR}" _proc_lower)
+      if(_proc_lower MATCHES "x86_64" OR _proc_lower MATCHES "amd64")
+        set(_macos_x86_64 ON)
+      endif()
+    endif()
+  endif()
+
+  if(NOT _macos_x86_64 AND DEFINED CMAKE_SYSTEM_PROCESSOR)
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _sysproc_lower)
+    if(_sysproc_lower MATCHES "x86_64" OR _sysproc_lower MATCHES "amd64")
+      set(_macos_x86_64 ON)
+    endif()
+  endif()
+
+  if(NOT _macos_x86_64)
+    # Last-resort heuristic: pointer size 8 on macOS commonly indicates 64-bit target.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+      message(WARNING "IgorXOP: macOS target pointer size is 64-bit; assuming x86_64. If building universal or arm64, verify CMAKE_OSX_ARCHITECTURES.")
+      set(_macos_x86_64 ON)
+    else()
+      message(WARNING "IgorXOP: macOS target does not appear to be x86_64. Skipping XOP (we only support macOS x64).")
+      set(BUILD_XOP_FINAL_ENABLED OFF CACHE INTERNAL "Final: IgorXOP will be built")
+      message(STATUS "==============================================")
+      return()
+    endif()
+  endif()
+endif()
+
+# At this point, PLATFORM_* and macOS x64 detection passed (if applicable)
+if(DEFINED PLATFORM_WIN64)
+  message(STATUS "IgorXOP: target platform = Windows x64 (PLATFORM_WIN64=ON)")
+endif()
+if(DEFINED PLATFORM_APPLE)
+  message(STATUS "IgorXOP: target platform = macOS (PLATFORM_APPLE=ON); x86_64 = ${_macos_x86_64}")
+endif()
+
 # -------------------------------------------------------------------------
 # Source list (platform-specific)
-#   - macOS: include WaveAccess.r (Rez resource) if present (XOP toolkit expects .r)
-#   - Windows: include WaveAccess.rc and WaveAccessWinCustom.rc if present
 # -------------------------------------------------------------------------
-set(XOP_NAME pylabhub-xop)          # base name of product
+set(XOP_NAME pylabhub-xop)          # base product name
 set(XOP_TARGET ${XOP_NAME})
 
 set(XOP_SOURCES
@@ -117,8 +155,8 @@ set(XOP_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/resource.h
 )
 
-# macOS resource file (.r) - Rez should be used only on macOS per toolkit docs. :contentReference[oaicite:1]{index=1}
-if(PLATFORM_APPLE)
+# macOS resource file (.r)
+if(DEFINED PLATFORM_APPLE)
   set(_rfile "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r")
   if(EXISTS "${_rfile}")
     list(APPEND XOP_SOURCES "${_rfile}")
@@ -127,7 +165,7 @@ if(PLATFORM_APPLE)
 endif()
 
 # Windows resource file(s)
-if(PLATFORM_WIN64)
+if(DEFINED PLATFORM_WIN64)
   set(_rcfile "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.rc")
   set(_rcfile_custom "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccessWinCustom.rc")
   if(EXISTS "${_rcfile}")
@@ -144,32 +182,25 @@ endif()
 # Create target
 # -------------------------------------------------------------------------
 # On macOS we want a bundle that is packaged as .xop; on Windows a DLL renamed to .xop.
-# We'll create a shared target and set properties per-platform.
 add_library(${XOP_TARGET} SHARED ${XOP_SOURCES})
 add_library(pylabhub::${XOP_TARGET} ALIAS ${XOP_TARGET})
 
-# macOS: create a bundle so CMake can produce a package folder (Contents/...).
-# We still set SUFFIX to .xop so the bundle name ends with .xop.
-if(PLATFORM_APPLE)
+# macOS: create bundle (Contents/...) and ensure .xop suffix
+if(DEFINED PLATFORM_APPLE)
   set_target_properties(${XOP_TARGET} PROPERTIES
     MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_GUI_IDENTIFIER "com.pylabhub.xop.${XOP_NAME}"
-    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "pylabhub.xop.${XOP_NAME}"
+    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}64"
+    PREFIX ""              # no lib prefix
+    SUFFIX ".xop"          # bundle ends with .xop
   )
 endif()
 
-# Ensure the output file uses the .xop wrapper extension and no 'lib' prefix on macOS and on Windows.
-# On Windows we also append 64 to the output name to follow the toolkit's examples for 64-bit XOPs. :contentReference[oaicite:2]{index=2}
-if(PLATFORM_WIN64)
+# Windows output naming (no lib prefix, output name ends with 64 and suffix .xop)
+if(DEFINED PLATFORM_WIN64)
   set_target_properties(${XOP_TARGET} PROPERTIES
-    PREFIX ""                         # no 'lib' prefix
-    OUTPUT_NAME "${XOP_NAME}64"       # WaveAccess64 style naming for 64-bit
-    SUFFIX ".xop"
-  )
-elseif(PLATFORM_APPLE)
-  # For macOS bundle, set prefix "" and suffix .xop to make the package name end with .xop
-  set_target_properties(${XOP_TARGET} PROPERTIES
-    PREFIX ""
+    PREFIX ""                         # no lib prefix
+    OUTPUT_NAME "${XOP_NAME}64"       # toolkit convention for 64-bit
     SUFFIX ".xop"
   )
 endif()
@@ -186,12 +217,11 @@ elseif(DEFINED XOP_SUPPORT_ROOT_USED AND EXISTS "${XOP_SUPPORT_ROOT_USED}/includ
   target_include_directories(${XOP_TARGET} PRIVATE "${XOP_SUPPORT_ROOT_USED}/include")
   message(STATUS "IgorXOP: using include dir ${XOP_SUPPORT_ROOT_USED}/include")
 elseif(DEFINED XOP_VENDOR_DIR AND EXISTS "${XOP_VENDOR_DIR}")
-  # last-resort vendor dir
   target_include_directories(${XOP_TARGET} PRIVATE "${XOP_VENDOR_DIR}")
   message(STATUS "IgorXOP: using vendor include dir ${XOP_VENDOR_DIR}")
 endif()
 
-# Link to XOP support
+# Link to XOP support library / imported target
 if(TARGET XOP::XOPSupport)
   target_link_libraries(${XOP_TARGET} PRIVATE XOP::XOPSupport)
   message(STATUS "IgorXOP: linking to XOP::XOPSupport imported target")
@@ -212,88 +242,74 @@ elseif(DEFINED XOP_SUPPORT_IGOR_LIB_PATH AND EXISTS "${XOP_SUPPORT_IGOR_LIB_PATH
 endif()
 
 # -------------------------------------------------------------------------
-# Compiler flags and MSVC-specific runtime configuration (per XOP dev notes)
-#  - Add _CRT_SECURE_NO_WARNINGS
-#  - Add /utf-8 for MSVC
-#  - Prefer static CRT (MultiThreaded / MultiThreadedDebug) per XOP guide. :contentReference[oaicite:3]{index=3}
+# Compiler flags and Debug/Release handling
+# - Consolidated MSVC handling (no duplicate blocks)
+# - Use generator expressions so multi-config generators work correctly
 # -------------------------------------------------------------------------
+# Set C++ standard requirement
 target_compile_features(${XOP_TARGET} PRIVATE cxx_std_17)
 
-# --- Debug/Release configuration helpers (MSVC-aware) ---
-#  - Define debug/release compile-time macros consistently:
-#      Debug configs:   _DEBUG and DEBUG
-#      Non-Debug:       NDEBUG
-#  - Choose MSVC runtime library per-configuration:
-#      Debug => /MTd (MultiThreadedDebug)
-#      Non-Debug => /MT (MultiThreaded)
-#  - Keep /utf-8 and _CRT_SECURE_NO_WARNINGS applied for MSVC.
-#
 if(MSVC)
-  # Always suppress deprecation warnings for MSVC CRT functions
+  # Common MSVC flags
   target_compile_definitions(${XOP_TARGET} PRIVATE _CRT_SECURE_NO_WARNINGS)
-  # Keep UTF-8 source interpretation in MSVC
   target_compile_options(${XOP_TARGET} PRIVATE /utf-8)
-  # Per-configuration compile definitions:
-  #   - For Debug configs (any config with name "Debug"), define _DEBUG and DEBUG
-  #   - For non-Debug configs, define NDEBUG
+
+  # Debug vs Release compile macros
   target_compile_definitions(${XOP_TARGET} PRIVATE
     $<$<CONFIG:Debug>:_DEBUG>
     $<$<CONFIG:Debug>:DEBUG>
     $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
   )
-  # CRT selection:
-  #   - Use /MTd on Debug (static debug CRT)
-  #   - Use /MT on non-Debug (static release CRT)
-  # Use generator expressions so behavior works in multi-config IDEs.
-  # For CMake < 3.15, uncomment the following and comment out the set_property() line.
-  # target_compile_options(${XOP_TARGET} PRIVATE
-  #   $<$<CONFIG:Debug>:/MTd>
-  #   $<$<NOT:$<CONFIG:Debug>>:/MT>
-  # )
-  set_property(TARGET ${XOP_TARGET} PROPERTY
-    MSVC_RUNTIME_LIBRARY "$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>"
+
+  # Select static CRT per-config (prefer static CRT as recommended by XOP docs)
+  target_compile_options(${XOP_TARGET} PRIVATE
+    $<$<CONFIG:Debug>:/MTd>
+    $<$<NOT:$<CONFIG:Debug>>:/MT>
   )
 else()
-  # Non-MSVC (clang/gcc): set portable debug macros and leave optimization flags to top-level.
-  # Define DEBUG for Debug configs and NDEBUG for non-Debug configs.
+  # Non-MSVC compilers: set portable debug macros; let optimization flags be controlled globally
   target_compile_definitions(${XOP_TARGET} PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
     $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
   )
+  # Optional: set -g/-O2 here if you want to force them for this target.
 endif()
 
-if(MSVC)
-  target_compile_definitions(${XOP_TARGET} PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(${XOP_TARGET} PRIVATE /utf-8)
-
-  # Set MSVC runtime library per-configuration using the modern MSVC runtime property (CMake >= 3.15)
-  # Use static CRT: MultiThreaded (Release) / MultiThreadedDebug (Debug)
-  # If using older CMake, this will be ignored; you can also set compile options /MT manually per-config.
-  set_property(TARGET ${XOP_TARGET} PROPERTY
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-  )
-
-  # The XOP dev notes recommend Multi-Threaded static runtime to avoid redistributable DLL issues. :contentReference[oaicite:4]{index=4}
-endif()
-
-# System libraries on Windows
-if(PLATFORM_WIN64)
-  target_link_libraries(${XOP_TARGET} PRIVATE version)  # version.lib required per toolkit docs. :contentReference[oaicite:5]{index=5}
+# Windows system libs
+if(DEFINED PLATFORM_WIN64)
+  target_link_libraries(${XOP_TARGET} PRIVATE version)  # version.lib per toolkit docs
 endif()
 
 # -------------------------------------------------------------------------
-# Post-build helper: copy any packaging/help files with specific suffixes
-# (only copy files with .ihf, .ipf, suffixes from the src dir).
-# The name is not fixed, so we detect by suffix.
+# Define XOP-standard macros required by XOPStandardHeaders.h
+# Per XOPStandardHeaders.h: define MACIGOR/IGOR64 on macOS x64; WINIGOR/IGOR64 on Win64.
+# See XOPStandardHeaders.h for details. :contentReference[oaicite:1]{index=1}
 # -------------------------------------------------------------------------
-# Search for files in source dir with the allowed suffixes (non-recursive)
-file(GLOB XOP_IHF_FILES  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/*.ihf")
-file(GLOB XOP_IPF_FILES  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/*.ipf")
+if(DEFINED PLATFORM_APPLE)
+  # We only build for macOS x86_64 (above we ensured _macos_x86_64)
+  if(_macos_x86_64)
+    target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
+    message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
+  else()
+    message(WARNING "IgorXOP: PLATFORM_APPLE set but macOS x86_64 detection failed; not adding MACIGOR/IGOR64")
+  endif()
+endif()
 
-# Combine lists
+if(DEFINED PLATFORM_WIN64)
+  target_compile_definitions(${XOP_TARGET} PRIVATE WINIGOR IGOR64)
+  message(STATUS "IgorXOP: adding compile definitions for Windows: WINIGOR IGOR64")
+endif()
+
+# -------------------------------------------------------------------------
+# Packaging/helper file discovery (discover once, reuse for post-build and install)
+# - Allowed suffixes: .ihf, .ipf, (non-recursive in source dir)
+# -------------------------------------------------------------------------
+file(GLOB _xop_ihf_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/*.ihf")
+file(GLOB _xop_ipf_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/*.ipf")
+
 set(_xop_package_files "")
-list(APPEND _xop_package_files ${XOP_IHF_FILES})
-list(APPEND _xop_package_files ${XOP_IPF_FILES})
+list(APPEND _xop_package_files ${_xop_ihf_files})
+list(APPEND _xop_package_files ${_xop_ipf_files})
 
 if(_xop_package_files)
   message(STATUS "IgorXOP: will copy the following packaging/help files next to built XOP:")
@@ -301,13 +317,12 @@ if(_xop_package_files)
     message(STATUS "  - ${_f}")
   endforeach()
 
-  # Add a post-build step for each file so it is copied next to the built artifact
   foreach(_f IN LISTS _xop_package_files)
     add_custom_command(TARGET ${XOP_TARGET} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/${_f}"
         "$<TARGET_FILE_DIR:${XOP_TARGET}>/${_f}"
-      COMMENT "Copying packaging/help file ${_f} next to built XOP"
+      COMMENT "Copying Igor procedure/help file ${_f} next to built XOP"
     )
   endforeach()
 else()
@@ -315,27 +330,20 @@ else()
 endif()
 
 # -------------------------------------------------------------------------
-# Install rules (reuse package-file list produced for post-build)
+# Install rules
 #  - Install only the final .xop package into <install_prefix>/xop/
-#  - Also copy any .ipf, .ihf files from the source dir into the same folder.
-#  - Do NOT add the plugin to a third-party export set (this is a project subproject).
+#  - Also copy any discovered .ihf/.ipf  files into that same folder.
+#  - Do NOT export this target in the third-party export set (this is a subproject artifact).
 # -------------------------------------------------------------------------
-
-# 1) Install the built XOP artifact into <install_root>/xop
 install(TARGETS ${XOP_TARGET}
-  RUNTIME DESTINATION xop     # Windows (DLL-like)
+  RUNTIME DESTINATION xop     # Windows-like runtime
   BUNDLE DESTINATION xop      # macOS bundle
-  LIBRARY DESTINATION xop     # other possible layout
+  LIBRARY DESTINATION xop     # other possible layouts
   INCLUDES DESTINATION include
 )
 
-# 2) Install packaging/help files (.ipf, .ihf).
-#    Prefer to reuse the list computed for the post-build copy step (_xop_package_files).
-#    If that variable is not present (e.g. code reordered), compute it once here as fallback.
-
-if(_xop_package_files)
+if(DEFINED _xop_package_files AND _xop_package_files)
   foreach(_rel IN LISTS _xop_package_files)
-    # Source file path (absolute) so install() has correct source reference
     set(_src "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
     if(EXISTS "${_src}")
       install(FILES "${_src}" DESTINATION xop)
@@ -345,7 +353,7 @@ if(_xop_package_files)
     endif()
   endforeach()
 else()
-  message(VERBOSE "IgorXOP: no .ipf/.iph/.ihf packaging files found in ${CMAKE_CURRENT_SOURCE_DIR}; nothing to install into xop/")
+  message(VERBOSE "IgorXOP: no packaging/help files to install into xop/")
 endif()
 
 # -------------------------------------------------------------------------
