@@ -37,7 +37,6 @@ else()
   message(STATUS "third_party/CMakeLists.txt not found; you should add one to coordinate submodules (fmt, libzmq).")
 endif()
 
-
 # -----------------------------------------------------------------------------
 # Source discovery
 # -----------------------------------------------------------------------------

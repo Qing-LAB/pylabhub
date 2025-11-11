@@ -1,6 +1,5 @@
 # ---------------------------------------------------------------------------
 # third_party/cmake/fmt.cmake
-#
 # Wrapper for fmt (third_party/fmt)
 #
 # Purpose & high-level policy:

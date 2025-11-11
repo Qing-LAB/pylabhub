@@ -14,6 +14,9 @@ option(THIRD_PARTY_FORCE_ALLOW_PCH "Force upstream PCH even on MSVC+Ninja (may p
 set(THIRD_PARTY_PCH_DIR "${CMAKE_CURRENT_BINARY_DIR}/pchs")
 file(MAKE_DIRECTORY "${THIRD_PARTY_PCH_DIR}")
 
+# Prefer to use nlohmann/json under third_party/include.
+option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/include if present" ON)
+
 # Per-library variant controls. Values: "none" | "shared" | "static"
 set(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Force libzmq build variant: none|shared|static")
 set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Force fmt build variant: none|shared|static")
@@ -23,6 +26,19 @@ set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Force fmt build variant
 # rather than changing global BUILD_TESTS.
 set(THIRD_PARTY_DISABLE_TESTS ON CACHE BOOL "Wrapper intent: disable third-party tests by default" FORCE)
 
+# ----------------------------------------------------------------------------
+# XOPToolkit / XOPSupport build options
+# ----------------------------------------------------------------------------
+# Prefer the project vendor copy; override by setting USE_SYSTEM_XOPSUPPORT to a path.
+# Example to force system XOPSupport:
+#   cmake -D USE_SYSTEM_XOPSUPPORT="/opt/XOPSupport" ...
+#
+# Single override path: if non-empty, FindXOPSupport will use this path and bypass vendor.
+set(USE_SYSTEM_XOPSUPPORT "" CACHE PATH "Optional: path to system-installed XOPSupport (overrides vendor tree when set).")
+
+# ----------------------------------------------------------------------------
+# Helper macros for snapshotting and restoring cache variables.
+#
 # --- snapshot_cache_var / restore_cache_var (minimal, correct) ---
 #
 # Requires CMake 3.18+ for "DEFINED CACHE{...}" support.
@@ -152,31 +168,13 @@ message(STATUS "THIRD_PARTY_PCH_DIR=${THIRD_PARTY_PCH_DIR}")
 message(STATUS "THIRD_PARTY_ZMQ_FORCE_VARIANT=${THIRD_PARTY_ZMQ_FORCE_VARIANT}")
 message(STATUS "THIRD_PARTY_FMT_FORCE_VARIANT=${THIRD_PARTY_FMT_FORCE_VARIANT}")
 message(STATUS "THIRD_PARTY_DISABLE_TESTS=${THIRD_PARTY_DISABLE_TESTS}")
-message(STATUS "=========================================================")
-
-# ----------------------------------------------------------------------------
-# XOPToolkit / XOPSupport build options
-# ----------------------------------------------------------------------------
-# Prefer the project vendor copy; override by setting USE_SYSTEM_XOPSUPPORT to a path.
-# Example to force system XOPSupport:
-#   cmake -D USE_SYSTEM_XOPSUPPORT="/opt/XOPSupport" ...
-#
-# If vendor directory exists at the provided default, prefer it.
-set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Vendor XOPSupport tree (preferred when available).")
-# Single override path: if non-empty, FindXOPSupport will use this path and bypass vendor.
-set(USE_SYSTEM_XOPSUPPORT "" CACHE PATH "Optional: path to system-installed XOPSupport (overrides vendor tree when set).")
-
-# Option to enable/disable building the XOP plugin entirely (user-visible)
-option(BUILD_XOP "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" ON)
-
-message("")
-message("===============================================================")
-message("XOPToolkit / XOPSupport build options:")
-message("  XOP_VENDOR_DIR=${XOP_VENDOR_DIR}")
-message("  USE_SYSTEM_XOPSUPPORT=${USE_SYSTEM_XOPSUPPORT}")
-message("  BUILD_XOP=${BUILD_XOP}")
-message("===============================================================")
-message("")
+message(STATUS "")
+message(STATUS "XOPToolkit / XOPSupport build options:")
+message(STATUS "  XOP_VENDOR_DIR=${XOP_VENDOR_DIR}")
+message(STATUS "  USE_SYSTEM_XOPSUPPORT=${USE_SYSTEM_XOPSUPPORT}")
+message(STATUS "  BUILD_XOP=${BUILD_XOP}")
+message(STATUS "===============================================================")
+message(STATUS "")
 
 # ----------------------------------------------------------------------------
 # End of ThirddParty Policy
