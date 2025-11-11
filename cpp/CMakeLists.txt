@@ -29,6 +29,10 @@ find_package(Threads REQUIRED)
 # - The third_party/CMakeLists.txt is expected to implement scoped snapshot/restore
 #   behavior so our THIRD_PARTY_* wrapper knobs control only the third-party subprojects.
 # -----------------------------------------------------------------------------
+message(STATUS "")
+message(STATUS "===============================================================")
+message(STATUS "Processing third-party submodules in ${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 if(EXISTS "${THIRD_PARTY_DIR}/CMakeLists.txt")
   message(STATUS "Adding ${THIRD_PARTY_DIR} to build (third_party/CMakeLists.txt)")
@@ -159,6 +163,19 @@ target_link_libraries(pylabhub-shell
   PRIVATE pylabhub-corelib
 )
 
+if(BUILD_XOP)
+  message(STATUS "Top-level: adding IgorXOP subdirectory (src/IgorXOP)")
+  # Add the subdirectory so its CMakeLists runs.
+  add_subdirectory(src/IgorXOP)
+else()
+  # Ensure the summary variables exist for top-level printing downstream
+  set(BUILD_XOP_FINAL_ENABLED OFF CACHE INTERNAL "Final: IgorXOP will be built")
+  set(XOP_TARGET_NAME "" CACHE INTERNAL "Final: IgorXOP target name")
+  set(XOPTOOLKIT_DIR "" CACHE INTERNAL "XOPSupport root used by IgorXOP")
+  set(XOP_SUPPORT_FOUND OFF CACHE INTERNAL "XOPSupport found (vendor or system)")
+  message(STATUS "Skipping src/IgorXOP (BUILD_XOP=OFF)")
+endif()
+
 # -----------------------------------------------------------------------------
 # Install / export (kept commented as before; left for your preference)
 # -----------------------------------------------------------------------------
@@ -197,12 +214,14 @@ message(STATUS "  Using vendored nlohmann: ${NLOHMANN_VENDORED}")
 message(STATUS "  libzmq target: ${ZMQ_LIB_TARGET}")
 message(STATUS "  fmt target: ${FMT_TARGET}")
 message(STATUS "  pylabhub build shared: ${PYLABHUB_BUILD_SHARED}")
+message(STATUS "")
+message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Install headers: ${PYLABHUB_INSTALL_HEADERS}")
-message(STATUS "==============================================")
+message(STATUS "")
 
-if(_build_xop_final)
-  message(STATUS "  XOP build added:    ${_build_xop_final}")
-  message(STATUS "  XOP vendor present: ${_xop_vendor_present}")
+if(BUILD_XOP_FINAL_ENABLED)
+  message(STATUS "  XOP build added:    ${XOP_TARGET_NAME}")
+  message(STATUS "  XOPTOOLKIT used:   ${XOPTOOLKIT_DIR}")
   message(STATUS "==============================================")
 else()
   message(STATUS "  XOP build:    OFF (IgorXOP subproject skipped)")
