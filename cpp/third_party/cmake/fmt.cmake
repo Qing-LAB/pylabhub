@@ -233,58 +233,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     # Otherwise, fall back to searching the build tree for library artifacts and install them with install(FILES ...).
     set(_thirdparty_fmt_targets_to_install "")
 
-    # Robust detection whether a target is a concrete installable target.
-    # This version first checks ALIASED_TARGET (reliable for detecting aliases),
-    # then falls back to TYPE. It returns TRUE only for concrete, non-alias,
-    # non-interface targets.
-    function(_is_target_installable tgt_name result_var)
-      # Default result = FALSE
-      set(${result_var} FALSE PARENT_SCOPE)
-
-      if (NOT tgt_name)
-        message(STATUS "third_party: _is_target_installable called with empty name")
-        return()
-      endif()
-
-      if(TARGET ${tgt_name})
-        # 1) Check if this is an ALIAS target. ALIASED_TARGET property is set for alias targets.
-        get_target_property(_aliased ${tgt_name} ALIASED_TARGET)
-        if(NOT _aliased OR _aliased STREQUAL "NOTFOUND")
-          # No ALIASED_TARGET property -> not an alias (or property unavailable)
-          set(_aliased "")
-        endif()
-
-        if(_aliased)
-          message(STATUS "third_party: target ${tgt_name} is an ALIAS of ${_aliased} -> not safe for install(TARGETS ...)")
-          set(${result_var} FALSE PARENT_SCOPE)
-          return()
-        endif()
-
-        # 2) Not an alias (or alias property unavailable). Query TYPE as a secondary check.
-        get_target_property(_tgt_type ${tgt_name} TYPE)
-        if(NOT _tgt_type OR _tgt_type STREQUAL "NOTFOUND")
-          set(_tgt_type "UNKNOWN")
-        endif()
-
-        message(STATUS "third_party: debug: target ${tgt_name} TYPE='${_tgt_type}'")
-
-        if(_tgt_type STREQUAL "INTERFACE_LIBRARY")
-          message(STATUS "third_party: target ${tgt_name} is INTERFACE -> not safe for install(TARGETS ...)")
-          set(${result_var} FALSE PARENT_SCOPE)
-        else()
-          # Conservative: treat STATIC/SHARED/MODULE/OBJECT/EXECUTABLE/UNKNOWN as installable.
-          set(${result_var} TRUE PARENT_SCOPE)
-        endif()
-      else()
-        message(STATUS "third_party: target ${tgt_name} not found")
-        set(${result_var} FALSE PARENT_SCOPE)
-      endif()
-    endfunction()
-
-
     # Candidate upstream target names to check (common variations)
     foreach(_cand IN ITEMS fmt fmt::fmt fmt::fmt-header-only)
       if(_cand)
+        # Check if candidate target is concrete and installable
         _is_target_installable("${_cand}" _cand_installable)
         if(_cand_installable)
           list(APPEND _thirdparty_fmt_targets_to_install ${_cand})

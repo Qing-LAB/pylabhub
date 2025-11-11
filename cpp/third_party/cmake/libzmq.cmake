@@ -139,7 +139,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   message("")
   
   # Suppose upstream provides zmq::zmq (might be an ALIAS).
-# Create a simple wrapper interface target in our namespace that links to it.
+  # Create a simple wrapper interface target in our namespace that links to it.
 
   # ----- additional robustness for ZeroMQ target names -----
   # (place after the existing libzmq-static / libzmq-shared aliasing)
@@ -186,18 +186,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     if (NOT TARGET pylabhub::zmq)
       add_library(pylabhub::zmq ALIAS pylabhub_zmq)
     endif()
-
-    # Installation: only install when we built libzmq ourselves,
-    # and ensure we don't call install() on an alias.
-    get_target_property(_zmq_type zmq::zmq TYPE)
-    if (NOT _zmq_type STREQUAL "ALIAS")
-      # upstream provided a real target name (rare). Install that instead.
-      install(TARGETS zmq::zmq ...)
-    else()
-      # upstream target is an ALIAS (e.g. system-provided). Skip install or
-      # install headers manually from vendored path.
-      message(STATUS "libzmq: upstream zmq::zmq is an ALIAS; skipping install(TARGETS zmq::zmq)")
-    endif()
+    message(STATUS "third_party: created interface target pylabhub::zmq -> zmq::zmq")
   else()
     # Fallback: if we build the subproject, it will produce a concrete target
     # like libzmq-static or similar. Create alias to that real target after add_subdirectory.
@@ -226,55 +215,141 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     message(STATUS "third_party: pylabhub::zmq not created; ZMQ_LIB_TARGET empty")
   endif()
 
-  # ---------------------------------------------------------
-  # Setup installation of libzmq target and headers
-  # ---------------------------------------------------------
+  # ---------------------------
+  # INSTALL handling for libzmq (wrapper-managed, robust)
+  # ---------------------------
   if(THIRD_PARTY_INSTALL)
-    # Determine the real linkable target that exists (prefer names upstream creates)
-    set(_real_zmq_target "")
-    if(TARGET zmq::zmq)
-      set(_real_zmq_target zmq::zmq)
-    elseif(TARGET libzmq)
-      set(_real_zmq_target libzmq)
-    elseif(TARGET libzmq-static)
-      set(_real_zmq_target libzmq-static)
-    elseif(TARGET libzmq-shared)
-      set(_real_zmq_target libzmq-shared)
-    endif()
+    message(STATUS "third_party: preparing install for libzmq (wrapper-managed)")
 
-    message("")
-    message("=========================================================")
-    message(STATUS "INSTALL setup for libzmq (ZeroMQ):")
-    if(_real_zmq_target)
-      # If upstream does not already handle install, create install rules for the existing target.
-      # Note: if upstream configured install, this may duplicate; guard as needed using upstream vars.
-      message(STATUS "third_party: installing libzmq target ${_real_zmq_target}")
+    set(_zmq_targets_to_install "")
 
-      install(TARGETS ${_real_zmq_target}
+    # Candidate upstream target names in preferred order.
+    # Prefer the concrete name (libzmq-static) if present, else try plain 'zmq', then namespaced 'zmq::zmq'.
+    set(_zmq_candidate_names "libzmq-static;zmq;zmq::zmq")
+
+    foreach(_cand IN LISTS _zmq_candidate_names)
+      if(NOT _cand)
+        continue()
+      endif()
+
+      # If the candidate target exists and is not an alias, _is_target_installable will say TRUE.
+      _is_target_installable("${_cand}" _cand_installable)
+      if(_cand_installable)
+        list(APPEND _zmq_targets_to_install ${_cand})
+        # Prefer the first installable candidate, but keep loop to allow multiple installable targets.
+        continue()
+      endif()
+
+      # If candidate exists but is an ALIAS, try to get its aliased real target and check that instead.
+      if(TARGET ${_cand})
+        get_target_property(_aliased ${_cand} ALIASED_TARGET)
+        if(DEFINED _aliased AND _aliased AND NOT _aliased STREQUAL "NOTFOUND")
+          # Test the aliased real target for installability.
+          _is_target_installable("${_aliased}" _aliased_installable)
+          if(_aliased_installable)
+            message(STATUS "third_party: candidate ${_cand} is an alias of ${_aliased}; will install ${_aliased} instead")
+            list(APPEND _zmq_targets_to_install ${_aliased})
+            continue()
+          else()
+            message(STATUS "third_party: candidate ${_cand} is alias of ${_aliased} but ${_aliased} not installable")
+          endif()
+        endif()
+      endif()
+    endforeach()
+
+    # Deduplicate target list if necessary
+    list(REMOVE_DUPLICATES _zmq_targets_to_install)
+
+    if(_zmq_targets_to_install)
+      # install concrete targets and add PUBLIC_HEADER DESTINATION to avoid dev warning.
+      install(TARGETS ${_zmq_targets_to_install}
         EXPORT pylabhubThirdPartyTargets
+        INCLUDES DESTINATION include
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
-        INCLUDES DESTINATION include
+        PUBLIC_HEADER DESTINATION include/zmq
       )
+      message(STATUS "third_party: installed libzmq targets via install(TARGETS ...): ${_zmq_targets_to_install}")
+    else()
+      # No concrete target found to call install(TARGETS ...) on.
+      # Fallback: try to install headers and/or manually copy library files from build tree.
 
-      # Install headers: prefer ZMQ_INCLUDE_DIR if set, fallback to vendored path
+      # 1) Install headers if available (prefer ZMQ_INCLUDE_DIR if set)
+      set(_zmq_headers_installed FALSE)
       if(DEFINED ZMQ_INCLUDE_DIR AND EXISTS "${ZMQ_INCLUDE_DIR}")
-        message(STATUS "third_party: installing libzmq headers from ${ZMQ_INCLUDE_DIR}")
+        message(STATUS "third_party: installing libzmq headers from ZMQ_INCLUDE_DIR (${ZMQ_INCLUDE_DIR})")
         install(DIRECTORY "${ZMQ_INCLUDE_DIR}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+        set(_zmq_headers_installed TRUE)
       else()
         set(_zmq_vendored_include "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include")
         if(EXISTS "${_zmq_vendored_include}")
-          message(STATUS "third_party: installing libzmq headers from ${_zmq_vendored_include}")
+          message(STATUS "third_party: installing vendored libzmq headers from ${_zmq_vendored_include}")
           install(DIRECTORY "${_zmq_vendored_include}/" DESTINATION include COMPONENT devel FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+          set(_zmq_headers_installed TRUE)
         endif()
       endif()
-    else()
-      message(WARNING "third_party: no libzmq target found to install; skipping libzmq install.")
-    endif()
-  endif()
-  message("=========================================================")
-  message("")
+
+      # 2) Search for lib artifacts in the libzmq build tree and install them if found.
+      set(_zmq_lib_found_files "")
+
+      # Search common output locations under the build directory of the third-party subproject.
+      file(GLOB _zmq_a RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq/**/libzmq*.a"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/libzmq*.a"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq*.a"
+      )
+      foreach(_f IN LISTS _zmq_a)
+        list(APPEND _zmq_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      file(GLOB _zmq_so RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq/**/libzmq*.so"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/libzmq*.so"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq*.so"
+      )
+      foreach(_f IN LISTS _zmq_so)
+        list(APPEND _zmq_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      # Windows import libs / dlls
+      file(GLOB _zmq_lib RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq/**/zmq*.lib"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/zmq*.lib"
+        "${CMAKE_CURRENT_BINARY_DIR}/*.lib"
+      )
+      foreach(_f IN LISTS _zmq_lib)
+        list(APPEND _zmq_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      file(GLOB _zmq_dll RELATIVE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/libzmq/**/zmq*.dll"
+        "${CMAKE_CURRENT_BINARY_DIR}/**/zmq*.dll"
+      )
+      foreach(_f IN LISTS _zmq_dll)
+        list(APPEND _zmq_lib_found_files "${CMAKE_CURRENT_BINARY_DIR}/${_f}")
+      endforeach()
+
+      list(REMOVE_DUPLICATES _zmq_lib_found_files)
+
+      # Keep only existing files
+      set(_zmq_lib_files_existing "")
+      foreach(_f IN LISTS _zmq_lib_found_files)
+        if(EXISTS "${_f}")
+          list(APPEND _zmq_lib_files_existing "${_f}")
+        endif()
+      endforeach()
+      set(_zmq_lib_found_files ${_zmq_lib_files_existing})
+
+      if(_zmq_lib_found_files)
+        message(STATUS "third_party: found libzmq artifacts to install: ${_zmq_lib_found_files}")
+        install(FILES ${_zmq_lib_found_files} DESTINATION lib COMPONENT devel)
+      else()
+        message(STATUS "third_party: no libzmq library artifacts found in build tree; nothing to install for libs")
+      endif()
+    endif() # if(_zmq_targets_to_install)
+  endif() # if(THIRD_PARTY_INSTALL)
+  # ---------------------------
 
   # ---------------------------------------------------------
   # Restore cached variables to avoid leakage to other third_party subprojects.
