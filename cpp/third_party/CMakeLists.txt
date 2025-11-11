@@ -36,6 +36,9 @@ include(cmake/fmt.cmake)
 # setup libzmq target
 include(cmake/libzmq.cmake)
 
+# setup XOPToolKit
+include(cmake/XOPToolKit.cmake)
+
 # ---------------------------------------------------------------------------
 # End of third_party/CMakeLists.txt
 # ---------------------------------------------------------------------------
