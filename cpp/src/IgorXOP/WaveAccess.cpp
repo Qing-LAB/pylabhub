@@ -47,8 +47,8 @@
                 As a result the XOP now requires Igor Pro 8.00 or later.
 */
 
-#include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
+#include "WaveAccess.h"
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.

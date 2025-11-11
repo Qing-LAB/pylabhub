@@ -289,7 +289,17 @@ if(DEFINED PLATFORM_APPLE)
   # We only build for macOS x86_64 (above we ensured _macos_x86_64)
   if(_macos_x86_64)
     target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
+    # Allow Apple's block syntax in system headers (blocks '^' token).
+    # Clang supports blocks via -fblocks; add it for the XOP target so system headers compile.
+    target_compile_options(${XOP_TARGET} PRIVATE
+      $<$<C_COMPILER_ID:Clang>:-fblocks>
+      $<$<CXX_COMPILER_ID:Clang>:-fblocks>
+    )
+    # (Optional) Make sure libc++ is used on modern macOS:
+    target_compile_options(${XOP_TARGET} PRIVATE -stdlib=libc++)
     message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
+    message(STATUS "IgorXOP: adding -fblocks option to allow Apple's block syntax in system headers")
+    message(STATUS "IgorXOP: adding -stdlib=libc++ to ensure libc++ is used on modern macOS")
   else()
     message(WARNING "IgorXOP: PLATFORM_APPLE set but macOS x86_64 detection failed; not adding MACIGOR/IGOR64")
   endif()
