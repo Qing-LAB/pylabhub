@@ -284,6 +284,17 @@ if(MSVC)
     $<$<CONFIG:Debug>:/MTd>
     $<$<NOT:$<CONFIG:Debug>>:/MT>
   )
+
+  # Linker flags: large address aware is recommended in sample projects
+  target_link_options(${XOP_TARGET} PRIVATE /LARGEADDRESSAWARE)
+
+  set(_exports_def "${CMAKE_CURRENT_SOURCE_DIR}/Exports.def")
+  if(EXISTS "${_exports_def}")
+    target_link_options(${XOP_TARGET} PRIVATE "/DEF:${_exports_def}")
+    message(STATUS "IgorXOP: using module definition ${_exports_def} to export XOPMain")
+  else()
+    message(VERBOSE "IgorXOP: Exports.def not found; ensure XOPMain is exported (e.g. via __declspec(dllexport) or a .def file).")
+  endif()
 else()
   # Non-MSVC compilers: set portable debug macros; let optimization flags be controlled globally
   target_compile_definitions(${XOP_TARGET} PRIVATE
