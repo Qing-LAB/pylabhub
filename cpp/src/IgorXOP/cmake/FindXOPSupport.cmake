@@ -42,7 +42,7 @@ function(_find_xopsupport_impl out_var)
   set(_igor_lib_path "")
   set(_root_used "")
 
-  # Helper: check a candidate root for both headers and library
+  # Helper function: check a given root for XOPSupport headers+lib
   function(_check_root_for_xop root)
     # look for headers
     set(_header_names "XOPSupport.h" "XOPSupport/XOPSupport.h")
@@ -54,48 +54,124 @@ function(_find_xopsupport_impl out_var)
       NO_DEFAULT_PATH
     )
 
-    # choose candidate lib names depending on platform
+    #
+    # Library detection — strict 64-bit name requirement (platform-specific)
+    #
+    # We support only PLATFORM_WIN64 and PLATFORM_APPLE (both 64-bit).
+    # For Windows we expect XOPSupport64*.lib under VC/x64 or lib64.
+    # For macOS we expect libXOPSupport64.a under Xcode/ (or lib64).
+    #
     if(DEFINED PLATFORM_WIN64)
-      set(_lib_names "XOPSupport.lib" "XOPSupport64.lib")
+      # Windows: prefer XOPSupport64 and probe VC/x64 first
+      set(_wanted_lib_names "XOPSupport64" "XOPSupport")
+      set(_expected_marker "64.lib")
+      set(_candidate_lib_dirs
+        "${root}/VC/x64"
+        "${root}/VC/x64/Release"
+        "${root}/lib64"
+        "${root}/lib"
+        "${root}/VC"
+        "${root}"
+      )
     elseif(DEFINED PLATFORM_APPLE)
-      set(_lib_names "libXOPSupport.a" "libXOPSupport64.a")
-    else()
-      set(_lib_names "XOPSupport" "XOPSupport64")
-    endif()
-
-    message(STATUS "  ** Looking for library file(s) [${_lib_names}] in ${root}")
-    find_library(_try_lib
-      NAMES ${_lib_names}
-      HINTS "${root}/lib" "${root}/lib64" "${root}/VC" "${root}/XCode" "${root}"
-      NO_DEFAULT_PATH
-    )
-
-    # optional IGOR import lib (useful on Windows)
-    if(WIN32)
-      find_library(_try_igor
-        NAMES "IGOR" "IGOR64"
-        HINTS "${root}/lib" "${root}"
-        NO_DEFAULT_PATH
+      # macOS: prefer libXOPSupport64.a under Xcode
+      # Allow both the canonical libXOPSupport64 and a candidate name XOPSupport64
+      set(_wanted_lib_names "XOPSupport64" "libXOPSupport64")
+      set(_expected_marker "64.a")
+      set(_candidate_lib_dirs
+        "${root}/Xcode"
+        "${root}/Xcode/Release"
+        "${root}/lib64"
+        "${root}/lib"
+        "${root}"
       )
     else()
-      set(_try_igor "")
+      # Shouldn't happen — higher-level code gates platforms
+      set(_wanted_lib_names "XOPSupport64")
+      set(_expected_marker "64")
+      set(_candidate_lib_dirs
+        "${root}/lib64"
+        "${root}/lib"
+        "${root}"
+      )
+    endif()
+
+    message(STATUS "  ** Looking for library with 64-bit naming (names='${_wanted_lib_names}', marker='${_expected_marker}') under ${root}")
+
+    # default: not found
+    set(_try_lib "")
+    foreach(_candidate_dir IN LISTS _candidate_lib_dirs)
+      if(NOT EXISTS "${_candidate_dir}")
+        continue()
+      endif()
+
+      # Probe this directory only to avoid accidental matches elsewhere
+      find_library(_found_in_dir
+        NAMES ${_wanted_lib_names}
+        PATHS "${_candidate_dir}"
+        NO_DEFAULT_PATH
+      )
+
+      if(_found_in_dir)
+        get_filename_component(_found_name "${_found_in_dir}" NAME)  # e.g., libXOPSupport64.a or XOPSupport64.lib
+        string(FIND "${_found_name}" "${_expected_marker}" _marker_index)
+        if(NOT _marker_index EQUAL -1)
+          set(_try_lib "${_found_in_dir}")
+          message(STATUS "  ** Found matching 64-bit library: ${_try_lib} (from ${_candidate_dir})")
+          break()
+        else()
+          message(STATUS "  ** Ignoring library (does not match 64-bit naming): ${_found_in_dir}")
+          unset(_found_in_dir)
+        endif()
+      endif()
+    endforeach()
+
+    # optional IGOR import lib (Windows only) — prefer IGOR64
+    set(_try_igor "")
+    if(DEFINED PLATFORM_WIN64)
+      foreach(_candidate_dir IN LISTS _candidate_lib_dirs)
+        if(NOT EXISTS "${_candidate_dir}")
+          continue()
+        endif()
+        find_library(_found_igor_in_dir
+          NAMES "IGOR64" "IGOR"
+          PATHS "${_candidate_dir}"
+          NO_DEFAULT_PATH
+        )
+        if(_found_igor_in_dir)
+          get_filename_component(_igor_name "${_found_igor_in_dir}" NAME)
+          string(FIND "${_igor_name}" "64.lib" _igor_marker_index)
+          if(NOT _igor_marker_index EQUAL -1)
+            set(_try_igor "${_found_igor_in_dir}")
+            message(STATUS "  ** Found matching IGOR import lib: ${_try_igor}")
+            break()
+          else()
+            message(STATUS "  ** Ignoring IGOR lib (does not match 64-bit naming): ${_found_igor_in_dir}")
+            unset(_found_igor_in_dir)
+          endif()
+        endif()
+      endforeach()
     endif()
 
     if(_try_include AND _try_lib)
       message(STATUS "  ** Both include headers and library found in ${root}")
       message(STATUS "     Include path: ${_try_include}")
       message(STATUS "     Library file: ${_try_lib}")
-      # export values to caller scope of _find_xopsupport_impl
+      if(_try_igor)
+        message(STATUS "     IGOR import lib: ${_try_igor}")
+      endif()
+
       set(_include_dir "${_try_include}" PARENT_SCOPE)
       set(_lib_path "${_try_lib}" PARENT_SCOPE)
       set(_igor_lib_path "${_try_igor}" PARENT_SCOPE)
       set(_found TRUE PARENT_SCOPE)
       return()
     else()
-      message(STATUS "  ** XOPSupport not found in ${root}")
+      message(STATUS "  ** XOPSupport not found in ${root} (headers: ${_try_include}, lib: ${_try_lib})")
       set(_found FALSE PARENT_SCOPE)
     endif()
   endfunction()
+
 
   # 1) if user provided USE_SYSTEM_XOPSUPPORT, try it first (authoritative)
   if(USE_SYSTEM_XOPSUPPORT)
