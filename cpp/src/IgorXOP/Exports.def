@@ -1,0 +1,3 @@
+LIBRARY "pylabhub-xop64"
+EXPORTS
+  XOPMain
