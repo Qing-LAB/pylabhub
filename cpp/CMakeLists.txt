@@ -1,3 +1,6 @@
+# --------------------------------------------------------------------------------
+# Top-level CMakeLists.txt for pylabhub-shell
+# --------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 
 # Optionally allow explicit override:
@@ -102,38 +105,19 @@ endif()
 # -----------------------------------------------------------------------------
 # Link third-party targets (if available)
 # -----------------------------------------------------------------------------
-if(TARGET nlohmann_json::nlohmann_json)
-    target_link_libraries(pylabhub-corelib PUBLIC nlohmann_json::nlohmann_json)
+if(TARGET pylabhub::nlohmann_json)
+    message(STATUS "Linking pylabhub-corelib against pylabhub::nlohmann_json")
+    target_link_libraries(pylabhub-corelib PUBLIC pylabhub::nlohmann_json)
 endif()
 
-if(FMT_TARGET)
-  message(STATUS "Linking pylabhub-corelib against ${FMT_TARGET}")
-  target_link_libraries(pylabhub-corelib PRIVATE ${FMT_TARGET})
+if(TARGET pylabhub::fmt)
+  message(STATUS "Linking pylabhub-corelib against pylabhub::fmt")
+  target_link_libraries(pylabhub-corelib PRIVATE pylabhub::fmt)
 endif()
 
-if(ZMQ_LIB_TARGET)
-  message(STATUS "Linking pylabhub-corelib against ${ZMQ_LIB_TARGET}")
-  target_link_libraries(pylabhub-corelib PRIVATE ${ZMQ_LIB_TARGET})
-else()
-  # Try system-wide ZeroMQ as fallback
-  find_package(ZeroMQ QUIET)
-  if(ZeroMQ_FOUND)
-    message(STATUS "ZeroMQ found by find_package; linking against system ZeroMQ")
-    if(TARGET ZeroMQ::ZeroMQ)
-      target_link_libraries(pylabhub-corelib PRIVATE ZeroMQ::ZeroMQ)
-    elseif(TARGET ZeroMQ::zmq)
-      target_link_libraries(pylabhub-corelib PRIVATE ZeroMQ::zmq)
-    else()
-      if(DEFINED ZeroMQ_LIBRARIES)
-        target_link_libraries(pylabhub-corelib PRIVATE ${ZeroMQ_LIBRARIES})
-      endif()
-      if(DEFINED ZeroMQ_INCLUDE_DIRS)
-        target_include_directories(pylabhub-corelib PRIVATE ${ZeroMQ_INCLUDE_DIRS})
-      endif()
-    endif()
-  else()
-    message(STATUS "No ZeroMQ target found; libzmq may not be available. If you need ZeroMQ, add it under third_party or install system libzmq.")
-  endif()
+if(TARGET pylabhub::zmq)
+  message(STATUS "Linking pylabhub-corelib against pylabhub::zmq")
+  target_link_libraries(pylabhub-corelib PRIVATE pylabhub::zmq)
 endif()
 
 # Link threads and enforce C++ language features
