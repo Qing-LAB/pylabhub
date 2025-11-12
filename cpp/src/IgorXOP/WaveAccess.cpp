@@ -47,8 +47,8 @@
                 As a result the XOP now requires Igor Pro 8.00 or later.
 */
 
-#include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
+#include "WaveAccess.h"
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.
@@ -855,7 +855,7 @@ static int DoFunction()
 {
     int funcIndex;
     void *p; // Pointer to structure containing function parameters and result.
-    int err;
+    int err = 0;
 
     funcIndex = (int)GetXOPItem(0); // Which function is being invoked ?
     p = (void *)GetXOPItem(1);      // Get pointer to params/result.

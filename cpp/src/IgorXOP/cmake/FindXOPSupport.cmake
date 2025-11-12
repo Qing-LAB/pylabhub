@@ -42,7 +42,7 @@ function(_find_xopsupport_impl out_var)
   set(_igor_lib_path "")
   set(_root_used "")
 
-  # Helper function: check a given root for XOPSupport headers+lib
+  # Helper function: check a given root for headers+lib
   function(_check_root_for_xop root)
     # look for headers
     set(_header_names "XOPSupport.h" "XOPSupport/XOPSupport.h")
@@ -171,7 +171,6 @@ function(_find_xopsupport_impl out_var)
       set(_found FALSE PARENT_SCOPE)
     endif()
   endfunction()
-
 
   # 1) if user provided USE_SYSTEM_XOPSUPPORT, try it first (authoritative)
   if(USE_SYSTEM_XOPSUPPORT)
