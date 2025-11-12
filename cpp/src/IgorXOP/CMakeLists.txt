@@ -188,10 +188,14 @@ add_library(pylabhub::${XOP_TARGET} ALIAS ${XOP_TARGET})
 
 # macOS: create bundle (Contents/...) and ensure .xop suffix
 if(DEFINED PLATFORM_APPLE)
+  # Ensure the bundle and executable names are consistent and include the "64" suffix
   set_target_properties(${XOP_TARGET} PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_GUI_IDENTIFIER "pylabhub.xop.${XOP_NAME}"
-    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}"
+    # IMPORTANT: make the bundle name *match* the executable and the toolkit convention (XOP64)
+    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}64"
+    # Explicit executable name inside Contents/MacOS/
+    MACOSX_BUNDLE_EXECUTABLE "${XOP_NAME}64"
     OUTPUT_NAME "${XOP_NAME}64"
     PREFIX ""              # no lib prefix
     SUFFIX ".xop"          # bundle ends with .xop
@@ -356,6 +360,33 @@ if(DEFINED PLATFORM_WIN64)
   message(STATUS "IgorXOP: adding compile definitions for Windows: WINIGOR IGOR64")
 endif()
 
+# -------------------------------------------------------------------------
+# Setup linker and Info.plist options for macOS to export XOPMain symbol
+# - Per XOP documentation, XOPMain must be exported from the Mach-O binary.
+# - This is done via an exports file (Exports.exp) passed to the linker.
+# -------------------------------------------------------------------------
+if(DEFINED PLATFORM_APPLE)
+  message(STATUS "IgorXOP: configuring macOS linker options to export XOPMain symbol")
+  # ensure Exports.exp is passed to the linker so XOPMain is exported from the Mach-O
+  set(_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/Exports.exp")
+  if(EXISTS "${_exports_file}")
+    target_link_options(${XOP_TARGET} PRIVATE
+      $<$<CONFIG:Debug>:-Wl,-exported_symbols_list,${_exports_file}>
+      $<$<NOT:$<CONFIG:Debug>>:-Wl,-exported_symbols_list,${_exports_file}>
+    )
+    message(STATUS "IgorXOP: using exported symbols file ${_exports_file}")
+  else()
+    message(WARNING "IgorXOP: Exports.exp not found at ${_exports_file}; XOPMain may not be exported.")
+  endif()
+  # Configure Info.plist for the macOS bundle
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Info64.plist.in"
+                "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+                @ONLY)
+  set_target_properties(${XOP_TARGET} PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+  )
+
+endif()
 # -------------------------------------------------------------------------
 # Packaging/helper file discovery (discover once, reuse for post-build and install)
 # - Allowed suffixes: .ihf, .ipf, (non-recursive in source dir)
