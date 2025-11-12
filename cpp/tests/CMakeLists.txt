@@ -53,6 +53,12 @@ foreach(src IN LISTS TEST_SOURCES)
     #   pylabhub-corelib       (contains utils, fileutil code)
     #
     # If your top-level CMake uses different target names, adjust these accordingly.
+    if(TARGET pylabhub::pylabhub::nlohmann_json)
+        target_link_libraries(${test_name} PRIVATE pylabhub::pylabhub::nlohmann_json)
+    else()
+        message(WARNING "Target 'pylabhub::pylabhub::nlohmann_json' not found. Ensure the top-level CMake defines it.")
+    endif()
+
     if(TARGET pylabhub-corelib)
         target_link_libraries(${test_name} PRIVATE pylabhub-corelib)
     else()
