@@ -191,7 +191,8 @@ if(DEFINED PLATFORM_APPLE)
   set_target_properties(${XOP_TARGET} PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_GUI_IDENTIFIER "pylabhub.xop.${XOP_NAME}"
-    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}64"
+    MACOSX_BUNDLE_BUNDLE_NAME "${XOP_NAME}"
+    OUTPUT_NAME "${XOP_NAME}64"
     PREFIX ""              # no lib prefix
     SUFFIX ".xop"          # bundle ends with .xop
   )
