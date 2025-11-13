@@ -1,18 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+         "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>@PRODUCT_NAME@</string>
+  <string>@XOP_BUNDLE_NAME@</string>
+
   <key>CFBundleExecutable</key>
-  <string>@EXECUTABLE_NAME@</string>
+  <string>@XOP_BUNDLE_EXECUTABLE@</string>
+
   <key>CFBundleIdentifier</key>
-  <string>com.yourorg.xop.@EXECUTABLE_NAME@</string>
+  <string>@XOP_BUNDLE_IDENTIFIER@</string>
+
   <key>CFBundlePackageType</key>
-  <string>IXOP</string>            <!-- MUST be IXOP per WaveMetrics docs -->
+  <string>IXOP</string>
+
   <key>CFBundleSignature</key>
-  <string>IGR0</string>            <!-- Creator code required by Igor -->
+  <string>IGR0</string>
+
+  <key>CFBundleShortVersionString</key>
+  <string>@XOP_BUNDLE_VERSION@</string>
+
   <key>CFBundleVersion</key>
-  <string>1.0</string>
+  <string>@XOP_BUNDLE_VERSION@</string>
+
+  <key>CFBundleDevelopmentRegion</key>
+  <string>English</string>
+
+  <key>CSResourcesFileMapped</key>
+  <true/>
 </dict>
 </plist>
