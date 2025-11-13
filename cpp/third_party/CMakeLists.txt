@@ -40,5 +40,10 @@ include(cmake/libzmq.cmake)
 include(cmake/XOPToolKit.cmake)
 
 # ---------------------------------------------------------------------------
+# As a result of the above includes, the third-party subprojects should now be
+# properly configured and added with alias targets named with the prefix
+# "pylabhub::" (e.g. pylabhub::fmt, pylabhub::zmq, pylabhub::nlohmann_json).
+# Third party header files and libraries will be installed under corresponding
+# directories in the main project install tree if THIRD_PARTY_INSTALL is ON.
 # End of third_party/CMakeLists.txt
 # ---------------------------------------------------------------------------
