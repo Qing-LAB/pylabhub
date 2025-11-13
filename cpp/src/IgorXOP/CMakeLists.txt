@@ -2,14 +2,11 @@
 # ------------------------------------------------------------------------------
 # Build the pylabhub XOP plugin for Igor Pro (Windows x64 and macOS x64)
 #
-# Produces:
-#   - macOS: <name>.xop  (bundle folder with Contents/MacOS/<exec>, Info.plist, etc.)
-#   - Windows: <name>.xop (DLL-style runtime)
-#
-# Notes:
-#  - This file is organized so macOS bundle assembly is robust for both Xcode
-#    generator and Makefile-style generator.
-#  - Packaging is handled by cmake/assemble_xop.cmake which is invoked at POST_BUILD.
+# - Produces macOS: a plain MODULE output (no .xop suffix) then assembles
+#   a <name>.xop (folder) by copying the module into Contents/MacOS/ and
+#   creating Info.plist / Resources as needed.
+# - Uses a marker-output custom-command to run cmake -D... -P assemble_xop.cmake
+#   which is robust across generators (Xcode, Ninja, Make).
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 project(IgorXOP LANGUAGES C CXX)
@@ -85,7 +82,7 @@ message(STATUS "IgorXOP: XOPSupport detected; XOPSupport root: ${XOPTOOLKIT_DIR}
 message(STATUS "IgorXOP: configuring XOP target (platform behavior follows).")
 
 # -------------------------
-# Platform validation & macOS x86_64 detection
+# Platform validation & macOS detection
 # -------------------------
 if(NOT (DEFINED PLATFORM_WIN64 OR DEFINED PLATFORM_APPLE))
   message(WARNING "IgorXOP: top-level did not provide PLATFORM_WIN64 or PLATFORM_APPLE. Skipping.")
@@ -165,6 +162,9 @@ endif()
 
 # -------------------------
 # Target creation: MODULE on macOS, SHARED otherwise
+# Note: we purposely do NOT set a custom SUFFIX so the built module file has no ".xop"
+# suffix and remains a plain module file (e.g. pylabhubxop64.xop or pylabhubxop64 depending
+# on generator). We'll copy it into <name>.xop folder ourselves.
 # -------------------------
 if(DEFINED PLATFORM_APPLE)
   add_library(${XOP_TARGET} MODULE ${XOP_SOURCES})
@@ -181,11 +181,10 @@ set_target_properties(${XOP_TARGET} PROPERTIES
 
 # -------------------------
 # macOS-specific bundle configuration (PLATFORM_APPLE)
-# This block is intentionally explicit so generators (Xcode) treat the target as a bundle.
 # -------------------------
 if(DEFINED PLATFORM_APPLE)
   # canonical names
-  set(XOP_BUNDLE_NAME "${XOP_NAME}64")            # e.g. pylabhubxop64.xop
+  set(XOP_BUNDLE_NAME "${XOP_NAME}64")            # e.g. pylabhubxop64
   set(XOP_BUNDLE_EXECUTABLE "${XOP_NAME}64")      # executable name inside Contents/MacOS
   set(XOP_BUNDLE_IDENTIFIER "edu.asu.physics.qinglab.${XOP_BUNDLE_NAME}")
   set(XOP_BUNDLE_VERSION "1.0")
@@ -194,13 +193,13 @@ if(DEFINED PLATFORM_APPLE)
   set(_plist_in "${CMAKE_CURRENT_SOURCE_DIR}/Info64.plist.in")
   set(_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/Exports.exp")
 
-  # Make the target a macOS bundle (Xcode will treat it accordingly)
+  # Make the target a macOS bundle product in generators (so Xcode knows it's intended as bundle),
+  # but we do not force a SUFFIX value here: we want the linker output to be the plain module file.
   set_target_properties(${XOP_TARGET} PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME "${XOP_BUNDLE_NAME}"
     MACOSX_BUNDLE_EXECUTABLE "${XOP_BUNDLE_EXECUTABLE}"
     PREFIX ""
-    SUFFIX ".xop"
   )
 
   # configure Info.plist at configure-time (if template exists)
@@ -216,7 +215,8 @@ if(DEFINED PLATFORM_APPLE)
     message(WARNING "IgorXOP: Info64.plist.in not found; bundle will not have configured Info.plist")
   endif()
 
-  # Avoid automatic code signing in Xcode projects; sign later if needed.
+  # Xcode attributes: tell Xcode to treat this as a bundle type named .xop (WRAPPER extension),
+  # but we will still assemble the final <name>.xop folder ourselves.
   if(CMAKE_GENERATOR MATCHES "Xcode")
     set_target_properties(${XOP_TARGET} PROPERTIES
       XCODE_ATTRIBUTE_PRODUCT_TYPE "com.apple.product-type.bundle"
@@ -228,7 +228,7 @@ if(DEFINED PLATFORM_APPLE)
     )
   endif()
 
-  # RPATH settings for loader-relative usage inside the bundle
+  # RPATH settings for loader-relative usage inside the bundle (defensive)
   set_target_properties(${XOP_TARGET} PROPERTIES
     BUILD_RPATH "@loader_path/../Frameworks"
     INSTALL_RPATH "@loader_path/../Frameworks"
@@ -244,7 +244,6 @@ if(DEFINED PLATFORM_APPLE)
     )
     message(STATUS "IgorXOP: using exported symbols file ${_exports_file}")
   else()
-    # fallback to exporting _XOPMain; keep verbose so user can debug
     message(VERBOSE "IgorXOP: Exports.exp not found; adding explicit export for _XOPMain")
     target_link_options(${XOP_TARGET} PRIVATE
       "-Wl,-exported_symbol,_XOPMain"
@@ -266,35 +265,66 @@ if(DEFINED PLATFORM_APPLE)
     "-framework AudioToolbox"
   )
 
-  # Packaging step: call cmake -P cmake/assemble_xop.cmake during POST_BUILD.
-  # We use generator-expressions so Xcode will embed a script phase with correct values.
-  set(_assemble_script "${CMAKE_SOURCE_DIR}/cmake/assemble_xop.cmake")
+  # -------------------------
+  # Robust packaging (single custom-command + single producing target).
+  # The custom_command produces the marker file; only one custom target
+  # is attached to that custom_command. Other targets depend on the
+  # producing target (via add_dependencies) rather than the file itself.
+  # This avoids Xcode "new build system" error about a single custom-command
+  # attached to multiple targets.
+  # -------------------------
+  set(_assemble_script "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.cmake")
+  set(_assembled_marker "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.assembled")
+
   if(EXISTS "${_assemble_script}")
-    add_custom_command(TARGET ${XOP_TARGET} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E echo "IgorXOP: packaging for $<TARGET_FILE_NAME:${XOP_TARGET}> (config: $<CONFIG>)"
-      COMMAND ${CMAKE_COMMAND} -E env CONFIGURATION=$<CONFIG>
-              ${CMAKE_COMMAND} -P "${_assemble_script}"
-              "$<TARGET_FILE:${XOP_TARGET}>"                             # path to build artifact
-              "$<TARGET_FILE_DIR:${XOP_TARGET}>/${XOP_BUNDLE_NAME}.bundle" # desired bundle location
-              "${XOP_BUNDLE_NAME}.xop"                                    # final filename (folder)
-      COMMENT "Assemble XOP bundle for ${XOP_TARGET}"
+    # Custom command: run assemble script and touch marker
+    add_custom_command(
+      OUTPUT "${_assembled_marker}"
+      # Make the byproduct explicit for Xcode dependency analysis.
+      BYPRODUCTS "${_assembled_marker}"
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E echo "IgorXOP: packaging ${XOP_BUNDLE_NAME}.xop from module $<TARGET_FILE:${XOP_TARGET}> (config: $<CONFIG>)"
+      COMMAND ${CMAKE_COMMAND}
+              -D_mach_o="$<TARGET_FILE:${XOP_TARGET}>" 
+              -D_bundle_dir="$<TARGET_FILE_DIR:${XOP_TARGET}>/${XOP_BUNDLE_NAME}.xop" 
+              -D_xop_name="${XOP_BUNDLE_NAME}" 
+              -D_build_root="${CMAKE_BINARY_DIR}" 
+              -D_config="$<CONFIG>" 
+              -P "${_assemble_script}"
+      COMMAND ${CMAKE_COMMAND} -E touch "${_assembled_marker}"
+      DEPENDS ${XOP_TARGET}
       VERBATIM
     )
-    message(STATUS "IgorXOP: packaging step registered (assemble_xop.cmake)")
+
+    # Single target that owns the custom-command output.
+    add_custom_target(assemble_xop_marker_${XOP_TARGET}
+      DEPENDS "${_assembled_marker}"
+      COMMENT "Assemble XOP bundle marker for ${XOP_TARGET}"
+    )
+
+    # Named convenience target: depends on the producing target (not the marker file).
+    add_custom_target(assemble_xop_${XOP_TARGET}
+      COMMENT "Assemble XOP bundle for ${XOP_TARGET}"
+    )
+    add_dependencies(assemble_xop_${XOP_TARGET} assemble_xop_marker_${XOP_TARGET})
+
+    # Another convenience alias (bundle target) that depends on the producing target.
+    add_custom_target(${XOP_TARGET}_bundle
+      COMMENT "Bundle target for ${XOP_TARGET}"
+    )
+    add_dependencies(${XOP_TARGET}_bundle assemble_xop_marker_${XOP_TARGET})
+
+    # Optionally make the marker target part of the default build. If you prefer
+    # assembly only when explicitly requested, remove the ALL argument below.
+    add_dependencies(${XOP_TARGET}_bundle assemble_xop_marker_${XOP_TARGET})
+    set_target_properties(assemble_xop_marker_${XOP_TARGET} PROPERTIES EXCLUDE_FROM_ALL FALSE)
+
+    message(STATUS "IgorXOP: registered assemble_xop marker target; assemble script: ${_assemble_script}")
   else()
     message(WARNING "IgorXOP: assemble_xop.cmake not found; bundle assembly will be skipped")
   endif()
 
-  # Provide explicit assemble target (manual invocation possible)
-  add_custom_target(assemble_xop_${XOP_TARGET}
-    COMMENT "Assemble XOP bundle for ${XOP_TARGET}"
-    DEPENDS ${XOP_TARGET}
-  )
-  add_dependencies(assemble_xop_${XOP_TARGET} ${XOP_TARGET})
-
-  # Optional: build-time assembly target (can be removed if undesired)
-  add_custom_target(${XOP_TARGET}_bundle ALL DEPENDS assemble_xop_${XOP_TARGET})
-endif()
+endif() # PLATFORM_APPLE
 
 # -------------------------
 # Include directories & linking (prefer imported XOP::XOPSupport)
