@@ -46,9 +46,13 @@
                 Recompiled with XOP Toolkit 8 which supports long object names.
                 As a result the XOP now requires Igor Pro 8.00 or later.
 */
+#ifdef PLATFORM_APPLE
+#include <Carbon/Carbon.h> //PCH for mac
+#endif
 
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
 #include "WaveAccess.h"
+#include <stdio.h>
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.
@@ -888,7 +892,8 @@ static int DoFunction()
 extern "C" void XOPEntry(void)
 {
     XOPIORecResult result = 0;
-
+    FILE * f=fopen("/tmp/myxop-init.log", "a");
+    if(f) {fprintf(f, "XOPEntry callled\n"), fclose(f); }
     switch (GetXOPMessage())
     {
     case FUNCTION: // Our external function being invoked ?
