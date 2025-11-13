@@ -174,11 +174,11 @@ endif()
 
 if(NOT resolved_built_target)
   message(FATAL_ERROR "assemble_xop.cmake: built target not found.
-Primary: ${built_target_input}
-Normalized: ${built_target_abs}
-Directory checked: ${built_dir}
-Observed listing:\n${_ls_out}
-Please ensure the link step produced the module and that this script runs after link.")
+                        Primary: ${built_target_input}
+                        Normalized: ${built_target_abs}
+                        Directory checked: ${built_dir}
+                        Observed listing:\n${_ls_out}
+                        Please ensure the link step produced the module and that this script runs after link.")
 endif()
 
 get_filename_component(resolved_built_target_abs "${resolved_built_target}" ABSOLUTE)
