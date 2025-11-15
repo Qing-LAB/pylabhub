@@ -198,10 +198,12 @@ function(_find_xopsupport_impl out_var)
     endif()
 
     if(NOT TARGET XOP::XOPSupport)
-      add_library(XOP::XOPSupport INTERFACE IMPORTED)
+      # Create an IMPORTED target so that consumers can link to XOP::XOPSupport and get the
+      # imported library location and include dirs properly propagated.
+      add_library(XOP::XOPSupport STATIC IMPORTED)
       set_target_properties(XOP::XOPSupport PROPERTIES
+        IMPORTED_LOCATION "${_lib_path}"
         INTERFACE_INCLUDE_DIRECTORIES "${_include_dir}"
-        INTERFACE_LINK_LIBRARIES "${_lib_path}"
       )
     else()
       message(STATUS "FindXOPSupport: XOP::XOPSupport already exists; skipping add_library().")
