@@ -85,7 +85,8 @@ else()
   add_library(pylabhub-corelib STATIC ${PYLABHUB_CORELIB_SOURCES})
 endif()
 
-add_library(pylabhub::pylabhub-corelib ALIAS pylabhub-corelib)
+add_library(pylabhub::corelib ALIAS pylabhub-corelib)
+message(STATUS "pylabhub::corelib created as alias to pylabhub-corelib")
 
 target_include_directories(pylabhub-corelib
     PUBLIC

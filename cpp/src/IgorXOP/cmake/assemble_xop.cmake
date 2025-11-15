@@ -15,6 +15,7 @@
 #         -D_config="Release" \
 #         -D_configured_plist="/abs/path/to/generated/Info.plist" \
 #         -D_r_file="/abs/path/to/WaveAccess.r" \
+#         -D_r_include_dirs="/path/to/XOPSupport/include;/another/include" \
 #         -D_rsrc_basename="pylabhubxop64.rsrc" \
 #         -D_install_root="/abs/virtual/root" \
 #         -P cmake/assemble_xop.cmake
@@ -30,31 +31,24 @@
 #   -D_config               : build configuration (e.g. Release, Debug)
 #   -D_configured_plist     : explicit path to an already-configured Info.plist
 #   -D_r_file               : path to the macOS .r resource source file (WaveAccess.r)
+#   -D_r_include_dirs       : semicolon-separated include dirs to pass to Rez (will be
+#                            translated into multiple "-I dir" arguments)
 #   -D_rsrc_basename        : desired basename for compiled resource (e.g. pylabhubxop64.rsrc)
-#   -D_install_root         : optional *post-build* virtual install root; if provided,
+#   -D_install_root         : optional post-build virtual install root; if provided,
 #                            the assembled bundle will be copied under
 #                            ${_install_root}/xop/${_xop_name}.xop
-#                            If NOT provided, a sensible default is used:
-#                            <CMAKE_BINARY_DIR>/install   (post-build staging area)
+#                            If NOT provided, default used: <CMAKE_BINARY_DIR>/install
 #
 # Behavior summary:
-#  1) Resolve the actual built module (robust against .so/.dylib/.xop suffix variants).
-#  2) Create the bundle directory structure:
-#         <bundle_dir>.xop/Contents/
-#           MacOS/        -> copy the module here (exec name has no .xop/.dylib/.so)
-#           Resources/    -> put .rsrc (compiled by Rez if available or copy .r)
-#           Resources/en.lproj/InfoPlist.strings
-#           Info.plist    -> chosen from highest-priority configured plist, or templated,
-#                            or generated minimally by the script.
-#  3) Set executable bit on the copied module.
-#  4) Optionally attempt to compile .r -> .rsrc using Rez; fallback to copying .r.
-#  5) Optionally copy assembled bundle into the post-build install root under xop/.
-#
-# Outcome:
-#   The assembled bundle will be available at the absolute path printed in the logs.
-#   If -D_install_root was provided (or defaulted), the bundle will also be copied to
-#   ${install_root}/xop/${_xop_name}.xop — this is a *post-build staging* location,
-#   not the final system installation.
+#  - resolves the built module robustly,
+#  - creates bundle Contents/MacOS and Resources,
+#  - copies the module into Contents/MacOS using a bare executable name (no .so/.dylib),
+#  - sets the exec bit on the copied file,
+#  - attempts to run Rez to compile .r -> .rsrc using provided include dirs (if any),
+#    falling back to copying the .r file if Rez isn't available or fails,
+#  - writes minimal Info.plist or uses provided/configured template,
+#  - writes Resources/en.lproj/InfoPlist.strings,
+#  - optionally stages the assembled bundle into the post-build install root.
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 
@@ -77,58 +71,55 @@ endfunction()
 # -----------------------
 # Read incoming -D variables (may be quoted by generators like Xcode)
 # -----------------------
-if(DEFINED _mach_o)
-  set(_raw_mach_o "${_mach_o}")
-else()
-  set(_raw_mach_o "")
+if(DEFINED _mach_o)            
+  set(_raw_mach_o "${_mach_o}")             
+else() 
+  set(_raw_mach_o "") 
 endif()
-
-if(DEFINED _bundle_dir)
-  set(_raw_bundle_dir "${_bundle_dir}")
-else()
-  set(_raw_bundle_dir "")
+if(DEFINED _bundle_dir)        
+  set(_raw_bundle_dir "${_bundle_dir}")     
+else() 
+  set(_raw_bundle_dir "") 
 endif()
-
-if(DEFINED _xop_name)
-  set(_raw_xop_name "${_xop_name}")
-else()
-  set(_raw_xop_name "")
+if(DEFINED _xop_name)          
+  set(_raw_xop_name "${_xop_name}")         
+else() 
+  set(_raw_xop_name "") 
 endif()
-
-if(DEFINED _build_root)
-  set(_raw_build_root "${_build_root}")
-else()
-  set(_raw_build_root "")
+if(DEFINED _build_root)        
+  set(_raw_build_root "${_build_root}")     
+else() 
+  set(_raw_build_root "") 
 endif()
-
-if(DEFINED _config)
-  set(_raw_config "${_config}")
-else()
-  set(_raw_config "")
+if(DEFINED _config)            
+  set(_raw_config "${_config}")             
+else() 
+  set(_raw_config "") 
 endif()
-
-if(DEFINED _configured_plist)
-  set(_raw_configured_plist "${_configured_plist}")
-else()
-  set(_raw_configured_plist "")
+if(DEFINED _configured_plist)  
+  set(_raw_configured_plist "${_configured_plist}") 
+else() 
+  set(_raw_configured_plist "") 
 endif()
-
-if(DEFINED _r_file)
-  set(_raw_r_file "${_r_file}")
-else()
-  set(_raw_r_file "")
+if(DEFINED _r_file)            
+  set(_raw_r_file "${_r_file}")             
+else() 
+  set(_raw_r_file "") 
 endif()
-
-if(DEFINED _rsrc_basename)
-  set(_raw_rsrc_basename "${_rsrc_basename}")
-else()
-  set(_raw_rsrc_basename "")
+if(DEFINED _r_include_dirs)    
+  set(_raw_r_include_dirs "${_r_include_dirs}") 
+else() 
+  set(_raw_r_include_dirs "") 
 endif()
-
-if(DEFINED _install_root)
-  set(_raw_install_root "${_install_root}")
-else()
-  set(_raw_install_root "")
+if(DEFINED _rsrc_basename)     
+  set(_raw_rsrc_basename "${_rsrc_basename}") 
+else() 
+  set(_raw_rsrc_basename "") 
+endif()
+if(DEFINED _install_root)      
+  set(_raw_install_root "${_install_root}") 
+else() 
+  set(_raw_install_root "") 
 endif()
 
 # sanitize inputs
@@ -139,6 +130,7 @@ _strip_surrounding_quotes(_build_root_sanitized _raw_build_root)
 _strip_surrounding_quotes(_config_sanitized _raw_config)
 _strip_surrounding_quotes(_configured_plist_sanitized _raw_configured_plist)
 _strip_surrounding_quotes(_r_file_sanitized _raw_r_file)
+_strip_surrounding_quotes(_r_include_dirs_sanitized _raw_r_include_dirs)
 _strip_surrounding_quotes(_rsrc_basename_sanitized _raw_rsrc_basename)
 _strip_surrounding_quotes(_install_root_sanitized _raw_install_root)
 
@@ -149,14 +141,17 @@ message(STATUS "  -D_xop_name         = '${_xop_name_sanitized}'")
 if(NOT "${_build_root_sanitized}" STREQUAL "") 
   message(STATUS "  -D_build_root       = '${_build_root_sanitized}'") 
 endif()
-if(NOT "${_config_sanitized}" STREQUAL "") 
-  message(STATUS "  -D_config           = '${_config_sanitized}'") 
+if(NOT "${_config_sanitized}" STREQUAL "")     
+  message(STATUS "  -D_config           = '${_config_sanitized}'")     
 endif()
 if(NOT "${_configured_plist_sanitized}" STREQUAL "") 
   message(STATUS "  -D_configured_plist = '${_configured_plist_sanitized}'") 
 endif()
-if(NOT "${_r_file_sanitized}" STREQUAL "") 
-  message(STATUS "  -D_r_file           = '${_r_file_sanitized}'") 
+if(NOT "${_r_file_sanitized}" STREQUAL "")     
+  message(STATUS "  -D_r_file           = '${_r_file_sanitized}'")     
+endif()
+if(NOT "${_r_include_dirs_sanitized}" STREQUAL "") 
+  message(STATUS "  -D_r_include_dirs   = '${_r_include_dirs_sanitized}'") 
 endif()
 if(NOT "${_rsrc_basename_sanitized}" STREQUAL "") 
   message(STATUS "  -D_rsrc_basename    = '${_rsrc_basename_sanitized}'") 
@@ -173,7 +168,7 @@ Required:
   -D_bundle_dir
   -D_xop_name
 Optional:
-  -D_build_root -D_config -D_configured_plist -D_r_file -D_rsrc_basename -D_install_root")
+  -D_build_root -D_config -D_configured_plist -D_r_file -D_rsrc_basename -D_install_root -D_r_include_dirs")
 endif()
 
 # -----------------------
@@ -261,9 +256,6 @@ if(IS_DIRECTORY "${_resolved_mach_abs}")
         file(COPY "${_configured_plist_sanitized}" DESTINATION "${_resolved_mach_abs}/Contents")
         message(STATUS "assemble_xop.cmake: copied configured Info.plist -> ${_resolved_mach_abs}/Contents/Info.plist")
       else()
-        # Attempt to find a template/configured plist using the same selection logic below.
-        # For idempotent behavior we will not attempt to template here; user should re-run
-        # assembly with -D_configured_plist if they need a fresh Info.plist applied.
         message(WARNING "assemble_xop.cmake: existing bundle missing Info.plist and no configured plist provided")
       endif()
     else()
@@ -282,49 +274,67 @@ file(MAKE_DIRECTORY "${_macos_dir}")
 file(MAKE_DIRECTORY "${_resources_dir}")
 file(MAKE_DIRECTORY "${_en_lproj_dir}")
 
-# Determine dest exec name (we prefer a bare executable name without .xop/.dylib/.so)
+# Determine dest exec name (prefer the sanitized xop name as the bare exec)
+# But also attempt to strip common extension suffixes from the resolved artifact name.
 get_filename_component(_resolved_mod_name "${_resolved_mach_abs}" NAME)
-# strip .xop, .xop.bundle, .dylib, .so if present on the artifact name
-string(REGEX REPLACE "\\.xop$" "" _dest_exec_name "${_resolved_mod_name}")
+set(_dest_exec_name "${_resolved_mod_name}")
+# strip known suffixes if present to produce a bare executable name
+string(REGEX REPLACE "\\.xop$" "" _dest_exec_name "${_dest_exec_name}")
 string(REGEX REPLACE "\\.xop\\.bundle$" "" _dest_exec_name "${_dest_exec_name}")
 string(REGEX REPLACE "\\.dylib$|\\.so$" "" _dest_exec_name "${_dest_exec_name}")
+# If the result is empty, fall back to the provided xop_name
+if(_dest_exec_name STREQUAL "") 
+  set(_dest_exec_name "${_xop_name_sanitized}") 
+endif()
 
 set(_dest_exec_path "${_macos_dir}/${_dest_exec_name}")
 
-# Copy resolved module into MacOS dir (preserves original file; copy will create a sibling file)
-file(COPY "${_resolved_mach_abs}" DESTINATION "${_macos_dir}")
-# Ensure executable bit
-execute_process(COMMAND /bin/chmod +x "${_dest_exec_path}"
-                RESULT_VARIABLE _chmod_res
-                OUTPUT_VARIABLE _chmod_out
-                ERROR_VARIABLE _chmod_err
+# Copy resolved module into MacOS dir using explicit target filename so the bundle
+# executable name inside Contents/MacOS matches CFBundleExecutable.
+# Use cmake -E copy to ensure the destination filename is as expected.
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy "${_resolved_mach_abs}" "${_dest_exec_path}"
+                RESULT_VARIABLE _copy_res
+                OUTPUT_VARIABLE _copy_out
+                ERROR_VARIABLE _copy_err
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT _chmod_res EQUAL 0)
-  message(WARNING "assemble_xop.cmake: could not set exec bit on ${_dest_exec_path}: ${_chmod_err}")
+if(NOT _copy_res EQUAL 0)
+  # Fall back to directory copy (should be rare); in that case derive the actual filename.
+  message(WARNING "assemble_xop.cmake: copy to '${_dest_exec_path}' failed: ${_copy_err}. Falling back to directory copy.")
+  file(COPY "${_resolved_mach_abs}" DESTINATION "${_macos_dir}")
+  get_filename_component(_orig_name "${_resolved_mach_abs}" NAME)
+  set(_dest_exec_path "${_macos_dir}/${_orig_name}")
+  # attempt to normalize dest exec name for plist consistency
+  get_filename_component(_dest_exec_name "${_dest_exec_path}" NAME_WE)
 endif()
-message(STATUS "assemble_xop.cmake: copied '${_resolved_mach_abs}' -> '${_dest_exec_path}'")
+
+# Ensure executable bit on the copied file
+if(EXISTS "${_dest_exec_path}")
+  execute_process(COMMAND /bin/chmod +x "${_dest_exec_path}"
+                  RESULT_VARIABLE _chmod_res
+                  OUTPUT_VARIABLE _chmod_out
+                  ERROR_VARIABLE _chmod_err
+                  OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT _chmod_res EQUAL 0)
+    message(WARNING "assemble_xop.cmake: could not set exec bit on ${_dest_exec_path}: ${_chmod_err}")
+  else()
+    message(STATUS "assemble_xop.cmake: copied module -> ${_dest_exec_path}")
+  endif()
+else()
+  message(WARNING "assemble_xop.cmake: expected copied executable does not exist: ${_dest_exec_path}")
+endif()
 
 # -----------------------
 # Info.plist discovery & installation into bundle (ordered priority)
-#
-# Priority:
-# 1) -D_configured_plist (explicit)
-# 2) <build_root>/src/IgorXOP/Info.plist
-# 3) <build_root>/src/IgorXOP/<config>/Info.plist
-# 4) <CMAKE_BINARY_DIR>/src/IgorXOP/Info.plist or <CMAKE_BINARY_DIR>/src/IgorXOP/<config>/Info.plist
-# 5) source template Info64.plist.in (treated as template)
-# 6) minimal generated Info.plist (fallback)
+# (same priority rules as your original version)
 # -----------------------
 set(_chosen_plist "")
 set(_chosen_is_template OFF)
 
-# 1) explicit configured plist
 if(NOT "${_configured_plist_sanitized}" STREQUAL "" AND EXISTS "${_configured_plist_sanitized}")
   set(_chosen_plist "${_configured_plist_sanitized}")
   set(_chosen_is_template OFF)
 endif()
 
-# 2) and 3) check build-root locations if not yet chosen
 if(_chosen_plist STREQUAL "" AND NOT "${_build_root_sanitized}" STREQUAL "")
   if(EXISTS "${_build_root_sanitized}/src/IgorXOP/Info.plist")
     set(_chosen_plist "${_build_root_sanitized}/src/IgorXOP/Info.plist")
@@ -335,7 +345,6 @@ if(_chosen_plist STREQUAL "" AND NOT "${_build_root_sanitized}" STREQUAL "")
   endif()
 endif()
 
-# 4) CMAKE_BINARY_DIR fallback
 if(_chosen_plist STREQUAL "")
   if(EXISTS "${CMAKE_BINARY_DIR}/src/IgorXOP/Info.plist")
     set(_chosen_plist "${CMAKE_BINARY_DIR}/src/IgorXOP/Info.plist")
@@ -346,7 +355,6 @@ if(_chosen_plist STREQUAL "")
   endif()
 endif()
 
-# 5) source template Info64.plist.in
 if(_chosen_plist STREQUAL "")
   set(_tpl_candidate "${CMAKE_SOURCE_DIR}/src/IgorXOP/Info64.plist.in")
   if(EXISTS "${_tpl_candidate}")
@@ -355,7 +363,6 @@ if(_chosen_plist STREQUAL "")
   endif()
 endif()
 
-# Install the chosen plist into the bundle (configure if template)
 if(NOT _chosen_plist STREQUAL "")
   if(_chosen_is_template)
     configure_file("${_chosen_plist}" "${_contents_dir}/Info.plist" @ONLY)
@@ -365,7 +372,7 @@ if(NOT _chosen_plist STREQUAL "")
     message(STATUS "assemble_xop.cmake: copied configured Info.plist -> ${_contents_dir}/Info.plist")
   endif()
 else()
-  # Write a minimal Info.plist that contains the fields necessary for Igor to read the bundle
+  # minimal Info.plist fallback
   file(WRITE "${_contents_dir}/Info.plist"
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
@@ -388,28 +395,49 @@ else()
 endif()
 
 # -----------------------
-# Optional: compile/copy .r resources into Resources/
-# - If Rez (Rez or rez) is available, attempt to create a binary .rsrc file named
-#   by -D_rsrc_basename and place it under Resources/.
-# - If Rez is not present or compilation fails, copy the .r source into Resources/
-#   as a fallback so that the information is preserved for manual processing.
+# Compile .r -> .rsrc using Rez (if available) with include dirs support
+# _r_include_dirs_sanitized is a semicolon-separated list (or empty).
 # -----------------------
 if(NOT "${_r_file_sanitized}" STREQUAL "" AND EXISTS "${_r_file_sanitized}")
+  # Prepare proper absolute output path for the rsrc
+  if(NOT "${_rsrc_basename_sanitized}" STREQUAL "")
+    set(_out_rsrc "${_resources_dir}/${_rsrc_basename_sanitized}")
+  else()
+    set(_out_rsrc "${_resources_dir}/${_xop_name_sanitized}.rsrc")
+  endif()
+
+  # Build Rez include-arguments as a CMake list so each "-I" and path is a separate arg
+  set(_rez_arg_list "")
+  if(NOT "${_r_include_dirs_sanitized}" STREQUAL "")
+    string(REPLACE ";" " " _r_inc_space "${_r_include_dirs_sanitized}")
+    foreach(_inc_dir IN LISTS _r_inc_space)
+      if(NOT _inc_dir STREQUAL "")
+        list(APPEND _rez_arg_list "-I" "${_inc_dir}")
+      endif()
+    endforeach()
+  endif()
+
+  # Find Rez executable (try common casings)
   find_program(_rez_exec Rez)
-  if(NOT _rez_exec)
-    find_program(_rez_exec rez)  # case-insensitive fallback
+  if(NOT _rez_exec) 
+    find_program(_rez_exec rez) 
   endif()
 
   if(_rez_exec)
-    # prefer provided rsrc basename; otherwise construct one from xop name
-    if("${_rsrc_basename_sanitized}" STREQUAL "")
-      set(_out_rsrc "${_resources_dir}/${_xop_name_sanitized}.rsrc")
-    else()
-      set(_out_rsrc "${_resources_dir}/${_rsrc_basename_sanitized}")
-    endif()
+    # Compose the full command list to pass to execute_process (ensures arguments are separated)
+    set(_cmd_list)
+    list(APPEND _cmd_list "${_rez_exec}")
+    foreach(_a IN LISTS _rez_arg_list)
+      list(APPEND _cmd_list "${_a}")
+    endforeach()
+    list(APPEND _cmd_list "-useDF" "-o" "${_out_rsrc}" "${_r_file_sanitized}")
 
-    message(STATUS "assemble_xop.cmake: found Rez (${_rez_exec}); compiling ${_r_file_sanitized} -> ${_out_rsrc}")
-    execute_process(COMMAND "${_rez_exec}" "-useDF" "-o" "${_out_rsrc}" "${_r_file_sanitized}"
+    # For logging, show a readable single-line command
+    string(REPLACE ";" " " _rez_args_readable "${_r_include_dirs_sanitized}")
+    message(STATUS "assemble_xop.cmake: invoking Rez: ${_rez_exec} ${_rez_args_readable} -useDF -o ${_out_rsrc} ${_r_file_sanitized}")
+
+    # Execute Rez
+    execute_process(COMMAND ${_cmd_list}
                     RESULT_VARIABLE _rez_res
                     OUTPUT_VARIABLE _rez_out
                     ERROR_VARIABLE _rez_err
@@ -421,24 +449,21 @@ if(NOT "${_r_file_sanitized}" STREQUAL "" AND EXISTS "${_r_file_sanitized}")
       message(STATUS "assemble_xop.cmake: wrote resource -> ${_out_rsrc}")
     endif()
   else()
-    message(WARNING "assemble_xop.cmake: Rez tool not found on PATH; copying .r source into Resources/ as fallback")
+    message(WARNING "assemble_xop.cmake: Rez not found on PATH; copying .r source into Resources/ as fallback")
     file(COPY "${_r_file_sanitized}" DESTINATION "${_resources_dir}")
   endif()
 else()
-  message(STATUS "assemble_xop.cmake: no .r resource file provided/found; skipping resource compilation")
+  message(STATUS "assemble_xop.cmake: no .r resource file provided or not present; skipping Rez step")
 endif()
 
 # -----------------------
 # Create en.lproj/InfoPlist.strings (localized strings required by some macOS versions)
-# We produce a small InfoPlist.strings with CFBundleName and CFBundleShortVersionString.
-# If the chosen Info.plist contains those keys, we attempt to extract them; otherwise use defaults.
 # -----------------------
 set(_bundle_name_val "")
 set(_short_ver_val "")
 
 if(EXISTS "${_contents_dir}/Info.plist")
   file(READ "${_contents_dir}/Info.plist" _plist_text)
-  # Simple extraction using regex: look for <key>CFBundleName</key> ... <string>VALUE</string>
   string(REGEX MATCH "<key>CFBundleName</key>[[:space:]]*<string>([^<]+)</string>" _match_name "${_plist_text}")
   if(_match_name)
     string(REGEX REPLACE ".*<key>CFBundleName</key>[[:space:]]*<string>([^<]+)</string>.*" "\\1" _bundle_name_val "${_plist_text}")
@@ -449,8 +474,12 @@ if(EXISTS "${_contents_dir}/Info.plist")
   endif()
 endif()
 
-if(_bundle_name_val STREQUAL "") set(_bundle_name_val "${_xop_name_sanitized}") endif()
-if(_short_ver_val STREQUAL "") set(_short_ver_val "1.0") endif()
+if(_bundle_name_val STREQUAL "") 
+  set(_bundle_name_val "${_xop_name_sanitized}") 
+endif()
+if(_short_ver_val STREQUAL "")  
+  set(_short_ver_val "1.0") 
+endif()
 
 file(WRITE "${_en_lproj_dir}/InfoPlist.strings"
   "/* Localized versions of Info.plist keys */\n\n"
@@ -461,12 +490,7 @@ file(WRITE "${_en_lproj_dir}/InfoPlist.strings"
 message(STATUS "assemble_xop.cmake: wrote localized InfoPlist.strings -> ${_en_lproj_dir}/InfoPlist.strings")
 
 # -----------------------
-# Defaulting and behavior for post-build install root:
-# If caller provided -D_install_root, use it. Otherwise default to
-#   <CMAKE_BINARY_DIR>/install
-# This directory is treated as a *post-build staging* (virtual root) location,
-# not the final system installation. The assembled bundle will be copied into
-# ${install_root}/xop/${_xop_name}.xop when available.
+# Post-build install staging root defaulting and bundle copy into <install_root>/xop/
 # -----------------------
 if("${_install_root_sanitized}" STREQUAL "")
   set(_install_root_effective "${CMAKE_BINARY_DIR}/install")
@@ -476,13 +500,9 @@ else()
   message(STATUS "assemble_xop.cmake: using provided -D_install_root = '${_install_root_effective}'")
 endif()
 
-# -----------------------
-# Optional: copy assembled bundle into the provided install root under xop/
-# -----------------------
 if(NOT "${_install_root_effective}" STREQUAL "")
   set(_install_dest "${_install_root_effective}/xop")
   file(MAKE_DIRECTORY "${_install_dest}")
-  # Ensure we remove any pre-existing bundle at destination and then copy directory
   execute_process(COMMAND ${CMAKE_COMMAND} -E remove_directory "${_install_dest}/${_xop_name_sanitized}.xop")
   execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory "${_bundle_dir_abs}" "${_install_dest}/${_xop_name_sanitized}.xop"
                   RESULT_VARIABLE _copy_res
