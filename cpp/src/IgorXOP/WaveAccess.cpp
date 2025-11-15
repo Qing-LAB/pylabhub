@@ -46,7 +46,6 @@
                 Recompiled with XOP Toolkit 8 which supports long object names.
                 As a result the XOP now requires Igor Pro 8.00 or later.
 */
-
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
 #include "WaveAccess.h"
 #include <stdio.h>
