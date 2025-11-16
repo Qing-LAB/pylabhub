@@ -1,3 +1,12 @@
+/*******************************************************************************
+  * @file include/fileutil/FileLock.hpp
+  * @brief Cross-platform file lock RAII wrapper
+  * @author Quan Qing
+  * @date 2025-11-15
+  * Reviewed and revised by Quan Qing on 2025-11-15
+  * First version created by Quan Qing with ChatGPT assistance.
+  * Unit test available at tests/test_filelock.cpp
+ ******************************************************************************/
 #pragma once
 // FileLock.hpp - cross-platform file lock RAII wrapper
 // Place at: include/fileutil/FileLock.hpp
