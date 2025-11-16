@@ -1,6 +1,15 @@
+/*******************************************************************************
+  * @file include/util/Logger.hpp
+  * @brief Lightweight, header-only template APIs for logging with fmt-style formatting.
+  * @author Quan Qing
+  * @date 2025-11-15
+  * Reviewed by Quan Qing on 2025-11-15
+  * First version created by Quan Qing with ChatGPT assistance.
+ ******************************************************************************/
+
 // Logger.hpp
 //
-// Lightweight, header-only template APIs for formatting (fmt).
+// Lightweight, header-only template APIs for logging with fmt-style formatting.
 // Implementation details (Impl) are hidden in Logger.cpp (pimpl).
 //
 // Design notes:
