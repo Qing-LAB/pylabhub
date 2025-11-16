@@ -1,4 +1,11 @@
-// include/pylabhub/platform.hpp
+/*******************************************************************************
+  * @file include/platform.hpp
+  * @brief Platform detection macros
+  * @author Quan Qing
+  * @date 2025-11-15
+  * Reviewed by Quan Qing on 2025-11-15
+  * First version created by Quan Qing with ChatGPT assistance.
+ ******************************************************************************/
 #pragma once
 
 // Prefer the build-system provided macros (PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD,

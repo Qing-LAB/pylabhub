@@ -1,8 +1,8 @@
-# THIRD_PARTY_CMAKESCRIPT.MD
+# THIRD_PARTY_CMAKESCRIPT.md
 
 A design and style guide for `third_party/cmake/*.cmake` helper scripts and how the top-level CMakeLists will consume them.
 
-This document describes conventions, required behavior, and recommended APIs for each third-party helper script under `third_party/cmake/`. The goal is **reliable, reproducible staging and install**: the third-party scripts must expose clean, consistent targets and metadata so the top level can (a) link against them, (b) stage their headers/libs into the project `build/install/` tree, and (c) include/install them correctly for downstream users.
+This document describes conventions, required behavior, and recommended APIs for each third-party helper script under `third_party/cmake/`. Each of these third-party helper scripts will handle specific third-party modules, and must expose clean, consistent targets and metadata so the top level can (a) access the header files and link against resulting libraries when available, (b) stage their headers/libs into the project `build/install/` tree, and (c) include/install them correctly for downstream users.
 
 ---
 
