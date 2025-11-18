@@ -352,6 +352,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     endif()
   endif() # if(THIRD_PARTY_INSTALL AND FMT_INSTALL)
 
+  # -------------------------------------------
+  # Now need to set up the post-build staging of fmt artifacts
+  # Following the instructions in the THIRD_PARTY_CMAKESCRIPT.md
+  # -------------------------------------------
+
+
   # ---------------------------
   # Restore previously-snapshotted cache variables so we do not leak settings
   # ---------------------------
