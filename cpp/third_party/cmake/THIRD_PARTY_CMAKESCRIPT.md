@@ -2,11 +2,17 @@
 
 A design and style guide for `third_party/cmake/*.cmake` helper scripts and how the top-level CMakeLists will integrate them.
 
-This document describes conventions, required behavior, and recommended APIs for each third-party helper script 
-under `third_party/cmake/`. Each of these third-party helper scripts will handle specific third-party modules, and must expose 
-clean, consistent targets and metadata so the top level can (a) access the header files and link against resulting libraries
-when available, (b) stage their headers/libs into the project `build/install/` tree, and (c) include/install them correctly 
-for downstream users.
+This document describes the recommended structure and required behaviors for each third-party helper script 
+under `third_party/cmake/`. 
+
+Each of these third-party helper scripts will handle specific third-party modules, and must expose clean, consistent targets 
+and metadata so the top level can 
+
+    - Access the header files and link against resulting libraries
+      when available,
+    - Stage their headers/libs into the project `build/install/` tree, and
+    - Provide clear semantics about header-only vs binary libraries for 
+      downstream users.
 
 In addition this document describes what the top-level CMakeLists.txt will expect from these scripts and how it will use the 
 information they provide.
