@@ -24,34 +24,44 @@
 # --- Common Scenarios (from the `cpp` directory) ---
 #
 # 1.  Standard Development Build (for local testing):
-#     Builds everything, stages all artifacts to `build/stage/`.
+#     Builds the main executables and libraries. Stages the core project
+#     artifacts and necessary runtime dependencies (e.g., DLLs) to `build/stage/`.
+#     This is the quickest way to get a runnable executable.
 #
 #     $ cmake -S . -B build
 #     $ cmake --build build
 #
 #     After this, you can run executables directly from `build/stage/bin/`.
 #
-# 2.  Build and Run Tests:
-#     Ensures tests are built and runnable via CTest.
+# 2.  Full Staging for Development:
+#     Builds and stages ALL artifacts (core project, third-party headers & libs)
+#     to `build/stage/`. This is the most reliable way to create a complete
+#     local development environment that mirrors the final installation.
+#
+#     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON
+#     $ cmake --build build --target stage_all
+#
+# 3.  Build and Run Tests:
+#     Ensures tests are built and can be run via CTest.
 #
 #     $ cmake -S . -B build -DBUILD_TESTS=ON
 #     $ cmake --build build
 #     $ cd build
 #     $ ctest
 #
-# 3.  Create a Full Distributable Package:
-#     Stages all components (including third-party libs) and installs them
-#     to the specified prefix.
+# 4.  Create a Full Distributable Package:
+#     This first performs a full staging and then copies the result to the
+#     final installation directory.
 #
 #     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON \
 #           -DPYLABHUB_CREATE_INSTALL_TARGET=ON \
 #           -DCMAKE_INSTALL_PREFIX=../install
-#     $ cmake --build build
+#     $ cmake --build build --target stage_all
 #     $ cmake --install build
 #
 #     The `../install` directory will now contain the complete package.
 #
-# 4.  Minimal Build (Core project only, no tests, no install):
+# 5.  Minimal Build (Core project only, no tests, no install):
 #     Useful for quick compilation checks or CI.
 #
 #     $ cmake -S . -B build -DBUILD_TESTS=OFF -DTHIRD_PARTY_INSTALL=OFF \
@@ -68,6 +78,22 @@
 #     third-party libs, tests, and the final `install` target are optional.
 # ===========================================================================
 cmake_minimum_required(VERSION 3.18)
+
+option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts" ON)
+
+if(FORCE_USE_CLANG_ON_APPLE)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    find_program(_clang_path clang)
+    find_program(_clangpp_path clang++)
+    if(_clang_path AND _clangpp_path)
+      set(CMAKE_C_COMPILER "${_clang_path}" CACHE FILEPATH "C compiler" FORCE)
+      set(CMAKE_CXX_COMPILER "${_clangpp_path}" CACHE FILEPATH "C++ compiler" FORCE)
+      message(STATUS "Top-level: forcing clang/clang++ on macOS: ${_clang_path}, ${_clangpp_path}")
+    else()
+      message(WARNING "Top-level: clang not found on PATH. Consider installing Xcode or CommandLineTools.")
+    endif()
+  endif()
+endif()
 
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
@@ -160,10 +186,10 @@ add_executable(pylabhub-shell src/coreshell.cpp)
 add_executable(pylabhub::shell ALIAS pylabhub-shell)
 target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
 
-# Make the default build trigger third-party staging.
-if(TARGET stage_third_party_deps)
-  add_dependencies(pylabhub-shell stage_third_party_deps)
-endif()
+# The `stage_all` target is a developer utility for explicitly staging everything.
+# We do NOT make `pylabhub-shell` depend on `stage_all` as it creates a
+# dependency cycle. The necessary runtime dependencies for `pylabhub-shell` are
+# staged via its POST_BUILD command, which correctly handles the dependency order.
 
 # Set the output file name to `hubshell` (.exe on Windows).
 set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
@@ -219,17 +245,14 @@ add_custom_command(TARGET pylabhub-shell POST_BUILD
 
 # Stage the core library (and its runtime dependencies on Windows)
 add_custom_command(TARGET pylabhub-corelib POST_BUILD
+  # Stage the library file.
   COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-  # Only copy the library file itself. The runtime dependencies are handled by the executable target.
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
-  COMMENT "Staging pylabhub-corelib to ${PYLABHUB_STAGING_DIR}/lib"
-)
-
-# Stage the public headers
-add_custom_command(TARGET pylabhub-corelib POST_BUILD
+  # Stage the public headers.
   COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
-  COMMENT "Staging public headers to ${PYLABHUB_STAGING_DIR}/include"
+  COMMENT "Staging pylabhub-corelib and public headers to ${PYLABHUB_STAGING_DIR}"
+  VERBATIM
 )
 
 # Make the global `stage_all` target depend on the core targets. This ensures

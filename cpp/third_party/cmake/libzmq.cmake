@@ -9,7 +9,8 @@ include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 #  - Discover the canonical concrete `libzmq` library target.
 #  - Provide a stable, namespaced `pylabhub::third_party::zmq` target for consumers.
 #  - Stage the `libzmq` headers and library artifacts into the project's
-#    `THIRD_PARTY_STAGING_DIR` by attaching custom commands to the
+#    `PYLABHUB_STAGING_DIR` by attaching custom commands to the
+# - PYLABHUB_STAGING_DIR: (PATH)
 #    `stage_third_party_deps` target.
 # ---------------------------------------------------------------------------
 #

@@ -1,0 +1,117 @@
+# cmake/assemble_xop.cmake.in
+# ------------------------------------------------------------------------------
+# Assemble a macOS .xop bundle directory from a compiled module file.
+#
+# This script is configured and executed by the `run_assemble_xop.cmake`
+# bootstrap script. All variables (e.g., @MACHO_BINARY_PATH@) are passed in
+# directly by the bootstrap script at build time.
+# ------------------------------------------------------------------------------
+cmake_minimum_required(VERSION 3.18)
+
+message(STATUS "assemble_xop.cmake: starting assembly")
+message(STATUS "  MACHO_BINARY_PATH = '@MACHO_BINARY_PATH@'")
+message(STATUS "  BUNDLE_DIR        = '@BUNDLE_DIR@'")
+message(STATUS "  XOP_BUNDLE_NAME   = '@XOP_BUNDLE_NAME@'")
+message(STATUS "  STAGING_DIR       = '@STAGING_DIR@'")
+
+# --- 1. Validate input variables ---
+if(NOT MACHO_BINARY_PATH OR NOT BUNDLE_DIR OR NOT XOP_BUNDLE_NAME)
+  message(FATAL_ERROR "assemble_xop.cmake: Required variables are missing. "
+    "This script must be run via the bootstrap wrapper.")
+endif()
+
+# --- 2. Clean previous bundle ---
+if(EXISTS "@BUNDLE_DIR@")
+  message(STATUS "  - Removing old bundle: @BUNDLE_DIR@")
+  file(REMOVE_RECURSE "@BUNDLE_DIR@")
+endif()
+
+# --- 3. Create bundle structure ---
+set(contents_dir "@BUNDLE_DIR@/Contents")
+set(macos_dir    "${contents_dir}/MacOS")
+set(res_dir      "${contents_dir}/Resources")
+file(MAKE_DIRECTORY "${macos_dir}")
+file(MAKE_DIRECTORY "${res_dir}")
+message(STATUS "  - Created bundle structure in @BUNDLE_DIR@")
+
+# --- 4. Copy Mach-O binary ---
+message(STATUS "  - Copying binary to ${macos_dir}/@XOP_BUNDLE_NAME@")
+file(COPY "@MACHO_BINARY_PATH@" DESTINATION "${macos_dir}/")
+
+# The MACOSX_BUNDLE property already gives the output file the correct name,
+# but we rename it here just in case to ensure the final executable name inside
+# the bundle is exactly what we expect.
+get_filename_component(source_binary_name "@MACHO_BINARY_PATH@" NAME)
+file(RENAME "${macos_dir}/${source_binary_name}" "${macos_dir}/@XOP_BUNDLE_NAME@")
+
+# --- 5. Create Info.plist ---
+file(WRITE "${contents_dir}/Info.plist"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleExecutable</key>
+    <string>@XOP_BUNDLE_NAME@</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.pylabub.@XOP_BUNDLE_NAME@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+</dict>
+</plist>"
+)
+message(STATUS "  - Created Info.plist")
+
+# --- 6. Compile and copy resources (.r file) ---
+find_program(REZ_EXECUTABLE Rez)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r" AND REZ_EXECUTABLE)
+  set(rez_source_file "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r")
+  set(rez_output_rsrc "${res_dir}/@XOP_BUNDLE_NAME@.rsrc")
+
+  # Build the include path arguments for Rez
+  set(rez_args "")
+  if(NOT "@R_INCLUDE_DIRS_LIST@" STREQUAL "")
+    string(REPLACE ";" " " _inc_dirs_list_str "@R_INCLUDE_DIRS_LIST@")
+    foreach(dir IN LISTS _inc_dirs_list_str)
+      list(APPEND rez_args "-I" "${dir}")
+    endforeach()
+  endif()
+
+  message(STATUS "  - Compiling resource file with Rez: ${rez_source_file}")
+  execute_process(
+    COMMAND ${REZ_EXECUTABLE} ${rez_args} -o "${rez_output_rsrc}" "${rez_source_file}"
+    RESULT_VARIABLE rez_result
+    ERROR_VARIABLE rez_error
+  )
+
+  if(NOT rez_result EQUAL 0)
+    message(WARNING "Rez failed to compile resource file. Error: ${rez_error}")
+  else()
+    message(STATUS "  - Created resource file: ${rez_output_rsrc}")
+  endif()
+else()
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r")
+    message(STATUS "  - No .r file found, skipping resource compilation.")
+  else()
+    message(WARNING "  - Rez compiler not found in PATH. Cannot compile .r file.")
+  endif()
+endif()
+
+# --- 7. Stage the final bundle ---
+# The bundle is created directly in the build directory. Now, copy it to the
+# final staging location.
+if(EXISTS "@STAGING_DIR@")
+    message(STATUS "  - Staging final bundle to @STAGING_DIR@/IgorXOP/")
+    file(COPY "@BUNDLE_DIR@/" DESTINATION "@STAGING_DIR@/IgorXOP/")
+else()
+    message(WARNING "  - STAGING_DIR was not defined, skipping final staging step.")
+endif()
+
+message(STATUS "assemble_xop.cmake: assembly complete.")

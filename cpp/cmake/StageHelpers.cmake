@@ -17,7 +17,7 @@
 # These functions rely on two variables being set by the parent scope
 # (typically `third_party/CMakeLists.txt`):
 #
-# - THIRD_PARTY_STAGING_DIR: The root directory for all staged artifacts.
+# - PYLABHUB_STAGING_DIR: The root directory for all staged artifacts.
 # - stage_third_party_deps: The global custom target to which staging
 #   commands are attached.
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ function(pylabhub_stage_headers)
     message(FATAL_ERROR "pylabhub_stage_headers requires a SUBDIR argument.")
   endif()
 
-  set(DEST_DIR "${THIRD_PARTY_STAGING_DIR}/include/${ARG_SUBDIR}")
+  set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
 
   # Stage headers from explicit directories
   foreach(DIR IN LISTS ARG_DIRECTORIES)
@@ -74,8 +74,8 @@ endfunction()
 function(pylabhub_stage_libraries)
   cmake_parse_arguments(ARG "" "" "TARGETS" ${ARGN})
 
-  set(DEST_DIR "${THIRD_PARTY_STAGING_DIR}/lib")
-  set(RUNTIME_DEST_DIR "${THIRD_PARTY_STAGING_DIR}/bin") # For Windows DLLs
+  set(DEST_DIR "${PYLABHUB_STAGING_DIR}/lib")
+  set(RUNTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/bin") # For Windows DLLs
 
   foreach(TGT IN LISTS ARG_TARGETS)
     if(TARGET ${TGT})
