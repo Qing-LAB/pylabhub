@@ -1,0 +1,12 @@
+# cmake-format.yaml
+# https://github.com/cheshirekow/cmake_format
+line_width: 100
+tab_size: 2
+use_tab: False
+keyword_case: upper # e.g. IF, ELSE
+command_case: upper # e.g. ADD_LIBRARY
+indent: 2
+separate_ctrl_name_with_space: True
+# control spacing for function arguments in CMakeLists
+spaces_before_comment: 2
+enable_multiline_lists: True

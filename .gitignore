@@ -26,7 +26,28 @@ htmlcov/
 # IDEs
 .vscode/
 .idea/
+.vs/
+*.sublime-project
+**/.vs/
+**/.vscode/
+**/.idea/
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Ignore CMake build output directory
+**/_build*/
+**/build*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/Testing/
+
+# --- XOPToolkit: ignore vendor files but keep placeholder and README ---
+cpp/third_party/XOPToolkit/XOPSupport/*
+!cpp/third_party/XOPToolkit/XOPSupport/.placeholder
+!cpp/third_party/XOPToolkit/XOPSupport/README.install.md
+
+
