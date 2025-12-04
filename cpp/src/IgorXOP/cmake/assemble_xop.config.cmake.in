@@ -1,0 +1,20 @@
+# This file is configured by src/IgorXOP/CMakeLists.txt and included by
+# assemble_xop.cmake. It passes all necessary variables from the main
+# build configuration to the assembly script.
+
+# --- Input Files ---
+set(MACHO_BINARY_PATH "@_mach_o@")
+set(REZ_SOURCE_FILE "@_r_file@")
+set(INFO_PLIST_SOURCE "@_configured_plist@")
+
+# --- Output Paths ---
+set(BUNDLE_DIR "@_bundle_dir@")
+set(STAGING_INSTALL_ROOT "@_install_root@")
+
+# --- Naming and Configuration ---
+set(XOP_BUNDLE_NAME "@_xop_name@")
+set(REZ_RESOURCE_BASENAME "@_rsrc_basename@")
+set(BUILD_CONFIG "@_config@")
+
+# --- Toolchain ---
+set(REZ_INCLUDE_DIRS "@_r_include_dirs@")

@@ -1,0 +1,271 @@
+include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
+# ---------------------------------------------------------------------------
+# third_party/cmake/libzmq.cmake
+# Wrapper for libzmq (ZeroMQ) third_party subproject
+#
+# Responsibilities:
+#  - Configure the upstream libzmq subproject in an isolated scope using the
+#    snapshot/restore cache helpers.
+#  - Discover the canonical concrete `libzmq` library target.
+#  - Provide a stable, namespaced `pylabhub::third_party::zmq` target for consumers.
+#  - Stage the `libzmq` headers and library artifacts into the project's
+#    `THIRD_PARTY_STAGING_DIR` by attaching custom commands to the
+#    `stage_third_party_deps` target.
+# ---------------------------------------------------------------------------
+#
+# This script is controlled by the following global options/variables:
+#
+# - THIRD_PARTY_ZMQ_FORCE_VARIANT: (CACHE STRING: "static" | "shared" | "none")
+#   Forces the build to be static or shared.
+#
+# - PYLABHUB_ZMQ_WITH_OPENPGM: (CACHE BOOL: ON | OFF)
+#   Enables the OpenPGM reliable multicast transport.
+#
+# - PYLABHUB_ZMQ_WITH_NORM: (CACHE BOOL: ON | OFF)
+#   Enables the NORM reliable multicast transport.
+#
+# - PYLABHUB_ZMQ_WITH_VMCI: (CACHE BOOL: ON | OFF)
+#   Enables the VMCI transport for VM-to-VM communication.
+#
+# - THIRD_PARTY_DISABLE_TESTS: (CACHE BOOL: ON | OFF)
+#   If ON, disables the build of libzmq's internal tests.
+#
+# - THIRD_PARTY_ALLOW_UPSTREAM_PCH: (CACHE BOOL: ON | OFF)
+#   If OFF (default), disables libzmq's precompiled header options.
+#
+# - THIRD_PARTY_INSTALL: (CACHE BOOL: ON | OFF)
+#   If ON, enables the post-build staging of libzmq artifacts.
+#
+# Internal Build Control & Isolation:
+# This script uses `snapshot_cache_var` and `restore_cache_var` to create an
+# isolated build environment. It translates high-level options into the specific
+# CACHE variables that the libzmq build system understands (e.g., `BUILD_STATIC`,
+# `ZMQ_BUILD_TESTS`). Any pre-existing global values for these variables are
+# saved before `add_subdirectory(libzmq)` and restored immediately after.
+#
+# The following are provided by the top-level build environment:
+#
+# - THIRD_PARTY_STAGING_DIR: (PATH)
+#   The absolute path to the staging directory where artifacts will be copied.
+#
+# - stage_third_party_deps: (CMake Target)
+#   The custom target "hook" to which staging commands are attached.
+# ---------------------------------------------------------------------------
+
+# Include the top-level staging helpers. The path is added by the root CMakeLists.txt.
+include(StageHelpers)
+
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
+  message(STATUS "[pylabhub-third-party] Configuring libzmq submodule...")
+
+  # ---------------------------
+  # Snapshot cache vars we will touch so we can restore them later and avoid leakage.
+  # (snapshot_cache_var/restore_cache_var should be provided by your cmake helpers.)
+  # ---------------------------
+  snapshot_cache_var(BUILD_SHARED)
+  snapshot_cache_var(BUILD_STATIC)
+  snapshot_cache_var(BUILD_SHARED_LIBS)
+  snapshot_cache_var(ZMQ_BUILD_TESTS)
+  snapshot_cache_var(BUILD_TESTS)
+  snapshot_cache_var(ENABLE_PRECOMPILED)
+
+  snapshot_cache_var(ZMQ_USE_PRECOMPILED_HEADER)
+  snapshot_cache_var(ZMQ_USE_PCH)
+  snapshot_cache_var(ENABLE_PRECOMPILED_HEADER)
+
+  # Additional knobs used to minimize libzmq build footprint (examples/docs/tools)
+  snapshot_cache_var(WITH_PERF_TOOL)
+  snapshot_cache_var(WITH_DOCS)
+  snapshot_cache_var(WITH_DOC)
+  snapshot_cache_var(ZMQ_BUILD_FRAMEWORK)
+  snapshot_cache_var(WITH_OPENPGM)
+  snapshot_cache_var(WITH_NORM)
+  snapshot_cache_var(WITH_VMCI)
+  snapshot_cache_var(ZMQ_BUILD_EXAMPLES)
+  snapshot_cache_var(ZMQ_BUILD_TOOLS)
+
+  # ---------------------------
+  # Variant selection: static/shared
+  # ---------------------------
+  if(NOT DEFINED THIRD_PARTY_ZMQ_FORCE_VARIANT)
+    set(THIRD_PARTY_ZMQ_FORCE_VARIANT "none")
+  endif()
+
+  if(THIRD_PARTY_ZMQ_FORCE_VARIANT STREQUAL "static")
+    set(BUILD_SHARED OFF CACHE BOOL "Wrapper: prefer static libs for libzmq" FORCE)
+    set(BUILD_STATIC ON CACHE BOOL "Wrapper: prefer static libs for libzmq" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Wrapper: prefer static libs (generic hint)" FORCE)
+    set(ZMQ_BUILD_SHARED OFF CACHE BOOL "Wrapper: prefer static libs for libzmq (alt)" FORCE)
+    set(ZMQ_STATIC ON CACHE BOOL "Wrapper: prefer static libs for libzmq (alt)" FORCE)
+    message(STATUS "[pylabhub-third-party] Forcing libzmq variant = static")
+  elseif(THIRD_PARTY_ZMQ_FORCE_VARIANT STREQUAL "shared")
+    set(BUILD_SHARED ON CACHE BOOL "Wrapper: prefer shared libs for libzmq" FORCE)
+    set(BUILD_STATIC OFF CACHE BOOL "Wrapper: prefer shared libs for libzmq" FORCE)
+    set(BUILD_SHARED_LIBS ON CACHE BOOL "Wrapper: prefer shared libs (generic hint)" FORCE)
+    set(ZMQ_BUILD_SHARED ON CACHE BOOL "Wrapper: prefer shared libs for libzmq (alt)" FORCE)
+    set(ZMQ_STATIC OFF CACHE BOOL "Wrapper: prefer shared libs for libzmq (alt)" FORCE)
+    message(STATUS "[pylabhub-third-party] Forcing libzmq variant = shared")
+  else()
+    message(STATUS "third_party wrapper: not forcing libzmq variant (none)")
+  endif()
+
+  # ---------------------------
+  # Disable upstream tests if requested by wrapper policy (do not set global BUILD_TESTS)
+  # ---------------------------
+  if(THIRD_PARTY_DISABLE_TESTS)
+    set(ZMQ_BUILD_TESTS OFF CACHE BOOL "Wrapper: disable libzmq tests only" FORCE)
+    set(ZMQ_TESTS OFF CACHE BOOL "Wrapper: disable libzmq tests (alt)" FORCE)
+    message(STATUS "[pylabhub-third-party] Disabling libzmq tests (ZMQ_BUILD_TESTS=OFF)")
+  endif()
+
+  # ---------------------------
+  # Precompiled header policy (scoped)
+  # ---------------------------
+  if(NOT DEFINED THIRD_PARTY_ALLOW_UPSTREAM_PCH)
+    set(THIRD_PARTY_ALLOW_UPSTREAM_PCH OFF)
+  endif()
+
+  if(NOT THIRD_PARTY_ALLOW_UPSTREAM_PCH)
+    set(ENABLE_PRECOMPILED OFF CACHE BOOL "Wrapper: disable libzmq precompiled headers" FORCE)
+    set(ZMQ_USE_PRECOMPILED_HEADER OFF CACHE BOOL "Wrapper: disable libzmq precompiled headers (alt)" FORCE)
+    set(ZMQ_USE_PCH OFF CACHE BOOL "Wrapper: disable libzmq precompiled headers (alt2)" FORCE)
+    set(ENABLE_PRECOMPILED_HEADER OFF CACHE BOOL "Wrapper: disable libzmq precompiled headers (alt3)" FORCE)
+    message(STATUS "[pylabhub-third-party] Disabling libzmq PCH")
+  else()
+    message(STATUS "[pylabhub-third-party] Allowing libzmq to use PCH if its build requests it")
+  endif()
+
+  # Extra note for MSVC + Ninja where PCH can cause duplicate-rule errors
+  if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    if(NOT THIRD_PARTY_ALLOW_UPSTREAM_PCH AND NOT THIRD_PARTY_FORCE_ALLOW_PCH)
+      message(STATUS "[pylabhub-third-party] MSVC+Ninja detected; keeping upstream PCH disabled by default to avoid duplicate-rule errors.")
+    elseif(THIRD_PARTY_FORCE_ALLOW_PCH)
+      message(WARNING "[pylabhub-third-party] MSVC+Ninja detected but you forced allowing upstream PCH (may see ninja: 'multiple rules generate precompiled.hpp').")
+    endif()
+  endif()
+
+  # ---------------------------
+  # Minimize upstream libzmq build (turn off docs, examples, optional transports, etc.)
+  # ---------------------------
+  set(WITH_PERF_TOOL OFF CACHE BOOL "Wrapper: disable libzmq perf tools" FORCE)
+  set(WITH_DOCS OFF CACHE BOOL "Wrapper: disable libzmq docs" FORCE)
+  set(ZMQ_BUILD_FRAMEWORK OFF CACHE BOOL "Wrapper: disable libzmq framework packaging" FORCE)
+
+  # --- Translate top-level tunables to libzmq-specific options ---
+  # Use the PYLABHUB_ZMQ_* variables to control the build. The `FORCE` ensures
+  # our policy is respected within the isolated build scope.
+  set(WITH_OPENPGM ${PYLABHUB_ZMQ_WITH_OPENPGM} CACHE BOOL "Wrapper: controlled by PYLABHUB_ZMQ_WITH_OPENPGM" FORCE)
+  set(WITH_NORM ${PYLABHUB_ZMQ_WITH_NORM} CACHE BOOL "Wrapper: controlled by PYLABHUB_ZMQ_WITH_NORM" FORCE)
+  set(WITH_VMCI ${PYLABHUB_ZMQ_WITH_VMCI} CACHE BOOL "Wrapper: controlled by PYLABHUB_ZMQ_WITH_VMCI" FORCE)
+
+  set(ZMQ_BUILD_EXAMPLES OFF CACHE BOOL "Wrapper: disable libzmq example binaries" FORCE)
+  set(ZMQ_BUILD_TOOLS OFF CACHE BOOL "Wrapper: disable libzmq helper tools" FORCE)
+
+  # --- Print summary of effective settings for visibility ---
+  message("")
+  message(STATUS "=========================================================")
+  message(STATUS "[pylabhub-third-party] Applying the following options for libzmq build:")
+  message(STATUS "  Build variant:")
+  message(STATUS "    - BUILD_SHARED_LIBS: ${BUILD_SHARED_LIBS}")
+  message(STATUS "    - BUILD_STATIC:      ${BUILD_STATIC}")
+  message(STATUS "    - BUILD_SHARED:      ${BUILD_SHARED}")
+  message(STATUS "  Features:")
+  message(STATUS "    - ZMQ_BUILD_TESTS:   ${ZMQ_BUILD_TESTS}")
+  message(STATUS "    - WITH_DOCS:         ${WITH_DOCS}")
+  message(STATUS "    - ZMQ_BUILD_EXAMPLES:${ZMQ_BUILD_EXAMPLES}")
+  message(STATUS "  Optional Transports:")
+  message(STATUS "    - WITH_OPENPGM:      ${WITH_OPENPGM}")
+  message(STATUS "    - WITH_NORM:         ${WITH_NORM}")
+  message(STATUS "    - WITH_VMCI:         ${WITH_VMCI}")
+  message(STATUS "  Precompiled Headers:")
+  message(STATUS "    - ENABLE_PRECOMPILED:${ENABLE_PRECOMPILED}")
+  message(STATUS "=========================================================")
+  message("")
+
+  # ---------------------------
+  # Add subproject (scoped)
+  # ---------------------------
+  add_subdirectory(libzmq EXCLUDE_FROM_ALL)
+
+  # --- 4. Discover the canonical concrete target ---
+  # Find the real, installable target for the libzmq library, ignoring aliases.
+  # ---------------------------
+  set(_zmq_canonical_target "")
+  set(_zmq_candidates "libzmq-static;libzmq-shared;libzmq;zmq;zmq::zmq")
+
+  foreach(_cand IN LISTS _zmq_candidates)
+    if(TARGET "${_cand}" AND NOT TARGET "${_cand}" STREQUAL "INTERFACE")
+      _resolve_alias_to_concrete("${_cand}" _zmq_canonical_target)
+      message(STATUS "[pylabhub-third-party] Found canonical libzmq target: ${_zmq_canonical_target} (from candidate '${_cand}')")
+      break()
+    endif()
+  endforeach()
+
+  # --- 5. Create wrapper target and define usage requirements ---
+  # This provides a stable `pylabhub::third_party::zmq` for consumers.
+  # ---------------------------
+  _expose_wrapper(pylabhub_zmq pylabhub::third_party::zmq)
+
+  if(_zmq_canonical_target)
+    # Binary library case: Link the wrapper to the concrete target.
+    target_link_libraries(pylabhub_zmq INTERFACE ${_zmq_canonical_target})
+    message(STATUS "[pylabhub-third-party] Linking pylabhub_zmq -> ${_zmq_canonical_target}")
+  else()
+    # This should not happen for libzmq unless the build is misconfigured.
+    message(WARNING "[pylabhub-third-party] No canonical binary target found for libzmq. Consumers may fail to link.")
+    # Manually add include directory as a fallback.
+    target_include_directories(pylabhub_zmq INTERFACE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include>
+      $<INSTALL_INTERFACE:include>
+    )
+  endif()
+
+  # --- 6. Stage artifacts for installation ---
+  # Add custom commands to copy headers and libs to the staging directory.
+  # ---------------------------
+  if(THIRD_PARTY_INSTALL)
+    message(STATUS "[pylabhub-third-party] Scheduling libzmq artifacts for staging...")
+
+    # Stage the header directory
+    pylabhub_stage_headers(
+      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include"
+      SUBDIR "zmq"
+    )
+
+    # Stage the library file, if a concrete target was found
+    if(_zmq_canonical_target)
+      pylabhub_stage_libraries(TARGETS ${_zmq_canonical_target})
+    endif()
+  else()
+    message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for libzmq.")
+  endif()
+
+  # --- 7. Restore cache variables ---
+  # Prevent settings from leaking to other sub-projects.
+  # ---------------------------
+  restore_cache_var(BUILD_SHARED BOOL)
+  restore_cache_var(BUILD_STATIC BOOL)
+  restore_cache_var(BUILD_SHARED_LIBS BOOL)
+  restore_cache_var(ZMQ_BUILD_TESTS BOOL)
+  restore_cache_var(BUILD_TESTS BOOL)
+  restore_cache_var(ENABLE_PRECOMPILED BOOL)
+
+  restore_cache_var(ZMQ_USE_PRECOMPILED_HEADER BOOL)
+  restore_cache_var(ZMQ_USE_PCH BOOL)
+  restore_cache_var(ENABLE_PRECOMPILED_HEADER BOOL)
+
+  restore_cache_var(WITH_PERF_TOOL BOOL)
+  restore_cache_var(WITH_DOCS BOOL)
+  restore_cache_var(WITH_DOC BOOL)
+  restore_cache_var(ZMQ_BUILD_FRAMEWORK BOOL)
+  restore_cache_var(WITH_OPENPGM BOOL)
+  restore_cache_var(WITH_NORM BOOL)
+  restore_cache_var(WITH_VMCI BOOL)
+  restore_cache_var(ZMQ_BUILD_EXAMPLES BOOL)
+  restore_cache_var(ZMQ_BUILD_TOOLS BOOL)
+
+  message(STATUS "[pylabhub-third-party] libzmq configuration complete.")
+else()
+  message(WARNING "[pylabhub-third-party] libzmq submodule not found at ${CMAKE_CURRENT_SOURCE_DIR}/libzmq. Skipping configuration.")
+endif()
