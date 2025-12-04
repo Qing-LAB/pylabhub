@@ -8,10 +8,10 @@
 # Design:
 #   1. Includes `ThirdPartyPolicyAndHelper.cmake` to define global options
 #      (e.g., `THIRD_PARTY_INSTALL`) and helper functions.
-#   2. Defines the `THIRD_PARTY_STAGING_DIR` variable, which points to the
-#      common directory where all dependency artifacts will be copied.
-#   3. Creates a global custom target, `stage_third_party_deps`, which serves
-#      as the "hook" for all staging operations.
+#   2. Uses the `PYLABHUB_STAGING_DIR` variable (defined at the top level) as
+#      the destination for all staged artifacts.
+#   3. Creates a `stage_third_party_deps` custom target to act as a "hook" for
+#      all third-party staging commands.
 #   4. Includes each library's wrapper script (e.g., `fmt.cmake`), which is
 #      responsible for configuring the library and attaching its staging
 #      commands to the `stage_third_party_deps` target.
