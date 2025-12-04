@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+         "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>@XOP_BUNDLE_NAME@</string>
+
+  <key>CFBundleExecutable</key>
+  <string>@XOP_BUNDLE_EXECUTABLE@</string>
+
+  <key>CFBundleIdentifier</key>
+  <string>@XOP_BUNDLE_IDENTIFIER@</string>
+
+  <key>CFBundlePackageType</key>
+  <string>IXOP</string>
+
+  <key>CFBundleSignature</key>
+  <string>IGR0</string>
+
+  <key>CFBundleShortVersionString</key>
+  <string>@XOP_BUNDLE_VERSION@</string>
+
+  <key>CFBundleVersion</key>
+  <string>@XOP_BUNDLE_VERSION@</string>
+
+  <key>CFBundleDevelopmentRegion</key>
+  <string>English</string>
+
+  <key>CSResourcesFileMapped</key>
+  <true/>
+</dict>
+</plist>

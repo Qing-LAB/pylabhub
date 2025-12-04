@@ -1,0 +1,83 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 19 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "PREFER_VENDOR_NLOHMANN": "ON",
+        "THIRD_PARTY_ZMQ_FORCE_VARIANT": "static",
+        "THIRD_PARTY_DISABLE_TESTS": "ON",
+        "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"
+      }
+    },
+
+    {
+      "name": "ninja-debug",
+      "inherits": "base",
+      "hidden": false,
+      "description": "Ninja / Debug (Linux / macOS / Windows Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ninja-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "ENABLE_SANITIZERS": "ON", "BUILD_TESTS": "ON" }
+    },
+
+    {
+      "name": "ninja-release",
+      "inherits": "base",
+      "hidden": false,
+      "description": "Ninja / Release (Linux / macOS / Windows Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ninja-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "ENABLE_SANITIZERS": "OFF", "BUILD_TESTS": "ON" }
+    },
+
+    {
+      "name": "msvc-x64-debug",
+      "hidden": false,
+      "description": "Visual Studio 2022 x64 Debug",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs-x64-debug",
+      "cacheVariables": {
+        "PREFER_VENDOR_NLOHMANN": "ON",
+        "BUILD_TESTS": "ON",
+        "THIRD_PARTY_ZMQ_FORCE_VARIANT": "static",
+        "THIRD_PARTY_DISABLE_TESTS": "ON",
+        "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"
+      }
+    },
+
+    {
+      "name": "msvc-x64-release",
+      "hidden": false,
+      "description": "Visual Studio 2022 x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs-x64-release",
+      "cacheVariables": {
+        "PREFER_VENDOR_NLOHMANN": "ON",
+        "BUILD_TESTS": "ON",
+        "THIRD_PARTY_ZMQ_FORCE_VARIANT": "static",
+        "THIRD_PARTY_DISABLE_TESTS": "ON",
+        "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "build-ninja-debug",   "configurePreset": "ninja-debug" },
+    { "name": "build-ninja-release", "configurePreset": "ninja-release" },
+    { "name": "build-msvc-debug",    "configurePreset": "msvc-x64-debug" },
+    { "name": "build-msvc-release",  "configurePreset": "msvc-x64-release" }
+  ],
+
+  "testPresets": [
+    { "name": "test-ninja-debug", "configurePreset": "ninja-debug" },
+    { "name": "test-msvc-debug",  "configurePreset": "msvc-x64-debug" }
+  ]
+}
