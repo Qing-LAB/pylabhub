@@ -1,0 +1,37 @@
+# This is a bootstrap script executed by the POST_BUILD command.
+# Its purpose is to configure the *actual* assembly script with values that are
+# only known at build time (via generator expressions).
+
+# These paths are configured by the parent CMakeLists.txt at configure time.
+set(ASSEMBLE_SCRIPT_TEMPLATE "@ASSEMBLE_SCRIPT_TEMPLATE@")
+set(CONFIGURED_ASSEMBLE_SCRIPT "@CONFIGURED_ASSEMBLE_SCRIPT@")
+
+
+# 1. Define the variables that were passed in from the POST_BUILD command.
+#    These values are now concrete paths, not unresolved generator expressions.
+#    MACHO_BINARY_PATH_ARG is passed via -D on the command line to resolve the generator expression.
+#    The rest are passed via configure_file.
+set(MACHO_BINARY_PATH "${MACHO_BINARY_PATH_ARG}")
+set(BUNDLE_DIR "@BUNDLE_DIR@")
+set(XOP_BUNDLE_NAME "@XOP_BUNDLE_NAME@")
+set(R_INCLUDE_DIRS_LIST "@R_INCLUDE_DIRS_LIST@")
+set(STAGING_DIR "@STAGING_DIR@")
+set(CMAKE_CURRENT_SOURCE_DIR "@CMAKE_CURRENT_SOURCE_DIR@") # Pass the source dir
+
+# For debugging: print the values we received.
+message(STATUS "run_assemble_xop.cmake.in: Received values:")
+message(STATUS "  MACHO_BINARY_PATH = '${MACHO_BINARY_PATH}'")
+message(STATUS "  BUNDLE_DIR        = '${BUNDLE_DIR}'")
+message(STATUS "  STAGING_DIR       = '${STAGING_DIR}'")
+message(STATUS "  --")
+message(STATUS "  ASSEMBLE_SCRIPT_TEMPLATE = '${ASSEMBLE_SCRIPT_TEMPLATE}'")
+message(STATUS "  CONFIGURED_ASSEMBLE_SCRIPT = '${CONFIGURED_ASSEMBLE_SCRIPT}'")
+
+# 2. Use configure_file to create the final assembly script from its template.
+#    This passes the now-resolved variables into the main script.
+configure_file("${ASSEMBLE_SCRIPT_TEMPLATE}" "${CONFIGURED_ASSEMBLE_SCRIPT}" @ONLY)
+
+# 3. Execute the newly configured assembly script.
+message(STATUS "run_assemble_xop.cmake.in: Executing configured assembly script...")
+include("${CONFIGURED_ASSEMBLE_SCRIPT}")
+message(STATUS "run_assemble_xop.cmake.in: Assembly script finished.")

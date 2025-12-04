@@ -180,17 +180,23 @@ endif()
 # Prepare r_include_dirs_list (semicol-separated) to pass to assemble script.
 # Preference order:
 #   1) INTERFACE_INCLUDE_DIRECTORIES of XOP::XOPSupport (if target exists)
+# We must filter this list to remove generator expressions, as the Rez compiler
+# only understands clean file paths.
 # -------------------------
-set(_r_include_dirs_list "")
-get_target_property(_r_include_dirs_list pylabhub::third_party::XOPToolKit INTERFACE_INCLUDE_DIRECTORIES)
-if(NOT _r_include_dirs_list)
-  # Fallback in case the property is empty or not found
-  set(_r_include_dirs_list "")
+set(_raw_include_dirs "")
+get_target_property(_raw_include_dirs pylabhub::third_party::XOPToolKit INTERFACE_INCLUDE_DIRECTORIES)
+
+set(_r_include_dirs_list "") # This will hold the clean, absolute paths.
+if(_raw_include_dirs)
+  foreach(dir IN LISTS _raw_include_dirs)
+    if(IS_ABSOLUTE "${dir}")
+      list(APPEND _r_include_dirs_list "${dir}")
+    endif()
+  endforeach()
 endif()
 
 # Log for visibility
 if(NOT "${_r_include_dirs_list}" STREQUAL "")
-  message(STATUS "IgorXOP: will pass Rez include dirs to assemble script: ${_r_include_dirs_list}")
   message(STATUS "IgorXOP: Passing Rez include dirs to bundle assembly script: ${_r_include_dirs_list}")
 else()
   message(STATUS "IgorXOP: no Rez include dirs discovered (Rez may fail if .r includes toolkit headers)")
@@ -201,35 +207,58 @@ endif()
 # We create a single custom-command that produces a single marker file to keep it
 # robust across generators. The final assemble marker target is added as a dependency.
 # -------------------------
-set(_assemble_script "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.cmake")
-set(_configured_assemble_script "${CMAKE_CURRENT_BINARY_DIR}/assemble_xop.cmake")
-set(_assemble_config_template "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.config.cmake.in")
-set(_assemble_config_file_abs "${CMAKE_CURRENT_BINARY_DIR}/assemble_xop.config.cmake")
-set(_bundle_marker "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.assembled")
-set(_bundle_dir "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.xop")
 
 if(DEFINED PLATFORM_APPLE)
-  # Add a post-build step to automatically assemble the .xop bundle
-  if(EXISTS "${_assemble_script}")
-    # 1. Configure a file to pass variables to the assembly script.
-    configure_file("${_assemble_config_template}" "${_assemble_config_file_abs}" @ONLY)
+  # --- macOS Bundle Assembly ---
+  # We use a two-stage process to handle generator expressions, which are only
+  # resolved at build time.
+  # 1. At configure time, we create a "bootstrap" script (`run_assemble_xop.cmake`).
+  #    This script contains generator expressions as placeholders.
+  # 2. At build time (POST_BUILD), CMake executes this bootstrap script. The
+  #    generator expressions are now resolved to concrete paths.
+  # 3. The bootstrap script then uses `configure_file` to create the *final*
+  #    assembly script, passing in the now-resolved paths.
+  # 4. Finally, the bootstrap script executes the final assembly script.
 
-    # 2. Configure the assembly script to know the absolute path to its config.
-    configure_file("${_assemble_script}" "${_configured_assemble_script}" @ONLY)
+  set(BOOTSTRAP_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/run_assemble_xop.cmake.in")
+  set(CONFIGURED_BOOTSTRAP_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/run_assemble_xop.cmake")
+  
+  # Define paths for the *actual* assembly script. These will be passed into the bootstrap script.
+  set(ASSEMBLE_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.cmake.in")
+  set(CONFIGURED_ASSEMBLE_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/assemble_xop.cmake")
+
+  # Add a post-build step to automatically assemble the .xop bundle
+  if(EXISTS "${BOOTSTRAP_SCRIPT_TEMPLATE}" AND EXISTS "${ASSEMBLE_SCRIPT_TEMPLATE}")
+    # Define the variables that will be substituted into the bootstrap script template.
+    # These use generator expressions, which will be resolved at build time.
+    set(MACHO_BINARY_PATH "$<TARGET_FILE:${XOP_TARGET}>")
+    set(BUNDLE_DIR "${CMAKE_CURRENT_BINARY_DIR}/${XOP_BUNDLE_NAME}.xop")
+    set(XOP_BUNDLE_NAME "${XOP_BUNDLE_NAME}") # This is already a concrete value
+    set(R_INCLUDE_DIRS_LIST "${_r_include_dirs_list}")
+    set(STAGING_DIR "${PYLABHUB_STAGING_DIR}")
+    set(CMAKE_CURRENT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}") # Pass the source dir
+
+    # At configure time, create the bootstrap script, filling it with generator expressions.
+    # These will be replaced with actual paths by the build system right before execution.
+    # The @ONLY flag ensures that only @VAR@ variables are replaced, not ${VAR} variables,
+    # which is crucial for passing generator expressions.
+    configure_file("${BOOTSTRAP_SCRIPT_TEMPLATE}" "${CONFIGURED_BOOTSTRAP_SCRIPT}" @ONLY)
 
     add_custom_command(
       TARGET ${XOP_TARGET}
       POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E echo "IgorXOP: Assembling ${XOP_BUNDLE_NAME}.xop bundle..."
-      COMMAND ${CMAKE_COMMAND} -P "${_configured_assemble_script}"
+      # Pass the generator expression directly on the command line.
+      # The build system will resolve it to a concrete path before executing the script.
+      COMMAND ${CMAKE_COMMAND}
+        -DMACHO_BINARY_PATH_ARG=$<TARGET_FILE:${XOP_TARGET}>
+        -P "${CONFIGURED_BOOTSTRAP_SCRIPT}"
       COMMENT "Assembling ${XOP_BUNDLE_NAME}.xop bundle"
       VERBATIM
     )
     message(STATUS "IgorXOP: Registered automatic assembly for ${XOP_TARGET}")
   else()
-    message(WARNING "IgorXOP: assemble_xop.cmake not found; bundle assembly will be skipped")
+    message(WARNING "IgorXOP: A required assembly script template was not found; bundle assembly will be skipped.")
   endif()
-
 endif()
 
 if(DEFINED PLATFORM_WIN64)

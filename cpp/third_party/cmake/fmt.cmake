@@ -9,7 +9,8 @@ include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 #  - Discover the canonical concrete `fmt` library target.
 #  - Provide a stable, namespaced `pylabhub::third_party::fmt` target for consumers.
 #  - Stage the `fmt` headers and library artifacts into the project's
-#    `THIRD_PARTY_STAGING_DIR` by attaching custom commands to the
+#    `PYLABHUB_STAGING_DIR` by attaching custom commands to the
+# - PYLABHUB_STAGING_DIR: (PATH)
 #    `stage_third_party_deps` target, as per the design document.
 #  - Preserve your original wrapper flags (THIRD_PARTY_FMT_FORCE_VARIANT,
 #    THIRD_PARTY_DISABLE_TESTS, THIRD_PARTY_ALLOW_UPSTREAM_PCH, etc.)

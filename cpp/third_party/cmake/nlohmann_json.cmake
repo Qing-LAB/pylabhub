@@ -9,7 +9,7 @@ include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 #    2. An existing upstream target (from `find_package` or a parent `FetchContent`).
 #    3. A `FetchContent` download as a final fallback.
 #  - Provide a stable, namespaced `pylabhub::third_party::nlohmann_json` target.
-#  - Stage the header files into the project's `THIRD_PARTY_STAGING_DIR` by
+#  - Stage the header files into the project's `PYLABHUB_STAGING_DIR` by
 #    attaching a custom command to the `stage_third_party_deps` target.
 # --------------------------------------------
 #
@@ -25,7 +25,7 @@ include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 # The following are provided by the top-level build environment and are not
 # intended to be user-configurable options:
 #
-# - THIRD_PARTY_STAGING_DIR: (PATH)
+# - PYLABHUB_STAGING_DIR: (PATH)
 #   The absolute path to the staging directory where artifacts will be copied.
 #
 # - stage_third_party_deps: (CMake Target)
@@ -73,6 +73,11 @@ if(PREFER_VENDOR_NLOHMANN AND NOT _nlohmann_upstream_target)
     set(_nlohmann_include_dir "${CMAKE_CURRENT_SOURCE_DIR}/include")
     set(_nlohmann_layout "namespaced")
     message(STATUS "[pylabhub-third-party] Found vendored nlohmann/json (namespaced layout).")
+  # Design Rationale: For a vendored copy, we enforce a namespaced layout.
+  # If a flat layout is detected (json.hpp directly in include/), we fail fast.
+  # This is a strict policy that requires the developer to fix the vendored
+  # source tree to match the project's expectations (`#include <nlohmann/json.hpp>`).
+  # This is a one-time fix that ensures consistency.
   elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include/json.hpp")
     message(FATAL_ERROR "[pylabhub-third-party] Found vendored nlohmann/json with a 'flat' layout. "
                         "This project requires a 'namespaced' layout. Please move 'include/json.hpp' "
@@ -106,10 +111,17 @@ if(NOT _nlohmann_include_dir AND NOT _nlohmann_upstream_target)
   _discover_nlohmann_target()
   if(_nlohmann_upstream_target)
       message(STATUS "[pylabhub-third-party] FetchContent provided target: ${_nlohmann_upstream_target}")
+      # Design Rationale: Some older versions of nlohmann/json fetched via
+      # FetchContent might have a "flat" header layout. We detect this and
+      # normalize it by creating a namespaced `nlohmann` subdirectory within
+      # the build tree's source directory for this dependency. This allows the
+      # rest of our project to consistently use `#include <nlohmann/json.hpp>`
+      # without modifying the original downloaded source.
       # Check the layout of the fetched content and fix it if it's flat.
       if(EXISTS "${nlohmann_json_SOURCE_DIR}/include/json.hpp" AND NOT EXISTS "${nlohmann_json_SOURCE_DIR}/include/nlohmann")
-        message(STATUS "[pylabhub-third-party] Fetched content has a flat layout. Creating namespaced layout for build...")
+        message(STATUS "[pylabhub-third-party] Fetched content has a flat layout. Normalizing to namespaced layout for this build.")
         file(MAKE_DIRECTORY "${nlohmann_json_SOURCE_DIR}/include/nlohmann")
+        # Note: This copy happens in the build tree, not the original source.
         file(COPY "${nlohmann_json_SOURCE_DIR}/include/json.hpp" DESTINATION "${nlohmann_json_SOURCE_DIR}/include/nlohmann/")
       endif()
       # Now that the layout is guaranteed to be namespaced, set the include directory.
@@ -151,7 +163,7 @@ endif()
 
 # --- 4. Stage artifacts for installation ---
 if(THIRD_PARTY_INSTALL)
-  if(_nlohmann_include_dir AND EXISTS "${_nlohmann_include_dir}/nlohmann")
+  if(_nlohmann_include_dir AND EXISTS "${_nlohmann_include_dir}/nlohmann/json.hpp")
     # The layout is guaranteed to be namespaced at this point. Copy the nlohmann
     # directory from the resolved include path into the staging include directory.
     pylabhub_stage_headers(DIRECTORIES "${_nlohmann_include_dir}/nlohmann" SUBDIR "nlohmann")
