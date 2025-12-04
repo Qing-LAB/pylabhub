@@ -112,6 +112,7 @@ elseif(DEFINED PLATFORM_WIN64)
   set_target_properties(${XOP_TARGET} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "${XOP_BUNDLE_NAME}"
+    SUFFIX ".xop"
   )
 endif()
 
@@ -208,31 +209,23 @@ set(_bundle_marker "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.assembled
 set(_bundle_dir "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.xop")
 
 if(DEFINED PLATFORM_APPLE)
+  # Add a post-build step to automatically assemble the .xop bundle
   if(EXISTS "${_assemble_script}")
     # 1. Configure a file to pass variables to the assembly script.
     configure_file("${_assemble_config_template}" "${_assemble_config_file_abs}" @ONLY)
 
     # 2. Configure the assembly script to know the absolute path to its config.
-    # This makes the script independent of its working directory.
     configure_file("${_assemble_script}" "${_configured_assemble_script}" @ONLY)
 
     add_custom_command(
-      OUTPUT "${_bundle_marker}"
-      BYPRODUCTS "${_bundle_marker}"
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      TARGET ${XOP_TARGET}
+      POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E echo "IgorXOP: Assembling ${XOP_BUNDLE_NAME}.xop bundle..."
       COMMAND ${CMAKE_COMMAND} -P "${_configured_assemble_script}"
-      COMMAND ${CMAKE_COMMAND} -E touch "${_bundle_marker}"
-      DEPENDS ${XOP_TARGET}
+      COMMENT "Assembling ${XOP_BUNDLE_NAME}.xop bundle"
       VERBATIM
     )
-
-    add_custom_target(assemble_xop_marker_${XOP_TARGET} DEPENDS "${_bundle_marker}")
-
-    # Add the bundle assembly to the global staging target.
-    add_dependencies(stage_all assemble_xop_marker_${XOP_TARGET})
-
-    message(STATUS "IgorXOP: assemble_xop marker target registered; assemble script: ${_assemble_script}")
+    message(STATUS "IgorXOP: Registered automatic assembly for ${XOP_TARGET}")
   else()
     message(WARNING "IgorXOP: assemble_xop.cmake not found; bundle assembly will be skipped")
   endif()
@@ -240,23 +233,15 @@ if(DEFINED PLATFORM_APPLE)
 endif()
 
 if(DEFINED PLATFORM_WIN64)
-  # Stage DLL into PYLABHUB_STAGING_DIR/IgorXOP/ and rename to .xop (so Igor can find it).
-  set(_win_marker "${CMAKE_BINARY_DIR}/src/IgorXOP/${XOP_BUNDLE_NAME}.dll.staged")
+  # Add a post-build step to stage the .xop file automatically
   add_custom_command(
-    OUTPUT "${_win_marker}"
-    BYPRODUCTS "${_win_marker}"
-    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E echo "IgorXOP: Staging ${XOP_BUNDLE_NAME}.dll as .xop..."
+    TARGET ${XOP_TARGET}
+    POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
-    COMMAND ${CMAKE_COMMAND} -E remove -f "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_win_marker}"
-    DEPENDS ${XOP_TARGET}
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMENT "Staging ${XOP_BUNDLE_NAME}.xop to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
     VERBATIM
   )
-  add_custom_target(assemble_xop_marker_${XOP_TARGET} DEPENDS "${_win_marker}")
-  # Create a single, user-friendly target to trigger the staging.
-  add_dependencies(stage_all assemble_xop_marker_${XOP_TARGET})
 
 endif()
 
@@ -269,20 +254,31 @@ set(_xop_package_files "")
 list(APPEND _xop_package_files ${_xop_ihf_files} ${_xop_ipf_files})
 
 if(_xop_package_files)
-  # The installation of helper files depends on the master install switch.
-  # The staging of the bundle itself is unconditional.
-  if(PYLABHUB_CREATE_INSTALL_TARGET)
-    foreach(_rel IN LISTS _xop_package_files)
-      set(_src "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
-      if(EXISTS "${_src}") # This install() is for the final installation step.
-        install(FILES "${_src}" DESTINATION "IgorXOP")
-        message(STATUS "IgorXOP: Scheduling install of ${_rel} -> <install-root>/IgorXOP/")
-      else()
-        message(WARNING "IgorXOP: Expected package file ${_src} not found at install scheduling time")
-      endif()
-    endforeach()
-  endif() # PYLABHUB_CREATE_INSTALL_TARGET
+  # Stage the helper files alongside the XOP bundle automatically.
+  add_custom_command(
+    TARGET ${XOP_TARGET}
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/${_xop_package_files}"
+      "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMENT "Staging IgorXOP helper files (.ipf, .ihf) to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    VERBATIM
+  )
 endif()
+
+# The installation of helper files depends on the master install switch.
+# The staging of the bundle itself is unconditional.
+if(PYLABHUB_CREATE_INSTALL_TARGET)
+  foreach(_rel IN LISTS _xop_package_files)
+    set(_src "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
+    if(EXISTS "${_src}") # This install() is for the final installation step.
+      install(FILES "${_src}" DESTINATION "IgorXOP")
+      message(STATUS "IgorXOP: Scheduling install of ${_rel} -> <install-root>/IgorXOP/")
+    else()
+      message(WARNING "IgorXOP: Expected package file ${_src} not found at install scheduling time")
+    endif()
+  endforeach()
+endif() # PYLABHUB_CREATE_INSTALL_TARGET
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)

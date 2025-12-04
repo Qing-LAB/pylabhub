@@ -85,12 +85,15 @@ function(pylabhub_stage_libraries)
         COMMENT "Staging library for ${TGT} to ${DEST_DIR}"
         VERBATIM)
 
-      # On Windows, also stage the runtime DLL to the bin directory
-      if(WIN32)
-        add_custom_command(TARGET stage_third_party_deps POST_BUILD
-          COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:RUNTIME:${TGT}>" "${RUNTIME_DEST_DIR}"
-          COMMENT "Staging runtime DLL for ${TGT} to ${RUNTIME_DEST_DIR}"
-          VERBATIM)
+      # On Windows, also stage the runtime DLL if the target is a shared library
+      if(PLATFORM_WIN64)
+        get_target_property(TGT_TYPE ${TGT} TYPE)
+        if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
+            add_custom_command(TARGET stage_third_party_deps POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:RUNTIME:${TGT}>" "${RUNTIME_DEST_DIR}"
+            COMMENT "Staging runtime DLL for ${TGT} to ${RUNTIME_DEST_DIR}"
+            VERBATIM)
+        endif()
       endif()
     endif()
   endforeach()

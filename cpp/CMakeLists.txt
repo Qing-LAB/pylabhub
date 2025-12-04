@@ -160,6 +160,11 @@ add_executable(pylabhub-shell src/coreshell.cpp)
 add_executable(pylabhub::shell ALIAS pylabhub-shell)
 target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
 
+# Make the default build trigger third-party staging.
+if(TARGET stage_third_party_deps)
+  add_dependencies(pylabhub-shell stage_third_party_deps)
+endif()
+
 # Set the output file name to `hubshell` (.exe on Windows).
 set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
 message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
