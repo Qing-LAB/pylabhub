@@ -1,238 +1,289 @@
+# ===========================================================================
+# Top-Level CMakeLists.txt for the pyLabHub C++ Project
+#
+# This file is the main entry point for the C++ build system. It orchestrates the
+# entire process, from dependency management to final installation, based on a
+# unified staging architecture.
+#
+# ---------------------------------------------------------------------------
+# HOW TO USE THIS BUILD SYSTEM
+# ---------------------------------------------------------------------------
+#
+# This system is designed around a "staging" directory (`build/stage/`). All
+# artifacts are first copied here, creating a complete, runnable package. The
+# final `install` step is just a simple copy of this directory.
+#
+# --- Exposed User Options ---
+#   -DBUILD_TESTS=ON/OFF              (Default: ON)   Build the test suite.
+#   -DBUILD_XOP=ON/OFF                (Default: ON)   Build the IgorXOP module.
+#   -DPYLABHUB_BUILD_SHARED=ON/OFF    (Default: OFF)  Build corelib as shared/static.
+#   -DTHIRD_PARTY_INSTALL=ON/OFF      (Default: ON)   Stage third-party libraries.
+#   -DPYLABHUB_CREATE_INSTALL_TARGET=ON/OFF (Default: ON)   Enable the `install` target.
+#   -DCMAKE_INSTALL_PREFIX=<path>     (Default: /usr/local or C:/Program Files)
+#
+# --- Common Scenarios (from the `cpp` directory) ---
+#
+# 1.  Standard Development Build (for local testing):
+#     Builds everything, stages all artifacts to `build/stage/`.
+#
+#     $ cmake -S . -B build
+#     $ cmake --build build
+#
+#     After this, you can run executables directly from `build/stage/bin/`.
+#
+# 2.  Build and Run Tests:
+#     Ensures tests are built and runnable via CTest.
+#
+#     $ cmake -S . -B build -DBUILD_TESTS=ON
+#     $ cmake --build build
+#     $ cd build
+#     $ ctest
+#
+# 3.  Create a Full Distributable Package:
+#     Stages all components (including third-party libs) and installs them
+#     to the specified prefix.
+#
+#     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON \
+#           -DPYLABHUB_CREATE_INSTALL_TARGET=ON \
+#           -DCMAKE_INSTALL_PREFIX=../install
+#     $ cmake --build build
+#     $ cmake --install build
+#
+#     The `../install` directory will now contain the complete package.
+#
+# 4.  Minimal Build (Core project only, no tests, no install):
+#     Useful for quick compilation checks or CI.
+#
+#     $ cmake -S . -B build -DBUILD_TESTS=OFF -DTHIRD_PARTY_INSTALL=OFF \
+#           -DPYLABHUB_CREATE_INSTALL_TARGET=OFF
+#     $ cmake --build build
+#
+# ---------------------------------------------------------------------------
+# Core Design Principles:
+#
+# 1.  **Unified Staging**: All artifacts are copied to `${PYLABHUB_STAGING_DIR}`.
+# 2.  **Modularity**: The build is broken into logical components (`cmake/`,
+#     `third_party/`, `src/`, `tests/`).
+# 3.  **Clear Separation**: Core components are always staged. Staging of
+#     third-party libs, tests, and the final `install` target are optional.
+# ===========================================================================
 cmake_minimum_required(VERSION 3.18)
 
-project(pylabhub-shell VERSION 0.1 LANGUAGES C CXX)
+project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
-# Optionally force clang on macOS
-option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts" ON)
-if(FORCE_USE_CLANG_ON_APPLE AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-  find_program(_clang_path clang)
-  find_program(_clangpp_path clang++)
-  if(_clang_path AND _clangpp_path)
-    set(CMAKE_C_COMPILER "${_clang_path}" CACHE FILEPATH "C compiler" FORCE)
-    set(CMAKE_CXX_COMPILER "${_clangpp_path}" CACHE FILEPATH "C++ compiler" FORCE)
-    message(STATUS "Top-level: forcing clang/clang++ on macOS: ${_clang_path}, ${_clangpp_path}")
-  else()
-    message(WARNING "Top-level: clang not found on PATH. Consider installing Xcode or CommandLineTools.")
-  endif()
-endif()
-
-# CMake helpers
+# --- 1. Global Setup and Helper Modules ---
+# This section sets up the fundamental build environment.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(cmake/PlatformAndCompiler.cmake)
-include(cmake/ToplevelOptions.cmake)
-include(cmake/StageHelpers.cmake)
-
+include(PlatformAndCompiler) # Handles platform detection and compiler flags.
+include(ToplevelOptions)     # Defines top-level options like BUILD_TESTS.
+include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
 find_package(Threads REQUIRED)
 
 message(STATUS "")
 message(STATUS "===============================================================")
-message(STATUS "Processing third-party submodules in ${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+message(STATUS "Top-Level Project: ${PROJECT_NAME} ${PROJECT_VERSION}")
+message(STATUS "Build Type:          ${CMAKE_BUILD_TYPE}")
+message(STATUS "Generator:           ${CMAKE_GENERATOR}")
+message(STATUS "Compiler:            ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "===============================================================")
+message(STATUS "")
 
-set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-if(EXISTS "${THIRD_PARTY_DIR}/CMakeLists.txt")
-  add_subdirectory("${THIRD_PARTY_DIR}" EXCLUDE_FROM_ALL)
-else()
-  message(STATUS "third_party/CMakeLists.txt not found; vendor includes may still be used.")
-endif()
+# --- 2. Staging Infrastructure ---
+# This section defines the unified staging directory and the master target
+# that drives the entire artifact collection process.
 
-# Source discovery
-file(GLOB_RECURSE UTIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp")
-file(GLOB_RECURSE FILEUTIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/fileutil/*.cpp")
-if(NOT UTIL_SOURCES) 
-  message(WARNING "No sources found in src/util — check your source path.") 
-endif()
-if(NOT FILEUTIL_SOURCES) 
-  message(WARNING "No sources found in src/fileutil — check your source path.") 
-endif()
+# `PYLABHUB_STAGING_DIR`: The single location within the build directory
+# (e.g., `build/stage`) where all artifacts will be copied. This directory
+# will mirror the final installation layout.
+set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Root directory for staging all project artifacts.")
 
-# corelib
-set(PYLABHUB_CORELIB_SOURCES ${UTIL_SOURCES} ${FILEUTIL_SOURCES})
+# `stage_all`: A global custom target that serves as a dependency hook. Other
+# sub-projects (like `third_party` and `IgorXOP`) add their staging commands
+# as dependencies to this target. Building `stage_all` ensures that all
+# necessary artifacts are collected.
+add_custom_target(stage_all COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}")
+message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
+
+# --- 3. Configure Third-Party Dependencies ---
+# This step configures all external libraries. The `third_party/CMakeLists.txt`
+# script orchestrates the individual wrapper scripts (`fmt.cmake`, etc.),
+# which create the clean `pylabhub::third_party::*` targets we use later.
+message(STATUS "--- Configuring Third-Party Dependencies ---")
+add_subdirectory(third_party)
+message(STATUS "--- Third-Party Configuration Complete ---")
+message(STATUS "")
+
+# --- 4. Build Main Project Libraries and Executables ---
+message(STATUS "--- Configuring Main Project Targets ---")
+
+# --- 3.1. pylabhub-corelib ---
+# This is the core library containing common utilities.
+file(GLOB_RECURSE CORELIB_SOURCES CONFIGURE_DEPENDS "src/util/*.cpp" "src/fileutil/*.cpp")
+
 if(PYLABHUB_BUILD_SHARED)
-  add_library(pylabhub-corelib SHARED ${PYLABHUB_CORELIB_SOURCES})
+  add_library(pylabhub-corelib SHARED ${CORELIB_SOURCES})
 else()
-  add_library(pylabhub-corelib STATIC ${PYLABHUB_CORELIB_SOURCES})
+  add_library(pylabhub-corelib STATIC ${CORELIB_SOURCES})
 endif()
+
+# Expose a stable alias for other project components to use.
 add_library(pylabhub::corelib ALIAS pylabhub-corelib)
-message(STATUS "Created alias target pylabhub::corelib -> pylabhub-corelib")
+message(STATUS "Configured target: pylabhub-corelib (alias: pylabhub::corelib)")
 
-target_include_directories(pylabhub-corelib
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+# Define public include directories for the core library.
+target_include_directories(pylabhub-corelib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
-if(NLOHMANN_VENDORED)
-  target_include_directories(pylabhub-corelib
-    PUBLIC
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/include>
-      $<INSTALL_INTERFACE:include>
-  )
-endif()
 
-# Link known third-party targets (if present)
-if(TARGET pylabhub::nlohmann_json)
-  message(STATUS "Linking pylabhub-corelib -> pylabhub::nlohmann_json")
-  target_link_libraries(pylabhub-corelib PUBLIC pylabhub::nlohmann_json)
-endif()
-if(TARGET pylabhub::fmt)
-  message(STATUS "Linking pylabhub-corelib -> pylabhub::fmt")
-  target_link_libraries(pylabhub-corelib PRIVATE pylabhub::fmt)
-endif()
-if(TARGET pylabhub::zmq)
-  message(STATUS "Linking pylabhub-corelib -> pylabhub::zmq")
-  target_link_libraries(pylabhub-corelib PRIVATE pylabhub::zmq)
-endif()
+# Link corelib against the third-party targets it needs.
+# The third-party framework ensures these targets are always available.
+target_link_libraries(pylabhub-corelib
+  PUBLIC
+    pylabhub::third_party::nlohmann_json # Public because corelib headers may include it.
+    pylabhub::third_party::fmt           # Public because static consumers need to link to it.
+  PRIVATE
+    pylabhub::third_party::zmq
+    Threads::Threads
+)
 
-target_link_libraries(pylabhub-corelib PUBLIC Threads::Threads)
+# Set standard properties for the core library.
 target_compile_features(pylabhub-corelib PUBLIC cxx_std_17)
 set_target_properties(pylabhub-corelib PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(PYLABHUB_BUILD_SHARED AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(PYLABHUB_BUILD_SHARED AND MSVC)
   set_target_properties(pylabhub-corelib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
-# Sanitizers unchanged
-if(ENABLE_SANITIZERS)
-  if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
-    message(WARNING "ENABLE_SANITIZERS requested but compiler not supported. Disabling sanitizers.")
-    set(ENABLE_SANITIZERS OFF CACHE BOOL "Enable sanitizers" FORCE)
-  endif()
-  if(APPLE)
-    message(WARNING "Sanitizers requested but running on macOS. Disabling sanitizers by default on Apple platforms.")
-    set(ENABLE_SANITIZERS OFF CACHE BOOL "Enable sanitizers" FORCE)
-  endif()
-endif()
-if(ENABLE_SANITIZERS)
-  target_compile_options(pylabhub-corelib PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
-  target_link_options(pylabhub-corelib PUBLIC -fsanitize=address,undefined)
-endif()
-
-# main executable
+# --- 3.2. pylabhub-shell (Main Executable) ---
+# The logical target name is `pylabhub-shell`.
 add_executable(pylabhub-shell src/coreshell.cpp)
-target_link_libraries(pylabhub-shell PRIVATE pylabhub-corelib)
+add_executable(pylabhub::shell ALIAS pylabhub-shell)
+target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
 
-# IgorXOP subproject (left to subproject to stage XOP)
+# Set the output file name to `hubshell` (.exe on Windows).
+set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
+message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
+
+message(STATUS "--- Main Project Configuration Complete ---")
+message(STATUS "")
+
+# --- 5. Optional Sub-Projects ---
+message(STATUS "--- Configuring Optional Sub-Projects ---")
+
+# --- 4.1. IgorXOP ---
 if(BUILD_XOP)
   add_subdirectory(src/IgorXOP)
-  if(DEFINED XOP_TARGET_NAME AND NOT "${XOP_TARGET_NAME}" STREQUAL "")
-    if(TARGET "${XOP_TARGET_NAME}" AND TARGET pylabhub::corelib)
-      target_link_libraries("${XOP_TARGET_NAME}" PRIVATE pylabhub::corelib)
-      message(STATUS "Top-level: linked XOP target ${XOP_TARGET_NAME} -> pylabhub::corelib (fallback)")
-    endif()
-  endif()
 else()
-  set(BUILD_XOP_FINAL_ENABLED OFF CACHE INTERNAL "Final: IgorXOP will be built")
-  set(XOP_TARGET_NAME "" CACHE INTERNAL "Final: IgorXOP target name")
-  set(XOPTOOLKIT_DIR "" CACHE INTERNAL "XOPSupport root used by IgorXOP")
-  set(XOP_SUPPORT_FOUND OFF CACHE INTERNAL "XOPSupport found (vendor or system)")
-  message(STATUS "Skipping src/IgorXOP (BUILD_XOP=OFF)")
+  message(STATUS "Skipping IgorXOP sub-project (BUILD_XOP is OFF).")
 endif()
 
+# --- 4.2. Tests ---
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
-endif()
-
-# -------------------------------------------------------------------------
-# Post-build staging tree
-# -------------------------------------------------------------------------
-set(_stage_root "${CMAKE_BINARY_DIR}/install")
-set(_stage_bin "${_stage_root}/bin")
-set(_stage_lib "${_stage_root}/lib")
-set(_stage_include "${_stage_root}/include")
-set(_stage_xop "${_stage_root}/xop")
-
-add_custom_target(stage_install COMMENT "Stage built artifacts into ${_stage_root}")
-add_custom_command(TARGET stage_install PRE_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage_bin}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage_lib}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage_include}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage_xop}"
-)
-
-# project staging copies
-add_custom_command(TARGET stage_install POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pylabhub-shell> "${_stage_bin}/"
-  COMMENT "Staging pylabhub-shell -> ${_stage_bin}"
-)
-add_custom_command(TARGET stage_install POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pylabhub-corelib> "${_stage_lib}/"
-  COMMENT "Staging pylabhub-corelib -> ${_stage_lib}"
-)
-add_custom_command(TARGET stage_install POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/include" "${_stage_include}"
-  COMMENT "Staging project headers -> ${_stage_include}"
-)
-
-# XOP bundle dependency (if subproject exposes bundle target)
-if(DEFINED XOP_TARGET_NAME AND NOT "${XOP_TARGET_NAME}" STREQUAL "")
-  set(_maybe_bundle_target "${XOP_TARGET_NAME}_bundle")
-  if(TARGET "${_maybe_bundle_target}")
-    add_dependencies(stage_install "${_maybe_bundle_target}")
-    message(STATUS "Top-level: stage_install depends on subproject bundle target ${_maybe_bundle_target} (subproject handles XOP staging).")
-  else()
-    message(STATUS "Top-level: XOP bundle target ${_maybe_bundle_target} not found; assuming subproject handles staging or assembly was skipped.")
-  endif()
 else()
-  message(STATUS "Top-level: XOP subproject not configured or XOP_TARGET_NAME not set; no XOP staging dependency added.")
+  message(STATUS "Skipping tests sub-project (BUILD_TESTS is OFF).")
 endif()
 
-# make stage part of regular build
-add_dependencies(stage_install pylabhub-shell pylabhub-corelib)
-set_target_properties(stage_install PROPERTIES EXCLUDE_FROM_ALL FALSE)
+message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
+message(STATUS "")
 
-# -------------------------------------------------------------------------
-# Third-party staging
-# -------------------------------------------------------------------------
-set(_THIRD_PARTY_TARGETS_TO_STAGE
-  pylabhub::fmt
-  pylabhub::zmq
-  pylabhub::nlohmann_json
+# --- 6. Staging for Main Project Targets ---
+# This section defines the post-build commands that copy the core project
+# artifacts into the unified staging directory. This staging is UNCONDITIONAL
+# because `pylabhub-corelib` and `pylabhub-shell` are essential components
+# of the project.
+
+# The `add_custom_command(TARGET ... POST_BUILD ...)` pattern ensures that
+# artifacts are copied immediately after they are successfully built.
+
+# Stage the main executable to `stage/bin/`.
+add_custom_command(TARGET pylabhub-shell POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
+  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-shell>" "${PYLABHUB_STAGING_DIR}/bin/"
+  # Copy the runtime dependencies (DLLs) of the executable to the bin directory.
+  # This is the correct place to use TARGET_RUNTIME_DLLS.
+  COMMAND ${CMAKE_COMMAND}
+    -D TARGET_NAME=pylabhub-shell
+    -D DEST_DIR=${PYLABHUB_STAGING_DIR}/bin
+    -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:pylabhub-shell>"
+    -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
+  COMMENT "Staging hubshell and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/bin"
+  VERBATIM
 )
 
-message(STATUS "Top-level: attempting to stage third-party targets: ${_THIRD_PARTY_TARGETS_TO_STAGE}")
-
-# IMPORTANT: call the helper with the *variable name* (no quotes) so it can expand the list:
-message(STATUS "**** include ******")
-stage_collect_and_schedule_includes(_THIRD_PARTY_TARGETS_TO_STAGE "${CMAKE_SOURCE_DIR}/third_party/include" "${_stage_include}" TARGET_STAGE stage_install)
-message(STATUS "**** libs ******")
-stage_schedule_third_party_libs(_THIRD_PARTY_TARGETS_TO_STAGE "${_stage_lib}" TARGET_STAGE stage_install)
-stage_schedule_lib_duplicate_check("${_stage_lib}" TARGET_STAGE stage_install)
-
-# Print resolved include roots (debugging aid)
-if(DEFINED _STAGEHELPERS_RESOLVED_INCLUDES)
-  message(STATUS "Top-level: StageHelpers resolved include roots: ${_STAGEHELPERS_RESOLVED_INCLUDES}")
-endif()
-
-# -------------------------------------------------------------------------
-# Install: copy staged tree into <dest>/pyLabHub when user runs cmake --install
-# -------------------------------------------------------------------------
-install(CODE
-"if(NOT EXISTS \"${CMAKE_BINARY_DIR}/install\")
-  message(FATAL_ERROR \"pyLabHub install: staging directory '${CMAKE_BINARY_DIR}/install' not found. Run the staging build: cmake --build <build-dir> --target stage_install before running 'cmake --install'.\")
-endif()
-set(_dest_root \"${CMAKE_INSTALL_PREFIX}/pyLabHub\")
-execute_process(COMMAND \"${CMAKE_COMMAND}\" -E remove_directory \"${_dest_root}\")
-execute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_directory \"${CMAKE_BINARY_DIR}/install\" \"${_dest_root}\"
-  RESULT_VARIABLE _copy_res OUTPUT_VARIABLE _copy_out ERROR_VARIABLE _copy_err)
-if(NOT _copy_res EQUAL 0)
-  message(FATAL_ERROR \"pyLabHub install: failed to copy staging tree to '${_dest_root}': ${_copy_err}\")
-endif()
-file(WRITE \"${_dest_root}/pyLabHubEnv.sh\" \"# Source this file to set up pyLabHub environment variables\nexport PYLABHUB_HOME=\\\"${CMAKE_INSTALL_PREFIX}/pyLabHub\\\"\nexport PATH=\\\"\\$PYLABHUB_HOME/bin:\\$PATH\\\"\n\")
-file(WRITE \"${_dest_root}/pyLabHubEnv.csh\" \"# Source this file to set up pyLabHub environment variables (csh/tcsh)\nsetenv PYLABHUB_HOME \\\"${CMAKE_INSTALL_PREFIX}/pyLabHub\\\"\nsetenv PATH \\\"\\$PYLABHUB_HOME/bin:\\$PATH\\\"\n\")
-message(STATUS \"pyLabHub installed into ${CMAKE_INSTALL_PREFIX}/pyLabHub. To activate, run: source ${CMAKE_INSTALL_PREFIX}/pyLabHub/pyLabHubEnv.sh\")"
+# Stage the core library (and its runtime dependencies on Windows)
+add_custom_command(TARGET pylabhub-corelib POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
+  # Only copy the library file itself. The runtime dependencies are handled by the executable target.
+  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
+  COMMENT "Staging pylabhub-corelib to ${PYLABHUB_STAGING_DIR}/lib"
 )
 
-# Summary
+# Stage the public headers
+add_custom_command(TARGET pylabhub-corelib POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
+  COMMENT "Staging public headers to ${PYLABHUB_STAGING_DIR}/include"
+)
+
+# Make the global `stage_all` target depend on the core targets. This ensures
+# that building `stage_all` will first build these components before any
+# dependent staging commands are run.
+add_dependencies(stage_all pylabhub-shell pylabhub-corelib)
+
+# --- 7. Final Installation Step ---
+# This section defines the `install` target. Its creation is controlled by the
+# `PYLABHUB_CREATE_INSTALL_TARGET` option, allowing developers to disable it
+# for build-only scenarios (e.g., in CI).
+if(PYLABHUB_CREATE_INSTALL_TARGET)
+  # The `install` command is now a simple, atomic operation that copies the
+  # entire, fully-populated staging directory to the installation prefix
+  # (`CMAKE_INSTALL_PREFIX`).
+  install(DIRECTORY "${PYLABHUB_STAGING_DIR}/"
+    DESTINATION "."
+    COMPONENT "pylabhub_runtime"
+  )
+  message(STATUS "Installation target enabled. Run 'cmake --install .' to copy staged artifacts.")
+endif()
+
+# --- 8. Final Configuration Summary ---
+# This block prints a clear summary of the selected build options, providing
+# immediate feedback to the developer on how the project is configured.
 message(STATUS "==============================================")
-message(STATUS "CMake summary:")
-if(DEFINED _platform_name) 
-  message(STATUS "  Platform detected:  ${_platform_name}") 
+message(STATUS "pyLabHub Configuration Summary")
+message(STATUS "----------------------------------------------")
+
+if(PYLABHUB_BUILD_SHARED)
+  set(_corelib_type "SHARED")
+else()
+  set(_corelib_type "STATIC")
 endif()
-message(STATUS "  Project:            ${PROJECT_NAME} (${PROJECT_VERSION})")
-message(STATUS "  CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER}")
-message(STATUS "  Build type:         ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Local stage root:   ${_stage_root}")
-if(BUILD_XOP_FINAL_ENABLED)
-  message(STATUS "  XOP build added:    ${XOP_TARGET_NAME}")
-  message(STATUS "  XOPTOOLKIT used:    ${XOPTOOLKIT_DIR}")
+if(BUILD_TESTS)
+  set(_build_tests "ON")
+else()
+  set(_build_tests "OFF")
 endif()
+if(BUILD_XOP)
+  set(_build_xop "ON")
+else()
+  set(_build_xop "OFF")
+endif()
+if(PYLABHUB_CREATE_INSTALL_TARGET)
+  set(_install_enabled "ON")
+else()
+  set(_install_enabled "OFF")
+endif()
+
+message(STATUS "  Install Prefix:      ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "  Build Type:          ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Core Library Type:   ${_corelib_type}")
+message(STATUS "  Build Tests:         ${_build_tests}")
+message(STATUS "  Build IgorXOP:       ${_build_xop}")
+if(THIRD_PARTY_INSTALL)
+message(STATUS "  3rd-Party Staging:   ON")
+else()
+message(STATUS "  3rd-Party Staging:   OFF")
+endif()
+message(STATUS "  Create Install Target: ${PYLABHUB_CREATE_INSTALL_TARGET} (from ${PYLABHUB_STAGING_DIR})")
 message(STATUS "==============================================")

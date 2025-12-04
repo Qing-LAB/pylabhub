@@ -45,43 +45,37 @@ enable_testing()
 foreach(src IN LISTS TEST_SOURCES)
     get_filename_component(test_name ${src} NAME_WE)
     add_executable(${test_name} ${src})
+    add_executable(pylabhub::${test_name} ALIAS ${test_name})
 
-    # Make sure test can find project headers
-    target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-
-    # Link with project libraries. Expect the root CMake to have defined these targets:
-    #   pylabhub-corelib       (contains utils, fileutil code)
-    #
-    # If your top-level CMake uses different target names, adjust these accordingly.
-    if(TARGET pylabhub-corelib)
-        target_link_libraries(${test_name} PRIVATE pylabhub-corelib)
+    # Link against the core library alias. This is the ONLY dependency needed.
+    # pylabhub::corelib will provide all other necessary targets (like fmt, zmq, Threads)
+    # and include directories through its PUBLIC/INTERFACE properties.
+    if(TARGET pylabhub::corelib)
+        target_link_libraries(${test_name} PRIVATE pylabhub::corelib)
     else()
-        message(WARNING "Target 'pylabhub-corelib' not found. Ensure the top-level CMake defines it.")
+        message(FATAL_ERROR "Target 'pylabhub::corelib' not found. The test suite requires the main project to be configured first.")
     endif()
-    # Make sure tests link fmt if pylabhub-core hides it (PRIVATE) ---
-    # If pylabhub-corelib did not expose fmt via PUBLIC, tests still need fmt available because
-    # Logger headers include <fmt/format.h>. Detect common fmt targets and link them.
-    if(TARGET fmt::fmt)
-        target_link_libraries(${test_name} PRIVATE fmt::fmt)
-    elseif(TARGET fmt::fmt-header-only)
-        # header-only variant: define FMT_HEADER_ONLY so fmt behaves as header-only if needed
-        target_compile_definitions(${test_name} PRIVATE FMT_HEADER_ONLY=1)
-        target_link_libraries(${test_name} PRIVATE fmt::fmt-header-only)
-    else()
-        # If fmt isn't a CMake target (e.g. not added as submodule), try to find it with find_package
-        find_package(fmt QUIET CONFIG)
-        if(TARGET fmt::fmt)
-            target_link_libraries(${test_name} PRIVATE fmt::fmt)
-        else()
-            message(WARNING "fmt target not found for test '${test_name}'. If pylabhub-corelib links fmt PRIVATE, tests will fail to compile. Add fmt as a submodule or install it system-wide.")
-        endif()
-    endif()
-
-    # Link threads
-    target_link_libraries(${test_name} PRIVATE Threads::Threads)
 
     # Ensure C++17
     target_compile_features(${test_name} PRIVATE cxx_std_17)
+
+    # Stage the test executable to the unified staging directory.
+    # This is conditional on the master install/staging switch. Test executables
+    # are considered optional artifacts and are only staged if the user intends
+    # to create a complete, installable package.
+    if(PYLABHUB_CREATE_INSTALL_TARGET)
+      add_custom_command(TARGET ${test_name} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${test_name}>" "${PYLABHUB_STAGING_DIR}/tests/"
+        COMMAND ${CMAKE_COMMAND}
+          -D TARGET_NAME=${test_name}
+          -D DEST_DIR=${PYLABHUB_STAGING_DIR}/tests
+          -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:${test_name}>"
+          -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
+        COMMENT "Staging test '${test_name}' and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/tests"
+      )
+      add_dependencies(stage_all ${test_name})
+    endif()
 
     # Pass compile-time log level to the test target
     target_compile_definitions(${test_name} PRIVATE LOGGER_COMPILE_LEVEL=${LOGGER_COMPILE_LEVEL})
