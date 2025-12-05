@@ -26,7 +26,13 @@ endif()
 
 message(STATUS "Signing bundle: ${BUNDLE_PATH} with identity: ${SIGNING_IDENTITY}")
 execute_process(
-  COMMAND ${CODESIGN_EXECUTABLE} --force --deep --sign "${SIGNING_IDENTITY}" "${BUNDLE_PATH}"
+  COMMAND ${CODESIGN_EXECUTABLE}
+          --force
+          --deep
+          --options runtime
+          --sign
+          "${SIGNING_IDENTITY}"
+          "${BUNDLE_PATH}"
   RESULT_VARIABLE result
 )
 
