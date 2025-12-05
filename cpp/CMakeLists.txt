@@ -141,63 +141,7 @@ message(STATUS "")
 
 # --- 4. Build Main Project Libraries and Executables ---
 message(STATUS "--- Configuring Main Project Targets ---")
-
-# --- 3.1. pylabhub-corelib ---
-# This is the core library containing common utilities.
-# NOTE: file(GLOB_RECURSE) is convenient but not always recommended in modern CMake,
-# as it won't automatically trigger a re-configure if you add or remove files.
-# For a small, stable set of core files, this is acceptable.
-file(GLOB_RECURSE CORELIB_SOURCES CONFIGURE_DEPENDS "src/util/*.cpp" "src/fileutil/*.cpp")
-
-if(PYLABHUB_BUILD_SHARED)
-  add_library(pylabhub-corelib SHARED ${CORELIB_SOURCES})
-else()
-  add_library(pylabhub-corelib STATIC ${CORELIB_SOURCES})
-endif()
-
-# Expose a stable alias for other project components to use.
-add_library(pylabhub::corelib ALIAS pylabhub-corelib)
-message(STATUS "Configured target: pylabhub-corelib (alias: pylabhub::corelib)")
-
-# Define public include directories for the core library.
-target_include_directories(pylabhub-corelib PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-
-# Link corelib against the third-party targets it needs.
-# The third-party framework ensures these targets are always available.
-target_link_libraries(pylabhub-corelib
-  PUBLIC
-    pylabhub::third_party::nlohmann_json # Public because corelib headers may include it.
-    pylabhub::third_party::fmt           # Public because static consumers need to link to it.
-  PRIVATE
-    pylabhub::third_party::zmq
-    Threads::Threads
-)
-
-# Set standard properties for the core library.
-target_compile_features(pylabhub-corelib PUBLIC cxx_std_17)
-set_target_properties(pylabhub-corelib PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(PYLABHUB_BUILD_SHARED AND MSVC)
-  set_target_properties(pylabhub-corelib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-endif()
-
-# --- 3.2. pylabhub-shell (Main Executable) ---
-# The logical target name is `pylabhub-shell`.
-add_executable(pylabhub-shell src/coreshell.cpp)
-add_executable(pylabhub::shell ALIAS pylabhub-shell)
-target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
-
-# The `stage_all` target is a developer utility for explicitly staging everything.
-# We do NOT make `pylabhub-shell` depend on `stage_all` as it creates a
-# dependency cycle. The necessary runtime dependencies for `pylabhub-shell` are
-# staged via its POST_BUILD command, which correctly handles the dependency order.
-
-# Set the output file name to `hubshell` (.exe on Windows).
-set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
-message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
-
+add_subdirectory(src)
 message(STATUS "--- Main Project Configuration Complete ---")
 message(STATUS "")
 
@@ -223,41 +167,6 @@ message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
 # --- 6. Staging for Main Project Targets ---
-# This section defines the post-build commands that copy the core project
-# artifacts into the unified staging directory. This staging is UNCONDITIONAL
-# because `pylabhub-corelib` and `pylabhub-shell` are essential components
-# of the project.
-
-# The `add_custom_command(TARGET ... POST_BUILD ...)` pattern ensures that
-# artifacts are copied immediately after they are successfully built.
-
-# Stage the main executable to `stage/bin/`.
-add_custom_command(TARGET pylabhub-shell POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-shell>" "${PYLABHUB_STAGING_DIR}/bin/"
-  # Copy the runtime dependencies (DLLs) of the executable to the bin directory.
-  # This is the correct place to use TARGET_RUNTIME_DLLS.
-  COMMAND ${CMAKE_COMMAND}
-    -D TARGET_NAME=pylabhub-shell
-    -D DEST_DIR=${PYLABHUB_STAGING_DIR}/bin
-    -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:pylabhub-shell>"
-    -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
-  COMMENT "Staging hubshell and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/bin"
-  VERBATIM
-)
-
-# Stage the core library (and its runtime dependencies on Windows)
-add_custom_command(TARGET pylabhub-corelib POST_BUILD
-  # Stage the library file.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
-  # Stage the public headers.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
-  COMMENT "Staging pylabhub-corelib and public headers to ${PYLABHUB_STAGING_DIR}"
-  VERBATIM
-)
-
 # Make the global `stage_all` target depend on the core targets. This ensures
 # that building `stage_all` will first build these components before any
 # dependent staging commands are run.
@@ -267,26 +176,15 @@ add_dependencies(stage_all pylabhub-shell pylabhub-corelib)
 # This section defines the `install` target. Its creation is controlled by the
 # `PYLABHUB_CREATE_INSTALL_TARGET` option, allowing developers to disable it
 # for build-only scenarios (e.g., in CI).
-
-# Collect helper files for the install step. This is separate from the post-build
-# staging, which is handled within the IgorXOP subproject.
-file(GLOB _xop_helper_files
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ihf"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ipf"
-)
 if(PYLABHUB_CREATE_INSTALL_TARGET)
   # The `install` command is now a simple, atomic operation that copies the
   # entire, fully-populated staging directory to the installation prefix
-  # (`CMAKE_INSTALL_PREFIX`).
+  # (`CMAKE_INSTALL_PREFIX`). All components are responsible for placing
+  # their artifacts into the staging directory before this step.
   install(DIRECTORY "${PYLABHUB_STAGING_DIR}/"
     DESTINATION "."
     COMPONENT "pylabhub_runtime"
   )
-
-  # Install the XOP helper files alongside the main installation.
-  install(FILES ${_xop_helper_files}
-    DESTINATION "IgorXOP"
-    COMPONENT "pylabhub_runtime")
   message(STATUS "Installation target enabled. Run 'cmake --install .' to copy staged artifacts.")
 endif()
 

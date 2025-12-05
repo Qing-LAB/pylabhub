@@ -5,7 +5,6 @@
 include(ThirdPartyPolicyAndHelper)
 
 # --- XOP Build Policy ---
-option(BUILD_XOP "Build the pylabhub XOP plugin (only supported on macOS and Windows x64)" ON)
 set(XOP_VENDOR_DIR "${CMAKE_SOURCE_DIR}/third_party/XOPToolkit/XOPSupport" CACHE PATH "Default path for a vendored XOPSupport tree.")
 
 if(BUILD_XOP AND NOT (PLATFORM_WIN64 OR PLATFORM_APPLE))
