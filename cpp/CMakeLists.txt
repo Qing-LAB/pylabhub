@@ -19,39 +19,36 @@
 #   -DPYLABHUB_BUILD_SHARED=ON/OFF    (Default: OFF)  Build corelib as shared/static.
 #   -DTHIRD_PARTY_INSTALL=ON/OFF      (Default: ON)   Stage third-party libraries.
 #   -DPYLABHUB_CREATE_INSTALL_TARGET=ON/OFF (Default: ON)   Enable the `install` target.
+#   -DFORCE_USE_CLANG_ON_APPLE=ON/OFF (Default: ON)   Ensure Apple toolchain is used on macOS.
 #   -DCMAKE_INSTALL_PREFIX=<path>     (Default: /usr/local or C:/Program Files)
 #
 # --- Common Scenarios (from the `cpp` directory) ---
 #
-# 1.  Standard Development Build (for local testing):
-#     Builds the main executables and libraries. Stages the core project
-#     artifacts and necessary runtime dependencies (e.g., DLLs) to `build/stage/`.
-#     This is the quickest way to get a runnable executable.
+# 1.  Standard Development Build (Makefile or Ninja):
+#     Generates build files for a command-line build system like Make or Ninja.
+#     This is the most common workflow for day-to-day development.
 #
 #     $ cmake -S . -B build
 #     $ cmake --build build
 #
 #     After this, you can run executables directly from `build/stage/bin/`.
 #
-# 2.  Full Staging for Development:
-#     Builds and stages ALL artifacts (core project, third-party headers & libs)
-#     to `build/stage/`. This is the most reliable way to create a complete
-#     local development environment that mirrors the final installation.
+# 2.  Xcode Project Generation and Build:
+#     Generates an `.xcodeproj` file for use with Xcode or `xcodebuild`.
+#     NOTE: This requires a clean environment to ensure the correct Apple toolchain
+#     is used, especially if you have other compilers (like from Homebrew) installed.
 #
-#     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON
-#     $ cmake --build build --target stage_all
+#     a. Generate the Xcode project:
+#        $ cmake -S . -B build_xcode -G Xcode
 #
-# 3.  Build and Run Tests:
-#     Ensures tests are built and can be run via CTest.
+#     b. Build from the command line (recommended):
+#        The `CC=` and `CXX=` prefixes ensure any conflicting environment variables are ignored.
+#        $ CC= CXX= xcodebuild -project build_xcode/pylabhub-cpp.xcodeproj
 #
-#     $ cmake -S . -B build -DBUILD_TESTS=ON
-#     $ cmake --build build
-#     $ cd build
-#     $ ctest
+#     c. Alternatively, open `build_xcode/pylabhub-cpp.xcodeproj` in the Xcode IDE and build from there.
 #
-# 4.  Create a Full Distributable Package:
-#     This first performs a full staging and then copies the result to the
-#     final installation directory.
+# 3.  Create a Full Distributable Package:
+#     This performs a full staging and then copies the result to the final installation directory.
 #
 #     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON \
 #           -DPYLABHUB_CREATE_INSTALL_TARGET=ON \
@@ -59,32 +56,55 @@
 #     $ cmake --build build --target stage_all
 #     $ cmake --install build
 #
-#     The `../install` directory will now contain the complete package.
-#
-# 5.  Minimal Build (Core project only, no tests, no install):
-#     Useful for quick compilation checks or CI.
-#
-#     $ cmake -S . -B build -DBUILD_TESTS=OFF -DTHIRD_PARTY_INSTALL=OFF \
-#           -DPYLABHUB_CREATE_INSTALL_TARGET=OFF
-#     $ cmake --build build
-#
 # ---------------------------------------------------------------------------
 # Core Design Principles:
 #
-# 1.  **Unified Staging**: All artifacts are copied to `${PYLABHUB_STAGING_DIR}`.
-# 2.  **Modularity**: The build is broken into logical components (`cmake/`,
-#     `third_party/`, `src/`, `tests/`).
-# 3.  **Clear Separation**: Core components are always staged. Staging of
-#     third-party libs, tests, and the final `install` target are optional.
-# ===========================================================================
+# Our architecture is built on a foundation of modern CMake practices,
+# emphasizing clarity, robustness, and maintainability.
+#
+# 1.  **Unified Staging**: The cornerstone of the design is the unified
+#     staging directory (`${PYLABHUB_STAGING_DIR}`). All build
+#     artifacts—executables, libraries, headers, and bundles—are copied into
+#     this single location within the build tree. This creates a self-contained,
+#     runnable version of the project that mirrors the final installation
+#     layout, making local development and testing simple and reliable.
+# 2.  **Isolation & Abstraction**: Third-party dependencies are configured
+#     in isolated "sandboxes" to prevent build settings from "leaking."
+#     Consumers link against stable, namespaced `ALIAS` targets, abstracting
+#     away underlying build details.
+# 3.  **Top-Down Control & Modularity**: The build system is broken into
+#     logical, single-responsibility modules. High-level build policies are
+#     defined as user-facing `CACHE` options.
+# 4.  **Clear Separation of Concerns**: Core components are always staged.
+#     Third-party libraries and optional components (`tests`) have their staging
+#     and building controlled by dedicated options.
+# 5.  **Installation**: The final `install` target performs a direct copy
+#     of the fully-populated staged directory, providing a clean separation
+#     between development builds and distributable packages.
+# ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 
-option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts" ON)
+# ===========================================================================
+# PHASE 1: Pre-Project Toolchain Configuration
+#
+# This phase runs BEFORE the `project()` command. Its sole purpose is to
+# influence which compiler and toolchain CMake will select. Logic here cannot
+# depend on compiler-specific information (like CMAKE_CXX_COMPILER_ID) because
+# the compiler has not been tested yet. We must use general system variables
+# like CMAKE_HOST_SYSTEM_NAME.
+# ===========================================================================
 
-if(FORCE_USE_CLANG_ON_APPLE)
-  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-    find_program(_clang_path clang)
-    find_program(_clangpp_path clang++)
+# Include all user-facing options first, so they are available for the logic below.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(ToplevelOptions)
+
+# On macOS, ensure we use the Apple-provided toolchain.
+if(FORCE_USE_CLANG_ON_APPLE AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  # For Makefile/Ninja generators, explicitly setting the compiler path
+  # prevents CMake from finding conflicting versions (e.g., from Homebrew).
+  if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+    find_program(_clang_path clang HINTS /usr/bin)
+    find_program(_clangpp_path clang++ HINTS /usr/bin)
     if(_clang_path AND _clangpp_path)
       set(CMAKE_C_COMPILER "${_clang_path}" CACHE FILEPATH "C compiler" FORCE)
       set(CMAKE_CXX_COMPILER "${_clangpp_path}" CACHE FILEPATH "C++ compiler" FORCE)
@@ -92,16 +112,35 @@ if(FORCE_USE_CLANG_ON_APPLE)
     else()
       message(WARNING "Top-level: clang not found on PATH. Consider installing Xcode or CommandLineTools.")
     endif()
+  # For the Xcode generator, we must NOT set CMAKE_C_COMPILER directly. Instead, we
+  # unset environment variables that might confuse `xcodebuild` at build time.
+  else()
+    unset(ENV{CC})
+    unset(ENV{CXX})
+    message(STATUS "Xcode generator: Unsetting CC and CXX environment variables to allow default toolchain selection.")
   endif()
 endif()
 
+# ===========================================================================
+# PHASE 2: Project Definition and Toolchain Detection
+#
+# The `project()` command is the most critical part of the configuration.
+# It triggers CMake to find and test the compilers for the specified languages.
+# After this command, variables like CMAKE_CXX_COMPILER_ID are available.
+# ===========================================================================
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
-# --- 1. Global Setup and Helper Modules ---
-# This section sets up the fundamental build environment.
+# ===========================================================================
+# PHASE 3: Post-Project Configuration
+#
+# All logic from this point forward can react to the chosen compiler and
+# platform. This is the correct place to set compiler-specific flags,
+# include helper modules that need the compiler ID, and define targets.
+# ===========================================================================
+
+# --- 3.1. Global Setup and Helper Modules ---
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
-include(ToplevelOptions)     # Defines top-level options like BUILD_TESTS.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
 find_package(Threads REQUIRED)
 
@@ -114,185 +153,70 @@ message(STATUS "Compiler:            ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPIL
 message(STATUS "===============================================================")
 message(STATUS "")
 
-# --- 2. Staging Infrastructure ---
+# --- 3.2. Staging Infrastructure ---
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
-
-# `PYLABHUB_STAGING_DIR`: The single location within the build directory
-# (e.g., `build/stage`) where all artifacts will be copied. This directory
-# will mirror the final installation layout.
 set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Root directory for staging all project artifacts.")
-
-# `stage_all`: A global custom target that serves as a dependency hook. Other
-# sub-projects (like `third_party` and `IgorXOP`) add their staging commands
-# as dependencies to this target. Building `stage_all` ensures that all
-# necessary artifacts are collected.
-add_custom_target(stage_all COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}")
+add_custom_target(stage_all
+    COMMAND ${CMAKE_COMMAND} -E echo " "
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} -E echo "Staging complete. The project is now ready for installation."
+    COMMAND ${CMAKE_COMMAND} -E echo "To install to ${CMAKE_INSTALL_PREFIX}, run: cmake --install ."
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
+)
 message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
 
-# --- 3. Configure Third-Party Dependencies ---
-# This step configures all external libraries. The `third_party/CMakeLists.txt`
-# script orchestrates the individual wrapper scripts (`fmt.cmake`, etc.),
-# which create the clean `pylabhub::third_party::*` targets we use later.
+# --- 3.3. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")
 add_subdirectory(third_party)
 message(STATUS "--- Third-Party Configuration Complete ---")
 message(STATUS "")
 
-# --- 4. Build Main Project Libraries and Executables ---
 message(STATUS "--- Configuring Main Project Targets ---")
-
-# --- 3.1. pylabhub-corelib ---
-# This is the core library containing common utilities.
-# NOTE: file(GLOB_RECURSE) is convenient but not always recommended in modern CMake,
-# as it won't automatically trigger a re-configure if you add or remove files.
-# For a small, stable set of core files, this is acceptable.
-file(GLOB_RECURSE CORELIB_SOURCES CONFIGURE_DEPENDS "src/util/*.cpp" "src/fileutil/*.cpp")
-
-if(PYLABHUB_BUILD_SHARED)
-  add_library(pylabhub-corelib SHARED ${CORELIB_SOURCES})
-else()
-  add_library(pylabhub-corelib STATIC ${CORELIB_SOURCES})
-endif()
-
-# Expose a stable alias for other project components to use.
-add_library(pylabhub::corelib ALIAS pylabhub-corelib)
-message(STATUS "Configured target: pylabhub-corelib (alias: pylabhub::corelib)")
-
-# Define public include directories for the core library.
-target_include_directories(pylabhub-corelib PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-
-# Link corelib against the third-party targets it needs.
-# The third-party framework ensures these targets are always available.
-target_link_libraries(pylabhub-corelib
-  PUBLIC
-    pylabhub::third_party::nlohmann_json # Public because corelib headers may include it.
-    pylabhub::third_party::fmt           # Public because static consumers need to link to it.
-  PRIVATE
-    pylabhub::third_party::zmq
-    Threads::Threads
-)
-
-# Set standard properties for the core library.
-target_compile_features(pylabhub-corelib PUBLIC cxx_std_17)
-set_target_properties(pylabhub-corelib PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(PYLABHUB_BUILD_SHARED AND MSVC)
-  set_target_properties(pylabhub-corelib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-endif()
-
-# --- 3.2. pylabhub-shell (Main Executable) ---
-# The logical target name is `pylabhub-shell`.
-add_executable(pylabhub-shell src/coreshell.cpp)
-add_executable(pylabhub::shell ALIAS pylabhub-shell)
-target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
-
-# The `stage_all` target is a developer utility for explicitly staging everything.
-# We do NOT make `pylabhub-shell` depend on `stage_all` as it creates a
-# dependency cycle. The necessary runtime dependencies for `pylabhub-shell` are
-# staged via its POST_BUILD command, which correctly handles the dependency order.
-
-# Set the output file name to `hubshell` (.exe on Windows).
-set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
-message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
-
+add_subdirectory(src)
 message(STATUS "--- Main Project Configuration Complete ---")
 message(STATUS "")
 
-# --- 5. Optional Sub-Projects ---
 message(STATUS "--- Configuring Optional Sub-Projects ---")
-
-# --- 4.1. IgorXOP ---
 if(BUILD_XOP)
   add_subdirectory(src/IgorXOP)
 else()
   message(STATUS "Skipping IgorXOP sub-project (BUILD_XOP is OFF).")
 endif()
-
-# --- 4.2. Tests ---
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 else()
   message(STATUS "Skipping tests sub-project (BUILD_TESTS is OFF).")
 endif()
-
 message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
-# --- 6. Staging for Main Project Targets ---
-# This section defines the post-build commands that copy the core project
-# artifacts into the unified staging directory. This staging is UNCONDITIONAL
-# because `pylabhub-corelib` and `pylabhub-shell` are essential components
-# of the project.
+# --- 3.4. Staging Dependencies ---
+# The global `stage_all` target depends on the individual staging targets
+# from each sub-project. This ensures all artifacts are staged correctly
+# before the final message is printed.
+add_dependencies(stage_all stage_core_artifacts)
 
-# The `add_custom_command(TARGET ... POST_BUILD ...)` pattern ensures that
-# artifacts are copied immediately after they are successfully built.
+# If the XOP is being built, make sure its staging target is part of the global `stage_all`.
+if(BUILD_XOP)
+  # This target is defined in src/IgorXOP/CMakeLists.txt
+  add_dependencies(stage_all stage_pylabhubxop)
+endif()
 
-# Stage the main executable to `stage/bin/`.
-add_custom_command(TARGET pylabhub-shell POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-shell>" "${PYLABHUB_STAGING_DIR}/bin/"
-  # Copy the runtime dependencies (DLLs) of the executable to the bin directory.
-  # This is the correct place to use TARGET_RUNTIME_DLLS.
-  COMMAND ${CMAKE_COMMAND}
-    -D TARGET_NAME=pylabhub-shell
-    -D DEST_DIR=${PYLABHUB_STAGING_DIR}/bin
-    -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:pylabhub-shell>"
-    -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
-  COMMENT "Staging hubshell and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/bin"
-  VERBATIM
-)
-
-# Stage the core library (and its runtime dependencies on Windows)
-add_custom_command(TARGET pylabhub-corelib POST_BUILD
-  # Stage the library file.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
-  # Stage the public headers.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
-  COMMENT "Staging pylabhub-corelib and public headers to ${PYLABHUB_STAGING_DIR}"
-  VERBATIM
-)
-
-# Make the global `stage_all` target depend on the core targets. This ensures
-# that building `stage_all` will first build these components before any
-# dependent staging commands are run.
-add_dependencies(stage_all pylabhub-shell pylabhub-corelib)
-
-# --- 7. Final Installation Step ---
-# This section defines the `install` target. Its creation is controlled by the
-# `PYLABHUB_CREATE_INSTALL_TARGET` option, allowing developers to disable it
-# for build-only scenarios (e.g., in CI).
-
-# Collect helper files for the install step. This is separate from the post-build
-# staging, which is handled within the IgorXOP subproject.
-file(GLOB _xop_helper_files
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ihf"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ipf"
-)
+# --- 3.5. Final Installation Step ---
+# Defines the `install` target, which simply copies the fully populated
+# staging directory to the final install prefix.
 if(PYLABHUB_CREATE_INSTALL_TARGET)
-  # The `install` command is now a simple, atomic operation that copies the
-  # entire, fully-populated staging directory to the installation prefix
-  # (`CMAKE_INSTALL_PREFIX`).
   install(DIRECTORY "${PYLABHUB_STAGING_DIR}/"
     DESTINATION "."
     COMPONENT "pylabhub_runtime"
   )
-
-  # Install the XOP helper files alongside the main installation.
-  install(FILES ${_xop_helper_files}
-    DESTINATION "IgorXOP"
-    COMPONENT "pylabhub_runtime")
-  message(STATUS "Installation target enabled. Run 'cmake --install .' to copy staged artifacts.")
+  message(STATUS "Installation target enabled. Run 'cmake --install' to copy staged artifacts.")
 endif()
 
-# --- 8. Final Configuration Summary ---
-# This block prints a clear summary of the selected build options, providing
-# immediate feedback to the developer on how the project is configured.
+# --- 3.6. Final Configuration Summary ---
 message(STATUS "==============================================")
 message(STATUS "pyLabHub Configuration Summary")
 message(STATUS "----------------------------------------------")
@@ -330,3 +254,8 @@ message(STATUS "  3rd-Party Staging:   OFF")
 endif()
 message(STATUS "  Create Install Target: ${PYLABHUB_CREATE_INSTALL_TARGET} (from ${PYLABHUB_STAGING_DIR})")
 message(STATUS "==============================================")
+message(STATUS "")
+message(STATUS "Build configuration is complete.")
+message(STATUS "1. To build all targets, run: cmake --build <your_build_directory>")
+message(STATUS "2. To stage all artifacts to '${PYLABHUB_STAGING_DIR}', run: cmake --build <your_build_directory> --target stage_all")
+message(STATUS "")

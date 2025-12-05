@@ -5,7 +5,7 @@
 # Responsibilities:
 #   - build the XOP module (MODULE on macOS, SHARED on Windows)
 #   - assemble .xop bundle on macOS via cmake/assemble_xop.cmake
-#   - stage the bundle / dll into a post-build install root (default: <build>/install)
+#   - stage the bundle / dll into a post-build staging root (default: <build>/stage)
 #   - export the XOP target name and an alias so the parent CMake can refer to it
 #
 # Expected top-level behavior (caller / parent CMake):
@@ -213,157 +213,121 @@ endif()
 
 # -------------------------
 # Staging the final bundle/dll.
+#
+# The philosophy is to separate ASSEMBLY from STAGING.
+# - Assembly happens as a POST_BUILD step on the main target (e.g., creating the .xop bundle).
+# - Staging happens via a separate custom target, `stage_${XOP_TARGET}`, which can be
+#   invoked explicitly after the build is complete.
 # -------------------------
 
+# Find optional helper files to be staged.
+file(GLOB _xop_help_files "${CMAKE_CURRENT_SOURCE_DIR}/*.ihf")
+file(GLOB _xop_proc_files "${CMAKE_CURRENT_SOURCE_DIR}/*.ipf")
+set(_xop_helper_files "")
+
+if(_xop_help_files)
+    list(APPEND _xop_helper_files ${_xop_help_files})
+    message(STATUS "IgorXOP: Found Igor Help File(s) (.ihf) to be staged: ${_xop_help_files}")
+endif()
+if(_xop_proc_files)
+    list(APPEND _xop_helper_files ${_xop_proc_files})
+    message(STATUS "IgorXOP: Found Igor Procedure File(s) (.ipf) to be staged: ${_xop_proc_files}")
+endif()
+
+if(NOT _xop_help_files AND NOT _xop_proc_files)
+    message(STATUS "IgorXOP: No optional Igor Help File(s) (.ihf) or Procedure File(s) (.ipf) were found.")
+endif()
+
 # ==============================================================================
-# macOS BUNDLE ASSEMBLY AND STAGING (PLATFORM_APPLE)
+# macOS: Assembly (POST_BUILD) and Staging (custom target)
 # ==============================================================================
 if(DEFINED PLATFORM_APPLE)
   # --- Overview of the macOS Post-Build Process ---
-  # The goal is to create a standard macOS .xop bundle, which is a directory
-  # with a specific internal structure. This cannot be done with a simple
-  # `add_library` command. We use a sequence of post-build commands to:
+  # The goal is to create a standard macOS .xop bundle. This is done via a
+  # POST_BUILD command on the main library target.
   #   1. Compile the C++ code into a single Mach-O binary.
-  #   2. Run a CMake script (`assemble_xop.cmake.in`) to build the .xop directory
-  #      structure around this binary.
-  #   3. Stage the complete bundle and any helper files to the project's
-  #      staging directory (`build/stage/`).
-  #   4. Prepare the bundle for distribution by cleaning metadata and signing it.
+  #   2. After the build, a bootstrap script (`run_assemble_xop.cmake`) is executed.
+  #   3. This script first runs an assembly script to create the .xop bundle
+  #      directory structure in the build tree.
+  #   4. It then runs a processing script to clean, sign, and verify the bundle in-place.
+  #   5. A separate `stage_pylabhubxop` target copies the final, verified bundle
+  #      to the global staging directory.
 
-  # --- The Bootstrap Mechanism for Running the Assembly Script ---
+  # --- The Bootstrap Mechanism for Running Post-Build Scripts ---
   # A challenge in CMake is that the exact path to a built target (the Mach-O binary)
-  # is only known at build time, not at configure time. We solve this using a
-  # two-stage "bootstrap" process:
+  # is only known at build time. We solve this using a two-stage "bootstrap" process:
   #
   # 1. `run_assemble_xop.cmake.in` (The Bootstrap Script):
-  #    At configure time, we create a script from this template. It is designed
+  #    At configure time, we create this script from a template. It is designed
   #    to receive the target's path as a command-line argument.
   #
-  # 2. `assemble_xop.cmake.in` (The Main Assembly Script):
-  #    This script does the actual work of creating the bundle. The bootstrap
-  #    script configures this script with the now-known path to the binary and
-  #    then executes it.
-  #
-  # 3. `add_custom_command(POST_BUILD ...)`:
-  #    This is where the magic happens. After the `pylabhubxop` target is built,
-  #    this command executes the bootstrap script, passing the binary's path
-  #    using a "generator expression" (`$<TARGET_FILE:...>`), which CMake
-  #    resolves right before running the command.
-
-  # 3. The bootstrap script then uses `configure_file` to create the *final*
-  #    assembly script, passing in the now-resolved paths.
-  # 4. Finally, the bootstrap script executes the final assembly script.
-
+  # 2. `add_custom_command(POST_BUILD ...)`:
+  #    After the `pylabhubxop` target is built, this command executes the
+  #    bootstrap script, passing the binary's path using a "generator expression"
+  #    (`$<TARGET_FILE:...>`), which CMake resolves at build time. The script then
+  #    handles the rest of the post-build steps.
   set(BOOTSTRAP_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/run_assemble_xop.cmake.in")
   set(CONFIGURED_BOOTSTRAP_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/run_assemble_xop.cmake")
 
-  # Define paths for the *actual* assembly script. These will be passed into the bootstrap script.
   set(ASSEMBLE_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.cmake.in")
   set(CONFIGURED_ASSEMBLE_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/assemble_xop.cmake")
 
-  # Define variables that will be substituted into the assembly script template.
-  # These are known at configure time.
   set(BUNDLE_DIR "${CMAKE_CURRENT_BINARY_DIR}/${XOP_BUNDLE_NAME}.xop")
-  set(REZ_SOURCE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r") # Passed to assemble_xop.cmake.in
-  set(INFO_PLIST_STRINGS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/InfoPlist.strings") # Passed to assemble_xop.cmake.in
-  set(R_INCLUDE_DIRS_LIST "${_r_include_dirs_list}") # Passed to assemble_xop.cmake.in
-  # CONFIGURED_INFO_PLIST is set earlier and will be passed to assemble_xop.cmake.in
-  
-  # At configure time, create the bootstrap script.
-  # The @ONLY flag ensures that only @VAR@ variables are replaced, not ${VAR} variables,
-  # which is crucial for passing generator expressions.
-  configure_file("${BOOTSTRAP_SCRIPT_TEMPLATE}" "${CONFIGURED_BOOTSTRAP_SCRIPT}" @ONLY)
-
-  # Find helper files to be staged alongside the bundle.
-  file(GLOB _xop_helper_files
-      "${CMAKE_CURRENT_SOURCE_DIR}/*.ihf"
-      "${CMAKE_CURRENT_SOURCE_DIR}/*.ipf"
-  )
+  set(REZ_SOURCE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r")
+  set(INFO_PLIST_STRINGS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/InfoPlist.strings")
+  set(R_INCLUDE_DIRS_LIST "${_r_include_dirs_list}")
 
   # Use "-" for an ad-hoc signature, which is sufficient for local execution and testing.
-  # For distribution, this should be a proper Developer ID.
   set(MACOSX_CODESIGN_IDENTITY "-" CACHE STRING "The identity to use for code signing the macOS bundle.")
-
-  # Add a single, sequential post-build command to assemble, stage, clean, and sign.
-  add_custom_command(
-    TARGET ${XOP_TARGET}
-    POST_BUILD
-
-    # Step 1: ASSEMBLE the bundle in the build directory.
-    # This invokes the bootstrap script, which in turn runs the main assembly script.
-    # The generator expression `$<TARGET_FILE:${XOP_TARGET}>` is resolved to the
-    # concrete path of the compiled binary just before this command is run.
-    COMMAND ${CMAKE_COMMAND}
-      -DMACHO_BINARY_PATH_ARG=$<TARGET_FILE:${XOP_TARGET}>
-      -P "${CONFIGURED_BOOTSTRAP_SCRIPT}"
-
-    # Step 2: STAGE the assembled bundle.
-    # This copies the entire `pylabhubxop64.xop` directory into the global staging area.
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${BUNDLE_DIR}" "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-
-    # Step 3: STAGE helper files (.ipf, .ihf) alongside the bundle.
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
-
-    # Step 4: CLEAN the bundle for distribution.
-    # `xattr -cr` removes extended attributes (like quarantine flags) that macOS
-    # adds to downloaded files. These attributes can interfere with code signing
-    # and cause Gatekeeper issues, so cleaning them is a critical step.
-    COMMAND xattr -cr "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-
-    # Step 5: SIGN the bundle.
-    # This invokes our `CodeSign.cmake` script, which runs `codesign`. For local
-    # builds, an ad-hoc signature (`-`) is sufficient. For distribution, a
-    # paid Apple Developer ID is required to pass Gatekeeper on other machines.
-    COMMAND ${CMAKE_COMMAND}
-      -D "BUNDLE_PATH=${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-      -D "SIGNING_IDENTITY=${MACOSX_CODESIGN_IDENTITY}"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CodeSign.cmake"
-    COMMENT "Assembling, staging, and signing ${XOP_BUNDLE_NAME}.xop and helper files"
-    VERBATIM
-  )
   if(MACOSX_CODESIGN_IDENTITY)
     message(STATUS "IgorXOP: macOS code signing is ENABLED with identity: ${MACOSX_CODESIGN_IDENTITY}")
   endif()
-endif()
 
-# ==============================================================================
-# Windows STAGING (PLATFORM_WIN64)
-# ==============================================================================
-if(DEFINED PLATFORM_WIN64)
-  # Add a post-build step to stage the .xop file automatically
+  set(PROCESS_BUNDLE_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/process_bundle.cmake")
+  set(CODESIGN_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/CodeSign.cmake")
+  set(VERIFY_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/VerifyXOP.cmake")
+  
+  configure_file("${BOOTSTRAP_SCRIPT_TEMPLATE}" "${CONFIGURED_BOOTSTRAP_SCRIPT}" @ONLY)
+
+  # --- Step 1: Assembly, Processing, and Verification (POST_BUILD) ---
+  # After the binary is built, run the bootstrap script to assemble, clean,
+  # sign, and verify the .xop bundle in the build directory.
   add_custom_command(
     TARGET ${XOP_TARGET}
     POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
-    COMMENT "Staging ${XOP_BUNDLE_NAME}.xop to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMAND ${CMAKE_COMMAND}
+      -DMACHO_BINARY_PATH_ARG=$<TARGET_FILE:${XOP_TARGET}>
+      -P "${CONFIGURED_BOOTSTRAP_SCRIPT}"
+    COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
 
+  # --- Step 2: Staging (Custom Target) ---
+  # This target simply copies the fully processed bundle and Igor help and procedure files to the staging area.
+  add_custom_target(stage_${XOP_TARGET}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${BUNDLE_DIR}" "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and Igor help and procedure files (.ipf, .ihf)"
+    VERBATIM
+  )
+  add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
 endif()
 
-# -------------------------
-# Install helper files (.ihf/.ipf) into <install_root>/xop/ if present
-# -------------------------
-# NOTE: For macOS, staging of helper files is integrated into the main post-build
-# sequence to guarantee correct execution order. For Windows, we add a separate
-# command here. The final `install` step is handled by the top-level CMakeLists.txt.
+# ==============================================================================
+# Windows: Staging (custom target)
+# ==============================================================================
 if(DEFINED PLATFORM_WIN64)
-  # Find helper files if they haven't been found already.
-  if(NOT _xop_helper_files)
-    file(GLOB _xop_helper_files
-        "${CMAKE_CURRENT_SOURCE_DIR}/*.ihf"
-        "${CMAKE_CURRENT_SOURCE_DIR}/*.ipf"
-    )
-  endif()
-
-  if(_xop_helper_files)
-    add_custom_command(TARGET ${XOP_TARGET} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
-      COMMENT "Staging IgorXOP helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
-    )
-  endif()
+  # For Windows, there is no assembly step. The SHARED library is the final artifact.
+  # We just need a custom target to stage the .xop and any Igor help and/or procedure files.
+  add_custom_target(stage_${XOP_TARGET}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMENT "Staging ${XOP_BUNDLE_NAME}.xop and Igor help and procedure files (.ipf, .ihf) to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    VERBATIM
+  )
+  add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
 endif()
 
 # -------------------------
@@ -372,4 +336,5 @@ endif()
 message(STATUS "IgorXOP: configured XOP target '${XOP_TARGET}'.")
 message(STATUS "  XOP build target:    ${XOP_TARGET}")
 message(STATUS "  XOP bundle name:     ${XOP_BUNDLE_NAME}")
+message(STATUS "  XOP staging target:  stage_${XOP_TARGET}")
 message(STATUS "==============================================")

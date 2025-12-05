@@ -23,7 +23,6 @@ set(THIRD_PARTY_POLICY_AND_HELPER_INCLUDED TRUE)
 # ---------------------------------------------------------------------------
 
 # --- General Build & Install Policies ---
-option(THIRD_PARTY_INSTALL "Install third-party libraries" ON)
 option(THIRD_PARTY_ALLOW_UPSTREAM_PCH "Allow upstream projects to enable precompiled headers" OFF)
 option(THIRD_PARTY_FORCE_ALLOW_PCH "Force upstream PCH even on MSVC+Ninja (may produce errors)" OFF)
 option(THIRD_PARTY_DISABLE_TESTS "Globally disable tests for all third-party libraries." ON)
