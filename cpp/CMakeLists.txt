@@ -144,6 +144,9 @@ message(STATUS "--- Configuring Main Project Targets ---")
 
 # --- 3.1. pylabhub-corelib ---
 # This is the core library containing common utilities.
+# NOTE: file(GLOB_RECURSE) is convenient but not always recommended in modern CMake,
+# as it won't automatically trigger a re-configure if you add or remove files.
+# For a small, stable set of core files, this is acceptable.
 file(GLOB_RECURSE CORELIB_SOURCES CONFIGURE_DEPENDS "src/util/*.cpp" "src/fileutil/*.cpp")
 
 if(PYLABHUB_BUILD_SHARED)
@@ -264,6 +267,13 @@ add_dependencies(stage_all pylabhub-shell pylabhub-corelib)
 # This section defines the `install` target. Its creation is controlled by the
 # `PYLABHUB_CREATE_INSTALL_TARGET` option, allowing developers to disable it
 # for build-only scenarios (e.g., in CI).
+
+# Collect helper files for the install step. This is separate from the post-build
+# staging, which is handled within the IgorXOP subproject.
+file(GLOB _xop_helper_files
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ihf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/IgorXOP/*.ipf"
+)
 if(PYLABHUB_CREATE_INSTALL_TARGET)
   # The `install` command is now a simple, atomic operation that copies the
   # entire, fully-populated staging directory to the installation prefix
@@ -272,6 +282,11 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
     DESTINATION "."
     COMPONENT "pylabhub_runtime"
   )
+
+  # Install the XOP helper files alongside the main installation.
+  install(FILES ${_xop_helper_files}
+    DESTINATION "IgorXOP"
+    COMPONENT "pylabhub_runtime")
   message(STATUS "Installation target enabled. Run 'cmake --install .' to copy staged artifacts.")
 endif()
 

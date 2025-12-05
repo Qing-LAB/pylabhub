@@ -1,0 +1,5 @@
+/* Localized versions of Info.plist keys */
+
+CFBundleName = "pylabhubxop";
+CFBundleShortVersionString = "1.0";
+CFBundleGetInfoString = "pylabhubxop version 1.0, Copyright 2024, pylabhub.";
