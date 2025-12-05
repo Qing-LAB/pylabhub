@@ -8,6 +8,7 @@ It collects verified knowledge from:
 - WaveMetrics XOP Toolkit documentation
 - Behavior observed with `pylabhubxop64` bundle builds
 - Empirical debugging of the CMake build process
+The build system has evolved to include automated assembly, verification, and code signing, encapsulating the lessons learned below.
 
 ---
 
@@ -136,16 +137,22 @@ Validate with:
 ```bash
 nm -gU build_xcode/stage/IgorXOP/pylabhubxop64.xop/Contents/MacOS/pylabhubxop64 | grep XOPMain
 ```
-If `XOPMain` is missing, Igor cannot call into the bundle.
+If `XOPMain` is missing, Igor cannot call into the bundle. Our build system now automates this check.
 
 ---
 
 ## 6. Compiling and Handling Resources
 
-- **Rez File (`.r` -> `.rsrc`):** The `WaveAccess.r` file is compiled by `Rez` into `pylabhubxop64.rsrc`.
-- **Localized Strings:** The static file `InfoPlist.strings` is copied into the bundle.
+Resource compilation is a critical and historically fragile part of building XOPs. Our build system fully automates this.
 
-Both of these steps are handled automatically by the `assemble_xop.cmake` script, which is invoked as part of the main target's `POST_BUILD` command sequence. There is no separate `configure_file` step for `InfoPlist.strings`.
+- **Rez Compilation (`.r` -> `.rsrc`):**
+  The `.r` file, which defines the XOP's interface with Igor, is compiled by Apple's `Rez` tool into a binary `pylabhubxop64.rsrc` file. This is handled by the `assemble_xop.cmake` script.
+
+  **Key Implementation Detail:** The script invokes `Rez` with the `-useDF` flag. This is essential on modern macOS to ensure the compiled resources are written to the file's "data fork." Without it, `Rez` defaults to the legacy "resource fork," which is often stripped during file copy operations (e.g., by CMake or `git`), resulting in an empty `.rsrc` file and a "logical end-of-file" error in Igor.
+
+- **Localized Strings:** The static `InfoPlist.strings` file is copied into `Contents/Resources/en.lproj/`. If the source file is missing, the script generates a minimal placeholder to ensure the bundle is valid.
+
+Both steps are part of a `POST_BUILD` command sequence.
 
 ---
 
@@ -179,43 +186,61 @@ target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
 
 | Symptom | Likely Cause | Fix |
 |----------|---------------|-----|
-| `.xop` loads but `XOPMain` never called | Executable not exported or Info.plist executable name mismatch | check `Exports.exp` and `CFBundleExecutable` |
-| Igor fails silently | missing or malformed `.rsrc` or Info.plist | ensure proper bundle layout |
-| Linker warning: missing line-end in Exports.exp | no final newline | add trailing `\n` |
-| `.r` compilation fails | `rez` not found or include paths missing | use `xcrun rez` and add `-I` paths |
-| Finder shows generic folder icon | `CFBundlePackageType` not `IXOP` or `CFBundleSignature` missing | fix Info.plist keys |
+| Igor shows "logical end-of-file during load" error | The `.rsrc` file inside the bundle is empty or corrupted. This happens if `Rez` wrote to the legacy resource fork, which was then stripped during a file copy. | The build script must use `Rez` with the `-useDF` flag. Our CMake build does this automatically. If building manually, ensure you add this flag. |
+| `.xop` loads but `XOPMain` never called | Executable not exported or Info.plist executable name mismatch | Check `Exports.exp` and `CFBundleExecutable`. This is now verified automatically by the build. |
+| Igor fails silently | Missing or malformed `.rsrc` or `Info.plist` | Ensure proper bundle layout. This is now verified automatically by the build. |
+| Linker warning: missing line-end in Exports.exp | No final newline in the `.exp` file. | Add a trailing newline (`\n`) to the file. |
+| `.r` compilation fails (`rez` error) | `rez` not found or include paths missing | Ensure Xcode Command Line Tools are installed (`xcode-select --install`). The build script automatically finds `rez` and adds necessary `-I` include paths. |
+| Finder shows generic folder icon | `CFBundlePackageType` not `IXOP` or `CFBundleSignature` missing | Fix `Info.plist` keys. |
 | Build fails with compiler errors | `CC`/`CXX` environment variables are interfering | Use `CC= CXX= xcodebuild ...` |
 
 ---
 
-## 10. Quick Verification Checklist
+## 10. Automated and Manual Verification
 
-After `CC= CXX= xcodebuild ...`:
+Our CMake build includes a robust, automated verification script (`VerifyXOP.cmake`) that runs as a `POST_BUILD` step. It checks for the most common structural and configuration errors, causing the build to fail if any are found.
+
+**Automated Checks:**
+- Correct bundle directory structure (`Contents/MacOS`, `Contents/Resources`).
+- Presence of the `Info.plist` file.
+- Presence of the main executable.
+- The `_XOPMain` symbol is correctly exported in the executable (via `nm`).
+- `CFBundleExecutable` in `Info.plist` matches the executable's filename (via `plutil`).
+
+**Manual Verification Checklist:**
+
+If you need to debug a bundle or verify one from an external source, the following manual checks (which mirror the automated process) are recommended.
 
 ```bash
 # Define the path to your staged bundle
 BUNDLE="build_xcode/stage/IgorXOP/pylabhubxop64.xop"
 
-# Confirm exported symbol
-nm -gU "${BUNDLE}/Contents/MacOS/pylabhubxop64" | grep XOPMain
-
-# Confirm bundle layout
+# 1. Confirm bundle layout
 tree "${BUNDLE}"
 
-# Confirm Info.plist and localized strings
+# 2. Confirm exported symbol
+nm -gU "${BUNDLE}/Contents/MacOS/pylabhubxop64" | grep XOPMain
+
+# 3. Confirm Info.plist executable name
 plutil -p "${BUNDLE}/Contents/Info.plist" | grep CFBundleExecutable
-cat "${BUNDLE}/Contents/Resources/en.lproj/InfoPlist.strings"
+
+# 4. Check for a non-empty resource file
+ls -l "${BUNDLE}/Contents/Resources/pylabhubxop64.rsrc"
 ```
 
-All checks should pass before testing inside Igor.
+A successful build from our CMake system implies all these checks have passed.
 
 ---
 
-## 11. Build Enhancements
+## 11. Build Process Details and Enhancements
 
-- **Code Signing:** Ad-hoc signing is now implemented automatically as a post-build step to allow local execution. For distribution on newer macOS, this will need to be extended with a proper Developer ID and notarization.
-- **`xcrun rez` Path:** The build relies on `Rez` being in the PATH. A future improvement could be to automatically detect it from `xcrun`.
-- **Localization:** `InfoPlist.strings` could be extended to support multiple languages.
+- **Code Signing:** The build automatically performs ad-hoc signing via the `CodeSign.cmake` post-build script. This is required for local execution on Apple Silicon Macs. Signing is triggered if the CMake variable `MACOSX_CODESIGN_IDENTITY` is set. For ad-hoc signing, set it to `-`. For distribution, this would be set to a proper Developer ID. The script prioritizes the system's `codesign` tool at `/usr/bin`.
+
+- **Toolchain Discovery (`Rez`, `nm`, etc.):** The build expects `Rez`, `nm`, and `plutil` to be available in the system `PATH`. These are standard components of the Xcode Command Line Tools. If you encounter errors about them being missing, run `xcode-select --install` and ensure your shell is configured to find them.
+
+- **Two-Phase Assembly:** The bundle assembly uses a two-step CMake script process (`run_assemble_xop.cmake.in` -> `assemble_xop.cmake`). This is a technical requirement to correctly resolve CMake "generator expressions" (e.g., the final path to the compiled binary) at the right time during the build.
+
+- **Localization:** `InfoPlist.strings` is currently hardcoded for English (`en.lproj`). The build could be extended to support multiple localizations by adding other `.lproj` directories.
 
 ---
 

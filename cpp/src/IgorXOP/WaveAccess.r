@@ -15,7 +15,7 @@ resource 'vers' (2) {						/* Igor version info */
 resource 'STR#' (1100) {					/* custom error messages */
 	{
 		/* [1] */
-		"WaveAccess requires Igor Pro 8.00 or later.",
+		"pyLabHubXOP requires Igor Pro 8.00 or later.",
 		/* [2] */
 		"Wave does not exist.",
 		/* [3] */
