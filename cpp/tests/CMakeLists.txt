@@ -42,10 +42,12 @@ set(TEST_SOURCES
 # ---------------------------------------------------------------------------
 enable_testing()
 
+set(_all_test_targets "")
 foreach(src IN LISTS TEST_SOURCES)
     get_filename_component(test_name ${src} NAME_WE)
     add_executable(${test_name} ${src})
     add_executable(pylabhub::${test_name} ALIAS ${test_name})
+    list(APPEND _all_test_targets ${test_name})
 
     # Link against the core library alias. This is the ONLY dependency needed.
     # pylabhub::corelib will provide all other necessary targets (like fmt, zmq, Threads)
@@ -58,24 +60,6 @@ foreach(src IN LISTS TEST_SOURCES)
 
     # Ensure C++17
     target_compile_features(${test_name} PRIVATE cxx_std_17)
-
-    # Stage the test executable to the unified staging directory.
-    # This is conditional on the master install/staging switch. Test executables
-    # are considered optional artifacts and are only staged if the user intends
-    # to create a complete, installable package.
-    if(PYLABHUB_CREATE_INSTALL_TARGET)
-      add_custom_command(TARGET ${test_name} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${test_name}>" "${PYLABHUB_STAGING_DIR}/tests/"
-        COMMAND ${CMAKE_COMMAND}
-          -D TARGET_NAME=${test_name}
-          -D DEST_DIR=${PYLABHUB_STAGING_DIR}/tests
-          -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:${test_name}>"
-          -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
-        COMMENT "Staging test '${test_name}' and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/tests"
-      )
-      add_dependencies(stage_all ${test_name})
-    endif()
 
     # Pass compile-time log level to the test target
     target_compile_definitions(${test_name} PRIVATE LOGGER_COMPILE_LEVEL=${LOGGER_COMPILE_LEVEL})
@@ -90,6 +74,45 @@ foreach(src IN LISTS TEST_SOURCES)
     # Add to CTest
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Staging for Test Executables
+#
+# Following the project's design, staging for tests is handled by a dedicated
+# custom target that is only triggered by the global `stage_all` target.
+# This is only active if the user intends to create an installable package.
+# ---------------------------------------------------------------------------
+if(PYLABHUB_CREATE_INSTALL_TARGET)
+  set(_staging_commands "")
+  foreach(test_name IN LISTS _all_test_targets)
+    # For each test, add a sequence of commands to the list.
+    list(APPEND _staging_commands
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${test_name}>" "${PYLABHUB_STAGING_DIR}/tests/"
+        COMMAND ${CMAKE_COMMAND}
+            -D TARGET_NAME=${test_name}
+            -D DEST_DIR=${PYLABHUB_STAGING_DIR}/tests
+            -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:${test_name}>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
+        COMMENT "Staging test '${test_name}'"
+    )
+  endforeach()
+
+  # Create the single custom target with all the commands.
+  add_custom_target(stage_tests
+      # The first command creates the directory once.
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
+      # Then, execute all the copy commands for each test.
+      ${_staging_commands}
+      COMMENT "Staging all test executables and their dependencies"
+      VERBATIM
+  )
+
+  # Ensure tests are built before staging and that `stage_all` triggers test staging.
+  add_dependencies(stage_tests ${_all_test_targets})
+  add_dependencies(stage_all stage_tests)
+  message(STATUS "Tests: Configured 'stage_tests' target for on-demand staging.")
+endif()
+
 
 # ---------------------------------------------------------------------------
 # Extra: friendly summary

@@ -157,7 +157,14 @@ message(STATUS "")
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
 set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Root directory for staging all project artifacts.")
-add_custom_target(stage_all COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}")
+add_custom_target(stage_all
+    COMMAND ${CMAKE_COMMAND} -E echo " "
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} -E echo "Staging complete. The project is now ready for installation."
+    COMMAND ${CMAKE_COMMAND} -E echo "To install to ${CMAKE_INSTALL_PREFIX}, run: cmake --install ."
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
+)
 message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
 
 # --- 3.3. Configure All Sub-Projects ---
@@ -187,9 +194,16 @@ message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
 # --- 3.4. Staging Dependencies ---
-# Make the global `stage_all` target depend on the core targets. This ensures
-# that building `stage_all` will first build these components.
-add_dependencies(stage_all pylabhub-shell pylabhub-corelib)
+# The global `stage_all` target depends on the individual staging targets
+# from each sub-project. This ensures all artifacts are staged correctly
+# before the final message is printed.
+add_dependencies(stage_all stage_core_artifacts)
+
+# If the XOP is being built, make sure its staging target is part of the global `stage_all`.
+if(BUILD_XOP)
+  # This target is defined in src/IgorXOP/CMakeLists.txt
+  add_dependencies(stage_all stage_pylabhubxop)
+endif()
 
 # --- 3.5. Final Installation Step ---
 # Defines the `install` target, which simply copies the fully populated
@@ -240,3 +254,8 @@ message(STATUS "  3rd-Party Staging:   OFF")
 endif()
 message(STATUS "  Create Install Target: ${PYLABHUB_CREATE_INSTALL_TARGET} (from ${PYLABHUB_STAGING_DIR})")
 message(STATUS "==============================================")
+message(STATUS "")
+message(STATUS "Build configuration is complete.")
+message(STATUS "1. To build all targets, run: cmake --build <your_build_directory>")
+message(STATUS "2. To stage all artifacts to '${PYLABHUB_STAGING_DIR}', run: cmake --build <your_build_directory> --target stage_all")
+message(STATUS "")
