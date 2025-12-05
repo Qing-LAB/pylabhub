@@ -95,6 +95,13 @@ if(FORCE_USE_CLANG_ON_APPLE)
   endif()
 endif()
 
+# On macOS, ensure environment variables don't override the Xcode generator's toolchain.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_GENERATOR STREQUAL "Xcode")
+  unset(ENV{CC})
+  unset(ENV{CXX})
+  message(STATUS "Xcode generator: Unsetting CC and CXX environment variables to allow default toolchain selection.")
+endif()
+
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
 # --- 1. Global Setup and Helper Modules ---
