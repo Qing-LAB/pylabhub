@@ -312,15 +312,17 @@ if(DEFINED PLATFORM_APPLE)
     COMMAND xattr -cr "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
 
     # Step 5: SIGN the bundle.
-    # This invokes our `CodeSign.cmake` script, which runs `codesign`. For local
-    # builds, an ad-hoc signature (`-`) is sufficient. For distribution, a
-    # paid Apple Developer ID is required to pass Gatekeeper on other machines.
     COMMAND ${CMAKE_COMMAND}
       -D "BUNDLE_PATH=${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
       -D "SIGNING_IDENTITY=${MACOSX_CODESIGN_IDENTITY}"
-      -D "MAIN_EXECUTABLE_NAME=${XOP_BUNDLE_NAME}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CodeSign.cmake"
-    COMMENT "Assembling, staging, and signing ${XOP_BUNDLE_NAME}.xop and helper files"
+
+    # Step 6: VERIFY the final staged bundle.
+    COMMAND ${CMAKE_COMMAND}
+      -D "BUNDLE_TO_VERIFY=${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
+      -D "EXECUTABLE_NAME=${XOP_BUNDLE_NAME}"
+      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/VerifyXOP.cmake"
+    COMMENT "Assembling, staging, signing, and verifying ${XOP_BUNDLE_NAME}.xop and helper files"
     VERBATIM
   )
   if(MACOSX_CODESIGN_IDENTITY)
