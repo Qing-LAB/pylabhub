@@ -8,15 +8,10 @@
 # Expects the following variables to be passed via -D on the command line:
 #   - BUNDLE_PATH: The full path to the .xop bundle to be signed.
 #   - SIGNING_IDENTITY: The identity to use for signing (e.g., "Developer ID Application: Your Name").
-#   - MAIN_EXECUTABLE_NAME: The name of the executable file inside the bundle's Contents/MacOS directory.
 # ------------------------------------------------------------------------------
 
 if(NOT DEFINED BUNDLE_PATH OR NOT EXISTS "${BUNDLE_PATH}")
   message(FATAL_ERROR "CodeSign.cmake: BUNDLE_PATH='${BUNDLE_PATH}' is not defined or does not exist.")
-endif()
-
-if(NOT DEFINED MAIN_EXECUTABLE_NAME OR "${MAIN_EXECUTABLE_NAME}" STREQUAL "")
-  message(FATAL_ERROR "CodeSign.cmake: MAIN_EXECUTABLE_NAME is not defined.")
 endif()
 
 if(NOT DEFINED SIGNING_IDENTITY OR "${SIGNING_IDENTITY}" STREQUAL "")
@@ -24,21 +19,25 @@ if(NOT DEFINED SIGNING_IDENTITY OR "${SIGNING_IDENTITY}" STREQUAL "")
   return()
 endif()
 
-find_program(CODESIGN_EXECUTABLE codesign)
+# Prioritize the official Apple toolchain path to avoid using other versions (e.g., from Homebrew).
+find_program(CODESIGN_EXECUTABLE codesign HINTS /usr/bin)
+if(NOT CODESIGN_EXECUTABLE)
+  # Fallback to the default PATH search if it's not in the standard location.
+  find_program(CODESIGN_EXECUTABLE codesign)
+endif()
+
 if(NOT CODESIGN_EXECUTABLE)
   message(FATAL_ERROR "Code signing failed: 'codesign' executable not found in PATH.")
 endif()
 
 message(STATUS "Signing bundle: ${BUNDLE_PATH} with identity: ${SIGNING_IDENTITY}")
 
-set(MAIN_EXECUTABLE_PATH "${BUNDLE_PATH}/Contents/MacOS/${MAIN_EXECUTABLE_NAME}")
-
+# Use the simple, robust command confirmed to work with the official codesign tool.
+# Separate arguments are used for robustness with execute_process.
 execute_process(
   COMMAND ${CODESIGN_EXECUTABLE}
-          --force
-          --options runtime
-          --main-executable "${MAIN_EXECUTABLE_PATH}"
-          --sign
+          -f
+          -s
           "${SIGNING_IDENTITY}"
           "${BUNDLE_PATH}"
   RESULT_VARIABLE result
