@@ -31,7 +31,14 @@ include(ThirdPartyPolicyAndHelper)
 # staging commands to. Building this target will collect all required headers
 # and libraries into the staging directory.
 if(THIRD_PARTY_INSTALL)
-  add_custom_target(stage_third_party_deps COMMENT "Staging all third-party dependencies to ${PYLABHUB_STAGING_DIR}")
+  # This custom target's first responsibility is to create the core directories.
+  # Subsequent commands (attached via StageHelpers.cmake) will populate them.
+  add_custom_target(stage_third_party_deps
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
+    COMMENT "Pre-creating third-party staging directories"
+  )
   add_dependencies(stage_all stage_third_party_deps)
   message(STATUS "[pylabhub-third-party] Staging enabled. Build the 'stage_third_party_deps' target to collect artifacts.")
 endif()

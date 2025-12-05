@@ -33,3 +33,24 @@ configure_file("@ASSEMBLE_SCRIPT_TEMPLATE@" "@CONFIGURED_ASSEMBLE_SCRIPT@" @ONLY
 # 4. Execute the final assembly script.
 message(STATUS "run_assemble_xop.cmake: Executing final assembly script: @CONFIGURED_ASSEMBLE_SCRIPT@")
 include("@CONFIGURED_ASSEMBLE_SCRIPT@")
+
+# 5. After assembly, run the processing script (clean, sign, verify).
+set(PROCESS_SCRIPT_PATH "@PROCESS_BUNDLE_SCRIPT_PATH@")
+if(EXISTS "${PROCESS_SCRIPT_PATH}")
+    message(STATUS "run_assemble_xop.cmake: Executing bundle processing script.")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND}
+          -D "BUNDLE_PATH=@BUNDLE_DIR@"
+          -D "EXECUTABLE_NAME=@XOP_BUNDLE_NAME@"
+          -D "SIGNING_IDENTITY=@MACOSX_CODESIGN_IDENTITY@"
+          -D "CODESIGN_SCRIPT_PATH=@CODESIGN_SCRIPT_PATH@"
+          -D "VERIFY_SCRIPT_PATH=@VERIFY_SCRIPT_PATH@"
+          -P "${PROCESS_SCRIPT_PATH}"
+        RESULT_VARIABLE result
+    )
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "Bundle processing script failed with exit code ${result}.")
+    endif()
+else()
+    message(WARNING "run_assemble_xop.cmake: Bundle processing script not found at ${PROCESS_SCRIPT_PATH}. Skipping.")
+endif()
