@@ -56,7 +56,32 @@
 #     $ cmake --build build --target stage_all
 #     $ cmake --install build
 #
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Core Design Principles:
+#
+# Our architecture is built on a foundation of modern CMake practices,
+# emphasizing clarity, robustness, and maintainability.
+#
+# 1.  **Unified Staging**: The cornerstone of the design is the unified
+#     staging directory (`${PYLABHUB_STAGING_DIR}`). All build
+#     artifacts—executables, libraries, headers, and bundles—are copied into
+#     this single location within the build tree. This creates a self-contained,
+#     runnable version of the project that mirrors the final installation
+#     layout, making local development and testing simple and reliable.
+# 2.  **Isolation & Abstraction**: Third-party dependencies are configured
+#     in isolated "sandboxes" to prevent build settings from "leaking."
+#     Consumers link against stable, namespaced `ALIAS` targets, abstracting
+#     away underlying build details.
+# 3.  **Top-Down Control & Modularity**: The build system is broken into
+#     logical, single-responsibility modules. High-level build policies are
+#     defined as user-facing `CACHE` options.
+# 4.  **Clear Separation of Concerns**: Core components are always staged.
+#     Third-party libraries and optional components (`tests`) have their staging
+#     and building controlled by dedicated options.
+# 5.  **Installation**: The final `install` target performs a direct copy
+#     of the fully-populated staged directory, providing a clean separation
+#     between development builds and distributable packages.
+# ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.18)
 
 # ===========================================================================
@@ -87,7 +112,7 @@ if(FORCE_USE_CLANG_ON_APPLE AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
     else()
       message(WARNING "Top-level: clang not found on PATH. Consider installing Xcode or CommandLineTools.")
     endif()
-  # For the Xcode generator, we must NOT set CMAKE_C_COMPILER. Instead, we
+  # For the Xcode generator, we must NOT set CMAKE_C_COMPILER directly. Instead, we
   # unset environment variables that might confuse `xcodebuild` at build time.
   else()
     unset(ENV{CC})
@@ -114,6 +139,7 @@ project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 # ===========================================================================
 
 # --- 3.1. Global Setup and Helper Modules ---
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
 find_package(Threads REQUIRED)
