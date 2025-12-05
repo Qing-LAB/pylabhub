@@ -82,7 +82,7 @@ cmake_minimum_required(VERSION 3.18)
 option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts" ON)
 
 if(FORCE_USE_CLANG_ON_APPLE)
-  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
     find_program(_clang_path clang HINTS /usr/bin)
     find_program(_clangpp_path clang++ HINTS /usr/bin)
     if(_clang_path AND _clangpp_path)
