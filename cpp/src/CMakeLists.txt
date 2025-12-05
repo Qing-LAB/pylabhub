@@ -61,33 +61,36 @@ message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
 
 
 # --- 3. Staging for Main Project Targets ---
-# This section defines the post-build commands that copy the core project
-# artifacts into the unified staging directory. This staging is UNCONDITIONAL
-# because `pylabhub-corelib` and `pylabhub-shell` are essential components
-# of the project.
+# This section defines a dedicated target to stage the core project artifacts
+# (executables, libraries, and headers) into the unified staging directory.
+# This target is intended to be a dependency of the top-level `stage_all` target,
+# ensuring that core artifacts are only staged on demand.
 
-# Stage the main executable to `stage/bin/`.
-add_custom_command(TARGET pylabhub-shell POST_BUILD
+add_custom_target(stage_core_artifacts
+  # Stage the main executable to `stage/bin/`.
   COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-shell>" "${PYLABHUB_STAGING_DIR}/bin/"
+
   # Copy the runtime dependencies (DLLs) of the executable to the bin directory.
   COMMAND ${CMAKE_COMMAND}
     -D TARGET_NAME=pylabhub-shell
     -D DEST_DIR=${PYLABHUB_STAGING_DIR}/bin
     -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:pylabhub-shell>"
     -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
-  COMMENT "Staging hubshell and its runtime dependencies to ${PYLABHUB_STAGING_DIR}/bin"
+
+  # Stage the core library file to `stage/lib/`.
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
+  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
+
+  # Stage the public headers to `stage/include/`.
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
+
+  COMMENT "Staging hubshell, corelib, and public headers to ${PYLABHUB_STAGING_DIR}"
   VERBATIM
 )
 
-# Stage the core library (and its runtime dependencies on Windows)
-add_custom_command(TARGET pylabhub-corelib POST_BUILD
-  # Stage the library file.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
-  # Stage the public headers.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
-  COMMENT "Staging pylabhub-corelib and public headers to ${PYLABHUB_STAGING_DIR}"
-  VERBATIM
-)
+# Ensure the artifacts are built before we try to stage them.
+add_dependencies(stage_core_artifacts pylabhub-shell pylabhub-corelib)
+
+message(STATUS "Configured target: stage_core_artifacts")
