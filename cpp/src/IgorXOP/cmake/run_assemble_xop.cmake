@@ -16,20 +16,14 @@ if(NOT DEFINED MACHO_BINARY_PATH_ARG)
 endif()
 
 # 2. Set the variable that the final assembly script template expects.
-#    MACHO_BINARY_PATH_ARG is passed via -D on the command line to resolve the generator expression.
-#    The rest are passed via configure_file from the parent CMakeLists.txt.
 set(MACHO_BINARY_PATH "${MACHO_BINARY_PATH_ARG}")
-set(BUNDLE_DIR "@BUNDLE_DIR@")
-set(XOP_BUNDLE_NAME "@XOP_BUNDLE_NAME@")
-set(CONFIGURED_INFO_PLIST "@CONFIGURED_INFO_PLIST@")
-set(INFO_PLIST_STRINGS_SOURCE "@INFO_PLIST_STRINGS_SOURCE@")
-set(REZ_SOURCE_FILE "@REZ_SOURCE_FILE@")
-set(R_INCLUDE_DIRS_LIST "@R_INCLUDE_DIRS_LIST@")
 
 # 3. Use configure_file to create the final, fully-resolved assembly script.
-#    This passes the now-resolved variables into the main script.
+#    All other variables (@BUNDLE_DIR@, @XOP_BUNDLE_NAME@, etc.) were already
+#    set at the initial CMake configure time.
 configure_file("@ASSEMBLE_SCRIPT_TEMPLATE@" "@CONFIGURED_ASSEMBLE_SCRIPT@" @ONLY)
 
 # 4. Execute the final assembly script.
 message(STATUS "run_assemble_xop.cmake: Executing final assembly script: @CONFIGURED_ASSEMBLE_SCRIPT@")
 include("@CONFIGURED_ASSEMBLE_SCRIPT@")
+

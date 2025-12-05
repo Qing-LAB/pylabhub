@@ -38,6 +38,7 @@ function(_find_xopsupport_impl)
       return()
     endif()
 
+    message(STATUS "  ** Looking for header files in candidate dirs...")
     find_path(_try_include
       NAMES "XOP.h"
       HINTS "${root}"
@@ -50,6 +51,8 @@ function(_find_xopsupport_impl)
       if(EXISTS "${root}/XOP.h")
         set(_try_include "${root}")
       endif()
+    else()
+      message(STATUS "  ** XOP header files found in ${_try_include}")
     endif()
 
     if(PLATFORM_WIN64)
@@ -78,7 +81,7 @@ function(_find_xopsupport_impl)
       set(_expected_marker "")
       set(_candidate_lib_dirs "")
     endif()
-
+    
     message(STATUS "  ** Looking for library (names='${_wanted_lib_names}') in candidate dirs...")
 
     set(_try_lib "")
@@ -132,10 +135,20 @@ function(_find_xopsupport_impl)
       endforeach()
     endif()
 
+    # Find the resource header directory, starting from the C++ header location.
+    find_path(_try_xop_resource_header_dir
+      NAMES "XOPStandardHeaders.r"
+      HINTS ${_try_include} # HINT with the already-found C++ include directory
+      PATH_SUFFIXES "Xcode" "VC" "" # Common subdirectories
+      DOC "Path to the directory containing Igor Pro XOP resource headers (.r files)"
+    )
+    message(STATUS "XOPToolKit: Found Rez resource headers at: ${_try_xop_resource_header_dir}")
+
     if(_try_include AND _try_lib)
       set(_include_dir "${_try_include}" PARENT_SCOPE)
       set(_lib_path "${_try_lib}" PARENT_SCOPE)
       set(_igor_lib_path "${_try_igor}" PARENT_SCOPE)
+      set(_xop_resource_header_dir "${_try_xop_resource_header_dir}" PARENT_SCOPE)
       set(_found TRUE PARENT_SCOPE)
     else()
       set(_found FALSE PARENT_SCOPE)
@@ -144,7 +157,7 @@ function(_find_xopsupport_impl)
 
   # --- Search Logic ---
   # 1. Prefer user-provided system path
-  if(DEFINED USE_SYSTEM_XOPSUPPORT)
+  if(DEFINED USE_SYSTEM_XOPSUPPORT AND USE_SYSTEM_XOPSUPPORT)
     message(STATUS "[pylabhub-third-party] Checking user-provided XOP SDK path: ${USE_SYSTEM_XOPSUPPORT}")
     _check_root_for_xop("${USE_SYSTEM_XOPSUPPORT}")
     set(_root_used "${USE_SYSTEM_XOPSUPPORT}")
@@ -163,9 +176,12 @@ function(_find_xopsupport_impl)
     set(XOP_SDK_LIBRARY "${_lib_path}" PARENT_SCOPE)
     set(XOP_SDK_IGOR_LIBRARY "${_igor_lib_path}" PARENT_SCOPE)
     set(XOP_SDK_FOUND TRUE PARENT_SCOPE)
+    set(XOP_RESOURCE_HEADER_DIR "${_xop_resource_header_dir}" PARENT_SCOPE)
+    
     message(STATUS "[pylabhub-third-party] Found XOP SDK in: ${_root_used}")
-    message(STATUS "  - Includes: ${XOP_SDK_INCLUDE_DIR}")
-    message(STATUS "  - Library: ${XOP_SDK_LIBRARY}")
+    message(STATUS "  - Includes: ${_include_dir}")
+    message(STATUS "  - Library: ${_lib_path}")
+    message(STATUS "  - Rez Dir: ${_xop_resource_header_dir}")
   else()
     set(XOP_SDK_FOUND FALSE PARENT_SCOPE)
   endif()
@@ -205,6 +221,13 @@ if(PLATFORM_APPLE)
     "-framework Carbon"
     "-framework AudioToolbox"
   )
+  if(XOP_RESOURCE_HEADER_DIR)
+    set_property(TARGET pylabhub_xoptoolkit APPEND PROPERTY
+      INTERFACE_REZ_INCLUDE_DIRECTORIES "${XOP_RESOURCE_HEADER_DIR}"
+    )
+  else()
+    message(WARNING "XOPToolKit: Could not find the directory containing XOPStandardHeaders.r. Rez compilation may fail.")
+  endif()
 elseif(PLATFORM_WIN64)
   target_link_libraries(pylabhub_xoptoolkit INTERFACE version)
 endif()
