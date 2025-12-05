@@ -18,3 +18,6 @@ option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the sta
 
 # Option to generate the final 'install' target.
 option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the staged directory" ON)
+
+# Option to enforce the use of Apple's clang toolchain on macOS.
+option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts to avoid conflicts with other compilers" ON)
