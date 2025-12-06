@@ -244,7 +244,7 @@ void test_recursion_guard()
     cfg.save();
 
     // Test nested call from with_json_read -> get()
-    bool read_ok = cfg.with_json_read([&](const json &data) {
+    bool read_ok = cfg.with_json_read([&]([[maybe_unused]] const json &data) {
         // This nested call should be rejected by the recursion guard.
         // get() throws on failure, so we expect an exception.
         bool caught = false;
@@ -319,7 +319,7 @@ void test_multithread_contention()
 
     for (int i = 0; i < THREADS; ++i)
     {
-        threads.emplace_back(&, i {
+        threads.emplace_back([&, i] {
             for (int j = 0; j < ITERS; ++j)
             {
                 // Mix of reads and writes to stress the locks.
@@ -474,7 +474,7 @@ int main(int argc, char **argv)
     TEST_CASE("Multi-Threaded Contention", test_multithread_contention);
 
     std::string exe_path = argv[0];
-    TEST_CASE("Multi-Process Contention", & { test_multiprocess_contention(exe_path); });
+    TEST_CASE("Multi-Process Contention", [&] { test_multiprocess_contention(exe_path); });
 
 #if PYLABHUB_IS_POSIX
     TEST_CASE("Symlink Attack Prevention (POSIX-only)", test_symlink_attack_prevention);

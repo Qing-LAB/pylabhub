@@ -56,7 +56,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         FileLock flock(configFile, LockMode::NonBlocking);
         if (!flock.valid())
         {
-            auto e = flock.error_code();
+            [[maybe_unused]] auto e = flock.error_code();
             LOGGER_ERROR("JsonConfig::init: cannot acquire lock for {} code={} msg=\"{}\"",
                          configFile.string().c_str(), e.value(), e.message().c_str());
             return false;
@@ -210,7 +210,7 @@ bool JsonConfig::reload() noexcept
         FileLock flock(_impl->configPath, LockMode::NonBlocking);
         if (!flock.valid())
         {
-            auto ec = flock.error_code();
+            [[maybe_unused]] auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for {} code={} msg=\"{}\"",
                          _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
@@ -276,7 +276,7 @@ bool JsonConfig::replace(const json &newData) noexcept
         FileLock flock(_impl->configPath, LockMode::NonBlocking);
         if (!flock.valid())
         {
-            auto ec = flock.error_code();
+            [[maybe_unused]] auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for {} code={} msg=\"{}\"",
                          _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;

@@ -72,11 +72,12 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#include "platform.hpp" // use your canonical platform macros
-
 #if !defined(PLATFORM_WIN64)
 #include <syslog.h> // provides LOG_PID, LOG_CONS, LOG_USER, etc.
 #endif
+
+// Include project-specific headers last to ensure they have the final say on macros.
+#include "platform.hpp" // use your canonical platform macros
 
 // Default initial reserve for fmt::memory_buffer used by Logger::log_fmt.
 // Can be overridden by -DLOGGER_FMT_BUFFER_RESERVE=N on the compiler command line.
@@ -156,28 +157,33 @@ class PYLABHUB_API Logger
     // ---- Formatting API (header-only templates) ----
     // Uses fmt-style format strings. These are convenience wrappers that format the message
     // into a UTF-8 buffer and hand it to write_formatted() (non-template sink).
-    template <typename... Args>
-    void log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args) noexcept;
+    template <typename... Args> void log_fmt(Level lvl, fmt::format_string<Args...> fmt_str,
+                                             Args &&...args) noexcept;
 
-    template <typename... Args> void trace_fmt(std::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void debug_fmt(std::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void info_fmt(std::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::L_INFO, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void warn_fmt(std::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void error_fmt(std::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Logger::Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
+        log_fmt(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }
 
     // Minimal compatibility printf-style helper (kept for legacy sites).
@@ -189,17 +195,13 @@ class PYLABHUB_API Logger
     // Implemented in Logger.cpp so it can access Impl.
     void write_formatted(Logger::Level lvl, std::string &&body) noexcept;
 
-    // Internal helper that records a write failure, updates counters and last error message,
-    // copies a user callback under lock and invokes it outside the lock. Implemented in .cpp.
-    void record_write_error(int errcode, const char *msg) noexcept;
-
     // Pimpl pointer. Impl is forward declared (below) and defined in Logger.cpp only.
     std::shared_ptr<Impl> pImpl;
 };
 
 // ----------------- Template implementation (must be in header) -----------------
 template <typename... Args>
-void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args) noexcept
+void Logger::log_fmt(Level lvl, fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
     // Fast path: check level without locking. should_log is implemented in .cpp.
     if (!this->should_log(lvl))
@@ -208,9 +210,10 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args
     try
     {
         fmt::memory_buffer mb;
-        // Use the more efficient overload that writes directly to the memory buffer,
-        // and perfectly forward the arguments for consistency with the public API.
-        fmt::format_to(mb, fmt::runtime(fmt_str), std::forward<Args>(args)...);
+        mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
+        // By using fmt::format_string, the format string is checked at compile time.
+        // We no longer need the fmt::runtime() wrapper.
+        fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
 
         // enforce configured cap (max_log_line_length() defined in .cpp)
         const size_t max_line = max_log_line_length();
@@ -246,43 +249,54 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args
 
 } // namespace pylabhub::utils
 
+// --- Macro Implementation ---
+// This uses a standard-compliant "macro-overloading" pattern to handle calls
+// with and without variadic arguments. It avoids the non-standard `##__VA_ARGS__`
+// extension and its associated pedantic compiler warnings.
+
+// 1. Helper to get the name of the macro to call (_1 for 1 arg, _V for variadic).
+#define PYLH_GET_MACRO_OVERLOAD(_1, _2, NAME, ...) NAME
+
+// 2. Generic dispatcher that calls the correct underlying function.
+#define PYLH_LOG_DISPATCH(log_function, ...)                                                       \
+    PYLH_GET_MACRO_OVERLOAD(__VA_ARGS__, PYLH_LOG_V, PYLH_LOG_1)                                    \
+    (log_function, __VA_ARGS__)
+
+// 3. Macro implementation for 1 argument (format string only).
+#define PYLH_LOG_1(log_function, fmt_str)                                                          \
+    ::pylabhub::utils::Logger::instance().log_function(FMT_STRING(fmt_str))
+
+// 4. Macro implementation for 2+ arguments (format string + variadic args).
+#define PYLH_LOG_V(log_function, fmt_str, ...)                                                     \
+    ::pylabhub::utils::Logger::instance().log_function(FMT_STRING(fmt_str), __VA_ARGS__)
+
 // macros for convenience (fmt-style)
 #if LOGGER_COMPILE_LEVEL >= 0
-// pylabhub::util::Logger::Level::L_TRACE
-#define LOGGER_TRACE(fmt_str, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance().trace_fmt(fmt_str, ##__VA_ARGS__)
+#define LOGGER_TRACE(...) PYLH_LOG_DISPATCH(trace_fmt, __VA_ARGS__)
 #else
-#define LOGGER_TRACE(fmt_str, ...) ((void)0)
+#define LOGGER_TRACE(...) ((void)0)
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 1
-// pylabhub::util::Logger::Level::L_DEBUG
-#define LOGGER_DEBUG(fmt_str, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance().debug_fmt(fmt_str, ##__VA_ARGS__)
+#define LOGGER_DEBUG(...) PYLH_LOG_DISPATCH(debug_fmt, __VA_ARGS__)
 #else
-#define LOGGER_DEBUG(fmt_str, ...) ((void)0)
+#define LOGGER_DEBUG(...) ((void)0)
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 2
-// pylabhub::util::Logger::Level::L_INFO
-#define LOGGER_INFO(fmt_str, ...)                                                                  \
-    ::pylabhub::utils::Logger::instance().info_fmt(fmt_str, ##__VA_ARGS__)
+#define LOGGER_INFO(...) PYLH_LOG_DISPATCH(info_fmt, __VA_ARGS__)
 #else
-#define LOGGER_INFO(fmt_str, ...) ((void)0)
+#define LOGGER_INFO(...) ((void)0)
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 3
-// pylabhub::util::Logger::Level::L_WARNING
-#define LOGGER_WARN(fmt_str, ...)                                                                  \
-    ::pylabhub::utils::Logger::instance().warn_fmt(fmt_str, ##__VA_ARGS__)
+#define LOGGER_WARN(...) PYLH_LOG_DISPATCH(warn_fmt, __VA_ARGS__)
 #else
-#define LOGGER_WARN(fmt_str, ...) ((void)0)
+#define LOGGER_WARN(...) ((void)0)
 #endif
 
 #if LOGGER_COMPILE_LEVEL >= 4
-// pylabhub::util::Logger::Level::L_ERROR
-#define LOGGER_ERROR(fmt_str, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance().error_fmt(fmt_str, ##__VA_ARGS__)
+#define LOGGER_ERROR(...) PYLH_LOG_DISPATCH(error_fmt, __VA_ARGS__)
 #else
-#define LOGGER_ERROR(fmt_str, ...) ((void)0)
+#define LOGGER_ERROR(...) ((void)0)
 #endif

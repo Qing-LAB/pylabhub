@@ -139,7 +139,6 @@ project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 # ===========================================================================
 
 # --- 3.1. Global Setup and Helper Modules ---
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
 find_package(Threads REQUIRED)
@@ -150,6 +149,20 @@ message(STATUS "Top-Level Project: ${PROJECT_NAME} ${PROJECT_VERSION}")
 message(STATUS "Build Type:          ${CMAKE_BUILD_TYPE}")
 message(STATUS "Generator:           ${CMAKE_GENERATOR}")
 message(STATUS "Compiler:            ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+
+# Display the platform detected by PlatformAndCompiler.cmake. This makes the
+# build configuration more transparent and confirms which platform-specific
+# logic will be activated.
+if(PLATFORM_WIN64)
+  set(_platform_string "Windows x64")
+elseif(PLATFORM_APPLE)
+  set(_platform_string "Apple macOS")
+elseif(PLATFORM_LINUX)
+  set(_platform_string "Linux")
+else()
+  set(_platform_string "Unknown")
+endif()
+message(STATUS "Platform:            ${_platform_string}")
 message(STATUS "===============================================================")
 message(STATUS "")
 
@@ -178,8 +191,9 @@ message(STATUS "--- Third-Party Configuration Complete ---")
 message(STATUS "")
 
 message(STATUS "--- Configuring Main Project Targets ---")
+# The 'src' directory is the root of our source tree. Its own CMakeLists.txt
+# is responsible for adding its subdirectories (like 'utils').
 add_subdirectory(src)
-add_subdirectory(src/utils)
 message(STATUS "--- Main Project Configuration Complete ---")
 message(STATUS "")
 
