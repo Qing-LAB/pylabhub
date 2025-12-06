@@ -122,7 +122,7 @@
 //
 // The build system (CMake) should define PYLABHUB_BUILD_DLL when building this
 // project as a shared library.
-#if defined(PYLABHUB_IS_WINDOWS)
+#if PYLABHUB_IS_WINDOWS
     #if defined(PYLABHUB_BUILD_DLL)
         #define PYLABHUB_API __declspec(dllexport)
     #else

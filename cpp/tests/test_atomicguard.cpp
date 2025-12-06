@@ -219,7 +219,10 @@ void test_concurrent_transfers()
                 int dest_idx = (j * 5 + i + 1) % NUM_GUARDS;
                 if (src_idx == dest_idx) continue;
 
-                guards[src_idx].transfer_to(guards[dest_idx]);
+                // Intentionally ignore the [[nodiscard]] return value. In this
+                // concurrent stress test, many transfers are expected to fail.
+                // The goal is to ensure atomicity, not to check every transfer.
+                (void)guards[src_idx].transfer_to(guards[dest_idx]);
             }
         });
     }

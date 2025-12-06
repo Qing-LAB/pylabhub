@@ -4,6 +4,10 @@
 #
 cmake_minimum_required(VERSION 3.18)
 
+# Add the utils subdirectory, which defines the pylabhub::utils library.
+# This must be done before defining any targets that depend on it.
+add_subdirectory(utils)
+
 # Gather sources for the core static library.
 # Exclude main.cpp (for the app) and sub-project directories.
 file(GLOB_RECURSE CORE_SOURCES
@@ -52,23 +56,23 @@ target_link_libraries(pylabhub-app PRIVATE pylabhub::core)
 
 # Create a single local staging target for all artifacts in this file (the app and the core library).
 # This target will be registered with the global build system, following the project's modular staging pattern.
+# The target is named 'stage_main_artifacts' for clarity, as it stages both the core library and the app.
 pylabhub_get_library_staging_commands(
   TARGET pylabhub-core
   DESTINATION lib # This argument is for runtime parts, but required by the function.
   OUT_COMMANDS stage_core_lib_commands
 )
-add_custom_target(stage_pylabhub_core ${stage_core_lib_commands} COMMENT "Staging pylabhub-core library")
+add_custom_target(stage_main_artifacts ${stage_core_lib_commands} COMMENT "Staging main project artifacts (core lib and app)")
 
 # Attach the command to stage the main application executable to this same local target.
-# This resolves the error, as we are now attaching to a target defined in the current directory.
 pylabhub_stage_executable(
   TARGET pylabhub-app
   DESTINATION bin
-  ATTACH_TO stage_pylabhub_core
+  ATTACH_TO stage_main_artifacts
 )
 
 # Ensure the local staging target depends on both build targets before executing.
-add_dependencies(stage_pylabhub_core pylabhub-core pylabhub-app)
-set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_core)
+add_dependencies(stage_main_artifacts pylabhub-core pylabhub-app)
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_main_artifacts)
 
 message(STATUS "Configured static library 'pylabhub::core' and executable 'pylabhub::app'.")
