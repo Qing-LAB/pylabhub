@@ -1,5 +1,5 @@
 /*******************************************************************************
-  * @file include/fileutil/FileLock.hpp
+  * @file include/utils/FileLock.hpp
   * @brief Cross-platform file lock RAII wrapper
   * @author Quan Qing
   * @date 2025-11-15
@@ -24,7 +24,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace pylabhub::fileutil
+namespace pylabhub::utils
 {
 
 enum class LockMode
@@ -71,4 +71,4 @@ class FileLock
 #endif
 };
 
-} // namespace pylabhub::fileutil
+} // namespace pylabhub::utils

@@ -165,6 +165,10 @@ add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
     COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
 )
+# This custom target serves as a hook for all core project artifacts (libraries,
+# executables) to attach their staging commands. It is a dependency of `stage_all`.
+add_custom_target(stage_core_artifacts)
+
 message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
 
 # --- 3.3. Configure All Sub-Projects ---
@@ -175,6 +179,7 @@ message(STATUS "")
 
 message(STATUS "--- Configuring Main Project Targets ---")
 add_subdirectory(src)
+add_subdirectory(src/utils)
 message(STATUS "--- Main Project Configuration Complete ---")
 message(STATUS "")
 
@@ -193,7 +198,14 @@ endif()
 message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
-# --- 3.4. Staging Dependencies ---
+# --- 3.4. Finalize Staging Dependencies ---
+# Collect all core staging targets registered by sub-projects via the global property.
+get_property(core_stage_targets GLOBAL PROPERTY CORE_STAGE_TARGETS)
+if(core_stage_targets)
+  message(STATUS "Adding core stage targets to 'stage_core_artifacts': ${core_stage_targets}")
+  add_dependencies(stage_core_artifacts ${core_stage_targets})
+endif()
+
 # The global `stage_all` target depends on the individual staging targets
 # from each sub-project. This ensures all artifacts are staged correctly
 # before the final message is printed.
@@ -203,6 +215,11 @@ add_dependencies(stage_all stage_core_artifacts)
 if(BUILD_XOP)
   # This target is defined in src/IgorXOP/CMakeLists.txt
   add_dependencies(stage_all stage_pylabhubxop)
+endif()
+
+if(BUILD_TESTS)
+  # This target is defined in tests/CMakeLists.txt
+  add_dependencies(stage_all stage_tests)
 endif()
 
 # --- 3.5. Final Installation Step ---
@@ -221,11 +238,6 @@ message(STATUS "==============================================")
 message(STATUS "pyLabHub Configuration Summary")
 message(STATUS "----------------------------------------------")
 
-if(PYLABHUB_BUILD_SHARED)
-  set(_corelib_type "SHARED")
-else()
-  set(_corelib_type "STATIC")
-endif()
 if(BUILD_TESTS)
   set(_build_tests "ON")
 else()
@@ -244,7 +256,7 @@ endif()
 
 message(STATUS "  Install Prefix:      ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Build Type:          ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Core Library Type:   ${_corelib_type}")
+message(STATUS "  Utility Library:     pylabhub-utils (SHARED)")
 message(STATUS "  Build Tests:         ${_build_tests}")
 message(STATUS "  Build IgorXOP:       ${_build_xop}")
 if(THIRD_PARTY_INSTALL)

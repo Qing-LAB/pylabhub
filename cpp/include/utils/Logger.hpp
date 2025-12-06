@@ -1,5 +1,5 @@
 /*******************************************************************************
-  * @file include/util/Logger.hpp
+  * @file include/utils/Logger.hpp
   * @brief Lightweight, header-only template APIs for logging with fmt-style formatting.
   * @author Quan Qing
   * @date 2025-11-15
@@ -42,7 +42,7 @@
 #define LOGGER_FMT_BUFFER_RESERVE (1024u)
 #endif
 
-namespace pylabhub::util
+namespace pylabhub::utils
 {
 
 struct Impl;
@@ -71,7 +71,7 @@ class Logger
 
     // Lifecycle - defined in Logger.cpp because Impl is incomplete here
     Logger();
-    ~Logger();
+    ~Logger(); // Now non-trivial, must be defined in .cpp
 
     Logger(const Logger &) = delete;
     Logger &operator=(const Logger &) = delete;
@@ -152,7 +152,7 @@ class Logger
     void record_write_error(int errcode, const char *msg) noexcept;
 
     // Pimpl pointer. Impl is forward declared (below) and defined in Logger.cpp only.
-    std::unique_ptr<Impl> pImpl;
+    std::shared_ptr<Impl> pImpl;
 };
 
 // ----------------- Template implementation (must be in header) -----------------
@@ -210,13 +210,13 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
     }
 }
 
-} // namespace pylabhub::util
+} // namespace pylabhub::utils
 
 // macros for convenience (fmt-style)
 #if LOGGER_COMPILE_LEVEL >= 0
 // pylabhub::util::Logger::Level::L_TRACE
 #define LOGGER_TRACE(fmt_str, ...)                                                                 \
-    ::pylabhub::util::Logger::instance().trace_fmt(fmt_str, ##__VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().trace_fmt(fmt_str, ##__VA_ARGS__)
 #else
 #define LOGGER_TRACE(fmt_str, ...) ((void)0)
 #endif
@@ -224,15 +224,15 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #if LOGGER_COMPILE_LEVEL >= 1
 // pylabhub::util::Logger::Level::L_DEBUG
 #define LOGGER_DEBUG(fmt_str, ...)                                                                 \
-    ::pylabhub::util::Logger::instance().debug_fmt(fmt_str, ##__VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().debug_fmt(fmt_str, ##__VA_ARGS__)
 #else
 #define LOGGER_DEBUG(fmt_str, ...) ((void)0)
 #endif
 
-#if LOGGER_COMPILE_LEVE >= 2
+#if LOGGER_COMPILE_LEVEL >= 2
 // pylabhub::util::Logger::Level::L_INFO
 #define LOGGER_INFO(fmt_str, ...)                                                                  \
-    ::pylabhub::util::Logger::instance().info_fmt(fmt_str, ##__VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().info_fmt(fmt_str, ##__VA_ARGS__)
 #else
 #define LOGGER_INFO(fmt_str, ...) ((void)0)
 #endif
@@ -240,7 +240,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #if LOGGER_COMPILE_LEVEL >= 3
 // pylabhub::util::Logger::Level::L_WARNING
 #define LOGGER_WARN(fmt_str, ...)                                                                  \
-    ::pylabhub::util::Logger::instance().warn_fmt(fmt_str, ##__VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().warn_fmt(fmt_str, ##__VA_ARGS__)
 #else
 #define LOGGER_WARN(fmt_str, ...) ((void)0)
 #endif
@@ -248,7 +248,7 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
 #if LOGGER_COMPILE_LEVEL >= 4
 // pylabhub::util::Logger::Level::L_ERROR
 #define LOGGER_ERROR(fmt_str, ...)                                                                 \
-    ::pylabhub::util::Logger::instance().error_fmt(fmt_str, ##__VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().error_fmt(fmt_str, ##__VA_ARGS__)
 #else
 #define LOGGER_ERROR(fmt_str, ...) ((void)0)
 #endif
