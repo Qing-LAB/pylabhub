@@ -30,7 +30,7 @@ namespace pylabhub::utils
 using json = nlohmann::json;
 
 // Constructors / dtor
-JsonConfig::JsonConfig() noexcept : _impl(std::make_unique<Impl>()) {}
+JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>()) {}
 JsonConfig::JsonConfig(const std::filesystem::path &configFile)
 {
     init(configFile, false);
@@ -42,11 +42,11 @@ JsonConfig &JsonConfig::operator=(JsonConfig &&) noexcept = default;
 bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMissing)
 {
     // Ensure the implementation object exists.
-    if (!_impl)
-        _impl = std::make_unique<Impl>();
+    if (!pImpl)
+        pImpl = std::make_unique<Impl>();
     // Lock to protect against concurrent init/reload/save operations.
-    std::lock_guard<std::mutex> g(_impl->initMutex);
-    _impl->configPath = configFile;
+    std::lock_guard<std::mutex> g(pImpl->initMutex);
+    pImpl->configPath = configFile;
 
     if (createIfMissing)
     {
@@ -104,10 +104,10 @@ bool JsonConfig::save() noexcept
         }
 
         // Normal public save path: acquire the main lock, then call the locked implementation.
-        if (!_impl)
+        if (!pImpl)
             return false;
-        std::lock_guard<std::mutex> g(_impl->initMutex);
-        if (!_impl)
+        std::lock_guard<std::mutex> g(pImpl->initMutex);
+        if (!pImpl)
             return false;
 
         std::error_code ec;
@@ -127,16 +127,16 @@ bool JsonConfig::save() noexcept
 
 bool JsonConfig::save_locked(std::error_code &ec)
 {
-    // Precondition: The caller MUST hold `_impl->initMutex`.
+    // Precondition: The caller MUST hold `pImpl->initMutex`.
 
     ec.clear();
-    if (!_impl)
+    if (!pImpl)
     {
         ec = std::make_error_code(std::errc::not_connected);
         return false;
     }
 
-    if (_impl->configPath.empty())
+    if (pImpl->configPath.empty())
     {
         LOGGER_ERROR("JsonConfig::save_locked: configPath not initialized (call init() first)");
         ec = std::make_error_code(std::errc::no_such_file_or_directory);
@@ -144,19 +144,19 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
 
     // Optimization: If the in-memory data hasn't changed, skip the expensive disk write.
-    if (!_impl->dirty.load(std::memory_order_acquire))
+    if (!pImpl->dirty.load(std::memory_order_acquire))
     {
         // nothing to do
         return true;
     }
 
     // Acquire a non-blocking cross-process lock to prevent corruption from other processes.
-    FileLock flock(_impl->configPath, LockMode::NonBlocking);
+    FileLock flock(pImpl->configPath, LockMode::NonBlocking);
     if (!flock.valid())
     {
         ec = flock.error_code();
         LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for {} code={} msg=\"{}\"",
-                     _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                     pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
         return false;
     }
 
@@ -164,13 +164,13 @@ bool JsonConfig::save_locked(std::error_code &ec)
     // minimizing the time we block other reader threads.
     json toWrite;
     {
-        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-        toWrite = _impl->data;
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        toWrite = pImpl->data;
     }
 
     try
     {
-        atomic_write_json(_impl->configPath, toWrite);
+        atomic_write_json(pImpl->configPath, toWrite);
     }
     catch (const std::exception &ex)
     {
@@ -186,7 +186,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
 
     // On successful write, clear the dirty flag as memory and disk are now in sync.
-    _impl->dirty.store(false, std::memory_order_release);
+    pImpl->dirty.store(false, std::memory_order_release);
     return true;
 }
 
@@ -195,33 +195,33 @@ bool JsonConfig::reload() noexcept
     try
     {
         // Ensure the implementation object exists.
-        if (!_impl)
-            _impl = std::make_unique<Impl>();
+        if (!pImpl)
+            pImpl = std::make_unique<Impl>();
         // Lock to protect against concurrent init/reload/save operations.
-        std::lock_guard<std::mutex> g(_impl->initMutex);
+        std::lock_guard<std::mutex> g(pImpl->initMutex);
 
-        if (_impl->configPath.empty())
+        if (pImpl->configPath.empty())
         {
             LOGGER_ERROR("JsonConfig::reload: configPath not initialized (call init() first)");
             return false;
         }
 
         // Acquire a non-blocking cross-process lock to ensure we read a consistent file.
-        FileLock flock(_impl->configPath, LockMode::NonBlocking);
+        FileLock flock(pImpl->configPath, LockMode::NonBlocking);
         if (!flock.valid())
         {
             [[maybe_unused]] auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for {} code={} msg=\"{}\"",
-                         _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                         pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
 
         // Read and parse the file.
-        std::ifstream in(_impl->configPath);
+        std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
             LOGGER_ERROR("JsonConfig::reload: cannot open file: {}",
-                         _impl->configPath.string().c_str());
+                         pImpl->configPath.string().c_str());
             return false;
         }
 
@@ -230,16 +230,16 @@ bool JsonConfig::reload() noexcept
         if (!in && !in.eof())
         {
             LOGGER_ERROR("JsonConfig::reload: parse/read error for {}",
-                         _impl->configPath.string().c_str());
+                         pImpl->configPath.string().c_str());
             return false;
         }
 
         // Atomically update the in-memory data.
         {
-            std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
-            _impl->data = std::move(newdata);
+            std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+            pImpl->data = std::move(newdata);
             // Memory now matches disk, so the dirty flag can be cleared.
-            _impl->dirty.store(false, std::memory_order_release);
+            pImpl->dirty.store(false, std::memory_order_release);
         }
 
         return true;
@@ -261,35 +261,35 @@ bool JsonConfig::replace(const json &newData) noexcept
     try
     {
         // Ensure the implementation object exists.
-        if (!_impl)
-            _impl = std::make_unique<Impl>();
+        if (!pImpl)
+            pImpl = std::make_unique<Impl>();
         // Lock to protect against concurrent init/reload/save operations.
-        std::lock_guard<std::mutex> g(_impl->initMutex);
+        std::lock_guard<std::mutex> g(pImpl->initMutex);
 
-        if (_impl->configPath.empty())
+        if (pImpl->configPath.empty())
         {
             LOGGER_ERROR("JsonConfig::replace: configPath not initialized (call init() first)");
             return false;
         }
 
         // Acquire a non-blocking cross-process lock before writing to disk.
-        FileLock flock(_impl->configPath, LockMode::NonBlocking);
+        FileLock flock(pImpl->configPath, LockMode::NonBlocking);
         if (!flock.valid())
         {
             [[maybe_unused]] auto ec = flock.error_code();
             LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for {} code={} msg=\"{}\"",
-                         _impl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+                         pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
 
         // Persist the new data to disk atomically. This may throw on failure.
-        atomic_write_json(_impl->configPath, newData);
+        atomic_write_json(pImpl->configPath, newData);
 
         // On successful write, update the in-memory data and clear the dirty flag.
         {
-            std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
-            _impl->data = newData;
-            _impl->dirty.store(false, std::memory_order_release);
+            std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+            pImpl->data = newData;
+            pImpl->dirty.store(false, std::memory_order_release);
         }
 
         return true;
@@ -312,11 +312,11 @@ json JsonConfig::as_json() const noexcept
     {
         // Return a copy of the data. This is thread-safe but may be expensive.
         // For performance-sensitive reads, use `with_json_read`.
-        if (!_impl)
+        if (!pImpl)
             return json::object();
-        std::lock_guard<std::mutex> g(_impl->initMutex); // Protects against concurrent destruction.
-        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-        return _impl->data;
+        std::lock_guard<std::mutex> g(pImpl->initMutex); // Protects against concurrent destruction.
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        return pImpl->data;
     }
     catch (...)
     {

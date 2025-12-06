@@ -60,6 +60,7 @@ struct Impl
     ~Impl();
     void record_write_error(int errcode, const char *msg) noexcept;
     void worker_loop();
+    void close_sinks() noexcept;
 
     // Asynchronous worker components
     std::atomic<bool> done{false};
@@ -124,6 +125,32 @@ Impl::~Impl()
         cv.notify_one();
         worker_thread.join();
     }
+}
+
+void Impl::close_sinks() noexcept
+{
+#if defined(PLATFORM_WIN64)
+    if (this->file_handle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(this->file_handle);
+        this->file_handle = INVALID_HANDLE_VALUE;
+    }
+    if (this->evt_handle)
+    {
+        DeregisterEventSource(this->evt_handle);
+        this->evt_handle = nullptr;
+    }
+#else
+    if (this->file_fd != -1)
+    {
+        ::close(this->file_fd);
+        this->file_fd = -1;
+        this->file_path.clear();
+    }
+    // closelog is safe even if not previously opened
+    closelog();
+#endif
+    this->dest = Logger::Destination::L_CONSOLE;
 }
 
 // --- Singleton Impl management ---
@@ -424,28 +451,7 @@ void Logger::shutdown()
     if (!pImpl)
         return;
     std::lock_guard<std::mutex> g(pImpl->mtx);
-#if defined(PLATFORM_WIN64)
-    if (pImpl->file_handle != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(pImpl->file_handle);
-        pImpl->file_handle = INVALID_HANDLE_VALUE;
-    }
-    if (pImpl->evt_handle)
-    {
-        DeregisterEventSource(pImpl->evt_handle);
-        pImpl->evt_handle = nullptr;
-    }
-#else
-    if (pImpl->file_fd != -1)
-    {
-        ::close(pImpl->file_fd);
-        pImpl->file_fd = -1;
-        pImpl->file_path.clear();
-    }
-    // closelog is safe even if not previously opened
-    closelog();
-#endif
-    pImpl->dest = Logger::Destination::L_CONSOLE;
+    pImpl->close_sinks();
 }
 
 // ---- Non-blocking write sink ----
@@ -500,26 +506,7 @@ void Impl::worker_loop()
     // After exiting the loop, ensure all sinks are properly closed.
     // This is a final cleanup step.
     std::lock_guard<std::mutex> g(mtx);
-#if defined(PLATFORM_WIN64)
-    if (file_handle != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(file_handle);
-        file_handle = INVALID_HANDLE_VALUE;
-    }
-    if (evt_handle)
-    {
-        DeregisterEventSource(evt_handle);
-        evt_handle = nullptr;
-    }
-#else
-    if (file_fd != -1)
-    {
-        ::close(file_fd);
-        file_fd = -1;
-        file_path.clear();
-    }
-    closelog();
-#endif
+    this->close_sinks();
 }
 
 // This function contains the original synchronous I/O logic.

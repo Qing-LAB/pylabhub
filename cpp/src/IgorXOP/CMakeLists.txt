@@ -41,15 +41,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # -------------------------
 # Parent should set one of PLATFORM_APPLE or PLATFORM_WIN64 (preferred). Attempt minimal detection otherwise.
 if(NOT (DEFINED PLATFORM_APPLE OR DEFINED PLATFORM_WIN64))
-  if(APPLE)
-    set(PLATFORM_APPLE TRUE CACHE BOOL "Auto-detected macOS platform" FORCE)
-    message(STATUS "IgorXOP: auto-detected PLATFORM_APPLE")
-  elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(PLATFORM_WIN64 TRUE CACHE BOOL "Auto-detected Windows x64 platform" FORCE)
-    message(STATUS "IgorXOP: auto-detected PLATFORM_WIN64 (64-bit Windows)")
-  else()
-    message(FATAL_ERROR "IgorXOP: platform not set or unsupported. Parent must set PLATFORM_APPLE or PLATFORM_WIN64.")
-  endif()
+  message(FATAL_ERROR "IgorXOP: Only PLATFORM_APPLE or PLATFORM_WIN64 is supported.")
 endif()
 
 # Enforce supported platforms only

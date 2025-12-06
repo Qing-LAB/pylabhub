@@ -59,7 +59,7 @@ target_link_libraries(pylabhub-app PRIVATE pylabhub::core)
 # The target is named 'stage_main_artifacts' for clarity, as it stages both the core library and the app.
 pylabhub_get_library_staging_commands(
   TARGET pylabhub-core
-  DESTINATION lib # This argument is for runtime parts, but required by the function.
+  DESTINATION lib # Staging destination for the core library
   OUT_COMMANDS stage_core_lib_commands
 )
 add_custom_target(stage_main_artifacts ${stage_core_lib_commands} COMMENT "Staging main project artifacts (core lib and app)")
