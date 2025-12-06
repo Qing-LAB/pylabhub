@@ -4,6 +4,9 @@
 
 cmake_minimum_required(VERSION 3.18)
 
+# Include helper modules that provide custom staging functions.
+include(StageHelpers)
+
 # Define the test executables.
 set(TEST_SOURCES
   test_logger.cpp
@@ -38,11 +41,22 @@ endforeach()
 
 # --- Staging ---
 # Create a custom target to stage all test executables to the `bin` directory.
-# This is a dependency of the top-level `stage_all` target.
-pylabhub_stage_executables(
-  TARGETS ${TEST_TARGETS}
-  DESTINATION bin
-  OUT_TARGET stage_tests
-)
+# This target will be a dependency of the top-level `stage_all` target.
+add_custom_target(stage_tests COMMENT "Staging all test executables")
+
+# Loop through each test target and attach its staging command to `stage_tests`.
+# This pattern follows the one used in `src/CMakeLists.txt` and uses the
+# singular `pylabhub_stage_executable` function, which is known to exist.
+foreach(test_target ${TEST_TARGETS})
+  pylabhub_stage_executable(
+    TARGET ${test_target}
+    DESTINATION bin
+    ATTACH_TO stage_tests
+  )
+endforeach()
+
+# The staging target must depend on the executables it intends to stage.
+# This ensures they are built before the staging commands are run.
+add_dependencies(stage_tests ${TEST_TARGETS})
 
 message(STATUS "Configured test executables: ${TEST_TARGETS}")

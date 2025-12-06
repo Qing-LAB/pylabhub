@@ -18,7 +18,10 @@
 #include "platform.hpp"
 #if PYLABHUB_IS_POSIX
 #include <cerrno>      // For EACCES
-#include <sys/stat.h>  // For chmod
+#include <sys/stat.h>  // For chmod, S_IRUSR, etc.
+#include <sys/types.h> // For pid_t
+#include <sys/wait.h>  // For waitpid() and associated macros
+#include <unistd.h>    // For fork(), execl(), _exit()
 #endif
 
 #include "utils/Logger.hpp"
@@ -292,6 +295,7 @@ void test_multithreaded_logging()
             for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
             {
                 LOGGER_DEBUG("thread {} message {}", t, i);
+                (void)t;
             }
         });
     }
@@ -321,6 +325,7 @@ void test_shutdown_flushes_queue()
             for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
             {
                 LOGGER_DEBUG("flush-test thread {} message {}", t, i);
+                (void)t;
             }
         });
     }
@@ -422,6 +427,7 @@ void test_write_error_callback()
     L.set_write_error_callback([&](const std::string &msg) {
         callback_invoked = true;
         error_code = L.last_write_error_code();
+        (void)msg;
     });
 
     LOGGER_INFO("This write should fail.");
