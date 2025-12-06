@@ -13,6 +13,9 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
 
+# Option to stage third-party headers and libraries.
+option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
+
 # Option to generate the final 'install' target.
 option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the staged directory" ON)
 
