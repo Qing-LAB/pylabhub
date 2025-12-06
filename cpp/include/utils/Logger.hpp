@@ -1,22 +1,64 @@
 /*******************************************************************************
-  * @file include/utils/Logger.hpp
-  * @brief Lightweight, header-only template APIs for logging with fmt-style formatting.
-  * @author Quan Qing
-  * @date 2025-11-15
-  * Reviewed by Quan Qing on 2025-11-15
-  * First version created by Quan Qing with ChatGPT assistance.
+ * @file Logger.hpp
+ * @brief High-performance, asynchronous, thread-safe logging utility.
+ *
+ * **Design Philosophy**
+ * The Logger is designed for high-throughput applications where logging latency
+ * must not impact the performance of application threads. It achieves this through
+ * a decoupled, asynchronous architecture:
+ *
+ * 1.  **Non-Blocking API**: Calls from application threads (e.g., `LOGGER_INFO(...)`)
+ *     are lightweight. They perform `fmt`-style string formatting and push the
+ *     resulting message into a thread-safe queue. This is a fast, non-blocking
+ *     operation.
+ * 2.  **Asynchronous Worker Thread**: A single, dedicated background thread
+ *     continuously pulls messages from the queue and performs all I/O operations
+ *     (writing to console, file, syslog, etc.). This isolates I/O latency from
+ *     the application logic.
+ * 3.  **Singleton with Shared Pimpl**: The Logger is a singleton (`Logger::instance()`)
+ *     that uses a `std::shared_ptr` to a private implementation (`Impl`). This
+ *     ensures that even if the `Logger` class is instantiated across different
+ *     modules (e.g., in a main executable and a plugin), they all share the same
+ *     underlying logging engine, queue, and worker thread. `std::call_once`
+ *     guarantees thread-safe initialization of this singleton `Impl`.
+ * 4.  **Header/Source Separation**:
+ *     - `Logger.hpp`: Contains the public API and header-only templates for
+ *       efficient message formatting (`log_fmt`).
+ *     - `Logger.cpp`: Contains the private implementation (`Impl`), the worker
+ *       thread logic, and all platform-specific I/O code.
+ * 5.  **Robustness**: Logging operations are guaranteed `noexcept`. Any exceptions
+ *     during formatting or I/O are caught internally and reported as logging
+ *     errors, ensuring that a logging failure can never crash the application.
+ *
+ * **Thread Safety**
+ * - All public methods are thread-safe.
+ * - Logging calls from multiple threads are serialized into the internal queue.
+ * - Configuration methods (`set_level`, `init_file`, etc.) use mutexes to protect
+ *   the logger's state from concurrent modification.
+ *
+ * **Usage**
+ * 1.  **Basic Logging**: Use the convenience macros.
+ *     ```cpp
+ *     #include "utils/Logger.hpp"
+ *     ...
+ *     LOGGER_INFO("User {} logged in from IP {}", user_id, ip_address);
+ *     LOGGER_ERROR("Failed to process request {}: {}", request_id, error_msg);
+ *     ```
+ *
+ * 2.  **Initialization**: Before logging, configure the desired sink.
+ *     ```cpp
+ *     Logger& logger = Logger::instance();
+ *     logger.init_file("/var/log/my_app.log");
+ *     logger.set_level(Logger::Level::L_DEBUG);
+ *     ```
+ *
+ * 3.  **Shutdown**: Call `shutdown()` for a graceful exit, ensuring all buffered
+ *     messages are written. In many applications, this is handled automatically
+ *     when the singleton is destroyed at program exit.
+ *     ```cpp
+ *     Logger::instance().shutdown();
+ *     ```
  ******************************************************************************/
-
-// Logger.hpp
-//
-// Lightweight, header-only template APIs for logging with fmt-style formatting.
-// Implementation details (Impl) are hidden in Logger.cpp (pimpl).
-//
-// Design notes:
-//  - Templates must not access Impl directly because Impl is incomplete here.
-//  - Template formatting uses fmt::memory_buffer with a configurable reserve macro.
-//  - Use should_log() and max_log_line_length() to query Impl-visible state.
-//  - write_formatted(...) is a non-template sink implemented in Logger.cpp.
 
 #pragma once
 
@@ -46,7 +88,7 @@ namespace pylabhub::utils
 {
 
 struct Impl;
-class Logger
+class PYLABHUB_API Logger
 {
   public:
     enum class Level : int
@@ -115,7 +157,7 @@ class Logger
     // Uses fmt-style format strings. These are convenience wrappers that format the message
     // into a UTF-8 buffer and hand it to write_formatted() (non-template sink).
     template <typename... Args>
-    void log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &...args) noexcept;
+    void log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args) noexcept;
 
     template <typename... Args> void trace_fmt(std::string_view fmt_str, Args &&...args) noexcept
     {
@@ -157,7 +199,7 @@ class Logger
 
 // ----------------- Template implementation (must be in header) -----------------
 template <typename... Args>
-void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &...args) noexcept
+void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, Args &&...args) noexcept
 {
     // Fast path: check level without locking. should_log is implemented in .cpp.
     if (!this->should_log(lvl))
@@ -166,17 +208,9 @@ void Logger::log_fmt(Logger::Level lvl, std::string_view fmt_str, const Args &..
     try
     {
         fmt::memory_buffer mb;
-        mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
-        fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), args...);
-        // the following has been tried.
-        // fmt::format_to(mb, fmt::runtime(fmt_str), std::forward<const Args>(args)...);
-        // fmt::vformat_to(mb, fmt::string_view(fmt_str), fmt::make_format_args(args...));
-
-        // std::string formatted = fmt::vformat(fmt::string_view(fmt_str),
-        // fmt::make_format_args(args...)); std::string mb=formatted;
-        //  fmt::vformat_to(std::back_inserter(mb),
-        //          fmt::string_view(fmt_str),
-        //          fmt::make_format_args(args...));
+        // Use the more efficient overload that writes directly to the memory buffer,
+        // and perfectly forward the arguments for consistency with the public API.
+        fmt::format_to(mb, fmt::runtime(fmt_str), std::forward<Args>(args)...);
 
         // enforce configured cap (max_log_line_length() defined in .cpp)
         const size_t max_line = max_log_line_length();

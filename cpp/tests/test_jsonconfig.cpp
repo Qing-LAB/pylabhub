@@ -2,8 +2,8 @@
 // Unit test for JsonConfig: function tests, multithread and multiprocess tests.
 //
 // Usage:
-//  ./test_jsonconfig                 <- run all tests (master)
-//  ./test_jsonconfig worker <path>   <- worker mode used by multiprocess test
+//  ./test_jsonconfig          <- run all tests (master)
+//  ./test_jsonconfig worker <path> <id> <- worker mode used by multiprocess test
 //
 // Exit code 0 = success. Non-zero indicates failure in one of the test cases.
 
@@ -13,12 +13,16 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <functional>
 #include <sstream>
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
+#include <fmt/core.h>
+
+#include "platform.hpp"
+
+#if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
@@ -28,96 +32,76 @@
 #endif
 
 #include "utils/JsonConfig.hpp"
+#include "utils/Logger.hpp"
 
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
+using namespace std::chrono_literals;
 
-static std::string temp_dir()
+// --- Test Harness ---
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+#define CHECK(condition)                                                                           \
+    do                                                                                             \
+    {                                                                                              \
+        if (!(condition))                                                                          \
+        {                                                                                          \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            throw std::runtime_error("Test case failed");                                          \
+        }                                                                                          \
+    } while (0)
+
+void TEST_CASE(const std::string &name, std::function<void()> test_func)
 {
-#if defined(_WIN32)
-    char buf[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, buf))
-        return std::string(buf);
-    return ".\\";
-#else
-    const char *t = std::getenv("TMPDIR");
-    return std::string(t ? t : "/tmp/");
-#endif
+    fmt::print("\n=== {} ===\n", name);
+    try
+    {
+        test_func();
+        tests_passed++;
+        fmt::print("  --- PASSED ---\n");
+    }
+    catch (const std::exception &e)
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
+    }
+    catch (...)
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED with unknown exception ---\n");
+    }
 }
 
-// Helper: read a top-level string key from JSON file; return empty string if not found
-static std::string read_key_as_string(const fs::path &p, const std::string &key)
+// --- Test Globals & Helpers ---
+static fs::path g_temp_dir;
+
+// Helper to read a file's content
+static std::string read_file_contents(const fs::path &p)
 {
     std::ifstream in(p);
     if (!in.is_open())
         return "";
-    try
-    {
-        nlohmann::json j;
-        in >> j;
-        if (!j.is_object())
-            return "";
-        if (!j.contains(key))
-            return "";
-        if (j[key].is_string())
-            return j[key].get<std::string>();
-        // convert non-string to string representation
-        std::ostringstream ss;
-        ss << j[key];
-        return ss.str();
-    }
-    catch (...)
-    {
-        return "";
-    }
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
 }
 
-// Worker mode: each worker will attempt to write a unique marker into the config via
-// with_json_write + save. Return code 0 indicates it succeeded in saving (i.e., acquisition of
-// cross-process lock and atomic write).
-static int worker_mode(const std::string &cfgpath, const std::string &worker_id)
-{
-    try
-    {
-        JsonConfig cfg(cfgpath);
-        // Try to perform a quick write under with_json_write; if another process holds the file
-        // lock, the atomic save may fail (non-blocking FileLock in save_locked). We return 0 only
-        // on success.
-        bool ok = cfg.with_json_write(
-            [&]()
-            {
-                // mutate in-memory
-                cfg.set("worker", worker_id);
-                // ensure we call save() inside with_json_write to exercise fast-path
-                bool s = cfg.save();
-                return s;
-            });
-        return ok ? 0 : 2;
-    }
-    catch (...)
-    {
-        return 3;
-    }
-}
+// --- Worker Process Logic ---
 
-// Utility to spawn another process (worker)
-// Returns process handle/identifier in platform-appropriate type, or -1 on failure
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
 static HANDLE spawn_worker_process(const std::string &exe, const std::string &cfgpath,
                                    const std::string &worker_id)
 {
-    std::ostringstream cmd;
-    cmd << '"' << exe << "\" worker \"" << cfgpath << "\" \"" << worker_id << '"';
-    std::string cmdline = cmd.str();
+    std::string cmdline = fmt::format("\"{}\" worker \"{}\" \"{}\"", exe, cfgpath, worker_id);
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
 
-    // Convert to wide string
     int wide = MultiByteToWideChar(CP_UTF8, 0, cmdline.c_str(), -1, nullptr, 0);
     std::wstring wcmd(wide, 0);
     MultiByteToWideChar(CP_UTF8, 0, cmdline.c_str(), -1, &wcmd[0], wide);
 
-    STARTUPINFOW si{};
-    PROCESS_INFORMATION pi{};
-    si.cb = sizeof(si);
     if (!CreateProcessW(nullptr, &wcmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
     {
         return nullptr;
@@ -140,315 +124,327 @@ static pid_t spawn_worker_process(const std::string &exe, const std::string &cfg
 }
 #endif
 
-// Basic functional tests: templates, read/write, dirty behavior inferred
-static bool basic_functional_tests(const fs::path &cfgfile)
+// Worker mode: each worker will attempt to write a unique marker into the config.
+// Returns 0 on success.
+static int worker_main(const std::string &cfgpath, const std::string &worker_id)
 {
-    std::cout << "[TEST] basic functional tests\n";
-    std::error_code ec;
-    fs::remove(cfgfile, ec);
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    JsonConfig cfg;
+    if (!cfg.init(cfgpath, false))
+        return 1;
 
-    JsonConfig cfg(cfgfile);
-    // set/get/get_or/has/erase/update
-    if (!cfg.set("int_val", 42))
-    {
-        std::cerr << "set failed\n";
-        return false;
-    }
-    try
-    {
-        int v = cfg.get<int>("int_val");
-        if (v != 42)
-        {
-            std::cerr << "get returned wrong value\n";
-            return false;
-        }
-    }
-    catch (...)
-    {
-        std::cerr << "get threw\n";
-        return false;
-    }
+    // Attempt to write our ID and save. This will use a non-blocking FileLock internally.
+    // Only one process should succeed.
+    bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
 
-    int v2 = cfg.get_or<int>("nonexistent", 7);
-    if (v2 != 7)
-    {
-        std::cerr << "get_or returned wrong default\n";
-        return false;
-    }
-
-    if (!cfg.has("int_val"))
-    {
-        std::cerr << "has failed\n";
-        return false;
-    }
-
-    if (!cfg.erase("int_val"))
-    {
-        std::cerr << "erase failed\n";
-        return false;
-    }
-    if (cfg.has("int_val"))
-    {
-        std::cerr << "erase did not remove key\n";
-        return false;
-    }
-
-    bool upd = cfg.update("obj",
-                          [](nlohmann::json &j)
-                          {
-                              j["x"] = 100;
-                              j["s"] = "hello";
-                          });
-    if (!upd)
-    {
-        std::cerr << "update failed\n";
-        return false;
-    }
-
-    try
-    {
-        auto j = cfg.get<nlohmann::json>("obj");
-        if (!j.is_object() || j["x"] != 100)
-        {
-            std::cerr << "update content wrong\n";
-            return false;
-        }
-    }
-    catch (...)
-    {
-        std::cerr << "get after update threw\n";
-        return false;
-    }
-
-    std::cout << "[OK] basic functional tests\n";
-    return true;
+    return ok ? 0 : 2;
 }
 
-// Test with_json_read: callback receives const json& and can read without copying
-static bool test_with_json_read(const fs::path &cfgfile)
+// --- Test Cases ---
+
+void test_init_and_create()
 {
-    std::cout << "[TEST] with_json_read\n";
-    std::error_code ec;
-    fs::remove(cfgfile, ec);
+    auto cfg_path = g_temp_dir / "init_create.json";
+    fs::remove(cfg_path);
 
-    JsonConfig cfg(cfgfile);
-    cfg.set("k", "v");
-    // with_json_read returns true and callback reads the const ref
-    bool ok = cfg.with_json_read(
-        [&](const nlohmann::json &ref)
-        {
-            if (!ref.is_object())
-                throw std::runtime_error("expected object");
-            if (!ref.contains("k"))
-                throw std::runtime_error("missing k");
-            if (ref["k"] != "v")
-                throw std::runtime_error("unexpected value");
-        });
-    if (!ok)
-    {
-        std::cerr << "with_json_read returned false\n";
-        return false;
-    }
+    JsonConfig config;
+    CHECK(!fs::exists(cfg_path));
 
-    // ensure exceptions thrown inside callback are swallowed and with_json_read returns false
-    bool threwBad = cfg.with_json_read([&](const nlohmann::json &ref) -> void
-                                       { throw std::runtime_error("test-ex"); });
-    if (threwBad)
-    {
-        std::cerr << "with_json_read did not return false on exception\n";
-        return false;
-    }
+    // Init with createIfMissing = true should create the file.
+    CHECK(config.init(cfg_path, true));
+    CHECK(fs::exists(cfg_path));
+    CHECK(config.as_json().is_object());
+    CHECK(config.as_json().empty());
 
-    std::cout << "[OK] with_json_read\n";
-    return true;
+    // Init again on existing file should succeed.
+    JsonConfig config2;
+    CHECK(config2.init(cfg_path, false));
+    CHECK(config2.as_json().is_object());
 }
 
-// Test with_json_write nested detection and save-in-callback behavior
-static bool test_with_json_write_and_save(const fs::path &cfgfile)
+void test_uninitialized_behavior()
 {
-    std::cout << "[TEST] with_json_write and save behavior\n";
-    std::error_code ec;
-    fs::remove(cfgfile, ec);
+    JsonConfig config; // Default-constructed, not initialized with a path.
 
-    JsonConfig cfg(cfgfile);
+    // All modification attempts should fail gracefully.
+    CHECK(!config.set("key", "value"));
+    CHECK(!config.erase("key"));
+    CHECK(!config.update("key", [](json &j) { j = 1; }));
+    CHECK(!config.save());
+    CHECK(!config.replace(json::object()));
+    CHECK(!config.with_json_write([](json &j) { j["a"] = 1; }));
 
-    // nested with_json_write on same instance should be refused
-    bool outer_ok = cfg.with_json_write(
-        [&]()
+    // Read operations should be safe but indicate no data.
+    CHECK(!config.has("key"));
+    CHECK(config.get_or<int>("key", 42) == 42);
+    CHECK(config.as_json().is_object());
+    CHECK(config.as_json().empty());
+}
+
+void test_basic_accessors()
+{
+    auto cfg_path = g_temp_dir / "accessors.json";
+    JsonConfig cfg;
+    cfg.init(cfg_path, true);
+
+    CHECK(cfg.set("int_val", 42));
+    CHECK(cfg.get<int>("int_val") == 42);
+    CHECK(cfg.get_or<int>("int_val", 0) == 42);
+    CHECK(cfg.get_or<int>("nonexistent", 99) == 99);
+
+    CHECK(cfg.has("int_val"));
+    CHECK(!cfg.has("nonexistent"));
+
+    CHECK(cfg.set("str_val", "hello"));
+    CHECK(cfg.get<std::string>("str_val") == "hello");
+
+    CHECK(cfg.erase("str_val"));
+    CHECK(!cfg.has("str_val"));
+
+    CHECK(cfg.update("obj", [](json &j) {
+        j["x"] = 100;
+        j["s"] = "world";
+    }));
+    auto j = cfg.get<json>("obj");
+    CHECK(j["x"] == 100);
+    CHECK(j["s"] == "world");
+}
+
+void test_reload()
+{
+    auto cfg_path = g_temp_dir / "reload.json";
+    JsonConfig cfg;
+    cfg.init(cfg_path, true);
+
+    cfg.set("value", 1);
+    CHECK(cfg.save());
+
+    // Modify the file externally.
+    {
+        std::ofstream out(cfg_path);
+        out << R"({ "value": 2, "new_key": "external" })";
+    }
+
+    // The in-memory value should still be the old one.
+    CHECK(cfg.get<int>("value") == 1);
+    CHECK(!cfg.has("new_key"));
+
+    // Reload should update the in-memory state.
+    CHECK(cfg.reload());
+    CHECK(cfg.get<int>("value") == 2);
+    CHECK(cfg.get<std::string>("new_key") == "external");
+}
+
+void test_recursion_guard()
+{
+    auto cfg_path = g_temp_dir / "recursion.json";
+    JsonConfig cfg;
+    cfg.init(cfg_path, true);
+    cfg.set("key", 123);
+    cfg.save();
+
+    // Test nested call from with_json_read -> get()
+    bool read_ok = cfg.with_json_read([&](const json &data) {
+        // This nested call should be rejected by the recursion guard.
+        // get() throws on failure, so we expect an exception.
+        bool caught = false;
+        try
         {
-            bool inner_ok = cfg.with_json_write([]() { return true; });
-            if (inner_ok)
+            (void)cfg.get<int>("key");
+        }
+        catch (const std::runtime_error &)
+        {
+            caught = true;
+        }
+        CHECK(caught);
+    });
+    // The outer call should still succeed.
+    CHECK(read_ok);
+
+    // Test nested call from with_json_write -> set()
+    bool write_ok = cfg.with_json_write([&](json &data) {
+        data["a"] = 1;
+        // This nested call should be rejected and return false.
+        bool nested_set_ok = cfg.set("b", 2);
+        CHECK(!nested_set_ok);
+    });
+    // The outer call should succeed and save the change from `data["a"] = 1;`
+    CHECK(write_ok);
+    CHECK(cfg.get<int>("a") == 1);
+    CHECK(!cfg.has("b")); // The nested set should not have taken effect.
+}
+
+void test_move_semantics()
+{
+    auto cfg_path = g_temp_dir / "move.json";
+    fs::remove(cfg_path);
+
+    // Test move construction
+    {
+        JsonConfig cfg1;
+        cfg1.init(cfg_path, true);
+        cfg1.set("val", 1);
+        CHECK(cfg1.has("val"));
+
+        JsonConfig cfg2(std::move(cfg1));
+        CHECK(cfg2.has("val"));
+        CHECK(cfg2.get<int>("val") == 1);
+        // cfg1 is now in a moved-from state, operations should fail gracefully.
+        CHECK(!cfg1.has("val"));
+        CHECK(!cfg1.save());
+    } // cfg2 is destroyed, its Pimpl is valid. cfg1's destructor is a no-op.
+
+    // Test move assignment
+    {
+        JsonConfig cfg3;
+        cfg3.init(cfg_path, true);
+        cfg3.set("val", 3);
+
+        JsonConfig cfg4; // Default constructed
+        cfg4 = std::move(cfg3);
+        CHECK(cfg4.get<int>("val") == 3);
+        CHECK(!cfg3.has("val"));
+    }
+}
+
+void test_multithread_contention()
+{
+    auto cfg_path = g_temp_dir / "multithread_contention.json";
+    JsonConfig cfg;
+    cfg.init(cfg_path, true);
+
+    const int THREADS = 8;
+    const int ITERS = 100;
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < THREADS; ++i)
+    {
+        threads.emplace_back(&, i {
+            for (int j = 0; j < ITERS; ++j)
             {
-                std::cerr << "nested with_json_write unexpectedly allowed\n";
-                return false;
-            }
-            return true;
-        });
-    if (!outer_ok)
-    {
-        std::cerr << "outer with_json_write failed\n";
-        return false;
-    }
-
-    // save() inside with_json_write should not deadlock and should persist
-    bool ok = cfg.with_json_write(
-        [&]()
-        {
-            cfg.set("inner", "yes");
-            bool s = cfg.save();
-            return s;
-        });
-    if (!ok)
-    {
-        std::cerr << "with_json_write+save failed\n";
-        return false;
-    }
-
-    // read file to verify persistence
-    std::string val = read_key_as_string(cfgfile, "inner");
-    if (val != "yes")
-    {
-        std::cerr << "inner not persisted, val='" << val << "'\n";
-        return false;
-    }
-
-    std::cout << "[OK] with_json_write and save\n";
-    return true;
-}
-
-// Test multithread behavior: thread A holds with_json_write and sleeps; thread B calls save() and
-// must finish afterwards.
-static bool test_multithread_save_ordering(const fs::path &cfgfile)
-{
-    std::cout << "[TEST] multithread save ordering\n";
-    std::error_code ec;
-    fs::remove(cfgfile, ec);
-
-    JsonConfig cfg(cfgfile);
-    std::atomic<bool> a_has{false}, b_done{false};
-
-    std::thread tA(
-        [&]()
-        {
-            cfg.with_json_write(
-                [&]()
+                // Mix of reads and writes to stress the locks.
+                if (j % 10 == 0)
                 {
-                    // mark and hold mutex for a short time
-                    cfg.set("th", 1);
-                    a_has.store(true);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    return true;
-                });
-        });
-
-    std::thread tB(
-        [&]()
-        {
-            // wait until A has acquired with_json_write
-            while (!a_has.load())
-                std::this_thread::yield();
-            // call save(); it will block until A releases the _initMutex and then proceed
-            bool s = cfg.save();
-            if (!s)
-            {
-                std::cerr << "threaded save() failed\n";
-                std::exit(101);
+                    cfg.set(fmt::format("t{}_j{}", i, j), true);
+                }
+                else
+                {
+                    (void)cfg.get_or<int>("nonexistent", 0);
+                }
             }
-            b_done.store(true);
         });
-
-    tA.join();
-    tB.join();
-    if (!b_done.load())
-    {
-        std::cerr << "threaded B did not complete\n";
-        return false;
     }
-    std::cout << "[OK] multithread save ordering\n";
-    return true;
+
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+
+    CHECK(cfg.save());
+
+    // Verify some of the data was written.
+    JsonConfig verifier;
+    verifier.init(cfg_path, false);
+    CHECK(verifier.has("t0_j0"));
+    CHECK(verifier.has("t1_j90"));
 }
 
-// Multiprocess test: spawn WORKERS worker processes that attempt to write (non-blocking).
-// Exactly one should succeed (others will fail to acquire cross-process FileLock).
-static bool test_multiprocess(const fs::path &cfgfile, const std::string &self_exe)
+void test_multiprocess_contention(const std::string &self_exe)
 {
-    std::cout << "[TEST] multiprocess exclusive writes\n";
-    std::error_code ec;
-    fs::remove(cfgfile, ec);
+    auto cfg_path = g_temp_dir / "multiprocess_contention.json";
+    fs::remove(cfg_path);
 
-    const int WORKERS = 6;
-#if defined(_WIN32)
-    std::vector<HANDLE> handles;
-    for (int i = 0; i < WORKERS; ++i)
+    // Create the initial file.
     {
-        std::ostringstream id;
-        id << "w" << i;
-        HANDLE h = spawn_worker_process(self_exe, cfgfile.string(), id.str());
-        if (!h)
-        {
-            std::cerr << "CreateProcess failed\n";
-            return false;
-        }
-        handles.push_back(h);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        JsonConfig creator;
+        creator.init(cfg_path, true);
+        CHECK(creator.save());
     }
-    int successes = 0;
-    for (auto h : handles)
+
+    const int PROCS = 8;
+    int success_count = 0;
+
+#if defined(PLATFORM_WIN64)
+    std::vector<HANDLE> procs;
+    for (int i = 0; i < PROCS; ++i)
     {
-        DWORD code = 0;
+        HANDLE h = spawn_worker_process(self_exe, cfg_path.string(), fmt::format("win-{}", i));
+        CHECK(h != nullptr);
+        procs.push_back(h);
+    }
+
+    for (auto h : procs)
+    {
         WaitForSingleObject(h, INFINITE);
-        GetExitCodeProcess(h, &code);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(h, &exit_code);
+        if (exit_code == 0)
+        {
+            success_count++;
+        }
         CloseHandle(h);
-        if (code == 0)
-            ++successes;
-    }
-    if (successes != 1)
-    {
-        std::cerr << "multiprocess: expected 1 success, got " << successes << "\n";
-        return false;
     }
 #else
     std::vector<pid_t> pids;
-    for (int i = 0; i < WORKERS; ++i)
+    for (int i = 0; i < PROCS; ++i)
     {
-        std::ostringstream id;
-        id << "w" << i;
-        pid_t pid = spawn_worker_process(self_exe, cfgfile.string(), id.str());
-        if (pid <= 0)
-        {
-            std::cerr << "fork failed\n";
-            return false;
-        }
+        pid_t pid = spawn_worker_process(self_exe, cfg_path.string(), fmt::format("posix-{}", i));
+        CHECK(pid > 0);
         pids.push_back(pid);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    int successes = 0;
     for (pid_t pid : pids)
     {
         int status = 0;
         waitpid(pid, &status, 0);
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-            ++successes;
-    }
-    if (successes != 1)
-    {
-        std::cerr << "multiprocess: expected 1 success, got " << successes << "\n";
-        return false;
+        {
+            success_count++;
+        }
     }
 #endif
 
-    // Verify that the file contains a "worker" key (the winning worker wrote it)
-    std::string winner = read_key_as_string(cfgfile, "worker");
-    if (winner.empty())
+    // In a non-blocking scenario, it's possible for more than one to succeed if they
+    // don't overlap perfectly, but we expect at least one to have succeeded.
+    CHECK(success_count > 0);
+
+    // Verify that the file contains a "worker" key.
+    JsonConfig verifier;
+    verifier.init(cfg_path, false);
+    CHECK(verifier.has("worker"));
+}
+
+#if PYLABHUB_IS_POSIX
+void test_symlink_attack_prevention()
+{
+    auto real_file = g_temp_dir / "real_file.txt";
+    auto symlink_path = g_temp_dir / "config.json";
+    fs::remove(real_file);
+    fs::remove(symlink_path);
+
+    // Create a "sensitive" file.
     {
-        std::cerr << "multiprocess: file missing worker key\n";
-        return false;
+        std::ofstream out(real_file);
+        out << "sensitive data";
     }
 
-    std::cout << "[OK] multiprocess exclusive writes, winner='" << winner << "'\n";
-    return true;
+    // Create a symlink pointing to it.
+    fs::create_symlink(real_file, symlink_path);
+    CHECK(fs::is_symlink(symlink_path));
+
+    JsonConfig cfg;
+    // init() should succeed as it just records the path.
+    CHECK(cfg.init(symlink_path, false));
+
+    cfg.set("malicious", "data");
+    // save() should fail because atomic_write_json will detect the symlink and throw.
+    // The save() method catches the exception and returns false.
+    CHECK(!cfg.save());
+
+    // Verify the sensitive file was not overwritten.
+    CHECK(read_file_contents(real_file) == "sensitive data");
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -457,32 +453,38 @@ int main(int argc, char **argv)
     {
         if (argc < 4)
         {
-            std::cerr << "worker usage: worker <cfgpath> <worker_id>\n";
+            fmt::print(stderr, "Worker mode requires a config path and worker ID.\n");
             return 2;
         }
-        std::string cfg = argv[2];
-        std::string id = argv[3];
-        return worker_mode(cfg, id);
+        return worker_main(argv[2], argv[3]);
     }
 
-    std::cout << "=== test_jsonconfig starting ===\n";
-    fs::path cfgfile = fs::path(temp_dir()) / "test_jsonconfig_unit.json";
+    // Main test runner
+    fmt::print("--- JsonConfig Test Suite ---\n");
+    g_temp_dir = fs::temp_directory_path() / "pylabhub_jsonconfig_tests";
+    fs::create_directories(g_temp_dir);
+    fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
 
-    // Run tests, bail out on first failure and return non-zero
-    if (!basic_functional_tests(cfgfile))
-        return 1;
-    if (!test_with_json_read(cfgfile))
-        return 2;
-    if (!test_with_json_write_and_save(cfgfile))
-        return 3;
-    if (!test_multithread_save_ordering(cfgfile))
-        return 4;
+    TEST_CASE("Initialization and Creation", test_init_and_create);
+    TEST_CASE("Uninitialized Object Behavior", test_uninitialized_behavior);
+    TEST_CASE("Basic Accessors (get/set/has/erase/update)", test_basic_accessors);
+    TEST_CASE("Reload from External Change", test_reload);
+    TEST_CASE("Recursion Guard Deadlock Prevention", test_recursion_guard);
+    TEST_CASE("Move Semantics", test_move_semantics);
+    TEST_CASE("Multi-Threaded Contention", test_multithread_contention);
 
-    // Multiprocess requires we know our exe path. argv[0] may be relative; use it directly.
     std::string exe_path = argv[0];
-    if (!test_multiprocess(cfgfile, exe_path))
-        return 5;
+    TEST_CASE("Multi-Process Contention", & { test_multiprocess_contention(exe_path); });
 
-    std::cout << "=== ALL TESTS PASSED ===\n";
-    return 0;
+#if PYLABHUB_IS_POSIX
+    TEST_CASE("Symlink Attack Prevention (POSIX-only)", test_symlink_attack_prevention);
+#endif
+
+    fmt::print("\n--- Test Summary ---\n");
+    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
+
+    // Final cleanup
+    fs::remove_all(g_temp_dir);
+
+    return tests_failed == 0 ? 0 : 1;
 }

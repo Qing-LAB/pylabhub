@@ -24,6 +24,8 @@
 #include <filesystem>
 #include <system_error>
 
+#include "platform.hpp" // For PYLABHUB_API
+
 namespace pylabhub::utils
 {
 
@@ -33,7 +35,11 @@ enum class LockMode
     NonBlocking
 };
 
-class FileLock
+
+// Forward-declare the implementation struct for the Pimpl idiom.
+struct FileLockImpl;
+
+class PYLABHUB_API FileLock
 {
   public:
     /// Construct and attempt to acquire lock immediately.
@@ -48,6 +54,8 @@ class FileLock
     FileLock(const FileLock &) = delete;
     FileLock &operator=(const FileLock &) = delete;
 
+    // The destructor must be defined in the .cpp file where FileLockImpl is a
+    // complete type, which is required by std::unique_ptr<FileLockImpl>.
     ~FileLock();
 
     /// Return whether lock was successfully acquired and is held.
@@ -58,17 +66,9 @@ class FileLock
     std::error_code error_code() const noexcept;
 
   private:
-    void open_and_lock(LockMode mode);
-
-    std::filesystem::path _path;
-    bool _valid = false;
-    std::error_code _ec;
-
-#if defined(_WIN32)
-    void *_handle = nullptr; // stored Windows handle (HANDLE)
-#else
-    int _fd = -1;
-#endif
+    // The only data member is a pointer to the implementation.
+    // This provides a stable ABI.
+    std::unique_ptr<FileLockImpl> pImpl;
 };
 
 } // namespace pylabhub::utils

@@ -1,17 +1,42 @@
 #pragma once
-// PathUtil.hpp - centralized path helpers (Windows long-path support)
-// Place at: include/utils/PathUtil.hpp
-//
-// Provides:
-//  - win32_to_long_path(std::filesystem::path) -> std::wstring
-//  - win32_make_unique_suffix() -> std::wstring
-//
-// On POSIX these functions are no-ops or return empty wstrings (not used).
+
+/*******************************************************************************
+ * @file PathUtil.hpp
+ * @brief Internal path manipulation helpers, primarily for Windows.
+ *
+ * **Design and Purpose**
+ * This header provides centralized helper functions for path manipulation. Its
+ * primary purpose is to abstract away platform-specific complexities,
+ * particularly the legacy `MAX_PATH` (260 character) limitation on Windows.
+ *
+ * **Internal Use Only**
+ * This is an **internal utility header** for the `pylabhub-utils` library. It is
+ * **not** part of the public API and should not be included by consumers of the
+ * library. Its functions are `inline` and intended to be compiled directly into
+ * the translation units that use them, such as `FileLock.cpp` and `JsonConfig.cpp`.
+ * Because it is not part of the public API, it does not require ABI stability
+ * measures (like Pimpl) or symbol export macros.
+ *
+ * **Key Functions (Windows)**:
+ * - `win32_to_long_path()`: Converts a standard path to its `\\?\` prefixed
+ *   long path equivalent. This allows Windows APIs to correctly handle paths
+ *   exceeding `MAX_PATH`. This is used by `FileLock` and `JsonConfig` before
+ *   calling `CreateFileW` or `ReplaceFileW`.
+ * - `win32_make_unique_suffix()`: Generates a unique-ish string for creating
+ *   temporary filenames, used by `JsonConfig::atomic_write_json`.
+ *
+ * **Platform Behavior**:
+ * - **Windows**: The functions are fully implemented.
+ * - **POSIX**: The functions are defined as empty stubs that do nothing, as
+ *   these path limitations do not exist on POSIX systems.
+ ******************************************************************************/
 
 #include <filesystem>
 #include <string>
 
-#if defined(_WIN32)
+#include "platform.hpp"
+
+#if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <chrono>
 #include <random>
@@ -22,7 +47,7 @@
 namespace pylabhub::utils
 {
 
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
 static inline std::wstring normalize_backslashes(std::wstring s)
 {
     for (auto &c : s)
