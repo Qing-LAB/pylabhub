@@ -8,6 +8,7 @@
  ******************************************************************************/
 #pragma once
 
+#include <fmt/ostream.h> // For fmt::print to FILE*
 #include <cstdio>  // For fprintf, stderr
 #include <cstdlib> // For std::abort
 
@@ -105,11 +106,11 @@
  * #include "platform.hpp"
  * ```
  */
-#define PANIC(msg)           \
-    do                       \
-    {                        \
-        fprintf(stderr, "%s", msg); \
-        std::abort();        \
+#define PANIC(msg)                                                                                 \
+    do                                                                                             \
+    {                                                                                              \
+        fmt::print(stderr, "FATAL ERROR: {}\n", msg);                                              \
+        std::abort();                                                                              \
     } while (0)
 #endif
 // ----------------------------------------------------------------------------

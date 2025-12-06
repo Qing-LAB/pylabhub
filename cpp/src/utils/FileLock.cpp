@@ -1,26 +1,42 @@
-// FileLock.cpp
-// Implementation of FileLock (cross-platform)
-// (modified to use new logger macros from logger.hpp)
-//
-// Design / critical notes:
-//  - Purpose: provide a small RAII wrapper for a cross-process file lock used by JsonConfig.
-//  - Semantics: Default behavior supports both Blocking and NonBlocking modes set at construction.
-//    NonBlocking mode is used throughout JsonConfig by policy: fail fast if a lock is held by
-//    another process.
-//  - POSIX: uses open() to create/open a lock file and flock(fd, LOCK_EX[|LOCK_NB]) to lock it.
-//  - Windows: uses CreateFileW on a lock-file path then LockFileEx/UnlockFileEx on the handle.
-//    We convert file paths to long-paths via PathUtil::win32_to_long_path to handle long paths.
-//  - The lock file path is derived from the target path: parent/<basename>.lock
-//    This keeps lock files local to same directory and avoids races across directories.
-//  - The class is movable (transfer ownership) and non-copyable.
-//  - All system errors are stored in _ec for callers to inspect when valid()==false.
-//
-// Thread-safety: FileLock instances are single-thread objects; you can create/destroy them on any
-// thread, but you should not attempt to use the same instance concurrently from multiple threads.
+/*******************************************************************************
+ * @file FileLock.cpp
+ * @brief Implementation of a cross-platform RAII file lock.
+ *
+ * **Design Philosophy**
+ * `FileLock` provides a robust, cross-platform, RAII-style mechanism for
+ * managing inter-process file locks. It is a critical component for ensuring
+ * the integrity of shared resources like configuration files.
+ *
+ * 1.  **RAII (Resource Acquisition Is Initialization)**: The lock is acquired in
+ *     the constructor and automatically released in the destructor. This prevents
+ *     leaked locks, even in the presence of exceptions.
+ * 2.  **Cross-Platform Abstraction**: The class provides a unified interface over
+ *     divergent platform-specific locking primitives:
+ *     - **POSIX**: Uses `flock()` on a dedicated `.lock` file. This is a widely
+ *       supported and robust advisory locking mechanism.
+ *     - **Windows**: Uses `LockFileEx()` on a handle to a dedicated `.lock` file.
+ * 3.  **Lock File Strategy**: A separate lock file (e.g., `config.json.lock` for
+ *     `config.json`) is used instead of locking the target file directly. This
+ *     avoids issues where file content operations might interfere with the lock
+ *     itself and simplifies the implementation.
+ * 4.  **Blocking and Non-Blocking Modes**: The lock can be acquired in either
+ *     `Blocking` or `NonBlocking` mode. The `NonBlocking` mode allows for a
+ *     "fail-fast" policy, which is used by `JsonConfig` to avoid deadlocks or
+ *     long waits if another process holds the lock.
+ * 5.  **Movability**: The class is movable but not copyable, allowing ownership
+ *     of a lock to be efficiently transferred (e.g., returned from a factory
+ *     function) while preventing accidental duplication.
+ *
+ * **Thread Safety**
+ * A `FileLock` instance is designed to be owned and used by a single thread.
+ * It is not safe to call methods on the same `FileLock` object from multiple
+ * threads concurrently. However, it is safe to create, move, and destroy
+ * `FileLock` objects across different threads.
+ ******************************************************************************/
 
-#include "fileutil/FileLock.hpp"
-#include "fileutil/PathUtil.hpp"
-#include "util/Logger.hpp" // <--- added
+#include "utils/FileLock.hpp"
+#include "utils/PathUtil.hpp"
+#include "utils/Logger.hpp"
 
 #include <filesystem>
 #include <string>
@@ -37,8 +53,28 @@
 #include <unistd.h>
 #endif
 
-namespace pylabhub::fileutil
+namespace pylabhub::utils
 {
+
+// --- Pimpl Definition ---
+
+// The private implementation of the FileLock.
+// All state is held here to provide ABI stability for the public FileLock class.
+struct FileLockImpl
+{
+    std::filesystem::path path;   // The original path for which a lock is requested.
+    bool valid = false;           // True if the lock is currently held.
+    std::error_code ec;           // Stores the last error if `valid` is false.
+
+#if defined(_WIN32)
+    void *handle = nullptr;       // The Windows file handle (HANDLE) for the .lock file.
+#else
+    int fd = -1;                  // The POSIX file descriptor for the .lock file.
+#endif
+};
+
+// Forward declaration for the private locking function.
+static void open_and_lock(LockMode mode, FileLockImpl *pImpl);
 
 // Helper: build lockfile path for a given target path.
 // Lock name policy: <parent>/<filename>.lock
@@ -48,205 +84,206 @@ static std::filesystem::path make_lock_path(const std::filesystem::path &target)
     if (parent.empty())
         parent = ".";
     std::string fname = target.filename().string();
-    if (fname.empty())
+    if (fname.empty() || fname == "." || fname == "..")
     {
-        // fallback if target is a directory or path ends with slash
+        // Fallback if target is a directory, path ends with a separator, or is "." or "..".
+        // Use the parent's name as a basis.
         fname = parent.filename().string();
-        if (fname.empty())
+        if (fname.empty() || fname == "." || fname == "..")
+        {
+            // Ultimate fallback for root or other unusual paths.
             fname = "file";
+        }
     }
     return parent / (fname + ".lock");
 }
 
 // ---------------- FileLock implementation ----------------
 
+// Constructor: attempts to open and lock the file based on the specified mode.
 FileLock::FileLock(const std::filesystem::path &path, LockMode mode)
-    : _path(path), _valid(false), _ec()
+    : pImpl(std::make_unique<FileLockImpl>())
 {
-    open_and_lock(mode);
+    // Delegate all logic to the private implementation.
+    pImpl->path = path;
+    open_and_lock(mode, pImpl.get());
 }
 
-FileLock::FileLock(FileLock &&other) noexcept
-    : _path(std::move(other._path)), _valid(other._valid), _ec(other._ec)
-{
-#if defined(_WIN32)
-    _handle = other._handle;
-    other._handle = nullptr;
-#else
-    _fd = other._fd;
-    other._fd = -1;
-#endif
-    other._valid = false;
-    other._ec.clear();
-}
+// Move constructor: transfers ownership of the lock from another FileLock instance.
+// The default implementation generated by the compiler is correct because the
+// class's only member, `std::unique_ptr`, has well-defined move semantics.
+FileLock::FileLock(FileLock &&) noexcept = default;
 
-FileLock &FileLock::operator=(FileLock &&other) noexcept
-{
-    if (this == &other)
-        return *this;
+// Move assignment operator: releases the current lock and takes ownership of another.
+// The default implementation is correct. `std::unique_ptr`'s move assignment
+// operator automatically handles releasing the old resource before acquiring the new one.
+FileLock &FileLock::operator=(FileLock &&) noexcept = default;
 
-    // Release any existing lock in this
-#if defined(_WIN32)
-    if (_handle)
-    {
-        // attempt to unlock and close; ignore failures
-        UnlockFileEx((HANDLE)_handle, 0, MAXDWORD, MAXDWORD, nullptr);
-        CloseHandle((HANDLE)_handle);
-        _handle = nullptr;
-    }
-#else
-    if (_fd != -1)
-    {
-        flock(_fd, LOCK_UN);
-        ::close(_fd);
-        _fd = -1;
-    }
-#endif
-
-    _path = std::move(other._path);
-    _valid = other._valid;
-    _ec = other._ec;
-
-#if defined(_WIN32)
-    _handle = other._handle;
-    other._handle = nullptr;
-#else
-    _fd = other._fd;
-    other._fd = -1;
-#endif
-
-    other._valid = false;
-    other._ec.clear();
-
-    return *this;
-}
-
+// Destructor: ensures the lock is released when the object goes out of scope.
 FileLock::~FileLock()
 {
-    // Release lock and close file/handle.
+    // A moved-from FileLock will have a null pImpl. Its destructor is a no-op.
+    if (!pImpl || !pImpl->valid)
+    {
+        return;
+    }
+
+    // At this point, pImpl->valid is true, so we hold a valid lock and handle/fd.
+    // Release lock and close file/handle. Ignore errors during this best-effort cleanup,
+    // as there is little a caller can do about a failure during destruction.
 #if defined(_WIN32)
-    if (_handle)
-    {
-        // Attempt to unlock entire file then close
-        OVERLAPPED ov = {};
-        // Ignore errors during cleanup
-        UnlockFileEx((HANDLE)_handle, 0, MAXDWORD, MAXDWORD, &ov);
-        CloseHandle((HANDLE)_handle);
-        _handle = nullptr;
-    }
+    OVERLAPPED ov = {};
+    UnlockFileEx((HANDLE)pImpl->handle, 0, MAXDWORD, MAXDWORD, &ov);
+    CloseHandle((HANDLE)pImpl->handle);
+    pImpl->handle = nullptr; // Not strictly necessary, but good practice.
 #else
-    if (_fd != -1)
-    {
-        // best-effort unlock and close
-        flock(_fd, LOCK_UN);
-        ::close(_fd);
-        _fd = -1;
-    }
+    flock(pImpl->fd, LOCK_UN);
+    ::close(pImpl->fd);
+    pImpl->fd = -1; // Not strictly necessary, but good practice.
 #endif
-    _valid = false;
-    _ec.clear();
 }
 
 bool FileLock::valid() const noexcept
 {
-    return _valid;
+    // A default-constructed or moved-from object will have a null pImpl.
+    return pImpl && pImpl->valid;
 }
 
 std::error_code FileLock::error_code() const noexcept
 {
-    return _ec;
+    // Return a default-constructed (empty) error code if the object is not initialized.
+    return pImpl ? pImpl->ec : std::error_code();
 }
 
-void FileLock::open_and_lock(LockMode mode)
+// Private helper that performs the actual locking logic on the Impl struct.
+static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
 {
-    // Reset state
-    _valid = false;
-    _ec.clear();
+    if (!pImpl)
+        return;
 
-    auto lockpath = make_lock_path(_path);
+    // Reset state in Impl for the new lock attempt.
+    pImpl->valid = false;
+    pImpl->ec.clear();
+
+    auto lockpath = make_lock_path(pImpl->path);
+
+    // Ensure the directory for the lock file exists before trying to create the file.
+    // This is wrapped in a try/catch as filesystem operations can throw exceptions
+    // (e.g., on permission errors not reported by the error_code overload).
+    try
+    {
+        auto parent_dir = lockpath.parent_path();
+        if (!parent_dir.empty())
+        {
+            std::error_code create_ec;
+            std::filesystem::create_directories(parent_dir, create_ec);
+            if (create_ec)
+            {
+                pImpl->ec = create_ec;
+                LOGGER_WARN("FileLock: create_directories failed for {} err={}",
+                            parent_dir.string(), create_ec.message());
+                pImpl->valid = false;
+                return;
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->ec = std::make_error_code(std::errc::io_error);
+        LOGGER_WARN("FileLock: create_directories threw an exception for {}: {}",
+                    lockpath.parent_path().string(), e.what());
+        pImpl->valid = false;
+        return;
+    }
 
 #if defined(_WIN32)
-    // Create/Open lock file with exclusive access to ensure we can lock it
-    // Convert to long path for Windows API calls
+    // Convert to long path for Windows API calls to handle paths > MAX_PATH.
     std::wstring lockpath_w = win32_to_long_path(lockpath);
 
+    // Open or create the lock file. We allow sharing at the file system level
+    // because we will use LockFileEx to enforce an exclusive lock.
     HANDLE h =
         CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, // allow other processes to open the file,
-                                                        // we use LockFileEx to enforce lock
+                    // Allow other processes to open the file. The OS-level lock provided
+                    // by LockFileEx is what guarantees exclusivity, not the file sharing mode.
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
     {
-        _ec = std::error_code(GetLastError(), std::system_category());
+        pImpl->ec = std::error_code(GetLastError(), std::system_category());
         // log using new logger API
         LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string().c_str(),
-                    _ec.value());
-        _handle = nullptr;
-        _valid = false;
+                    pImpl->ec.value());
+        pImpl->handle = nullptr;
+        pImpl->valid = false;
         return;
     }
 
-    // Prepare flags: exclusive lock; optionally fail immediately
+    // Prepare flags: exclusive lock; optionally fail immediately for non-blocking mode.
     DWORD flags = LOCKFILE_EXCLUSIVE_LOCK;
     if (mode == LockMode::NonBlocking)
         flags |= LOCKFILE_FAIL_IMMEDIATELY;
 
+    // The OVERLAPPED struct is required for LockFileEx, even for synchronous operations.
+    // We lock the entire file by specifying a very large range (MAXDWORD, MAXDWORD).
     OVERLAPPED ov = {};
     BOOL ok = LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov);
     if (!ok)
     {
         DWORD err = GetLastError();
-        _ec = std::error_code(static_cast<int>(err), std::system_category());
+        pImpl->ec = std::error_code(static_cast<int>(err), std::system_category());
         LOGGER_WARN("FileLock: LockFileEx failed for {} err={}", lockpath.string().c_str(), err);
         CloseHandle(h);
-        _handle = nullptr;
-        _valid = false;
+        pImpl->handle = nullptr;
+        pImpl->valid = false;
         return;
     }
 
     // Success
-    _handle = reinterpret_cast<void *>(h);
-    _valid = true;
-    _ec.clear();
+    pImpl->handle = reinterpret_cast<void *>(h);
+    pImpl->valid = true;
+    pImpl->ec.clear();
     return;
 
 #else
     // POSIX implementation
     int flags = O_CREAT | O_RDWR;
-    // Mode 0666 so creation honors umask
+    // Mode 0666 so that file creation honors the process's umask.
     int fd = ::open(lockpath.c_str(), flags, 0666);
     if (fd == -1)
     {
-        _ec = std::error_code(errno, std::generic_category());
+        pImpl->ec = std::error_code(errno, std::generic_category());
         LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string().c_str(),
-                    _ec.message().c_str());
-        _fd = -1;
-        _valid = false;
+                    pImpl->ec.message().c_str());
+        pImpl->fd = -1;
+        pImpl->valid = false;
         return;
     }
 
+    // Prepare flags for flock(). LOCK_EX requests an exclusive lock.
+    // LOCK_NB makes the call non-blocking.
     int op = LOCK_EX;
     if (mode == LockMode::NonBlocking)
         op |= LOCK_NB;
 
     if (flock(fd, op) != 0)
     {
-        _ec = std::error_code(errno, std::generic_category());
+        pImpl->ec = std::error_code(errno, std::generic_category());
         LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string().c_str(),
-                    _ec.message().c_str());
+                    pImpl->ec.message().c_str());
         ::close(fd);
-        _fd = -1;
-        _valid = false;
+        pImpl->fd = -1;
+        pImpl->valid = false;
         return;
     }
 
     // Success
-    _fd = fd;
-    _valid = true;
-    _ec.clear();
+    pImpl->fd = fd;
+    pImpl->valid = true;
+    pImpl->ec.clear();
     return;
 #endif
 }
 
-} // namespace pylabhub::fileutil
+} // namespace pylabhub::utils
