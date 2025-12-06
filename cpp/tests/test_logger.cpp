@@ -31,9 +31,9 @@
 #include <vector>
 
 #include "platform.hpp"
-#include "util/Logger.hpp"
+#include "utils/Logger.hpp"
 
-using namespace pylabhub::util;
+using namespace pylabhub::utils;
 
 static const std::string OUTPATH = "tests/output.log";
 

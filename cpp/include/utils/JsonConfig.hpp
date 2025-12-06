@@ -63,11 +63,11 @@ then save().
 #include <type_traits>
 #include <vector>
 
-#include "fileutil/FileLock.hpp"
+#include "utils/FileLock.hpp"
 #include "nlohmann/json.hpp"
-#include "util/Logger.hpp"
+#include "utils/Logger.hpp"
 
-namespace pylabhub::fileutil
+namespace pylabhub::utils
 {
 
 using json = nlohmann::json;
@@ -370,6 +370,6 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
     }
 }
 
-} // namespace pylabhub::fileutil
+} // namespace pylabhub::utils
 
 // end JsonConfig.hpp

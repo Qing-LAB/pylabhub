@@ -24,9 +24,9 @@
 #include <unistd.h>
 #endif
 
-#include "fileutil/FileLock.hpp"
+#include "utils/FileLock.hpp"
 
-using namespace pylabhub::fileutil;
+using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 
 static std::string make_temp_base()

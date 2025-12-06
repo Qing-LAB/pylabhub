@@ -27,9 +27,9 @@
 #include <unistd.h>
 #endif
 
-#include "fileutil/JsonConfig.hpp"
+#include "utils/JsonConfig.hpp"
 
-using namespace pylabhub::fileutil;
+using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 
 static std::string temp_dir()

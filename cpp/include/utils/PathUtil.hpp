@@ -1,6 +1,6 @@
 #pragma once
 // PathUtil.hpp - centralized path helpers (Windows long-path support)
-// Place at: include/fileutil/PathUtil.hpp
+// Place at: include/utils/PathUtil.hpp
 //
 // Provides:
 //  - win32_to_long_path(std::filesystem::path) -> std::wstring
@@ -19,7 +19,7 @@
 #include <windows.h>
 #endif
 
-namespace pylabhub::fileutil
+namespace pylabhub::utils
 {
 
 #if defined(_WIN32)
@@ -88,4 +88,4 @@ inline std::wstring win32_make_unique_suffix()
 
 #endif
 
-} // namespace pylabhub::fileutil
+} // namespace pylabhub::utils
