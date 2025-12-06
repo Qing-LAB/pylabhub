@@ -2,8 +2,9 @@
 #include "utils/AtomicGuard.hpp"
 
 #include <cassert>
+#include <string>
 #include <mutex>
-#include <fmt/core.h> // for fmt::format_to_n
+#include <fmt/core.h>
 
 namespace pylabhub::utils
 {
@@ -33,13 +34,9 @@ struct AtomicGuardImpl
     // this flag and will fail if either guard is being destructed.
     std::atomic<bool> being_destructed_{false};
 
-    // Flag to indicate if ownership was released via transfer_to(). This helps the
-    // destructor distinguish a legitimate release failure from an error.
-    std::atomic<bool> released_via_transfer_{false};
-
-    // Flag to track if this guard has ever successfully acquired ownership. This
-    // is crucial for the destructor's diagnostic logic.
-    std::atomic<bool> has_ever_acquired_{false};
+    // Flag to track if this guard believes it is the current owner. This is the
+    // source of truth for whether the destructor should attempt a release.
+    std::atomic<bool> is_active_{false};
 };
 
 
@@ -125,6 +122,12 @@ AtomicGuard::AtomicGuard(AtomicOwner *owner, bool tryAcquire) noexcept
 
 AtomicGuard::~AtomicGuard() noexcept
 {
+    // A moved-from guard will have a null pImpl. Its destructor is a no-op.
+    if (!pImpl)
+    {
+        return;
+    }
+
     pImpl->being_destructed_.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lk(pImpl->guard_mtx_);
 
@@ -134,8 +137,10 @@ AtomicGuard::~AtomicGuard() noexcept
     if (!own || tok == 0)
         return;
 
-    // If this guard never successfully acquired the resource, there's nothing to release.
-    if (!pImpl->has_ever_acquired_.load(std::memory_order_acquire))
+    // If this guard does not believe it is the active owner, do nothing. This
+    // correctly handles guards that were never active, were explicitly released,
+    // or transferred ownership away.
+    if (!pImpl->is_active_.load(std::memory_order_acquire))
     {
         return;
     }
@@ -144,28 +149,17 @@ AtomicGuard::~AtomicGuard() noexcept
     if (own->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
                                                   std::memory_order_acquire))
     {
+        pImpl->is_active_.store(false, std::memory_order_release);
         return; // Successfully released.
     }
 
-    // CAS failed. Diagnose the failure.
-    if (expected == 0)
-    {
-        return; // Benign: resource was already free.
-    }
-    if (pImpl->released_via_transfer_.load(std::memory_order_acquire))
-    {
-        return; // Benign: ownership was legitimately transferred away.
-    }
-
-    // Critical error.
-    char error_msg[256];
-    auto result = fmt::format_to_n(error_msg, sizeof(error_msg) - 1,
-                                   "FATAL: AtomicGuard(token={}): Invariant violation on destruction. "
-                                   "Expected owner state to be self, but found {}. "
-                                   "The resource was not released and not transferred. Aborting.\n",
-                                   tok, expected);
-    *result.out = '\0'; // Ensure null-termination
-    PANIC(error_msg);
+    // Critical error: The guard believed it was the owner, but the underlying
+    // resource state was unexpectedly changed by another entity.
+    std::string err_msg = fmt::format(
+        "AtomicGuard(token={}): Invariant violation on destruction. "
+        "Guard was active but owner state was {} instead of self ({}).",
+        tok, tok, expected);
+    PANIC(err_msg);
 }
 
 AtomicGuard::AtomicGuard(AtomicGuard &&) noexcept = default;
@@ -196,8 +190,7 @@ bool AtomicGuard::acquire() noexcept
     if (own->atomic_ref().compare_exchange_strong(expected, tok, std::memory_order_acq_rel,
                                                   std::memory_order_acquire))
     {
-        pImpl->has_ever_acquired_.store(true, std::memory_order_release);
-        pImpl->released_via_transfer_.store(false, std::memory_order_release);
+        pImpl->is_active_.store(true, std::memory_order_release);
         return true;
     }
     return false;
@@ -213,8 +206,13 @@ bool AtomicGuard::release() noexcept
     assert(tok != 0 && "my_token_ must be non-zero");
 
     uint64_t expected = tok;
-    return own->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
-                                                     std::memory_order_acquire);
+    if (own->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire))
+    {
+        pImpl->is_active_.store(false, std::memory_order_release);
+        return true;
+    }
+    return false;
 }
 
 bool AtomicGuard::attach_and_acquire(AtomicOwner *owner) noexcept
@@ -282,9 +280,8 @@ bool AtomicGuard::transfer_to(AtomicGuard &dest) noexcept
     }
 
     dest.pImpl->owner_.store(own, std::memory_order_release);
-    this->pImpl->released_via_transfer_.store(true, std::memory_order_release);
-    dest.pImpl->released_via_transfer_.store(false, std::memory_order_release);
-    dest.pImpl->has_ever_acquired_.store(true, std::memory_order_release);
+    this->pImpl->is_active_.store(false, std::memory_order_release);
+    dest.pImpl->is_active_.store(true, std::memory_order_release);
 
     return true;
 }

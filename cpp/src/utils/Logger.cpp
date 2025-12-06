@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <fmt/ostream.h> // For fmt::print to FILE*
 
 #if defined(PLATFORM_WIN64)
 #define NOMINMAX
@@ -52,11 +53,15 @@ struct Impl
     // Asynchronous worker components
     std::atomic<bool> done{false};
     std::thread worker_thread;
+    // Mutex and CV to protect the message queue and signal the worker thread.
     std::mutex queue_mtx;
     std::condition_variable cv;
     std::vector<std::string> queue;
 
-    // Public members for this TU-local struct (we are in the .cpp).
+    // Mutex to protect configuration state (destination, file handles, etc.).
+    // This is locked by public configuration methods and by the worker thread
+    // before performing I/O, preventing race conditions if a sink is changed
+    // while a write is in progress.
     std::mutex mtx;
 
     Logger::Destination dest = Logger::Destination::L_CONSOLE;
@@ -82,6 +87,8 @@ struct Impl
     std::atomic<int> last_write_errcode{0};
     std::string last_write_errmsg;
 
+    // Timestamp for the last internal warning written to stderr, used to
+    // rate-limit such warnings to avoid flooding the console.
     std::chrono::steady_clock::time_point last_stderr_notice =
         std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
@@ -118,9 +125,11 @@ static std::once_flag g_impl_once_flag;
 
 static std::shared_ptr<Impl> get_impl_instance()
 {
-    // This function is the sole entry point for creating the Impl singleton.
-    // std::call_once guarantees the lambda is executed exactly once per process,
-    // even when called concurrently from multiple threads or modules.
+    // This function is the sole entry point for creating the shared Impl singleton.
+    // `std::call_once` guarantees that the lambda is executed exactly once per
+    // process, even when called concurrently from multiple threads. This is crucial
+    // for ensuring that all `Logger` instances, potentially created in different
+    // modules of a larger application, share a single logging backend.
     std::call_once(g_impl_once_flag, []() { g_impl_instance = std::make_shared<Impl>(); });
     return g_impl_instance;
 }
@@ -151,32 +160,13 @@ static uint64_t get_native_thread_id() noexcept
 // Helper: formatted local time with millisecond resolution (UTC/local depending on system)
 static std::string formatted_time()
 {
-#if defined(PLATFORM_WIN64)
     using namespace std::chrono;
     auto now = system_clock::now();
-    auto secs = time_point_cast<seconds>(now);
-    std::time_t t = system_clock::to_time_t(secs);
-    std::tm tm_buf;
-    localtime_s(&tm_buf, &t);
-    auto ms = duration_cast<milliseconds>(now - secs).count();
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03lld", tm_buf.tm_year + 1900,
-             tm_buf.tm_mon + 1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
-             static_cast<long long>(ms));
-    return std::string(buf);
-#else
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    time_t t = tv.tv_sec;
-    struct tm tm_buf;
-    localtime_r(&t, &tm_buf);
-    char timebuf[64];
-    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm_buf);
-    long long ms = static_cast<long long>(tv.tv_usec / 1000);
-    char final_buf[80];
-    snprintf(final_buf, sizeof(final_buf), "%s.%03lld", timebuf, ms);
-    return std::string(final_buf);
-#endif
+    // Use {fmt} to format the time portably.
+    // This combines the date/time from a time_t with the milliseconds from the time_point.
+    auto as_time_t = system_clock::to_time_t(now);
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+    return fmt::format("{:%Y-%m-%d %H:%M:%S}.{:03}", fmt::localtime(as_time_t), ms.count());
 }
 
 static const char *level_to_string(Logger::Level lvl) noexcept
@@ -529,26 +519,21 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
 
     if (pImpl->dest == Logger::Destination::L_CONSOLE)
     {
-        // write to stderr
-        size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
-        if (wrote != full_ln.size())
+        try
         {
-#if defined(PLATFORM_WIN64)
-            int err = static_cast<int>(GetLastError());
-            std::string msg = "fwrite to stderr failed on Windows";
-            // release lock before recording error
-            lk.unlock(); // Important: unlock before calling back
-            Logger::instance().record_write_error(err, msg.c_str());
-#else
-            int err = errno;
-            std::string msg = std::string("fwrite to stderr failed: ") + strerror(err);
+            // Use fmt::print for efficient, type-safe output to stderr.
+            fmt::print(stderr, FMT_STRING("{}"), full_ln);
+            fflush(stderr);
+        }
+        catch (const std::system_error &e)
+        {
+            // This is how {fmt} reports I/O errors.
+            int err = e.code().value();
+            std::string msg = e.what();
+            // Unlock before calling the error handler to avoid deadlocks if the
+            // callback tries to interact with the logger.
             lk.unlock();
             Logger::instance().record_write_error(err, msg.c_str());
-#endif
-        }
-        else
-        {
-            fflush(stderr);
         }
         return;
     }
@@ -566,7 +551,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
             {
                 DWORD err = GetLastError();
                 std::string msg = "WriteFile failed";
-                lk.unlock(); // Important: unlock before calling back
+                lk.unlock(); // Unlock before calling back.
                 Logger::instance().record_write_error(static_cast<int>(err), msg.c_str());
             }
             else
@@ -577,7 +562,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
                     {
                         DWORD err2 = GetLastError();
                         std::string msg = "FlushFileBuffers failed";
-                        lk.unlock(); // Important: unlock before calling back
+                        lk.unlock(); // Unlock before calling back.
                         Logger::instance().record_write_error(static_cast<int>(err2), msg.c_str());
                     }
                 }
@@ -622,7 +607,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
                     std::string msg = std::string("write() failed: ") + strerror(err);
                     if (pImpl->use_flock)
                         flock(pImpl->file_fd, LOCK_UN);
-                    lk.unlock();
+                    lk.unlock(); // Unlock before calling back.
                     Logger::instance().record_write_error(err, msg.c_str());
                     return;
                 }
@@ -636,7 +621,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
                     std::string msg = std::string("fsync failed: ") + strerror(err);
                     if (pImpl->use_flock)
                         flock(pImpl->file_fd, LOCK_UN);
-                    lk.unlock();
+                    lk.unlock(); // Unlock before calling back.
                     Logger::instance().record_write_error(err, msg.c_str());
                     return;
                 }
@@ -651,7 +636,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
             {
                 int err = errno;
                 std::string msg = std::string("fwrite to stderr failed: ") + strerror(err);
-                lk.unlock();
+                lk.unlock(); // Unlock before calling back.
                 Logger::instance().record_write_error(err, msg.c_str());
             }
             else
@@ -709,7 +694,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
             {
                 DWORD err = GetLastError();
                 std::string msg = "ReportEventW failed";
-                lk.unlock(); // Important: unlock before calling back
+                lk.unlock(); // Unlock before calling back.
                 Logger::instance().record_write_error(static_cast<int>(err), msg.c_str());
             }
         }
@@ -734,7 +719,7 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
             int err = errno;
             std::string msg =
                 std::string("fwrite to stderr failed (eventlog fallback): ") + strerror(err);
-            lk.unlock();
+            lk.unlock(); // Unlock before calling back.
             Logger::instance().record_write_error(err, msg.c_str());
         }
         else
@@ -746,24 +731,17 @@ static void do_write(Impl *pImpl, std::string &&full_ln)
     }
 
     // default fallback: console
-    size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
-    if (wrote != full_ln.size())
+    try
     {
-#if defined(PLATFORM_WIN64)
-        int err = static_cast<int>(GetLastError());
-        std::string msg = "fwrite to stderr failed (fallback)";
-        lk.unlock();
-        Logger::instance().record_write_error(err, msg.c_str());
-#else
-        int err = errno;
-        std::string msg = std::string("fwrite to stderr failed (fallback): ") + strerror(err);
-        lk.unlock();
-        Logger::instance().record_write_error(err, msg.c_str());
-#endif
-    }
-    else
-    {
+        fmt::print(stderr, FMT_STRING("{}"), full_ln);
         fflush(stderr);
+    }
+    catch (const std::system_error &e)
+    {
+        int err = e.code().value();
+        std::string msg = std::string("fwrite to stderr failed (fallback): ") + e.what();
+        lk.unlock(); // Unlock before calling back.
+        Logger::instance().record_write_error(err, msg.c_str());
     }
 }
 
@@ -810,9 +788,9 @@ void Logger::record_write_error(int errcode, const char *msg) noexcept
     // Rate-limited warning printed outside the lock
     if (should_warn)
     {
-        fprintf(stderr, "logger: write failure (count=%d): %s\n", pImpl->write_failure_count.load(),
-                saved_msg.c_str());
-        fflush(stderr);
+        // Use fmt::print for consistency and type safety.
+        fmt::print(stderr, "logger: write failure (count={}): {}\n",
+                   pImpl->write_failure_count.load(), saved_msg);
     }
 }
 

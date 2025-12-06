@@ -1,9 +1,9 @@
 // test_filelock.cpp
-// Test for FileLock: multi-threaded and multi-process checks.
+// Unit test for pylabhub::utils::FileLock.
 //
 // Usage:
-//   ./test_filelock                <-- master: runs both thread & process tests
-//   ./test_filelock worker <path>  <-- child worker mode (attempt NonBlocking lock on <path>)
+//   ./test_filelock          <-- master: runs all tests
+//   ./test_filelock worker <path>  <-- child worker mode (for multi-process test)
 
 #include <atomic>
 #include <chrono>
@@ -11,12 +11,16 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
+#include <fmt/core.h>
+
+#include "platform.hpp"
+
+#if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
@@ -25,39 +29,64 @@
 #endif
 
 #include "utils/FileLock.hpp"
+#include "utils/Logger.hpp" // For logging inside tests
 
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
+using namespace std::chrono_literals;
 
-static std::string make_temp_base()
+// --- Test Harness ---
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+#define CHECK(condition)                                                                           \
+    do                                                                                             \
+    {                                                                                              \
+        if (!(condition))                                                                          \
+        {                                                                                          \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            throw std::runtime_error("Test case failed");                                          \
+        }                                                                                          \
+    } while (0)
+
+void TEST_CASE(const std::string &name, std::function<void()> test_func)
 {
-    std::string tmp;
-#if defined(_WIN32)
-    char buf[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, buf))
-        tmp = std::string(buf);
-    else
-        tmp = ".\\";
-#else
-    const char *t = std::getenv("TMPDIR");
-    tmp = t ? t : "/tmp/";
-#endif
-    return tmp;
+    fmt::print("\n=== {} ===\n", name);
+    try
+    {
+        test_func();
+        tests_passed++;
+        fmt::print("  --- PASSED ---\n");
+    }
+    catch (const std::exception &e)
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
+    }
+    catch (...)
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED with unknown exception ---\n");
+    }
 }
 
-#if defined(_WIN32)
-// Windows create process helper - returns process HANDLE on success (must CloseHandle)
-static HANDLE spawn_process_w(const std::string &exe, const std::string &arg0,
-                              const std::string &arg1)
+// --- Test Globals & Helpers ---
+static fs::path g_temp_dir;
+
+// --- Worker Process Logic ---
+
+#if defined(PLATFORM_WIN64)
+static HANDLE spawn_worker_process(const std::string &exe, const std::string &lockpath)
 {
-    std::string cmdline = '"' + exe + "\" " + arg0 + " \"" + arg1 + '"';
+    std::string cmdline = fmt::format("\"{}\" worker \"{}\"", exe, lockpath);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
-    // convert to wide
+
     int wide = MultiByteToWideChar(CP_UTF8, 0, cmdline.c_str(), -1, nullptr, 0);
     std::wstring wcmd(wide, 0);
     MultiByteToWideChar(CP_UTF8, 0, cmdline.c_str(), -1, &wcmd[0], wide);
+
     if (!CreateProcessW(nullptr, &wcmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
     {
         return nullptr;
@@ -66,192 +95,265 @@ static HANDLE spawn_process_w(const std::string &exe, const std::string &arg0,
     return pi.hProcess;
 }
 #else
-static pid_t spawn_process_posix(const std::string &exe, const std::string &arg0,
-                                 const std::string &arg1)
+static pid_t spawn_worker_process(const std::string &exe, const std::string &lockpath)
 {
     pid_t pid = fork();
     if (pid == 0)
     {
-        // child
-        execl(exe.c_str(), exe.c_str(), arg0.c_str(), arg1.c_str(), nullptr);
-        // If exec failed:
-        _exit(127);
+        // Child process
+        execl(exe.c_str(), exe.c_str(), "worker", lockpath.c_str(), nullptr);
+        _exit(127); // Should not be reached if execl is successful
     }
     return pid;
 }
 #endif
 
-// Worker mode: attempt NonBlocking FileLock on provided lock path and write file on success
-static int worker_filelock_mode(const std::string &lockpath, const std::string &outfile)
+// Worker mode: attempt NonBlocking FileLock on provided lock path.
+// Returns 0 on success, non-zero on failure.
+static int worker_main(const std::string &lockpath)
 {
+    // Keep the logger quiet in worker processes unless there's an error.
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+
     FileLock lock(fs::path(lockpath), LockMode::NonBlocking);
     if (!lock.valid())
     {
-        // failed to obtain in-process/OS lock
-        std::cout << "WORKER: failed to acquire lock: " << lock.error_code().message() << "\n";
-        return 2;
+        // Failed to acquire lock, this is an expected outcome for competing workers.
+        return 1;
     }
-    // got it; write our pid/thread id into outfile
-    std::ofstream out(outfile, std::ios::app);
-    if (out.is_open())
-    {
-#if defined(_WIN32)
-        DWORD pid = GetCurrentProcessId();
-        out << "pid:" << pid << "\n";
-#else
-        pid_t pid = getpid();
-        out << "pid:" << pid << "\n";
-#endif
-        out.close();
-    }
-    // Keep lock for a short moment so other workers likely fail
-    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    // Successfully acquired the lock. Hold it for a moment to ensure
+    // other processes will see it as locked.
+    std::this_thread::sleep_for(100ms);
+
+    // Return 0 to signal success.
     return 0;
+}
+
+// --- Test Cases ---
+
+void test_basic_nonblocking()
+{
+    auto lock_path = g_temp_dir / "basic.lock";
+    fs::remove(lock_path);
+
+    {
+        FileLock lock(lock_path, LockMode::NonBlocking);
+        CHECK(lock.valid());
+        CHECK(!lock.error_code());
+
+        // Try to lock it again in the same process (should fail).
+        FileLock lock2(lock_path, LockMode::NonBlocking);
+        CHECK(!lock2.valid());
+    } // lock is released here
+
+    // Now it should be lockable again
+    FileLock lock3(lock_path, LockMode::NonBlocking);
+    CHECK(lock3.valid());
+}
+
+void test_blocking_lock()
+{
+    auto lock_path = g_temp_dir / "blocking.lock";
+    fs::remove(lock_path);
+
+    std::atomic<bool> thread_has_lock = false;
+    std::atomic<bool> main_released_lock = false;
+
+    // 1. Main thread acquires the lock
+    auto main_lock = std::make_unique<FileLock>(lock_path, LockMode::Blocking);
+    CHECK(main_lock->valid());
+
+    // 2. Spawn a thread that will try to acquire the same lock (and block)
+    std::thread t1([&]() {
+        auto start = std::chrono::steady_clock::now();
+        FileLock thread_lock(lock_path, LockMode::Blocking); // This should block
+        auto end = std::chrono::steady_clock::now();
+
+        // This thread should have blocked until the main thread released the lock.
+        CHECK(thread_lock.valid());
+        CHECK(main_released_lock.load());
+        CHECK(end - start > 100ms);
+        thread_has_lock = true;
+    });
+
+    // 3. Give the thread time to start and block on the lock
+    std::this_thread::sleep_for(200ms);
+    CHECK(!thread_has_lock.load()); // Thread should still be blocked
+
+    // 4. Main thread releases the lock
+    main_released_lock = true;
+    main_lock.reset(); // This destroys the FileLock object and releases the lock
+
+    // 5. Join the thread and check that it completed
+    t1.join();
+    CHECK(thread_has_lock.load());
+}
+
+void test_move_semantics()
+{
+    auto lock_path = g_temp_dir / "move.lock";
+    fs::remove(lock_path);
+
+    // Test move construction
+    {
+        FileLock lock1(lock_path, LockMode::NonBlocking);
+        CHECK(lock1.valid());
+
+        FileLock lock2(std::move(lock1));
+        CHECK(lock2.valid());
+        CHECK(!lock1.valid()); // lock1 should be invalid after move
+    } // lock2 is destroyed, releasing the lock
+
+    // Test move assignment
+    {
+        FileLock lock3(lock_path, LockMode::NonBlocking);
+        CHECK(lock3.valid());
+
+        FileLock lock4(g_temp_dir / "another.lock", LockMode::NonBlocking);
+        CHECK(lock4.valid()); // Holds a different lock
+
+        lock4 = std::move(lock3); // lock4 releases its old lock and takes lock3's
+        CHECK(lock4.valid());
+        CHECK(!lock3.valid());
+    } // lock4 is destroyed, releasing the lock
+}
+
+void test_directory_creation()
+{
+    auto new_dir = g_temp_dir / "new_dir_for_lock";
+    auto lock_path = new_dir / "test.lock";
+
+    fs::remove_all(new_dir); // Ensure it doesn't exist
+    CHECK(!fs::exists(new_dir));
+
+    {
+        FileLock lock(lock_path, LockMode::NonBlocking);
+        CHECK(lock.valid());
+        CHECK(fs::exists(new_dir));
+        CHECK(fs::exists(lock_path));
+    } // lock released
+
+    fs::remove_all(new_dir); // Cleanup
+}
+
+void test_multithread_nonblocking()
+{
+    auto lock_path = g_temp_dir / "multithread.lock";
+    fs::remove(lock_path);
+
+    const int THREADS = 16;
+    std::atomic<int> success_count{0};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < THREADS; ++i)
+    {
+        threads.emplace_back([&]() {
+            // Each thread makes one attempt.
+            FileLock lock(lock_path, LockMode::NonBlocking);
+            if (lock.valid())
+            {
+                success_count++;
+                // Hold the lock for a moment to increase contention
+                std::this_thread::sleep_for(50ms);
+            }
+        });
+    }
+
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+
+    // Exactly one thread should have succeeded in acquiring the non-blocking lock.
+    CHECK(success_count.load() == 1);
+}
+
+void test_multiprocess_nonblocking(const std::string &self_exe)
+{
+    auto lock_path = g_temp_dir / "multiprocess.lock";
+    fs::remove(lock_path);
+
+    const int PROCS = 8;
+    int success_count = 0;
+
+#if defined(PLATFORM_WIN64)
+    std::vector<HANDLE> procs;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        HANDLE h = spawn_worker_process(self_exe, lock_path.string());
+        CHECK(h != nullptr);
+        procs.push_back(h);
+    }
+
+    for (auto h : procs)
+    {
+        WaitForSingleObject(h, INFINITE);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(h, &exit_code);
+        if (exit_code == 0)
+        {
+            success_count++;
+        }
+        CloseHandle(h);
+    }
+#else
+    std::vector<pid_t> pids;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        pid_t pid = spawn_worker_process(self_exe, lock_path.string());
+        CHECK(pid > 0);
+        pids.push_back(pid);
+    }
+
+    for (pid_t pid : pids)
+    {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        {
+            success_count++;
+        }
+    }
+#endif
+
+    // Exactly one worker process should have succeeded.
+    CHECK(success_count == 1);
 }
 
 int main(int argc, char **argv)
 {
-    if (argc >= 2 && std::strcmp(argv[1], "worker-filelock") == 0)
+    // Worker process entry point
+    if (argc > 1 && std::string(argv[1]) == "worker")
     {
-        if (argc < 4)
-            return 3;
-        return worker_filelock_mode(argv[2], argv[3]);
-    }
-
-    std::cout << "*** test_filelock: start\n";
-
-    // Prepare temp files
-    std::string tmpbase = make_temp_base();
-    fs::path lockfile = fs::path(tmpbase) / "test_filelock.lock";
-    fs::path outfile = fs::path(tmpbase) / "test_filelock.out";
-
-    // ensure clean
-    std::error_code ec;
-    fs::remove(lockfile, ec);
-    fs::remove(outfile, ec);
-
-    // ----- Threaded test -----
-    {
-        const int THREADS = 12;
-        std::atomic<int> success_count{0};
-        std::vector<std::thread> thr;
-        for (int i = 0; i < THREADS; ++i)
+        if (argc < 3)
         {
-            thr.emplace_back(
-                [&]()
-                {
-                    FileLock lock(lockfile, LockMode::NonBlocking);
-                    if (lock.valid())
-                    {
-                        // success
-                        success_count.fetch_add(1, std::memory_order_relaxed);
-                        std::ofstream out(outfile, std::ios::app);
-                        if (out.is_open())
-                            out << "thread:" << std::this_thread::get_id() << "\n";
-                    }
-                });
-        }
-        for (auto &t : thr)
-            t.join();
-        int succ = success_count.load();
-        std::cout << "threaded test: success_count=" << succ << "\n";
-        if (succ != 1)
-        {
-            std::cerr << "threaded test failed: expected 1 thread to acquire lock non-blocking\n";
+            fmt::print(stderr, "Worker mode requires a lock path argument.\n");
             return 2;
         }
+        return worker_main(argv[2]);
     }
 
-    // remove outfile for process run
-    fs::remove(outfile, ec);
+    // Main test runner
+    fmt::print("--- FileLock Test Suite ---\n");
+    g_temp_dir = fs::temp_directory_path() / "pylabhub_filelock_tests";
+    fs::create_directories(g_temp_dir);
+    fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
 
-    // ----- Process test -----
-    {
-        const int PROCS = 9;
-#if defined(_WIN32)
-        std::string exe = argv[0];
-        std::vector<HANDLE> procs;
-        for (int i = 0; i < PROCS; ++i)
-        {
-            HANDLE h = spawn_process_w(exe, "worker-filelock",
-                                       lockfile.string() + "\x1f" + outfile.string());
-            if (!h)
-            {
-                std::cerr << "spawn failed\n";
-                return 5;
-            }
-            procs.push_back(h);
-            // slight stagger
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        // Wait for children
-        int success_count = 0;
-        for (auto h : procs)
-        {
-            DWORD st = WaitForSingleObject(h, INFINITE);
-            DWORD code = 0;
-            GetExitCodeProcess(h, &code);
-            if (code == 0)
-                ++success_count;
-            CloseHandle(h);
-        }
-#else
-        std::string exe = argv[0];
-        std::vector<pid_t> pids;
-        for (int i = 0; i < PROCS; ++i)
-        {
-            pid_t pid = fork();
-            if (pid == 0)
-            {
-                // child: exec same program in worker mode
-                execl(exe.c_str(), exe.c_str(), "worker-filelock", lockfile.c_str(),
-                      outfile.c_str(), nullptr);
-                _exit(127);
-            }
-            else if (pid < 0)
-            {
-                std::cerr << "fork failed\n";
-                return 6;
-            }
-            pids.push_back(pid);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        int success_count = 0;
-        for (pid_t pid : pids)
-        {
-            int status = 0;
-            waitpid(pid, &status, 0);
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-                ++success_count;
-        }
-#endif
-        // On POSIX branch we counted success_count; define here for both branches:
-#if defined(_WIN32)
-        int successes = 0;
-        // read outfile to count lines written
-        std::ifstream in(outfile);
-        std::string line;
-        while (std::getline(in, line))
-        {
-            if (!line.empty())
-                ++successes;
-        }
-        std::cout << "process test: successes(file lines)=" << successes << "\n";
-        if (successes != 1)
-        {
-            std::cerr << "process test failed: expected exactly 1 process to acquire lock\n";
-            return 7;
-        }
-#else
-        std::cout << "process test: success_count=" << success_count << "\n";
-        if (success_count != 1)
-        {
-            std::cerr << "process test failed: expected exactly 1 process to acquire lock\n";
-            return 7;
-        }
-#endif
-    }
+    TEST_CASE("Basic Non-Blocking Lock", test_basic_nonblocking);
+    TEST_CASE("Blocking Lock Behavior", test_blocking_lock);
+    TEST_CASE("Move Semantics", test_move_semantics);
+    TEST_CASE("Automatic Directory Creation", test_directory_creation);
+    TEST_CASE("Multi-Threaded Non-Blocking Lock", test_multithread_nonblocking);
 
-    std::cout << "test_filelock: OK\n";
-    return 0;
+    std::string self_exe = argv[0];
+    TEST_CASE("Multi-Process Non-Blocking Lock", [&]() { test_multiprocess_nonblocking(self_exe); });
+
+    fmt::print("\n--- Test Summary ---\n");
+    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
+
+    // Final cleanup
+    fs::remove_all(g_temp_dir);
+
+    return tests_failed == 0 ? 0 : 1;
 }

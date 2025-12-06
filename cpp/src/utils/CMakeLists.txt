@@ -15,6 +15,7 @@ set(UTILS_SOURCES
   JsonConfig.cpp
   FileLock.cpp
   AtomicGuard.cpp
+  RecursionGuard.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
