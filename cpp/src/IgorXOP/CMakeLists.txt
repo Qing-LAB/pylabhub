@@ -158,9 +158,9 @@ endif()
 target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::third_party::XOPToolKit)
 message(STATUS "IgorXOP: linked to pylabhub::third_party::XOPToolKit")
 
-if(TARGET pylabhub::corelib)
-  target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::corelib) # Use the namespaced alias
-  message(STATUS "IgorXOP: linked to pylabhub::corelib")
+if(TARGET pylabhub::utils)
+  target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::utils) # Use the namespaced alias
+  message(STATUS "IgorXOP: linked to pylabhub::utils")
 endif()
 
 # -------------------------
@@ -171,10 +171,7 @@ set(_exports_def "${CMAKE_CURRENT_SOURCE_DIR}/Exports.def")
 
 if(DEFINED PLATFORM_APPLE)
   if(EXISTS "${_exports_exp}")
-    target_link_options(${XOP_TARGET} PRIVATE
-      $<$<CONFIG:Debug>:-Wl,-exported_symbols_list,${_exports_exp}>
-      $<$<NOT:$<CONFIG:Debug>>:-Wl,-exported_symbols_list,${_exports_exp}>
-    )
+    target_link_options(${XOP_TARGET} PRIVATE "-Wl,-exported_symbols_list,${_exports_exp}")
     message(STATUS "IgorXOP: using exported symbols file ${_exports_exp}")
   else()
     target_link_options(${XOP_TARGET} PRIVATE "-Wl,-exported_symbol,_XOPMain")
@@ -301,34 +298,47 @@ if(DEFINED PLATFORM_APPLE)
     COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
+endif() # End of PLATFORM_APPLE specific assembly
 
-  # --- Step 2: Staging (Custom Target) ---
-  # This target simply copies the fully processed bundle and Igor help and procedure files to the staging area.
-  add_custom_target(stage_${XOP_TARGET}
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+# ==============================================================================
+# Staging (Custom Target for both macOS and Windows)
+# ==============================================================================
+# This section defines a single, unified `stage_pylabhubxop` target that handles
+# copying the final artifacts for both platforms. This removes redundancy while
+# clearly separating the platform-specific logic.
+
+set(stage_commands "")
+
+# Add the platform-specific command for the main artifact.
+if(DEFINED PLATFORM_APPLE)
+  # For macOS, copy the entire assembled .xop bundle directory.
+  list(APPEND stage_commands
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${BUNDLE_DIR}" "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
-    COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and Igor help and procedure files (.ipf, .ihf)"
-    VERBATIM
   )
-  add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
+elseif(DEFINED PLATFORM_WIN64)
+  # For Windows, copy the final .xop DLL.
+  list(APPEND stage_commands
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+  )
 endif()
 
-# ==============================================================================
-# Windows: Staging (custom target)
-# ==============================================================================
-if(DEFINED PLATFORM_WIN64)
-  # For Windows, there is no assembly step. The SHARED library is the final artifact.
-  # We just need a custom target to stage the .xop and any Igor help and/or procedure files.
-  add_custom_target(stage_${XOP_TARGET}
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+# Conditionally add the command to copy helper files.
+# This is critical to prevent a build error if `_xop_helper_files` is empty,
+# as `copy_if_different` requires at least one source file.
+if(_xop_helper_files)
+  list(APPEND stage_commands
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
-    COMMENT "Staging ${XOP_BUNDLE_NAME}.xop and Igor help and procedure files (.ipf, .ihf) to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
-    VERBATIM
   )
-  add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
 endif()
+
+# Create the unified staging target for this component.
+add_custom_target(stage_${XOP_TARGET}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+  ${stage_commands}
+  COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
+  VERBATIM
+)
+add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)

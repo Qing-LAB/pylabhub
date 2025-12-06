@@ -1,96 +1,74 @@
-# cpp/src/CMakeLists.txt
+# /cpp/src/CMakeLists.txt
 #
-# Defines the main project targets: pylabhub-corelib and pylabhub-shell.
-# This file is included by the top-level CMakeLists.txt.
+# Configures the main project libraries and executables.
 #
 cmake_minimum_required(VERSION 3.18)
 
-# --- 1. pylabhub-corelib ---
-# This is the core library containing common utilities.
-# Sources are listed explicitly to avoid issues with file(GLOB).
-set(CORELIB_SOURCES
-  util/Logger.cpp
-  fileutil/FileLock.cpp
-  fileutil/JsonConfig.cpp
+# Gather sources for the core static library.
+# Exclude main.cpp (for the app) and sub-project directories.
+file(GLOB_RECURSE CORE_SOURCES
+  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+  "*.cpp"
 )
+list(FILTER CORE_SOURCES EXCLUDE REGEX "(hubshell\\.cpp|utils/.*|IgorXOP/.*)$")
 
-if(PYLABHUB_BUILD_SHARED)
-  add_library(pylabhub-corelib SHARED ${CORELIB_SOURCES})
+# Define the core library. If there are no sources, it will be an INTERFACE
+# library that serves as a placeholder to group dependencies. Otherwise, it
+# will be a STATIC library.
+if(NOT CORE_SOURCES)
+  add_library(pylabhub-core INTERFACE)
+  target_compile_features(pylabhub-core INTERFACE cxx_std_17)
+  set(CORE_LIB_SCOPE INTERFACE)
+  message(STATUS "No sources found for pylabhub-core. Creating as an INTERFACE library placeholder.")
 else()
-  add_library(pylabhub-corelib STATIC ${CORELIB_SOURCES})
+  add_library(pylabhub-core STATIC ${CORE_SOURCES})
+  target_compile_features(pylabhub-core PRIVATE cxx_std_17)
+  set(CORE_LIB_SCOPE PUBLIC)
 endif()
+add_library(pylabhub::core ALIAS pylabhub-core)
 
-# Expose a stable alias for other project components to use.
-add_library(pylabhub::corelib ALIAS pylabhub-corelib)
-message(STATUS "Configured target: pylabhub-corelib (alias: pylabhub::corelib)")
-
-# Define public include directories for the core library.
-# Note: CMAKE_CURRENT_SOURCE_DIR here is cpp/src, so we go up one level.
-target_include_directories(pylabhub-corelib PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
+# The core library exposes the main include directory and depends on the utils library
+# and other third-party dependencies.
+target_include_directories(pylabhub-core
+  ${CORE_LIB_SCOPE}
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
 )
-
-# Link corelib against the third-party targets it needs.
-# The third-party framework ensures these targets are always available.
-target_link_libraries(pylabhub-corelib
-  PUBLIC
-    pylabhub::third_party::nlohmann_json # Public because corelib headers may include it.
-    pylabhub::third_party::fmt           # Public because static consumers need to link to it.
-  PRIVATE
+target_link_libraries(pylabhub-core
+  ${CORE_LIB_SCOPE}
+    pylabhub::utils
     pylabhub::third_party::zmq
-    Threads::Threads
 )
 
-# Set standard properties for the core library.
-target_compile_features(pylabhub-corelib PUBLIC cxx_std_17)
-set_target_properties(pylabhub-corelib PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(PYLABHUB_BUILD_SHARED AND MSVC)
-  set_target_properties(pylabhub-corelib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-endif()
+# Define the main application executable.
+add_executable(pylabhub-app hubshell.cpp)
+add_executable(pylabhub::app ALIAS pylabhub-app)
+target_compile_features(pylabhub-app PRIVATE cxx_std_17)
 
-# --- 2. pylabhub-shell (Main Executable) ---
-# The logical target name is `pylabhub-shell`.
-add_executable(pylabhub-shell coreshell.cpp)
-add_executable(pylabhub::shell ALIAS pylabhub-shell)
-target_link_libraries(pylabhub-shell PRIVATE pylabhub::corelib)
+# The app links against the core library.
+target_link_libraries(pylabhub-app PRIVATE pylabhub::core)
 
-# Set the output file name to `hubshell` (.exe on Windows).
-set_target_properties(pylabhub-shell PROPERTIES OUTPUT_NAME "hubshell")
-message(STATUS "Configured target: pylabhub-shell (alias: pylabhub::shell)")
+# --- Staging ---
 
+# Create a single local staging target for all artifacts in this file (the app and the core library).
+# This target will be registered with the global build system, following the project's modular staging pattern.
+pylabhub_get_library_staging_commands(
+  TARGET pylabhub-core
+  DESTINATION lib # This argument is for runtime parts, but required by the function.
+  OUT_COMMANDS stage_core_lib_commands
+)
+add_custom_target(stage_pylabhub_core ${stage_core_lib_commands} COMMENT "Staging pylabhub-core library")
 
-# --- 3. Staging for Main Project Targets ---
-# This section defines a dedicated target to stage the core project artifacts
-# (executables, libraries, and headers) into the unified staging directory.
-# This target is intended to be a dependency of the top-level `stage_all` target,
-# ensuring that core artifacts are only staged on demand.
-
-add_custom_target(stage_core_artifacts
-  # Stage the main executable to `stage/bin/`.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-shell>" "${PYLABHUB_STAGING_DIR}/bin/"
-
-  # Copy the runtime dependencies (DLLs) of the executable to the bin directory.
-  COMMAND ${CMAKE_COMMAND}
-    -D TARGET_NAME=pylabhub-shell
-    -D DEST_DIR=${PYLABHUB_STAGING_DIR}/bin
-    -D "RUNTIME_DEPS=$<TARGET_RUNTIME_DLLS:pylabhub-shell>"
-    -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDeps.cmake"
-
-  # Stage the core library file to `stage/lib/`.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub-corelib>" "${PYLABHUB_STAGING_DIR}/lib/"
-
-  # Stage the public headers to `stage/include/`.
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/include/" "${PYLABHUB_STAGING_DIR}/include/"
-
-  COMMENT "Staging hubshell, corelib, and public headers to ${PYLABHUB_STAGING_DIR}"
-  VERBATIM
+# Attach the command to stage the main application executable to this same local target.
+# This resolves the error, as we are now attaching to a target defined in the current directory.
+pylabhub_stage_executable(
+  TARGET pylabhub-app
+  DESTINATION bin
+  ATTACH_TO stage_pylabhub_core
 )
 
-# Ensure the artifacts are built before we try to stage them.
-add_dependencies(stage_core_artifacts pylabhub-shell pylabhub-corelib)
+# Ensure the local staging target depends on both build targets before executing.
+add_dependencies(stage_pylabhub_core pylabhub-core pylabhub-app)
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_core)
 
-message(STATUS "Configured target: stage_core_artifacts")
+message(STATUS "Configured static library 'pylabhub::core' and executable 'pylabhub::app'.")

@@ -1,20 +1,15 @@
 // Logger.cpp
 //
-// Implementation of Logger. Impl (pimpl) is defined only in this file to keep the header
-// free of implementation details (mutexes, file descriptors, platform headers, etc.).
+// Implementation of Logger using an asynchronous worker thread.
 //
-// Important design and locking notes (read carefully):
-//  - Most state is stored in Impl and protected by Impl::mtx where appropriate.
-//  - The template log_fmt() in the header calls should_log() and max_log_line_length()
-//    which are small non-template functions defined below (they only read atomics).
-//  - write_formatted() acquires the Impl mutex to access/serialize sink handles where needed.
-//    If a write fails we **release** the write lock before invoking record_write_error()
-//    to avoid a deadlock / reentrancy problem. record_write_error() acquires the mutex
-//    internally as required and invokes user callbacks outside the lock.
-//  - The RAII helper ImplAccessorLocal is defined in this translation unit only and is not
-//    visible in the header.
+// Design:
+// - Logging calls from application threads are non-blocking. They format the message
+//   and push it into a thread-safe queue.
+// - A dedicated background worker thread pulls messages from the queue and performs
+//   all I/O operations (writing to file, console, etc.).
+// - This decouples application performance from I/O latency.
 
-#include "util/Logger.hpp"
+#include "utils/Logger.hpp"
 
 #include <cerrno>
 #include <chrono>
@@ -45,12 +40,22 @@
 #include <unistd.h>
 #endif
 
-namespace pylabhub::util
+namespace pylabhub::utils
 {
-
-// Forward declare helpers (Impl defined below)
+// The private implementation of the Logger.
 struct Impl
 {
+    Impl();
+    ~Impl();
+    void worker_loop();
+
+    // Asynchronous worker components
+    std::atomic<bool> done{false};
+    std::thread worker_thread;
+    std::mutex queue_mtx;
+    std::condition_variable cv;
+    std::vector<std::string> queue;
+
     // Public members for this TU-local struct (we are in the .cpp).
     std::mutex mtx;
 
@@ -83,50 +88,45 @@ struct Impl
     std::function<void(const std::string &)> write_error_callback;
 };
 
-// TU-local RAII helper. Not visible outside this file.
-// This helper assumes the caller will use it to capture state and call callback
-// outside the critical section. It does NOT attempt to lock the Impl mutex itself
-// unless needed by a member function.
-struct ImplAccessorLocal
+Impl::Impl()
 {
-    explicit ImplAccessorLocal(Impl *impl) : p(impl) {}
+    // Start the background worker thread upon construction.
+    worker_thread = std::thread(&Impl::worker_loop, this);
+}
 
-    // Atomically update counters and store the message under lock.
-    void capture_error(int errcode, const std::string &msg)
+Impl::~Impl()
+{
+    // Signal the worker to shut down and wait for it to finish.
+    if (worker_thread.joinable())
     {
-        p->write_failure_count.fetch_add(1);
-        p->last_write_errcode.store(errcode);
         {
-            std::lock_guard<std::mutex> g(p->mtx);
-            p->last_write_errmsg = msg;
+            std::lock_guard<std::mutex> lk(queue_mtx);
+            done = true;
         }
+        cv.notify_one();
+        worker_thread.join();
     }
+}
 
-    // Copy the callback under lock so we can call it outside the lock.
-    std::function<void(const std::string &)> copy_callback_and_update_notice()
-    {
-        std::function<void(const std::string &)> cb;
-        {
-            std::lock_guard<std::mutex> g(p->mtx);
-            cb = p->write_error_callback;
-            // update the last_stderr_notice if the interval elapsed
-            // (we will print outside the lock if needed)
-            auto now = std::chrono::steady_clock::now();
-            if (now - p->last_stderr_notice > std::chrono::seconds(5))
-            {
-                p->last_stderr_notice = now;
-                should_warn = true;
-            }
-        }
-        return cb;
-    }
+// --- Singleton Impl management ---
+// This ensures that even if the Logger object is instantiated multiple times
+// (e.g., due to static linking shenanigans), they all share a single Impl instance
+// with a single worker thread. This pattern is thread-safe and robust across
+// most module boundaries if the logger is part of a shared library.
+static std::shared_ptr<Impl> g_impl_instance;
+static std::once_flag g_impl_once_flag;
 
-    bool should_warn_now() const noexcept { return should_warn; }
+static std::shared_ptr<Impl> get_impl_instance()
+{
+    // This function is the sole entry point for creating the Impl singleton.
+    // std::call_once guarantees the lambda is executed exactly once per process,
+    // even when called concurrently from multiple threads or modules.
+    std::call_once(g_impl_once_flag, []() { g_impl_instance = std::make_shared<Impl>(); });
+    return g_impl_instance;
+}
 
-  private:
-    Impl *p;
-    bool should_warn{false};
-};
+// Forward declaration for the actual I/O logic, now used by the worker.
+static void do_write(Impl *pImpl, std::string &&full_ln);
 
 // Helper: get a platform-native thread id
 static uint64_t get_native_thread_id() noexcept
@@ -172,10 +172,10 @@ static std::string formatted_time()
     localtime_r(&t, &tm_buf);
     char timebuf[64];
     strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm_buf);
-    int ms = static_cast<int>(tv.tv_usec / 1000);
-    std::ostringstream oss;
-    oss << timebuf << '.' << std::setw(3) << std::setfill('0') << ms;
-    return oss.str();
+    long long ms = static_cast<long long>(tv.tv_usec / 1000);
+    char final_buf[80];
+    snprintf(final_buf, sizeof(final_buf), "%s.%03lld", timebuf, ms);
+    return std::string(final_buf);
 #endif
 }
 
@@ -221,8 +221,16 @@ static int level_to_syslog_priority(Logger::Level lvl) noexcept
 
 // ------------------------ Logger implementation ------------------------
 
-Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
-Logger::~Logger() = default;
+Logger::Logger() : pImpl(get_impl_instance()) {}
+
+// The destructor must be defined in the .cpp file where Impl is a complete type.
+// The default destructor in the header would not work with std::shared_ptr<Impl>
+// because Impl is an incomplete type there.
+Logger::~Logger()
+{
+    // The shared_ptr will correctly manage the lifetime of the Impl instance.
+    // When the last Logger handle is destroyed, the Impl destructor will be called.
+}
 
 Logger &Logger::instance()
 {
@@ -436,11 +444,9 @@ void Logger::shutdown()
     pImpl->dest = Logger::Destination::L_CONSOLE;
 }
 
-// ---- write sink ----
-// write_formatted centralizes all sink-specific logic and ensures:
-//  - body is UTF-8 (no trailing newline expected)
-//  - appropriate header (timestamp, level, tid) is prepended
-//  - on write failure, record_write_error(...) is called outside of any write lock
+// ---- Non-blocking write sink ----
+// This function is called by the application threads. It formats the final
+// message and pushes it to the worker queue, then returns immediately.
 void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 {
     if (!pImpl)
@@ -449,8 +455,76 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         fmt::format(FMT_STRING("{} [{}] [tid={}] {}"), formatted_time(), level_to_string(lvl),
                     std::to_string(get_native_thread_id()), body);
     std::string full_ln = full + "\n";
+    
+    // Push the formatted message to the queue for the worker thread.
+    {
+        std::lock_guard<std::mutex> lk(pImpl->queue_mtx);
+        pImpl->queue.push_back(std::move(full_ln));
+    }
+    pImpl->cv.notify_one(); // Wake up the worker thread.
+}
 
-    // Acquire lock to protect sink handles while writing.
+// The main loop for the background worker thread.
+void Impl::worker_loop()
+{
+    std::vector<std::string> write_batch;
+    while (true)
+    {
+        {
+            std::unique_lock<std::mutex> lk(queue_mtx);
+            // Wait until the queue has messages or shutdown is requested.
+            cv.wait(lk, [this] { return done || !queue.empty(); });
+
+            // If shutdown is requested and the queue is empty, we're done.
+            if (done && queue.empty())
+            {
+                break;
+            }
+
+            // Atomically swap the queue contents into our local batch.
+            // This minimizes the time the queue is locked.
+            write_batch.swap(queue);
+        }
+
+        // Process all messages in the batch.
+        for (auto &msg : write_batch)
+        {
+            do_write(this, std::move(msg));
+        }
+        write_batch.clear();
+    }
+
+    // After exiting the loop, ensure all sinks are properly closed.
+    // This is a final cleanup step.
+    std::lock_guard<std::mutex> g(mtx);
+#if defined(PLATFORM_WIN64)
+    if (file_handle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(file_handle);
+        file_handle = INVALID_HANDLE_VALUE;
+    }
+    if (evt_handle)
+    {
+        DeregisterEventSource(evt_handle);
+        evt_handle = nullptr;
+    }
+#else
+    if (file_fd != -1)
+    {
+        ::close(file_fd);
+        file_fd = -1;
+        file_path.clear();
+    }
+    closelog();
+#endif
+}
+
+// This function contains the original synchronous I/O logic.
+// It is now called exclusively by the worker thread.
+static void do_write(Impl *pImpl, std::string &&full_ln)
+{
+    // The worker thread is the only writer, but we still need to lock
+    // to protect sink handles during reconfiguration (e.g., set_destination).
     std::unique_lock<std::mutex> lk(pImpl->mtx);
 
     if (pImpl->dest == Logger::Destination::L_CONSOLE)
@@ -463,13 +537,13 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             int err = static_cast<int>(GetLastError());
             std::string msg = "fwrite to stderr failed on Windows";
             // release lock before recording error
-            lk.unlock();
-            record_write_error(err, msg.c_str());
+            lk.unlock(); // Important: unlock before calling back
+            Logger::instance().record_write_error(err, msg.c_str());
 #else
             int err = errno;
             std::string msg = std::string("fwrite to stderr failed: ") + strerror(err);
             lk.unlock();
-            record_write_error(err, msg.c_str());
+            Logger::instance().record_write_error(err, msg.c_str());
 #endif
         }
         else
@@ -492,8 +566,8 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             {
                 DWORD err = GetLastError();
                 std::string msg = "WriteFile failed";
-                lk.unlock();
-                record_write_error(static_cast<int>(err), msg.c_str());
+                lk.unlock(); // Important: unlock before calling back
+                Logger::instance().record_write_error(static_cast<int>(err), msg.c_str());
             }
             else
             {
@@ -503,8 +577,8 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
                     {
                         DWORD err2 = GetLastError();
                         std::string msg = "FlushFileBuffers failed";
-                        lk.unlock();
-                        record_write_error(static_cast<int>(err2), msg.c_str());
+                        lk.unlock(); // Important: unlock before calling back
+                        Logger::instance().record_write_error(static_cast<int>(err2), msg.c_str());
                     }
                 }
             }
@@ -549,7 +623,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
                     if (pImpl->use_flock)
                         flock(pImpl->file_fd, LOCK_UN);
                     lk.unlock();
-                    record_write_error(err, msg.c_str());
+                    Logger::instance().record_write_error(err, msg.c_str());
                     return;
                 }
                 off += w;
@@ -563,7 +637,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
                     if (pImpl->use_flock)
                         flock(pImpl->file_fd, LOCK_UN);
                     lk.unlock();
-                    record_write_error(err, msg.c_str());
+                    Logger::instance().record_write_error(err, msg.c_str());
                     return;
                 }
             }
@@ -578,7 +652,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
                 int err = errno;
                 std::string msg = std::string("fwrite to stderr failed: ") + strerror(err);
                 lk.unlock();
-                record_write_error(err, msg.c_str());
+                Logger::instance().record_write_error(err, msg.c_str());
             }
             else
             {
@@ -635,8 +709,8 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             {
                 DWORD err = GetLastError();
                 std::string msg = "ReportEventW failed";
-                lk.unlock();
-                record_write_error(static_cast<int>(err), msg.c_str());
+                lk.unlock(); // Important: unlock before calling back
+                Logger::instance().record_write_error(static_cast<int>(err), msg.c_str());
             }
         }
         else
@@ -661,7 +735,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             std::string msg =
                 std::string("fwrite to stderr failed (eventlog fallback): ") + strerror(err);
             lk.unlock();
-            record_write_error(err, msg.c_str());
+            Logger::instance().record_write_error(err, msg.c_str());
         }
         else
         {
@@ -679,12 +753,12 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
         int err = static_cast<int>(GetLastError());
         std::string msg = "fwrite to stderr failed (fallback)";
         lk.unlock();
-        record_write_error(err, msg.c_str());
+        Logger::instance().record_write_error(err, msg.c_str());
 #else
         int err = errno;
         std::string msg = std::string("fwrite to stderr failed (fallback): ") + strerror(err);
         lk.unlock();
-        record_write_error(err, msg.c_str());
+        Logger::instance().record_write_error(err, msg.c_str());
 #endif
     }
     else
@@ -703,22 +777,17 @@ void Logger::record_write_error(int errcode, const char *msg) noexcept
         return;
     std::string saved_msg = msg ? msg : std::string();
 
-    // update counters and store message under lock
+    // Acquire lock once to update state and copy the callback.
+    std::function<void(const std::string &)> cb;
+    bool should_warn = false;
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
         pImpl->write_failure_count.fetch_add(1);
         pImpl->last_write_errcode.store(errcode);
         pImpl->last_write_errmsg = saved_msg;
-    }
-
-    // copy callback under lock
-    std::function<void(const std::string &)> cb;
-    bool should_warn = false;
-    {
-        std::lock_guard<std::mutex> g(pImpl->mtx);
         cb = pImpl->write_error_callback;
         auto now = std::chrono::steady_clock::now();
-        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5))
+        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5)) // Rate-limit warnings
         {
             pImpl->last_stderr_notice = now;
             should_warn = true;
@@ -777,7 +846,7 @@ void Logger::log_printf(const char *fmt, ...) noexcept
     }
     va_end(ap);
 
-    write_formatted(Logger::Level::L_INFO, std::move(body));
+    log_fmt(Logger::Level::L_INFO, "{}", body);
 }
 
-} // namespace pylabhub::util
+} // namespace pylabhub::utils

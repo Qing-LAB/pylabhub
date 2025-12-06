@@ -10,9 +10,6 @@ option(BUILD_TESTS "Build the pyLabHub test suite" ON)
 # Option to build the IgorXOP module.
 option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 
-# Option to build the core library as a shared library (.so/.dll) instead of static (.a/.lib).
-option(PYLABHUB_BUILD_SHARED "Build pylabhub-corelib as a shared library" OFF)
-
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
 
