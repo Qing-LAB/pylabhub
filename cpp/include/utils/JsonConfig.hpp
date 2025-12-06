@@ -149,7 +149,7 @@ class PYLABHUB_API JsonConfig
     };
 
     // The Pimpl idiom provides a stable ABI, which is critical for shared libraries.
-    std::unique_ptr<Impl> _impl;
+    std::unique_ptr<Impl> pImpl;
 
     // save_locked: performs the actual atomic on-disk write. Caller must hold _initMutex.
     bool save_locked(std::error_code &ec);
@@ -175,24 +175,24 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
     RecursionGuard guard(key);
 
     // Refuse to operate if the object has not been initialized with a file path.
-    if (!_impl || _impl->configPath.empty())
+    if (!pImpl || pImpl->configPath.empty())
     {
         LOGGER_ERROR(
             "JsonConfig::with_json_write: cannot modify uninitialized config object.");
         return false;
     }
-    std::lock_guard<std::mutex> lg(_impl->initMutex);
+    std::lock_guard<std::mutex> lg(pImpl->initMutex);
 
     try
     {
         // Acquire a unique lock on the data to provide exclusive access to the callback.
-        std::unique_lock<std::shared_mutex> w_lock(_impl->rwMutex);
+        std::unique_lock<std::shared_mutex> w_lock(pImpl->rwMutex);
 
         // Pass the json object to the user's callback for modification.
-        std::forward<F>(fn)(_impl->data);
+        std::forward<F>(fn)(pImpl->data);
 
         // If the callback completes without throwing, mark the data as dirty.
-        _impl->dirty.store(true, std::memory_order_release);
+        pImpl->dirty.store(true, std::memory_order_release);
     }
     catch (const std::exception &e)
     {
@@ -232,13 +232,13 @@ template <typename F> bool JsonConfig::with_json_read(F &&cb) const noexcept
         RecursionGuard guard(key);
 
         // Ensure structural state is present before attempting to read
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        if (!_impl)
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        if (!pImpl)
             return false;
 
         // Acquire shared lock for concurrent reads
-        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-        const json &ref = _impl->data;
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        const json &ref = pImpl->data;
 
         // Invoke callback with a const reference to avoid copying
         std::forward<F>(cb)(ref);
@@ -268,15 +268,15 @@ template <typename T> bool JsonConfig::set(const std::string &key, T const &valu
 
         // Refuse to set data if the object has not been initialized with a file path.
         // This prevents creating a "pathless" config that can't be saved.
-        if (!_impl || _impl->configPath.empty())
+        if (!pImpl || pImpl->configPath.empty())
         {
             LOGGER_ERROR("JsonConfig::set: cannot set value on uninitialized config object.");
             return false;
         }
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
-        _impl->data[key] = value;
-        _impl->dirty.store(true, std::memory_order_release);
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+        pImpl->data[key] = value;
+        pImpl->dirty.store(true, std::memory_order_release);
         return true;
     }
     catch (...)
@@ -297,13 +297,13 @@ template <typename T> T JsonConfig::get(const std::string &key) const
     }
     RecursionGuard guard(key_ptr);
 
-    if (!_impl)
+    if (!pImpl)
         throw std::runtime_error("JsonConfig::get: not initialized");
-    std::lock_guard<std::mutex> lg(_impl->initMutex);
+    std::lock_guard<std::mutex> lg(pImpl->initMutex);
 
-    std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-    auto it = _impl->data.find(key);
-    if (it == _impl->data.end())
+    std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+    auto it = pImpl->data.find(key);
+    if (it == pImpl->data.end())
         throw std::runtime_error("JsonConfig::get: key not found: " + key);
     try
     {
@@ -330,12 +330,12 @@ T JsonConfig::get_or(const std::string &key, T const &default_value) const noexc
         }
         RecursionGuard guard(key_ptr);
 
-        if (!_impl)
+        if (!pImpl)
             return default_value;
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-        auto it = _impl->data.find(key);
-        if (it == _impl->data.end())
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        auto it = pImpl->data.find(key);
+        if (it == pImpl->data.end())
             return default_value;
         try
         {
@@ -365,11 +365,11 @@ inline bool JsonConfig::has(const std::string &key) const noexcept
         }
         RecursionGuard guard(key_ptr);
 
-        if (!_impl)
+        if (!pImpl)
             return false;
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        std::shared_lock<std::shared_mutex> r(_impl->rwMutex);
-        return _impl->data.find(key) != _impl->data.end();
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        return pImpl->data.find(key) != pImpl->data.end();
     }
     catch (...)
     {
@@ -390,15 +390,15 @@ inline bool JsonConfig::erase(const std::string &key) noexcept
         }
         RecursionGuard guard(key_ptr);
 
-        if (!_impl)
+        if (!pImpl)
             return false;
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
-        auto it = _impl->data.find(key);
-        if (it == _impl->data.end())
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+        auto it = pImpl->data.find(key);
+        if (it == pImpl->data.end())
             return false;
-        _impl->data.erase(it);
-        _impl->dirty.store(true, std::memory_order_release);
+        pImpl->data.erase(it);
+        pImpl->dirty.store(true, std::memory_order_release);
         return true;
     }
     catch (...)
@@ -422,16 +422,16 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
         RecursionGuard guard(key_ptr);
 
         // Refuse to update data if the object has not been initialized with a file path.
-        if (!_impl || _impl->configPath.empty())
+        if (!pImpl || pImpl->configPath.empty())
         {
             LOGGER_ERROR("JsonConfig::update: cannot update value on uninitialized config object.");
             return false;
         }
-        std::lock_guard<std::mutex> lg(_impl->initMutex);
-        std::unique_lock<std::shared_mutex> w(_impl->rwMutex);
-        json &target = _impl->data[key]; // create if missing
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+        json &target = pImpl->data[key]; // create if missing
         updater(target);
-        _impl->dirty.store(true, std::memory_order_release);
+        pImpl->dirty.store(true, std::memory_order_release);
         return true;
     }
     catch (...)
