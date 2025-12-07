@@ -149,7 +149,7 @@ function(pylabhub_stage_executable)
   add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:${ARG_TARGET}>"
-            "${DEST_DIR}"
+            "${DEST_DIR}/"
     COMMENT "Staging executable for ${ARG_TARGET} to ${DEST_DIR}"
     VERBATIM)
 endfunction()
@@ -193,26 +193,26 @@ function(pylabhub_get_library_staging_commands)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:RUNTIME:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}")
+           "$<TARGET_FILE:RUNTIME:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:ARCHIVE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}")
+           "$<TARGET_FILE:ARCHIVE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
     else()
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
       # runtime and linking. Stage it to the specified destination (e.g., 'bin').
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}")
+           "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       # On Linux, also place a copy/symlink in the 'lib' directory for consumers to find during linking.
       if(PLATFORM_LINUX)
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
           list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-               "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}")
+               "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
         endif()
       endif()
     endif()
   elseif(TGT_TYPE STREQUAL "STATIC_LIBRARY")
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-         "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}")
+         "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
   endif()
 
   set(${ARG_OUT_COMMANDS} ${commands_list} PARENT_SCOPE)

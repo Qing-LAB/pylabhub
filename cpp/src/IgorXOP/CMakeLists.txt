@@ -325,7 +325,6 @@ endif()
 
 # Create the unified staging target for this component.
 add_custom_target(stage_${XOP_TARGET}
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
   ${stage_commands}
   COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
   VERBATIM
