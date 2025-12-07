@@ -27,6 +27,8 @@
 namespace pylabhub::utils
 {
 
+namespace fs = std::filesystem;
+
 using json = nlohmann::json;
 
 // Constructors / dtor
@@ -84,7 +86,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         // `flock` is released here by its destructor.
     }
 
-    return reload();
+    return reload_locked();
 }
 
 bool JsonConfig::save() noexcept
@@ -194,15 +196,31 @@ bool JsonConfig::reload() noexcept
 {
     try
     {
-        // Ensure the implementation object exists.
         if (!pImpl)
-            pImpl = std::make_unique<Impl>();
-        // Lock to protect against concurrent init/reload/save operations.
+            return false;
         std::lock_guard<std::mutex> g(pImpl->initMutex);
+        return reload_locked();
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("JsonConfig::reload: exception: {}", e.what());
+        return false;
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("JsonConfig::reload: unknown exception");
+        return false;
+    }
+}
 
+bool JsonConfig::reload_locked() noexcept
+{
+    // Precondition: Caller must hold pImpl->initMutex.
+    try
+    {
         if (pImpl->configPath.empty())
         {
-            LOGGER_ERROR("JsonConfig::reload: configPath not initialized (call init() first)");
+            LOGGER_ERROR("JsonConfig::reload_locked: configPath not initialized (call init() first)");
             return false;
         }
 
@@ -211,7 +229,7 @@ bool JsonConfig::reload() noexcept
         if (!flock.valid())
         {
             [[maybe_unused]] auto ec = flock.error_code();
-            LOGGER_ERROR("JsonConfig::reload: failed to acquire lock for {} code={} msg=\"{}\"",
+            LOGGER_ERROR("JsonConfig::reload_locked: failed to acquire lock for {} code={} msg=\"{}\"",
                          pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
@@ -220,18 +238,38 @@ bool JsonConfig::reload() noexcept
         std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
-            LOGGER_ERROR("JsonConfig::reload: cannot open file: {}",
-                         pImpl->configPath.string().c_str());
-            return false;
+            // This is not an error if the file is legitimately not there (e.g., after init
+            // with createIfMissing=false). In that case, we just have an empty config.
+            // We only log an error if we expected it to exist.
+            std::error_code ec;
+            if (fs::exists(pImpl->configPath, ec))
+            {
+                LOGGER_ERROR("JsonConfig::reload_locked: cannot open file: {}",
+                             pImpl->configPath.string().c_str());
+            }
+            // If the file doesn't exist, we just treat it as an empty JSON object.
+            pImpl->data = json::object();
+            pImpl->dirty.store(false, std::memory_order_release);
+            return true;
         }
 
         json newdata;
         in >> newdata;
-        if (!in && !in.eof())
+        if (in.good())
         {
-            LOGGER_ERROR("JsonConfig::reload: parse/read error for {}",
+             // It is possible that the file is empty, in which case the extraction
+             // would fail. We should handle this gracefully.
+            if (newdata.is_null())
+            {
+                newdata = json::object();
+            }
+        } else if (!in.eof()) {
+            LOGGER_ERROR("JsonConfig::reload_locked: parse/read error for {}",
                          pImpl->configPath.string().c_str());
             return false;
+        } else {
+             // File is empty, which is valid. Treat as an empty object.
+             newdata = json::object();
         }
 
         // Atomically update the in-memory data.
@@ -246,12 +284,12 @@ bool JsonConfig::reload() noexcept
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("JsonConfig::reload: exception: {}", e.what());
+        LOGGER_ERROR("JsonConfig::reload_locked: exception: {}", e.what());
         return false;
     }
     catch (...)
     {
-        LOGGER_ERROR("JsonConfig::reload: unknown exception");
+        LOGGER_ERROR("JsonConfig::reload_locked: unknown exception");
         return false;
     }
 }
