@@ -33,6 +33,10 @@ foreach(test_target ${TEST_TARGETS})
   # This overrides any default and ensures the LOGGER_* macros are compiled in.
   target_compile_definitions(${test_target} PRIVATE LOGGER_COMPILE_LEVEL=0)
 
+  if (PYLABHUB_LOGGER_DEBUG)
+    target_compile_definitions(${test_target} PRIVATE _LOGGER_DEBUG_ENABLED=1)
+  endif()
+
   # Add each test to CTest for `ctest` command integration.
   # The COMMAND points to the executable in the staging directory. This ensures
   # that the test runs in an environment identical to deployment, where all

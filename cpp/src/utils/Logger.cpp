@@ -134,7 +134,7 @@ Impl::Impl()
         flush_cv.wait(lk, [this] { return !flush_requested.load(); });
     }
 
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Log worker thread created and ready. Native handle: {}\n",
                static_cast<void*>(worker_thread.native_handle()));
     fflush(stdout);
@@ -143,7 +143,7 @@ Impl::Impl()
 
 Impl::~Impl()
 {
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Logger Impl destructor called. Shutting down worker thread.\n");
     fflush(stdout);
 #endif
@@ -388,7 +388,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
     if (needed == 0)
     {
-        pImpl->last_errno.store(GetLastError());
+        pImpl->record_write_error(GetLastError(), "MultiByteToWideChar failed in init_file");
         return false;
     }
     std::wstring wpath(needed, L'\0');
@@ -401,7 +401,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE)
     {
-        pImpl->last_errno.store(GetLastError());
+        pImpl->record_write_error(GetLastError(), "CreateFileW failed in init_file");
         return false;
     }
     SetFilePointer(h, 0, nullptr, FILE_END);
@@ -422,7 +422,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     int fd = ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
     if (fd == -1)
     {
-        pImpl->last_errno.store(errno);
+        pImpl->record_write_error(errno, "open() failed in init_file");
         return false;
     }
     pImpl->file_fd = fd;
@@ -432,7 +432,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     
 #endif
 
-#if defined(PYLABHUB_LOGGER_DEBUG)
+#if defined(_LOGGER_DEBUG_ENABLED)
     fmt::print("Logger: Logger started at time {} with default log level '{}'\n", formatted_time(), level_to_string(this->level()));
     fmt::print("Logger: initialized file sink at '{}', use_flock={}\n",
                utf8_path, use_flock ? "true" : "false");
@@ -454,7 +454,7 @@ void Logger::init_syslog(const char *ident, int option, int facility)
     (void)facility;
 #endif
 
-#if defined(PYLABHUB_LOGGER_DEBUG)
+#if defined(_LOGGER_DEBUG_ENABLED)
     fmt::print("Logger: initialized syslog sink with ident='{}', option={}, facility={}\n",
                ident ? ident : "app", option, facility);
 #endif
@@ -472,13 +472,13 @@ bool Logger::init_eventlog(const wchar_t *source_name)
     HANDLE h = RegisterEventSourceW(nullptr, source_name);
     if (!h)
     {
-        pImpl->last_errno.store(GetLastError());
+        pImpl->record_write_error(GetLastError(), "RegisterEventSourceW failed");
         return false;
     }
     pImpl->evt_handle = h;
     pImpl->dest = Logger::Destination::L_EVENTLOG;
 
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     if (source_name)
     {
         std::wstring w_source_name(source_name);
@@ -506,7 +506,7 @@ bool Logger::init_eventlog(const wchar_t *source_name)
 #else
     (void)source_name;
 
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Logger: event log sink not supported on this platform\n");
     fflush(stdout);
 #endif
@@ -588,11 +588,11 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
     try
     {
         // Construct the full log message with timestamp, level, thread id.
-        std::string full_message = fmt::format("{} [{}] [tid={}] {}",
+        std::string prefix = fmt::format("{} [{}] [tid={}] ",
                             formatted_time(),
                             level_to_string(lvl),
-                            get_native_thread_id(),
-                            body);
+                            get_native_thread_id());
+        std::string full_message = prefix + body;
 
         // Push the formatted message to the queue for the worker thread.
         {
@@ -630,7 +630,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 // The main loop for the background worker thread.
 void Impl::worker_loop()
 {
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Log worker loop started.\n");
     fflush(stdout);
 #endif
@@ -674,153 +674,210 @@ void Impl::worker_loop()
     // After exiting the loop, ensure all sinks are properly closed.
     std::lock_guard<std::mutex> g(mtx);
     this->close_sinks();
-#ifdef PYLABHUB_LOGGER_DEBUG
+#ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Log worker loop exiting.\n");
     fflush(stdout);
 #endif
 }
 
-// This function contains the original synchronous I/O logic.
-// It is now called exclusively by the worker thread.
+// Internal helper for writing to console (stderr)
+static void write_to_console_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+{
+    try
+    {
+        fmt::print(stderr, FMT_STRING("{}"), full_ln);
+        fflush(stderr);
+    }
+    catch (const std::system_error &e)
+    {
+        lk.unlock(); // Unlock before calling back.
+        pImpl->record_write_error(e.code().value(), e.what());
+    }
+}
+
+// Internal helper for writing to a file on POSIX systems
+#if !defined(PLATFORM_WIN64)
+static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+{
+    if (pImpl->file_fd != -1)
+    {
+        if (pImpl->use_flock)
+            flock(pImpl->file_fd, LOCK_EX);
+        ssize_t total = static_cast<ssize_t>(full_ln.size());
+        ssize_t off = 0;
+        const char *data = full_ln.data();
+        while (off < total)
+        {
+            ssize_t w = ::write(pImpl->file_fd, data + off, static_cast<size_t>(total - off));
+            if (w < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                int err = errno;
+                if (pImpl->use_flock)
+                    flock(pImpl->file_fd, LOCK_UN);
+                lk.unlock();
+                pImpl->record_write_error(err, "write() failed");
+                return;
+            }
+            off += w;
+        }
+
+        if (pImpl->fsync_per_write.load())
+        {
+            if (::fsync(pImpl->file_fd) != 0)
+            {
+                int err = errno;
+                if (pImpl->use_flock)
+                    flock(pImpl->file_fd, LOCK_UN);
+                lk.unlock();
+                pImpl->record_write_error(err, "fsync failed");
+                return;
+            }
+        }
+        if (pImpl->use_flock)
+            flock(pImpl->file_fd, LOCK_UN);
+    }
+    else
+    {
+        size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
+        if (wrote != full_ln.size())
+        {
+            lk.unlock();
+            pImpl->record_write_error(errno, "fwrite to stderr failed (file fallback)");
+        }
+        else
+        {
+            fflush(stderr);
+        }
+    }
+}
+#endif
+
+// Internal helper for writing to a file on Windows systems
+#if defined(PLATFORM_WIN64)
+static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+{
+    if (pImpl->file_handle != INVALID_HANDLE_VALUE)
+    {
+        DWORD written = 0;
+        BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(),
+                            static_cast<DWORD>(full_ln.size()), &written, nullptr);
+        if (!ok || written != full_ln.size())
+        {
+            lk.unlock();
+            pImpl->record_write_error(static_cast<int>(GetLastError()), "WriteFile failed");
+        }
+        else if (pImpl->fsync_per_write.load())
+        {
+            if (!FlushFileBuffers(pImpl->file_handle))
+            {
+                lk.unlock();
+                pImpl->record_write_error(static_cast<int>(GetLastError()), "FlushFileBuffers failed");
+            }
+        }
+    }
+    else
+    {
+        // fallback to OutputDebugString if no file handle
+        std::wstring w = [](const std::string &s) -> std::wstring
+        {
+            if (s.empty())
+                return {};
+            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                                             nullptr, 0);
+            if (needed <= 0)
+                return {};
+            std::wstring out(needed, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0],
+                                needed);
+            return out;
+        }(full_ln);
+        OutputDebugStringW(w.c_str());
+    }
+}
+#endif
+
+// Internal helper for writing to syslog
+#if !defined(PLATFORM_WIN64)
+static void write_to_syslog_internal(Impl *pImpl, LogMessage &&msg, std::unique_lock<std::mutex> &lk)
+{
+    syslog(level_to_syslog_priority(msg.level), "%s", msg.message.c_str());
+    (void)pImpl; // Unused in this path, but consistent signature
+    (void)lk;    // Unused in this path, but consistent signature
+}
+#endif
+
+// Internal helper for writing to eventlog on Windows
+#if defined(PLATFORM_WIN64)
+static void write_to_eventlog_internal(Impl *pImpl, const std::string &full_ln, LogMessage &&msg, std::unique_lock<std::mutex> &lk)
+{
+    if (pImpl->evt_handle)
+    {
+        std::wstring wmsg;
+        {
+            // convert utf8 to wstring
+            int needed = MultiByteToWideChar(CP_UTF8, 0, msg.message.c_str(), -1, nullptr, 0);
+            if (needed > 0)
+            {
+                wmsg.resize(needed);
+                MultiByteToWideChar(CP_UTF8, 0, msg.message.c_str(), -1, &wmsg[0], needed);
+                if (!wmsg.empty() && wmsg.back() == L'\0')
+                    wmsg.pop_back();
+            }
+        }
+        LPCWSTR strings[1] = {wmsg.c_str()};
+        if (!ReportEventW(pImpl->evt_handle, EVENTLOG_INFORMATION_TYPE, 0, 0, nullptr, 1, 0,
+                          strings, nullptr))
+        {
+            lk.unlock();
+            pImpl->record_write_error(static_cast<int>(GetLastError()), "ReportEventW failed");
+        }
+    }
+    else
+    {
+        // Fallback to OutputDebugString if no event handle
+        std::wstring w;
+        int needed = MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, nullptr, 0);
+        if (needed > 0)
+        {
+            w.resize(needed);
+            MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, &w[0], needed);
+            if (!w.empty() && w.back() == L'\0')
+                w.pop_back();
+        }
+        OutputDebugStringW(w.c_str());
+    }
+}
+#endif
+
+// This function contains the original synchronous I/O logic, now dispatching to helpers.
+// It is called exclusively by the worker thread.
 static void do_write(Impl *pImpl, LogMessage &&msg)
 {
     // The worker thread is the only writer, but we still need to lock
     // to protect sink handles during reconfiguration (e.g., set_destination).
     std::unique_lock<std::mutex> lk(pImpl->mtx);
 
-    // Reconstruct the full line with a newline for sinks that require it.
-    const std::string full_ln = msg.message + "\n";
+    const std::string full_ln = msg.message + "\n"; // Only needed for console/file/eventlog fallback
 
-    if (pImpl->dest == Logger::Destination::L_CONSOLE)
+    switch (pImpl->dest)
     {
-        try
-        {
-            // Use fmt::print for efficient, type-safe output to stderr.
-            fmt::print(stderr, FMT_STRING("{}"), full_ln);
-            fflush(stderr);
-        }
-        catch (const std::system_error &e)
-        {
-            // This is how {fmt} reports I/O errors.
-            int err = e.code().value();
-            // Unlock before calling the error handler to avoid deadlocks if the
-            // callback tries to interact with the logger.
-            lk.unlock();
-            pImpl->record_write_error(err, e.what());
-        }
-        return;
-    }
-
-    if (pImpl->dest == Logger::Destination::L_FILE)
-    {
+    case Logger::Destination::L_CONSOLE:
+        write_to_console_internal(pImpl, full_ln, lk);
+        break;
+    case Logger::Destination::L_FILE:
 #if defined(PLATFORM_WIN64)
-        if (pImpl->file_handle != INVALID_HANDLE_VALUE)
-        {
-            // prefer single WriteFile call
-            DWORD written = 0;
-            BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(),
-                                static_cast<DWORD>(full_ln.size()), &written, nullptr);
-            if (!ok || written != full_ln.size())
-            {
-                DWORD err = GetLastError();
-                lk.unlock(); // Unlock before calling back.
-                pImpl->record_write_error(static_cast<int>(err), "WriteFile failed");
-            }
-            else
-            {
-                if (pImpl->fsync_per_write.load())
-                {
-                    if (!FlushFileBuffers(pImpl->file_handle))
-                    {
-                        DWORD err2 = GetLastError();
-                        lk.unlock(); // Unlock before calling back.
-                        pImpl->record_write_error(static_cast<int>(err2), "FlushFileBuffers failed");
-                    }
-                }
-            }
-        }
-        else
-        {
-            // fallback to OutputDebugString if no file handle
-            std::wstring w = [](const std::string &s) -> std::wstring
-            {
-                if (s.empty())
-                    return {};
-                int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                                                 nullptr, 0);
-                if (needed <= 0)
-                    return {};
-                std::wstring out(needed, L'\0');
-                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0],
-                                    needed);
-                return out;
-            }(full_ln);
-            OutputDebugStringW(w.c_str());
-        }
+        write_to_file_internal(pImpl, full_ln, lk);
 #else
-        if (pImpl->file_fd != -1)
-        {
-            // If use_flock is requested, obtain file lock first (advisory)
-            if (pImpl->use_flock)
-                flock(pImpl->file_fd, LOCK_EX);
-            // Attempt single write; loop to handle EINTR / partial writes
-            ssize_t total = static_cast<ssize_t>(full_ln.size());
-            ssize_t off = 0;
-            const char *data = full_ln.data();
-            while (off < total)
-            {
-                ssize_t w = ::write(pImpl->file_fd, data + off, static_cast<size_t>(total - off));
-                if (w < 0)
-                {
-                    if (errno == EINTR)
-                        continue;
-                    int err = errno;
-                    if (pImpl->use_flock)
-                        flock(pImpl->file_fd, LOCK_UN);
-                    lk.unlock(); // Unlock before calling back.
-                    pImpl->record_write_error(err, "write() failed");
-                    return;
-                }
-                off += w;
-            }
-
-            if (pImpl->fsync_per_write.load())
-            {
-                if (::fsync(pImpl->file_fd) != 0)
-                {
-                    int err = errno;
-                    if (pImpl->use_flock)
-                        flock(pImpl->file_fd, LOCK_UN);
-                    lk.unlock(); // Unlock before calling back.
-                    pImpl->record_write_error(err, "fsync failed");
-                    return;
-                }
-            }
-            if (pImpl->use_flock)
-                flock(pImpl->file_fd, LOCK_UN);
-        }
-        else
-        {
-            size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
-            if (wrote != full_ln.size())
-            {
-                int err = errno;
-                lk.unlock(); // Unlock before calling back.
-                pImpl->record_write_error(err, "fwrite to stderr failed");
-            }
-            else
-            {
-                fflush(stderr);
-            }
-        }
+        write_to_file_internal(pImpl, full_ln, lk);
 #endif
-        return;
-    }
-
-    if (pImpl->dest == Logger::Destination::L_SYSLOG)
-    {
-#if defined(PLATFORM_WIN64)
-        // On Windows default to debug output
+        break;
+    case Logger::Destination::L_SYSLOG:
+#if !defined(PLATFORM_WIN64)
+        write_to_syslog_internal(pImpl, std::move(msg), lk);
+#else
+        // Fallback to debug output on Windows
         std::wstring w = [](const std::string &s) -> std::wstring
         {
             if (s.empty())
@@ -834,83 +891,20 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
             return out;
         }(msg.message);
         OutputDebugStringW(w.c_str());
-#else
-        syslog(level_to_syslog_priority(msg.level), "%s", msg.message.c_str());
 #endif
-        return;
-    }
-
-    if (pImpl->dest == Logger::Destination::L_EVENTLOG)
-    {
+        break;
+    case Logger::Destination::L_EVENTLOG:
 #if defined(PLATFORM_WIN64)
-        if (pImpl->evt_handle)
-        {
-            std::wstring wmsg;
-            {
-                // convert utf8 to wstring
-                int needed = MultiByteToWideChar(CP_UTF8, 0, msg.message.c_str(), -1, nullptr, 0);
-                if (needed > 0)
-                {
-                    wmsg.resize(needed);
-                    MultiByteToWideChar(CP_UTF8, 0, msg.message.c_str(), -1, &wmsg[0], needed);
-                    if (!wmsg.empty() && wmsg.back() == L'\0')
-                        wmsg.pop_back();
-                }
-            }
-            LPCWSTR strings[1] = {wmsg.c_str()};
-            if (!ReportEventW(pImpl->evt_handle, EVENTLOG_INFORMATION_TYPE, 0, 0, nullptr, 1, 0,
-                              strings, nullptr))
-            {
-                DWORD err = GetLastError();
-                lk.unlock(); // Unlock before calling back.
-                pImpl->record_write_error(static_cast<int>(err), "ReportEventW failed");
-            }
-            else
-            {
-                // success
-            }
-        }
-        else
-        {
-            std::wstring w;
-            int needed = MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, nullptr, 0);
-            if (needed > 0)
-            {
-                w.resize(needed);
-                MultiByteToWideChar(CP_UTF8, 0, full_ln.c_str(), -1, &w[0], needed);
-                if (!w.empty() && w.back() == L'\0')
-                    w.pop_back();
-            }
-            OutputDebugStringW(w.c_str());
-        }
+        write_to_eventlog_internal(pImpl, full_ln, std::move(msg), lk);
 #else
-        // fallback to stderr
-        size_t wrote = fwrite(full_ln.data(), 1, full_ln.size(), stderr);
-        if (wrote != full_ln.size())
-        {
-            int err = errno;
-            lk.unlock(); // Unlock before calling back.
-            pImpl->record_write_error(err, "fwrite to stderr failed (eventlog fallback)");
-        }
-        else
-        {
-            fflush(stderr);
-        }
+        // Fallback to stderr on POSIX
+        write_to_console_internal(pImpl, full_ln, lk);
 #endif
-        return;
-    }
-
-    // default fallback: console
-    try
-    {
-        fmt::print(stderr, FMT_STRING("{}"), full_ln);
-        fflush(stderr);
-    }
-    catch (const std::system_error &e)
-    {
-        int err = e.code().value();
-        lk.unlock(); // Unlock before calling back.
-        pImpl->record_write_error(err, "fwrite to stderr failed (fallback)");
+        break;
+    default:
+        // Default fallback to console logging
+        write_to_console_internal(pImpl, full_ln, lk);
+        break;
     }
 }
 
@@ -928,6 +922,7 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
     {
         std::lock_guard<std::mutex> g(this->mtx);
         this->write_failure_count.fetch_add(1);
+        this->last_errno.store(errcode); // Store the OS-specific error code
         this->last_write_errcode.store(errcode);
         this->last_write_errmsg = saved_msg;
         cb = this->write_error_callback;
@@ -940,7 +935,7 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
     }
 
     // Invoke callback outside the lock (safe)
-#if defined(PYLABHUB_LOGGER_DEBUG)
+#if defined(_LOGGER_DEBUG_ENABLED)
     fmt::print(stdout, "record_write_error: cb is {}.\n", cb ? "NOT NULL" : "NULL");
     fflush(stdout);
 #endif
@@ -948,7 +943,9 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
     {
         try
         {
-            cb(saved_msg);
+            // Construct a more informative message for the callback
+            std::string full_err_msg = fmt::format("Logger write error: {} (code: {})", saved_msg, errcode);
+            cb(full_err_msg);
         }
         catch (...)
         {
@@ -960,8 +957,8 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
     if (should_warn)
     {
         // Use fmt::print for consistency and type safety.
-        fmt::print(stderr, "logger: write failure (count={}): {}\n",
-                   this->write_failure_count.load(), saved_msg);
+        fmt::print(stderr, "logger: write failure (count={}): {} (code: {}.\n",
+                   this->write_failure_count.load(), saved_msg, errcode);
     }
 }
 
