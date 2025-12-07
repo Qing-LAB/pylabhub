@@ -422,10 +422,10 @@ void test_symlink_attack_prevention()
     fs::remove(real_file);
     fs::remove(symlink_path);
 
-    // Create a "sensitive" file.
+    // Create a "sensitive" file with VALID JSON content.
     {
         std::ofstream out(real_file);
-        out << "sensitive data";
+        out << R"({ "original": "data" })";
     }
 
     // Create a symlink pointing to it.
@@ -433,16 +433,21 @@ void test_symlink_attack_prevention()
     CHECK(fs::is_symlink(symlink_path));
 
     JsonConfig cfg;
-    // init() should succeed as it just records the path.
+    // init() will now succeed because reload() can parse the JSON.
     CHECK(cfg.init(symlink_path, false));
+    CHECK(cfg.get<std::string>("original") == "data");
 
+    // Now, attempt to save. This should fail because atomic_write_json
+    // detects the symlink path and throws an exception, which save()
+    // catches and converts to a `false` return value.
     cfg.set("malicious", "data");
-    // save() should fail because atomic_write_json will detect the symlink and throw.
-    // The save() method catches the exception and returns false.
     CHECK(!cfg.save());
 
-    // Verify the sensitive file was not overwritten.
-    CHECK(read_file_contents(real_file) == "sensitive data");
+    // Verify the sensitive file was not overwritten with malicious data.
+    // It should still contain the original valid JSON.
+    json j = json::parse(read_file_contents(real_file));
+    CHECK(j["original"] == "data");
+    CHECK(j.find("malicious") == j.end());
 }
 #endif
 

@@ -170,6 +170,21 @@ message(STATUS "")
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
 set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Root directory for staging all project artifacts.")
+
+# Create a dedicated target to initialize all staging directories. This
+# prevents race conditions and file/directory name conflicts by ensuring
+# the directory structure exists before any artifacts are copied.
+add_custom_target(create_staging_dirs
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/docs"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tools"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/config"
+    COMMENT "Initializing staging directories"
+)
+
 add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo " "
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
@@ -181,6 +196,11 @@ add_custom_target(stage_all
 # This custom target serves as a hook for all core project artifacts (libraries,
 # executables) to attach their staging commands. It is a dependency of `stage_all`.
 add_custom_target(stage_core_artifacts)
+
+# Ensure that the core staging process and the overall staging process
+# wait for the directories to be created first.
+add_dependencies(stage_core_artifacts create_staging_dirs)
+add_dependencies(stage_all create_staging_dirs)
 
 message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
 
@@ -225,14 +245,28 @@ endif()
 # before the final message is printed.
 add_dependencies(stage_all stage_core_artifacts)
 
+# The `stage_third_party_deps` target (from third_party/CMakeLists.txt) must
+# also be executed. To prevent a race condition where both core and third-party
+# targets try to create the same directories simultaneously (e.g., in a parallel
+# build with `make -j`), we create an explicit dependency. This ensures
+# third-party dependencies are staged *before* core artifacts.
+if(THIRD_PARTY_INSTALL)
+  # This target is defined in third_party/CMakeLists.txt
+  add_dependencies(stage_core_artifacts stage_third_party_deps)
+endif()
+
 # If the XOP is being built, make sure its staging target is part of the global `stage_all`.
 if(BUILD_XOP)
   # This target is defined in src/IgorXOP/CMakeLists.txt
+  # Ensure it waits for the staging directories to exist.
+  add_dependencies(stage_pylabhubxop create_staging_dirs)
   add_dependencies(stage_all stage_pylabhubxop)
 endif()
 
 if(BUILD_TESTS)
   # This target is defined in tests/CMakeLists.txt
+  # Ensure it waits for the staging directories to exist.
+  add_dependencies(stage_tests create_staging_dirs)
   add_dependencies(stage_all stage_tests)
 endif()
 

@@ -49,6 +49,9 @@ add_executable(pylabhub-app hubshell.cpp)
 add_executable(pylabhub::app ALIAS pylabhub-app)
 target_compile_features(pylabhub-app PRIVATE cxx_std_17)
 
+# Set the compile-time log level based on the build type (Debug/Release).
+target_compile_definitions(pylabhub-app PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
+
 # The app links against the core library.
 target_link_libraries(pylabhub-app PRIVATE pylabhub::core)
 

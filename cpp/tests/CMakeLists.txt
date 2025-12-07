@@ -29,6 +29,10 @@ foreach(test_target ${TEST_TARGETS})
   # Linking against the namespaced alias is the correct modern CMake approach.
   target_link_libraries(${test_target} PRIVATE pylabhub::utils)
 
+  # Define the compile-time log level for tests to enable all log messages.
+  # This overrides any default and ensures the LOGGER_* macros are compiled in.
+  target_compile_definitions(${test_target} PRIVATE LOGGER_COMPILE_LEVEL=0)
+
   # Add each test to CTest for `ctest` command integration.
   # The COMMAND points to the executable in the staging directory. This ensures
   # that the test runs in an environment identical to deployment, where all

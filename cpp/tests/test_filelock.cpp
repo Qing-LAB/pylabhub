@@ -221,18 +221,26 @@ void test_move_semantics()
 
 void test_directory_creation()
 {
+    // This test verifies that if the parent directory for a lock file does not
+    // exist, FileLock will create it automatically.
     auto new_dir = g_temp_dir / "new_dir_for_lock";
-    auto lock_path = new_dir / "test.lock";
+    auto resource_to_lock = new_dir / "resource.txt";
+    auto actual_lock_file = new_dir / "resource.txt.lock";
 
-    fs::remove_all(new_dir); // Ensure it doesn't exist
+    fs::remove_all(new_dir); // Ensure the parent directory doesn't exist.
     CHECK(!fs::exists(new_dir));
 
     {
-        FileLock lock(lock_path, LockMode::NonBlocking);
+        // Create a lock for a resource inside the non-existent directory.
+        FileLock lock(resource_to_lock, LockMode::NonBlocking);
         CHECK(lock.valid());
+
+        // FileLock should have created the directory for the lock file.
         CHECK(fs::exists(new_dir));
-        CHECK(fs::exists(lock_path));
-    } // lock released
+
+        // It should also have created the lock file itself.
+        CHECK(fs::exists(actual_lock_file));
+    }
 
     fs::remove_all(new_dir); // Cleanup
 }

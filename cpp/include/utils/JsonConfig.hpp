@@ -144,7 +144,7 @@ class PYLABHUB_API JsonConfig
         mutable std::mutex initMutex;      // Protects all structural state and serializes access.
         std::atomic<bool> dirty{false}; // true if memory may be newer than disk
 
-        Impl() = default;
+        Impl() : data(json::object()) {}
         ~Impl() = default;
     };
 
@@ -153,6 +153,9 @@ class PYLABHUB_API JsonConfig
 
     // save_locked: performs the actual atomic on-disk write. Caller must hold _initMutex.
     bool save_locked(std::error_code &ec);
+
+    // reload_locked: performs the actual file read. Caller must hold _initMutex.
+    bool reload_locked() noexcept;
 
   private:
     // atomic, cross-platform write helper (definition in JsonConfig.cpp)

@@ -70,6 +70,11 @@ struct Impl
     std::condition_variable cv;
     std::vector<LogMessage> queue;
 
+    // Flush mechanism
+    std::mutex flush_mtx;
+    std::condition_variable flush_cv;
+    std::atomic<bool> flush_requested{false};
+
     // Mutex to protect configuration state (destination, file handles, etc.).
     // This is locked by public configuration methods and by the worker thread
     // before performing I/O, preventing race conditions if a sink is changed
@@ -111,10 +116,37 @@ Impl::Impl()
 {
     // Start the background worker thread upon construction.
     worker_thread = std::thread(&Impl::worker_loop, this);
+
+    // Reuse the flush mechanism to perform a startup synchronization.
+    // This ensures the constructor waits until the worker thread is fully running
+    // and ready to process messages.
+    {
+        std::unique_lock<std::mutex> lk(flush_mtx);
+        // Set flush_requested to true regardless of queue state.
+        flush_requested.store(true, std::memory_order_release);
+
+        // Notify the worker. It will wake up immediately because the flush_requested
+        // flag satisfies its wait condition.
+        cv.notify_one();
+
+        // Wait until the worker has started, run through its loop once (with an
+        // empty queue), and cleared the flush_requested flag.
+        flush_cv.wait(lk, [this] { return !flush_requested.load(); });
+    }
+
+#ifdef PYLABHUB_LOGGER_DEBUG
+    fmt::print(stdout, "Log worker thread created and ready. Native handle: {}\n",
+               static_cast<void*>(worker_thread.native_handle()));
+    fflush(stdout);
+#endif
 }
 
 Impl::~Impl()
 {
+#ifdef PYLABHUB_LOGGER_DEBUG
+    fmt::print(stdout, "Logger Impl destructor called. Shutting down worker thread.\n");
+    fflush(stdout);
+#endif
     // Signal the worker to shut down and wait for it to finish.
     if (worker_thread.joinable())
     {
@@ -195,15 +227,14 @@ static uint64_t get_native_thread_id() noexcept
 #endif
 }
 
-// Helper: formatted local time with millisecond resolution (UTC/local depending on system)
+// Helper: formatted local time with sub-second resolution
 static std::string formatted_time()
 {
     using namespace std::chrono;
     auto now = system_clock::now();
-    // Use {fmt} to format the time portably. The {:%Y-%m-%d %H:%M:%S.%L}
-    // format string directly formats a std::chrono::time_point with
-    // millisecond precision, which is simpler and more idiomatic.
-    return fmt::format("{:%Y-%m-%d %H:%M:%S.%L}", now);
+    // Use {fmt} to format the time portably. {:%Y-%m-%d %H:%M:%S.%f} provides
+    // microsecond precision.
+    return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", now);
 }
 
 static const char *level_to_string(Logger::Level lvl) noexcept
@@ -270,11 +301,13 @@ Logger &Logger::instance()
 }
 
 // ---- small accessors used by header-only templates ----
-bool Logger::should_log(Logger::Level lvl) const noexcept
+bool Logger::should_log(Level lvl) const noexcept
 {
     if (!pImpl)
         return false;
-    return static_cast<int>(lvl) >= pImpl->level.load(std::memory_order_relaxed);
+    
+    bool result = static_cast<int>(lvl) >= pImpl->level.load(std::memory_order_relaxed);
+    return result;
 }
 
 size_t Logger::max_log_line_length() const noexcept
@@ -378,7 +411,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     pImpl->file_path = utf8_path;
     pImpl->use_flock = use_flock;
     pImpl->dest = Logger::Destination::L_FILE;
-    return true;
+    
 #else
     // POSIX open with O_APPEND
     if (pImpl->file_fd != -1)
@@ -396,8 +429,16 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     pImpl->file_path = utf8_path;
     pImpl->use_flock = use_flock;
     pImpl->dest = Logger::Destination::L_FILE;
-    return true;
+    
 #endif
+
+#if defined(PYLABHUB_LOGGER_DEBUG)
+    fmt::print("Logger: Logger started at time {} with default log level '{}'\n", formatted_time(), level_to_string(this->level()));
+    fmt::print("Logger: initialized file sink at '{}', use_flock={}\n",
+               utf8_path, use_flock ? "true" : "false");
+#endif
+
+    return true;
 }
 
 void Logger::init_syslog(const char *ident, int option, int facility)
@@ -411,6 +452,11 @@ void Logger::init_syslog(const char *ident, int option, int facility)
     (void)ident;
     (void)option;
     (void)facility;
+#endif
+
+#if defined(PYLABHUB_LOGGER_DEBUG)
+    fmt::print("Logger: initialized syslog sink with ident='{}', option={}, facility={}\n",
+               ident ? ident : "app", option, facility);
 #endif
 }
 
@@ -431,9 +477,40 @@ bool Logger::init_eventlog(const wchar_t *source_name)
     }
     pImpl->evt_handle = h;
     pImpl->dest = Logger::Destination::L_EVENTLOG;
+
+#ifdef PYLABHUB_LOGGER_DEBUG
+    if (source_name)
+    {
+        std::wstring w_source_name(source_name);
+        std::string u8_source_name;
+        if (!w_source_name.empty())
+        {
+            int size_needed = WideCharToMultiByte(CP_UTF8, 0, w_source_name.c_str(), (int)w_source_name.length(), NULL, 0, NULL, NULL);
+            if (size_needed > 0)
+            {
+                u8_source_name.resize(size_needed);
+                WideCharToMultiByte(CP_UTF8, 0, w_source_name.c_str(), (int)w_source_name.length(), &u8_source_name[0], size_needed, NULL, NULL);
+            }
+        }
+        fmt::print(stdout, "Logger: initialized event log sink with source_name='{}'\n", u8_source_name);
+        fflush(stdout);
+    }
+    else
+    {
+        fmt::print(stdout, "Logger: initialized event log sink with source_name='app'\n");
+        fflush(stdout);
+    }
+#endif
+
     return true;
 #else
     (void)source_name;
+
+#ifdef PYLABHUB_LOGGER_DEBUG
+    fmt::print(stdout, "Logger: event log sink not supported on this platform\n");
+    fflush(stdout);
+#endif
+
     return false;
 #endif
 }
@@ -450,8 +527,54 @@ void Logger::shutdown()
 {
     if (!pImpl)
         return;
+
+    // Ask the worker thread to process all pending messages and wait for it.
+    flush();
+
+    // After flush(), the queue should be empty. A check with dirty() can be a sanity check.
+    if (dirty())
+    {
+        // This would indicate a bug in flush() or unexpected concurrent logging.
+        // We can flush again to be resilient.
+        flush();
+    }
+
+    // Now that all messages are written, it's safe to close the file handles.
     std::lock_guard<std::mutex> g(pImpl->mtx);
     pImpl->close_sinks();
+}
+
+void Logger::flush() noexcept
+{
+    if (!pImpl)
+        return;
+
+    // A lock is needed to wait on the condition variable.
+    std::unique_lock<std::mutex> lk(pImpl->flush_mtx);
+    {
+        std::lock_guard<std::mutex> qlk(pImpl->queue_mtx);
+        // If the queue is already empty, no need to signal the worker and wait.
+        if (pImpl->queue.empty())
+        {
+            return;
+        }
+        pImpl->flush_requested.store(true, std::memory_order_release);
+    }
+
+    // Notify the worker that a flush has been requested.
+    pImpl->cv.notify_one();
+
+    // Wait until the worker thread signals that it has finished processing
+    // the queue and has reset the flush_requested flag.
+    pImpl->flush_cv.wait(lk, [this] { return !pImpl->flush_requested.load(); });
+}
+
+bool Logger::dirty() const noexcept
+{
+    if (!pImpl)
+        return false;
+    std::lock_guard<std::mutex> lk(pImpl->queue_mtx);
+    return !pImpl->queue.empty();
 }
 
 // ---- Non-blocking write sink ----
@@ -461,52 +584,100 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 {
     if (!pImpl)
         return;
-    std::string full =
-        fmt::format(FMT_STRING("{} [{}] [tid={}] {}"), formatted_time(), level_to_string(lvl),
-                    std::to_string(get_native_thread_id()), body);
-    
-    // Push the formatted message to the queue for the worker thread.
+
+    try
     {
-        std::lock_guard<std::mutex> lk(pImpl->queue_mtx);
-        pImpl->queue.emplace_back(LogMessage{lvl, std::move(full)});
+        // Construct the full log message with timestamp, level, thread id.
+        std::string full_message = fmt::format("{} [{}] [tid={}] {}",
+                            formatted_time(),
+                            level_to_string(lvl),
+                            get_native_thread_id(),
+                            body);
+
+        // Push the formatted message to the queue for the worker thread.
+        {
+            std::lock_guard<std::mutex> lk(pImpl->queue_mtx);
+            pImpl->queue.emplace_back(LogMessage{lvl, std::move(full_message)});
+        }
+        pImpl->cv.notify_one(); // Wake up the worker thread.
+        }
+        catch (const std::exception &ex)
+        {
+        // This catch block is a safeguard. With the corrected formatting logic,
+        // exceptions should be rare, but we must honor the noexcept contract.
+        // We can't log the error using the logger itself, so we write to stderr.
+        auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5))
+        {
+            pImpl->last_stderr_notice = now;
+            fmt::print(stderr, "INTERNAL LOGGER ERROR in write_formatted: {}\n", ex.what());
+        }
     }
-    pImpl->cv.notify_one(); // Wake up the worker thread.
+    catch(...)
+    {
+        // Similar to above, for non-standard exceptions.
+        auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        if (now - pImpl->last_stderr_notice > std::chrono::seconds(5))
+        {
+            pImpl->last_stderr_notice = now;
+            fmt::print(stderr, "UNKNOWN INTERNAL LOGGER ERROR in write_formatted\n");
+        }
+    }
 }
 
 // The main loop for the background worker thread.
 void Impl::worker_loop()
 {
+#ifdef PYLABHUB_LOGGER_DEBUG
+    fmt::print(stdout, "Log worker loop started.\n");
+    fflush(stdout);
+#endif
     std::vector<LogMessage> write_batch;
     while (true)
     {
         {
             std::unique_lock<std::mutex> lk(queue_mtx);
-            // Wait until the queue has messages or shutdown is requested.
-            cv.wait(lk, [this] { return done || !queue.empty(); });
+            // Wait until the queue has messages, shutdown is requested, or a flush is requested.
+            cv.wait(lk, [this] { return done || !queue.empty() || flush_requested.load(); });
 
-            // If shutdown is requested and the queue is empty, we're done.
             if (done && queue.empty())
             {
                 break;
             }
-
-            // Atomically swap the queue contents into our local batch.
-            // This minimizes the time the queue is locked.
             write_batch.swap(queue);
         }
 
-        // Process all messages in the batch.
-        for (auto &msg : write_batch)
+        if (!write_batch.empty())
         {
-            do_write(this, std::move(msg));
+            for (auto &msg : write_batch)
+            {
+                do_write(this, std::move(msg));
+            }
+            write_batch.clear();
         }
-        write_batch.clear();
+
+        // If a flush was requested and we've emptied the queue, notify the flushing thread.
+        if (flush_requested.load(std::memory_order_acquire))
+        {
+            std::lock_guard<std::mutex> lk(queue_mtx);
+            if (queue.empty())
+            {
+                flush_requested.store(false, std::memory_order_release);
+                // The waiting thread holds the flush_mtx, but we can notify without it.
+                flush_cv.notify_all();
+            }
+        }
     }
 
     // After exiting the loop, ensure all sinks are properly closed.
-    // This is a final cleanup step.
     std::lock_guard<std::mutex> g(mtx);
     this->close_sinks();
+#ifdef PYLABHUB_LOGGER_DEBUG
+    fmt::print(stdout, "Log worker loop exiting.\n");
+    fflush(stdout);
+#endif
 }
 
 // This function contains the original synchronous I/O logic.
@@ -612,6 +783,7 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
                 }
                 off += w;
             }
+
             if (pImpl->fsync_per_write.load())
             {
                 if (::fsync(pImpl->file_fd) != 0)
@@ -693,6 +865,10 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
                 lk.unlock(); // Unlock before calling back.
                 pImpl->record_write_error(static_cast<int>(err), "ReportEventW failed");
             }
+            else
+            {
+                // success
+            }
         }
         else
         {
@@ -764,6 +940,10 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
     }
 
     // Invoke callback outside the lock (safe)
+#if defined(PYLABHUB_LOGGER_DEBUG)
+    fmt::print(stdout, "record_write_error: cb is {}.\n", cb ? "NOT NULL" : "NULL");
+    fflush(stdout);
+#endif
     if (cb)
     {
         try
@@ -783,39 +963,6 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
         fmt::print(stderr, "logger: write failure (count={}): {}\n",
                    this->write_failure_count.load(), saved_msg);
     }
-}
-
-// Minimal printf-style compatibility wrapper using vsnprintf fallback
-void Logger::log_printf(const char *fmt, ...) noexcept
-{
-    if (!fmt)
-        return;
-    // vsnprintf to compute size then format
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    int needed = vsnprintf(nullptr, 0, fmt, ap_copy);
-    va_end(ap_copy);
-
-    std::string body;
-    if (needed < 0)
-    {
-        body = "[FORMAT ERROR]";
-    }
-    else
-    {
-        size_t sz = static_cast<size_t>(needed) + 1;
-        std::vector<char> buf(sz);
-        va_list ap2;
-        va_copy(ap2, ap);
-        vsnprintf(buf.data(), sz, fmt, ap2);
-        va_end(ap2);
-        body.assign(buf.data(), static_cast<size_t>(needed));
-    }
-    va_end(ap);
-
-    log_fmt(Logger::Level::L_INFO, "{}", body);
 }
 
 } // namespace pylabhub::utils

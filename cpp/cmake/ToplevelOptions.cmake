@@ -18,3 +18,19 @@ option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the s
 
 # Option to enforce the use of Apple's clang toolchain on macOS.
 option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts to avoid conflicts with other compilers" ON)
+
+# Option to enable debug logging in the pyLabHub logger.
+# When this is turned on, the logger will print to standard output
+# the message being logged, and the destination of the log message.
+option(PYLABHUB_LOGGER_DEBUG "Enable debug logging in the pyLabHub logger" OFF)
+
+# --- Logger Compile-Time Level ---
+# Set the default compile-time log level. This controls which LOGGER_* macros
+# are compiled into the binary.
+# 0=TRACE, 1=DEBUG, 2=INFO, 3=WARNING, 4=ERROR
+if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(PYLABHUB_LOGGER_COMPILE_LEVEL 1 CACHE STRING "Default logger compile level") # DEBUG
+else()
+  set(PYLABHUB_LOGGER_COMPILE_LEVEL 4 CACHE STRING "Default logger compile level") # ERROR for Release, etc.
+endif()
+message(STATUS "Logger compile-time level set to: ${PYLABHUB_LOGGER_COMPILE_LEVEL} (0=Trace, 1=Debug, 2=Info, 3=Warn, 4=Error)")

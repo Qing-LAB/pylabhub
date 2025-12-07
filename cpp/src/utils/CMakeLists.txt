@@ -31,6 +31,10 @@ target_compile_features(pylabhub-utils PRIVATE cxx_std_17)
 # Consumers of the library will not have this defined, so they will get __declspec(dllimport).
 target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_BUILD_DLL)
 
+if (PYLABHUB_LOGGER_DEBUG)
+    target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_LOGGER_DEBUG)
+endif()
+
 # Define the public include directory for consumers of this library.
 # This makes `include/` available via `target_include_directories`.
 target_include_directories(pylabhub-utils
