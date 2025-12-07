@@ -49,6 +49,7 @@
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
 #include "WaveAccess.h"
 #include <stdio.h>
+#include <fmt/format.h>
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.
@@ -137,13 +138,14 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
 
     // Now, store all of the info in the handle to return to Igor.
 
-    sprintf(buf, "Wave name: \'%s\'; type: %d; dimensions: %d", waveName, waveType, numDimensions);
+    auto result_buf = fmt::format_to_n(buf, sizeof(buf) - 1, "Wave name: \'{}\'; type: {}; dimensions: {}", waveName, waveType, numDimensions);
+    *result_buf.out = '\0'; // Null-terminate the string
     if (result = AddCStringToHandle(buf, p->strH))
         return result;
 
     // Add the data units and nominal full scale values.
-    sprintf(buf, "; data units=\"%s\"; data full scale=%g,%g", dataUnits, dataFullScaleMin,
-            dataFullScaleMax);
+    result_buf = fmt::format_to_n(buf, sizeof(buf) - 1, "; data units=\"{}\"; data full scale={},{}", dataUnits, dataFullScaleMin, dataFullScaleMax);
+    *result_buf.out = '\0'; // Null-terminate the string
     if (result = AddCStringToHandle(buf, p->strH))
         return result;
 
@@ -152,10 +154,11 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
     {
         if (result = AddCStringToHandle(CR_STR, p->strH)) // Add CR.
             return result;
-        sprintf(buf,
-                "\tDimension number: %d, size=%lld, sfA=%g, sfB=%g, dimensionUnits=\"%s\"" CR_STR,
-                dimension, (SInt64)dimensionSizes[dimension], sfA[dimension], sfB[dimension],
-                dimensionUnits[dimension]);
+        auto result_buf = fmt::format_to_n(buf, sizeof(buf) - 1,
+                                   "\tDimension number: {}, size={}, sfA={}, sfB={}, dimensionUnits=\"{}\"{}",
+                                   dimension, (SInt64)dimensionSizes[dimension], sfA[dimension], sfB[dimension],
+                                   dimensionUnits[dimension], CR_STR);
+        *result_buf.out = '\0'; // Null-terminate the string
         if (result = AddCStringToHandle(buf, p->strH))
             return result;
 
@@ -172,7 +175,8 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
             }
             if (result = MDGetDimensionLabel(p->w, dimension, element, dimLabel))
                 return result;
-            sprintf(buf, "\'%s\'", dimLabel);
+            auto result_buf = fmt::format_to_n(buf, sizeof(buf) - 1, "\'{}\'", dimLabel);
+            *result_buf.out = '\0'; // Null-terminate the string
             if (element < dimensionSizes[dimension] - 1)
                 strcat(buf, ", ");
             if (result = AddCStringToHandle(buf, p->strH))
