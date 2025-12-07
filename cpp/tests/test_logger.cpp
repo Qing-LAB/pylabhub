@@ -489,16 +489,17 @@ int main(int argc, char **argv)
     g_self_exe_path = argv[0];
 
     // Explicitly register all tests to avoid static initialization issues.
-    std::map<std::string, std::function<void()>> tests;
-    tests["Basic Logging and File Sink"] = test_basic_logging;
-    tests["Log Level Filtering"] = test_log_level_filtering;
-    tests["Message Truncation"] = test_message_truncation;
-    tests["Bad Format String Handling"] = test_bad_format_string;
-    tests["Multi-threaded Logging"] = test_multithreaded_logging;
-    tests["Flush Waits For Queue"] = test_flush_waits_for_queue;
+    // Use a vector of pairs to preserve order.
+    std::vector<std::pair<std::string, std::function<void()>>> tests;
+    tests.emplace_back("Basic Logging and File Sink", test_basic_logging);
+    tests.emplace_back("Log Level Filtering", test_log_level_filtering);
+    tests.emplace_back("Message Truncation", test_message_truncation);
+    tests.emplace_back("Bad Format String Handling", test_bad_format_string);
+    tests.emplace_back("Multi-threaded Logging", test_multithreaded_logging);
+    tests.emplace_back("Flush Waits For Queue", test_flush_waits_for_queue);
 #if PYLABHUB_IS_POSIX
-    tests["Write Error Callback (POSIX-only)"] = test_write_error_callback;
-    tests["Multi-process Logging"] = test_multiprocess_logging;
+    tests.emplace_back("Write Error Callback (POSIX-only)", test_write_error_callback);
+    // The multi-process test is special and will be run last.
 #endif
 
     // --- Child Process Entry Point (for isolated tests) ---
@@ -510,17 +511,24 @@ int main(int argc, char **argv)
             return 1;
         }
         std::string test_to_run = argv[2];
-        if (tests.count(test_to_run))
+        
+        // Re-create the map to find the test function by name.
+        std::map<std::string, std::function<void()>> test_map(tests.begin(), tests.end());
+#if PYLABHUB_IS_POSIX
+        test_map["Multi-process Logging"] = test_multiprocess_logging;
+#endif
+
+        if (test_map.count(test_to_run))
         {
             g_log_path = fs::temp_directory_path() / "pylabhub_test_logger.log";
-            run_test_and_exit(test_to_run, tests[test_to_run]);
+            run_test_and_exit(test_to_run, test_map[test_to_run]);
         }
         else
         {
             fmt::print(stderr, "Test '{}' not found in registry.\n", test_to_run);
             return 1;
         }
-        return 0;
+        return 0; // Should not be reached
     }
 
     // --- Grandchild Process Entry Point (for multi-process stress test) ---
@@ -536,18 +544,26 @@ int main(int argc, char **argv)
 
     // --- Parent Process Test Runner ---
     fmt::print("--- Logger Test Suite (Process-Isolated) ---\n");
-
-    for (const auto& [name, func] : tests)
-    {
+#if defined(_LOGGER_DEBUG_ENABLED)
+    fmt::print("Logger debug mode is ENABLED.\n");
+#else
+    fmt::print("Logger debug mode is DISABLED.\n");
+#endif
+    auto run_test_process = [&](const std::string& name) {
         fmt::print("\n--- Spawning test: {} ---\n", name);
 #if defined(PLATFORM_WIN64)
         // Windows process spawning logic would go here
-#else // POSIX
+        // For now, we just increment failed count on Windows for tests that need fork.
+        if (name == "Multi-process Logging") {
+            fmt::print("Skipping test '{}' on Windows in this example.\n", name);
+            return;
+        }
+#endif
         pid_t pid = fork();
         if (pid == -1) {
             perror("fork");
             tests_failed++;
-            continue;
+            return;
         }
         if (pid == 0) { // Child process
             execl(argv[0], argv[0], "--run-test", name.c_str(), nullptr);
@@ -563,8 +579,18 @@ int main(int argc, char **argv)
                 fmt::print(stderr, "--- Test '{}' FAILED in child process ---\n", name);
             }
         }
-#endif
+    };
+    
+    // Run all standard tests sequentially.
+    for (const auto& [name, func] : tests)
+    {
+        run_test_process(name);
     }
+
+#if PYLABHUB_IS_POSIX
+    // Run the multi-process test last and by itself.
+    run_test_process("Multi-process Logging");
+#endif
 
     fmt::print("\n--- Test Summary ---\n");
     fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);

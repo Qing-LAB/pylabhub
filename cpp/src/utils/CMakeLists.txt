@@ -32,7 +32,8 @@ target_compile_features(pylabhub-utils PRIVATE cxx_std_17)
 target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_BUILD_DLL)
 
 if (PYLABHUB_LOGGER_DEBUG)
-    target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_LOGGER_DEBUG)
+    target_compile_definitions(pylabhub-utils PRIVATE _LOGGER_DEBUG_ENABLED=1)
+    message(STATUS "Building pylabhub-utils with logger debug enabled.")
 endif()
 
 # Define the public include directory for consumers of this library.

@@ -51,6 +51,10 @@ target_compile_features(pylabhub-app PRIVATE cxx_std_17)
 
 # Set the compile-time log level based on the build type (Debug/Release).
 target_compile_definitions(pylabhub-app PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
+if(PYLABHUB_LOGGER_DEBUG_ENABLED)
+  target_compile_definitions(pylabhub-app PRIVATE _LOGGER_DEBUG_ENABLED=1)
+  message(STATUS "Building pylabhub-app with logger debug enabled.")
+endif()
 
 # The app links against the core library.
 target_link_libraries(pylabhub-app PRIVATE pylabhub::core)

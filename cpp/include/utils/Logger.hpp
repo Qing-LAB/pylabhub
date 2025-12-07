@@ -228,9 +228,10 @@ void Logger::log_fmt(Level lvl, fmt::string_view fmt_str, Args &&...args) noexce
             body.assign(mb.data(), cap);
             body.append(trunc_marker);
         }
-#if defined(PYLABHUB_LOGGER_DEBUG)
+#if defined(_LOGGER_DEBUG_ENABLED)
         fmt::print(stdout, "log_fmt called: level={} body='{}'\n", static_cast<int>(lvl), body);
-        fflush(stdout);
+        fmt::print(stdout, "DEBUG: log_fmt received fmt_str='{}' (size={})\n", fmt_str, fmt_str.size());
+        fflush(stdout); // Ensure it's printed immediately
 #endif
         // hand off to platform sink
         this->write_formatted(lvl, std::move(body));
