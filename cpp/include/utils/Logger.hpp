@@ -323,12 +323,22 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 } // namespace pylabhub::utils
 
 // --- Macro Implementation ---
-// These convenience macros are the recommended way to use the logger.
-// The FMT_STRING() wrapper explicitly tells the compiler to treat the format
-// string as a compile-time entity, which resolves ambiguity and guarantees
-// that macro-based calls are checked at compile time.
+// The logger provides two sets of macros for different use cases.
+
+// 1. Standard Macros (e.g., LOGGER_INFO): For compile-time constant format strings.
+//    This is the recommended macro for 99% of use cases, providing maximum
+//    performance and compile-time format string validation.
 #define LOGGER_TRACE(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
 #define LOGGER_DEBUG(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
 #define LOGGER_INFO(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
 #define LOGGER_WARN(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
 #define LOGGER_ERROR(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+
+// 2. Runtime Macros (e.g., LOGGER_INFO_RT): For format strings held in variables.
+//    Use this when the format string is not a compile-time constant. These calls
+//    are not checked at compile time and will fall back to the slower runtime formatter.
+#define LOGGER_TRACE_RT(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_DEBUG_RT(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_INFO_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_WARN_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_ERROR_RT(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
