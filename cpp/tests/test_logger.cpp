@@ -244,7 +244,7 @@ void test_message_truncation()
     L.set_max_log_line_length(max_len);
     std::string long_msg(100, 'A'); // 100 'A' characters
 
-    LOGGER_INFO(long_msg);
+    LOGGER_INFO_RT(long_msg);
 
     L.flush();
     CHECK(!L.dirty());
@@ -277,8 +277,9 @@ void test_bad_format_string()
     CHECK(L.init_file(g_log_path.string(), false));
     L.set_level(Logger::Level::L_INFO);
 
-    // This should be caught by the try/catch in log_fmt and logged as an error
-    LOGGER_INFO("Missing arg: {}");
+    // Use the _RT macro to test the runtime format string checking.
+    std::string bad_fmt = "Missing arg: {}";
+    LOGGER_INFO_RT(bad_fmt);
 
     L.flush();
     CHECK(!L.dirty());
