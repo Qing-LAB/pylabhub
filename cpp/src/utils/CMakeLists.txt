@@ -24,7 +24,7 @@ add_library(pylabhub-utils SHARED ${UTILS_SOURCES})
 add_library(pylabhub::utils ALIAS pylabhub-utils)
 
 # Set modern C++ standard.
-target_compile_features(pylabhub-utils PRIVATE cxx_std_17)
+target_compile_features(pylabhub-utils PRIVATE cxx_std_20)
 
 # Define PYLABHUB_BUILD_DLL when compiling this library. This is crucial for
 # the PYLABHUB_API macro in platform.hpp to use __declspec(dllexport) on Windows.

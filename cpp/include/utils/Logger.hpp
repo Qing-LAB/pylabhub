@@ -269,11 +269,11 @@ void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexce
 
 // --- Macro Implementation ---
 // These convenience macros are the recommended way to use the logger.
-// The compile-time filtering is handled by 'if constexpr' inside the
-// log_fmt template. These macros resolve directly to the member function
-// allowing for both calls with and without variadic arguments in a C++ standard way.
-#define LOGGER_TRACE ::pylabhub::utils::Logger::instance().trace_fmt
-#define LOGGER_DEBUG ::pylabhub::utils::Logger::instance().debug_fmt
-#define LOGGER_INFO  ::pylabhub::utils::Logger::instance().info_fmt
-#define LOGGER_WARN  ::pylabhub::utils::Logger::instance().warn_fmt
-#define LOGGER_ERROR ::pylabhub::utils::Logger::instance().error_fmt
+// They use the C++20 __VA_OPT__ feature to automatically wrap the format
+// string with FMT_STRING() and correctly handle calls with or without
+// variadic arguments in a standard-compliant way.
+#define LOGGER_TRACE(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_DEBUG(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_INFO(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_WARN(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_ERROR(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
