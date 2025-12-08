@@ -88,7 +88,16 @@
 namespace pylabhub::utils
 {
 
+// The struct Impl is forward declaration to implement a Pimpl pattern.
+// The actual definition is in Logger.cpp.
+// This keeps implementation details out of the public header.
+// The Pimpl is managed by a std::shared_ptr in the Logger class.
+// This will ensure only one instance of the logging engine exists by using
+// std::call_once in get_impl_instance().
+// This also avoids C++ ABI issues across shared library boundaries.
 struct Impl;
+
+// The Logger class provides a high-performance, asynchronous, thread-safe logging API.
 class PYLABHUB_API Logger
 {
   public:
