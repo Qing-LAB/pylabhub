@@ -21,12 +21,12 @@ list(FILTER CORE_SOURCES EXCLUDE REGEX "(hubshell\\.cpp|utils/.*|IgorXOP/.*)$")
 # will be a STATIC library.
 if(NOT CORE_SOURCES)
   add_library(pylabhub-core INTERFACE)
-  target_compile_features(pylabhub-core INTERFACE cxx_std_17)
+  target_compile_features(pylabhub-core INTERFACE cxx_std_20)
   set(CORE_LIB_SCOPE INTERFACE)
   message(STATUS "No sources found for pylabhub-core. Creating as an INTERFACE library placeholder.")
 else()
   add_library(pylabhub-core STATIC ${CORE_SOURCES})
-  target_compile_features(pylabhub-core PRIVATE cxx_std_17)
+  target_compile_features(pylabhub-core PRIVATE cxx_std_20)
   set(CORE_LIB_SCOPE PUBLIC)
 endif()
 add_library(pylabhub::core ALIAS pylabhub-core)
@@ -47,7 +47,7 @@ target_link_libraries(pylabhub-core
 # Define the main application executable.
 add_executable(pylabhub-app hubshell.cpp)
 add_executable(pylabhub::app ALIAS pylabhub-app)
-target_compile_features(pylabhub-app PRIVATE cxx_std_17)
+target_compile_features(pylabhub-app PRIVATE cxx_std_20)
 
 # Set the compile-time log level based on the build type (Debug/Release).
 target_compile_definitions(pylabhub-app PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})

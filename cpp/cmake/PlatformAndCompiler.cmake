@@ -2,7 +2,8 @@
 # Language / Compiler flags / Build-type
 # You must define project() before including this file.
 # -----------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 20)
+# CMAKE_CXX_STANDARD is not set here to avoid forcing it on third-party libraries.
+# It should be set on a per-target basis for project-specific code.
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
