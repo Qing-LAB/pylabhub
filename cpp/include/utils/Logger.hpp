@@ -323,12 +323,12 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 } // namespace pylabhub::utils
 
 // --- Macro Implementation ---
-// These macros pass their arguments directly to the overloaded `..._fmt` functions.
-// C++ overload resolution will automatically select:
-//  - The `fmt::format_string` version for string literals (enabling compile-time checks).
-//  - The `fmt::string_view` version for variables (falling back to runtime checks).
-#define LOGGER_TRACE(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_DEBUG(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_INFO(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_WARN(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_ERROR(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+// These convenience macros are the recommended way to use the logger.
+// The FMT_STRING() wrapper explicitly tells the compiler to treat the format
+// string as a compile-time entity, which resolves ambiguity and guarantees
+// that macro-based calls are checked at compile time.
+#define LOGGER_TRACE(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_DEBUG(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_INFO(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_WARN(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_ERROR(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(,) __VA_ARGS__)
