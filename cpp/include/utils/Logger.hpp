@@ -173,6 +173,26 @@ class PYLABHUB_API Logger
      */
     void flush() noexcept;
 
+    // ---- Configuration & Diagnostics ----
+    void set_level(Level lvl);
+    Level level() const;
+    bool dirty() const noexcept;
+
+    void set_fsync_per_write(bool v);
+    void set_write_error_callback(std::function<void(const std::string &)> cb);
+
+    int last_errno() const;
+    int last_write_error_code() const;
+    std::string last_write_error_message() const;
+    int write_failure_count() const;
+
+    // Maximum allowed log body length (bytes). Declared noexcept so header templates can call it.
+    void set_max_log_line_length(size_t bytes);
+    size_t max_log_line_length() const noexcept;
+
+    // Small accessor used by header-only templates. Declared noexcept and defined in .cpp.
+    bool should_log(Level lvl) const noexcept;
+
     // ---- Formatting API (header-only templates) ----
     // The logger provides two distinct APIs for logging:
     // 1. Compile-Time: `..._fmt` functions for string literals, offering maximum
