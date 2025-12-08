@@ -127,7 +127,7 @@ add_library(pylabhub::${XOP_TARGET} ALIAS ${XOP_TARGET})
 # -------------------------
 # Standard compile/link flags
 # -------------------------
-target_compile_features(${XOP_TARGET} PRIVATE cxx_std_17)
+target_compile_features(${XOP_TARGET} PRIVATE cxx_std_20)
 
 if(DEFINED PLATFORM_APPLE)
   target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
