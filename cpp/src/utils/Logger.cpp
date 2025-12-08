@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <condition_variable>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
