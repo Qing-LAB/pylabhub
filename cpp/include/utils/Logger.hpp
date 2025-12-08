@@ -157,35 +157,38 @@ class PYLABHUB_API Logger
     bool should_log(Level lvl) const noexcept;
 
     // ---- Formatting API (header-only templates) ----
-    // Uses fmt-style format strings. This API uses runtime format string checking
-    // to support logging both string literals and runtime string variables.
-    template <typename... Args>
-    void log_fmt(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
+    // This API uses compile-time format string checking for performance and safety.
+    template <Level level, typename... Args>
+    void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     template <typename... Args>
-    void trace_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
+        log_fmt<Level::L_TRACE>(fmt_str, std::forward<Args>(args)...);
     }
+
     template <typename... Args>
-    void debug_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
+        log_fmt<Level::L_DEBUG>(fmt_str, std::forward<Args>(args)...);
     }
+
     template <typename... Args>
-    void info_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
+        log_fmt<Level::L_INFO>(fmt_str, std::forward<Args>(args)...);
     }
+
     template <typename... Args>
-    void warn_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
+        log_fmt<Level::L_WARNING>(fmt_str, std::forward<Args>(args)...);
     }
+
     template <typename... Args>
-    void error_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
+        log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
     }
 
   private:
@@ -197,92 +200,80 @@ class PYLABHUB_API Logger
     std::shared_ptr<Impl> pImpl;
 };
 
-// ----------------- Template implementation (must be in header) -----------------
-template <typename... Args>
-void Logger::log_fmt(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept
-{
-    // Fast path: check level without locking. should_log is implemented in .cpp.
-    if (!this->should_log(lvl))
-        return;
-
-    try
-    {
-        fmt::memory_buffer mb;
-        mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
-        // Use fmt::runtime() to indicate the format string is not a compile-time constant.
-        fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
-
-        // enforce configured cap (max_log_line_length() defined in .cpp)
-        const size_t max_line = max_log_line_length();
-        static constexpr std::string_view trunc_marker = "...[TRUNCATED]";
-        size_t cap = (max_line > trunc_marker.size()) ? (max_line - trunc_marker.size()) : 1;
-
-        std::string body;
-        if (mb.size() <= cap)
-        {
-            body.assign(mb.data(), mb.size());
-        }
-        else
-        {
-            // naive byte-level truncation; consider UTF-8-safe truncation if needed.
-            body.assign(mb.data(), cap);
-            body.append(trunc_marker);
-        }
-#if defined(_LOGGER_DEBUG_ENABLED)
-        fmt::print(stdout, "log_fmt called: level={} body='{}'\n", static_cast<int>(lvl), body);
-        fmt::print(stdout, "DEBUG: log_fmt received fmt_str='{}' (size={})\n", fmt_str, fmt_str.size());
-        fflush(stdout); // Ensure it's printed immediately
+// --- Compile-Time Log Level ---
+// Sets the minimum log level to be compiled into the binary.
+// This is controlled by the build system, e.g., by passing -DLOGGER_COMPILE_LEVEL=1
+// 0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error
+#ifndef LOGGER_COMPILE_LEVEL
+#define LOGGER_COMPILE_LEVEL 0
 #endif
-        // hand off to platform sink
-        this->write_formatted(lvl, std::move(body));
-    }
-    catch (const std::exception &ex)
+
+// ----------------- Template implementation (must be in header) -----------------
+template <Logger::Level level, typename... Args>
+void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+{
+    if constexpr (static_cast<int>(level) >= LOGGER_COMPILE_LEVEL)
     {
-        // never throw from logging template
-        std::string err = std::string("[FORMAT ERROR] ") + ex.what();
-        this->write_formatted(lvl, std::move(err));
-    }
-    catch (...)
-    {
-        this->write_formatted(lvl, std::string("[UNKNOWN FORMAT ERROR]"));
+        // After the compile-time check, do a runtime check.
+        // This allows dynamically changing the log level (e.g., in a config file)
+        // for levels that have been compiled in.
+        if (!this->should_log(level))
+            return;
+
+        try
+        {
+            fmt::memory_buffer mb;
+            mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
+
+            // Use the compile-time checked format string directly. This is faster
+            // and safer than fmt::runtime().
+            fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
+
+            // Enforce configured cap (max_log_line_length() is defined in .cpp)
+            const size_t max_line = max_log_line_length();
+            static constexpr std::string_view trunc_marker = "...[TRUNCATED]";
+            size_t cap = (max_line > trunc_marker.size()) ? (max_line - trunc_marker.size()) : 1;
+
+            std::string body;
+            if (mb.size() <= cap)
+            {
+                body.assign(mb.data(), mb.size());
+            }
+            else
+            {
+                // Naive byte-level truncation.
+                body.assign(mb.data(), cap);
+                body.append(trunc_marker);
+            }
+#if defined(_LOGGER_DEBUG_ENABLED)
+            fmt::print(stdout, "log_fmt called: level={} body='{}'\n", static_cast<int>(level), body);
+            fflush(stdout); // Ensure it's printed immediately
+#endif
+            // Hand off to the asynchronous worker thread.
+            this->write_formatted(level, std::move(body));
+        }
+        catch (const std::exception &ex)
+        {
+            // Never throw from logging. Report format errors as a log message.
+            std::string err = std::string("[FORMAT ERROR] ") + ex.what();
+            this->write_formatted(level, std::move(err));
+        }
+        catch (...)
+        {
+            this->write_formatted(level, std::string("[UNKNOWN FORMAT ERROR]"));
+        }
     }
 }
 
 } // namespace pylabhub::utils
 
 // --- Macro Implementation ---
-// This uses the GNU extension with the '##' token paste operator to swallow the
-// trailing comma when no arguments are provided for __VA_ARGS__. This is widely
-// supported by GCC, Clang, and MSVC.
-
-#define LOGGER_TRACE(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(fmt, ##__VA_ARGS__)
-#define LOGGER_DEBUG(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(fmt, ##__VA_ARGS__)
-#define LOGGER_INFO(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(fmt, ##__VA_ARGS__)
-#define LOGGER_WARN(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(fmt, ##__VA_ARGS__)
-#define LOGGER_ERROR(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(fmt, ##__VA_ARGS__)
-
-// Disable macros below the current compile-time level.
-#if LOGGER_COMPILE_LEVEL > 0
-#undef LOGGER_TRACE
-#define LOGGER_TRACE(...) ((void)0)
-#endif
-
-#if LOGGER_COMPILE_LEVEL > 1
-#undef LOGGER_DEBUG
-#define LOGGER_DEBUG(...) ((void)0)
-#endif
-
-#if LOGGER_COMPILE_LEVEL > 2
-#undef LOGGER_INFO
-#define LOGGER_INFO(...) ((void)0)
-#endif
-
-#if LOGGER_COMPILE_LEVEL > 3
-#undef LOGGER_WARN
-#define LOGGER_WARN(...) ((void)0)
-#endif
-
-#if LOGGER_COMPILE_LEVEL > 4
-#undef LOGGER_ERROR
-#define LOGGER_ERROR(...) ((void)0)
-#endif
+// These convenience macros are the recommended way to use the logger.
+// The compile-time filtering is handled by 'if constexpr' inside the
+// log_fmt template. These macros resolve directly to the member function
+// allowing for both calls with and without variadic arguments in a C++ standard way.
+#define LOGGER_TRACE ::pylabhub::utils::Logger::instance().trace_fmt
+#define LOGGER_DEBUG ::pylabhub::utils::Logger::instance().debug_fmt
+#define LOGGER_INFO  ::pylabhub::utils::Logger::instance().info_fmt
+#define LOGGER_WARN  ::pylabhub::utils::Logger::instance().warn_fmt
+#define LOGGER_ERROR ::pylabhub::utils::Logger::instance().error_fmt
