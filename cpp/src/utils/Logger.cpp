@@ -235,7 +235,7 @@ static std::string formatted_time()
     auto now = system_clock::now();
     // Use {fmt} to format the time portably. {:%Y-%m-%d %H:%M:%S.%f} provides
     // microsecond precision.
-    return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", now);
+    return fmt::format("{:%Y-%m-%d %H:%M:%S}", now);
 }
 
 static const char *level_to_string(Logger::Level lvl) noexcept
