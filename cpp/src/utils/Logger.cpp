@@ -538,6 +538,9 @@ void Logger::shutdown()
         return;
     }
 
+    // Log the shutdown event itself. This will be the last message queued.
+    LOGGER_INFO("Logger shutting down upon explicit request.");
+
     // It is important to flush any pending messages before signaling shutdown.
     flush();
 

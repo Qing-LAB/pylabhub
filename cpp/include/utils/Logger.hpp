@@ -149,6 +149,30 @@ class PYLABHUB_API Logger
     // init_eventlog: Windows only (takes wchar_t* source); returns true on success.
     bool init_eventlog(const wchar_t *source_name);
 
+    /**
+     * @brief Performs a final, synchronous shutdown of the logger.
+     * 
+     * This function logs a shutdown message, flushes all pending messages to the
+     * current sink, then permanently stops the background worker thread. Any
+     * subsequent calls to the logger will be ignored.
+     * 
+     * @note This is an advanced feature for deterministic cleanup. Most applications
+     * can rely on the automatic shutdown that occurs when the program exits. It is
+     * primarily useful in scenarios like:
+     * - Unit tests that need to verify log contents before exiting.
+     * - Daemon processes that need to release file handles without terminating.
+     * - Programs that need to ensure logging is complete before calling `exec`.
+     */
+    void shutdown();
+
+    /**
+     * @brief Waits for the logger to process all currently queued messages.
+     * 
+     * This is a synchronous call that blocks until the worker thread has finished
+     * writing all messages that were in the queue at the time `flush()` was called.
+     */
+    void flush() noexcept;
+
   private:
     void set_destination(Destination dest);
     // Non-template sink: accepts an already-formatted UTF-8 body (no newline).
