@@ -107,9 +107,9 @@ int run_as_child_main(const std::string &log_path)
     Logger &L = Logger::instance();
 
     // Make sure child writes to same file (append)
-    if (!L.init_file(log_path, /*use_flock*/ true))
+    if (!L.set_logfile(log_path, /*use_flock*/ true))
     {
-        fmt::print(stderr, "child: init_file failed (errno={})\n", L.last_errno());
+        fmt::print(stderr, "child: set_logfile failed (errno={})\n", L.last_errno());
         return 2;
     }
 
@@ -184,7 +184,7 @@ void test_basic_logging()
 {
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
 
     LOGGER_INFO("unit-test: ascii message {}", 42);
@@ -212,7 +212,7 @@ void test_log_level_filtering()
 {
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_WARNING); // Only WARNING and above should be logged
 
     LOGGER_INFO("This should NOT be logged.");
@@ -238,7 +238,7 @@ void test_message_truncation()
 {
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_DEBUG);
     const size_t max_len = 32;
     L.set_max_log_line_length(max_len);
@@ -274,7 +274,7 @@ void test_bad_format_string()
 {
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_INFO);
 
     // Use the _RT macro to test the runtime format string checking.
@@ -298,7 +298,7 @@ void test_multithreaded_logging()
 {
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_DEBUG);
 
     const int THREADS = 8;
@@ -334,7 +334,7 @@ void test_flush_waits_for_queue()
     const int MESSAGES_PER_THREAD = 100;
 
     Logger &L = Logger::instance();
-    CHECK(L.init_file(g_log_path.string(), false));
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
 
     std::vector<std::thread> threads;
@@ -388,7 +388,7 @@ void test_write_error_callback()
 
     // Re-initialize the logger. On POSIX, open() with O_WRONLY will fail on
     // a read-only file. We don't CHECK the result, we check the callback.
-    L.init_file(g_log_path.string(), false);
+    L.set_logfile(g_log_path.string(), false);
     L.set_level(Logger::Level::L_INFO);
     L.set_fsync_per_write(true); // Force fsync to ensure the OS reports the write error
 
@@ -427,7 +427,7 @@ void test_multiprocess_logging()
     std::remove(multiprocess_log_path.string().c_str());
 
     Logger &L = Logger::instance();
-    CHECK(L.init_file(multiprocess_log_path.string(), true)); // Use flock for multi-process
+    CHECK(L.set_logfile(multiprocess_log_path.string(), true)); // Use flock for multi-process
     L.set_level(Logger::Level::L_INFO);
 
     LOGGER_INFO("parent-process-start");

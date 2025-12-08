@@ -56,7 +56,7 @@
  * 3.  **Initialization**: Before logging, configure the desired sink.
  *     ```cpp
  *     Logger& logger = Logger::instance();
- *     logger.init_file("/var/log/my_app.log");
+ *     logger.set_logfile("/var/log/my_app.log");
  *     logger.set_level(Logger::Level::L_DEBUG);
  *     ```
  *
@@ -139,15 +139,15 @@ class PYLABHUB_API Logger
     Logger &operator=(Logger &&) = delete;
 
     // ---- Sinks / initializers (defined in .cpp) ----
-    // init_file: open the given UTF-8 path for append. Returns true on success.
+    // set_logfile: open the given UTF-8 path for append. Returns true on success.
     // use_flock: on POSIX enables advisory flock() while writing.
-    bool init_file(const std::string &utf8_path, bool use_flock = false, int mode = 0644);
+    bool set_logfile(const std::string &utf8_path, bool use_flock = false, int mode = 0644);
 
-    // init_syslog: POSIX only (no-op on Windows)
-    void init_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
+    // set_syslog: POSIX only (no-op on Windows)
+    void set_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
 
-    // init_eventlog: Windows only (takes wchar_t* source); returns true on success.
-    bool init_eventlog(const wchar_t *source_name);
+    // set_eventlog: Windows only (takes wchar_t* source); returns true on success.
+    bool set_eventlog(const wchar_t *source_name);
 
     /**
      * @brief Performs a final, synchronous shutdown of the logger.

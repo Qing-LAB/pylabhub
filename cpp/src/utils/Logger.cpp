@@ -386,7 +386,7 @@ void Logger::set_max_log_line_length(size_t bytes)
 }
 
 // ---- sinks initialization ----
-bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
+bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
 {
     if (!pImpl)
         return false;
@@ -449,7 +449,7 @@ bool Logger::init_file(const std::string &utf8_path, bool use_flock, int mode)
     return true;
 }
 
-void Logger::init_syslog(const char *ident, int option, int facility)
+void Logger::set_syslog(const char *ident, int option, int facility)
 {
 #if !defined(PLATFORM_WIN64)
     std::lock_guard<std::mutex> g(pImpl->mtx);
@@ -468,7 +468,7 @@ void Logger::init_syslog(const char *ident, int option, int facility)
 #endif
 }
 
-bool Logger::init_eventlog(const wchar_t *source_name)
+bool Logger::set_eventlog(const wchar_t *source_name)
 {
 #if defined(PLATFORM_WIN64)
     std::lock_guard<std::mutex> g(pImpl->mtx);
