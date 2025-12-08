@@ -137,7 +137,7 @@ Impl::Impl()
 
 #ifdef _LOGGER_DEBUG_ENABLED
     fmt::print(stdout, "Log worker thread created and ready. Native handle: {}\n",
-               static_cast<void*>(worker_thread.native_handle()));
+               static_cast<uint64_t>(worker_thread.native_handle()));
     fflush(stdout);
 #endif
 }
