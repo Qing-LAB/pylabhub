@@ -25,6 +25,9 @@ endforeach()
 foreach(test_target ${TEST_TARGETS})
   add_executable(${test_target} ${test_target}.cpp)
 
+  # Set the C++ standard for the test executables to C++20.
+  target_compile_features(${test_target} PRIVATE cxx_std_20)
+
   # All tests depend on the pylabhub-utils shared library.
   # Linking against the namespaced alias is the correct modern CMake approach.
   target_link_libraries(${test_target} PRIVATE pylabhub::utils)

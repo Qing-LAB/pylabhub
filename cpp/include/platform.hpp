@@ -80,13 +80,13 @@
 // For GCC/Clang use __cplusplus; for MSVC use _MSVC_LANG (MSVC sets
 // __cplusplus only when /Zc:__cplusplus is enabled).
 #if defined(_MSC_VER)
-#if !defined(_MSVC_LANG) || (_MSVC_LANG < 201703L)
+#if !defined(_MSVC_LANG) || (_MSVC_LANG < 202002L)
 #error                                                                                             \
-    "This project requires C++17 or later. Please compile with /std:c++17 or newer (MSVC) or enable a C++17+ standard."
+    "This project requires C++20 or later. Please compile with /std:c++20 or newer (MSVC)."
 #endif
 #else
-#if __cplusplus < 201703L
-#error "This project requires C++17 or later. Please compile with -std=c++17 or newer."
+#if __cplusplus < 202002L
+#error "This project requires C++20 or later. Please compile with -std=c++20 or newer."
 #endif
 #endif
 
