@@ -157,8 +157,10 @@ class PYLABHUB_API Logger
     bool should_log(Level lvl) const noexcept;
 
     // ---- Formatting API (header-only templates) ----
-    // This API supports both compile-time checked format strings (for performance and safety)
-    // and runtime format strings (for flexibility).
+    // The logger provides two distinct APIs for logging:
+    // 1. Compile-Time: `..._fmt` functions for string literals, offering maximum
+    //    performance and safety via compile-time format string validation.
+    // 2. Run-Time: `..._fmt_rt` functions for string variables, offering flexibility.
 
     // --- Compile-Time Path ---
     template <Level level, typename... Args>
@@ -190,32 +192,32 @@ class PYLABHUB_API Logger
         log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
     }
 
-    // --- Runtime Fallback Path ---
+    // --- Runtime Path ---
     template <typename... Args>
     void log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
 
     template <typename... Args>
-    void trace_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void debug_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void info_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void warn_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void error_fmt(fmt::string_view fmt_str, Args &&...args) noexcept
+    void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }
@@ -337,8 +339,8 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 // 2. Runtime Macros (e.g., LOGGER_INFO_RT): For format strings held in variables.
 //    Use this when the format string is not a compile-time constant. These calls
 //    are not checked at compile time and will fall back to the slower runtime formatter.
-#define LOGGER_TRACE_RT(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_DEBUG_RT(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_INFO_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_WARN_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
-#define LOGGER_ERROR_RT(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_TRACE_RT(fmt, ...) ::pylabhub::utils::Logger::instance().trace_fmt_rt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_DEBUG_RT(fmt, ...) ::pylabhub::utils::Logger::instance().debug_fmt_rt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_INFO_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().info_fmt_rt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_WARN_RT(fmt, ...)  ::pylabhub::utils::Logger::instance().warn_fmt_rt(fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGGER_ERROR_RT(fmt, ...) ::pylabhub::utils::Logger::instance().error_fmt_rt(fmt __VA_OPT__(,) __VA_ARGS__)
