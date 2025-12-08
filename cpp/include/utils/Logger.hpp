@@ -173,6 +173,72 @@ class PYLABHUB_API Logger
      */
     void flush() noexcept;
 
+    // ---- Formatting API (header-only templates) ----
+    // The logger provides two distinct APIs for logging:
+    // 1. Compile-Time: `..._fmt` functions for string literals, offering maximum
+    //    performance and safety via compile-time format string validation.
+    // 2. Run-Time: `..._fmt_rt` functions for string variables, offering flexibility.
+
+    // --- Compile-Time Path ---
+    template <Level level, typename... Args>
+    void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
+
+    template <typename... Args>
+    void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_TRACE>(fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_DEBUG>(fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_INFO>(fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_WARNING>(fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
+    }
+
+    // --- Runtime Path ---
+    template <typename... Args>
+    void log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
+
+    template <typename... Args>
+    void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args>
+    void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
+    }
+
   private:
     void set_destination(Destination dest);
     // Non-template sink: accepts an already-formatted UTF-8 body (no newline).
