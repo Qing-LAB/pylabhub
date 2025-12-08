@@ -148,14 +148,21 @@ Impl::~Impl()
     fmt::print(stdout, "Logger Impl destructor called. Shutting down worker thread.\n");
     fflush(stdout);
 #endif
-    // Signal the worker to shut down and wait for it to finish.
-    if (worker_thread.joinable())
+    // In case shutdown() was not called explicitly, ensure we still shut down gracefully.
+    if (!done.load(std::memory_order_relaxed) && worker_thread.joinable())
     {
+        // To avoid calling the public flush() from a destructor, we inline a simplified
+        // version: just signal the worker and let it drain the queue before it exits.
         {
             std::lock_guard<std::mutex> lk(queue_mtx);
-            done = true;
+            done.store(true);
         }
         cv.notify_one();
+        worker_thread.join();
+    }
+    else if (worker_thread.joinable())
+    {
+        // If done was already true, just make sure we join.
         worker_thread.join();
     }
 }
@@ -526,23 +533,23 @@ void Logger::set_destination(Logger::Destination dest)
 
 void Logger::shutdown()
 {
-    if (!pImpl)
-        return;
-
-    // Ask the worker thread to process all pending messages and wait for it.
-    flush();
-
-    // After flush(), the queue should be empty. A check with dirty() can be a sanity check.
-    if (dirty())
+    if (!pImpl || pImpl->done.load(std::memory_order_relaxed))
     {
-        // This would indicate a bug in flush() or unexpected concurrent logging.
-        // We can flush again to be resilient.
-        flush();
+        return;
     }
 
-    // Now that all messages are written, it's safe to close the file handles.
-    std::lock_guard<std::mutex> g(pImpl->mtx);
-    pImpl->close_sinks();
+    // It is important to flush any pending messages before signaling shutdown.
+    flush();
+
+    if (pImpl->worker_thread.joinable())
+    {
+        {
+            std::lock_guard<std::mutex> lk(pImpl->queue_mtx);
+            pImpl->done.store(true);
+        }
+        pImpl->cv.notify_one();
+        pImpl->worker_thread.join();
+    }
 }
 
 void Logger::flush() noexcept
@@ -583,7 +590,7 @@ bool Logger::dirty() const noexcept
 // message and pushes it to the worker queue, then returns immediately.
 void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 {
-    if (!pImpl)
+    if (!pImpl || pImpl->done.load(std::memory_order_relaxed))
         return;
 
     try

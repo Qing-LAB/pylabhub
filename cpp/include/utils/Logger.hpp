@@ -37,7 +37,8 @@
  *   the logger's state from concurrent modification.
  *
  * **Usage**
- * 1.  **Basic Logging**: Use the convenience macros.
+ * 1.  **Basic Logging (Compile-Time Format String)**: Use the standard macros
+ *     for logging string literals. This is the most common, safe, and performant method.
  *     ```cpp
  *     #include "utils/Logger.hpp"
  *     ...
@@ -45,16 +46,23 @@
  *     LOGGER_ERROR("Failed to process request {}: {}", request_id, error_msg);
  *     ```
  *
- * 2.  **Initialization**: Before logging, configure the desired sink.
+ * 2.  **Logging with Runtime Format Strings**: For cases where the format string
+ *     is a variable, use the `_RT` suffixed macros.
+ *     ```cpp
+ *     std::string format_from_config = get_format_for_event("login");
+ *     LOGGER_INFO_RT(format_from_config, user_id, ip_address);
+ *     ```
+ *
+ * 3.  **Initialization**: Before logging, configure the desired sink.
  *     ```cpp
  *     Logger& logger = Logger::instance();
  *     logger.init_file("/var/log/my_app.log");
  *     logger.set_level(Logger::Level::L_DEBUG);
  *     ```
  *
- * 3.  **Shutdown**: Call `shutdown()` for a graceful exit, ensuring all buffered
- *     messages are written. In many applications, this is handled automatically
- *     when the singleton is destroyed at program exit.
+ * 4.  **Shutdown**: Call `shutdown()` for a graceful, deterministic exit, ensuring
+ *     all buffered messages are written before the function returns. If not
+ *     called explicitly, shutdown will happen automatically at program exit.
  *     ```cpp
  *     Logger::instance().shutdown();
  *     ```
@@ -141,97 +149,8 @@ class PYLABHUB_API Logger
     // init_eventlog: Windows only (takes wchar_t* source); returns true on success.
     bool init_eventlog(const wchar_t *source_name);
 
-    void set_destination(Destination dest);
-    void shutdown(); // close sinks, release handles
-    void flush() noexcept;
-
-    // ---- Configuration & Diagnostics ----
-    void set_level(Level lvl);
-    Level level() const;
-    bool dirty() const noexcept;
-
-    void set_fsync_per_write(bool v);
-    void set_write_error_callback(std::function<void(const std::string &)> cb);
-
-    int last_errno() const;
-    int last_write_error_code() const;
-    std::string last_write_error_message() const;
-    int write_failure_count() const;
-
-    // Maximum allowed log body length (bytes). Declared noexcept so header templates can call it.
-    void set_max_log_line_length(size_t bytes);
-    size_t max_log_line_length() const noexcept;
-
-    // Small accessor used by header-only templates. Declared noexcept and defined in .cpp.
-    bool should_log(Level lvl) const noexcept;
-
-    // ---- Formatting API (header-only templates) ----
-    // The logger provides two distinct APIs for logging:
-    // 1. Compile-Time: `..._fmt` functions for string literals, offering maximum
-    //    performance and safety via compile-time format string validation.
-    // 2. Run-Time: `..._fmt_rt` functions for string variables, offering flexibility.
-
-    // --- Compile-Time Path ---
-    template <Level level, typename... Args>
-    void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
-
-    template <typename... Args>
-    void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
-    {
-        log_fmt<Level::L_TRACE>(fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
-    {
-        log_fmt<Level::L_DEBUG>(fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
-    {
-        log_fmt<Level::L_INFO>(fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
-    {
-        log_fmt<Level::L_WARNING>(fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
-    {
-        log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
-    }
-
-    // --- Runtime Path ---
-    template <typename... Args>
-    void log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
-
-    template <typename... Args>
-    void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
-    {
-        log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
-    {
-        log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
-    {
-        log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
-    {
-        log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
-    }
-    template <typename... Args>
-    void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
-    {
-        log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
-    }
-
   private:
+    void set_destination(Destination dest);
     // Non-template sink: accepts an already-formatted UTF-8 body (no newline).
     // Implemented in Logger.cpp so it can access Impl.
     void write_formatted(Logger::Level lvl, std::string &&body) noexcept;
