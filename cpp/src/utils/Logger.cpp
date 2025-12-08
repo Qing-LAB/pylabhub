@@ -62,6 +62,7 @@ struct Impl
     void record_write_error(int errcode, const char *msg) noexcept;
     void worker_loop();
     void close_sinks() noexcept;
+    std::string get_sink_description() const;
 
     // Asynchronous worker components
     std::atomic<bool> done{false};
@@ -164,6 +165,23 @@ Impl::~Impl()
     {
         // If done was already true, just make sure we join.
         worker_thread.join();
+    }
+}
+
+std::string Impl::get_sink_description() const
+{
+    switch (dest)
+    {
+    case Logger::Destination::L_CONSOLE:
+        return "Console";
+    case Logger::Destination::L_FILE:
+        return fmt::format("File: {}", file_path);
+    case Logger::Destination::L_SYSLOG:
+        return "Syslog";
+    case Logger::Destination::L_EVENTLOG:
+        return "Windows Event Log";
+    default:
+        return "Unknown";
     }
 }
 
@@ -390,135 +408,134 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
 {
     if (!pImpl)
         return false;
-    std::lock_guard<std::mutex> g(pImpl->mtx);
+
+    // Log the switch to the old sink before changing.
+    const std::string old_sink_desc = pImpl->get_sink_description();
+    LOGGER_ERROR_RT("Switching log destination from {} to file: {}", old_sink_desc, utf8_path);
+    flush();
+
+    // Now, perform the switch under a lock.
+    bool success = false;
+    {
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        pImpl->close_sinks(); // Close any previously opened sink.
+
 #if defined(PLATFORM_WIN64)
-    // Convert UTF-8 path to wide and CreateFileW
-    int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
-    if (needed == 0)
-    {
-        pImpl->record_write_error(GetLastError(), "MultiByteToWideChar failed in init_file");
-        return false;
-    }
-    std::wstring wpath(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, &wpath[0], needed);
-    // remove trailing null
-    if (!wpath.empty() && wpath.back() == L'\0')
-        wpath.pop_back();
+        int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
+        if (needed == 0) {
+            pImpl->record_write_error(GetLastError(), "MultiByteToWideChar failed in set_logfile");
+        } else {
+            std::wstring wpath(needed, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, &wpath[0], needed);
+            if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
 
-    HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE, FILE_SHARE_READ,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE)
-    {
-        pImpl->record_write_error(GetLastError(), "CreateFileW failed in init_file");
-        return false;
-    }
-    SetFilePointer(h, 0, nullptr, FILE_END);
-    if (pImpl->file_handle != INVALID_HANDLE_VALUE)
-        CloseHandle(pImpl->file_handle);
-    pImpl->file_handle = h;
-    pImpl->file_path = utf8_path;
-    pImpl->use_flock = use_flock;
-    pImpl->dest = Logger::Destination::L_FILE;
-    
+            HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE, FILE_SHARE_READ,
+                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) {
+                pImpl->record_write_error(GetLastError(), "CreateFileW failed in set_logfile");
+            } else {
+                SetFilePointer(h, 0, nullptr, FILE_END);
+                pImpl->file_handle = h;
+                pImpl->file_path = utf8_path;
+                pImpl->use_flock = use_flock;
+                pImpl->dest = Logger::Destination::L_FILE;
+                success = true;
+            }
+        }
 #else
-    // POSIX open with O_APPEND
-    if (pImpl->file_fd != -1)
-    {
-        ::close(pImpl->file_fd);
-        pImpl->file_fd = -1;
-    }
-    int fd = ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
-    if (fd == -1)
-    {
-        pImpl->record_write_error(errno, "open() failed in init_file");
-        return false;
-    }
-    pImpl->file_fd = fd;
-    pImpl->file_path = utf8_path;
-    pImpl->use_flock = use_flock;
-    pImpl->dest = Logger::Destination::L_FILE;
-    
+        int fd = ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
+        if (fd == -1) {
+            pImpl->record_write_error(errno, "open() failed in set_logfile");
+        } else {
+            pImpl->file_fd = fd;
+            pImpl->file_path = utf8_path;
+            pImpl->use_flock = use_flock;
+            pImpl->dest = Logger::Destination::L_FILE;
+            success = true;
+        }
 #endif
+        if (!success) {
+            // Revert to console logging on failure.
+            pImpl->dest = Logger::Destination::L_CONSOLE;
+        }
+    } // Mutex is released here.
 
-#if defined(_LOGGER_DEBUG_ENABLED)
-    fmt::print("Logger: Logger started at time {} with default log level '{}'\n", formatted_time(), level_to_string(this->level()));
-    fmt::print("Logger: initialized file sink at '{}', use_flock={}\n",
-               utf8_path, use_flock ? "true" : "false");
-#endif
+    // Log the outcome to the new sink (or console if it failed).
+    if (success) {
+        LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
+    } else {
+        LOGGER_ERROR_RT("Failed to switch logging to file: {}. Reverting to console.", utf8_path);
+    }
 
-    return true;
+    return success;
 }
 
 void Logger::set_syslog(const char *ident, int option, int facility)
 {
 #if !defined(PLATFORM_WIN64)
-    std::lock_guard<std::mutex> g(pImpl->mtx);
-    openlog(ident ? ident : "app", option ? option : (LOG_PID | LOG_CONS),
-            facility ? facility : LOG_USER);
-    pImpl->dest = Logger::Destination::L_SYSLOG;
+    if (!pImpl)
+        return;
+
+    const std::string old_sink_desc = pImpl->get_sink_description();
+    LOGGER_ERROR_RT("Switching log destination from {} to syslog", old_sink_desc);
+    flush();
+
+    {
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        pImpl->close_sinks();
+        openlog(ident ? ident : "app", option ? option : (LOG_PID | LOG_CONS),
+                facility ? facility : LOG_USER);
+        pImpl->dest = Logger::Destination::L_SYSLOG;
+    }
+
+    LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
+
 #else
     (void)ident;
     (void)option;
     (void)facility;
-#endif
-
-#if defined(_LOGGER_DEBUG_ENABLED)
-    fmt::print("Logger: initialized syslog sink with ident='{}', option={}, facility={}\n",
-               ident ? ident : "app", option, facility);
 #endif
 }
 
 bool Logger::set_eventlog(const wchar_t *source_name)
 {
 #if defined(PLATFORM_WIN64)
-    std::lock_guard<std::mutex> g(pImpl->mtx);
-    if (pImpl->evt_handle)
-    {
-        DeregisterEventSource(pImpl->evt_handle);
-        pImpl->evt_handle = nullptr;
-    }
-    HANDLE h = RegisterEventSourceW(nullptr, source_name);
-    if (!h)
-    {
-        pImpl->record_write_error(GetLastError(), "RegisterEventSourceW failed");
+    if (!pImpl)
         return false;
-    }
-    pImpl->evt_handle = h;
-    pImpl->dest = Logger::Destination::L_EVENTLOG;
 
-#ifdef _LOGGER_DEBUG_ENABLED
-    if (source_name)
+    const std::string old_sink_desc = pImpl->get_sink_description();
+    LOGGER_ERROR_RT("Switching log destination from {} to Windows Event Log", old_sink_desc);
+    flush();
+
+    bool success = false;
     {
-        std::wstring w_source_name(source_name);
-        std::string u8_source_name;
-        if (!w_source_name.empty())
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        pImpl->close_sinks();
+        HANDLE h = RegisterEventSourceW(nullptr, source_name);
+        if (!h)
         {
-            int size_needed = WideCharToMultiByte(CP_UTF8, 0, w_source_name.c_str(), (int)w_source_name.length(), NULL, 0, NULL, NULL);
-            if (size_needed > 0)
-            {
-                u8_source_name.resize(size_needed);
-                WideCharToMultiByte(CP_UTF8, 0, w_source_name.c_str(), (int)w_source_name.length(), &u8_source_name[0], size_needed, NULL, NULL);
-            }
+            pImpl->record_write_error(GetLastError(), "RegisterEventSourceW failed");
+            pImpl->dest = Logger::Destination::L_CONSOLE;
         }
-        fmt::print(stdout, "Logger: initialized event log sink with source_name='{}'\n", u8_source_name);
-        fflush(stdout);
+        else
+        {
+            pImpl->evt_handle = h;
+            pImpl->dest = Logger::Destination::L_EVENTLOG;
+            success = true;
+        }
+    }
+
+    if (success)
+    {
+        LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
     }
     else
     {
-        fmt::print(stdout, "Logger: initialized event log sink with source_name='app'\n");
-        fflush(stdout);
+        LOGGER_ERROR("Failed to switch to Windows Event Log. Reverting to console.");
     }
-#endif
-
-    return true;
+    return success;
 #else
     (void)source_name;
-
-#ifdef _LOGGER_DEBUG_ENABLED
-    fmt::print(stdout, "Logger: event log sink not supported on this platform\n");
-    fflush(stdout);
-#endif
-
     return false;
 #endif
 }
@@ -539,7 +556,7 @@ void Logger::shutdown()
     }
 
     // Log the shutdown event itself. This will be the last message queued.
-    LOGGER_INFO("Logger shutting down upon explicit request.");
+    LOGGER_ERROR("Logger shutting down upon explicit request.");
 
     // It is important to flush any pending messages before signaling shutdown.
     flush();
