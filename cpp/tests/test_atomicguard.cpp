@@ -5,7 +5,7 @@
 // the `pylabhub-utils` shared library.
 //
 // Manual build example (from the `build` directory):
-//   g++ -std=c++17 -O2 -pthread ../tests/test_atomicguard.cpp \
+//   g++ -std=c++17 -O2 -pthread ../tests/test_atomicguard.cpp
 //       -I../include -L./src/utils -lpylabhub-utils -o test_atomicguard
 //
 // Run:
