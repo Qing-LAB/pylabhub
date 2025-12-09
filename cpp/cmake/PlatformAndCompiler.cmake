@@ -76,6 +76,20 @@ elseif(APPLE)
   set(PLATFORM_APPLE TRUE CACHE BOOL "Building for Apple / macOS platform" FORCE)
   set(_platform_macro_defined TRUE)
   set(_platform_name "Apple / macOS")
+
+  # Set a default deployment target if not specified by the user or is empty.
+  if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version to target." FORCE)
+  endif()
+  message(STATUS "macOS deployment target set to: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+
+  # Explicitly set the architecture based on the host processor.
+  if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "macOS architecture" FORCE)
+  else()
+    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "macOS architecture" FORCE)
+  endif()
+  message(STATUS "macOS architecture set to: ${CMAKE_OSX_ARCHITECTURES}")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
   add_compile_definitions(PLATFORM_FREEBSD=1)
   set(PLATFORM_FREEBSD TRUE CACHE BOOL "Building for FreeBSD platform" FORCE)

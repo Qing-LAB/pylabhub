@@ -91,8 +91,13 @@ endif()
 # compiles this into a binary `.rsrc` file, which Igor reads at runtime.
 set(REZ_SOURCE_FILE "@REZ_SOURCE_FILE@")
 if(EXISTS "${REZ_SOURCE_FILE}")
-  find_program(REZ_EXECUTABLE Rez)
-  if(REZ_EXECUTABLE)
+  execute_process(
+    COMMAND xcrun --find Rez
+    OUTPUT_VARIABLE REZ_EXECUTABLE
+    RESULT_VARIABLE REZ_FIND_RESULT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(REZ_FIND_RESULT EQUAL 0 AND EXISTS "${REZ_EXECUTABLE}")
     set(rez_output_rsrc "${_resources_dir}/@XOP_BUNDLE_NAME@.rsrc")
 
     # Build the include path arguments for Rez
