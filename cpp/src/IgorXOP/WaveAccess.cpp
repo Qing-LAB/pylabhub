@@ -86,6 +86,7 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
     double sfB[MAX_DIMENSIONS];
     char dimLabel[MAX_DIM_LABEL_BYTES + 1];
     int result;
+    decltype(fmt::format_to_n(buf, 0, "")) result_buf_tuple;
 
     if (p->w == NULL)
     {
@@ -104,7 +105,7 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
     waveType = WaveType(p->w);
 
     // Get number of used dimensions in wave.
-    if (result = MDGetWaveDimensions(p->w, &numDimensions, dimensionSizes))
+    if ((result = MDGetWaveDimensions(p->w, &numDimensions, dimensionSizes)))
         return result;
 
     /*	Get wave scaling for all used dimensions.
@@ -113,78 +114,78 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
     */
     for (dimension = 0; dimension < numDimensions; dimension++)
     {
-        if (result = MDGetWaveScaling(p->w, dimension, &sfA[dimension], &sfB[dimension]))
+        if ((result = MDGetWaveScaling(p->w, dimension, &sfA[dimension], &sfB[dimension])))
             return result;
     }
 
     // Get units for all dimensions.
     for (dimension = 0; dimension < numDimensions; dimension++)
     {
-        if (result = MDGetWaveUnits(p->w, dimension, &dimensionUnits[dimension][0]))
+        if ((result = MDGetWaveUnits(p->w, dimension, &dimensionUnits[dimension][0])))
             return result;
     }
 
     /*	Get the data nominal full scale values for the wave.
             -1 means get full scale values instead of dimension scaling.
     */
-    if (result = MDGetWaveScaling(p->w, -1, &dataFullScaleMax, &dataFullScaleMin))
+    if ((result = MDGetWaveScaling(p->w, -1, &dataFullScaleMax, &dataFullScaleMin)))
         return result;
 
     /*	Get the data units for the wave.
             -1 means data units instead of dimension units.
     */
-    if (result = MDGetWaveUnits(p->w, -1, dataUnits))
+    if ((result = MDGetWaveUnits(p->w, -1, dataUnits)))
         return result;
 
     // Now, store all of the info in the handle to return to Igor.
 
-    auto result_buf =
+    result_buf_tuple =
         fmt::format_to_n(buf, sizeof(buf) - 1, "Wave name: \'{}\'; type: {}; dimensions: {}",
-                         waveName, waveType, numDimensions);
-    *result_buf.out = '\0'; // Null-terminate the string
-    if (result = AddCStringToHandle(buf, p->strH))
+    *result_buf_tuple.out = '\0'; // Null-terminate the string
+    if ((result = AddCStringToHandle(buf, p->strH)))
         return result;
 
     // Add the data units and nominal full scale values.
-    result_buf =
+    result_buf_tuple =
         fmt::format_to_n(buf, sizeof(buf) - 1, "; data units=\"{}\"; data full scale={},{}",
                          dataUnits, dataFullScaleMin, dataFullScaleMax);
-    *result_buf.out = '\0'; // Null-terminate the string
-    if (result = AddCStringToHandle(buf, p->strH))
+    *result_buf_tuple.out = '\0'; // Null-terminate the string
+    if ((result = AddCStringToHandle(buf, p->strH)))
         return result;
 
     // Add information for each dimension.
+    decltype(fmt::format_to_n(buf, 0, "")) result_buf_inner; // Declare here to avoid shadowing
     for (dimension = 0; dimension < numDimensions; dimension++)
     {
-        if (result = AddCStringToHandle(CR_STR, p->strH)) // Add CR.
+        if ((result = AddCStringToHandle(CR_STR, p->strH))) // Add CR.
             return result;
-        auto result_buf = fmt::format_to_n(
+        result_buf_inner = fmt::format_to_n(
             buf, sizeof(buf) - 1,
             "\tDimension number: {}, size={}, sfA={}, sfB={}, dimensionUnits=\"{}\"{}", dimension,
             (SInt64)dimensionSizes[dimension], sfA[dimension], sfB[dimension],
             dimensionUnits[dimension], CR_STR);
-        *result_buf.out = '\0'; // Null-terminate the string
-        if (result = AddCStringToHandle(buf, p->strH))
+        *result_buf_inner.out = '\0'; // Null-terminate the string
+        if ((result = AddCStringToHandle(buf, p->strH)))
             return result;
 
         //	Get dimension label for each element of this dimension.
-        if (result = AddCStringToHandle("\t\tLabels: ", p->strH))
+        if ((result = AddCStringToHandle("\t\tLabels: ", p->strH)))
             return result;
         for (element = -1; element < dimensionSizes[dimension]; element++)
         { // Loop starts from -1 because -1 returns
             if (element >= 5)
             { // the label for the entire dimension.
-                if (result = AddCStringToHandle("(and so on)", p->strH))
+                if ((result = AddCStringToHandle("(and so on)", p->strH)))
                     return result;
                 break;
             }
-            if (result = MDGetDimensionLabel(p->w, dimension, element, dimLabel))
+            if ((result = MDGetDimensionLabel(p->w, dimension, element, dimLabel)))
                 return result;
-            auto result_buf = fmt::format_to_n(buf, sizeof(buf) - 1, "\'{}\'", dimLabel);
-            *result_buf.out = '\0'; // Null-terminate the string
+            result_buf_inner = fmt::format_to_n(buf, sizeof(buf) - 1, "\'{}\'", dimLabel);
+            *result_buf_inner.out = '\0'; // Null-terminate the string
             if (element < dimensionSizes[dimension] - 1)
-                strcat(buf, ", ");
-            if (result = AddCStringToHandle(buf, p->strH))
+                strcat_s(buf, sizeof(buf), ", ");
+            if ((result = AddCStringToHandle(buf, p->strH)))
                 return result;
         }
     }
