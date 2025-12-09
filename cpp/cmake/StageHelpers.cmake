@@ -193,9 +193,12 @@ function(pylabhub_get_library_staging_commands)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:RUNTIME:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
-      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:ARCHIVE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+           "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
+      if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
+         list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+         "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+      endif()
     else()
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
       # runtime and linking. Stage it to the specified destination (e.g., 'bin').
