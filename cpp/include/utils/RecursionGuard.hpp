@@ -72,7 +72,10 @@ class PYLABHUB_API RecursionGuard
   private:
     const void *key_;
     // Declaration of the thread-local stack. Definition is in the .cpp file.
-    static thread_local std::vector<const void *> g_stack;
+    // this has been REMOVED from the header because Windows does not allow
+    // thread_local variables to be exposed in DLLs. Instead, we are defining it
+    // only in the .cpp file as a static thread-local variable.
+    // static thread_local std::vector<const void *> g_stack;
 };
 
 } // namespace pylabhub::utils
