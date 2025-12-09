@@ -76,8 +76,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "utils/FileLock.hpp"
 #include "nlohmann/json.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
 #include "utils/RecursionGuard.hpp"
 
@@ -142,7 +142,7 @@ class PYLABHUB_API JsonConfig
         nlohmann::json data;
         mutable std::shared_mutex rwMutex; // Protects `data` for fine-grained reads/writes.
         mutable std::mutex initMutex;      // Protects all structural state and serializes access.
-        std::atomic<bool> dirty{false}; // true if memory may be newer than disk
+        std::atomic<bool> dirty{false};    // true if memory may be newer than disk
 
         Impl() : data(json::object()) {}
         ~Impl() = default;
@@ -180,8 +180,7 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
     // Refuse to operate if the object has not been initialized with a file path.
     if (!pImpl || pImpl->configPath.empty())
     {
-        LOGGER_ERROR(
-            "JsonConfig::with_json_write: cannot modify uninitialized config object.");
+        LOGGER_ERROR("JsonConfig::with_json_write: cannot modify uninitialized config object.");
         return false;
     }
     std::lock_guard<std::mutex> lg(pImpl->initMutex);
@@ -327,8 +326,8 @@ T JsonConfig::get_or(const std::string &key, T const &default_value) const noexc
         const void *key_ptr = static_cast<const void *>(this);
         if (RecursionGuard::is_recursing(key_ptr))
         {
-            LOGGER_WARN(
-                "JsonConfig::get_or - nested call detected on same instance; refusing to re-enter.");
+            LOGGER_WARN("JsonConfig::get_or - nested call detected on same instance; refusing to "
+                        "re-enter.");
             return default_value;
         }
         RecursionGuard guard(key_ptr);
@@ -418,8 +417,8 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
         const void *key_ptr = static_cast<const void *>(this);
         if (RecursionGuard::is_recursing(key_ptr))
         {
-            LOGGER_WARN(
-                "JsonConfig::update - nested call detected on same instance; refusing to re-enter.");
+            LOGGER_WARN("JsonConfig::update - nested call detected on same instance; refusing to "
+                        "re-enter.");
             return false;
         }
         RecursionGuard guard(key_ptr);
