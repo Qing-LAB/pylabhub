@@ -170,9 +170,7 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
     // Detect and refuse nested calls on the same instance for this thread to prevent deadlocks.
     if (RecursionGuard::is_recursing(key))
     {
-        LOGGER_WARN(
-            "JsonConfig::with_json_write - nested call detected on same instance; refusing to "
-            "re-enter.");
+        LOGGER_WARN("JsonConfig::with_json_write - nested call detected on same instance; refusing to re-enter.");
         return false;
     }
     RecursionGuard guard(key);
@@ -226,9 +224,7 @@ template <typename F> bool JsonConfig::with_json_read(F &&cb) const noexcept
         // Detect and refuse nested calls to prevent deadlocks.
         if (RecursionGuard::is_recursing(key))
         {
-            LOGGER_WARN(
-                "JsonConfig::with_json_read - nested call detected on same instance; refusing to "
-                "re-enter.");
+            LOGGER_WARN("JsonConfig::with_json_read - nested call detected on same instance; refusing to re-enter.");
             return false;
         }
         RecursionGuard guard(key);

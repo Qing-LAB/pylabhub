@@ -26,6 +26,7 @@
 #endif
 
 #include "utils/Logger.hpp"
+#include <processthreadsapi.h>
 
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
@@ -561,7 +562,7 @@ int main(int argc, char **argv)
             fmt::print("Skipping test '{}' on Windows in this example.\n", name);
             return;
         }
-#endif
+#else
         pid_t pid = fork();
         if (pid == -1)
         {
@@ -589,7 +590,7 @@ int main(int argc, char **argv)
             }
         }
     };
-
+#endif
     // Run all standard tests sequentially.
     for (const auto &[name, func] : tests)
     {

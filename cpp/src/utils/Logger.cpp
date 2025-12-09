@@ -930,11 +930,11 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
         {
             if (s.empty())
                 return {};
-            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_tostr(), -1, nullptr, 0);
+            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
             if (needed <= 0)
                 return {};
             std::wstring out(needed, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, s.c_tostr(), -1, &out[0], needed);
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &out[0], needed);
             return out;
         }(msg.message);
         OutputDebugStringW(w.c_str());
