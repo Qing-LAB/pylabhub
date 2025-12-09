@@ -41,12 +41,13 @@ struct AtomicGuardImpl
 
 // --- AtomicGuard Static Members ---
 
-// Define the static member variable.
-std::atomic<uint64_t> AtomicGuard::next_token_{1};
-
 // Define the static token generator function.
 uint64_t AtomicGuard::generate_token() noexcept
 {
+    // This is a function-local static, ensuring it's initialized only once,
+    // is thread-safe on C++11 and later, and is not part of the DLL's public interface.
+    static std::atomic<uint64_t> next_token_{1};
+
     uint64_t t;
     // Loop until a non-zero token is fetched. This handles the (extremely rare)
     // case where the atomic counter wraps around to zero.

@@ -212,7 +212,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     {
         pImpl->ec = std::error_code(GetLastError(), std::system_category());
         // log using new logger API
-        LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string().c_str(),
+        LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string(),
                     pImpl->ec.value());
         pImpl->handle = nullptr;
         pImpl->valid = false;
@@ -232,7 +232,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     {
         DWORD err = GetLastError();
         pImpl->ec = std::error_code(static_cast<int>(err), std::system_category());
-        LOGGER_WARN("FileLock: LockFileEx failed for {} err={}", lockpath.string().c_str(), err);
+        LOGGER_WARN("FileLock: LockFileEx failed for {} err={}", lockpath.string(), err);
         CloseHandle(h);
         pImpl->handle = nullptr;
         pImpl->valid = false;
@@ -253,8 +253,8 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     if (fd == -1)
     {
         pImpl->ec = std::error_code(errno, std::generic_category());
-        LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string().c_str(),
-                    pImpl->ec.message().c_str());
+        LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(),
+                    pImpl->ec.message());
         pImpl->fd = -1;
         pImpl->valid = false;
         return;
@@ -269,8 +269,8 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     if (flock(fd, op) != 0)
     {
         pImpl->ec = std::error_code(errno, std::generic_category());
-        LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string().c_str(),
-                    pImpl->ec.message().c_str());
+        LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string(),
+                    pImpl->ec.message());
         ::close(fd);
         pImpl->fd = -1;
         pImpl->valid = false;

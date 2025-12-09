@@ -93,6 +93,15 @@
 #define LOGGER_FMT_BUFFER_RESERVE (1024u)
 #endif
 
+// Disable warning C4251 for Pimpl members.
+// This warning is triggered by private members of exported classes that use STL templates.
+// It is a well-known issue with MSVC and is considered safe to disable for Pimpl
+// patterns because the private member is not part of the public ABI.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace pylabhub::utils
 {
 
@@ -362,6 +371,10 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 }
 
 } // namespace pylabhub::utils
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // --- Macro Implementation ---
 // The logger provides two sets of macros for different use cases.

@@ -104,6 +104,15 @@
 
 #include "platform.hpp" // project platform macro header (authoritative)
 
+// Disable warning C4251 for Pimpl members.
+// This warning is triggered by private members of exported classes that use STL templates.
+// It is a well-known issue with MSVC and is considered safe to disable for Pimpl
+// patterns because the private member is not part of the public ABI.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace pylabhub::utils
 {
 
@@ -241,11 +250,12 @@ class PYLABHUB_API AtomicGuard
     // This provides a stable ABI.
     std::unique_ptr<AtomicGuardImpl> pImpl;
 
-    // Token generator: persistent per-process counter.
-    static std::atomic<uint64_t> next_token_;
-
     // Thread-safe token generator.
     static uint64_t generate_token() noexcept;
 };
 
 } // namespace pylabhub::utils
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

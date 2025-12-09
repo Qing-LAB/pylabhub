@@ -135,14 +135,17 @@ if(MSVC)
   target_compile_options(${XOP_TARGET} PRIVATE /Zc:preprocessor)
 endif()
 
-if(DEFINED PLATFORM_APPLE)
-  target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
-  message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
-endif()
-if(DEFINED PLATFORM_WIN64)
-  target_compile_definitions(${XOP_TARGET} PRIVATE WINIGOR IGOR64)
-  message(STATUS "IgorXOP: adding compile definitions for Windows: WINIGOR IGOR64")
-endif()
+# The following compile definitions are provided by XOPStandardHeaders.h and were causing macro redefinition warnings.
+# They are commented out to avoid redundancy and rely on the toolkit's intended mechanism for platform detection.
+# In case of future issues with XOPStandardHeaders.h changes, these can be uncommented for testing.
+#if(DEFINED PLATFORM_APPLE)
+#  target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
+#  message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
+#endif()
+#if(DEFINED PLATFORM_WIN64)
+#  target_compile_definitions(${XOP_TARGET} PRIVATE WINIGOR IGOR64)
+#  message(STATUS "IgorXOP: adding compile definitions for Windows: WINIGOR IGOR64")
+#endif()
 
 # -------------------------
 # Consume top-level provided helper/core targets if available

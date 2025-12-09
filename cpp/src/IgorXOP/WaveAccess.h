@@ -1,3 +1,5 @@
+#include "XOPStandardHeaders.h"
+
 /*
         WaveAccess.h -- equates for WaveAccess XOP
 */
