@@ -137,7 +137,7 @@ Impl::Impl()
     }
 
 #ifdef _LOGGER_DEBUG_ENABLED
-    fmt::print(stdout, "Log worker thread created and ready. Native handle: {}\n",
+    fmt::print(stdout, "Log worker thread created and ready. C++ thread id: {}\n",
                worker_thread.get_id());
     fflush(stdout);
 #endif
@@ -674,7 +674,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 void Impl::worker_loop()
 {
 #ifdef _LOGGER_DEBUG_ENABLED
-    fmt::print(stdout, "Log worker loop started.\n");
+    fmt::print(stdout, "Log worker loop started. Native thread id: {}\n", get_native_thread_id());
     fflush(stdout);
 #endif
     std::vector<LogMessage> write_batch;
