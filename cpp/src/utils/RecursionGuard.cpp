@@ -6,7 +6,7 @@ namespace pylabhub::utils
 
 // Definition of the thread-local static member.
 // Each thread gets its own instance of this vector.
-thread_local std::vector<const void *> RecursionGuard::g_stack;
+static thread_local std::vector<const void *> g_stack;
 
 RecursionGuard::RecursionGuard(const void *key) : key_(key)
 {

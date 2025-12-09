@@ -1,16 +1,16 @@
 /*******************************************************************************
-  * @file include/platform.hpp
-  * @brief Platform detection macros
-  * @author Quan Qing
-  * @date 2025-11-15
-  * Reviewed by Quan Qing on 2025-11-15
-  * First version created by Quan Qing with ChatGPT assistance.
+ * @file include/platform.hpp
+ * @brief Platform detection macros
+ * @author Quan Qing
+ * @date 2025-11-15
+ * Reviewed by Quan Qing on 2025-11-15
+ * First version created by Quan Qing with ChatGPT assistance.
  ******************************************************************************/
 #pragma once
 
+#include <cstdio>        // For fprintf, stderr
+#include <cstdlib>       // For std::abort
 #include <fmt/ostream.h> // For fmt::print to FILE*
-#include <cstdio>  // For fprintf, stderr
-#include <cstdlib> // For std::abort
 
 // Prefer the build-system provided macros (PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD,
 // PLATFORM_LINUX, PLATFORM_UNKNOWN). If they are not defined by the build system, fall back to
@@ -81,8 +81,7 @@
 // __cplusplus only when /Zc:__cplusplus is enabled).
 #if defined(_MSC_VER)
 #if !defined(_MSVC_LANG) || (_MSVC_LANG < 202002L)
-#error                                                                                             \
-    "This project requires C++20 or later. Please compile with /std:c++20 or newer (MSVC)."
+#error "This project requires C++20 or later. Please compile with /std:c++20 or newer (MSVC)."
 #endif
 #else
 #if __cplusplus < 202002L
@@ -123,13 +122,13 @@
 // The build system (CMake) should define PYLABHUB_BUILD_DLL when building this
 // project as a shared library.
 #if PYLABHUB_IS_WINDOWS
-    #if defined(PYLABHUB_BUILD_DLL)
-        #define PYLABHUB_API __declspec(dllexport)
-    #else
-        #define PYLABHUB_API __declspec(dllimport)
-    #endif
+#if defined(PYLABHUB_BUILD_DLL)
+#define PYLABHUB_API __declspec(dllexport)
+#else
+#define PYLABHUB_API __declspec(dllimport)
+#endif
 #else // GCC, Clang, etc.
-    #define PYLABHUB_API __attribute__((visibility("default")))
+#define PYLABHUB_API __attribute__((visibility("default")))
 #endif
 
 // Fallback for static builds or when the macro isn't defined.
