@@ -129,6 +129,12 @@ add_library(pylabhub::${XOP_TARGET} ALIAS ${XOP_TARGET})
 # -------------------------
 target_compile_features(${XOP_TARGET} PRIVATE cxx_std_20)
 
+# Check if we are using MSVC
+if(MSVC)
+  # Enable the standards-conforming preprocessor
+  target_compile_options(${XOP_TARGET} PRIVATE /Zc:preprocessor)
+endif()
+
 if(DEFINED PLATFORM_APPLE)
   target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
   message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
