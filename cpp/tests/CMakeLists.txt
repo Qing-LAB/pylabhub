@@ -28,6 +28,12 @@ foreach(test_target ${TEST_TARGETS})
   # Set the C++ standard for the test executables to C++20.
   target_compile_features(${test_target} PRIVATE cxx_std_20)
 
+  # Check if we are using MSVC
+  if(MSVC)
+    # Enable the standards-conforming preprocessor
+    target_compile_options(${test_target} PRIVATE /Zc:preprocessor)
+  endif()
+
   # All tests depend on the pylabhub-utils shared library.
   # Linking against the namespaced alias is the correct modern CMake approach.
   target_link_libraries(${test_target} PRIVATE pylabhub::utils)
