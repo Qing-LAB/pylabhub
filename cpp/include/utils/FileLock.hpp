@@ -26,6 +26,12 @@
 
 #include "platform.hpp" // For PYLABHUB_API
 
+// Disable warning C4251 for Pimpl members.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace pylabhub::utils
 {
 
@@ -71,3 +77,7 @@ class PYLABHUB_API FileLock
 };
 
 } // namespace pylabhub::utils
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

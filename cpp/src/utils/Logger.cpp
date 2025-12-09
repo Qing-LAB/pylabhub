@@ -421,6 +421,8 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
         pImpl->close_sinks(); // Close any previously opened sink.
 
 #if defined(PLATFORM_WIN64)
+        // Mark parameter as unused on Windows.
+        (void)mode;
         int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
         if (needed == 0)
         {

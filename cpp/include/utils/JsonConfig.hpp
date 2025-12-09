@@ -81,6 +81,12 @@
 #include "utils/Logger.hpp"
 #include "utils/RecursionGuard.hpp"
 
+// Disable warning C4251 for Pimpl members.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace pylabhub::utils
 {
 
@@ -439,5 +445,9 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
 }
 
 } // namespace pylabhub::utils
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // end JsonConfig.hpp

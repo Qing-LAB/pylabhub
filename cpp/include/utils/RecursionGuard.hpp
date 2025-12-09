@@ -51,7 +51,6 @@
  ******************************************************************************/
 
 #include "platform.hpp" // For PYLABHUB_API
-#include <vector>
 
 namespace pylabhub::utils
 {

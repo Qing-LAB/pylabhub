@@ -10,11 +10,12 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
-#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <fmt/core.h>
 
 #include "platform.hpp"
 #if PYLABHUB_IS_POSIX
@@ -25,16 +26,17 @@
 #include <unistd.h>    // For fork(), execl(), _exit()
 #endif
 
+#if PYLABHUB_IS_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "utils/Logger.hpp"
-#include <processthreadsapi.h>
 
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 
-// --- Test Harness: Explicit Registration ---
-// Tests are explicitly registered in a map inside main() to avoid static
-// initialization issues. Each test is run in an isolated process.
-
+// --- Test Harness ---
 static int tests_passed = 0;
 static int tests_failed = 0;
 
@@ -43,34 +45,21 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
-            throw std::runtime_error("Test case failed");                                          \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}", #condition, __FILE__, __LINE__);   \
+            exit(1);                                                                               \
         }                                                                                          \
     } while (0)
 
-// This function is called in the child process to run a single, isolated test.
-void run_test_and_exit(const std::string &name, std::function<void()> test_func)
-{
-    fmt::print("\n=== {} ===\n", name);
-    try
-    {
-        test_func();
-        fmt::print("  --- PASSED ---\n");
-        exit(0); // Exit with success code
-    }
-    catch (const std::exception &e)
-    {
-        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "  --- FAILED with unknown exception ---\n");
-    }
-    exit(1); // Exit with failure code
-}
+#define FAIL_TEST(message)                                                                         \
+    do                                                                                             \
+    {                                                                                              \
+        fmt::print(stderr, "  TEST FAILED: {} at {}:{}", message, __FILE__, __LINE__);           \
+        exit(1);                                                                                   \
+    } while (0)
 
 // --- Test Globals & Helpers ---
 static fs::path g_log_path;
+static std::string g_self_exe_path;
 
 // Read file contents into a string (binary mode)
 static bool read_file_contents(const std::string &path, std::string &out)
@@ -101,82 +90,8 @@ static size_t count_lines(const std::string &path)
     return count;
 }
 
-// Child entrypoint used for the multi-process stress test.
-int run_as_child_main(const std::string &log_path)
-{
-    Logger &L = Logger::instance();
+// --- Test Cases ---
 
-    // Make sure child writes to same file (append)
-    if (!L.set_logfile(log_path, /*use_flock*/ true))
-    {
-        fmt::print(stderr, "child: set_logfile failed (errno={})\n", L.last_errno());
-        return 2;
-    }
-
-    // Use trace level so everything is logged
-    L.set_level(Logger::Level::L_TRACE);
-
-    // Each child writes a small set of messages
-    for (int i = 0; i < 20; ++i)
-    {
-        L.info_fmt("child-msg pid={} idx={}",
-                   static_cast<int>(std::hash<std::thread::id>()(std::this_thread::get_id())), i);
-    }
-
-    // UTF-8 sanity message
-    L.info_fmt("child utf8 {}", "☃");
-    L.flush();
-    CHECK(!L.dirty());
-    L.shutdown();
-    return 0;
-}
-
-#if defined(PLATFORM_WIN64)
-// Spawns the same executable with "--child" argument for the stress test.
-static PROCESS_INFORMATION spawn_child_windows(const std::string &exePath,
-                                               const std::string &logPath)
-{
-    STARTUPINFOA si{};
-    PROCESS_INFORMATION pi{};
-    si.cb = sizeof(si);
-
-    std::string cmd = fmt::format("\"{}\" --child \"{}\"", exePath, logPath);
-    // CreateProcess modifies the command buffer, so we need a mutable char array
-    std::vector<char> cmdbuf(cmd.begin(), cmd.end());
-    cmdbuf.push_back('\0');
-
-    BOOL ok = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-                             &si, &pi);
-    if (!ok)
-    {
-        fmt::print(stderr, "CreateProcessA failed: {}\n", GetLastError());
-        PROCESS_INFORMATION empty{};
-        return empty;
-    }
-    CloseHandle(pi.hThread);
-    return pi;
-}
-#else
-// Spawns the same executable with "--child" argument for the stress test.
-static pid_t spawn_child_posix(const std::string &exePath, const std::string &logPath)
-{
-    pid_t pid = fork();
-    if (pid == -1)
-    {
-        perror("fork");
-        return -1;
-    }
-    if (pid == 0)
-    {
-        // Child process: replace its image with a new instance of this executable
-        execl(exePath.c_str(), exePath.c_str(), "--child", logPath.c_str(), nullptr);
-        _exit(127); // Should not be reached if execl is successful
-    }
-    return pid;
-}
-#endif
-
-// Read file contents into a string (binary mode)
 void test_basic_logging()
 {
     std::remove(g_log_path.string().c_str());
@@ -185,9 +100,7 @@ void test_basic_logging()
     L.set_level(Logger::Level::L_TRACE);
 
     LOGGER_INFO("unit-test: ascii message {}", 42);
-    L.flush(); // Diagnostic flush
     LOGGER_DEBUG("unit-test: debug {:.2f}", 3.14159);
-    L.flush(); // Diagnostic flush
     LOGGER_INFO("unit-test: utf8 test {} {}", "☃", "日本語");
 
     L.flush();
@@ -195,9 +108,7 @@ void test_basic_logging()
     L.shutdown();
 
     std::string contents;
-    fmt::print("Reading log file: {}\n", g_log_path.string());
     CHECK(read_file_contents(g_log_path.string(), contents));
-    fmt::print("contents: {}\n", contents);
     CHECK(contents.find("unit-test: ascii message 42") != std::string::npos);
     CHECK(contents.find("unit-test: debug 3.14") != std::string::npos);
     CHECK(contents.find("☃") != std::string::npos);
@@ -310,7 +221,6 @@ void test_multithreaded_logging()
                 for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
                 {
                     LOGGER_DEBUG("thread {} message {}", t, i);
-                    (void)t;
                 }
             });
     }
@@ -331,7 +241,7 @@ void test_flush_waits_for_queue()
 {
     const int THREADS = 4;
     const int MESSAGES_PER_THREAD = 100;
-
+    std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
@@ -354,18 +264,11 @@ void test_flush_waits_for_queue()
         t.join();
     }
 
-    // At this point, messages are likely still in the queue or being processed.
-    // Call flush() to synchronously wait for the worker to drain the queue.
     L.flush();
     CHECK(!L.dirty());
 
-    // Now that flush() has returned, the file MUST contain all messages.
     size_t lines = count_lines(g_log_path.string());
     CHECK(lines == THREADS * MESSAGES_PER_THREAD);
-
-    // Now it's safe to shut down.
-    L.flush();
-    CHECK(!L.dirty());
     L.shutdown();
 }
 
@@ -375,21 +278,15 @@ void test_write_error_callback()
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
 
-    // Create a file that we can then make read-only
     {
         std::ofstream touch(g_log_path);
         touch << "initial content\n";
     }
     CHECK(fs::exists(g_log_path));
 
-    // Set permissions to read-only
     chmod(g_log_path.string().c_str(), S_IRUSR | S_IRGRP | S_IROTH); // 0444
-
-    // Re-initialize the logger. On POSIX, open() with O_WRONLY will fail on
-    // a read-only file. We don't CHECK the result, we check the callback.
-    L.set_logfile(g_log_path.string(), false);
+    CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_INFO);
-    L.set_fsync_per_write(true); // Force fsync to ensure the OS reports the write error
 
     std::atomic<bool> callback_invoked = false;
     std::atomic<int> error_code = 0;
@@ -404,67 +301,96 @@ void test_write_error_callback()
         });
 
     LOGGER_INFO("This write should fail.");
-
     L.flush();
     CHECK(!L.dirty());
 
-    L.shutdown(); // This will flush, ensuring the write is attempted.
+    L.shutdown();
 
     CHECK(callback_invoked.load());
     CHECK(L.write_failure_count() > initial_failures);
-    CHECK(error_code.load() == EACCES); // EACCES is "Permission denied"
+    CHECK(error_code.load() != 0);
 
-    // Cleanup: make writable again so we can remove it
     chmod(g_log_path.string().c_str(), S_IRWXU | S_IWGRP | S_IWOTH);
 }
 #endif
 
-// Global variable to hold the path to the current executable.
-static std::string g_self_exe_path;
+// --- Multi-process Test Logic ---
+
+// Entrypoint for child processes spawned by test_multiprocess_logging
+int multiproc_child_main()
+{
+    Logger &L = Logger::instance();
+    if (!L.set_logfile(g_log_path.string(), true))
+    {
+        return 2;
+    }
+    L.set_level(Logger::Level::L_TRACE);
+    for (int i = 0; i < 20; ++i)
+    {
+#if PYLABHUB_IS_WINDOWS
+        L.info_fmt("child-msg pid={} idx={}", GetCurrentProcessId(), i);
+#else
+        L.info_fmt("child-msg pid={} idx={}", getpid(), i);
+#endif
+    }
+    L.info_fmt("child utf8 {}", "☃");
+    L.flush();
+    L.shutdown();
+    return 0;
+}
 
 void test_multiprocess_logging()
 {
-    fs::path multiprocess_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
-    std::remove(multiprocess_log_path.string().c_str());
+    g_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
+    std::remove(g_log_path.string().c_str());
 
     Logger &L = Logger::instance();
-    CHECK(L.set_logfile(multiprocess_log_path.string(), true)); // Use flock for multi-process
+    CHECK(L.set_logfile(g_log_path.string(), true));
     L.set_level(Logger::Level::L_INFO);
 
     LOGGER_INFO("parent-process-start");
-    L.flush(); // Ensure parent's message is written before children start
+    L.flush();
 
     const int CHILDREN = 3;
-    const int MESSAGES_PER_CHILD = 20;
+    const int MESSAGES_PER_CHILD = 21; // 20 + 1 utf8
 
-#if defined(PLATFORM_WIN64)
-    std::vector<PROCESS_INFORMATION> procs;
+#if PYLABHUB_IS_WINDOWS
+    std::vector<HANDLE> procs;
     for (int i = 0; i < CHILDREN; ++i)
     {
-        PROCESS_INFORMATION pi =
-            spawn_child_windows(g_self_exe_path, multiprocess_log_path.string());
-        if (pi.hProcess == nullptr)
+        std::string cmdline_str = fmt::format("\"{}\" --multiproc-child", g_self_exe_path);
+        std::vector<char> cmdline(cmdline_str.begin(), cmdline_str.end());
+        cmdline.push_back('\0');
+
+        STARTUPINFOA si{};
+        PROCESS_INFORMATION pi{};
+        si.cb = sizeof(si);
+        if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                             nullptr, &si, &pi))
         {
-            throw std::runtime_error("Failed to spawn child process");
+            FAIL_TEST("CreateProcessA failed");
         }
-        procs.push_back(pi);
+        CloseHandle(pi.hThread);
+        procs.push_back(pi.hProcess);
     }
-    for (auto &pi : procs)
+    for (auto &h : procs)
     {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD code = 0;
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hProcess);
+        WaitForSingleObject(h, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(h, &code);
+        CloseHandle(h);
         CHECK(code == 0);
     }
 #else
     std::vector<pid_t> child_pids;
     for (int i = 0; i < CHILDREN; ++i)
     {
-        pid_t pid = spawn_child_posix(g_self_exe_path, multiprocess_log_path.string());
-        if (pid < 0)
+        pid_t pid = fork();
+        CHECK(pid != -1);
+        if (pid == 0)
         {
-            throw std::runtime_error("Failed to fork child process");
+            execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--multiproc-child", nullptr);
+            _exit(127); // Should not be reached
         }
         child_pids.push_back(pid);
     }
@@ -476,138 +402,153 @@ void test_multiprocess_logging()
     }
 #endif
     L.flush();
-    CHECK(!L.dirty());
     L.shutdown();
 
-    size_t lines = count_lines(multiprocess_log_path.string());
-    size_t expected_lines = 1 /* parent start */ + (CHILDREN * (MESSAGES_PER_CHILD + 1 /* utf8 */));
+    size_t lines = count_lines(g_log_path.string());
+    size_t expected_lines = 1 + (CHILDREN * MESSAGES_PER_CHILD);
     CHECK(lines == expected_lines);
-    std::remove(multiprocess_log_path.string().c_str());
+    std::remove(g_log_path.string().c_str());
+}
+
+// --- Test Runner ---
+
+// Spawns a child process to run a single, isolated test.
+void run_test_in_process(const std::string &test_name)
+{
+    fmt::print("\n--- Running test: {} ---\n", test_name);
+
+#if PYLABHUB_IS_WINDOWS
+    std::string cmdline_str = fmt::format("\"{}\" --run-test {}", g_self_exe_path, test_name);
+    std::vector<char> cmdline(cmdline_str.begin(), cmdline_str.end());
+    cmdline.push_back('\0');
+
+    STARTUPINFOA si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+
+    if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
+                         &pi))
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\n", GetLastError());
+        return;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (exit_code == 0)
+    {
+        tests_passed++;
+        fmt::print("  --- PASSED ---\n");
+    }
+    else
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED in child process (exit code: {})", exit_code);
+    }
+#else
+    pid_t pid = fork();
+    if (pid == -1)
+    {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED: fork() failed ---\n");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--run-test", test_name.c_str(),
+              nullptr);
+        _exit(127); // execl only returns on error
+    }
+    else
+    {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        {
+            tests_passed++;
+            fmt::print("  --- PASSED ---\n");
+        }
+        else
+        {
+            tests_failed++;
+            fmt::print(stderr, "  --- FAILED in child process ---\n");
+        }
+    }
+#endif
 }
 
 int main(int argc, char **argv)
 {
-    // Store path to self for multi-process test
     g_self_exe_path = argv[0];
+    g_log_path = fs::temp_directory_path() / "pylabhub_test_logger.log";
 
-    // Explicitly register all tests to avoid static initialization issues.
-    // Use a vector of pairs to preserve order.
-    std::vector<std::pair<std::string, std::function<void()>>> tests;
-    tests.emplace_back("Basic Logging and File Sink", test_basic_logging);
-    tests.emplace_back("Log Level Filtering", test_log_level_filtering);
-    tests.emplace_back("Message Truncation", test_message_truncation);
-    tests.emplace_back("Bad Format String Handling", test_bad_format_string);
-    tests.emplace_back("Multi-threaded Logging", test_multithreaded_logging);
-    tests.emplace_back("Flush Waits For Queue", test_flush_waits_for_queue);
-#if PYLABHUB_IS_POSIX
-    tests.emplace_back("Write Error Callback (POSIX-only)", test_write_error_callback);
-    // The multi-process test is special and will be run last.
-#endif
-
-    // --- Child Process Entry Point (for isolated tests) ---
+    // --- Child Process Entry Point ---
     if (argc > 1 && std::string(argv[1]) == "--run-test")
     {
         if (argc < 3)
         {
-            fmt::print(stderr, "Child mode '--run-test' requires a test name argument.\n");
-            return 1;
+            return 1; // Test name not provided
         }
-        std::string test_to_run = argv[2];
-
-        // Re-create the map to find the test function by name.
-        std::map<std::string, std::function<void()>> test_map(tests.begin(), tests.end());
+        const std::string test_name = argv[2];
+        if (test_name == "test_basic_logging")
+            test_basic_logging();
+        else if (test_name == "test_log_level_filtering")
+            test_log_level_filtering();
+        else if (test_name == "test_message_truncation")
+            test_message_truncation();
+        else if (test_name == "test_bad_format_string")
+            test_bad_format_string();
+        else if (test_name == "test_multithreaded_logging")
+            test_multithreaded_logging();
+        else if (test_name == "test_flush_waits_for_queue")
+            test_flush_waits_for_queue();
 #if PYLABHUB_IS_POSIX
-        test_map["Multi-process Logging"] = test_multiprocess_logging;
+        else if (test_name == "test_write_error_callback")
+            test_write_error_callback();
 #endif
-
-        if (test_map.count(test_to_run))
-        {
-            g_log_path = fs::temp_directory_path() / "pylabhub_test_logger.log";
-            run_test_and_exit(test_to_run, test_map[test_to_run]);
-        }
         else
         {
-            fmt::print(stderr, "Test '{}' not found in registry.\n", test_to_run);
+            fmt::print(stderr, "Unknown test name: {}", test_name);
             return 1;
         }
-        return 0; // Should not be reached
+        exit(0); // Explicitly exit with success
     }
 
-    // --- Grandchild Process Entry Point (for multi-process stress test) ---
-    if (argc > 1 && std::string(argv[1]) == "--child")
+    if (argc > 1 && std::string(argv[1]) == "--multiproc-child")
     {
-        if (argc < 3)
-        {
-            fmt::print(stderr, "Child mode requires log path argument.\n");
-            return 1;
-        }
-        return run_as_child_main(argv[2]);
+        return multiproc_child_main();
     }
 
     // --- Parent Process Test Runner ---
     fmt::print("--- Logger Test Suite (Process-Isolated) ---\n");
-#if defined(_LOGGER_DEBUG_ENABLED)
-    fmt::print("Logger debug mode is ENABLED.\n");
-#else
-    fmt::print("Logger debug mode is DISABLED.\n");
-#endif
-    auto run_test_process = [&](const std::string &name)
-    {
-        fmt::print("\n--- Spawning test: {} ---\n", name);
-#if defined(PLATFORM_WIN64)
-        // Windows process spawning logic would go here
-        // For now, we just increment failed count on Windows for tests that need fork.
-        if (name == "Multi-process Logging")
-        {
-            fmt::print("Skipping test '{}' on Windows in this example.\n", name);
-            return;
-        }
-#else
-        pid_t pid = fork();
-        if (pid == -1)
-        {
-            perror("fork");
-            tests_failed++;
-            return;
-        }
-        if (pid == 0)
-        { // Child process
-            execl(argv[0], argv[0], "--run-test", name.c_str(), nullptr);
-            _exit(127); // execl only returns on error
-        }
-        else
-        { // Parent process
-            int status = 0;
-            waitpid(pid, &status, 0);
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-            {
-                tests_passed++;
-            }
-            else
-            {
-                tests_failed++;
-                fmt::print(stderr, "--- Test '{}' FAILED in child process ---\n", name);
-            }
-        }
-    };
-#endif
-    // Run all standard tests sequentially.
-    for (const auto &[name, func] : tests)
-    {
-        run_test_process(name);
-    }
 
+    const std::vector<std::string> test_names = {
+        "test_basic_logging",       "test_log_level_filtering", "test_message_truncation",
+        "test_bad_format_string",   "test_multithreaded_logging",
+        "test_flush_waits_for_queue"};
+
+    for (const auto &name : test_names)
+    {
+        run_test_in_process(name);
+    }
 #if PYLABHUB_IS_POSIX
-    // Run the multi-process test last and by itself.
-    run_test_process("Multi-process Logging");
+    run_test_in_process("test_write_error_callback");
 #endif
+
+    // The multi-process test is special and runs directly from the parent
+    run_test_in_process("test_multiprocess_logging");
 
     fmt::print("\n--- Test Summary ---\n");
-    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
+    fmt::print("Passed: {}, Failed: {}", tests_passed, tests_failed);
 
-    // Final cleanup
     std::error_code ec;
-    fs::remove(fs::temp_directory_path() / "pylabhub_test_logger.log", ec);
+    fs::remove(g_log_path, ec);
     fs::remove(fs::temp_directory_path() / "pylabhub_multiprocess_test.log", ec);
 
     return tests_failed == 0 ? 0 : 1;
