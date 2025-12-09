@@ -26,6 +26,12 @@ add_library(pylabhub::utils ALIAS pylabhub-utils)
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PRIVATE cxx_std_20)
 
+# Check if we are using MSVC
+if(MSVC)
+    # Enable the standards-conforming preprocessor
+    target_compile_options(pylabhub-utils PRIVATE /Zc:preprocessor)
+endif()
+
 # Define PYLABHUB_BUILD_DLL when compiling this library. This is crucial for
 # the PYLABHUB_API macro in platform.hpp to use __declspec(dllexport) on Windows.
 # Consumers of the library will not have this defined, so they will get __declspec(dllimport).
