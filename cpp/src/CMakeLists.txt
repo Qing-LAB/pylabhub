@@ -27,6 +27,11 @@ if(NOT CORE_SOURCES)
 else()
   add_library(pylabhub-core STATIC ${CORE_SOURCES})
   target_compile_features(pylabhub-core PRIVATE cxx_std_20)
+  # Check if we are using MSVC
+  if(MSVC)
+    # Enable the standards-conforming preprocessor
+    target_compile_options(pylabhub-core PRIVATE /Zc:preprocessor)
+  endif()
   set(CORE_LIB_SCOPE PUBLIC)
 endif()
 add_library(pylabhub::core ALIAS pylabhub-core)
