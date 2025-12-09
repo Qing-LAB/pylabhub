@@ -19,11 +19,15 @@ if(NOT DEFINED SIGNING_IDENTITY OR "${SIGNING_IDENTITY}" STREQUAL "")
   return()
 endif()
 
-# Prioritize the official Apple toolchain path to avoid using other versions (e.g., from Homebrew).
-find_program(CODESIGN_EXECUTABLE codesign HINTS /usr/bin)
-if(NOT CODESIGN_EXECUTABLE)
-  # Fallback to the default PATH search if it's not in the standard location.
-  find_program(CODESIGN_EXECUTABLE codesign)
+# Find the codesign executable.
+# On macOS, the system `codesign` is located at `/usr/bin/codesign`.
+# We use this absolute path to avoid issues with environments like Conda that
+# can prepend their own, potentially incompatible, tools to the PATH.
+if(EXISTS "/usr/bin/codesign")
+  set(CODESIGN_EXECUTABLE "/usr/bin/codesign")
+  message(STATUS "Found codesign executable at /usr/bin/codesign")
+else()
+  message(FATAL_ERROR "Could not find codesign at the expected system path: /usr/bin/codesign. Please ensure the Xcode Command Line Tools are installed correctly.")
 endif()
 
 if(NOT CODESIGN_EXECUTABLE)
