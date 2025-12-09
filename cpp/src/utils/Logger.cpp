@@ -99,6 +99,10 @@ struct Impl
     std::atomic<int> level{static_cast<int>(Logger::Level::L_DEBUG)};
     std::atomic<bool> fsync_per_write{false};
 
+    // Worker thread identifiers, populated by the worker itself upon startup.
+    std::atomic<uint64_t> worker_native_thread_id{0};
+    std::atomic<size_t> worker_cpp_thread_id_hash{0};
+
     std::atomic<size_t> max_log_line_length{256 * 1024};
 
     std::atomic<int> last_errno{0};
@@ -137,8 +141,12 @@ Impl::Impl()
     }
 
 #ifdef _LOGGER_DEBUG_ENABLED
-    fmt::print(stdout, "Log worker thread created and ready. C++ thread id: {}\n",
-               worker_thread.get_id());
+    // By the time we get here, the worker thread has started, run its loop once,
+    // populated its thread IDs, and then gone to sleep waiting for messages.
+    // It is now safe to read the stored atomic ID values.
+    fmt::print(stdout,
+               "Log worker thread created and ready. C++ thread id hash: {}, Native thread id: {}\n",
+               worker_cpp_thread_id_hash.load(), worker_native_thread_id.load());
     fflush(stdout);
 #endif
 }
@@ -673,10 +681,10 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
 // The main loop for the background worker thread.
 void Impl::worker_loop()
 {
-#ifdef _LOGGER_DEBUG_ENABLED
-    fmt::print(stdout, "Log worker loop started. Native thread id: {}\n", get_native_thread_id());
-    fflush(stdout);
-#endif
+    // First action: store this thread's identifiers for external access.
+    worker_native_thread_id.store(get_native_thread_id());
+    worker_cpp_thread_id_hash.store(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+
     std::vector<LogMessage> write_batch;
     while (true)
     {
@@ -1011,6 +1019,20 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
         fmt::print(stderr, "logger: write failure (count={}): {} (code: {}.\n",
                    this->write_failure_count.load(), saved_msg, errcode);
     }
+}
+
+uint64_t Logger::get_worker_native_thread_id() const
+{
+    if (!pImpl)
+        return 0;
+    return pImpl->worker_native_thread_id.load();
+}
+
+size_t Logger::get_worker_cpp_thread_id_hash() const
+{
+    if (!pImpl)
+        return 0;
+    return pImpl->worker_cpp_thread_id_hash.load();
 }
 
 } // namespace pylabhub::utils
