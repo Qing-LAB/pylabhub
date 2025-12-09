@@ -35,8 +35,8 @@
  ******************************************************************************/
 
 #include "utils/FileLock.hpp"
-#include "utils/PathUtil.hpp"
 #include "utils/Logger.hpp"
+#include "utils/PathUtil.hpp"
 
 #include <filesystem>
 #include <string>
@@ -62,14 +62,14 @@ namespace pylabhub::utils
 // All state is held here to provide ABI stability for the public FileLock class.
 struct FileLockImpl
 {
-    std::filesystem::path path;   // The original path for which a lock is requested.
-    bool valid = false;           // True if the lock is currently held.
-    std::error_code ec;           // Stores the last error if `valid` is false.
+    std::filesystem::path path; // The original path for which a lock is requested.
+    bool valid = false;         // True if the lock is currently held.
+    std::error_code ec;         // Stores the last error if `valid` is false.
 
 #if defined(_WIN32)
-    void *handle = nullptr;       // The Windows file handle (HANDLE) for the .lock file.
+    void *handle = nullptr; // The Windows file handle (HANDLE) for the .lock file.
 #else
-    int fd = -1;                  // The POSIX file descriptor for the .lock file.
+    int fd = -1; // The POSIX file descriptor for the .lock file.
 #endif
 };
 
@@ -202,12 +202,11 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
 
     // Open or create the lock file. We allow sharing at the file system level
     // because we will use LockFileEx to enforce an exclusive lock.
-    HANDLE h =
-        CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                    // Allow other processes to open the file. The OS-level lock provided
-                    // by LockFileEx is what guarantees exclusivity, not the file sharing mode.
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = CreateFileW(
+        lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
+        // Allow other processes to open the file. The OS-level lock provided
+        // by LockFileEx is what guarantees exclusivity, not the file sharing mode.
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
     {

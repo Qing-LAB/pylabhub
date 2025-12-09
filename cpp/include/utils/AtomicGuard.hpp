@@ -47,7 +47,8 @@
  * - C++17 is required (`inline static`, `std::scoped_lock`, `[[nodiscard]]`).
  *
  * **Usage and Best Practices**:
- * 1.  **RAII-Style Guard**: The most common use is as a stack-based RAII object. The destructor automatically handles releasing the lock.
+ * 1.  **RAII-Style Guard**: The most common use is as a stack-based RAII object. The destructor
+ * automatically handles releasing the lock.
  *
  *     ```cpp
  *     AtomicOwner owner;
@@ -60,7 +61,8 @@
  *     } // guard's destructor is called, releasing the lock.
  *     ```
  *
- * 2.  **Explicit Ownership Transfer**: To pass lock ownership between two existing guards, use `transfer_to()`.
+ * 2.  **Explicit Ownership Transfer**: To pass lock ownership between two existing guards, use
+ * `transfer_to()`.
  *
  *     ```cpp
  *     AtomicGuard source_guard(&owner, true);
@@ -70,7 +72,8 @@
  *     }
  *     ```
  *
- * 3.  **Moving a Guard**: To transfer the guard object itself (e.g., from a factory function), use `std::move`.
+ * 3.  **Moving a Guard**: To transfer the guard object itself (e.g., from a factory function), use
+ * `std::move`.
  *
  *     ```cpp
  *     AtomicGuard create_and_acquire_guard(AtomicOwner* owner) {
@@ -87,14 +90,17 @@
  *     } // my_guard's destructor releases the lock.
  *     ```
  *
- * 4.  **Check Operation Success**: Methods like `acquire()`, `release()`, and `transfer_to()` are marked with `[[nodiscard]]`. It is critical to check their return values. The robust destructor will call `PANIC()` (which defaults to `std::abort()`) if it detects an invariant violation, helping to catch logic errors early.
+ * 4.  **Check Operation Success**: Methods like `acquire()`, `release()`, and `transfer_to()` are
+ * marked with `[[nodiscard]]`. It is critical to check their return values. The robust destructor
+ * will call `PANIC()` (which defaults to `std::abort()`) if it detects an invariant violation,
+ * helping to catch logic errors early.
  ******************************************************************************/
 
 #include <atomic>
 #include <cstdint>
-#include <memory> // For std::unique_ptr
-#include <mutex>  // For std::mutex& return type in guard_mutex()
 #include <fmt/core.h> // for fmt::format_to_n
+#include <memory>     // For std::unique_ptr
+#include <mutex>      // For std::mutex& return type in guard_mutex()
 
 #include "platform.hpp" // project platform macro header (authoritative)
 
@@ -116,10 +122,10 @@ class PYLABHUB_API AtomicOwner
     explicit AtomicOwner(uint64_t initial) noexcept;
 
     AtomicOwner(const AtomicOwner &) = delete;
-    AtomicOwner& operator=(const AtomicOwner &) = delete;
+    AtomicOwner &operator=(const AtomicOwner &) = delete;
     // Pimpl allows for safe move semantics.
     AtomicOwner(AtomicOwner &&) noexcept;
-    AtomicOwner& operator=(AtomicOwner &&) noexcept;
+    AtomicOwner &operator=(AtomicOwner &&) noexcept;
     ~AtomicOwner();
 
     // Public interface remains the same.
@@ -165,7 +171,7 @@ class PYLABHUB_API AtomicGuard
 
     // Construct attached to an owner (optionally attempt a single acquire).
     explicit AtomicGuard(AtomicOwner *owner, bool tryAcquire = false) noexcept;
-    
+
     // No copy. Move is now enabled and safe due to Pimpl.
     AtomicGuard(const AtomicGuard &) = delete;
     AtomicGuard &operator=(const AtomicGuard &) = delete;
@@ -201,7 +207,6 @@ class PYLABHUB_API AtomicGuard
 
     // Return this guard's persistent token (non-zero).
     uint64_t token() const noexcept;
-
 
     // Access to the guard mutex for callers that need to perform multi-field
     // observations atomically (advanced usage). Use with caution to avoid

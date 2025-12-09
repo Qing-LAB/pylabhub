@@ -47,7 +47,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -201,10 +201,12 @@ void test_basic_accessors()
     CHECK(cfg.erase("str_val"));
     CHECK(!cfg.has("str_val"));
 
-    CHECK(cfg.update("obj", [](json &j) {
-        j["x"] = 100;
-        j["s"] = "world";
-    }));
+    CHECK(cfg.update("obj",
+                     [](json &j)
+                     {
+                         j["x"] = 100;
+                         j["s"] = "world";
+                     }));
     auto j = cfg.get<json>("obj");
     CHECK(j["x"] == 100);
     CHECK(j["s"] == "world");
@@ -244,30 +246,34 @@ void test_recursion_guard()
     cfg.save();
 
     // Test nested call from with_json_read -> get()
-    bool read_ok = cfg.with_json_read([&]([[maybe_unused]] const json &data) {
-        // This nested call should be rejected by the recursion guard.
-        // get() throws on failure, so we expect an exception.
-        bool caught = false;
-        try
+    bool read_ok = cfg.with_json_read(
+        [&]([[maybe_unused]] const json &data)
         {
-            (void)cfg.get<int>("key");
-        }
-        catch (const std::runtime_error &)
-        {
-            caught = true;
-        }
-        CHECK(caught);
-    });
+            // This nested call should be rejected by the recursion guard.
+            // get() throws on failure, so we expect an exception.
+            bool caught = false;
+            try
+            {
+                (void)cfg.get<int>("key");
+            }
+            catch (const std::runtime_error &)
+            {
+                caught = true;
+            }
+            CHECK(caught);
+        });
     // The outer call should still succeed.
     CHECK(read_ok);
 
     // Test nested call from with_json_write -> set()
-    bool write_ok = cfg.with_json_write([&](json &data) {
-        data["a"] = 1;
-        // This nested call should be rejected and return false.
-        bool nested_set_ok = cfg.set("b", 2);
-        CHECK(!nested_set_ok);
-    });
+    bool write_ok = cfg.with_json_write(
+        [&](json &data)
+        {
+            data["a"] = 1;
+            // This nested call should be rejected and return false.
+            bool nested_set_ok = cfg.set("b", 2);
+            CHECK(!nested_set_ok);
+        });
     // The outer call should succeed and save the change from `data["a"] = 1;`
     CHECK(write_ok);
     CHECK(cfg.get<int>("a") == 1);
@@ -319,20 +325,22 @@ void test_multithread_contention()
 
     for (int i = 0; i < THREADS; ++i)
     {
-        threads.emplace_back([&, i] {
-            for (int j = 0; j < ITERS; ++j)
+        threads.emplace_back(
+            [&, i]
             {
-                // Mix of reads and writes to stress the locks.
-                if (j % 10 == 0)
+                for (int j = 0; j < ITERS; ++j)
                 {
-                    cfg.set(fmt::format("t{}_j{}", i, j), true);
+                    // Mix of reads and writes to stress the locks.
+                    if (j % 10 == 0)
+                    {
+                        cfg.set(fmt::format("t{}_j{}", i, j), true);
+                    }
+                    else
+                    {
+                        (void)cfg.get_or<int>("nonexistent", 0);
+                    }
                 }
-                else
-                {
-                    (void)cfg.get_or<int>("nonexistent", 0);
-                }
-            }
-        });
+            });
     }
 
     for (auto &t : threads)

@@ -44,7 +44,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -165,17 +165,19 @@ void test_blocking_lock()
     CHECK(main_lock->valid());
 
     // 2. Spawn a thread that will try to acquire the same lock (and block)
-    std::thread t1([&]() {
-        auto start = std::chrono::steady_clock::now();
-        FileLock thread_lock(lock_path, LockMode::Blocking); // This should block
-        auto end = std::chrono::steady_clock::now();
+    std::thread t1(
+        [&]()
+        {
+            auto start = std::chrono::steady_clock::now();
+            FileLock thread_lock(lock_path, LockMode::Blocking); // This should block
+            auto end = std::chrono::steady_clock::now();
 
-        // This thread should have blocked until the main thread released the lock.
-        CHECK(thread_lock.valid());
-        CHECK(main_released_lock.load());
-        CHECK(end - start > 100ms);
-        thread_has_lock = true;
-    });
+            // This thread should have blocked until the main thread released the lock.
+            CHECK(thread_lock.valid());
+            CHECK(main_released_lock.load());
+            CHECK(end - start > 100ms);
+            thread_has_lock = true;
+        });
 
     // 3. Give the thread time to start and block on the lock
     std::this_thread::sleep_for(200ms);
@@ -256,16 +258,18 @@ void test_multithread_nonblocking()
 
     for (int i = 0; i < THREADS; ++i)
     {
-        threads.emplace_back([&]() {
-            // Each thread makes one attempt.
-            FileLock lock(lock_path, LockMode::NonBlocking);
-            if (lock.valid())
+        threads.emplace_back(
+            [&]()
             {
-                success_count++;
-                // Hold the lock for a moment to increase contention
-                std::this_thread::sleep_for(50ms);
-            }
-        });
+                // Each thread makes one attempt.
+                FileLock lock(lock_path, LockMode::NonBlocking);
+                if (lock.valid())
+                {
+                    success_count++;
+                    // Hold the lock for a moment to increase contention
+                    std::this_thread::sleep_for(50ms);
+                }
+            });
     }
 
     for (auto &t : threads)
@@ -355,7 +359,8 @@ int main(int argc, char **argv)
     TEST_CASE("Multi-Threaded Non-Blocking Lock", test_multithread_nonblocking);
 
     std::string self_exe = argv[0];
-    TEST_CASE("Multi-Process Non-Blocking Lock", [&]() { test_multiprocess_nonblocking(self_exe); });
+    TEST_CASE("Multi-Process Non-Blocking Lock",
+              [&]() { test_multiprocess_nonblocking(self_exe); });
 
     fmt::print("\n--- Test Summary ---\n");
     fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);

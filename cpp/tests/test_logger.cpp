@@ -42,7 +42,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -67,7 +67,6 @@ void run_test_and_exit(const std::string &name, std::function<void()> test_func)
     }
     exit(1); // Exit with failure code
 }
-
 
 // --- Test Globals & Helpers ---
 static fs::path g_log_path;
@@ -175,9 +174,6 @@ static pid_t spawn_child_posix(const std::string &exePath, const std::string &lo
     return pid;
 }
 #endif
-
-
-
 
 // Read file contents into a string (binary mode)
 void test_basic_logging()
@@ -307,13 +303,15 @@ void test_multithreaded_logging()
     threads.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t)
     {
-        threads.emplace_back([t]() {
-            for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
+        threads.emplace_back(
+            [t]()
             {
-                LOGGER_DEBUG("thread {} message {}", t, i);
-                (void)t;
-            }
-        });
+                for (int i = 0; i < MESSAGES_PER_THREAD; ++i)
+                {
+                    LOGGER_DEBUG("thread {} message {}", t, i);
+                    (void)t;
+                }
+            });
     }
     for (auto &t : threads)
     {
@@ -340,12 +338,14 @@ void test_flush_waits_for_queue()
     std::vector<std::thread> threads;
     for (int i = 0; i < THREADS; ++i)
     {
-        threads.emplace_back([i] {
-            for (int j = 0; j < MESSAGES_PER_THREAD; ++j)
+        threads.emplace_back(
+            [i]
             {
-                LOGGER_INFO("flush-test: thread={} msg={}", i, j);
-            }
-        });
+                for (int j = 0; j < MESSAGES_PER_THREAD; ++j)
+                {
+                    LOGGER_INFO("flush-test: thread={} msg={}", i, j);
+                }
+            });
     }
 
     for (auto &t : threads)
@@ -367,8 +367,6 @@ void test_flush_waits_for_queue()
     CHECK(!L.dirty());
     L.shutdown();
 }
-
-
 
 #if PYLABHUB_IS_POSIX
 void test_write_error_callback()
@@ -396,11 +394,13 @@ void test_write_error_callback()
     std::atomic<int> error_code = 0;
     int initial_failures = L.write_failure_count();
 
-    L.set_write_error_callback([&](const std::string &msg) {
-        callback_invoked = true;
-        error_code = L.last_write_error_code();
-        (void)msg;
-    });
+    L.set_write_error_callback(
+        [&](const std::string &msg)
+        {
+            callback_invoked = true;
+            error_code = L.last_write_error_code();
+            (void)msg;
+        });
 
     LOGGER_INFO("This write should fail.");
 
@@ -433,7 +433,6 @@ void test_multiprocess_logging()
     LOGGER_INFO("parent-process-start");
     L.flush(); // Ensure parent's message is written before children start
 
-
     const int CHILDREN = 3;
     const int MESSAGES_PER_CHILD = 20;
 
@@ -441,7 +440,8 @@ void test_multiprocess_logging()
     std::vector<PROCESS_INFORMATION> procs;
     for (int i = 0; i < CHILDREN; ++i)
     {
-        PROCESS_INFORMATION pi = spawn_child_windows(g_self_exe_path, multiprocess_log_path.string());
+        PROCESS_INFORMATION pi =
+            spawn_child_windows(g_self_exe_path, multiprocess_log_path.string());
         if (pi.hProcess == nullptr)
         {
             throw std::runtime_error("Failed to spawn child process");
@@ -512,7 +512,7 @@ int main(int argc, char **argv)
             return 1;
         }
         std::string test_to_run = argv[2];
-        
+
         // Re-create the map to find the test function by name.
         std::map<std::string, std::function<void()>> test_map(tests.begin(), tests.end());
 #if PYLABHUB_IS_POSIX
@@ -550,40 +550,48 @@ int main(int argc, char **argv)
 #else
     fmt::print("Logger debug mode is DISABLED.\n");
 #endif
-    auto run_test_process = [&](const std::string& name) {
+    auto run_test_process = [&](const std::string &name)
+    {
         fmt::print("\n--- Spawning test: {} ---\n", name);
 #if defined(PLATFORM_WIN64)
         // Windows process spawning logic would go here
         // For now, we just increment failed count on Windows for tests that need fork.
-        if (name == "Multi-process Logging") {
+        if (name == "Multi-process Logging")
+        {
             fmt::print("Skipping test '{}' on Windows in this example.\n", name);
             return;
         }
 #endif
         pid_t pid = fork();
-        if (pid == -1) {
+        if (pid == -1)
+        {
             perror("fork");
             tests_failed++;
             return;
         }
-        if (pid == 0) { // Child process
+        if (pid == 0)
+        { // Child process
             execl(argv[0], argv[0], "--run-test", name.c_str(), nullptr);
             _exit(127); // execl only returns on error
         }
-        else { // Parent process
+        else
+        { // Parent process
             int status = 0;
             waitpid(pid, &status, 0);
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+            {
                 tests_passed++;
-            } else {
+            }
+            else
+            {
                 tests_failed++;
                 fmt::print(stderr, "--- Test '{}' FAILED in child process ---\n", name);
             }
         }
     };
-    
+
     // Run all standard tests sequentially.
-    for (const auto& [name, func] : tests)
+    for (const auto &[name, func] : tests)
     {
         run_test_process(name);
     }

@@ -2,9 +2,9 @@
 #include "utils/AtomicGuard.hpp"
 
 #include <cassert>
-#include <string>
-#include <mutex>
 #include <fmt/core.h>
+#include <mutex>
+#include <string>
 
 namespace pylabhub::utils
 {
@@ -38,7 +38,6 @@ struct AtomicGuardImpl
     // source of truth for whether the destructor should attempt a release.
     std::atomic<bool> is_active_{false};
 };
-
 
 // --- AtomicGuard Static Members ---
 
@@ -95,11 +94,20 @@ bool AtomicOwner::compare_exchange_strong(uint64_t &expected, uint64_t desired) 
                                                  std::memory_order_acquire);
 }
 
-bool AtomicOwner::is_free() const noexcept { return load() == 0; }
+bool AtomicOwner::is_free() const noexcept
+{
+    return load() == 0;
+}
 
-std::atomic<uint64_t> &AtomicOwner::atomic_ref() noexcept { return pImpl->state_; }
+std::atomic<uint64_t> &AtomicOwner::atomic_ref() noexcept
+{
+    return pImpl->state_;
+}
 
-const std::atomic<uint64_t> &AtomicOwner::atomic_ref() const noexcept { return pImpl->state_; }
+const std::atomic<uint64_t> &AtomicOwner::atomic_ref() const noexcept
+{
+    return pImpl->state_;
+}
 
 // --- AtomicGuard Method Implementations ---
 
@@ -155,10 +163,10 @@ AtomicGuard::~AtomicGuard() noexcept
 
     // Critical error: The guard believed it was the owner, but the underlying
     // resource state was unexpectedly changed by another entity.
-    std::string err_msg = fmt::format(
-        "AtomicGuard(token={}): Invariant violation on destruction. "
-        "Guard was active but owner state was {} instead of self ({}).",
-        tok, tok, expected);
+    std::string err_msg =
+        fmt::format("AtomicGuard(token={}): Invariant violation on destruction. "
+                    "Guard was active but owner state was {} instead of self ({}).",
+                    tok, tok, expected);
     PANIC(err_msg);
 }
 
@@ -207,7 +215,7 @@ bool AtomicGuard::release() noexcept
 
     uint64_t expected = tok;
     if (own->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
-                                                     std::memory_order_acquire))
+                                                  std::memory_order_acquire))
     {
         pImpl->is_active_.store(false, std::memory_order_release);
         return true;

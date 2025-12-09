@@ -220,7 +220,8 @@ bool JsonConfig::reload_locked() noexcept
     {
         if (pImpl->configPath.empty())
         {
-            LOGGER_ERROR("JsonConfig::reload_locked: configPath not initialized (call init() first)");
+            LOGGER_ERROR(
+                "JsonConfig::reload_locked: configPath not initialized (call init() first)");
             return false;
         }
 
@@ -229,8 +230,9 @@ bool JsonConfig::reload_locked() noexcept
         if (!flock.valid())
         {
             [[maybe_unused]] auto ec = flock.error_code();
-            LOGGER_ERROR("JsonConfig::reload_locked: failed to acquire lock for {} code={} msg=\"{}\"",
-                         pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
+            LOGGER_ERROR(
+                "JsonConfig::reload_locked: failed to acquire lock for {} code={} msg=\"{}\"",
+                pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
         }
 
@@ -257,19 +259,23 @@ bool JsonConfig::reload_locked() noexcept
         in >> newdata;
         if (in.good())
         {
-             // It is possible that the file is empty, in which case the extraction
-             // would fail. We should handle this gracefully.
+            // It is possible that the file is empty, in which case the extraction
+            // would fail. We should handle this gracefully.
             if (newdata.is_null())
             {
                 newdata = json::object();
             }
-        } else if (!in.eof()) {
+        }
+        else if (!in.eof())
+        {
             LOGGER_ERROR("JsonConfig::reload_locked: parse/read error for {}",
                          pImpl->configPath.string().c_str());
             return false;
-        } else {
-             // File is empty, which is valid. Treat as an empty object.
-             newdata = json::object();
+        }
+        else
+        {
+            // File is empty, which is valid. Treat as an empty object.
+            newdata = json::object();
         }
 
         // Atomically update the in-memory data.
@@ -401,8 +407,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         FlushFileBuffers(h);
         CloseHandle(h);
         DeleteFileW(tmp_full_w.c_str());
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: WriteFile failed: {}", err));
+        throw std::runtime_error(fmt::format("atomic_write_json: WriteFile failed: {}", err));
     }
 
     // 3. Flush file buffers to ensure the data is physically written to disk.
@@ -428,8 +433,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         DWORD err = GetLastError();
         // Attempt cleanup
         DeleteFileW(tmp_full_w.c_str());
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: ReplaceFileW failed: {}", err));
+        throw std::runtime_error(fmt::format("atomic_write_json: ReplaceFileW failed: {}", err));
     }
 
     // `ReplaceFileW` on success moves the temp file, so the original temp path is now unused.
@@ -447,8 +451,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     {
         if (S_ISLNK(lstat_buf.st_mode))
         {
-            throw std::runtime_error(
-                "atomic_write_json: target path is a symbolic link, refusing to write for security reasons.");
+            throw std::runtime_error("atomic_write_json: target path is a symbolic link, refusing "
+                                     "to write for security reasons.");
         }
     }
 

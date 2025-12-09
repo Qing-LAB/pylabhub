@@ -14,11 +14,11 @@
 
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <condition_variable>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -331,7 +331,7 @@ bool Logger::should_log(Level lvl) const noexcept
 {
     if (!pImpl)
         return false;
-    
+
     bool result = static_cast<int>(lvl) >= pImpl->level.load(std::memory_order_relaxed);
     return result;
 }
@@ -422,18 +422,25 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
 
 #if defined(PLATFORM_WIN64)
         int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
-        if (needed == 0) {
+        if (needed == 0)
+        {
             pImpl->record_write_error(GetLastError(), "MultiByteToWideChar failed in set_logfile");
-        } else {
+        }
+        else
+        {
             std::wstring wpath(needed, L'\0');
             MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, &wpath[0], needed);
-            if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
+            if (!wpath.empty() && wpath.back() == L'\0')
+                wpath.pop_back();
 
             HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE, FILE_SHARE_READ,
                                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (h == INVALID_HANDLE_VALUE) {
+            if (h == INVALID_HANDLE_VALUE)
+            {
                 pImpl->record_write_error(GetLastError(), "CreateFileW failed in set_logfile");
-            } else {
+            }
+            else
+            {
                 SetFilePointer(h, 0, nullptr, FILE_END);
                 pImpl->file_handle = h;
                 pImpl->file_path = utf8_path;
@@ -443,10 +450,14 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
             }
         }
 #else
-        int fd = ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
-        if (fd == -1) {
+        int fd =
+            ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
+        if (fd == -1)
+        {
             pImpl->record_write_error(errno, "open() failed in set_logfile");
-        } else {
+        }
+        else
+        {
             pImpl->file_fd = fd;
             pImpl->file_path = utf8_path;
             pImpl->use_flock = use_flock;
@@ -454,16 +465,20 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
             success = true;
         }
 #endif
-        if (!success) {
+        if (!success)
+        {
             // Revert to console logging on failure.
             pImpl->dest = Logger::Destination::L_CONSOLE;
         }
     } // Mutex is released here.
 
     // Log the outcome to the new sink (or console if it failed).
-    if (success) {
+    if (success)
+    {
         LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
-    } else {
+    }
+    else
+    {
         LOGGER_ERROR_RT("Failed to switch logging to file: {}. Reverting to console.", utf8_path);
     }
 
@@ -616,10 +631,8 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
     try
     {
         // Construct the full log message with timestamp, level, thread id.
-        std::string prefix = fmt::format("{} [{}] [tid={}] ",
-                            formatted_time(),
-                            level_to_string(lvl),
-                            get_native_thread_id());
+        std::string prefix = fmt::format("{} [{}] [tid={}] ", formatted_time(),
+                                         level_to_string(lvl), get_native_thread_id());
         std::string full_message = prefix + body;
 
         // Push the formatted message to the queue for the worker thread.
@@ -628,9 +641,9 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             pImpl->queue.emplace_back(LogMessage{lvl, std::move(full_message)});
         }
         pImpl->cv.notify_one(); // Wake up the worker thread.
-        }
-        catch (const std::exception &ex)
-        {
+    }
+    catch (const std::exception &ex)
+    {
         // This catch block is a safeguard. With the corrected formatting logic,
         // exceptions should be rare, but we must honor the noexcept contract.
         // We can't log the error using the logger itself, so we write to stderr.
@@ -642,7 +655,7 @@ void Logger::write_formatted(Level lvl, std::string &&body) noexcept
             fmt::print(stderr, "INTERNAL LOGGER ERROR in write_formatted: {}\n", ex.what());
         }
     }
-    catch(...)
+    catch (...)
     {
         // Similar to above, for non-standard exceptions.
         auto now = std::chrono::steady_clock::now();
@@ -709,7 +722,8 @@ void Impl::worker_loop()
 }
 
 // Internal helper for writing to console (stderr)
-static void write_to_console_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+static void write_to_console_internal(Impl *pImpl, const std::string &full_ln,
+                                      std::unique_lock<std::mutex> &lk)
 {
     try
     {
@@ -725,7 +739,8 @@ static void write_to_console_internal(Impl *pImpl, const std::string &full_ln, s
 
 // Internal helper for writing to a file on POSIX systems
 #if !defined(PLATFORM_WIN64)
-static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+static void write_to_file_internal(Impl *pImpl, const std::string &full_ln,
+                                   std::unique_lock<std::mutex> &lk)
 {
     if (pImpl->file_fd != -1)
     {
@@ -784,13 +799,14 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std:
 
 // Internal helper for writing to a file on Windows systems
 #if defined(PLATFORM_WIN64)
-static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std::unique_lock<std::mutex> &lk)
+static void write_to_file_internal(Impl *pImpl, const std::string &full_ln,
+                                   std::unique_lock<std::mutex> &lk)
 {
     if (pImpl->file_handle != INVALID_HANDLE_VALUE)
     {
         DWORD written = 0;
-        BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(),
-                            static_cast<DWORD>(full_ln.size()), &written, nullptr);
+        BOOL ok = WriteFile(pImpl->file_handle, full_ln.data(), static_cast<DWORD>(full_ln.size()),
+                            &written, nullptr);
         if (!ok || written != full_ln.size())
         {
             lk.unlock();
@@ -801,7 +817,8 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std:
             if (!FlushFileBuffers(pImpl->file_handle))
             {
                 lk.unlock();
-                pImpl->record_write_error(static_cast<int>(GetLastError()), "FlushFileBuffers failed");
+                pImpl->record_write_error(static_cast<int>(GetLastError()),
+                                          "FlushFileBuffers failed");
             }
         }
     }
@@ -812,13 +829,12 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std:
         {
             if (s.empty())
                 return {};
-            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                                             nullptr, 0);
+            int needed =
+                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
             if (needed <= 0)
                 return {};
             std::wstring out(needed, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0],
-                                needed);
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0], needed);
             return out;
         }(full_ln);
         OutputDebugStringW(w.c_str());
@@ -828,7 +844,8 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln, std:
 
 // Internal helper for writing to syslog
 #if !defined(PLATFORM_WIN64)
-static void write_to_syslog_internal(Impl *pImpl, LogMessage &&msg, std::unique_lock<std::mutex> &lk)
+static void write_to_syslog_internal(Impl *pImpl, LogMessage &&msg,
+                                     std::unique_lock<std::mutex> &lk)
 {
     syslog(level_to_syslog_priority(msg.level), "%s", msg.message.c_str());
     (void)pImpl; // Unused in this path, but consistent signature
@@ -838,7 +855,8 @@ static void write_to_syslog_internal(Impl *pImpl, LogMessage &&msg, std::unique_
 
 // Internal helper for writing to eventlog on Windows
 #if defined(PLATFORM_WIN64)
-static void write_to_eventlog_internal(Impl *pImpl, const std::string &full_ln, LogMessage &&msg, std::unique_lock<std::mutex> &lk)
+static void write_to_eventlog_internal(Impl *pImpl, const std::string &full_ln, LogMessage &&msg,
+                                       std::unique_lock<std::mutex> &lk)
 {
     if (pImpl->evt_handle)
     {
@@ -887,7 +905,8 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
     // to protect sink handles during reconfiguration (e.g., set_destination).
     std::unique_lock<std::mutex> lk(pImpl->mtx);
 
-    const std::string full_ln = msg.message + "\n"; // Only needed for console/file/eventlog fallback
+    const std::string full_ln =
+        msg.message + "\n"; // Only needed for console/file/eventlog fallback
 
     switch (pImpl->dest)
     {
@@ -905,20 +924,21 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
 #if !defined(PLATFORM_WIN64)
         write_to_syslog_internal(pImpl, std::move(msg), lk);
 #else
+    {
         // Fallback to debug output on Windows
         std::wstring w = [](const std::string &s) -> std::wstring
         {
             if (s.empty())
                 return {};
-            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                                             nullptr, 0);
+            int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_tostr(), -1, nullptr, 0);
             if (needed <= 0)
                 return {};
             std::wstring out(needed, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &out[0], needed);
+            MultiByteToWideChar(CP_UTF8, 0, s.c_tostr(), -1, &out[0], needed);
             return out;
         }(msg.message);
         OutputDebugStringW(w.c_str());
+    }
 #endif
         break;
     case Logger::Destination::L_EVENTLOG:
@@ -972,7 +992,8 @@ void Impl::record_write_error(int errcode, const char *msg) noexcept
         try
         {
             // Construct a more informative message for the callback
-            std::string full_err_msg = fmt::format("Logger write error: {} (code: {})", saved_msg, errcode);
+            std::string full_err_msg =
+                fmt::format("Logger write error: {} (code: {})", saved_msg, errcode);
             cb(full_err_msg);
         }
         catch (...)

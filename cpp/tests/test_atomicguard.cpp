@@ -55,7 +55,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);    \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -211,32 +211,50 @@ void test_concurrent_transfers()
 
     for (int i = 0; i < NUM_THREADS; ++i)
     {
-        threads.emplace_back([&]() {
-            for (int j = 0; j < TRANSFERS_PER_THREAD; ++j)
+        threads.emplace_back(
+            [&]()
             {
-                // Transfer between pseudo-random pairs to stress the locks.
-                int src_idx = (j * 3 + i) % NUM_GUARDS;
-                int dest_idx = (j * 5 + i + 1) % NUM_GUARDS;
-                if (src_idx == dest_idx) continue;
+                for (int j = 0; j < TRANSFERS_PER_THREAD; ++j)
+                {
+                    // Transfer between pseudo-random pairs to stress the locks.
+                    int src_idx = (j * 3 + i) % NUM_GUARDS;
+                    int dest_idx = (j * 5 + i + 1) % NUM_GUARDS;
+                    if (src_idx == dest_idx)
+                        continue;
 
-                // Intentionally ignore the [[nodiscard]] return value. In this
-                // concurrent stress test, many transfers are expected to fail.
-                // The goal is to ensure atomicity, not to check every transfer.
-                (void)guards[src_idx].transfer_to(guards[dest_idx]);
-            }
-        });
+                    // Intentionally ignore the [[nodiscard]] return value. In this
+                    // concurrent stress test, many transfers are expected to fail.
+                    // The goal is to ensure atomicity, not to check every transfer.
+                    (void)guards[src_idx].transfer_to(guards[dest_idx]);
+                }
+            });
     }
 
-    for (auto &t : threads) { t.join(); }
+    for (auto &t : threads)
+    {
+        t.join();
+    }
 
     // After all the transfers, exactly one guard should be active.
     int active_count = 0;
-    for (const auto &g : guards) { if (g.active()) { active_count++; } }
+    for (const auto &g : guards)
+    {
+        if (g.active())
+        {
+            active_count++;
+        }
+    }
     CHECK(active_count == 1);
     CHECK(owner.load() != 0);
 
     // Clean up by releasing the final owner.
-    for (auto &g : guards) { if (g.active()) { CHECK(g.release()); } }
+    for (auto &g : guards)
+    {
+        if (g.active())
+        {
+            CHECK(g.release());
+        }
+    }
     CHECK(owner.is_free());
 }
 
@@ -280,7 +298,7 @@ void test_transfer_rejects_different_owners()
 
     CHECK(a.acquire());
     CHECK(!a.transfer_to(b)); // must reject
-    CHECK(a.active());       // still active
+    CHECK(a.active());        // still active
     CHECK(a.release());
 }
 
@@ -410,7 +428,7 @@ void test_atomicguard_move_semantics()
         CHECK(c.active());
         uint64_t token_c = c.token();
 
-        AtomicGuard d;      // Default constructed
+        AtomicGuard d;    // Default constructed
         d = std::move(c); // Move assignment
 
         CHECK(d.active());
@@ -527,12 +545,10 @@ int main(int argc, char **argv)
     TEST_CASE("Concurrent Transfers", test_concurrent_transfers);
     TEST_CASE("Cross-Thread Transfer", test_transfer_between_threads);
     TEST_CASE("Transfer Rejects Different Owners", test_transfer_rejects_different_owners);
-    TEST_CASE("Destructor Correctly Handles Transferred-From Guard",
-              test_destructor_with_transfer);
+    TEST_CASE("Destructor Correctly Handles Transferred-From Guard", test_destructor_with_transfer);
     TEST_CASE("Attach, Detach, and Attach-Acquire", test_attach_and_detach);
     TEST_CASE("Detach while Active and Destruction", test_detach_and_destruction);
-    TEST_CASE("Destructor Correctly Handles No-Op Scenarios",
-              test_noop_destructor_scenarios);
+    TEST_CASE("Destructor Correctly Handles No-Op Scenarios", test_noop_destructor_scenarios);
     TEST_CASE("AtomicOwner Move Semantics", test_atomicowner_move_semantics);
     TEST_CASE("AtomicGuard Move Semantics", test_atomicguard_move_semantics);
 
