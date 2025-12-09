@@ -199,6 +199,9 @@ class PYLABHUB_API Logger
     void set_max_log_line_length(size_t bytes);
     size_t max_log_line_length() const noexcept;
 
+    uint64_t get_worker_native_thread_id() const;
+    size_t get_worker_cpp_thread_id_hash() const;
+
     // Small accessor used by header-only templates. Declared noexcept and defined in .cpp.
     bool should_log(Level lvl) const noexcept;
 
