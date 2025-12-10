@@ -43,14 +43,15 @@ namespace fs = std::filesystem;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define CHECK(condition)                                                                           \
-    do                                                                                             \
-    {
-        if (!(condition))
-        {
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}", #condition, __FILE__, __LINE__);   \
-            exit(1);
-        }
+#define CHECK(condition)                                                                        \
+    do                                                                                          \
+    {                                                                                           \
+        if (!(condition))                                                                       \
+        {                                                                                       \
+            tests_failed++;                                                                     \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}", #condition, __FILE__, __LINE__);  \
+            exit(1);                                                                            \
+        }                                                                                       \
     } while (0)
 
 // --- Test Globals & Helpers ---
