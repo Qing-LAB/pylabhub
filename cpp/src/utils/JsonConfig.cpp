@@ -372,7 +372,7 @@ json JsonConfig::as_json() const noexcept
 
 void JsonConfig::atomic_write_json(const std::filesystem::path &target, const json &j)
 {
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     // Windows implementation
     std::filesystem::path parent = target.parent_path();
     if (parent.empty())
