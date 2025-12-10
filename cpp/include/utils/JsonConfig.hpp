@@ -10,10 +10,7 @@
  * handling both in-process (multi-threaded) and cross-process concurrency.
  *
  * 1.  **Concurrency Model**:
- *     - **Inter-Process Safety**: Uses `FileLock` to ensure that only one
- *       process can write to the configuration file at a time. All file
- *       operations (`save`, `reload`, `replace`) acquire a non-blocking file
- *       lock, following a "fail-fast" policy to avoid deadlocks.
+ *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This mechanism does *not* provide mandatory locking against processes that do not respect this advisory lock.
  *     - **Intra-Process (Thread) Safety**: Employs a two-level locking scheme.
  *       A coarse-grained `std::mutex` (`initMutex`) serializes all public
  *       methods to protect the object's structural integrity (e.g., during

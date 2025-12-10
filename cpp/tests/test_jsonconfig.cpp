@@ -52,6 +52,13 @@ static int tests_failed = 0;
         }                                                                                          \
     } while (0)
 
+#define FAIL_TEST(msg)                                                                  \
+    do                                                                                             \
+    {                                                                                              \
+        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);               \
+        throw std::runtime_error("Test case failed: " + std::string(msg));                         \
+    } while (0)
+
 void TEST_CASE(const std::string &name, std::function<void()> test_func)
 {
     fmt::print("\n=== {} ===\n", name);
@@ -490,7 +497,7 @@ void test_symlink_attack_prevention_windows()
         }
         else
         {
-            CHECK(false && "Failed to create symbolic link for test.");
+            FAIL_TEST("Failed to create symbolic link for test.");
         }
     }
     CHECK(fs::is_symlink(symlink_path));

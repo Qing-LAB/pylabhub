@@ -374,9 +374,27 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
 {
 #if defined(PLATFORM_WIN64)
     // Windows implementation
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Target: {}\n", target.string());
+#endif
+
     std::filesystem::path parent = target.parent_path();
     if (parent.empty())
         parent = ".";
+
+    // Ensure the target directory exists.
+    std::error_code ec_dir;
+    fs::create_directories(target.parent_path(), ec_dir);
+    if (ec_dir)
+    {
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): create_directories failed for {}: {}\n",
+                            target.parent_path().string(), ec_dir.message());
+        throw std::runtime_error("atomic_write_json: create_directories failed: " + ec_dir.message());
+    }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Parent directory '{}' ensured.\n", target.parent_path().string());
+#endif
+
 
     std::wstring filename = target.filename().wstring();
     std::wstring tmpname = filename + L".tmp" + win32_make_unique_suffix();
@@ -387,16 +405,22 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     std::wstring tmp_full_w = win32_to_long_path(tmp_full);
     std::wstring target_w = win32_to_long_path(target);
 
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Temp file path: {}\n", tmp_full.string());
+#endif
+
     // Security: Check if the target is a reparse point (e.g., a symlink).
-    // If the file doesn't exist, GetFileAttributesW returns INVALID_FILE_ATTRIBUTES,
-    // in which case this check is skipped (no symlink to worry about yet).
     DWORD attributes = GetFileAttributesW(target_w.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
     {
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): Target path '{}' is a reparse point. Refusing to write.\n", target.string());
         throw std::runtime_error(
             "atomic_write_json: target path is a reparse point (e.g., symbolic link), "
             "refusing to write for security reasons.");
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Reparse point check passed for target '{}'.\n", target.string());
+#endif
 
     // 1. Create a temporary file. No sharing is allowed to ensure we have exclusive access.
     HANDLE h = CreateFileW(tmp_full_w.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
@@ -404,9 +428,14 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     if (h == INVALID_HANDLE_VALUE)
     {
         DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): CreateFileW(temp) failed for '{}'. Error: {}\n", tmp_full.string(), err);
         throw std::runtime_error(
             fmt::format("atomic_write_json: CreateFileW(temp) failed: {}", err));
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Temp file '{}' created successfully (HANDLE: {:p}).\n", tmp_full.string(), (void*)h);
+#endif
+
 
     // 2. Write the JSON data to the temporary file.
     std::string out = j.dump(4);
@@ -415,26 +444,81 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     if (!ok || static_cast<size_t>(written) != out.size())
     {
         DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): WriteFile failed for '{}'. Bytes written: {}. Expected: {}. Error: {}\n",
+                     tmp_full.string(), written, out.size(), err);
         FlushFileBuffers(h);
         CloseHandle(h);
         DeleteFileW(tmp_full_w.c_str());
         throw std::runtime_error(fmt::format("atomic_write_json: WriteFile failed: {}", err));
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Wrote {} bytes to temp file '{}'.\n", written, tmp_full.string());
+#endif
+
 
     // 3. Flush file buffers to ensure the data is physically written to disk.
     if (!FlushFileBuffers(h))
     {
         DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): FlushFileBuffers failed for '{}'. Error: {}\n", tmp_full.string(), err);
         CloseHandle(h);
         DeleteFileW(tmp_full_w.c_str());
         throw std::runtime_error(
             fmt::format("atomic_write_json: FlushFileBuffers failed: {}", err));
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Flushed buffers for temp file '{}'.\n", tmp_full.string());
+#endif
+
 
     // 4. Close the handle to the temporary file.
     CloseHandle(h);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Closed handle for temp file '{}'.\n", tmp_full.string());
+#endif
+
 
     // 5. Atomically replace the original file with the new temporary file.
+    // We need to acquire an exclusive lock on the target file itself during the ReplaceFileW
+    // operation to prevent other processes from interfering with the target file at this
+    // critical moment.
+
+    HANDLE target_h = INVALID_HANDLE_VALUE;
+    bool lock_acquired = false;
+
+    // Open target file for exclusive access to apply a mandatory lock.
+    target_h = CreateFileW(target_w.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (target_h == INVALID_HANDLE_VALUE)
+    {
+        DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): CreateFileW(target for lock) failed for '{}'. Error: {}\n", target.string(), err);
+        DeleteFileW(tmp_full_w.c_str());
+        throw std::runtime_error(
+            fmt::format("atomic_write_json: CreateFileW(target for lock) failed: {}", err));
+    }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Target file '{}' opened for mandatory lock (HANDLE: {:p}).\n", target.string(), (void*)target_h);
+#endif
+
+
+    OVERLAPPED ov = {};
+    if (!LockFileEx(target_h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD,
+                    MAXDWORD, &ov))
+    {
+        DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): LockFileEx(target) failed for '{}'. Error: {}\n", target.string(), err);
+        CloseHandle(target_h);
+        DeleteFileW(tmp_full_w.c_str());
+        throw std::runtime_error(
+            fmt::format("atomic_write_json: LockFileEx(target) failed: {}", err));
+    }
+    lock_acquired = true;
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Exclusive lock acquired on target '{}'.\n", target.string());
+#endif
+
+
     // `REPLACEFILE_WRITE_THROUGH` ensures the operation is not just cached but
     // is completed on the physical storage, providing strong durability guarantees.
     BOOL replaced = ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr,
@@ -442,15 +526,53 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     if (!replaced)
     {
         DWORD err = GetLastError();
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): ReplaceFileW failed for target '{}'. Error: {}\n", target.string(), err);
         // Attempt cleanup
+        if (lock_acquired)
+        {
+            UnlockFileEx(target_h, 0, MAXDWORD, MAXDWORD, &ov);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+            fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Lock released on target '{}' during ReplaceFileW failure.\n", target.string());
+#endif
+        }
+        CloseHandle(target_h);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Target handle closed during ReplaceFileW failure.\n");
+#endif
         DeleteFileW(tmp_full_w.c_str());
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Temp file '{}' deleted during ReplaceFileW failure.\n", tmp_full.string());
+#endif
         throw std::runtime_error(fmt::format("atomic_write_json: ReplaceFileW failed: {}", err));
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): ReplaceFileW succeeded for target '{}'.\n", target.string());
+#endif
+
+
+    // Release the lock and close the handle.
+    if (lock_acquired)
+    {
+        UnlockFileEx(target_h, 0, MAXDWORD, MAXDWORD, &ov);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Lock released on target '{}'.\n", target.string());
+#endif
+    }
+    CloseHandle(target_h);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Target handle closed.\n", target.string());
+
+    // `ReplaceFileW` on success moves the temp file, so the original temp path is now unused.
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Operation completed successfully for '{}'.\n", target.string());
+#endif
 
     // `ReplaceFileW` on success moves the temp file, so the original temp path is now unused.
 
 #else
     // POSIX implementation
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Target: {}\n", target.string());
+#endif
     namespace fs = std::filesystem;
 
     // Security: Check if the target is a symlink to prevent symlink attacks where
@@ -462,22 +584,31 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     {
         if (S_ISLNK(lstat_buf.st_mode))
         {
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): Target path '{}' is a symbolic link. Refusing to write.\n", target.string());
             throw std::runtime_error("atomic_write_json: target path is a symbolic link, refusing "
                                      "to write for security reasons.");
         }
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Symlink check passed for target '{}'.\n", target.string());
+#endif
 
     std::string dir = target.parent_path().string();
     if (dir.empty())
         dir = ".";
 
     // Ensure the target directory exists.
-    std::error_code ec;
-    fs::create_directories(target.parent_path(), ec);
-    if (ec)
+    std::error_code ec_dir;
+    fs::create_directories(target.parent_path(), ec_dir);
+    if (ec_dir)
     {
-        throw std::runtime_error("atomic_write_json: create_directories failed: " + ec.message());
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): create_directories failed for {}: {}\n",
+                            target.parent_path().string(), ec_dir.message());
+        throw std::runtime_error("atomic_write_json: create_directories failed: " + ec_dir.message());
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Parent directory '{}' ensured.\n", target.parent_path().string());
+#endif
 
     // 1. Create a secure temporary file in the same directory as the target.
     // `mkstemp` creates a file with a unique name and opens it, returning a file descriptor.
@@ -490,9 +621,13 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     if (fd == -1)
     {
         int err = errno;
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): mkstemp failed for '{}'. Error: {} ({})\n", tmpl_buf.data(), err, std::strerror(err));
         throw std::runtime_error(
             fmt::format("atomic_write_json: mkstemp failed: {}", std::strerror(err)));
     }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+    fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Temp file '{}' created successfully (FD: {}).\n", tmpl_buf.data(), fd);
+#endif
 
     std::string tmp_path = tmpl_buf.data();
     bool tmp_unlinked = false;
@@ -510,6 +645,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             if (w < 0)
             {
                 int err = errno;
+                fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): write failed for '{}'. Bytes written: {}. Expected: {}. Error: {} ({})\n",
+                             tmp_path, written, out.size(), err, std::strerror(err));
                 ::close(fd);
                 ::unlink(tmp_path.c_str());
                 throw std::runtime_error(
@@ -518,16 +655,23 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             written += static_cast<size_t>(w);
             toWrite -= static_cast<size_t>(w);
         }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Wrote {} bytes to temp file '{}'.\n", written, tmp_path);
+#endif
 
         // 3. Sync the file contents to disk to ensure data durability.
         if (::fsync(fd) != 0)
         {
             int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): fsync(file) failed for '{}'. Error: {} ({})\n", tmp_path, err, std::strerror(err));
             ::close(fd);
             ::unlink(tmp_path.c_str());
             throw std::runtime_error(
                 fmt::format("atomic_write_json: fsync(file) failed: {}", std::strerror(err)));
         }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Flushed buffers for temp file '{}'.\n", tmp_path);
+#endif
 
         // 4. If the original file exists, copy its permissions to the new file
         // to maintain security context.
@@ -537,32 +681,109 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             if (fchmod(fd, st.st_mode) != 0)
             {
                 int err = errno;
+                fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): fchmod failed for '{}'. Error: {} ({})\n", tmp_path, err, std::strerror(err));
                 ::close(fd);
                 ::unlink(tmp_path.c_str());
                 throw std::runtime_error(
                     fmt::format("atomic_write_json: fchmod failed: {}", std::strerror(err)));
             }
         }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Copied permissions to temp file '{}'.\n", tmp_path);
+#endif
 
         // 5. Close the temporary file descriptor.
         if (::close(fd) != 0)
         {
             int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): close failed for temp file '{}'. Error: {} ({})\n", tmp_path, err, std::strerror(err));
             ::unlink(tmp_path.c_str());
             throw std::runtime_error(
                 fmt::format("atomic_write_json: close failed: {}", std::strerror(err)));
         }
         fd = -1;
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Closed handle for temp file '{}'.\n", tmp_path);
+#endif
 
         // 6. Atomically rename the temporary file to the final target path.
+        // We need to acquire an exclusive flock on the target file itself during the rename
+        // operation to prevent other processes from interfering with the target file at this
+        // critical moment.
+
+        int target_fd = -1;
+        bool flock_acquired = false;
+
+        // Open target file for exclusive access to apply a mandatory lock.
+        // Use O_CREAT | O_RDWR in case the target file doesn't exist yet (e.g., first write).
+        target_fd = ::open(target.c_str(), O_CREAT | O_RDWR, 0666);
+        if (target_fd == -1)
+        {
+            int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): open(target for lock) failed for '{}'. Error: {} ({})\n", target.string(), err, std::strerror(err));
+            ::unlink(tmp_path.c_str());
+            throw std::runtime_error(
+                fmt::format("atomic_write_json: open(target for lock) failed: {}", std::strerror(err)));
+        }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Target file '{}' opened for mandatory lock (FD: {}).\n", target.string(), target_fd);
+#endif
+
+        if (flock(target_fd, LOCK_EX | LOCK_NB) != 0)
+        {
+            int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): flock(target) failed for '{}'. Error: {} ({})\n", target.string(), err, std::strerror(err));
+            ::close(target_fd);
+            ::unlink(tmp_path.c_str());
+            throw std::runtime_error(
+                fmt::format("atomic_write_json: flock(target) failed: {}", std::strerror(err)));
+        }
+        flock_acquired = true;
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Exclusive flock acquired on target '{}'.\n", target.string());
+#endif
+
         if (std::rename(tmp_path.c_str(), target.c_str()) != 0)
         {
             int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): rename failed for target '{}'. Error: {} ({})\n", target.string(), err, std::strerror(err));
+            // Attempt cleanup
+            if (flock_acquired)
+            {
+                flock(target_fd, LOCK_UN);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+                fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Flock released on target '{}' during rename failure.\n", target.string());
+#endif
+            }
+            ::close(target_fd);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+            fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Target handle closed during rename failure.\n");
+#endif
             ::unlink(tmp_path.c_str());
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+            fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Temp file '{}' unlinked during rename failure.\n", tmp_path);
+#endif
             throw std::runtime_error(
                 fmt::format("atomic_write_json: rename failed: {}", std::strerror(err)));
         }
         tmp_unlinked = true;
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Rename succeeded for target '{}'.\n", target.string());
+#endif
+
+        // Release the lock and close the handle.
+        if (flock_acquired)
+        {
+            flock(target_fd, LOCK_UN);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+            fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Flock released on target '{}'.\n", target.string());
+#endif
+        }
+        ::close(target_fd);
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Target handle closed.\n", target.string());
+#endif
+
 
         // 7. Sync the parent directory. This is a crucial step to ensure that the
         // directory entry changes from the `rename` operation are durable on disk.
@@ -572,6 +793,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             if (::fsync(dfd) != 0)
             {
                 int err = errno;
+                fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): fsync(dir) failed for '{}'. Error: {} ({})\n", dir, err, std::strerror(err));
                 ::close(dfd);
                 throw std::runtime_error(
                     fmt::format("atomic_write_json: fsync(dir) failed: {}", std::strerror(err)));
@@ -581,15 +803,22 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         else
         {
             int err = errno;
+            fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): open(dir) failed for fsync on '{}'. Error: {} ({})\n", dir, err, std::strerror(err));
             throw std::runtime_error(fmt::format(
                 "atomic_write_json: open(dir) failed for fsync: {}", std::strerror(err)));
         }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Operation completed successfully for '{}'.\n", target.string());
+#endif
     }
     catch (...)
     {
         // In case of any error, ensure the temporary file is cleaned up.
         if (!tmp_unlinked)
         {
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+            fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Cleaning up unlinked temp file '{}'.\n", tmp_path);
+#endif
             ::unlink(tmp_path.c_str());
         }
         throw;
