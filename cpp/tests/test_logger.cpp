@@ -18,7 +18,10 @@
 #include <fmt/core.h>
 
 #include "platform.hpp"
-#if PYLABHUB_IS_POSIX
+#if defined(PLATFORM_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <cerrno>      // For EACCES
 #include <sys/stat.h>  // For chmod, S_IRUSR, etc.
 #include <sys/types.h> // For pid_t
@@ -42,19 +45,12 @@ static int tests_failed = 0;
 
 #define CHECK(condition)                                                                           \
     do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
+    {
+        if (!(condition))
+        {
             fmt::print(stderr, "  CHECK FAILED: {} at {}:{}", #condition, __FILE__, __LINE__);   \
-            exit(1);                                                                               \
-        }                                                                                          \
-    } while (0)
-
-#define FAIL_TEST(message)                                                                         \
-    do                                                                                             \
-    {                                                                                              \
-        fmt::print(stderr, "  TEST FAILED: {} at {}:{}", message, __FILE__, __LINE__);           \
-        exit(1);                                                                                   \
+            exit(1);
+        }
     } while (0)
 
 // --- Test Globals & Helpers ---
@@ -272,9 +268,42 @@ void test_flush_waits_for_queue()
     L.shutdown();
 }
 
-#if PYLABHUB_IS_POSIX
 void test_write_error_callback()
 {
+#if defined(PLATFORM_WIN64)
+    std::remove(g_log_path.string().c_str());
+    Logger &L = Logger::instance();
+
+    // On Windows, lock the file with an exclusive read handle
+    HANDLE h = CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS, 
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+
+    L.set_logfile(g_log_path.string(), false);
+    L.set_level(Logger::Level::L_INFO);
+
+    std::atomic<bool> callback_invoked = false;
+    std::atomic<int> error_code = 0;
+    int initial_failures = L.write_failure_count();
+
+    L.set_write_error_callback(
+        [&](const std::string &msg)
+        {
+            callback_invoked = true;
+            error_code = L.last_write_error_code();
+            (void)msg;
+        });
+
+    LOGGER_INFO("This write should fail.");
+    L.flush();
+    L.shutdown();
+
+    CHECK(callback_invoked.load());
+    CHECK(L.write_failure_count() > initial_failures);
+    CHECK(error_code.load() == ERROR_SHARING_VIOLATION);
+
+    CloseHandle(h);
+#else
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
 
@@ -311,8 +340,8 @@ void test_write_error_callback()
     CHECK(error_code.load() != 0);
 
     chmod(g_log_path.string().c_str(), S_IRWXU | S_IWGRP | S_IWOTH);
-}
 #endif
+}
 
 void test_uninitialized_state_drops_logs()
 {
@@ -601,7 +630,6 @@ int main(int argc, char **argv)
 #if PYLABHUB_IS_POSIX
     run_test_in_process("test_write_error_callback");
 #endif
-
     // The multi-process test is special and runs directly from the parent
     run_test_in_process("test_multiprocess_logging");
 

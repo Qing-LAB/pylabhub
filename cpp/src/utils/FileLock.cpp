@@ -43,7 +43,7 @@
 #include <system_error>
 #include <utility>
 
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
 #include <sstream>
 #include <windows.h>
 #else
@@ -66,7 +66,7 @@ struct FileLockImpl
     bool valid = false;         // True if the lock is currently held.
     std::error_code ec;         // Stores the last error if `valid` is false.
 
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     void *handle = nullptr; // The Windows file handle (HANDLE) for the .lock file.
 #else
     int fd = -1; // The POSIX file descriptor for the .lock file.
@@ -131,7 +131,7 @@ FileLock::~FileLock()
     // At this point, pImpl->valid is true, so we hold a valid lock and handle/fd.
     // Release lock and close file/handle. Ignore errors during this best-effort cleanup,
     // as there is little a caller can do about a failure during destruction.
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     OVERLAPPED ov = {};
     UnlockFileEx((HANDLE)pImpl->handle, 0, MAXDWORD, MAXDWORD, &ov);
     CloseHandle((HANDLE)pImpl->handle);
@@ -196,7 +196,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         return;
     }
 
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     // Convert to long path for Windows API calls to handle paths > MAX_PATH.
     std::wstring lockpath_w = win32_to_long_path(lockpath);
 
