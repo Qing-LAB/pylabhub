@@ -13,6 +13,7 @@ set(TEST_SOURCES
   test_filelock.cpp
   test_jsonconfig.cpp
   test_atomicguard.cpp
+  test_recursionguard.cpp
 )
 
 # Create a list of target names from source files.

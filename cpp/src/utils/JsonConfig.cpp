@@ -387,6 +387,17 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     std::wstring tmp_full_w = win32_to_long_path(tmp_full);
     std::wstring target_w = win32_to_long_path(target);
 
+    // Security: Check if the target is a reparse point (e.g., a symlink).
+    // If the file doesn't exist, GetFileAttributesW returns INVALID_FILE_ATTRIBUTES,
+    // in which case this check is skipped (no symlink to worry about yet).
+    DWORD attributes = GetFileAttributesW(target_w.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+    {
+        throw std::runtime_error(
+            "atomic_write_json: target path is a reparse point (e.g., symbolic link), "
+            "refusing to write for security reasons.");
+    }
+
     // 1. Create a temporary file. No sharing is allowed to ensure we have exclusive access.
     HANDLE h = CreateFileW(tmp_full_w.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
