@@ -83,7 +83,7 @@ struct Impl
     // while a write is in progress.
     std::mutex mtx;
 
-    Logger::Destination dest = Logger::Destination::L_CONSOLE;
+    Logger::Destination dest = Logger::Destination::L_NONE;
 
     // file sink
 #if defined(PLATFORM_WIN64)
@@ -180,6 +180,8 @@ std::string Impl::get_sink_description() const
 {
     switch (dest)
     {
+    case Logger::Destination::L_NONE:
+        return "None";
     case Logger::Destination::L_CONSOLE:
         return "Console";
     case Logger::Destination::L_FILE:
@@ -216,7 +218,7 @@ void Impl::close_sinks() noexcept
     // closelog is safe even if not previously opened
     closelog();
 #endif
-    this->dest = Logger::Destination::L_CONSOLE;
+    this->dest = Logger::Destination::L_NONE;
 }
 
 // --- Singleton Impl management ---
@@ -285,6 +287,8 @@ static const char *level_to_string(Logger::Level lvl) noexcept
         return "WARN";
     case Logger::Level::L_ERROR:
         return "ERROR";
+    case Logger::Level::L_SYSTEM:
+        return "SYSTEM";
     default:
         return "UNK";
     }
@@ -308,6 +312,8 @@ static int level_to_syslog_priority(Logger::Level lvl) noexcept
         return LOG_WARNING;
     case Logger::Level::L_ERROR:
         return LOG_ERR;
+    case Logger::Level::L_SYSTEM:
+        return LOG_CRIT;
     default:
         return LOG_INFO;
     }
@@ -411,22 +417,39 @@ void Logger::set_max_log_line_length(size_t bytes)
     pImpl->max_log_line_length.store(bytes ? bytes : 1);
 }
 
+void Logger::set_console()
+{
+    if (!pImpl)
+        return;
+
+    const std::string old_sink_desc = pImpl->get_sink_description();
+
+    // Perform the switch under lock
+    {
+        std::lock_guard<std::mutex> g(pImpl->mtx);
+        pImpl->close_sinks();
+        pImpl->dest = Logger::Destination::L_CONSOLE;
+    }
+
+    // Log after the switch has been completed
+    if (old_sink_desc != "Console")
+    {
+        LOGGER_SYSTEM_RT("Switched log destination from {} to Console", old_sink_desc);
+    }
+}
+
 // ---- sinks initialization ----
 bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
 {
     if (!pImpl)
         return false;
 
-    // Log the switch to the old sink before changing.
     const std::string old_sink_desc = pImpl->get_sink_description();
-    LOGGER_ERROR_RT("Switching log destination from {} to file: {}", old_sink_desc, utf8_path);
-    flush();
 
-    // Now, perform the switch under a lock.
     bool success = false;
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
-        pImpl->close_sinks(); // Close any previously opened sink.
+        pImpl->close_sinks(); // Resets dest to L_NONE
 
 #if defined(PLATFORM_WIN64)
         // Mark parameter as unused on Windows.
@@ -475,23 +498,21 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
             success = true;
         }
 #endif
-        if (!success)
-        {
-            // Revert to console logging on failure.
-            pImpl->dest = Logger::Destination::L_CONSOLE;
-        }
     } // Mutex is released here.
 
-    // Log the outcome to the new sink (or console if it failed).
+    // Log after the switch attempt.
     if (success)
     {
-        LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
+        LOGGER_SYSTEM_RT("Switched log destination from {} to file: {}", old_sink_desc, utf8_path);
     }
     else
     {
-        LOGGER_ERROR_RT("Failed to switch logging to file: {}. Reverting to console.", utf8_path);
+        // If the switch failed, logging is disabled. We must write to stderr directly.
+        fmt::print(stderr,
+                   "pylabub::Logger: ERROR: Failed to switch logging to file: {}. Logging is "
+                   "disabled.\n",
+                   utf8_path);
     }
-
     return success;
 }
 
@@ -502,8 +523,6 @@ void Logger::set_syslog(const char *ident, int option, int facility)
         return;
 
     const std::string old_sink_desc = pImpl->get_sink_description();
-    LOGGER_ERROR_RT("Switching log destination from {} to syslog", old_sink_desc);
-    flush();
 
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
@@ -513,7 +532,7 @@ void Logger::set_syslog(const char *ident, int option, int facility)
         pImpl->dest = Logger::Destination::L_SYSLOG;
     }
 
-    LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
+    LOGGER_SYSTEM_RT("Switched log destination from {} to Syslog", old_sink_desc);
 
 #else
     (void)ident;
@@ -529,18 +548,15 @@ bool Logger::set_eventlog(const wchar_t *source_name)
         return false;
 
     const std::string old_sink_desc = pImpl->get_sink_description();
-    LOGGER_ERROR_RT("Switching log destination from {} to Windows Event Log", old_sink_desc);
-    flush();
 
     bool success = false;
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
-        pImpl->close_sinks();
+        pImpl->close_sinks(); // Resets dest to L_NONE
         HANDLE h = RegisterEventSourceW(nullptr, source_name);
         if (!h)
         {
             pImpl->record_write_error(GetLastError(), "RegisterEventSourceW failed");
-            pImpl->dest = Logger::Destination::L_CONSOLE;
         }
         else
         {
@@ -552,11 +568,16 @@ bool Logger::set_eventlog(const wchar_t *source_name)
 
     if (success)
     {
-        LOGGER_ERROR_RT("Logging redirected from {}", old_sink_desc);
+        LOGGER_SYSTEM_RT("Switched log destination from {} to Windows Event Log", old_sink_desc);
     }
     else
     {
-        LOGGER_ERROR("Failed to switch to Windows Event Log. Reverting to console.");
+        // If the switch failed, logging is disabled. We must write to stderr directly.
+        // We can't easily print the wide string source_name here without more complex
+        // conversions, so we omit it for this cross-platform-focused logger.
+        fmt::print(stderr,
+                   "pylabub::Logger: ERROR: Failed to switch to Windows Event Log. Logging is "
+                   "disabled.\n");
     }
     return success;
 #else
@@ -581,7 +602,7 @@ void Logger::shutdown()
     }
 
     // Log the shutdown event itself. This will be the last message queued.
-    LOGGER_ERROR("Logger shutting down upon explicit request.");
+    LOGGER_SYSTEM("Logger shutting down upon explicit request.");
 
     // It is important to flush any pending messages before signaling shutdown.
     flush();
@@ -914,6 +935,11 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
     // The worker thread is the only writer, but we still need to lock
     // to protect sink handles during reconfiguration (e.g., set_destination).
     std::unique_lock<std::mutex> lk(pImpl->mtx);
+
+    if (pImpl->dest == Logger::Destination::L_NONE)
+    {
+        return; // Drop message if no destination is configured.
+    }
 
     const std::string full_ln =
         msg.message + "\n"; // Only needed for console/file/eventlog fallback

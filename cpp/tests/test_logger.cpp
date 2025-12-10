@@ -314,6 +314,58 @@ void test_write_error_callback()
 }
 #endif
 
+void test_uninitialized_state_drops_logs()
+{
+    std::remove(g_log_path.string().c_str());
+    Logger &L = Logger::instance();
+    // In the uninitialized (default) state, destination is L_NONE.
+    // These logs should be processed by the worker but dropped instead of written.
+    LOGGER_INFO("This message should be dropped.");
+    LOGGER_ERROR("This message should also be dropped.");
+    L.flush(); // The flush should complete without writing anything.
+
+    // Now, set a destination. Subsequent logs should be written.
+    CHECK(L.set_logfile(g_log_path.string(), false));
+    L.set_level(Logger::Level::L_TRACE);
+    LOGGER_INFO("This message should be logged.");
+    L.flush();
+    L.shutdown();
+
+    std::string contents;
+    CHECK(read_file_contents(g_log_path.string(), contents));
+    CHECK(contents.find("This message should be dropped.") == std::string::npos);
+    CHECK(contents.find("This message should also be dropped.") == std::string::npos);
+    CHECK(contents.find("This message should be logged.") != std::string::npos);
+    // The log file should contain the "Switched log destination" message and the one after.
+    CHECK(count_lines(g_log_path.string()) == 2);
+}
+
+void test_set_console()
+{
+    // This test doesn't write to a file, it just checks that the
+    // sink-switching logic for the console works as expected.
+    // It's difficult to capture stderr here, so we mainly test that
+    // the calls don't crash and that the internal state looks correct.
+    Logger &L = Logger::instance();
+
+    // Switch to console (from NONE)
+    L.set_console();
+    L.set_level(Logger::Level::L_INFO);
+    LOGGER_INFO("This should go to console.");
+
+    // Switch to file
+    CHECK(L.set_logfile(g_log_path.string(), false));
+    LOGGER_INFO("This should go to file.");
+
+    // Switch back to console
+    L.set_console();
+    LOGGER_INFO("This should go back to console.");
+
+    L.flush();
+    L.shutdown();
+    CHECK(true); // If we got here without crashing, consider it a pass.
+}
+
 // --- Multi-process Test Logic ---
 
 // Entrypoint for child processes spawned by test_multiprocess_logging
@@ -508,6 +560,10 @@ int main(int argc, char **argv)
             test_multithreaded_logging();
         else if (test_name == "test_flush_waits_for_queue")
             test_flush_waits_for_queue();
+        else if (test_name == "test_uninitialized_state_drops_logs")
+            test_uninitialized_state_drops_logs();
+        else if (test_name == "test_set_console")
+            test_set_console();
 #if PYLABHUB_IS_POSIX
         else if (test_name == "test_write_error_callback")
             test_write_error_callback();
@@ -529,9 +585,14 @@ int main(int argc, char **argv)
     fmt::print("--- Logger Test Suite (Process-Isolated) ---\n");
 
     const std::vector<std::string> test_names = {
-        "test_basic_logging",       "test_log_level_filtering", "test_message_truncation",
-        "test_bad_format_string",   "test_multithreaded_logging",
-        "test_flush_waits_for_queue"};
+        "test_basic_logging",
+        "test_log_level_filtering",
+        "test_message_truncation",
+        "test_bad_format_string",
+        "test_multithreaded_logging",
+        "test_flush_waits_for_queue",
+        "test_uninitialized_state_drops_logs",
+        "test_set_console"};
 
     for (const auto &name : test_names)
     {

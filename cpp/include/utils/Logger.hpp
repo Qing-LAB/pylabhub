@@ -125,10 +125,12 @@ class PYLABHUB_API Logger
         L_INFO = 2,
         L_WARNING = 3,
         L_ERROR = 4,
+        L_SYSTEM = 5,
     };
 
     enum class Destination
     {
+        L_NONE,
         L_CONSOLE,
         L_FILE,
         L_SYSLOG,
@@ -150,6 +152,7 @@ class PYLABHUB_API Logger
     // ---- Sinks / initializers (defined in .cpp) ----
     // set_logfile: open the given UTF-8 path for append. Returns true on success.
     // use_flock: on POSIX enables advisory flock() while writing.
+    void set_console();
     bool set_logfile(const std::string &utf8_path, bool use_flock = false, int mode = 0644);
 
     // set_syslog: POSIX only (no-op on Windows)
@@ -240,6 +243,11 @@ class PYLABHUB_API Logger
     {
         log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
     }
+    template <typename... Args>
+    void system_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    {
+        log_fmt<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
+    }
 
     // --- Runtime Path ---
     template <typename... Args>
@@ -264,6 +272,10 @@ class PYLABHUB_API Logger
     template <typename... Args> void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
+    }
+    template <typename... Args> void system_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    {
+        log_fmt_runtime(Level::L_SYSTEM, fmt_str, std::forward<Args>(args)...);
     }
 
   private:
@@ -395,6 +407,8 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
     ::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_ERROR(fmt, ...)                                                                     \
     ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_SYSTEM(fmt, ...)                                                                    \
+    ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 
 // 2. Runtime Macros (e.g., LOGGER_INFO_RT): For format strings held in variables.
 //    Use this when the format string is not a compile-time constant. These calls
@@ -409,3 +423,5 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
     ::pylabhub::utils::Logger::instance().warn_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_ERROR_RT(fmt, ...)                                                                  \
     ::pylabhub::utils::Logger::instance().error_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_SYSTEM_RT(fmt, ...)                                                                 \
+    ::pylabhub::utils::Logger::instance().system_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
