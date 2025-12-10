@@ -76,6 +76,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "PathUtil.hpp"
 #include "nlohmann/json.hpp"
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
