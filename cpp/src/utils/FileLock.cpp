@@ -1,11 +1,12 @@
 /*******************************************************************************
  * @file FileLock.cpp
- * @brief Implementation of a cross-platform RAII file lock.
+ * @brief Implementation of a cross-platform RAII advisory file lock using a separate lock file.
  *
  * **Design Philosophy**
  * `FileLock` provides a robust, cross-platform, RAII-style mechanism for
- * managing inter-process file locks. It is a critical component for ensuring
- * the integrity of shared resources like configuration files.
+ * managing inter-process *advisory* file locks. It is a critical component for
+ * ensuring the integrity of shared resources like configuration files *when all
+ * participating processes respect the same locking convention*.
  *
  * 1.  **RAII (Resource Acquisition Is Initialization)**: The lock is acquired in
  *     the constructor and automatically released in the destructor. This prevents
@@ -19,10 +20,14 @@
  *     `config.json`) is used instead of locking the target file directly. This
  *     avoids issues where file content operations might interfere with the lock
  *     itself and simplifies the implementation.
+ *     **IMPORTANT**: This is an *advisory* lock. It means only processes that
+ *     explicitly attempt to acquire this lock will be affected. Other processes
+ *     (or processes not using this `FileLock` mechanism) can still access and
+ *     modify the original target file without being blocked.
  * 4.  **Blocking and Non-Blocking Modes**: The lock can be acquired in either
  *     `Blocking` or `NonBlocking` mode. The `NonBlocking` mode allows for a
  *     "fail-fast" policy, which is used by `JsonConfig` to avoid deadlocks or
- *     long waits if another process holds the lock.
+ *     long waits if another process holds the advisory lock.
  * 5.  **Movability**: The class is movable but not copyable, allowing ownership
  *     of a lock to be efficiently transferred (e.g., returned from a factory
  *     function) while preventing accidental duplication.

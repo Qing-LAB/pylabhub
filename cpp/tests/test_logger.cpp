@@ -54,6 +54,14 @@ static int tests_failed = 0;
         }                                                                                       \
     } while (0)
 
+#define FAIL_TEST(msg)                                                                 \
+    do                                                                                          \
+    {                                                                                           \
+        tests_failed++;                                                                         \
+        fmt::print(stderr, "  TEST FAILED: {} at {}:{}", msg, __FILE__, __LINE__);              \
+        exit(1);                                                                                \
+    } while (0)
+
 // --- Test Globals & Helpers ---
 static fs::path g_log_path;
 static std::string g_self_exe_path;

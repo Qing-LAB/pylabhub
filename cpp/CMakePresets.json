@@ -72,8 +72,8 @@
   "buildPresets": [
     { "name": "build-ninja-debug",   "configurePreset": "ninja-debug" },
     { "name": "build-ninja-release", "configurePreset": "ninja-release" },
-    { "name": "build-msvc-debug",    "configurePreset": "msvc-x64-debug" },
-    { "name": "build-msvc-release",  "configurePreset": "msvc-x64-release" }
+    { "name": "build-msvc-debug",    "configurePreset": "msvc-x64-debug", "configuration":  "Debug" },
+    { "name": "build-msvc-release",  "configurePreset": "msvc-x64-release", "configuration": "Release" }
   ],
 
   "testPresets": [
