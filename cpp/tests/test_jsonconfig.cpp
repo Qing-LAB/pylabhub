@@ -459,6 +459,60 @@ void test_symlink_attack_prevention()
 }
 #endif
 
+#if defined(PLATFORM_WIN64)
+void test_symlink_attack_prevention_windows()
+{
+    auto real_file = g_temp_dir / "real_file.txt";
+    auto symlink_path = g_temp_dir / "config_win.json";
+    fs::remove(real_file);
+    fs::remove(symlink_path);
+
+    // Create a "sensitive" file with VALID JSON content.
+    {
+        std::ofstream out(real_file);
+        out << R"({ "original": "data" })";
+    }
+
+    // Create a symbolic link. Requires specific privileges/developer mode.
+    // Use `win32_to_long_path` helper for CreateSymbolicLinkW.
+    std::wstring symlink_w = pylabhub::utils::win32_to_long_path(symlink_path);
+    std::wstring real_w = pylabhub::utils::win32_to_long_path(real_file);
+
+    if (!CreateSymbolicLinkW(symlink_w.c_str(), real_w.c_str(), 0))
+    {
+        // If symlink creation fails (e.g., due to insufficient permissions),
+        // we skip the test and report a warning.
+        DWORD error = GetLastError();
+        if (error == ERROR_PRIVILEGE_NOT_HELD || error == ERROR_ACCESS_DENIED)
+        {
+            fmt::print(stderr, "  WARNING: Skipping Windows symlink test. Requires SeCreateSymbolicLinkPrivilege or Developer Mode (Error {}).\n", error);
+            return;
+        }
+        else
+        {
+            CHECK(false && "Failed to create symbolic link for test.");
+        }
+    }
+    CHECK(fs::is_symlink(symlink_path));
+
+    JsonConfig cfg;
+    // init() will now succeed as reload() can parse the JSON through the symlink.
+    CHECK(cfg.init(symlink_path, false));
+    CHECK(cfg.get<std::string>("original") == "data");
+
+    // Now, attempt to save. This should fail because atomic_write_json
+    // detects the reparse point and throws an exception. save() catches
+    // this and returns `false`.
+    cfg.set("malicious", "data");
+    CHECK(!cfg.save());
+
+    // Verify the sensitive file was not overwritten with malicious data.
+    json j = json::parse(read_file_contents(real_file));
+    CHECK(j["original"] == "data");
+    CHECK(j.find("malicious") == j.end());
+}
+#endif
+
 int main(int argc, char **argv)
 {
     // Worker mode: invoked by master to test multiprocess behavior
@@ -491,6 +545,10 @@ int main(int argc, char **argv)
 
 #if PYLABHUB_IS_POSIX
     TEST_CASE("Symlink Attack Prevention (POSIX-only)", test_symlink_attack_prevention);
+#endif
+
+#if defined(PLATFORM_WIN64)
+    TEST_CASE("Symlink Attack Prevention (Windows-only)", test_symlink_attack_prevention_windows);
 #endif
 
     fmt::print("\n--- Test Summary ---\n");
