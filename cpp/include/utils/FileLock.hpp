@@ -1,6 +1,6 @@
 /*******************************************************************************
  * @file include/utils/FileLock.hpp
- * @brief Cross-platform file lock RAII wrapper
+ * @brief Cross-platform advisory file lock RAII wrapper using a separate lock file.
  * @author Quan Qing
  * @date 2025-11-15
  * Reviewed and revised by Quan Qing on 2025-11-15
@@ -8,7 +8,7 @@
  * Unit test available at tests/test_filelock.cpp
  ******************************************************************************/
 #pragma once
-// FileLock.hpp - cross-platform file lock RAII wrapper
+// FileLock.hpp - cross-platform advisory file lock RAII wrapper using a separate lock file.
 // Place at: include/fileutil/FileLock.hpp
 //
 // Usage:
@@ -16,9 +16,13 @@
 //   if (!lock.valid()) { handle error: lock.error_code() }
 //
 // Behavior:
-//  - On POSIX uses flock(fd, LOCK_EX[|LOCK_NB]) on an on-disk lock file
-//  - On Windows uses CreateFileW + LockFileEx with long-path support
-//  - The lock file is <parent-of-path>/<basename>.lock
+//  - Implements an *advisory* lock. It relies on all cooperating processes to
+//    respect the lock. It does NOT prevent non-cooperating processes from
+//    accessing the target file.
+//  - On POSIX uses flock(fd, LOCK_EX[|LOCK_NB]) on an on-disk lock file.
+//  - On Windows uses CreateFileW + LockFileEx with long-path support.
+//  - The lock file created and used for locking is <parent-of-path>/<basename>.lock
+//    (e.g., for target `/a/b/c.txt`, the lock file is `/a/b/c.txt.lock`).
 //  - Moveable but non-copyable
 
 #include <filesystem>
