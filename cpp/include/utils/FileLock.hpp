@@ -72,7 +72,8 @@ class PYLABHUB_API FileLock
      *             placed on a corresponding '.lock' file.
      * @param mode The locking mode (Blocking or NonBlocking).
      */
-    explicit FileLock(const std::filesystem::path &path, LockMode mode = LockMode::Blocking);
+    explicit FileLock(const std::filesystem::path &path,
+                      LockMode mode = LockMode::Blocking) noexcept;
 
     /// @brief Move constructor. Transfers ownership of an existing lock.
     FileLock(FileLock &&other) noexcept;

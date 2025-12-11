@@ -195,7 +195,9 @@ void test_basic_accessors()
     cfg.init(cfg_path, true);
 
     CHECK(cfg.set("int_val", 42));
-    CHECK(cfg.get<int>("int_val") == 42);
+    int int_val = 0;
+    CHECK(cfg.get("int_val", int_val));
+    CHECK(int_val == 42);
     CHECK(cfg.get_or<int>("int_val", 0) == 42);
     CHECK(cfg.get_or<int>("nonexistent", 99) == 99);
 
@@ -203,7 +205,9 @@ void test_basic_accessors()
     CHECK(!cfg.has("nonexistent"));
 
     CHECK(cfg.set("str_val", "hello"));
-    CHECK(cfg.get<std::string>("str_val") == "hello");
+    std::string str_val;
+    CHECK(cfg.get("str_val", str_val));
+    CHECK(str_val == "hello");
 
     CHECK(cfg.erase("str_val"));
     CHECK(!cfg.has("str_val"));
@@ -214,7 +218,8 @@ void test_basic_accessors()
                          j["x"] = 100;
                          j["s"] = "world";
                      }));
-    auto j = cfg.get<json>("obj");
+    json j;
+    CHECK(cfg.get("obj", j));
     CHECK(j["x"] == 100);
     CHECK(j["s"] == "world");
 }
@@ -235,13 +240,18 @@ void test_reload()
     }
 
     // The in-memory value should still be the old one.
-    CHECK(cfg.get<int>("value") == 1);
+    int value = 0;
+    CHECK(cfg.get("value", value));
+    CHECK(value == 1);
     CHECK(!cfg.has("new_key"));
 
     // Reload should update the in-memory state.
     CHECK(cfg.reload());
-    CHECK(cfg.get<int>("value") == 2);
-    CHECK(cfg.get<std::string>("new_key") == "external");
+    CHECK(cfg.get("value", value));
+    CHECK(value == 2);
+    std::string new_key;
+    CHECK(cfg.get("new_key", new_key));
+    CHECK(new_key == "external");
 }
 
 void test_recursion_guard()
@@ -257,17 +267,9 @@ void test_recursion_guard()
         [&]([[maybe_unused]] const json &data)
         {
             // This nested call should be rejected by the recursion guard.
-            // get() throws on failure, so we expect an exception.
-            bool caught = false;
-            try
-            {
-                (void)cfg.get<int>("key");
-            }
-            catch (const std::runtime_error &)
-            {
-                caught = true;
-            }
-            CHECK(caught);
+            // The new get() returns false on failure, so we check that.
+            int val;
+            CHECK(!cfg.get("key", val));
         });
     // The outer call should still succeed.
     CHECK(read_ok);
@@ -283,7 +285,9 @@ void test_recursion_guard()
         });
     // The outer call should succeed and save the change from `data["a"] = 1;`
     CHECK(write_ok);
-    CHECK(cfg.get<int>("a") == 1);
+    int a_val = 0;
+    CHECK(cfg.get("a", a_val));
+    CHECK(a_val == 1);
     CHECK(!cfg.has("b")); // The nested set should not have taken effect.
 }
 
@@ -301,7 +305,9 @@ void test_move_semantics()
 
         JsonConfig cfg2(std::move(cfg1));
         CHECK(cfg2.has("val"));
-        CHECK(cfg2.get<int>("val") == 1);
+        int val = 0;
+        CHECK(cfg2.get("val", val));
+        CHECK(val == 1);
         // cfg1 is now in a moved-from state, operations should fail gracefully.
         CHECK(!cfg1.has("val"));
         CHECK(!cfg1.save());
@@ -315,7 +321,9 @@ void test_move_semantics()
 
         JsonConfig cfg4; // Default constructed
         cfg4 = std::move(cfg3);
-        CHECK(cfg4.get<int>("val") == 3);
+        int val = 0;
+        CHECK(cfg4.get("val", val));
+        CHECK(val == 3);
         CHECK(!cfg3.has("val"));
     }
 }
@@ -450,7 +458,9 @@ void test_symlink_attack_prevention()
     JsonConfig cfg;
     // init() will now succeed because reload() can parse the JSON.
     CHECK(cfg.init(symlink_path, false));
-    CHECK(cfg.get<std::string>("original") == "data");
+    std::string original;
+    CHECK(cfg.get("original", original));
+    CHECK(original == "data");
 
     // Now, attempt to save. This should fail because atomic_write_json
     // detects the symlink path and throws an exception, which save()
@@ -505,7 +515,9 @@ void test_symlink_attack_prevention_windows()
     JsonConfig cfg;
     // init() will now succeed as reload() can parse the JSON through the symlink.
     CHECK(cfg.init(symlink_path, false));
-    CHECK(cfg.get<std::string>("original") == "data");
+    std::string original;
+    CHECK(cfg.get("original", original));
+    CHECK(original == "data");
 
     // Now, attempt to save. This should fail because atomic_write_json
     // detects the reparse point and throws an exception. save() catches

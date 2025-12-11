@@ -134,7 +134,7 @@ static std::filesystem::path make_lock_path(const std::filesystem::path &target)
 // ---------------- FileLock implementation ----------------
 
 // Constructor: attempts to open and lock the file based on the specified mode.
-FileLock::FileLock(const std::filesystem::path &path, LockMode mode)
+FileLock::FileLock(const std::filesystem::path &path, LockMode mode) noexcept
     : pImpl(std::make_unique<FileLockImpl>())
 {
     // Delegate all logic to the private implementation.
