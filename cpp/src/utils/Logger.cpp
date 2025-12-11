@@ -466,8 +466,9 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
             if (!wpath.empty() && wpath.back() == L'\0')
                 wpath.pop_back();
 
-            HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE, FILE_SHARE_READ,
-                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            HANDLE h = CreateFileW(wpath.c_str(), FILE_APPEND_DATA | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
             if (h == INVALID_HANDLE_VALUE)
             {
                 pImpl->record_write_error(GetLastError(), "CreateFileW failed in set_logfile");

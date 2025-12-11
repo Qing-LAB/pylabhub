@@ -103,6 +103,8 @@ void test_basic_logging()
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
 
     LOGGER_INFO("unit-test: ascii message {}", 42);
     LOGGER_DEBUG("unit-test: debug {:.2f}", 3.14159);
@@ -110,6 +112,9 @@ void test_basic_logging()
 
     L.flush();
     CHECK(!L.dirty());
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == 3);
+
     L.shutdown();
 
     std::string contents;
@@ -118,7 +123,6 @@ void test_basic_logging()
     CHECK(contents.find("unit-test: debug 3.14") != std::string::npos);
     CHECK(contents.find("☃") != std::string::npos);
     CHECK(contents.find("日本語") != std::string::npos);
-    CHECK(count_lines(g_log_path.string()) == 3);
 }
 
 void test_log_level_filtering()
@@ -126,8 +130,10 @@ void test_log_level_filtering()
     std::remove(g_log_path.string().c_str());
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
-    L.set_level(Logger::Level::L_WARNING); // Only WARNING and above should be logged
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
 
+    L.set_level(Logger::Level::L_WARNING); // Only WARNING and above should be logged
     LOGGER_INFO("This should NOT be logged.");
     LOGGER_DEBUG("This should also NOT be logged.");
     LOGGER_WARN("This WARNING should be logged.");
@@ -136,6 +142,9 @@ void test_log_level_filtering()
 
     L.flush();
     CHECK(!L.dirty());
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == 2);
+
     L.shutdown();
 
     std::string contents;
@@ -144,7 +153,6 @@ void test_log_level_filtering()
     CHECK(contents.find("This should also NOT be logged.") == std::string::npos);
     CHECK(contents.find("This WARNING should be logged.") != std::string::npos);
     CHECK(contents.find("This DEBUG should now be logged.") != std::string::npos);
-    CHECK(count_lines(g_log_path.string()) == 2);
 }
 
 void test_message_truncation()
@@ -169,9 +177,10 @@ void test_message_truncation()
     CHECK(contents.find(long_msg) == std::string::npos);
 
     // Extract the logged body and check its length
-    std::string line;
+    std::string line, discard;
     std::stringstream ss(contents);
-    std::getline(ss, line);
+    std::getline(ss, discard); // Discard the "switched destination" line
+    std::getline(ss, line);    // This should be our truncated line
 
     // The format is "TIME [LEVEL] [tid=TID] BODY"
     // Find the start of the body by finding the last "] "
@@ -189,6 +198,8 @@ void test_bad_format_string()
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_INFO);
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
 
     // Use the _RT macro to test the runtime format string checking.
     std::string bad_fmt = "Missing arg: {}";
@@ -196,6 +207,9 @@ void test_bad_format_string()
 
     L.flush();
     CHECK(!L.dirty());
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == 1);
+
     L.shutdown();
 
     std::string contents;
@@ -204,7 +218,6 @@ void test_bad_format_string()
     auto pos1 = contents.find("[FORMAT ERROR]");
     auto pos2 = contents.find("invalid format string"); // fmt may report this
     CHECK(pos1 != std::string::npos || pos2 != std::string::npos);
-    CHECK(count_lines(g_log_path.string()) == 1);
 }
 
 void test_multithreaded_logging()
@@ -213,6 +226,8 @@ void test_multithreaded_logging()
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_DEBUG);
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
 
     const int THREADS = 8;
     const int MESSAGES_PER_THREAD = 200;
@@ -236,10 +251,10 @@ void test_multithreaded_logging()
 
     L.flush();
     CHECK(!L.dirty());
-    L.shutdown();
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == THREADS * MESSAGES_PER_THREAD);
 
-    size_t lines = count_lines(g_log_path.string());
-    CHECK(lines == THREADS * MESSAGES_PER_THREAD);
+    L.shutdown();
 }
 
 void test_flush_waits_for_queue()
@@ -250,6 +265,8 @@ void test_flush_waits_for_queue()
     Logger &L = Logger::instance();
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
 
     std::vector<std::thread> threads;
     for (int i = 0; i < THREADS; ++i)
@@ -272,8 +289,8 @@ void test_flush_waits_for_queue()
     L.flush();
     CHECK(!L.dirty());
 
-    size_t lines = count_lines(g_log_path.string());
-    CHECK(lines == THREADS * MESSAGES_PER_THREAD);
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == THREADS * MESSAGES_PER_THREAD);
     L.shutdown();
 }
 
@@ -365,8 +382,14 @@ void test_uninitialized_state_drops_logs()
     // Now, set a destination. Subsequent logs should be written.
     CHECK(L.set_logfile(g_log_path.string(), false));
     L.set_level(Logger::Level::L_TRACE);
+    L.flush(); // ensure startup message is written
+    size_t lines_before = count_lines(g_log_path.string());
+
     LOGGER_INFO("This message should be logged.");
     L.flush();
+    size_t lines_after = count_lines(g_log_path.string());
+    CHECK(lines_after - lines_before == 1);
+
     L.shutdown();
 
     std::string contents;
@@ -375,7 +398,6 @@ void test_uninitialized_state_drops_logs()
     CHECK(contents.find("This message should also be dropped.") == std::string::npos);
     CHECK(contents.find("This message should be logged.") != std::string::npos);
     // The log file should contain the "Switched log destination" message and the one after.
-    CHECK(count_lines(g_log_path.string()) == 2);
 }
 
 void test_set_console()
@@ -407,12 +429,13 @@ void test_set_console()
 // --- Multi-process Test Logic ---
 
 // Entrypoint for child processes spawned by test_multiprocess_logging
-int multiproc_child_main()
+void multiproc_child_main()
 {
     Logger &L = Logger::instance();
+    // The g_log_path is set by the --multiproc-child handler in main()
     if (!L.set_logfile(g_log_path.string(), true))
     {
-        return 2;
+        exit(2);
     }
     L.set_level(Logger::Level::L_TRACE);
     for (int i = 0; i < 20; ++i)
@@ -426,7 +449,6 @@ int multiproc_child_main()
     L.info_fmt("child utf8 {}", "☃");
     L.flush();
     L.shutdown();
-    return 0;
 }
 
 void test_multiprocess_logging()
@@ -448,7 +470,8 @@ void test_multiprocess_logging()
     std::vector<HANDLE> procs;
     for (int i = 0; i < CHILDREN; ++i)
     {
-        std::string cmdline_str = fmt::format("\"{}\" --multiproc-child", g_self_exe_path);
+        std::string cmdline_str = fmt::format("\"{}\" --multiproc-child \"{}\"", g_self_exe_path,
+                                              g_log_path.string());
         std::vector<char> cmdline(cmdline_str.begin(), cmdline_str.end());
         cmdline.push_back('\0');
 
@@ -479,7 +502,8 @@ void test_multiprocess_logging()
         CHECK(pid != -1);
         if (pid == 0)
         {
-            execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--multiproc-child", nullptr);
+            execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--multiproc-child",
+                  g_log_path.string().c_str(), nullptr);
             _exit(127); // Should not be reached
         }
         child_pids.push_back(pid);
@@ -495,7 +519,9 @@ void test_multiprocess_logging()
     L.shutdown();
 
     size_t lines = count_lines(g_log_path.string());
-    size_t expected_lines = 1 + (CHILDREN * MESSAGES_PER_CHILD);
+    // Parent: 1 for set_logfile, 1 for 'start' message, 1 for shutdown.
+    // Children: 1 for set_logfile, MESSAGES_PER_CHILD, 1 for shutdown.
+    size_t expected_lines = 3 + (CHILDREN * (MESSAGES_PER_CHILD + 2));
     CHECK(lines == expected_lines);
     std::remove(g_log_path.string().c_str());
 }
@@ -602,6 +628,8 @@ int main(int argc, char **argv)
             test_uninitialized_state_drops_logs();
         else if (test_name == "test_set_console")
             test_set_console();
+        else if (test_name == "test_multiprocess_logging")
+            test_multiprocess_logging();
 #if PYLABHUB_IS_POSIX
         else if (test_name == "test_write_error_callback")
             test_write_error_callback();
@@ -616,7 +644,13 @@ int main(int argc, char **argv)
 
     if (argc > 1 && std::string(argv[1]) == "--multiproc-child")
     {
-        return multiproc_child_main();
+        if (argc < 3)
+        {
+            return 3; // Log path not provided
+        }
+        g_log_path = argv[2];
+        multiproc_child_main();
+        exit(0);
     }
 
     // --- Parent Process Test Runner ---
