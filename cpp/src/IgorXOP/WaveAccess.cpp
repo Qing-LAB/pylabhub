@@ -899,11 +899,7 @@ static int DoFunction()
 extern "C" void XOPEntry(void)
 {
     XOPIORecResult result = 0;
-    FILE *f = fopen("/tmp/myxop-init.log", "a");
-    if (f)
-    {
-        fprintf(f, "XOPEntry callled\n"), fclose(f);
-    }
+
     switch (GetXOPMessage())
     {
     case FUNCTION: // Our external function being invoked ?

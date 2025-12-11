@@ -113,7 +113,12 @@ if(DEFINED PLATFORM_APPLE)
     INSTALL_RPATH ""
   )
 elseif(DEFINED PLATFORM_WIN64)
-  add_library(${XOP_TARGET} SHARED ${XOP_SOURCES})
+  # On Windows, XOPs are standard DLLs. Using MODULE accurately describes
+  # this target as a runtime-loadable plugin (like a DLL), rather than
+  # a library intended for static linkage within the build system.
+  # This choice resolves LNK4070 by better informing the linker about the
+  # nature of the output artifact.
+  add_library(${XOP_TARGET} MODULE ${XOP_SOURCES})
   set_target_properties(${XOP_TARGET} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "${XOP_BUNDLE_NAME}"
@@ -131,6 +136,9 @@ target_compile_features(${XOP_TARGET} PRIVATE cxx_std_20)
 
 # Check if we are using MSVC
 if(MSVC)
+  # Enable synchronous exception handling and disable warning C5105.
+  target_compile_options(${XOP_TARGET} PRIVATE /EHsc /wd5105)
+
   # Enable the standards-conforming preprocessor
   target_compile_options(${XOP_TARGET} PRIVATE /Zc:preprocessor)
 endif()

@@ -15,7 +15,7 @@ set(UTILS_SOURCES
   JsonConfig.cpp
   FileLock.cpp
   AtomicGuard.cpp
-  RecursionGuard.cpp
+  # RecursionGuard.cpp is now a header-only utility.
   # Add any new .cpp files for this library to the list above.
 )
 
@@ -28,6 +28,9 @@ target_compile_features(pylabhub-utils PRIVATE cxx_std_20)
 
 # Check if we are using MSVC
 if(MSVC)
+    # Enable synchronous exception handling and disable warning C5105.
+    target_compile_options(pylabhub-utils PRIVATE /EHsc /wd5105)
+
     # Enable the standards-conforming preprocessor
     target_compile_options(pylabhub-utils PRIVATE /Zc:preprocessor)
 endif()
