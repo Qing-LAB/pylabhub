@@ -12,10 +12,9 @@
  * 1.  **Concurrency Model**:
  *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This mechanism does *not* provide mandatory locking against processes that do not respect this advisory lock.
  *     - **Intra-Process (Thread) Safety**: Employs a two-level locking scheme.
- *       A coarse-grained `std::mutex` (`initMutex`) serializes all public
- *       methods to protect the object's structural integrity (e.g., during
- *       `init` or `reload`). A fine-grained `std::shared_mutex` (`rwMutex`)
- *       protects the internal `nlohmann::json` data object.
+ *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant** operations like `init`, `save`, `reload`, `replace`, and move construction/assignment. This protects the object's structural integrity.
+ *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json` data object for simple key-value accessors (`get`, `set`, etc.), allowing high-performance concurrent reads.
+ *       - **IMPORTANT**: To achieve this performance, the caller must ensure that move operations on a `JsonConfig` object are externally synchronized with any concurrent access to that same object. Accessing an object while it is being moved from by another thread will result in undefined behavior.
  *
  * 2.  **Atomic On-Disk Writes**: The `save()` operation uses a robust
  *     `atomic_write_json` helper. This function writes the new content to a
@@ -97,7 +96,9 @@ class PYLABHUB_API JsonConfig
     explicit JsonConfig(const std::filesystem::path &configFile);
     ~JsonConfig();
 
-    // Copying is disallowed. Moving is now enabled and safe due to the Pimpl idiom.
+    // Copying is disallowed. Moving is enabled but requires CAREFUL synchronization.
+    // See cpp/docs/README_utils.md for a detailed explanation of the risks
+    // associated with moving a JsonConfig object while it is in use by another thread.
     JsonConfig(const JsonConfig &) = delete;
     JsonConfig &operator=(const JsonConfig &) = delete;
     JsonConfig(JsonConfig &&) noexcept;
@@ -121,7 +122,14 @@ class PYLABHUB_API JsonConfig
     // noexcept and const so callers can safely call it without exceptions escaping.
     template <typename F> bool with_json_read(F &&cb) const noexcept;
 
-    // ---------------- Template accessors ----------------
+    // ---------------- High-Performance Template Accessors ----------------
+    // The following methods are optimized for high-contention, read-heavy workloads.
+    // They use only the fine-grained `rwMutex` for data protection, bypassing the
+    // coarser structural lock (`initMutex`) to allow for maximum concurrency.
+    //
+    // See `cpp/docs/README_utils.md` for a detailed discussion of the concurrency
+    // model and the requirement for external synchronization of move operations.
+    // ----------------------------------------------------------------------
     // Top-level key helpers. Implemented in-header (templates).
     template <typename T> bool set(const std::string &key, T const &value) noexcept;
 
@@ -148,7 +156,7 @@ class PYLABHUB_API JsonConfig
         std::filesystem::path configPath;
         nlohmann::json data;
         mutable std::shared_mutex rwMutex; // Protects `data` for fine-grained reads/writes.
-        mutable std::mutex initMutex;      // Protects all structural state and serializes access.
+        mutable std::mutex initMutex;      // Protects all structural state and serializes lifecycle/structural operations.
         std::atomic<bool> dirty{false};    // true if memory may be newer than disk
 
         Impl() : data(json::object()) {}
@@ -278,7 +286,6 @@ template <typename T> bool JsonConfig::set(const std::string &key, T const &valu
             LOGGER_ERROR("JsonConfig::set: cannot set value on uninitialized config object.");
             return false;
         }
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         pImpl->data[key] = value;
         pImpl->dirty.store(true, std::memory_order_release);
@@ -308,7 +315,6 @@ bool JsonConfig::get(const std::string &key, T &out_value) const noexcept
         {
             return false;
         }
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
 
         std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
         auto it = pImpl->data.find(key);
@@ -342,7 +348,6 @@ T JsonConfig::get_or(const std::string &key, T const &default_value) const noexc
 
         if (!pImpl)
             return default_value;
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
         std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
         auto it = pImpl->data.find(key);
         if (it == pImpl->data.end())
@@ -377,7 +382,6 @@ inline bool JsonConfig::has(const std::string &key) const noexcept
 
         if (!pImpl)
             return false;
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
         std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
         return pImpl->data.find(key) != pImpl->data.end();
     }
@@ -402,7 +406,6 @@ inline bool JsonConfig::erase(const std::string &key) noexcept
 
         if (!pImpl)
             return false;
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         auto it = pImpl->data.find(key);
         if (it == pImpl->data.end())
@@ -437,7 +440,6 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
             LOGGER_ERROR("JsonConfig::update: cannot update value on uninitialized config object.");
             return false;
         }
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         json &target = pImpl->data[key]; // create if missing
         updater(target);

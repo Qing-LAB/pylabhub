@@ -487,8 +487,9 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     bool lock_acquired = false;
 
     // Open target file for exclusive access to apply a mandatory lock.
-    target_h = CreateFileW(target_w.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    target_h = CreateFileW(target_w.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
     if (target_h == INVALID_HANDLE_VALUE)
     {
         DWORD err = GetLastError();
