@@ -486,10 +486,10 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     HANDLE target_h = INVALID_HANDLE_VALUE;
     bool lock_acquired = false;
 
-    // Open target file for exclusive access to apply a mandatory lock.
+    // Open target file, including FILE_SHARE_DELETE to cooperate with ReplaceFileW.
     target_h = CreateFileW(target_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (target_h == INVALID_HANDLE_VALUE)
     {
         DWORD err = GetLastError();
@@ -502,10 +502,10 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Target file '{}' opened for mandatory lock (HANDLE: {:p}).\n", target.string(), (void*)target_h);
 #endif
 
-
+    // Lock the first byte of the file, consistent with FileLock's strategy.
     OVERLAPPED ov = {};
-    if (!LockFileEx(target_h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD,
-                    MAXDWORD, &ov))
+    if (!LockFileEx(target_h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
+                    &ov))
     {
         DWORD err = GetLastError();
         fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): LockFileEx(target) failed for '{}'. Error: {}\n", target.string(), err);
@@ -519,19 +519,41 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Exclusive lock acquired on target '{}'.\n", target.string());
 #endif
 
+    // Attempt ReplaceFileW with retries for transient sharing violations.
+    const int REPLACE_RETRIES = 5;
+    const int REPLACE_DELAY_MS = 100;
+    BOOL replaced = FALSE;
+    DWORD last_replace_error = 0;
 
-    // `REPLACEFILE_WRITE_THROUGH` ensures the operation is not just cached but
-    // is completed on the physical storage, providing strong durability guarantees.
-    BOOL replaced = ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr,
-                                 REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
+    for (int i = 0; i < REPLACE_RETRIES; ++i)
+    {
+        // `REPLACEFILE_WRITE_THROUGH` ensures the operation is not just cached but
+        // is completed on the physical storage, providing strong durability guarantees.
+        replaced = ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr,
+                                REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
+        if (replaced)
+        {
+            break; // Success
+        }
+        last_replace_error = GetLastError();
+        if (last_replace_error != ERROR_SHARING_VIOLATION)
+        {
+            break; // Failed for a non-transient reason, no retry
+        }
+#if defined(DEBUG_ATOMIC_WRITE_JSON)
+        fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): ReplaceFileW failed with sharing violation (Error: {}). Retrying (attempt {}/{})...\n", last_replace_error, i + 1, REPLACE_RETRIES);
+#endif
+        Sleep(REPLACE_DELAY_MS); // Wait before retrying
+    }
+
     if (!replaced)
     {
-        DWORD err = GetLastError();
-        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): ReplaceFileW failed for target '{}'. Error: {}\n", target.string(), err);
+        DWORD err = last_replace_error;
+        fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(WIN): ReplaceFileW failed for target '{}' after {} retries. Error: {}\n", target.string(), REPLACE_RETRIES, err);
         // Attempt cleanup
         if (lock_acquired)
         {
-            UnlockFileEx(target_h, 0, MAXDWORD, MAXDWORD, &ov);
+            UnlockFileEx(target_h, 0, 1, 0, &ov);
 #if defined(DEBUG_ATOMIC_WRITE_JSON)
             fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Lock released on target '{}' during ReplaceFileW failure.\n", target.string());
 #endif
@@ -554,7 +576,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     // Release the lock and close the handle.
     if (lock_acquired)
     {
-        UnlockFileEx(target_h, 0, MAXDWORD, MAXDWORD, &ov);
+        UnlockFileEx(target_h, 0, 1, 0, &ov);
 #if defined(DEBUG_ATOMIC_WRITE_JSON)
         fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(WIN): Lock released on target '{}'.\n", target.string());
 #endif
