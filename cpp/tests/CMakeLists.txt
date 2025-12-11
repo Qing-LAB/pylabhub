@@ -31,6 +31,9 @@ foreach(test_target ${TEST_TARGETS})
 
   # Check if we are using MSVC
   if(MSVC)
+    # Enable synchronous exception handling and disable warning C5105.
+    target_compile_options(${test_target} PRIVATE /EHsc /wd5105)
+
     # Enable the standards-conforming preprocessor
     target_compile_options(${test_target} PRIVATE /Zc:preprocessor)
   endif()

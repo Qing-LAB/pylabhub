@@ -125,10 +125,13 @@ class PYLABHUB_API JsonConfig
     // Top-level key helpers. Implemented in-header (templates).
     template <typename T> bool set(const std::string &key, T const &value) noexcept;
 
-    // Throws std::runtime_error if the key is not found or if the value cannot
-    // be converted to type T. For non-throwing access, use get_or.
-    template <typename T> T get(const std::string &key) const;
+    // Provides a safe, non-throwing way to retrieve a value.
+    // Returns true on success, false if key is not found or type conversion fails.
+    template <typename T>
+    bool get(const std::string &key, T &out_value) const noexcept;
 
+    // Returns the value for a given key, or a default value if the key does not
+    // exist or a type conversion error occurs.
     template <typename T> T get_or(const std::string &key, T const &default_value) const noexcept;
 
     bool has(const std::string &key) const noexcept;
@@ -287,34 +290,39 @@ template <typename T> bool JsonConfig::set(const std::string &key, T const &valu
     }
 }
 
-template <typename T> T JsonConfig::get(const std::string &key) const
+template <typename T>
+bool JsonConfig::get(const std::string &key, T &out_value) const noexcept
 {
-    const void *key_ptr = static_cast<const void *>(this);
-    if (RecursionGuard::is_recursing(key_ptr))
-    {
-        // Cannot log here easily as it might re-enter. Throwing is the only safe option
-        // for a non-noexcept function.
-        throw std::runtime_error(
-            "JsonConfig::get - nested call detected on same instance; refusing to re-enter.");
-    }
-    RecursionGuard guard(key_ptr);
-
-    if (!pImpl)
-        throw std::runtime_error("JsonConfig::get: not initialized");
-    std::lock_guard<std::mutex> lg(pImpl->initMutex);
-
-    std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
-    auto it = pImpl->data.find(key);
-    if (it == pImpl->data.end())
-        throw std::runtime_error("JsonConfig::get: key not found: " + key);
     try
     {
-        return it->template get<T>();
+        const void *key_ptr = static_cast<const void *>(this);
+        if (RecursionGuard::is_recursing(key_ptr))
+        {
+            LOGGER_WARN(
+                "JsonConfig::get - nested call detected on same instance; refusing to re-enter.");
+            return false;
+        }
+        RecursionGuard guard(key_ptr);
+
+        if (!pImpl)
+        {
+            return false;
+        }
+        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        auto it = pImpl->data.find(key);
+        if (it == pImpl->data.end())
+        {
+            return false;
+        }
+        it->get_to(out_value);
+        return true;
     }
-    catch (const std::exception &ex)
+    catch (...)
     {
-        throw std::runtime_error(std::string("JsonConfig::get: conversion failed for key ") + key +
-                                 ": " + ex.what());
+        // On any exception (e.g., nlohmann::json::type_error), return false.
+        return false;
     }
 }
 
