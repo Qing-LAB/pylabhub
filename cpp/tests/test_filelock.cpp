@@ -118,7 +118,13 @@ static int worker_main(const std::string &lockpath)
     FileLock lock(fs::path(lockpath), LockMode::NonBlocking);
     if (!lock.valid())
     {
-        // Failed to acquire lock, this is an expected outcome for competing workers.
+        // On failure, print the error to stderr for easier debugging in CI.
+        // For a competing worker, the expected error is "resource unavailable try again".
+        if (lock.error_code())
+        {
+            fmt::print(stderr, "worker: failed to acquire lock: code={} msg='{}'\n",
+                       lock.error_code().value(), lock.error_code().message());
+        }
         return 1;
     }
 
