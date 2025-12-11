@@ -54,6 +54,8 @@
 #include <utility>
 
 #if defined(PLATFORM_WIN64)
+#include <codecvt>
+#include <locale>
 #include <sstream>
 #include <windows.h>
 #else
@@ -62,6 +64,43 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+// Portable canonicalizer for registry key. Produces a stable key for a lock file path.
+// - Uses absolute + lexical normalization (no symlink resolution).
+// - On Windows, convert to long path form and to lower-case to ensure case-insensitive match.
+static std::string make_lock_key(const std::filesystem::path &lockpath)
+{
+    try
+    {
+        std::filesystem::path abs = std::filesystem::absolute(lockpath).lexically_normal();
+
+#if defined(PLATFORM_WIN64)
+        // Convert to long path and lowercase for stable key
+        std::wstring longw = pylabhub::utils::win32_to_long_path(abs); // ensure this handles relative -> absolute
+        // Lowercase the wchar_t string to normalize case (Windows is case-insensitive)
+        for (auto &ch : longw)
+            ch = towlower(ch);
+        // Convert to UTF-8
+        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        return conv.to_bytes(longw);
+#else
+        return abs.generic_string(); // use generic_string to avoid platform separators
+#endif
+    }
+    catch (...)
+    {
+        // Fallback: use plain lexically_normal string (shouldn't usually happen)
+        try
+        {
+            return std::filesystem::absolute(lockpath).lexically_normal().generic_string();
+        }
+        catch (...)
+        {
+            // Last resort: raw string
+            return lockpath.string();
+        }
+    }
+}
 
 namespace pylabhub::utils
 {
@@ -248,11 +287,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     try
     {
         // Normalize the path to generate a consistent key for the lock registry.
-        // `weakly_canonical` is used because it resolves the path as much as
-        // possible without requiring the lockfile to already exist, unlike
-        // `canonical`. This prevents inconsistent key generation (e.g., due to
-        // case differences on Windows or symlink resolution).
-        pImpl->lock_key = std::filesystem::weakly_canonical(lockpath).string();
+        pImpl->lock_key = make_lock_key(lockpath);
         LOGGER_TRACE("FileLock: Using lock key '{}'", pImpl->lock_key);
     }
     catch (const std::exception &e)
@@ -260,7 +295,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         // Filesystem operations can throw. If path normalization fails, the lock
         // cannot be safely managed.
         pImpl->ec = std::make_error_code(std::errc::io_error);
-        LOGGER_WARN("FileLock: weakly_canonical path conversion for '{}' threw: {}.",
+        LOGGER_WARN("FileLock: make_lock_key path conversion for '{}' threw: {}.",
                     lockpath.string(), e.what());
         pImpl->valid = false;
         return;
@@ -311,6 +346,20 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     // (inter-process) lock. If this fails, the process-local lock will be
     // automatically released by the destructor, maintaining consistency.
 
+    // Helper to undo the process-local lock acquisition on failure
+    auto rollback_proc_local_lock = [&]() {
+        std::lock_guard<std::mutex> lg(g_registry_mtx);
+        if (pImpl->proc_state)
+        {
+            if (--pImpl->proc_state->owners == 0)
+            {
+                g_proc_locks.erase(pImpl->lock_key);
+                pImpl->proc_state->cv.notify_all();
+            }
+            pImpl->proc_state.reset();
+        }
+    };
+
     // Ensure the directory for the lock file exists before trying to create the file.
     // This is wrapped in a try/catch as filesystem operations can throw exceptions
     // (e.g., on permission errors not reported by the error_code overload).
@@ -327,6 +376,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
                 LOGGER_WARN("FileLock: create_directories failed for {} err={}",
                             parent_dir.string(), create_ec.message());
                 pImpl->valid = false;
+                rollback_proc_local_lock();
                 return;
             }
         }
@@ -337,6 +387,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         LOGGER_WARN("FileLock: create_directories threw an exception for {}: {}",
                     lockpath.parent_path().string(), e.what());
         pImpl->valid = false;
+        rollback_proc_local_lock();
         return;
     }
 
@@ -360,6 +411,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
                     pImpl->ec.value());
         pImpl->handle = nullptr;
         pImpl->valid = false;
+        rollback_proc_local_lock();
         return;
     }
 
@@ -380,12 +432,16 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         CloseHandle(h);
         pImpl->handle = nullptr;
         pImpl->valid = false;
+        rollback_proc_local_lock();
         return;
     }
 
 #else
     // POSIX implementation
     int flags = O_CREAT | O_RDWR;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
     // Mode 0666 so that file creation honors the process's umask.
     int fd = ::open(lockpath.c_str(), flags, 0666);
     if (fd == -1)
@@ -395,8 +451,16 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
                     pImpl->ec.message());
         pImpl->fd = -1;
         pImpl->valid = false;
+        rollback_proc_local_lock();
         return;
     }
+
+// If O_CLOEXEC not available, set FD_CLOEXEC manually:
+#ifndef O_CLOEXEC
+    int oldfl = fcntl(fd, F_GETFD);
+    if (oldfl != -1)
+        fcntl(fd, F_SETFD, oldfl | FD_CLOEXEC);
+#endif
 
     // Prepare flags for flock(). LOCK_EX requests an exclusive lock.
     // LOCK_NB makes the call non-blocking.
@@ -412,6 +476,7 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         ::close(fd);
         pImpl->fd = -1;
         pImpl->valid = false;
+        rollback_proc_local_lock();
         return;
     }
     pImpl->fd = fd;

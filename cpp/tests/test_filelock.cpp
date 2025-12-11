@@ -124,6 +124,10 @@ static int worker_main(const std::string &lockpath)
         {
             fmt::print(stderr, "worker: failed to acquire lock: code={} msg='{}'\n",
                        lock.error_code().value(), lock.error_code().message());
+#if defined(PLATFORM_WIN64)
+            DWORD last = GetLastError();
+            fmt::print(stderr, "worker: last error: {}\n", last);
+#endif
         }
         return 1;
     }
