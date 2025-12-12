@@ -15,6 +15,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(_platform_macro_defined FALSE)
 
+if(NOT CMAKE_BUILD_TYPE)
+  message(STATUS "CMAKE_BUILD_TYPE not set. Default to Debug.")
+  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the build type: (Release, Debug, RelWithDebInfo, MinSizeRel)" FORCE)
+endif()
+
 # Helpful diagnostics that will be printed so user can see what CMake sees.
 message(STATUS "CMake generator information (diagnostics):")
 message(STATUS "  CMAKE_GENERATOR...........: ${CMAKE_GENERATOR}")
@@ -23,6 +28,7 @@ message(STATUS "  CMAKE_VS_PLATFORM_NAME....: ${CMAKE_VS_PLATFORM_NAME}")
 message(STATUS "  CMAKE_SIZEOF_VOID_P.......: ${CMAKE_SIZEOF_VOID_P}")
 message(STATUS "  CMAKE_HOST_SYSTEM_PROCESSOR: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 message(STATUS "  CMAKE_SYSTEM_NAME.........: ${CMAKE_SYSTEM_NAME}")
+message(STATUS "  CMAKE_BUILD_TYPE..........: ${CMAKE_BUILD_TYPE}")
 message(STATUS "============================================================")
 
 # Helper: robust predicate for "windows x64"
