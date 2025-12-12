@@ -21,6 +21,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/file.h> // flock
 #include <unistd.h>
 #endif
 
@@ -55,10 +56,10 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         // Use a FileLock to prevent a Time-of-Check-to-Time-of-Use (TOCTOU) race
         // condition where another process could create the file between our `exists`
         // check and our `atomic_write_json` call.
-        FileLock flock(configFile, LockMode::NonBlocking);
-        if (!flock.valid())
+        FileLock filelock(configFile, LockMode::NonBlocking);
+        if (!filelock.valid())
         {
-            [[maybe_unused]] auto e = flock.error_code();
+            [[maybe_unused]] auto e = filelock.error_code();
             LOGGER_ERROR("JsonConfig::init: cannot acquire lock for {} code={} msg=\"{}\"",
                          configFile.string().c_str(), e.value(), e.message().c_str());
             return false;
@@ -83,7 +84,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
                 return false;
             }
         }
-        // `flock` is released here by its destructor.
+        // `filelock` is released here by its destructor.
     }
 
     return reload_locked();
@@ -153,10 +154,10 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
 
     // Acquire a non-blocking cross-process lock to prevent corruption from other processes.
-    FileLock flock(pImpl->configPath, LockMode::NonBlocking);
-    if (!flock.valid())
+    FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+    if (!filelock.valid())
     {
-        ec = flock.error_code();
+        ec = filelock.error_code();
         LOGGER_ERROR("JsonConfig::save_locked: failed to acquire lock for {} code={} msg=\"{}\"",
                      pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
         return false;
@@ -226,10 +227,10 @@ bool JsonConfig::reload_locked() noexcept
         }
 
         // Acquire a non-blocking cross-process lock to ensure we read a consistent file.
-        FileLock flock(pImpl->configPath, LockMode::NonBlocking);
-        if (!flock.valid())
+        FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+        if (!filelock.valid())
         {
-            [[maybe_unused]] auto ec = flock.error_code();
+            [[maybe_unused]] auto ec = filelock.error_code();
             LOGGER_ERROR(
                 "JsonConfig::reload_locked: failed to acquire lock for {} code={} msg=\"{}\"",
                 pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
@@ -317,10 +318,10 @@ bool JsonConfig::replace(const json &newData) noexcept
         }
 
         // Acquire a non-blocking cross-process lock before writing to disk.
-        FileLock flock(pImpl->configPath, LockMode::NonBlocking);
-        if (!flock.valid())
+        FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+        if (!filelock.valid())
         {
-            [[maybe_unused]] auto ec = flock.error_code();
+            [[maybe_unused]] auto ec = filelock.error_code();
             LOGGER_ERROR("JsonConfig::replace: failed to acquire lock for {} code={} msg=\"{}\"",
                          pImpl->configPath.string().c_str(), ec.value(), ec.message().c_str());
             return false;
@@ -752,7 +753,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Target file '{}' opened for mandatory lock (FD: {}).\n", target.string(), target_fd);
 #endif
 
-        if (flock(target_fd, LOCK_EX | LOCK_NB) != 0)
+        if (::flock(target_fd, LOCK_EX | LOCK_NB) != 0)
         {
             int err = errno;
             fmt::print(stderr, "ERROR_ATOMIC_WRITE_JSON(POSIX): flock(target) failed for '{}'. Error: {} ({})\n", target.string(), err, std::strerror(err));
@@ -773,7 +774,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             // Attempt cleanup
             if (flock_acquired)
             {
-                flock(target_fd, LOCK_UN);
+                ::flock(target_fd, LOCK_UN);
 #if defined(DEBUG_ATOMIC_WRITE_JSON)
                 fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Flock released on target '{}' during rename failure.\n", target.string());
 #endif
@@ -797,7 +798,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         // Release the lock and close the handle.
         if (flock_acquired)
         {
-            flock(target_fd, LOCK_UN);
+            ::flock(target_fd, LOCK_UN);
 #if defined(DEBUG_ATOMIC_WRITE_JSON)
             fmt::print(stderr, "DEBUG_ATOMIC_WRITE_JSON(POSIX): Flock released on target '{}'.\n", target.string());
 #endif
