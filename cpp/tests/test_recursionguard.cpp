@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <fmt/core.h>
+#include <memory>
 
 using namespace pylabhub::utils;
 
