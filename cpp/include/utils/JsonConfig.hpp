@@ -78,6 +78,7 @@
 #include "utils/Logger.hpp"
 #include "utils/RecursionGuard.hpp"
 
+#include "pylabhub_utils_export.h"
 // Disable warning C4251 for Pimpl members.
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -89,7 +90,7 @@ namespace pylabhub::utils
 
 using json = nlohmann::json;
 
-class PYLABHUB_API JsonConfig
+class PYLABHUB_UTILS_EXPORT JsonConfig
 {
   public:
     JsonConfig() noexcept;

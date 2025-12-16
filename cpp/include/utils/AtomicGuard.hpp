@@ -102,7 +102,8 @@
 #include <memory>     // For std::unique_ptr
 #include <mutex>      // For std::mutex& return type in guard_mutex()
 
-#include "platform.hpp" // project platform macro header (authoritative)
+#include "platform.hpp"
+#include "pylabhub_utils_export.h"
 
 // Disable warning C4251 for Pimpl members.
 // This warning is triggered by private members of exported classes that use STL templates.
@@ -124,7 +125,7 @@ namespace pylabhub::utils
 // Forward-declare the implementation struct for the Pimpl idiom.
 struct AtomicOwnerImpl;
 
-class PYLABHUB_API AtomicOwner
+class PYLABHUB_UTILS_EXPORT AtomicOwner
 {
   public:
     AtomicOwner() noexcept;
@@ -172,7 +173,7 @@ class PYLABHUB_API AtomicOwner
 // Forward-declare the implementation struct for the Pimpl idiom.
 struct AtomicGuardImpl;
 
-class PYLABHUB_API AtomicGuard
+class PYLABHUB_UTILS_EXPORT AtomicGuard
 {
   public:
     // Default constructor: generate a persistent token and leave detached.

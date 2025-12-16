@@ -84,8 +84,9 @@
 #include <syslog.h> // provides LOG_PID, LOG_CONS, LOG_USER, etc.
 #endif
 
-// Include project-specific headers last to ensure they have the final say on macros.
-#include "platform.hpp" // use your canonical platform macros
+// Include project-specific headers.
+#include "platform.hpp"
+#include "pylabhub_utils_export.h"
 
 // Default initial reserve for fmt::memory_buffer used by Logger::log_fmt.
 // Can be overridden by -DLOGGER_FMT_BUFFER_RESERVE=N on the compiler command line.
@@ -115,7 +116,7 @@ namespace pylabhub::utils
 struct Impl;
 
 // The Logger class provides a high-performance, asynchronous, thread-safe logging API.
-class PYLABHUB_API Logger
+class PYLABHUB_UTILS_EXPORT Logger
 {
   public:
     enum class Level : int
