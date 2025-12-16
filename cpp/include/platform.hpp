@@ -113,26 +113,3 @@
     } while (0)
 #endif
 // ----------------------------------------------------------------------------
-
-// --- Shared Library API Export Macros ---------------------------------------
-// When building a shared library, symbols (classes, functions) intended for
-// public use must be explicitly marked for export. This macro handles the
-// platform-specific syntax.
-//
-// The build system (CMake) should define PYLABHUB_BUILD_DLL when building this
-// project as a shared library.
-#if PYLABHUB_IS_WINDOWS
-#if defined(PYLABHUB_BUILD_DLL)
-#define PYLABHUB_API __declspec(dllexport)
-#else
-#define PYLABHUB_API __declspec(dllimport)
-#endif
-#else // GCC, Clang, etc.
-#define PYLABHUB_API __attribute__((visibility("default")))
-#endif
-
-// Fallback for static builds or when the macro isn't defined.
-#ifndef PYLABHUB_API
-#define PYLABHUB_API
-#endif
-// ----------------------------------------------------------------------------

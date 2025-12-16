@@ -31,7 +31,8 @@
 #include <memory> // For std::unique_ptr
 #include <system_error>
 
-#include "platform.hpp" // For PYLABHUB_API
+#include "platform.hpp"
+#include "pylabhub_utils_export.h"
 
 // Disable warning C4251 for Pimpl members, which is a common practice when
 // exporting classes that use std::unique_ptr with an incomplete type.
@@ -63,7 +64,7 @@ struct FileLockImpl;
  * It is designed to be safe for both multi-process and multi-threaded scenarios,
  * providing consistent behavior across platforms.
  */
-class PYLABHUB_API FileLock
+class PYLABHUB_UTILS_EXPORT FileLock
 {
   public:
     /**
