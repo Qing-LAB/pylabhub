@@ -24,7 +24,36 @@ add_library(pylabhub-utils SHARED ${UTILS_SOURCES})
 add_library(pylabhub::utils ALIAS pylabhub-utils)
 
 # Set modern C++ standard.
-target_compile_features(pylabhub-utils PRIVATE cxx_std_20)
+target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Symbol Export and Visibility Control
+#
+# Use GenerateExportHeader to create export macros for this library.
+# This ensures that symbols are correctly exported from the DLL on Windows and
+# that visibility is managed on other platforms.
+include(GenerateExportHeader)
+generate_export_header(pylabhub-utils
+  BASE_NAME "pylabhub_utils"
+  EXPORT_MACRO_NAME "PYLABHUB_UTILS_EXPORT"
+)
+
+# By default, we want all symbols to be hidden unless explicitly exported.
+# On Windows, this is the default for DLLs.
+# On GCC/Clang, we must explicitly set the compiler flag.
+if(NOT MSVC)
+  target_compile_options(pylabhub-utils PRIVATE -fvisibility=hidden)
+endif()
+
+# The generated header needs to be on the include path. Since this is a public
+# dependency for consumers of the library, we make it a PUBLIC include.
+# The generated header is placed in the build directory for the current source
+# directory.
+target_include_directories(pylabhub-utils
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+)
+# ==============================================================================
 
 # Check if we are using MSVC
 if(MSVC)
@@ -34,11 +63,6 @@ if(MSVC)
     # Enable the standards-conforming preprocessor
     target_compile_options(pylabhub-utils PRIVATE /Zc:preprocessor)
 endif()
-
-# Define PYLABHUB_BUILD_DLL when compiling this library. This is crucial for
-# the PYLABHUB_API macro in platform.hpp to use __declspec(dllexport) on Windows.
-# Consumers of the library will not have this defined, so they will get __declspec(dllimport).
-target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_BUILD_DLL)
 
 if (PYLABHUB_LOGGER_DEBUG)
     target_compile_definitions(pylabhub-utils PRIVATE _LOGGER_DEBUG_ENABLED=1)
