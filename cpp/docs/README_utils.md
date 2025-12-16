@@ -13,7 +13,9 @@ The `JsonConfig` class provides a robust, thread-safe, and process-safe interfac
 - **Concurrency:** The class is designed for heavy concurrent use, both from multiple threads within a single process and from multiple cooperating processes.
 - **Robustness:** On-disk file writes are atomic, ensuring that the configuration file is never left in a partially-written or corrupt state, even if the application crashes.
 - **Safety:** The public API is `noexcept`, catching internal errors and translating them into simple boolean return values to prevent exceptions from propagating into consumer code.
-- **ABI Stability:** It uses the Pimpl idiom (`std::unique_ptr<Impl>`) to hide all private data members, ensuring that future changes to the implementation do not break binary compatibility for shared library consumers.
+- **ABI Stability:** The library is designed to maintain a stable Application Binary Interface (ABI), which is critical for a shared library that may be updated without forcing consumers to recompile. This is achieved through two complementary techniques:
+    1.  **Pimpl Idiom (`std::unique_ptr<Impl>`)**: All private data members are hidden within a forward-declared `Impl` struct. This means the size and memory layout of the public class (`JsonConfig`) never changes, even if internal variables are added or removed.
+    2.  **Controlled Symbol Export**: The library's build system automatically generates a `pylabhub_utils_export.h` header. Every public class intended for use by consumers is explicitly marked with the `PYLABHUB_UTILS_EXPORT` macro. On Windows, this expands to `__declspec(dllexport)` or `__declspec(dllimport)`, and on other platforms, it controls symbol visibility. This practice ensures that only the intended classes are part of the public API, preventing internal implementation details from accidentally becoming part of the library's ABI.
 
 ### Concurrency Model
 
