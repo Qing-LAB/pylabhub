@@ -16,6 +16,14 @@ Our architecture is built on a foundation of modern CMake practices, emphasizing
 
 *   **Top-Down Control & Modularity**: The build system is broken down into logical, single-responsibility modules (`cmake/`, `third_party/`, `src/`, `tests/`). High-level build policies are defined as user-facing `CACHE` options (e.g., `BUILD_TESTS`, `THIRD_PARTY_INSTALL`), which are then interpreted by the appropriate modules. This provides a clear, centralized API for developers to tune the build.
 
+*   **Robust Symbol Visibility and Export**: For shared libraries (like `pylabhub::utils`), the build system uses modern CMake practices to control which symbols are exported, ensuring a stable Application Binary Interface (ABI).
+    *   **Generated Headers**: Instead of a manual `__declspec(dllexport/dllimport)` macro, the system uses CMake's `generate_export_header` function for each shared library. This creates a `<target_name>_export.h` file in the build directory (e.g., `pylabhub_utils_export.h`).
+    *   **Target-Specific Macros**: This generated header contains a target-specific macro (e.g., `PYLABHUB_UTILS_EXPORT`) that automatically resolves to `__declspec(dllexport)` when building the library, `__declspec(dllimport)` when consuming it, or becomes empty for static builds. Public classes in the library must be decorated with this macro.
+    *   **Default Hidden Visibility**: On non-Windows platforms (GCC/Clang), all shared library targets are compiled with `-fvisibility=hidden`. This means that only the symbols explicitly marked with the export macro are made public, reducing symbol table bloat and preventing accidental ABI exposure.
+    *   **Header Staging**: The generated export header is a required public header for any consumer of the library. As such, it is automatically copied to the staging directory (`${PYLABHUB_STAGING_DIR}/include/`) as part of the library's staging process.
+
+    This entire mechanism serves the standard C++ compilation model where consumers of the library compile against its public headers. The headers provide the necessary **declarations** (class layouts, function signatures), while the export/import macros ensure the linker can connect the consumer's code to the shared library's **definitions** (the actual implementation) at runtime. For this to work, it is essential that the full set of public headers, including the generated `..._export.h` file, is correctly staged and installed for the consumer to find.
+
 *   **Clear Separation of Concerns**: We have established a clear hierarchy of components:
     *   **Core Components** (`pylabhub::utils`, `pylabhub::core`, `pylabhub::app`): These are integral to the project and are **always** built. Their artifacts are staged by the `stage_core_artifacts` target.
     *   **Third-Party Libraries**: These are external dependencies whose staging is controlled by the `THIRD_PARTY_INSTALL` option and handled by the `stage_third_party_deps` target.
