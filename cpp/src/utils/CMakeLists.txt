@@ -96,6 +96,14 @@ pylabhub_get_library_staging_commands(
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")
 add_dependencies(stage_pylabhub_utils pylabhub-utils)
 
+# Also stage the generated export header alongside the library.
+add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
+          "${PYLABHUB_STAGING_DIR}/include/"
+  COMMENT "Staging generated export header for pylabhub-utils"
+)
+
 # Register this local staging target with the global build system.
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_utils)
 
