@@ -54,10 +54,21 @@
 #include <utility>
 
 #if defined(PLATFORM_WIN64)
-#include <codecvt>
-#include <locale>
 #include <sstream>
 #include <windows.h>
+
+// Helper to convert UTF-16 wstring to UTF-8 string using the Windows API.
+// This replaces the deprecated std::wstring_convert and <codecvt> functionality.
+static std::string wstring_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) {
+        return std::string();
+    }
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -80,9 +91,8 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
         // Lowercase the wchar_t string to normalize case (Windows is case-insensitive)
         for (auto &ch : longw)
             ch = towlower(ch);
-        // Convert to UTF-8
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
-        return conv.to_bytes(longw);
+        // Convert to UTF-8 using the modern, non-deprecated Windows API.
+        return wstring_to_utf8(longw);
 #else
         return abs.generic_string(); // use generic_string to avoid platform separators
 #endif
