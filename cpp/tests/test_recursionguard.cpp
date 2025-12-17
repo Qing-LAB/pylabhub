@@ -20,7 +20,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\\n", #condition, __FILE__, __LINE__);   \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -32,17 +32,17 @@ void TEST_CASE(const std::string &name, std::function<void()> test_func)
     {
         test_func();
         tests_passed++;
-        fmt::print("  --- PASSED ---\\n");
+        fmt::print("  --- PASSED ---\n");
     }
     catch (const std::exception &e)
     {
         tests_failed++;
-        fmt::print(stderr, "  --- FAILED: {} ---\\n", e.what());
+        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
     }
     catch (...)
     {
         tests_failed++;
-        fmt::print(stderr, "  --- FAILED with unknown exception ---\\n");
+        fmt::print(stderr, "  --- FAILED with unknown exception ---\n");
     }
 }
 
@@ -51,22 +51,29 @@ void TEST_CASE(const std::string &name, std::function<void()> test_func)
 int some_object;
 int another_object;
 
-void recursive_function(int depth)
+// implementation:
+void recursive_function(int depth, bool expect_recursing)
 {
-    CHECK(!RecursionGuard::is_recursing(&some_object));
+    // At the start of the *outermost* call expect_recursing == false.
+    // For inner recursive calls expect_recursing == true because an outer guard exists.
+    CHECK(RecursionGuard::is_recursing(&some_object) == expect_recursing);
+
     RecursionGuard g(&some_object);
+    // after constructing the guard, it should always be true
     CHECK(RecursionGuard::is_recursing(&some_object));
 
     if (depth > 0)
     {
-        recursive_function(depth - 1);
+        // inner calls will see the outer guard -> expect_recursing == true
+        recursive_function(depth - 1, /*expect_recursing=*/true);
     }
 }
+
 
 void test_single_object_recursion()
 {
     CHECK(!RecursionGuard::is_recursing(&some_object));
-    recursive_function(3);
+    recursive_function(3, false);
     CHECK(!RecursionGuard::is_recursing(&some_object));
 }
 
@@ -118,14 +125,17 @@ void test_out_of_order_destruction()
 // --- Main Test Runner ---
 int main()
 {
-    fmt::print("--- RecursionGuard Test Suite ---\\n");
+    fmt::print("--- RecursionGuard Test Suite ---\n");
+
+    some_object = 0;
+    another_object = 0;
 
     TEST_CASE("Single Object Direct Recursion", test_single_object_recursion);
     TEST_CASE("Multiple Objects Interleaved", test_multiple_objects);
     TEST_CASE("Out-of-Order Destruction", test_out_of_order_destruction);
 
-    fmt::print("\n--- Test Summary ---\\n");
-    fmt::print("Passed: {}, Failed: \\n", tests_passed, tests_failed);
+    fmt::print("\n--- Test Summary ---\n");
+    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
 
     return tests_failed == 0 ? 0 : 1;
 }
