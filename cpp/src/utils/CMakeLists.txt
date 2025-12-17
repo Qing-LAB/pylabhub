@@ -85,6 +85,30 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
 )
 
+# ==============================================================================
+# Installation
+#
+# Defines the rules for installing this library as part of a package that can
+# be used by other CMake projects via `find_package`.
+# ==============================================================================
+install(TARGETS pylabhub-utils
+  EXPORT pylabhubTargets
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+# Install the public headers for this library.
+# The `pylabhub_utils_export.h` header is essential for consumers.
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/utils/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/utils
+)
+
 # --- Staging ---
 # Define a local custom target to handle staging for this component.
 pylabhub_get_library_staging_commands(
@@ -102,6 +126,14 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
           "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
           "${PYLABHUB_STAGING_DIR}/include/"
   COMMENT "Staging generated export header for pylabhub-utils"
+)
+
+# Stage the public headers for this library to match the installation.
+add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/include/utils"
+          "${PYLABHUB_STAGING_DIR}/include/utils"
+  COMMENT "Staging public headers for pylabhub-utils"
 )
 
 # Register this local staging target with the global build system.

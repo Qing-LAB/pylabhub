@@ -52,3 +52,7 @@ cpp/third_party/XOPToolkit/XOPSupport/*
 
 # -- Local log recording todo, progress and summary for feeding AI tools
 progress_log/
+
+# Packaged source code archives
+*.tar.gz
+*.tgz

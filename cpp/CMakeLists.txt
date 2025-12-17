@@ -154,6 +154,8 @@ endif()
 # ===========================================================================
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+
 # ===========================================================================
 # PHASE 3: Post-Project Configuration
 #
@@ -294,15 +296,43 @@ if(BUILD_TESTS)
   add_dependencies(stage_all stage_tests)
 endif()
 
-# --- 3.5. Final Installation Step ---
-# Defines the `install` target, which simply copies the fully populated
-# staging directory to the final install prefix.
+# --- 3.5. Final Installation and Packaging ---
 if(PYLABHUB_CREATE_INSTALL_TARGET)
-  install(DIRECTORY "${PYLABHUB_STAGING_DIR}/"
-    DESTINATION "."
-    COMPONENT "pylabhub_runtime"
+  # Install the exported targets file.
+  install(EXPORT pylabhubTargets
+    FILE
+      pylabhubTargets.cmake
+    NAMESPACE
+      pylabhub::
+    DESTINATION
+      ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
   )
-  message(STATUS "Installation target enabled. Run 'cmake --install' to copy staged artifacts.")
+
+  # Generate and install the package version file.
+  include(CMakePackageConfigHelpers)
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY AnyNewerVersion
+  )
+
+  # Generate the main package config file.
+  configure_package_config_file(
+    "${CMAKE_SOURCE_DIR}/cmake/pylabhubConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
+  )
+
+  # Install the generated config files.
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
+  )
+
+  message(STATUS "Installation target enabled. Run 'cmake --install' to create a package.")
+else()
+  message(STATUS "Installation target disabled.")
 endif()
 
 # --- 3.6. Final Configuration Summary ---
