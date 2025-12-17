@@ -1,4 +1,4 @@
-LIBRARY "pylabhubxop64"
+LIBRARY "pylabhubxop64.xop"
 EXPORTS
   XOPMain
   
