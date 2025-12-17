@@ -7,6 +7,7 @@
 
 #include <algorithm> // for std::find
 #include <vector>
+#include <type_traits>
 
 namespace pylabhub::utils
 {
@@ -17,14 +18,34 @@ namespace pylabhub::utils
 // Its constructor is not guaranteed to be noexcept (std::vector::push_back can
 // throw std::bad_alloc), which is an unacceptable risk for a public-facing API.
 
+// Alias for the underlying stack container so intent is clearer.
+using recursion_stack_t = std::vector<const void *>;
+
+// C++17 inline thread-local variable ensures a single instance across TUs
+// (subject to the usual inlining/ODR semantics). This is preferable to a
+// function-local static in header-only code that may be included into both
+// shared libs and executables.
+inline thread_local recursion_stack_t g_recursion_stack;
+
 // Helper function to get the thread-local stack. Defined as a function-local
 // static to ensure it exists once per thread.
-inline std::vector<const void *> &get_recursion_stack()
+inline recursion_stack_t &get_recursion_stack() noexcept
 {
-    static thread_local std::vector<const void *> g_stack;
-    return g_stack;
+    return g_recursion_stack;
 }
 
+/**
+ * @brief RAII guard that records a pointer key on a thread-local stack.
+ *
+ * Typical usage:
+ *   RecursionGuard g(&some_object);
+ *   if (RecursionGuard::is_recursing(&some_object)) { ... }
+ *
+ * Notes:
+ *  - Construction may throw (std::vector::push_back may allocate).
+ *  - Destruction never throws (marked noexcept) and will remove the key from
+ *    the stack; if destruction is out-of-order the key is removed by search.
+ */
 class RecursionGuard
 {
   public:
@@ -33,8 +54,9 @@ class RecursionGuard
     {
         get_recursion_stack().push_back(key_);
     }
-
-    ~RecursionGuard()
+    // Destructor must not throw. Vector operations on pointers are noexcept on
+    // all mainstream implementations, but wrap defensively to guarantee noexcept.
+    ~RecursionGuard() noexcept
     {
         auto &stack = get_recursion_stack();
         if (!stack.empty() && stack.back() == key_)
@@ -44,23 +66,40 @@ class RecursionGuard
         }
         else
         {
-            // Defensive removal for out-of-order destruction.
+#if (__cplusplus >= 202002L)
+            // C++20: std::erase removes all occurrences (no allocation, linear time).
+            std::erase(stack, key_);
+#else
+            // Pre-C++20: find + erase first occurrence (linear time).
             auto it = std::find(stack.begin(), stack.end(), key_);
             if (it != stack.end())
             {
                 stack.erase(it);
             }
+#endif
         }
     }
 
+    // Non-copyable and non-movable: moving a guard would change ownership semantics.
     RecursionGuard(const RecursionGuard &) = delete;
     RecursionGuard &operator=(const RecursionGuard &) = delete;
+    RecursionGuard(RecursionGuard &&) = delete;
+    RecursionGuard &operator=(RecursionGuard &&) = delete;
 
     // Checks if the given key is already present on the current thread's stack.
-    static bool is_recursing(const void *key)
+    /** @return true if 'key' is present in the current thread's recursion stack. */
+    [[nodiscard]] static bool is_recursing(const void *key) noexcept
     {
-        auto const &stack = get_recursion_stack();
-        return std::find(stack.begin(), stack.end(), key) != stack.end();
+        const auto &stack = get_recursion_stack();
+        if (stack.empty())
+            return false;
+
+        // Fast-path: if the most-recent entry matches, return true quickly.
+        if (stack.back() == key)
+            return true;
+
+        // Otherwise fall back to full scan.
+        return std::find(stack.cbegin(), stack.cend(), key) != stack.cend();
     }
 
   private:
