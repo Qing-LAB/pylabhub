@@ -64,6 +64,18 @@ endif()
 # The app links against the core library.
 target_link_libraries(pylabhub-app PRIVATE pylabhub::core)
 
+# ==============================================================================
+# Installation
+# ==============================================================================
+install(TARGETS pylabhub-app DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Install the public headers associated with the core library.
+install(FILES
+  ${CMAKE_SOURCE_DIR}/include/platform.hpp
+  ${CMAKE_SOURCE_DIR}/include/PythonLoader.hpp
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
 # --- Staging ---
 
 # Create a single local staging target for all artifacts in this file (the app and the core library).
@@ -81,6 +93,15 @@ pylabhub_stage_executable(
   TARGET pylabhub-app
   DESTINATION bin
   ATTACH_TO stage_main_artifacts
+)
+
+# Stage the public headers for the core library to match the installation.
+add_custom_command(TARGET stage_main_artifacts POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/include/platform.hpp"
+          "${CMAKE_SOURCE_DIR}/include/PythonLoader.hpp"
+          "${PYLABHUB_STAGING_DIR}/include/"
+  COMMENT "Staging public headers for pylabhub-core"
 )
 
 # Ensure the local staging target depends on both build targets before executing.
