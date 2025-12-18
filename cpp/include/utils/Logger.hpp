@@ -2,70 +2,52 @@
  * @file Logger.hpp
  * @brief High-performance, asynchronous, thread-safe logging utility.
  *
- * **Design Philosophy**
+ * **Design Philosophy: Command-Queue Pattern**
  * The Logger is designed for high-throughput applications where logging latency
  * must not impact the performance of application threads. It achieves this through
  * a decoupled, asynchronous architecture:
  *
  * 1.  **Non-Blocking API**: Calls from application threads (e.g., `LOGGER_INFO(...)`)
- *     are lightweight. They perform `fmt`-style string formatting and push the
- *     resulting message into a thread-safe queue. This is a fast, non-blocking
- *     operation.
+ *     are lightweight. They create a command object (e.g., a log message or a
+ *     control command like changing a sink) and push it into a thread-safe queue.
+ *     This is a fast, non-blocking operation.
  * 2.  **Asynchronous Worker Thread**: A single, dedicated background thread
- *     continuously pulls messages from the queue and performs all I/O operations
- *     (writing to console, file, syslog, etc.). This isolates I/O latency from
- *     the application logic.
- * 3.  **Singleton with Shared Pimpl**: The Logger is a singleton (`Logger::instance()`)
- *     that uses a `std::shared_ptr` to a private implementation (`Impl`). This
- *     ensures that even if the `Logger` class is instantiated across different
- *     modules (e.g., in a main executable and a plugin), they all share the same
- *     underlying logging engine, queue, and worker thread. `std::call_once`
- *     guarantees thread-safe initialization of this singleton `Impl`.
- * 4.  **Header/Source Separation**:
- *     - `Logger.hpp`: Contains the public API and header-only templates for
- *       efficient message formatting (`log_fmt`).
- *     - `Logger.cpp`: Contains the private implementation (`Impl`), the worker
- *       thread logic, and all platform-specific I/O code.
- * 5.  **Robustness**: Logging operations are guaranteed `noexcept`. Any exceptions
- *     during formatting or I/O are caught internally and reported as logging
- *     errors, ensuring that a logging failure can never crash the application.
+ *     is the **sole consumer** of the command queue. It performs all I/O
+ *     operations (writing to console or file) and manages sink lifetimes (e.g.,
+ *     opening/closing files). This isolates I/O latency from application logic
+ *     and eliminates the need for complex locking around shared resources like
+ *     file handles.
+ * 3.  **Sink Abstraction**: A `Sink` base class defines a simple interface for
+ *     writing and flushing. Concrete implementations (`ConsoleSink`, `FileSink`)
+ *     encapsulate the details of each destination. This makes the logger
+ *     extensible to other destinations (e.g., network, syslog) in the future.
+ * 4.  **Minimal Locking**: API threads only acquire a brief lock to push a
+ *     command onto the queue. Since the worker is the only thread that accesses
+ *     the active sink, complex lock-ordering deadlocks are avoided.
+ * 5.  **Robustness**: The logger supports graceful shutdown, ensuring all buffered
+ *     messages are written before the program exits. I/O errors are handled
+ *     within the worker and can be reported via a callback, preventing logging
+ *     failures from crashing the main application.
  *
  * **Thread Safety**
  * - All public methods are thread-safe.
- * - Logging calls from multiple threads are serialized into the internal queue.
- * - Configuration methods (`set_level`, `init_file`, etc.) use mutexes to protect
- *   the logger's state from concurrent modification.
+ * - Logging calls and configuration changes from multiple threads are serialized
+ *   into an internal command queue, preserving their order.
  *
  * **Usage**
- * 1.  **Basic Logging (Compile-Time Format String)**: Use the standard macros
- *     for logging string literals. This is the most common, safe, and performant method.
- *     ```cpp
- *     #include "utils/Logger.hpp"
- *     ...
- *     LOGGER_INFO("User {} logged in from IP {}", user_id, ip_address);
- *     LOGGER_ERROR("Failed to process request {}: {}", request_id, error_msg);
- *     ```
+ * ```cpp
+ * // Basic logging
+ * #include "utils/Logger.hpp"
+ * LOGGER_INFO("User {} logged in", user_id);
  *
- * 2.  **Logging with Runtime Format Strings**: For cases where the format string
- *     is a variable, use the `_RT` suffixed macros.
- *     ```cpp
- *     std::string format_from_config = get_format_for_event("login");
- *     LOGGER_INFO_RT(format_from_config, user_id, ip_address);
- *     ```
+ * // Configuration
+ * Logger& logger = Logger::instance();
+ * logger.set_logfile("/var/log/my_app.log"); // Asynchronously switches to a file
+ * logger.set_level(Logger::Level::L_DEBUG);
  *
- * 3.  **Initialization**: Before logging, configure the desired sink.
- *     ```cpp
- *     Logger& logger = Logger::instance();
- *     logger.set_logfile("/var/log/my_app.log");
- *     logger.set_level(Logger::Level::L_DEBUG);
- *     ```
- *
- * 4.  **Shutdown**: Call `shutdown()` for a graceful, deterministic exit, ensuring
- *     all buffered messages are written before the function returns. If not
- *     called explicitly, shutdown will happen automatically at program exit.
- *     ```cpp
- *     Logger::instance().shutdown();
- *     ```
+ * // Graceful shutdown
+ * logger.shutdown(); // Blocks until all logs are written
+ * ```
  ******************************************************************************/
 
 #pragma once
@@ -80,24 +62,13 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#if !defined(PLATFORM_WIN64)
-#include <syslog.h> // provides LOG_PID, LOG_CONS, LOG_USER, etc.
-#endif
-
-// Include project-specific headers.
-#include "platform.hpp"
 #include "pylabhub_utils_export.h"
 
 // Default initial reserve for fmt::memory_buffer used by Logger::log_fmt.
-// Can be overridden by -DLOGGER_FMT_BUFFER_RESERVE=N on the compiler command line.
 #ifndef LOGGER_FMT_BUFFER_RESERVE
 #define LOGGER_FMT_BUFFER_RESERVE (1024u)
 #endif
 
-// Disable warning C4251 for Pimpl members.
-// This warning is triggered by private members of exported classes that use STL templates.
-// It is a well-known issue with MSVC and is considered safe to disable for Pimpl
-// patterns because the private member is not part of the public ABI.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4251)
@@ -106,16 +77,9 @@
 namespace pylabhub::utils
 {
 
-// The struct Impl is forward declaration to implement a Pimpl pattern.
-// The actual definition is in Logger.cpp.
-// This keeps implementation details out of the public header.
-// The Pimpl is managed by a std::shared_ptr in the Logger class.
-// This will ensure only one instance of the logging engine exists by using
-// std::call_once in get_impl_instance().
-// This also avoids C++ ABI issues across shared library boundaries.
+// Forward declaration of the private implementation
 struct Impl;
 
-// The Logger class provides a high-performance, asynchronous, thread-safe logging API.
 class PYLABHUB_UTILS_EXPORT Logger
 {
   public:
@@ -129,52 +93,53 @@ class PYLABHUB_UTILS_EXPORT Logger
         L_SYSTEM = 5,
     };
 
-    enum class Destination
-    {
-        L_NONE,
-        L_CONSOLE,
-        L_FILE,
-        L_SYSLOG,
-        L_EVENTLOG,
-    };
-
     // Singleton accessor
     static Logger &instance();
 
-    // Lifecycle - defined in Logger.cpp because Impl is incomplete here
-    Logger();
-    ~Logger(); // Now non-trivial, must be defined in .cpp
-
+    // Lifecycle
     Logger(const Logger &) = delete;
     Logger &operator=(const Logger &) = delete;
     Logger(Logger &&) = delete;
     Logger &operator=(Logger &&) = delete;
 
-    // ---- Sinks / initializers (defined in .cpp) ----
-    // set_logfile: open the given UTF-8 path for append. Returns true on success.
-    // use_flock: on POSIX enables advisory flock() while writing.
-    void set_console();
-    bool set_logfile(const std::string &utf8_path, bool use_flock = false, int mode = 0644);
+    ~Logger();
 
-    // set_syslog: POSIX only (no-op on Windows)
-    void set_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
-
-    // set_eventlog: Windows only (takes wchar_t* source); returns true on success.
-    bool set_eventlog(const wchar_t *source_name);
+    // --- Sinks / Configuration ---
+    // All configuration changes are asynchronous; they are commands that will be
+    // executed in order by the worker thread.
 
     /**
-     * @brief Performs a final, synchronous shutdown of the logger.
+     * @brief Switch logging to the console (stderr). Non-blocking.
+     */
+    void set_console();
+
+    /**
+     * @brief Switch logging to a file. Non-blocking.
+     * @param utf8_path Path to the log file.
+     * @param use_flock If true, use an advisory file lock during writes (POSIX).
+     */
+    void set_logfile(const std::string &utf8_path, bool use_flock = false);
+
+    /**
+     * @brief Switch logging to syslog (POSIX only). Non-blocking.
+     * @param ident The identity string passed to openlog. Defaults to program name.
+     * @param option The option bitfield for openlog.
+     * @param facility The facility code for openlog.
+     */
+    void set_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
+
+    /**
+     * @brief Switch logging to Windows Event Log (Windows only). Non-blocking.
+     * @param source_name The event source name.
+     */
+    void set_eventlog(const wchar_t *source_name);
+
+    /**
+     * @brief Gracefully shuts down the logger.
      *
-     * This function logs a shutdown message, flushes all pending messages to the
-     * current sink, then permanently stops the background worker thread. Any
-     * subsequent calls to the logger will be ignored.
-     *
-     * @note This is an advanced feature for deterministic cleanup. Most applications
-     * can rely on the automatic shutdown that occurs when the program exits. It is
-     * primarily useful in scenarios like:
-     * - Unit tests that need to verify log contents before exiting.
-     * - Daemon processes that need to release file handles without terminating.
-     * - Programs that need to ensure logging is complete before calling `exec`.
+     * This function queues a shutdown command and blocks until the worker thread
+     * has processed all messages and terminated. This guarantees that all logs are
+     * written before the function returns.
      */
     void shutdown();
 
@@ -184,38 +149,21 @@ class PYLABHUB_UTILS_EXPORT Logger
      * This is a synchronous call that blocks until the worker thread has finished
      * writing all messages that were in the queue at the time `flush()` was called.
      */
-    void flush() noexcept;
+    void flush();
 
-    // ---- Configuration & Diagnostics ----
+    // --- Configuration & Diagnostics ---
     void set_level(Level lvl);
     Level level() const;
-    bool dirty() const noexcept;
 
-    void set_fsync_per_write(bool v);
+    /**
+     * @brief Sets a callback to be invoked upon a write error.
+     *
+     * The callback will be executed from the worker thread's context.
+     * @param cb A function taking a const std::string& with the error message.
+     */
     void set_write_error_callback(std::function<void(const std::string &)> cb);
 
-    int last_errno() const;
-    int last_write_error_code() const;
-    std::string last_write_error_message() const;
-    int write_failure_count() const;
-
-    // Maximum allowed log body length (bytes). Declared noexcept so header templates can call it.
-    void set_max_log_line_length(size_t bytes);
-    size_t max_log_line_length() const noexcept;
-
-    uint64_t get_worker_native_thread_id() const;
-    size_t get_worker_cpp_thread_id_hash() const;
-
-    // Small accessor used by header-only templates. Declared noexcept and defined in .cpp.
-    bool should_log(Level lvl) const noexcept;
-
-    // ---- Formatting API (header-only templates) ----
-    // The logger provides two distinct APIs for logging:
-    // 1. Compile-Time: `..._fmt` functions for string literals, offering maximum
-    //    performance and safety via compile-time format string validation.
-    // 2. Run-Time: `..._fmt_rt` functions for string variables, offering flexibility.
-
-    // --- Compile-Time Path ---
+    // --- Formatting API (header-only templates) ---
     template <Level lvl, typename... Args>
     void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
@@ -280,109 +228,72 @@ class PYLABHUB_UTILS_EXPORT Logger
     }
 
   private:
-    void set_destination(Destination dest);
-    // Non-template sink: accepts an already-formatted UTF-8 body (no newline).
-    // Implemented in Logger.cpp so it can access Impl.
-    void write_formatted(Logger::Level lvl, std::string &&body) noexcept;
+    // private constructor for singleton
+    Logger();
 
-    // Pimpl pointer. Impl is forward declared (below) and defined in Logger.cpp only.
-    std::shared_ptr<Impl> pImpl;
+    // Pimpl pointer.
+    std::unique_ptr<Impl> pImpl;
+
+    // Internal logging function that enqueues a formatted message.
+    void enqueue_log(Level lvl, std::string &&body) noexcept;
+
+    // Accessor for runtime log level check
+    bool should_log(Level lvl) const noexcept;
 };
 
 // --- Compile-Time Log Level ---
-// Sets the minimum log level to be compiled into the binary.
-// This is controlled by the build system, e.g., by passing -DLOGGER_COMPILE_LEVEL=1
-// 0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error
 #ifndef LOGGER_COMPILE_LEVEL
-#define LOGGER_COMPILE_LEVEL 0
+#define LOGGER_COMPILE_LEVEL 0 // 0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error
 #endif
 
 // ----------------- Template implementation (must be in header) -----------------
 
-// --- COMPILE-TIME PATH IMPLEMENTATION ---
 template <Logger::Level lvl, typename... Args>
 void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
-    // This entire block is removed by the compiler if the log level is below LOGGER_COMPILE_LEVEL.
     if constexpr (static_cast<int>(lvl) >= LOGGER_COMPILE_LEVEL)
     {
-        // After the compile-time check, do a runtime check.
-        if (!this->should_log(lvl))
+        if (!should_log(lvl))
             return;
 
         try
         {
             fmt::memory_buffer mb;
-            mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
+            mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
             fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
-
-            const size_t max_line = max_log_line_length();
-            static constexpr std::string_view trunc_marker = "...[TRUNCATED]";
-            size_t cap = (max_line > trunc_marker.size()) ? (max_line - trunc_marker.size()) : 1;
-
-            std::string body;
-            if (mb.size() <= cap)
-            {
-                body.assign(mb.data(), mb.size());
-            }
-            else
-            {
-                body.assign(mb.data(), cap);
-                body.append(trunc_marker);
-            }
-            this->write_formatted(lvl, std::move(body));
+            enqueue_log(lvl, std::string(mb.data(), mb.size()));
         }
         catch (const std::exception &ex)
         {
-            std::string err = std::string("[FORMAT ERROR] ") + ex.what();
-            this->write_formatted(lvl, std::move(err));
+            enqueue_log(lvl, std::string("[FORMAT ERROR] ") + ex.what());
         }
         catch (...)
         {
-            this->write_formatted(lvl, std::string("[UNKNOWN FORMAT ERROR]"));
+            enqueue_log(lvl, "[UNKNOWN FORMAT ERROR]");
         }
     }
 }
 
-// --- RUNTIME PATH IMPLEMENTATION ---
 template <typename... Args>
 void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept
 {
-    // No compile-time check is possible here, but we still check the runtime level.
-    if (!this->should_log(lvl))
+    if (!should_log(lvl))
         return;
 
     try
     {
         fmt::memory_buffer mb;
-        mb.reserve(static_cast<size_t>(LOGGER_FMT_BUFFER_RESERVE));
-        // Use fmt::runtime() as the format string is not known at compile time.
+        mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
         fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
-
-        const size_t max_line = max_log_line_length();
-        static constexpr std::string_view trunc_marker = "...[TRUNCATED]";
-        size_t cap = (max_line > trunc_marker.size()) ? (max_line - trunc_marker.size()) : 1;
-
-        std::string body;
-        if (mb.size() <= cap)
-        {
-            body.assign(mb.data(), mb.size());
-        }
-        else
-        {
-            body.assign(mb.data(), cap);
-            body.append(trunc_marker);
-        }
-        this->write_formatted(lvl, std::move(body));
+        enqueue_log(lvl, std::string(mb.data(), mb.size()));
     }
     catch (const std::exception &ex)
     {
-        std::string err = std::string("[FORMAT ERROR] ") + ex.what();
-        this->write_formatted(lvl, std::move(err));
+        enqueue_log(lvl, std::string("[FORMAT ERROR] ") + ex.what());
     }
     catch (...)
     {
-        this->write_formatted(lvl, std::string("[UNKNOWN FORMAT ERROR]"));
+        enqueue_log(lvl, "[UNKNOWN FORMAT ERROR]");
     }
 }
 
@@ -393,11 +304,6 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 #endif
 
 // --- Macro Implementation ---
-// The logger provides two sets of macros for different use cases.
-
-// 1. Standard Macros (e.g., LOGGER_INFO): For compile-time constant format strings.
-//    This is the recommended macro for 99% of use cases, providing maximum
-//    performance and compile-time format string validation.
 #define LOGGER_TRACE(fmt, ...)                                                                     \
     ::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_DEBUG(fmt, ...)                                                                     \
@@ -411,9 +317,6 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 #define LOGGER_SYSTEM(fmt, ...)                                                                    \
     ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 
-// 2. Runtime Macros (e.g., LOGGER_INFO_RT): For format strings held in variables.
-//    Use this when the format string is not a compile-time constant. These calls
-//    are not checked at compile time and will fall back to the slower runtime formatter.
 #define LOGGER_TRACE_RT(fmt, ...)                                                                  \
     ::pylabhub::utils::Logger::instance().trace_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_DEBUG_RT(fmt, ...)                                                                  \
