@@ -78,7 +78,7 @@ static fs::path g_temp_dir;
 #if defined(PLATFORM_WIN64)
 static HANDLE spawn_worker_process(const std::string &exe, const std::string &resource_path)
 {
-    std::string cmdline = fmt::format("\"{{}}\" worker \"{{}}\"", exe, resource_path);
+    std::string cmdline = fmt::format("\"{}\" worker \"{}\"", exe, resource_path);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -127,9 +127,9 @@ static int worker_main(const std::string &resource_path_str)
                                               lock.error_code().message());
 #if defined(PLATFORM_WIN64)
             // On Windows, CreateProcess is used, so fmt::print to stderr is generally safe.
-            fmt::print(stderr, "{{}}", err_msg);
+            fmt::print(stderr, "{}", err_msg);
             DWORD last = GetLastError();
-            fmt::print(stderr, "worker: last error: {{}}\n", last);
+            fmt::print(stderr, "worker: last error: {}\n", last);
 #else
             // On POSIX, use write() for async-signal-safety.
             ::write(STDERR_FILENO, err_msg.c_str(), err_msg.length());
@@ -438,6 +438,7 @@ void test_directory_path_locking()
         FileLock lock(".", ResourceType::Directory, LockMode::NonBlocking);
         CHECK(lock.valid());
         CHECK(fs::exists(expected_lock_file));
+        lock = FileLock("non_existence_removal", ResourceType::File, LockMode::NonBlocking);            // Release lock
         fs::remove(expected_lock_file); // Clean up for next test
     }
 
