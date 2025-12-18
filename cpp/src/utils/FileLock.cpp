@@ -13,8 +13,8 @@
  *     leaked locks, even in the presence of exceptions.
  * 2.  **Cross-Platform Abstraction**: The class provides a unified interface over
  *     divergent platform-specific locking primitives:
- *     - **POSIX**: Uses `flock()` on a dedicated `.lock` file. This is a widely
- *       supported and robust advisory locking mechanism.
+ * **POSIX**: Uses `flock()` on a dedicated `.lock` file. This is a widely
+ *       supported and robust advisory locking mechanism for *local* filesystems.
  *     - **Windows**: Uses `LockFileEx()` on a handle to a dedicated `.lock` file.
  * 3.  **Lock File Strategy**: A separate lock file (e.g., `config.json.lock` for
  *     `config.json`) is used instead of locking the target file directly. This
@@ -24,6 +24,9 @@
  *     explicitly attempt to acquire this lock will be affected. Other processes
  *     (or processes not using this `FileLock` mechanism) can still access and
  *     modify the original target file without being blocked.
+ *     **WARNING**: The reliability of `flock()` over network filesystems (like NFS)
+ *     is not guaranteed and can be implementation-dependent. This locking
+ *     mechanism is safest when used on local filesystems.
  * 4.  **Blocking and Non-Blocking Modes**: The lock can be acquired in either
  *     `Blocking` or `NonBlocking` mode. The `NonBlocking` mode allows for a
  *     "fail-fast" policy, which is used by `JsonConfig` to avoid deadlocks or
@@ -45,11 +48,14 @@
 #include "utils/Logger.hpp"
 #include "utils/PathUtil.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -59,13 +65,17 @@
 
 // Helper to convert UTF-16 wstring to UTF-8 string using the Windows API.
 // This replaces the deprecated std::wstring_convert and <codecvt> functionality.
-static std::string wstring_to_utf8(const std::wstring& wstr) {
-    if (wstr.empty()) {
+static std::string wstring_to_utf8(const std::wstring &wstr)
+{
+    if (wstr.empty())
+    {
         return std::string();
     }
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
+    int size_needed =
+        WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
     std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL, NULL);
+    WideCharToMultiByte(
+        CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL, NULL);
     return strTo;
 }
 
@@ -87,7 +97,8 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 
 #if defined(PLATFORM_WIN64)
         // Convert to long path and lowercase for stable key
-        std::wstring longw = pylabhub::utils::win32_to_long_path(abs); // ensure this handles relative -> absolute
+        std::wstring longw =
+            pylabhub::utils::win32_to_long_path(abs); // ensure this handles relative -> absolute
         // Lowercase the wchar_t string to normalize case (Windows is case-insensitive)
         for (auto &ch : longw)
             ch = towlower(ch);
@@ -115,6 +126,12 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 namespace pylabhub::utils
 {
 
+// Polling interval for timed and blocking lock attempts.
+// This value is a heuristic balance between CPU usage (shorter sleep means
+// more polling) and responsiveness (longer sleep means slower reaction to a
+// released lock). 20ms is a reasonable default.
+static constexpr std::chrono::milliseconds LOCK_POLLING_INTERVAL = std::chrono::milliseconds(20);
+
 // --- Process-local lock registry ---
 // This registry ensures that even on Windows (where native file locks are
 // per-process, meaning a second LockFileEx call from another thread in the
@@ -135,10 +152,10 @@ static std::unordered_map<std::string, std::shared_ptr<ProcLockState>> g_proc_lo
 // All state is held here to provide ABI stability for the public FileLock class.
 struct FileLockImpl
 {
-    std::filesystem::path path;       // The original path for which a lock is requested.
-    bool valid = false;               // True if the lock is currently held.
-    std::error_code ec;               // Stores the last error if `valid` is false.
-    std::string lock_key;             // The canonical key for the lock path in g_proc_locks.
+    std::filesystem::path path; // The original path for which a lock is requested.
+    bool valid = false;         // True if the lock is currently held.
+    std::error_code ec;         // Stores the last error if `valid` is false.
+    std::string lock_key;       // The canonical key for the lock path in g_proc_locks.
     std::shared_ptr<ProcLockState>
         proc_state; // The process-local state for this lock.
 
@@ -149,118 +166,147 @@ struct FileLockImpl
 #endif
 };
 
-// Forward declaration for the private locking function.
-static void open_and_lock(LockMode mode, FileLockImpl *pImpl);
-
-// Helper to convert LockMode to a string for logging.
-static const char *lock_mode_to_string(LockMode mode)
+// Custom deleter for the unique_ptr. This is the idiomatic way to handle
+// cleanup for a Pimpl object that holds resources. It ensures that whenever the
+// unique_ptr destroys the FileLockImpl object (on destruction, reset, or
+// move-assignment), this code is run.
+void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
 {
-    return mode == LockMode::Blocking ? "blocking" : "non-blocking";
-}
-
-// Helper: build lockfile path for a given target path.
-// Lock name policy: <parent>/<filename>.lock
-static std::filesystem::path make_lock_path(const std::filesystem::path &target)
-{
-    std::filesystem::path parent = target.parent_path();
-    if (parent.empty())
-        parent = ".";
-    std::string fname = target.filename().string();
-    if (fname.empty() || fname == "." || fname == "..")
+    if (!p)
     {
-        // Fallback if target is a directory, path ends with a separator, or is "." or "..".
-        // Use the parent's name as a basis.
-        fname = parent.filename().string();
-        if (fname.empty() || fname == "." || fname == "..")
+        return;
+    }
+
+    if (p->valid)
+    {
+        LOGGER_DEBUG("FileLock: Releasing lock for '{}'", p->path.string());
+    }
+
+    // --- 1. Release OS-level lock ---
+    if (p->valid)
+    {
+#if defined(PLATFORM_WIN64)
+        OVERLAPPED ov = {};
+        UnlockFileEx((HANDLE)p->handle, 0, 1, 0, &ov);
+        CloseHandle((HANDLE)p->handle);
+        p->handle = nullptr;
+#else
+        flock(p->fd, LOCK_UN);
+        ::close(p->fd);
+        p->fd = -1;
+#endif
+    }
+
+    // --- 2. Release process-local lock ---
+    if (p->proc_state)
+    {
+        std::lock_guard<std::mutex> lg(g_registry_mtx);
+        if (--p->proc_state->owners == 0)
         {
-            // Ultimate fallback for root or other unusual paths.
-            fname = "file";
+            LOGGER_TRACE(
+                "FileLock: Last process-local owner for '{}' released. Notifying waiters.",
+                p->lock_key);
+            g_proc_locks.erase(p->lock_key);
+            p->proc_state->cv.notify_all();
+        }
+        else
+        {
+            LOGGER_TRACE("FileLock: Process-local lock for '{}' released. {} owners remain.",
+                         p->lock_key,
+                         p->proc_state->owners);
         }
     }
-    return parent / (fname + ".lock");
+
+    // Finally, delete the memory for the Pimpl object itself.
+    delete p;
+}
+
+// Forward declaration for the private locking function.
+static void open_and_lock(FileLockImpl *pImpl,
+                          ResourceType type,
+                          LockMode mode,
+                          std::optional<std::chrono::milliseconds> timeout);
+
+// This function is now a public static member of FileLock.
+std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesystem::path &target,
+                                                  ResourceType type) noexcept
+{
+    try
+    {
+        // First, resolve the path to an absolute form to handle ., .., and
+        // relative paths safely and consistently. This does not resolve symlinks
+        // and does not require the path to exist.
+        const auto abs_target = std::filesystem::absolute(target).lexically_normal();
+
+        if (type == ResourceType::Directory)
+        {
+            // For a directory, the lock file is named after the directory and
+            // lives in its parent directory.
+            auto fname_str = abs_target.filename().string();
+            auto parent = abs_target.parent_path();
+
+            // If the filename is empty (e.g. for root paths like "/" or "C:\"),
+            // use a fixed, safe name for the lock file.
+            if (fname_str.empty() || fname_str == "." || fname_str == "..")
+            {
+                fname_str = "pylabhub_root";
+            }
+            return parent / (fname_str + ".dir.lock");
+        }
+        else
+        {
+            // For a file, the lock is alongside the file.
+            return abs_target.string() + ".lock";
+        }
+    }
+    catch (const std::exception &e)
+    {
+        // Filesystem operations can throw. In a noexcept function, the best we
+        // can do is log and return an empty path to signal failure.
+        LOGGER_ERROR("FileLock::get_expected_lock_fullname_for threw an exception for target '{}': {}",
+                     target.string(),
+                     e.what());
+        return {};
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("FileLock::get_expected_lock_fullname_for threw an unknown exception for target '{}'",
+                     target.string());
+        return {};
+    }
 }
 
 // ---------------- FileLock implementation ----------------
 
 // Constructor: attempts to open and lock the file based on the specified mode.
-FileLock::FileLock(const std::filesystem::path &path, LockMode mode) noexcept
-    : pImpl(std::make_unique<FileLockImpl>())
+// Note: We use `new FileLockImpl` because std::make_unique cannot be used with
+// a custom deleter type that is only forward-declared in the header.
+FileLock::FileLock(const std::filesystem::path &path, ResourceType type, LockMode mode) noexcept
+    : pImpl(new FileLockImpl)
 {
     // Delegate all logic to the private implementation.
     pImpl->path = path;
-    open_and_lock(mode, pImpl.get());
+    open_and_lock(pImpl.get(), type, mode, std::nullopt);
 }
 
-// Move constructor: transfers ownership of the lock from another FileLock instance.
-// The default implementation generated by the compiler is correct because the
-// class's only member, `std::unique_ptr`, has well-defined move semantics.
-FileLock::FileLock(FileLock &&) noexcept = default;
-
-// Move assignment operator: releases the current lock and takes ownership of another.
-// The default implementation is correct. `std::unique_ptr`'s move assignment
-// operator automatically handles releasing the old resource before acquiring the new one.
-FileLock &FileLock::operator=(FileLock &&) noexcept = default;
-
-// Destructor: ensures the lock is released when the object goes out of scope.
-FileLock::~FileLock()
+// Timed constructor: attempts to open and lock for a given duration.
+FileLock::FileLock(const std::filesystem::path &path,
+                   ResourceType type,
+                   std::chrono::milliseconds timeout) noexcept
+    : pImpl(new FileLockImpl)
 {
-    // A moved-from FileLock will have a null pImpl. Its destructor is a no-op.
-    if (!pImpl)
-    {
-        return;
-    }
-
-    if (pImpl->valid)
-    {
-        LOGGER_DEBUG("FileLock: Releasing lock for '{}'", pImpl->path.string());
-    }
-
-    // --- 1. Release OS-level lock ---
-    // This must happen first so that other processes waiting on the OS-level
-    // lock can proceed as soon as possible.
-    if (pImpl->valid)
-    {
-        // At this point, pImpl->valid is true, so we hold a valid lock and handle/fd.
-        // Release lock and close file/handle. Ignore errors during this best-effort cleanup,
-        // as there is little a caller can do about a failure during destruction.
-#if defined(PLATFORM_WIN64)
-        OVERLAPPED ov = {};
-        // Unlock only the first byte, matching the acquisition logic.
-        UnlockFileEx((HANDLE)pImpl->handle, 0, 1, 0, &ov);
-        CloseHandle((HANDLE)pImpl->handle);
-        pImpl->handle = nullptr; // Not strictly necessary, but good practice.
-#else
-        flock(pImpl->fd, LOCK_UN);
-        ::close(pImpl->fd);
-        pImpl->fd = -1; // Not strictly necessary, but good practice.
-#endif
-    }
-
-    // --- 2. Release process-local lock ---
-    // This must be done regardless of whether the OS lock was acquired,
-    // to correctly decrement the owner count in the shared registry.
-    if (pImpl->proc_state)
-    {
-        std::lock_guard<std::mutex> lg(g_registry_mtx);
-        if (--pImpl->proc_state->owners == 0)
-        {
-            LOGGER_TRACE("FileLock: Last process-local owner for '{}' released. Notifying waiters.",
-                         pImpl->lock_key);
-            // If we were the last owner for this path in this process,
-            // remove the entry from the global map to prevent it from growing
-            // indefinitely and notify any waiting threads.
-            g_proc_locks.erase(pImpl->lock_key);
-            pImpl->proc_state->cv.notify_all();
-        }
-        else
-        {
-            LOGGER_TRACE(
-                "FileLock: Process-local lock for '{}' released. {} owners remain.",
-                pImpl->lock_key, pImpl->proc_state->owners);
-        }
-        pImpl->proc_state.reset(); // Release shared_ptr ownership.
-    }
+    pImpl->path = path;
+    // A timed lock is a variation of a blocking lock.
+    open_and_lock(pImpl.get(), type, LockMode::Blocking, timeout);
 }
+
+// By explicitly defaulting the special member functions in the .cpp file, we
+// ensure the compiler generates them at a point where FileLockImpl and its
+// deleter are complete types. This is critical for the unique_ptr Pimpl idiom
+// to work correctly across module boundaries and with move semantics.
+FileLock::~FileLock() = default;
+FileLock::FileLock(FileLock &&) noexcept = default;
+FileLock &FileLock::operator=(FileLock &&) noexcept = default;
 
 bool FileLock::valid() const noexcept
 {
@@ -275,19 +321,39 @@ std::error_code FileLock::error_code() const noexcept
 }
 
 // Private helper that performs the actual locking logic on the Impl struct.
-static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
+static void open_and_lock(FileLockImpl *pImpl,
+                          ResourceType type,
+                          LockMode mode,
+                          std::optional<std::chrono::milliseconds> timeout)
 {
     if (!pImpl)
         return;
+
+    const auto start_time = std::chrono::steady_clock::now();
 
     // Reset state in Impl for the new lock attempt.
     pImpl->valid = false;
     pImpl->ec.clear();
 
-    LOGGER_DEBUG("FileLock: Attempting to acquire {} lock on '{}'", lock_mode_to_string(mode),
-                 pImpl->path.string());
+    const char *mode_str = "unknown";
+    if (timeout)
+    {
+        mode_str = "timed blocking";
+    }
+    else
+    {
+        mode_str = (mode == LockMode::Blocking) ? "blocking" : "non-blocking";
+    }
+    LOGGER_DEBUG("FileLock: Attempting to acquire {} lock on '{}'", mode_str, pImpl->path.string());
 
-    auto lockpath = make_lock_path(pImpl->path);
+    auto lockpath = FileLock::get_expected_lock_fullname_for(pImpl->path, type);
+    if (lockpath.empty())
+    {
+        pImpl->ec = std::make_error_code(std::errc::invalid_argument);
+        pImpl->valid = false;
+        LOGGER_WARN("FileLock: get_expected_lock_fullname_for failed for '{}'", pImpl->path.string());
+        return;
+    }
 
     // --- 1. Process-Local Lock Acquisition ---
     // First, acquire the process-local lock to ensure correct intra-process (i.e.,
@@ -306,7 +372,8 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         // cannot be safely managed.
         pImpl->ec = std::make_error_code(std::errc::io_error);
         LOGGER_WARN("FileLock: make_lock_key path conversion for '{}' threw: {}.",
-                    lockpath.string(), e.what());
+                    lockpath.string(),
+                    e.what());
         pImpl->valid = false;
         return;
     }
@@ -326,35 +393,46 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
             {
                 pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
                 pImpl->valid = false;
-                LOGGER_DEBUG(
-                    "FileLock: Non-blocking lock on '{}' failed: already locked in-process.",
-                    pImpl->path.string());
-                // Failed to acquire process-local lock. No OS lock was attempted.
-                // The destructor will correctly handle releasing the proc_state.
+                LOGGER_DEBUG("FileLock: Non-blocking lock on '{}' failed: already locked in-process.",
+                             pImpl->path.string());
+                // This lock never acquired ownership, so detach from the proc_state
+                // to prevent the destructor from decrementing the owner count.
+                pImpl->proc_state.reset();
                 return;
             }
         }
-        else // Blocking
+        else // Blocking or Timed Blocking
         {
             if (state->owners > 0)
             {
-                LOGGER_TRACE(
-                    "FileLock: Blocking lock on '{}' waiting for in-process lock to be released.",
-                    pImpl->path.string());
+                LOGGER_TRACE("FileLock: Lock on '{}' waiting for in-process release.",
+                             pImpl->path.string());
             }
+
             // Wait until the lock is no longer owned by any other thread in this process.
-            state->cv.wait(regl, [&] { return state->owners == 0; });
+            if (timeout)
+            {
+                if (!state->cv.wait_for(regl, *timeout, [&] { return state->owners == 0; }))
+                {
+                    // Timed out waiting for the in-process lock.
+                    pImpl->ec = std::make_error_code(std::errc::timed_out);
+                    pImpl->valid = false;
+                    LOGGER_DEBUG("FileLock: Timed out waiting for in-process lock on '{}'",
+                                 pImpl->path.string());
+                    return;
+                }
+            }
+            else
+            {
+                state->cv.wait(regl, [&] { return state->owners == 0; });
+            }
         }
         // If we are here, we have acquired the process-local lock.
         state->owners++;
         LOGGER_TRACE("FileLock: Acquired process-local lock for '{}'. Owners: {}",
-                     pImpl->path.string(), state->owners);
+                     pImpl->path.string(),
+                     state->owners);
     }
-
-    // --- 2. OS-Level Lock Acquisition ---
-    // Now that the process-local lock is held, attempt to acquire the OS-level
-    // (inter-process) lock. If this fails, the process-local lock will be
-    // automatically released by the destructor, maintaining consistency.
 
     // Helper to undo the process-local lock acquisition on failure
     auto rollback_proc_local_lock = [&]() {
@@ -370,9 +448,12 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
         }
     };
 
-    // Ensure the directory for the lock file exists before trying to create the file.
-    // This is wrapped in a try/catch as filesystem operations can throw exceptions
-    // (e.g., on permission errors not reported by the error_code overload).
+    // --- 2. OS-Level Lock Acquisition ---
+    // Now that the process-local lock is held, attempt to acquire the OS-level
+    // (inter-process) lock. If this fails, the process-local lock will be
+    // automatically released by the destructor, maintaining consistency.
+
+    // Ensure the directory for the lock file exists.
     try
     {
         auto parent_dir = lockpath.parent_path();
@@ -384,7 +465,8 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
             {
                 pImpl->ec = create_ec;
                 LOGGER_WARN("FileLock: create_directories failed for {} err={}",
-                            parent_dir.string(), create_ec.message());
+                            parent_dir.string(),
+                            create_ec.message());
                 pImpl->valid = false;
                 rollback_proc_local_lock();
                 return;
@@ -395,111 +477,129 @@ static void open_and_lock(LockMode mode, FileLockImpl *pImpl)
     {
         pImpl->ec = std::make_error_code(std::errc::io_error);
         LOGGER_WARN("FileLock: create_directories threw an exception for {}: {}",
-                    lockpath.parent_path().string(), e.what());
+                    lockpath.parent_path().string(),
+                    e.what());
         pImpl->valid = false;
         rollback_proc_local_lock();
         return;
     }
 
+    // Polling loop for timed and blocking locks. For non-blocking, it runs once.
+    while (true)
+    {
 #if defined(PLATFORM_WIN64)
-    // Convert to long path for Windows API calls to handle paths > MAX_PATH.
-    std::wstring lockpath_w = win32_to_long_path(lockpath);
+        std::wstring lockpath_w = win32_to_long_path(lockpath);
+        HANDLE h = CreateFileW(lockpath_w.c_str(),
+                               GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr,
+                               OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
 
-    // Open or create the lock file. We allow sharing at the file system level
-    // because we will use LockFileEx to enforce an exclusive lock.
-    HANDLE h = CreateFileW(
-        lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-        // Allow other processes to open the file. The OS-level lock provided
-        // by LockFileEx is what guarantees exclusivity, not the file sharing mode.
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            pImpl->ec = std::error_code(GetLastError(), std::system_category());
+            LOGGER_WARN("FileLock: CreateFileW failed for {} err={}",
+                        lockpath.string(),
+                        pImpl->ec.value());
+            pImpl->valid = false;
+            rollback_proc_local_lock();
+            return;
+        }
 
-    if (h == INVALID_HANDLE_VALUE)
-    {
-        pImpl->ec = std::error_code(GetLastError(), std::system_category());
-        // log using new logger API
-        LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string(),
-                    pImpl->ec.value());
-        pImpl->handle = nullptr;
-        pImpl->valid = false;
-        rollback_proc_local_lock();
-        return;
-    }
+        // For any blocking mode (timed or infinite), we first try a non-blocking lock.
+        DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
+        OVERLAPPED ov = {};
+        BOOL ok = LockFileEx(h, flags, 0, 1, 0, &ov);
 
-    // Prepare flags: exclusive lock; optionally fail immediately for non-blocking mode.
-    DWORD flags = LOCKFILE_EXCLUSIVE_LOCK;
-    if (mode == LockMode::NonBlocking)
-        flags |= LOCKFILE_FAIL_IMMEDIATELY;
+        if (ok)
+        {
+            pImpl->handle = reinterpret_cast<void *>(h);
+            pImpl->valid = true;
+            pImpl->ec.clear();
+            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str, pImpl->path.string());
+            return; // Success
+        }
 
-    // The OVERLAPPED struct is required for LockFileEx, even for synchronous operations.
-    // We lock the first byte of the file, which is a common and portable pattern.
-    OVERLAPPED ov = {};
-    BOOL ok = LockFileEx(h, flags, 0, 1, 0, &ov);
-    if (!ok)
-    {
-        DWORD err = GetLastError();
-        pImpl->ec = std::error_code(static_cast<int>(err), std::system_category());
-        LOGGER_WARN("FileLock: LockFileEx failed for {} err={}", lockpath.string(), err);
+        // Lock failed. Clean up the handle.
         CloseHandle(h);
-        pImpl->handle = nullptr;
-        pImpl->valid = false;
-        rollback_proc_local_lock();
-        return;
-    }
 
+        // If it was a non-blocking attempt, we are done.
+        if (mode == LockMode::NonBlocking)
+        {
+            pImpl->ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+            LOGGER_DEBUG("FileLock: Non-blocking lock failed for '{}'", pImpl->path.string());
+            pImpl->valid = false;
+            rollback_proc_local_lock();
+            return;
+        }
 #else
-    // POSIX implementation
-    int flags = O_CREAT | O_RDWR;
+        // POSIX implementation
+        int open_flags = O_CREAT | O_RDWR;
 #ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
+        open_flags |= O_CLOEXEC;
 #endif
-    // Mode 0666 so that file creation honors the process's umask.
-    int fd = ::open(lockpath.c_str(), flags, 0666);
-    if (fd == -1)
-    {
-        pImpl->ec = std::error_code(errno, std::generic_category());
-        LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(),
-                    pImpl->ec.message());
-        pImpl->fd = -1;
-        pImpl->valid = false;
-        rollback_proc_local_lock();
-        return;
-    }
+        int fd = ::open(lockpath.c_str(), open_flags, 0666);
 
-// If O_CLOEXEC not available, set FD_CLOEXEC manually:
+        if (fd == -1)
+        {
+            pImpl->ec = std::error_code(errno, std::generic_category());
+            LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(), pImpl->ec.message());
+            pImpl->valid = false;
+            rollback_proc_local_lock();
+            return;
+        }
 #ifndef O_CLOEXEC
-    int oldfl = fcntl(fd, F_GETFD);
-    if (oldfl != -1)
-        fcntl(fd, F_SETFD, oldfl | FD_CLOEXEC);
+        int oldfl = fcntl(fd, F_GETFD);
+        if (oldfl != -1)
+            fcntl(fd, F_SETFD, oldfl | FD_CLOEXEC);
 #endif
 
-    // Prepare flags for flock(). LOCK_EX requests an exclusive lock.
-    // LOCK_NB makes the call non-blocking.
-    int op = LOCK_EX;
-    if (mode == LockMode::NonBlocking)
-        op |= LOCK_NB;
+        // For any blocking mode (timed or infinite), we first try a non-blocking lock.
+        int flock_op = LOCK_EX | LOCK_NB;
+        if (flock(fd, flock_op) == 0)
+        {
+            pImpl->fd = fd;
+            pImpl->valid = true;
+            pImpl->ec.clear();
+            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str, pImpl->path.string());
+            return; // Success
+        }
 
-    if (flock(fd, op) != 0)
-    {
-        pImpl->ec = std::error_code(errno, std::generic_category());
-        LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string(),
-                    pImpl->ec.message());
+        // Lock failed. Clean up the descriptor.
         ::close(fd);
-        pImpl->fd = -1;
-        pImpl->valid = false;
-        rollback_proc_local_lock();
-        return;
-    }
-    pImpl->fd = fd;
+
+        // If it was a non-blocking attempt, we are done.
+        if (mode == LockMode::NonBlocking)
+        {
+            pImpl->ec = std::error_code(errno, std::generic_category());
+            LOGGER_DEBUG("FileLock: Non-blocking lock failed for '{}'", pImpl->path.string());
+            pImpl->valid = false;
+            rollback_proc_local_lock();
+            return;
+        }
 #endif
 
-    // Success
-    LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", lock_mode_to_string(mode),
-                 pImpl->path.string());
-#if defined(PLATFORM_WIN64)
-    pImpl->handle = reinterpret_cast<void *>(h);
-#endif
-    pImpl->valid = true;
-    pImpl->ec.clear();
+        // --- Timed/Blocking Polling Logic ---
+        // If we reach here, the non-blocking attempt failed and we are in a blocking mode.
+        if (timeout)
+        {
+            auto elapsed = std::chrono::steady_clock::now() - start_time;
+            if (elapsed >= *timeout)
+            {
+                // Timeout expired.
+                pImpl->ec = std::make_error_code(std::errc::timed_out);
+                LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'", pImpl->path.string());
+                pImpl->valid = false;
+                rollback_proc_local_lock();
+                return;
+            }
+        }
+
+        // Wait a short interval before trying again.
+        std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
+    }
 }
 
 } // namespace pylabhub::utils

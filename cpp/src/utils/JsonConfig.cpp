@@ -56,7 +56,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         // Use a FileLock to prevent a Time-of-Check-to-Time-of-Use (TOCTOU) race
         // condition where another process could create the file between our `exists`
         // check and our `atomic_write_json` call.
-        FileLock filelock(configFile, LockMode::NonBlocking);
+        FileLock filelock(configFile, ResourceType::File, LockMode::NonBlocking);
         if (!filelock.valid())
         {
             [[maybe_unused]] auto e = filelock.error_code();
@@ -154,7 +154,7 @@ bool JsonConfig::save_locked(std::error_code &ec)
     }
 
     // Acquire a non-blocking cross-process lock to prevent corruption from other processes.
-    FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+    FileLock filelock(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
     if (!filelock.valid())
     {
         ec = filelock.error_code();
@@ -227,7 +227,7 @@ bool JsonConfig::reload_locked() noexcept
         }
 
         // Acquire a non-blocking cross-process lock to ensure we read a consistent file.
-        FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+        FileLock filelock(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
         if (!filelock.valid())
         {
             [[maybe_unused]] auto ec = filelock.error_code();
@@ -318,7 +318,7 @@ bool JsonConfig::replace(const json &newData) noexcept
         }
 
         // Acquire a non-blocking cross-process lock before writing to disk.
-        FileLock filelock(pImpl->configPath, LockMode::NonBlocking);
+        FileLock filelock(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
         if (!filelock.valid())
         {
             [[maybe_unused]] auto ec = filelock.error_code();

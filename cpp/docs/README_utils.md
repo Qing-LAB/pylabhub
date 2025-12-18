@@ -21,23 +21,60 @@ The `JsonConfig` class provides a robust, thread-safe, and process-safe interfac
 
 `JsonConfig` uses a sophisticated two-level locking strategy to balance performance and safety.
 
-#### Level 1: Structural Lock (`initMutex`)
-A coarse-grained `std::mutex` is used to serialize operations that affect the object's structure, lifecycle, or its relationship with the filesystem. This includes:
-- `init()`, `reload()`, `replace()`, `save()`
-- Move constructors and move assignment operators.
+---
 
-This lock ensures that the core state of the object (like its file path or the `Impl` pointer itself) cannot be changed while another thread is in the middle of a critical operation.
+## `FileLock`
 
-#### Level 2: Data Lock (`rwMutex`)
-A fine-grained `std::shared_mutex` is used exclusively to protect access to the in-memory `nlohmann::json` data object.
-- **Read Access** (`get`, `has`, etc.) uses a `std::shared_lock`, allowing for high-throughput concurrent reads from multiple threads.
-- **Write Access** (`set`, `erase`, etc.) uses a `std::unique_lock`, ensuring that only one thread can modify the data at a time.
+`FileLock` is a cross-platform, RAII-style utility for creating *advisory* inter-process and inter-thread locks.
 
-### Critical Risk Analysis: Concurrent Move Operations
+### Design Philosophy & Usage
+
+- **RAII (Resource Acquisition Is Initialization):** The lock is acquired in the constructor and automatically released when the object goes out of scope. This prevents leaked locks, even in the presence of exceptions or errors.
+
+- **Explicit Resource Type:** The constructor requires you to explicitly state whether you are locking a `File` or a `Directory`. This makes the API safer and more self-documenting.
+
+  ```cpp
+  using pylabhub::utils::FileLock;
+  using pylabhub::utils::ResourceType;
+
+  {
+      // Lock a file resource
+      FileLock lock("/path/to/resource.txt", ResourceType::File);
+      if (lock.valid()) {
+          // Lock acquired, proceed with critical section
+      } else {
+          // Failed to acquire lock, handle error
+      }
+  } // Lock is automatically released here
+  ```
+
+- **Advisory Nature:** `FileLock` only prevents contention between processes that *also* use `FileLock`. It does not use mandatory OS-level locks and will not prevent a non-cooperating process from accessing the target resource.
+
+- **Cross-Platform:** It provides a unified interface over `flock()` on POSIX systems and `LockFileEx()` on Windows.
+
+- **Locking Strategy:** To avoid interfering with the target resource, `FileLock` operates on a separate, empty lock file. The naming convention is designed to be unambiguous and prevent collisions between file and directory targets based on the `ResourceType` provided:
+  - **`ResourceType::File`:** For a target file like `/path/to/data.json`, the lock file is created as `/path/to/data.json.lock`.
+  - **`ResourceType::Directory`:** For a target directory like `/path/to/my_dir`, the lock file is created as `/path/to/my_dir.dir.lock`.
+
+- **Locking Modes:** The constructor accepts a `LockMode` to control its behavior when a lock is already held:
+  - `LockMode::Blocking`: (Default) Waits indefinitely until the lock can be acquired.
+  - `LockMode::NonBlocking`: Returns immediately if the lock cannot be acquired. `valid()` will be `false`.
+  - **Timed:** A constructor overload accepts a `std::chrono::milliseconds` duration, attempting to acquire the lock until the timeout expires.
+
+### Concurrency Model
+
+`FileLock` uses a two-level locking strategy to ensure correctness for both multi-threaded and multi-process scenarios:
+
+1.  **Process-Local Lock:** An in-memory, thread-safe registry (`std::mutex` and `std::condition_variable`) is used to serialize lock attempts *within the same process*. This is critical for providing consistent behavior on platforms like Windows where native file locks are per-process and do not block other threads in the same process.
+
+2.  **OS-Level Lock:** Once the process-local lock is acquired, the class attempts to acquire the system-wide OS lock (`flock`/`LockFileEx`) on the designated `.lock` or `.dir.lock` file. This handles contention between different processes.
+
+#### Critical Risk Analysis: Concurrent Move Operations
 
 The high-performance locking model (using `rwMutex` for simple accessors) introduces a critical rule for users of the class:
 
 **WARNING: You MUST externally synchronize move operations.**
+
 
 If one thread attempts to move a `JsonConfig` object while another thread is calling any method on it, a **use-after-free** memory error will occur, leading to a crash.
 

@@ -447,6 +447,9 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
     const std::string old_sink_desc = pImpl->get_sink_description();
 
     bool success = false;
+    int error_code = 0;
+    const char *error_message = nullptr;
+
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
         pImpl->close_sinks(); // Resets dest to L_NONE
@@ -457,7 +460,8 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
         int needed = MultiByteToWideChar(CP_UTF8, 0, utf8_path.c_str(), -1, nullptr, 0);
         if (needed == 0)
         {
-            pImpl->record_write_error(GetLastError(), "MultiByteToWideChar failed in set_logfile");
+            error_code = GetLastError();
+            error_message = "MultiByteToWideChar failed in set_logfile";
         }
         else
         {
@@ -471,7 +475,8 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
                                    FILE_ATTRIBUTE_NORMAL, nullptr);
             if (h == INVALID_HANDLE_VALUE)
             {
-                pImpl->record_write_error(GetLastError(), "CreateFileW failed in set_logfile");
+                error_code = GetLastError();
+                error_message = "CreateFileW failed in set_logfile";
             }
             else
             {
@@ -488,7 +493,8 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
             ::open(utf8_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, static_cast<mode_t>(mode));
         if (fd == -1)
         {
-            pImpl->record_write_error(errno, "open() failed in set_logfile");
+            error_code = errno;
+            error_message = "open() failed in set_logfile";
         }
         else
         {
@@ -500,6 +506,11 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock, int mode)
         }
 #endif
     } // Mutex is released here.
+
+    if (!success && error_message)
+    {
+        pImpl->record_write_error(error_code, error_message);
+    }
 
     // Log after the switch attempt.
     if (success)
@@ -551,13 +562,17 @@ bool Logger::set_eventlog(const wchar_t *source_name)
     const std::string old_sink_desc = pImpl->get_sink_description();
 
     bool success = false;
+    int error_code = 0;
+    const char *error_message = nullptr;
+
     {
         std::lock_guard<std::mutex> g(pImpl->mtx);
         pImpl->close_sinks(); // Resets dest to L_NONE
         HANDLE h = RegisterEventSourceW(nullptr, source_name);
         if (!h)
         {
-            pImpl->record_write_error(GetLastError(), "RegisterEventSourceW failed");
+            error_code = GetLastError();
+            error_message = "RegisterEventSourceW failed";
         }
         else
         {
@@ -565,6 +580,11 @@ bool Logger::set_eventlog(const wchar_t *source_name)
             pImpl->dest = Logger::Destination::L_EVENTLOG;
             success = true;
         }
+    }
+
+    if (!success && error_message)
+    {
+        pImpl->record_write_error(error_code, error_message);
     }
 
     if (success)
@@ -776,8 +796,6 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln,
 {
     if (pImpl->file_fd != -1)
     {
-        if (pImpl->use_flock)
-            flock(pImpl->file_fd, LOCK_EX);
         ssize_t total = static_cast<ssize_t>(full_ln.size());
         ssize_t off = 0;
         const char *data = full_ln.data();
@@ -789,8 +807,6 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln,
                 if (errno == EINTR)
                     continue;
                 int err = errno;
-                if (pImpl->use_flock)
-                    flock(pImpl->file_fd, LOCK_UN);
                 lk.unlock();
                 pImpl->record_write_error(err, "write() failed");
                 return;
@@ -803,15 +819,11 @@ static void write_to_file_internal(Impl *pImpl, const std::string &full_ln,
             if (::fsync(pImpl->file_fd) != 0)
             {
                 int err = errno;
-                if (pImpl->use_flock)
-                    flock(pImpl->file_fd, LOCK_UN);
                 lk.unlock();
                 pImpl->record_write_error(err, "fsync failed");
                 return;
             }
         }
-        if (pImpl->use_flock)
-            flock(pImpl->file_fd, LOCK_UN);
     }
     else
     {
@@ -954,7 +966,34 @@ static void do_write(Impl *pImpl, LogMessage &&msg)
 #if defined(PLATFORM_WIN64)
         write_to_file_internal(pImpl, full_ln, lk);
 #else
+        if (pImpl->use_flock)
+        {
+            int current_fd = pImpl->file_fd;
+            if (current_fd == -1)
+            {
+                break;
+            }
+
+            lk.unlock();
+            ::flock(current_fd, LOCK_EX);
+            lk.lock();
+
+            if (pImpl->dest != Logger::Destination::L_FILE || pImpl->file_fd != current_fd)
+            {
+                ::flock(current_fd, LOCK_UN);
+                break;
+            }
+        }
+
         write_to_file_internal(pImpl, full_ln, lk);
+
+        if (pImpl->use_flock)
+        {
+            if (pImpl->file_fd != -1)
+            {
+                ::flock(pImpl->file_fd, LOCK_UN);
+            }
+        }
 #endif
         break;
     case Logger::Destination::L_SYSLOG:
