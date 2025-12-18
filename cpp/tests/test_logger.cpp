@@ -43,20 +43,20 @@ static int tests_failed = 0;
 
 #define CHECK(condition)                                                                           \
     do                                                                                             \
-    {
+    {                                                                                              \
         if (!(condition))                                                                          \
-        {
+        {                                                                                          \
             tests_failed++;                                                                        \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\\n", #condition, __FILE__, __LINE__);   \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);  \
             exit(1);                                                                               \
-        }
+        }                                                                                          \
     } while (0)
 
 #define FAIL_TEST(msg)                                                                             \
     do                                                                                             \
-    {
+    {                                                                                              \
         tests_failed++;                                                                            \
-        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\\n", msg, __FILE__, __LINE__);               \
+        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);              \
         exit(1);                                                                                   \
     } while (0)
 
@@ -259,7 +259,7 @@ void test_multithread_stress()
             found_threads++;
         }
     }
-    CHECK(found_threads > 0);
+    CHECK(found_threads == LOG_THREADS);
     CHECK(contents.find("Switched log to Console") != std::string::npos);
     CHECK(contents.find("Switched log to file") != std::string::npos);
 }
@@ -360,11 +360,9 @@ void test_platform_sinks()
 void multiproc_child_main()
 {
     Logger &L = Logger::instance();
-    if (!L.set_logfile(g_log_path.string(), true))
-    {
-        exit(2);
-    }
+    L.set_logfile(g_log_path.string(), true);
     L.set_level(Logger::Level::L_TRACE);
+
     for (int i = 0; i < 100; ++i)
     {
 #if defined(_WIN32)
@@ -461,7 +459,7 @@ void test_multiprocess_logging()
 
 void run_test_in_process(const std::string &test_name)
 {
-    fmt::print("\n--- Running test: {} ---\\n", test_name);
+    fmt::print("\n--- Running test: {} ---\n", test_name);
 #if defined(_WIN32)
     std::string cmdline_str = fmt::format("\"{}\" --run-test {}", g_self_exe_path, test_name);
     std::vector<char> cmdline(cmdline_str.begin(), cmdline_str.end());
@@ -473,7 +471,7 @@ void run_test_in_process(const std::string &test_name)
                          &pi))
     {
         tests_failed++;
-        fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\\n", GetLastError());
+        fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\n", GetLastError());
         return;
     }
     WaitForSingleObject(pi.hProcess, 15000); // 15 second timeout
@@ -481,12 +479,22 @@ void run_test_in_process(const std::string &test_name)
     GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    if (exit_code == 0)
+    {
+        tests_passed++;
+        fmt::print("  --- PASSED ---\n");
+    }
+    else
+        {
+        tests_failed++;
+        fmt::print(stderr, "  --- FAILED in child process ---\n");
+        }
 #else
     pid_t pid = fork();
     if (pid == -1)
     {
         tests_failed++;
-        fmt::print(stderr, "  --- FAILED: fork() failed ---\\n");
+        fmt::print(stderr, "  --- FAILED: fork() failed ---\n");
         return;
     }
 
@@ -503,12 +511,12 @@ void run_test_in_process(const std::string &test_name)
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
         {
             tests_passed++;
-            fmt::print("  --- PASSED ---\\n");
+            fmt::print("  --- PASSED ---\n");
         }
         else
         {
             tests_failed++;
-            fmt::print(stderr, "  --- FAILED in child process ---\\n");
+            fmt::print(stderr, "  --- FAILED in child process ---\n");
         }
     }
 #endif
@@ -545,7 +553,7 @@ int main(int argc, char **argv)
             test_multiprocess_logging();
         else
         {
-            fmt::print(stderr, "Unknown test name: {}$\\n", test_name);
+            fmt::print(stderr, "Unknown test name: {}$\n", test_name);
             return 1;
         }
         // Success is exit code 0, which is default.
@@ -562,7 +570,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    fmt::print("--- Logger Test Suite (Process-Isolated) ---\\n");
+    fmt::print("--- Logger Test Suite (Process-Isolated) ---\n");
     const std::vector<std::string> test_names = {
         "test_basic_logging",          "test_log_level_filtering",
         "test_bad_format_string",      "test_default_sink_and_switching",
@@ -575,8 +583,8 @@ int main(int argc, char **argv)
         run_test_in_process(name);
     }
 
-    fmt::print("\\n--- Test Summary ---\\n");
-    fmt::print("Passed: {}, Failed: {}$\\n", tests_passed, tests_failed);
+    fmt::print("\n--- Test Summary ---\n");
+    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
 
     std::error_code ec;
     fs::remove(g_log_path, ec);
