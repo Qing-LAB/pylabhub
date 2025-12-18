@@ -81,9 +81,17 @@ static const char *level_to_string(Logger::Level lvl)
     }
 }
 
+// Helper: formatted local time with sub-second resolution
+static std::string formatted_time(std::chrono::system_clock::time_point timestamp)
+{
+    // Use {fmt} to format the time portably. {:%Y-%m-%d %H:%M:%S.%f} provides
+    // microsecond precision.
+    return fmt::format("{:%Y-%m-%d %H:%M:%S}", timestamp);
+}
+
 static std::string format_message(const LogMessage &msg)
 {
-    return fmt::format("{:%Y-%m-%d %H:%M:%S.%f} [{}] [tid={}] {}\n", msg.timestamp,
+    return fmt::format("{} [{}] [tid={}] {}\n", formatted_time(msg.timestamp),
                        level_to_string(msg.level), msg.thread_id, msg.body);
 }
 
@@ -375,7 +383,13 @@ void Impl::worker_loop()
                         }
                         else if constexpr (std::is_same_v<T, SetConsoleSinkCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                            {
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(), "Switched log to Console"});
+                                sink_->flush();
+                            }
                             sink_ = std::make_unique<ConsoleSink>();
                             sink_->write({Logger::Level::L_SYSTEM,
                                           std::chrono::system_clock::now(), get_native_thread_id(),
@@ -383,7 +397,14 @@ void Impl::worker_loop()
                         }
                         else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                            {
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(),
+                                              fmt::format("Switched log to file: {}", arg.path)});
+                                sink_->flush();
+                            }
                             sink_ = std::make_unique<FileSink>(arg.path, arg.use_flock);
                             sink_->write({Logger::Level::L_SYSTEM,
                                           std::chrono::system_clock::now(), get_native_thread_id(),
@@ -392,7 +413,13 @@ void Impl::worker_loop()
 #if !defined(_WIN32)
                         else if constexpr (std::is_same_v<T, SetSyslogSinkCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                            {
+                                sink_->flush();
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(), "Switched log to Syslog"});
+                            }
                             sink_ = std::make_unique<SyslogSink>(
                                 arg.ident.empty() ? nullptr : arg.ident.c_str(), arg.option,
                                 arg.facility);
@@ -404,7 +431,13 @@ void Impl::worker_loop()
 #ifdef _WIN32
                         else if constexpr (std::is_same_v<T, SetEventLogSinkCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                            {
+                                sink_->write(
+                                    {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                     get_native_thread_id(), "Switched log to Windows Event Log"});
+                                sink_->flush();
+                            }
                             sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
                             sink_->write({Logger::Level::L_SYSTEM,
                                           std::chrono::system_clock::now(), get_native_thread_id(),
