@@ -3,7 +3,7 @@
 //
 // Usage:
 //   ./test_filelock          <-- master: runs all tests
-//   ./test_filelock worker <path>  <-- child worker mode (for multi-process test)
+//   ./test_filelock worker <resource_path>  <-- child worker mode (for multi-process test)
 
 #include <atomic>
 #include <chrono>
@@ -44,7 +44,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{} \n", #condition, __FILE__, __LINE__);  \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -61,7 +61,7 @@ void TEST_CASE(const std::string &name, std::function<void()> test_func)
     catch (const std::exception &e)
     {
         tests_failed++;
-        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
+        fmt::print(stderr, "  --- FAILED: {} \n", e.what());
     }
     catch (...)
     {
@@ -76,9 +76,9 @@ static fs::path g_temp_dir;
 // --- Worker Process Logic ---
 
 #if defined(PLATFORM_WIN64)
-static HANDLE spawn_worker_process(const std::string &exe, const std::string &lockpath)
+static HANDLE spawn_worker_process(const std::string &exe, const std::string &resource_path)
 {
-    std::string cmdline = fmt::format("\"{}\" worker \"{}\"", exe, lockpath);
+    std::string cmdline = fmt::format("\"{{}}\" worker \"{{}}\"", exe, resource_path);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -95,48 +95,51 @@ static HANDLE spawn_worker_process(const std::string &exe, const std::string &lo
     return pi.hProcess;
 }
 #else
-static pid_t spawn_worker_process(const std::string &exe, const std::string &lockpath)
+static pid_t spawn_worker_process(const std::string &exe, const std::string &resource_path)
 {
     pid_t pid = fork();
     if (pid == 0)
     {
         // Child process
-        execl(exe.c_str(), exe.c_str(), "worker", lockpath.c_str(), nullptr);
+        execl(exe.c_str(), exe.c_str(), "worker", resource_path.c_str(), nullptr);
         _exit(127); // Should not be reached if execl is successful
     }
     return pid;
 }
 #endif
 
-// Worker mode: attempt NonBlocking FileLock on provided lock path.
+// Worker mode: attempt NonBlocking FileLock on provided resource path.
 // Returns 0 on success, non-zero on failure.
-static int worker_main(const std::string &lockpath)
+static int worker_main(const std::string &resource_path_str)
 {
     // Keep the logger quiet in worker processes unless there's an error.
     Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path resource_path(resource_path_str);
 
-    FileLock lock(fs::path(lockpath), LockMode::NonBlocking);
+    FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
     if (!lock.valid())
     {
-        // On failure, print the error to stderr for easier debugging in CI.
-        // For a competing worker, the expected error is "resource unavailable try again".
         if (lock.error_code())
         {
-            fmt::print(stderr, "worker: failed to acquire lock: code={} msg='{}'\n",
-                       lock.error_code().value(), lock.error_code().message());
+            // On failure, print the error to stderr for easier debugging in CI.
+            std::string err_msg = fmt::format("worker: failed to acquire lock: code={} msg='{}'\n",
+                                              lock.error_code().value(),
+                                              lock.error_code().message());
 #if defined(PLATFORM_WIN64)
+            // On Windows, CreateProcess is used, so fmt::print to stderr is generally safe.
+            fmt::print(stderr, "{{}}", err_msg);
             DWORD last = GetLastError();
-            fmt::print(stderr, "worker: last error: {}\n", last);
+            fmt::print(stderr, "worker: last error: {{}}\n", last);
+#else
+            // On POSIX, use write() for async-signal-safety.
+            ::write(STDERR_FILENO, err_msg.c_str(), err_msg.length());
 #endif
         }
         return 1;
     }
 
-    // Successfully acquired the lock. Hold it for a moment to ensure
-    // other processes will see it as locked.
+    // Successfully acquired the lock. Hold it for a moment.
     std::this_thread::sleep_for(100ms);
-
-    // Return 0 to signal success.
     return 0;
 }
 
@@ -144,123 +147,153 @@ static int worker_main(const std::string &lockpath)
 
 void test_basic_nonblocking()
 {
-    auto lock_path = g_temp_dir / "basic.lock";
-    fs::remove(lock_path);
+    auto resource_path = g_temp_dir / "basic_resource.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     {
-        FileLock lock(lock_path, LockMode::NonBlocking);
+        FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
         CHECK(lock.valid());
         CHECK(!lock.error_code());
 
         // Try to lock it again in the same process (should fail).
-        FileLock lock2(lock_path, LockMode::NonBlocking);
+        FileLock lock2(resource_path, ResourceType::File, LockMode::NonBlocking);
         CHECK(!lock2.valid());
     } // lock is released here
 
     // Now it should be lockable again
-    FileLock lock3(lock_path, LockMode::NonBlocking);
+    FileLock lock3(resource_path, ResourceType::File, LockMode::NonBlocking);
     CHECK(lock3.valid());
 }
 
 void test_blocking_lock()
 {
-    auto lock_path = g_temp_dir / "blocking.lock";
-    fs::remove(lock_path);
+    auto resource_path = g_temp_dir / "blocking_resource.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     std::atomic<bool> thread_has_lock = false;
     std::atomic<bool> main_released_lock = false;
 
-    // 1. Main thread acquires the lock
-    auto main_lock = std::make_unique<FileLock>(lock_path, LockMode::Blocking);
+    auto main_lock =
+        std::make_unique<FileLock>(resource_path, ResourceType::File, LockMode::Blocking);
     CHECK(main_lock->valid());
 
-    // 2. Spawn a thread that will try to acquire the same lock (and block)
     std::thread t1(
         [&]()
         {
             auto start = std::chrono::steady_clock::now();
-            FileLock thread_lock(lock_path, LockMode::Blocking); // This should block
+            FileLock thread_lock(
+                resource_path, ResourceType::File, LockMode::Blocking); // This should block
             auto end = std::chrono::steady_clock::now();
 
-            // This thread should have blocked until the main thread released the lock.
             CHECK(thread_lock.valid());
             CHECK(main_released_lock.load());
             CHECK(end - start > 100ms);
             thread_has_lock = true;
         });
 
-    // 3. Give the thread time to start and block on the lock
     std::this_thread::sleep_for(200ms);
-    CHECK(!thread_has_lock.load()); // Thread should still be blocked
+    CHECK(!thread_has_lock.load());
 
-    // 4. Main thread releases the lock
     main_released_lock = true;
-    main_lock.reset(); // This destroys the FileLock object and releases the lock
+    main_lock.reset();
 
-    // 5. Join the thread and check that it completed
     t1.join();
     CHECK(thread_has_lock.load());
 }
 
 void test_move_semantics()
 {
-    auto lock_path = g_temp_dir / "move.lock";
-    fs::remove(lock_path);
+    auto resource1 = g_temp_dir / "move1.txt";
+    auto resource2 = g_temp_dir / "move2.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource1, ResourceType::File));
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource2, ResourceType::File));
 
-    // Test move construction
+    fmt::print("  - Testing move construction\n");
     {
-        FileLock lock1(lock_path, LockMode::NonBlocking);
+        FileLock lock1(resource1, ResourceType::File, LockMode::NonBlocking);
         CHECK(lock1.valid());
-
         FileLock lock2(std::move(lock1));
         CHECK(lock2.valid());
-        CHECK(!lock1.valid()); // lock1 should be invalid after move
-    } // lock2 is destroyed, releasing the lock
+        CHECK(!lock1.valid());
+    }
 
-    // Test move assignment
     {
-        FileLock lock3(lock_path, LockMode::NonBlocking);
-        CHECK(lock3.valid());
+        FileLock lock1_again(resource1, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock1_again.valid());
+    }
 
-        FileLock lock4(g_temp_dir / "another.lock", LockMode::NonBlocking);
-        CHECK(lock4.valid()); // Holds a different lock
+    fmt::print("  - Testing move assignment to valid target\n");
+    {
+        FileLock lock_A(resource1, ResourceType::File, LockMode::NonBlocking);
+        FileLock lock_B(resource2, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock_A.valid());
+        CHECK(lock_B.valid());
 
-        lock4 = std::move(lock3); // lock4 releases its old lock and takes lock3's
-        CHECK(lock4.valid());
-        CHECK(!lock3.valid());
-    } // lock4 is destroyed, releasing the lock
+        lock_B = std::move(lock_A);
+        CHECK(lock_B.valid());
+        CHECK(!lock_A.valid());
+
+        FileLock lock_res2_again(resource2, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock_res2_again.valid());
+    }
+
+    {
+        FileLock lock_res1_again(resource1, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock_res1_again.valid());
+    }
+
+    fmt::print("  - Testing self-move assignment\n");
+    {
+        FileLock lock_self(resource1, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock_self.valid());
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-move"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
+        lock_self = std::move(lock_self);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+        CHECK(lock_self.valid());
+    }
+
+    {
+        FileLock lock_after_self(resource1, ResourceType::File, LockMode::NonBlocking);
+        CHECK(lock_after_self.valid());
+    }
 }
 
 void test_directory_creation()
 {
-    // This test verifies that if the parent directory for a lock file does not
-    // exist, FileLock will create it automatically.
     auto new_dir = g_temp_dir / "new_dir_for_lock";
     auto resource_to_lock = new_dir / "resource.txt";
-    auto actual_lock_file = new_dir / "resource.txt.lock";
+    auto actual_lock_file =
+        FileLock::get_expected_lock_fullname_for(resource_to_lock, ResourceType::File);
 
-    fs::remove_all(new_dir); // Ensure the parent directory doesn't exist.
+    fs::remove_all(new_dir);
     CHECK(!fs::exists(new_dir));
 
     {
-        // Create a lock for a resource inside the non-existent directory.
-        FileLock lock(resource_to_lock, LockMode::NonBlocking);
+        FileLock lock(resource_to_lock, ResourceType::File, LockMode::NonBlocking);
         CHECK(lock.valid());
-
-        // FileLock should have created the directory for the lock file.
         CHECK(fs::exists(new_dir));
-
-        // It should also have created the lock file itself.
         CHECK(fs::exists(actual_lock_file));
     }
 
-    fs::remove_all(new_dir); // Cleanup
+    fs::remove_all(new_dir);
 }
 
 void test_multithread_nonblocking()
 {
-    auto lock_path = g_temp_dir / "multithread.lock";
-    fs::remove(lock_path);
+    auto resource_path = g_temp_dir / "multithread.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     const int THREADS = 16;
     std::atomic<int> success_count{0};
@@ -271,30 +304,25 @@ void test_multithread_nonblocking()
         threads.emplace_back(
             [&]()
             {
-                // Each thread makes one attempt.
-                FileLock lock(lock_path, LockMode::NonBlocking);
+                FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
                 if (lock.valid())
                 {
                     success_count++;
-                    // Hold the lock for a moment to increase contention
                     std::this_thread::sleep_for(50ms);
                 }
             });
     }
 
     for (auto &t : threads)
-    {
         t.join();
-    }
 
-    // Exactly one thread should have succeeded in acquiring the non-blocking lock.
     CHECK(success_count.load() == 1);
 }
 
 void test_multiprocess_nonblocking(const std::string &self_exe)
 {
-    auto lock_path = g_temp_dir / "multiprocess.lock";
-    fs::remove(lock_path);
+    auto resource_path = g_temp_dir / "multiprocess.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     const int PROCS = 8;
     int success_count = 0;
@@ -303,7 +331,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, lock_path.string());
+        HANDLE h = spawn_worker_process(self_exe, resource_path.string());
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -323,7 +351,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<pid_t> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(self_exe, lock_path.string());
+        pid_t pid = spawn_worker_process(self_exe, resource_path.string());
         CHECK(pid > 0);
         pids.push_back(pid);
     }
@@ -339,24 +367,153 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     }
 #endif
 
-    // Exactly one worker process should have succeeded.
     CHECK(success_count == 1);
+}
+
+void test_timed_lock()
+{
+    auto resource_path = g_temp_dir / "timed.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
+
+    {
+        FileLock main_lock(resource_path, ResourceType::File, LockMode::Blocking);
+        CHECK(main_lock.valid());
+
+        auto start = std::chrono::steady_clock::now();
+        FileLock timed_lock_fail(resource_path, ResourceType::File, 100ms);
+        auto end = std::chrono::steady_clock::now();
+
+        CHECK(!timed_lock_fail.valid());
+        CHECK(timed_lock_fail.error_code() == std::errc::timed_out);
+
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        CHECK(duration.count() >= 100);
+        CHECK(duration.count() < 300);
+    }
+
+    FileLock timed_lock_succeed(resource_path, ResourceType::File, 100ms);
+    if (!timed_lock_succeed.valid())
+    {
+        fmt::print(stderr,
+                   "  timed_lock_succeed failed with error: {}\n",
+                   timed_lock_succeed.error_code().message());
+    }
+    CHECK(timed_lock_succeed.valid());
+    CHECK(!timed_lock_succeed.error_code());
+}
+
+void test_directory_path_locking()
+{
+    fmt::print("  - Testing standard directory\n");
+    {
+        auto dir_to_lock = g_temp_dir / "dir_to_lock";
+        fs::create_directory(dir_to_lock);
+
+        auto expected_lock_file =
+            FileLock::get_expected_lock_fullname_for(dir_to_lock, ResourceType::Directory);
+        auto regular_file_lock_path =
+            FileLock::get_expected_lock_fullname_for(dir_to_lock, ResourceType::File);
+        fs::remove(expected_lock_file);
+        fs::remove(regular_file_lock_path);
+
+        FileLock lock(dir_to_lock, ResourceType::Directory, LockMode::NonBlocking);
+        CHECK(lock.valid());
+        CHECK(fs::exists(expected_lock_file));
+        CHECK(!fs::exists(regular_file_lock_path));
+
+        FileLock non_conflicting_lock(
+            g_temp_dir / "dir_to_lock", ResourceType::File,
+            LockMode::NonBlocking);
+        CHECK(non_conflicting_lock.valid());
+    }
+
+    fmt::print("  - Testing current directory (.)\n");
+    {
+        fs::path cwd = fs::current_path();
+        auto expected_lock_file =
+            FileLock::get_expected_lock_fullname_for(".", ResourceType::Directory);
+        fmt::print(
+            "  - CWD: '{}', expecting lock: '{}'\n", cwd.string(), expected_lock_file.string());
+
+        FileLock lock(".", ResourceType::Directory, LockMode::NonBlocking);
+        CHECK(lock.valid());
+        CHECK(fs::exists(expected_lock_file));
+        fs::remove(expected_lock_file); // Clean up for next test
+    }
+
+#if !defined(PLATFORM_WIN64)
+    // Note: Creating files in the root directory may fail due to permissions.
+    // This test focuses on ensuring that paths resolving to root are correctly
+    // handled by the path generation logic.
+    fmt::print("  - Testing path resolving to root (e.g., '.._.._..')\n");
+    {
+        // Construct a path that will resolve to root from the current directory.
+        fs::path path_to_root = ".";
+        for (const auto &part : fs::current_path())
+        {
+            // Avoid adding ".." for the root slash itself.
+            if (part.string() != "/")
+            {
+                path_to_root /= "..";
+            }
+        }
+
+        // The primary goal is to test the path generation logic.
+        auto generated_lock_file =
+            FileLock::get_expected_lock_fullname_for(path_to_root, ResourceType::Directory);
+        fs::path correct_root_lock_file = "/pylabhub_root.dir.lock";
+
+        fmt::print("  - Path to root: '{}', expecting lock file: '{}', generated: '{}'\n",
+                   path_to_root.string(),
+                   correct_root_lock_file.string(),
+                   generated_lock_file.string());
+
+        CHECK(generated_lock_file == correct_root_lock_file);
+
+        // We can also try to acquire the lock, but we won't fail the test if
+        // it fails due to permissions. This part just verifies the locking
+        // mechanism itself in permissive environments.
+        try
+        {
+            fs::remove(generated_lock_file); // Attempt cleanup before locking
+            FileLock lock(path_to_root, ResourceType::Directory, LockMode::NonBlocking);
+            if (lock.valid())
+            {
+                fmt::print("  - NOTE: Successfully acquired lock on resolving-to-root path.\n");
+                CHECK(fs::exists(generated_lock_file));
+                fs::remove(generated_lock_file); // Cleanup after locking
+            }
+            else
+            {
+                fmt::print(stderr,
+                           "  NOTE: Could not acquire lock on root dir, likely due to "
+                           "permissions (Error: {}).\n",
+                           lock.error_code().message());
+            }
+        }
+        catch (const fs::filesystem_error &e)
+        {
+            // This is an acceptable outcome if we don't have permissions.
+            fmt::print(stderr,
+                       "  NOTE: Could not test root dir locking, likely due to permissions: {}\n",
+                       e.what());
+        }
+    }
+#endif
 }
 
 int main(int argc, char **argv)
 {
-    // Worker process entry point
     if (argc > 1 && std::string(argv[1]) == "worker")
     {
         if (argc < 3)
         {
-            fmt::print(stderr, "Worker mode requires a lock path argument.\n");
+            fmt::print(stderr, "Worker mode requires a resource path argument.\n");
             return 2;
         }
         return worker_main(argv[2]);
     }
 
-    // Main test runner
     fmt::print("--- FileLock Test Suite ---\n");
     g_temp_dir = fs::temp_directory_path() / "pylabhub_filelock_tests";
     fs::create_directories(g_temp_dir);
@@ -364,8 +521,10 @@ int main(int argc, char **argv)
 
     TEST_CASE("Basic Non-Blocking Lock", test_basic_nonblocking);
     TEST_CASE("Blocking Lock Behavior", test_blocking_lock);
+    TEST_CASE("Timed Lock Behavior", test_timed_lock);
     TEST_CASE("Move Semantics", test_move_semantics);
     TEST_CASE("Automatic Directory Creation", test_directory_creation);
+    TEST_CASE("Directory Path Locking", test_directory_path_locking);
     TEST_CASE("Multi-Threaded Non-Blocking Lock", test_multithread_nonblocking);
 
     std::string self_exe = argv[0];
@@ -375,7 +534,6 @@ int main(int argc, char **argv)
     fmt::print("\n--- Test Summary ---\n");
     fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
 
-    // Final cleanup
     fs::remove_all(g_temp_dir);
 
     return tests_failed == 0 ? 0 : 1;

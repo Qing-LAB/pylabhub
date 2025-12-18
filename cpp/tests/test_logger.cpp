@@ -23,6 +23,9 @@
 #include <windows.h>
 #else
 #include <cerrno>      // For EACCES
+#include <fcntl.h>       // For open()
+#include <signal.h>      // For kill()
+#include <sys/file.h>    // For flock()
 #include <sys/stat.h>  // For chmod, S_IRUSR, etc.
 #include <sys/types.h> // For pid_t
 #include <sys/wait.h>  // For waitpid() and associated macros
@@ -301,7 +304,7 @@ void test_write_error_callback()
     Logger &L = Logger::instance();
 
     // On Windows, lock the file with an exclusive read handle
-    HANDLE h = CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS, 
+    HANDLE h = CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     CHECK(h != INVALID_HANDLE_VALUE);
 
@@ -339,9 +342,8 @@ void test_write_error_callback()
     }
     CHECK(fs::exists(g_log_path));
 
+    // Make the file read-only so that the subsequent open() for writing fails.
     chmod(g_log_path.string().c_str(), S_IRUSR | S_IRGRP | S_IROTH); // 0444
-    CHECK(L.set_logfile(g_log_path.string(), false));
-    L.set_level(Logger::Level::L_INFO);
 
     std::atomic<bool> callback_invoked = false;
     std::atomic<int> error_code = 0;
@@ -351,20 +353,23 @@ void test_write_error_callback()
         [&](const std::string &msg)
         {
             callback_invoked = true;
+            // Note: last_write_error_code() is thread-safe (atomic)
             error_code = L.last_write_error_code();
             (void)msg;
         });
 
-    LOGGER_INFO("This write should fail.");
-    L.flush();
-    CHECK(!L.dirty());
+    // We expect this to fail because the file is read-only.
+    // This will trigger the error callback.
+    bool set_logfile_opened_successfully = L.set_logfile(g_log_path.string(), false);
 
     L.shutdown();
 
+    CHECK(!set_logfile_opened_successfully);
     CHECK(callback_invoked.load());
     CHECK(L.write_failure_count() > initial_failures);
-    CHECK(error_code.load() != 0);
+    CHECK(error_code.load() == EACCES);
 
+    // cleanup
     chmod(g_log_path.string().c_str(), S_IRWXU | S_IWGRP | S_IWOTH);
 #endif
 }
@@ -426,6 +431,97 @@ void test_set_console()
     CHECK(true); // If we got here without crashing, consider it a pass.
 }
 
+#if PYLABHUB_IS_POSIX
+// This test is designed to trigger a specific race condition:
+// 1. A lock-holding process is forked to block our worker thread on `flock`.
+// 2. We log a message, causing our worker to block on `flock`.
+// 3. While the worker is blocked, we reconfigure the logger from the main thread.
+// 4. We kill the lock-holder, unblocking the worker.
+// The test verifies that the worker detects the configuration change and safely
+// aborts the write to the old, now-stale file descriptor.
+void test_reconfigure_while_flock_waiting()
+{
+    // 1. Setup files
+    fs::path log_path1 = fs::temp_directory_path() / "pylabhub_race_test1.log";
+    fs::path log_path2 = fs::temp_directory_path() / "pylabhub_race_test2.log";
+    std::remove(log_path1.string().c_str());
+    std::remove(log_path2.string().c_str());
+
+    // 2. Fork a child process to hold the file lock.
+    pid_t lock_holder_pid = fork();
+    CHECK(lock_holder_pid != -1);
+
+    if (lock_holder_pid == 0)
+    {
+        // --- Child (Lock Holder) Process ---
+        // Open the file, acquire an exclusive lock, and wait to be killed.
+        int fd = open(log_path1.c_str(), O_RDWR | O_CREAT, 0666);
+        if (fd == -1)
+        {
+            _exit(1);
+        }
+        if (::flock(fd, LOCK_EX) != 0)
+        {
+            _exit(2);
+        }
+        // Lock acquired. Now just wait. pause() waits for any signal.
+        pause();
+        _exit(0); // Should not be reached.
+    }
+
+    // --- Parent (Test) Process ---
+    Logger &L = Logger::instance();
+
+    // Give the lock holder a moment to start and acquire the lock.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 3. Configure logger to use the locked file.
+    CHECK(L.set_logfile(log_path1.string(), true));
+    L.set_level(Logger::Level::L_INFO);
+    L.flush(); // Wait for "Switched log destination" message to be processed.
+
+    // 4. Log a message. The worker will queue this and then block on flock.
+    const char *test_message = "This message should be dropped.";
+    LOGGER_INFO_RT(test_message);
+
+    // 5. Give the worker thread a moment to run and block on flock().
+    // This is not foolproof, but is the simplest way to test the race.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 6. While the worker is blocked, reconfigure the logger. This is the race.
+    LOGGER_INFO("Switching log files.");
+    CHECK(L.set_logfile(log_path2.string(), false)); // Switch to new file, no flock
+    LOGGER_INFO("Switched to new file.");
+
+    // 7. Kill the lock-holding child process to release the lock.
+    kill(lock_holder_pid, SIGKILL);
+    int status = 0;
+    waitpid(lock_holder_pid, &status, 0); // Clean up the zombie process
+
+    // 8. Flush and shut down. This should not hang.
+    L.flush();
+    L.shutdown();
+
+    // 9. Verification
+    std::string contents1, contents2;
+    // The first file might not exist if nothing was ever written to it, which is ok.
+    read_file_contents(log_path1.string(), contents1);
+    CHECK(read_file_contents(log_path2.string(), contents2));
+
+    // The first message should have been dropped because the fd changed.
+    CHECK(contents1.find(test_message) == std::string::npos);
+
+    // The new file should contain the reconfiguration messages.
+    CHECK(contents2.find("Switching log files.") != std::string::npos);
+    CHECK(contents2.find("Switched to new file.") != std::string::npos);
+    CHECK(contents2.find("Switched log destination from") != std::string::npos);
+
+    // Cleanup
+    std::remove(log_path1.string().c_str());
+    std::remove(log_path2.string().c_str());
+}
+#endif
+
 // --- Multi-process Test Logic ---
 
 // Entrypoint for child processes spawned by test_multiprocess_logging
@@ -450,7 +546,6 @@ void multiproc_child_main()
     L.flush();
     L.shutdown();
 }
-
 void test_multiprocess_logging()
 {
     g_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
@@ -633,6 +728,8 @@ int main(int argc, char **argv)
 #if PYLABHUB_IS_POSIX
         else if (test_name == "test_write_error_callback")
             test_write_error_callback();
+        else if (test_name == "test_reconfigure_while_flock_waiting")
+            test_reconfigure_while_flock_waiting();
 #endif
         else
         {
@@ -672,6 +769,7 @@ int main(int argc, char **argv)
     }
 #if PYLABHUB_IS_POSIX
     run_test_in_process("test_write_error_callback");
+    run_test_in_process("test_reconfigure_while_flock_waiting");
 #endif
     // The multi-process test is special and runs directly from the parent
     run_test_in_process("test_multiprocess_logging");

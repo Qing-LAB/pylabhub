@@ -175,4 +175,12 @@ else()
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for nlohmann/json.")
 endif()
 
+# --- 5. Add to export set for installation ---
+# This target is an INTERFACE library, but it must be part of the export
+# set so that downstream projects consuming our package can find its
+# include directories.
+install(TARGETS pylabhub_nlohmann_json
+  EXPORT pylabhubTargets
+)
+
 message(STATUS "[pylabhub-third-party] nlohmann/json configuration complete.")
