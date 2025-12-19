@@ -204,8 +204,8 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
         {
             LOGGER_TRACE("FileLock: Last process-local owner for '{}' released. Notifying waiters.",
                          p->lock_key);
-            g_proc_locks.erase(p->lock_key);
             p->proc_state->cv.notify_all();
+            g_proc_locks.erase(p->lock_key);
         }
         else
         {
@@ -373,7 +373,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
 
     { // Scoped lock for the global registry
         std::unique_lock<std::mutex> regl(g_registry_mtx);
-        auto &state = g_proc_locks[pImpl->lock_key];
+        auto state = g_proc_locks[pImpl->lock_key];
         if (!state)
         {
             state = std::make_shared<ProcLockState>();
@@ -435,8 +435,8 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
         {
             if (--pImpl->proc_state->owners == 0)
             {
-                g_proc_locks.erase(pImpl->lock_key);
                 pImpl->proc_state->cv.notify_all();
+                g_proc_locks.erase(pImpl->lock_key);
             }
             pImpl->proc_state.reset();
         }
