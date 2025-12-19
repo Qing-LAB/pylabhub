@@ -631,7 +631,6 @@ void Impl::worker_loop()
                     auto msg = fmt::format("Logger error: {}", e.what());
                     callback_dispatcher_.post([cb, msg]() { cb(msg); });
                 }
-                sink_.reset(); // Stop logging to a faulty sink
             }
         }
         local_queue.clear();
