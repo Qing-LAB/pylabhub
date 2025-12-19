@@ -16,7 +16,7 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
 #define NOMINMAX
 #include <windows.h>
 #else
@@ -75,7 +75,7 @@ static const char *level_to_string(Logger::Level lvl)
 // Helper: get a platform-native thread id
 static uint64_t get_native_thread_id() noexcept
 {
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     return static_cast<uint64_t>(::GetCurrentThreadId());
 #elif defined(__APPLE__)
     uint64_t tid;
@@ -167,7 +167,7 @@ class FileSink : public Sink
   public:
     FileSink(const std::string &path, bool use_flock) : path_(path), use_flock_(use_flock)
     {
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
         (void)use_flock_; // Not supported
         int needed = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
         if (needed == 0)
@@ -192,7 +192,7 @@ class FileSink : public Sink
 
     ~FileSink() override
     {
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
         if (handle_ != INVALID_HANDLE_VALUE)
             CloseHandle(handle_);
 #else
@@ -204,7 +204,7 @@ class FileSink : public Sink
     void write(const LogMessage &msg) override
     {
         auto formatted_message = format_message(msg);
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
         if (handle_ == INVALID_HANDLE_VALUE)
             return;
         DWORD bytes_written;
@@ -223,7 +223,7 @@ class FileSink : public Sink
 
     void flush() override
     {
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
         if (handle_ != INVALID_HANDLE_VALUE)
             FlushFileBuffers(handle_);
 #else
@@ -237,14 +237,14 @@ class FileSink : public Sink
   private:
     std::string path_;
     bool use_flock_;
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 #else
     int fd_ = -1;
 #endif
 };
 
-#if !defined(_WIN32)
+#if !defined(PLATFORM_WIN64)
 class SyslogSink : public Sink
 {
   public:
@@ -283,9 +283,9 @@ class SyslogSink : public Sink
         }
     }
 };
-#endif // !defined(_WIN32)
+#endif // !defined(PLATFORM_WIN64)
 
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
 class EventLogSink : public Sink
 {
   public:
@@ -352,7 +352,7 @@ class EventLogSink : public Sink
         }
     }
 };
-#endif // _WIN32
+#endif // PLATFORM_WIN64
 
 // --- Control Commands for the queue ---
 struct SetConsoleSinkCommand
@@ -494,7 +494,7 @@ void Impl::worker_loop()
                                           get_native_thread_id(),
                                           make_buffer("Switched log to file: {}", arg.path)});
                         }
-#if !defined(_WIN32)
+#if !defined(PLATFORM_WIN64)
                         else if constexpr (std::is_same_v<T, SetSyslogSinkCommand>)
                         {
                             if (sink_)
@@ -513,7 +513,7 @@ void Impl::worker_loop()
                                           make_buffer("Switched log to Syslog")});
                         }
 #endif
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
                         else if constexpr (std::is_same_v<T, SetEventLogSinkCommand>)
                         {
                             if (sink_)
@@ -590,7 +590,7 @@ void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 
 void Logger::set_syslog(const char *ident, int option, int facility)
 {
-#if !defined(_WIN32)
+#if !defined(PLATFORM_WIN64)
     pImpl->enqueue_command(
         SetSyslogSinkCommand{ident ? std::string(ident) : std::string(), option, facility});
 #else
@@ -602,7 +602,7 @@ void Logger::set_syslog(const char *ident, int option, int facility)
 
 void Logger::set_eventlog(const wchar_t *source_name)
 {
-#ifdef _WIN32
+#ifdef PLATFORM_WIN64
     pImpl->enqueue_command(SetEventLogSinkCommand{source_name});
 #else
     (void)source_name;
