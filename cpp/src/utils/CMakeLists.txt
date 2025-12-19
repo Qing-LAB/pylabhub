@@ -54,6 +54,10 @@ target_include_directories(pylabhub-utils
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
 )
+
+# Ensure the generated header is available to consumers
+target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_UTILS_EXPORT_DLL=1)
+
 # ==============================================================================
 
 # Check if we are using MSVC

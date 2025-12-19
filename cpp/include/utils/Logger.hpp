@@ -243,7 +243,8 @@ class PYLABHUB_UTILS_EXPORT Logger
     std::unique_ptr<Impl> pImpl;
 
     // Internal logging function that enqueues a formatted message.
-    void enqueue_log(Level lvl, std::string &&body) noexcept;
+    void enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept;
+    void enqueue_log(Level lvl, std::string &&body_str) noexcept;
 
     // Accessor for runtime log level check
     bool should_log(Level lvl) const noexcept;
@@ -269,7 +270,7 @@ void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexce
             fmt::memory_buffer mb;
             mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
             fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
-            enqueue_log(lvl, std::string(mb.data(), mb.size()));
+            enqueue_log(lvl, std::move(mb));
         }
         catch (const std::exception &ex)
         {
@@ -293,7 +294,7 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
         fmt::memory_buffer mb;
         mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
         fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
-        enqueue_log(lvl, std::string(mb.data(), mb.size()));
+        enqueue_log(lvl, std::move(mb));
     }
     catch (const std::exception &ex)
     {
