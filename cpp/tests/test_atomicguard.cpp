@@ -39,6 +39,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
