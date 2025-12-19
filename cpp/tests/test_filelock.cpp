@@ -295,7 +295,7 @@ void test_multithread_nonblocking()
     auto resource_path = g_temp_dir / "multithread.txt";
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
-    const int THREADS = 16;
+    const int THREADS = 32;
     std::atomic<int> success_count{0};
     std::vector<std::thread> threads;
 
@@ -324,7 +324,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     auto resource_path = g_temp_dir / "multiprocess.txt";
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
-    const int PROCS = 8;
+    const int PROCS = 16;
     int success_count = 0;
 
 #if defined(PLATFORM_WIN64)
