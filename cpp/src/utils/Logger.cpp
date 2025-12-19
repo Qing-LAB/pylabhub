@@ -53,7 +53,7 @@ struct LogMessage
     Logger::Level level;
     std::chrono::system_clock::time_point timestamp;
     uint64_t thread_id;
-    std::string body;
+    fmt::memory_buffer body;
 };
 
 // --- Sink Abstraction ---
@@ -99,7 +99,8 @@ static std::string formatted_time(std::chrono::system_clock::time_point timestam
 static std::string format_message(const LogMessage &msg)
 {
     return fmt::format("{} [{}] [tid={}] {}\n", formatted_time(msg.timestamp),
-                       level_to_string(msg.level), msg.thread_id, msg.body);
+                       level_to_string(msg.level), msg.thread_id,
+                       std::string_view(msg.body.data(), msg.body.size()));
 }
 
 // --- Concrete Sinks ---
@@ -203,7 +204,7 @@ class SyslogSink : public Sink
 
     void write(const LogMessage &msg) override
     {
-        syslog(level_to_syslog_priority(msg.level), "%s", msg.body.c_str());
+        syslog(level_to_syslog_priority(msg.level), "%.*s", (int)msg.body.size(), msg.body.data());
     }
 
     void flush() override {} // Not buffered in app
@@ -258,18 +259,18 @@ class EventLogSink : public Sink
         if (!handle_)
             return;
 
-        std::wstring wbody;
-        if (!msg.body.empty())
+        // Convert UTF-8 from memory_buffer to UTF-16
+        int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(),
+                                         static_cast<int>(msg.body.size()), nullptr, 0);
+        if (needed <= 0)
         {
-            int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.c_str(),
-                                             static_cast<int>(msg.body.length()), nullptr, 0);
-            if (needed > 0)
-            {
-                wbody.resize(needed);
-                MultiByteToWideChar(CP_UTF8, 0, msg.body.c_str(),
-                                    static_cast<int>(msg.body.length()), &wbody[0], needed);
-            }
+            const wchar_t *empty_str = L"";
+            ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0,
+                         &empty_str, nullptr);
+            return;
         }
+        std::wstring wbody(needed, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()), &wbody[0], needed);
 
         const wchar_t *strings[1] = {wbody.c_str()};
         ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, strings,
@@ -324,7 +325,7 @@ struct SetEventLogSinkCommand
 };
 struct FlushCommand
 {
-    std::promise<void> promise;
+    std::shared_ptr<std::promise<void>> promise;
 };
 struct ShutdownCommand
 {
@@ -419,13 +420,14 @@ void Impl::worker_loop()
                             if (sink_)
                             {
                                 sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(), "Switched log to Console"});
+                                              std::chrono::system_clock::now(), get_native_thread_id(),
+                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Console")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<ConsoleSink>();
-                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(), "Switched log to Console"});
+                            sink_->write({Logger::Level::L_SYSTEM,
+                                          std::chrono::system_clock::now(), get_native_thread_id(),
+                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Console")});
                         }
                         else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
                         {
@@ -434,13 +436,13 @@ void Impl::worker_loop()
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
                                               get_native_thread_id(),
-                                              fmt::format("Switched log to file: {}", arg.path)});
+                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to file: {}", arg.path)});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<FileSink>(arg.path, arg.use_flock);
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                           get_native_thread_id(),
-                                          fmt::format("Switched log to file: {}", arg.path)});
+                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to file: {}", arg.path)});
                         }
 #if !defined(_WIN32)
                         else if constexpr (std::is_same_v<T, SetSyslogSinkCommand>)
@@ -450,13 +452,15 @@ void Impl::worker_loop()
                                 sink_->flush();
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
-                                              get_native_thread_id(), "Switched log to Syslog"});
+                                              get_native_thread_id(),
+                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Syslog")});
                             }
                             sink_ = std::make_unique<SyslogSink>(
                                 arg.ident.empty() ? nullptr : arg.ident.c_str(), arg.option,
                                 arg.facility);
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(), "Switched log to Syslog"});
+                                          get_native_thread_id(),
+                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Syslog")});
                         }
 #endif
 #ifdef _WIN32
@@ -466,13 +470,14 @@ void Impl::worker_loop()
                             {
                                 sink_->write(
                                     {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                     get_native_thread_id(), "Switched log to Windows Event Log"});
+                                     get_native_thread_id(),
+                                     fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Windows Event Log")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                           get_native_thread_id(),
-                                          "Switched log to Windows Event Log"});
+                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Windows Event Log")});
                         }
 #endif
                         else if constexpr (std::is_same_v<T, FlushCommand>)
@@ -569,9 +574,9 @@ void Logger::flush()
 {
     if (!pImpl)
         return;
-    std::promise<void> promise;
-    auto future = promise.get_future();
-    pImpl->enqueue_command(FlushCommand{std::move(promise)});
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
+    pImpl->enqueue_command(FlushCommand{promise});
     future.wait();
 }
 
@@ -603,12 +608,23 @@ bool Logger::should_log(Level lvl) const noexcept
     return static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
-void Logger::enqueue_log(Level lvl, std::string &&body) noexcept
+void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (!pImpl || pImpl->done_.load(std::memory_order_relaxed))
         return;
 
     LogMessage msg{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)};
+    pImpl->enqueue_command(std::move(msg));
+}
+
+void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
+{
+    if (!pImpl || pImpl->done_.load(std::memory_order_relaxed))
+        return;
+
+    fmt::memory_buffer mb;
+    mb.append(body_str);
+    LogMessage msg{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(mb)};
     pImpl->enqueue_command(std::move(msg));
 }
 
