@@ -86,7 +86,6 @@ namespace pylabhub::utils
 
 // Forward declaration of the private implementation
 struct Impl;
-
 class PYLABHUB_UTILS_EXPORT Logger
 {
   public:
