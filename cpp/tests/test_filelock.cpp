@@ -76,9 +76,10 @@ static fs::path g_temp_dir;
 // --- Worker Process Logic ---
 
 #if defined(PLATFORM_WIN64)
-static HANDLE spawn_worker_process(const std::string &exe, const std::string &resource_path)
+static HANDLE spawn_worker_process(const std::string &exe, const std::string &mode,
+                                   const std::string &resource_path)
 {
-    std::string cmdline = fmt::format("\"{}\" worker \"{}\"", exe, resource_path);
+    std::string cmdline = fmt::format("\"{}\" {} \"{}\"", exe, mode, resource_path);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -95,22 +96,23 @@ static HANDLE spawn_worker_process(const std::string &exe, const std::string &re
     return pi.hProcess;
 }
 #else
-static pid_t spawn_worker_process(const std::string &exe, const std::string &resource_path)
+static pid_t spawn_worker_process(const std::string &exe, const std::string &mode,
+                                  const std::string &resource_path)
 {
     pid_t pid = fork();
     if (pid == 0)
     {
         // Child process
-        execl(exe.c_str(), exe.c_str(), "worker", resource_path.c_str(), nullptr);
+        execl(exe.c_str(), exe.c_str(), mode.c_str(), resource_path.c_str(), nullptr);
         _exit(127); // Should not be reached if execl is successful
     }
     return pid;
 }
 #endif
 
-// Worker mode: attempt NonBlocking FileLock on provided resource path.
+// Worker mode for non-blocking multi-process test: attempt NonBlocking FileLock
 // Returns 0 on success, non-zero on failure.
-static int worker_main(const std::string &resource_path_str)
+static int worker_main_nonblocking_test(const std::string &resource_path_str)
 {
     // Keep the logger quiet in worker processes unless there's an error.
     Logger::instance().set_level(Logger::Level::L_ERROR);
@@ -121,17 +123,14 @@ static int worker_main(const std::string &resource_path_str)
     {
         if (lock.error_code())
         {
-            // On failure, print the error to stderr for easier debugging in CI.
             std::string err_msg =
                 fmt::format("worker: failed to acquire lock: code={} msg='{}'\n",
                             lock.error_code().value(), lock.error_code().message());
 #if defined(PLATFORM_WIN64)
-            // On Windows, CreateProcess is used, so fmt::print to stderr is generally safe.
             fmt::print(stderr, "{}", err_msg);
             DWORD last = GetLastError();
             fmt::print(stderr, "worker: last error: {}\n", last);
 #else
-            // On POSIX, use write() for async-signal-safety.
             ::write(STDERR_FILENO, err_msg.c_str(), err_msg.length());
 #endif
         }
@@ -142,6 +141,39 @@ static int worker_main(const std::string &resource_path_str)
     std::this_thread::sleep_for(100ms);
     return 0;
 }
+
+// Worker mode for blocking multi-process contention test.
+// Acquires a blocking lock, increments a counter in a shared file.
+// Returns 0 on success.
+static int worker_main_blocking_contention(const std::string &counter_path_str, int num_iterations)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path counter_path(counter_path_str);
+
+    for (int i = 0; i < num_iterations; ++i)
+    {
+        FileLock lock(counter_path, ResourceType::File, LockMode::Blocking); // Blocking acquire
+        if (!lock.valid())
+        {
+            // This should not happen if the lock is working correctly.
+            return 1;
+        }
+
+        std::ifstream ifs(counter_path);
+        int current_value = 0;
+        if (ifs.is_open())
+        {
+            ifs >> current_value;
+            ifs.close();
+        }
+
+        std::ofstream ofs(counter_path);
+        ofs << (current_value + 1);
+        ofs.close();
+    }
+    return 0;
+}
+
 
 // --- Test Cases ---
 
@@ -370,6 +402,68 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     CHECK(success_count == 1);
 }
 
+void test_multiprocess_blocking_contention(const std::string &self_exe)
+{
+    auto counter_path = g_temp_dir / "counter.txt";
+    fs::remove(counter_path);
+
+    // Initialize counter file to 0
+    {
+        std::ofstream ofs(counter_path);
+        ofs << 0;
+    }
+
+    const int PROCS = 8;        // Number of worker processes
+    const int ITERS_PER_WORKER = 50; // Iterations each worker performs
+
+#if defined(PLATFORM_WIN64)
+    std::vector<HANDLE> procs;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        HANDLE h = spawn_worker_process(self_exe, "blocking_worker",
+                                       fmt::format("{} {}", counter_path.string(), ITERS_PER_WORKER));
+        CHECK(h != nullptr);
+        procs.push_back(h);
+    }
+
+    for (auto h : procs)
+    {
+        WaitForSingleObject(h, INFINITE);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(h, &exit_code);
+        CloseHandle(h);
+        CHECK(exit_code == 0); // Each worker must succeed
+    }
+#else
+    std::vector<pid_t> pids;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        pid_t pid = spawn_worker_process(self_exe, "blocking_worker",
+                                         fmt::format("{} {}", counter_path.string(), ITERS_PER_WORKER));
+        CHECK(pid > 0);
+        pids.push_back(pid);
+    }
+
+    for (pid_t pid : pids)
+    {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0); // Each worker must succeed
+    }
+#endif
+
+    // Verify final counter value
+    std::ifstream ifs(counter_path);
+    int final_value = 0;
+    if (ifs.is_open())
+    {
+        ifs >> final_value;
+        ifs.close();
+    }
+    CHECK(final_value == PROCS * ITERS_PER_WORKER);
+}
+
+
 void test_timed_lock()
 {
     auto resource_path = g_temp_dir / "timed.txt";
@@ -503,14 +597,28 @@ void test_directory_path_locking()
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && std::string(argv[1]) == "worker")
+    if (argc > 1)
     {
-        if (argc < 3)
+        std::string mode = argv[1];
+        if (mode == "nonblocking_worker")
         {
-            fmt::print(stderr, "Worker mode requires a resource path argument.\n");
-            return 2;
+            if (argc < 3)
+            {
+                fmt::print(stderr, "Worker mode requires a resource path argument.\n");
+                return 2;
+            }
+            return worker_main_nonblocking_test(argv[2]);
         }
-        return worker_main(argv[2]);
+        else if (mode == "blocking_worker")
+        {
+            if (argc < 4)
+            {
+                fmt::print(stderr, "Blocking worker mode requires counter path and iterations.\n");
+                return 2;
+            }
+            int iterations = std::stoi(argv[3]);
+            return worker_main_blocking_contention(argv[2], iterations);
+        }
     }
 
     fmt::print("--- FileLock Test Suite ---\n");
@@ -529,6 +637,8 @@ int main(int argc, char **argv)
     std::string self_exe = argv[0];
     TEST_CASE("Multi-Process Non-Blocking Lock",
               [&]() { test_multiprocess_nonblocking(self_exe); });
+    TEST_CASE("Multi-Process Blocking Contention (Counter)",
+              [&]() { test_multiprocess_blocking_contention(self_exe); });
 
     fmt::print("\n--- Test Summary ---\n");
     fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
