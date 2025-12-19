@@ -12,9 +12,8 @@
  * 1.  **Concurrency Model**:
  *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This mechanism does *not* provide mandatory locking against processes that do not respect this advisory lock.
  *     - **Intra-Process (Thread) Safety**: Employs a two-level locking scheme.
- *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant** operations like `init`, `save`, `reload`, `replace`, and move construction/assignment. This protects the object's structural integrity.
- *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json` data object for simple key-value accessors (`get`, `set`, etc.), allowing high-performance concurrent reads.
- *       - **IMPORTANT**: To achieve this performance, the caller must ensure that move operations on a `JsonConfig` object are externally synchronized with any concurrent access to that same object. Accessing an object while it is being moved from by another thread will result in undefined behavior.
+ *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant** operations like `init`, `save`, `reload`, and `replace`. This protects the object's structural integrity.
+ *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json` data object for simple key-value accessors (`get`, `set`, `with_json_read`, etc.), allowing high-performance concurrent reads.
  *
  * 2.  **Atomic On-Disk Writes**: The `save()` operation uses a robust
  *     `atomic_write_json` helper. This function writes the new content to a
@@ -97,13 +96,13 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     explicit JsonConfig(const std::filesystem::path &configFile);
     ~JsonConfig();
 
-    // Copying is disallowed. Moving is enabled but requires CAREFUL synchronization.
-    // See cpp/docs/README_utils.md for a detailed explanation of the risks
-    // associated with moving a JsonConfig object while it is in use by another thread.
+    // Copying and moving is disallowed to prevent race conditions and ensure
+    // that a single object instance manages a given configuration file.
+    // For ownership transfer, use std::unique_ptr<JsonConfig>.
     JsonConfig(const JsonConfig &) = delete;
     JsonConfig &operator=(const JsonConfig &) = delete;
-    JsonConfig(JsonConfig &&) noexcept;
-    JsonConfig &operator=(JsonConfig &&) noexcept;
+    JsonConfig(JsonConfig &&) = delete;
+    JsonConfig &operator=(JsonConfig &&) = delete;
 
     // Non-template operations (implemented in JsonConfig.cpp)
     bool init(const std::filesystem::path &configFile, bool createIfMissing);
@@ -245,8 +244,7 @@ template <typename F> bool JsonConfig::with_json_read(F &&cb) const noexcept
         }
         RecursionGuard guard(key);
 
-        // Ensure structural state is present before attempting to read
-        std::lock_guard<std::mutex> lg(pImpl->initMutex);
+        // Ensure the implementation object exists before attempting to read.
         if (!pImpl)
             return false;
 
