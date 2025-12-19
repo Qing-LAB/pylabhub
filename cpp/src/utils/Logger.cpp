@@ -486,8 +486,18 @@ Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
 
 Impl::~Impl()
 {
-    // Note: shutdown() should be called manually via pylabhub::utils::Finalize()
-    // This is a fallback for cases where it's not.
+    if (!shutdown_requested_.load())
+    {
+        // Shutdown was not called explicitly. This is not an error, but it's
+        // not recommended, as logs from other static destructors may be lost.
+        // The explicit pylabhub::utils::Finalize() function is the preferred way
+        // to ensure a clean shutdown.
+        fmt::print(stderr,
+                   "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
+                   "Call pylabhub::utils::Finalize() before main() returns to guarantee "
+                   "all logs are flushed.\n");
+    }
+    // Always call shutdown() as a fallback.
     shutdown();
 }
 
