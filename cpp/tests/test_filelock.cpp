@@ -174,6 +174,33 @@ static int worker_main_blocking_contention(const std::string &counter_path_str, 
     return 0;
 }
 
+// Worker for parent-child blocking test.
+// Acquires a lock and checks that it was forced to wait.
+static int worker_main_parent_child(const std::string &resource_path_str)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path resource_path(resource_path_str);
+
+    auto start = std::chrono::steady_clock::now();
+    FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
+    auto end = std::chrono::steady_clock::now();
+
+    if (!lock.valid())
+    {
+        return 1;
+    }
+
+    // Check that we actually blocked for a significant time.
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    if (duration.count() < 100)
+    {
+        fmt::print(stderr, "Child did not block as expected. Wait time: {}ms\n", duration.count());
+        return 2;
+    }
+
+    return 0;
+}
+
 
 // --- Test Cases ---
 
@@ -463,6 +490,42 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
     CHECK(final_value == PROCS * ITERS_PER_WORKER);
 }
 
+void test_multiprocess_parent_child_blocking(const std::string &self_exe)
+{
+    auto resource_path = g_temp_dir / "parent_child_block.txt";
+    fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
+
+    // 1. Parent acquires the lock
+    FileLock parent_lock(resource_path, ResourceType::File, LockMode::Blocking);
+    CHECK(parent_lock.valid());
+
+#if defined(PLATFORM_WIN64)
+    // 2. Spawn child, which will block
+    HANDLE child_proc = spawn_worker_process(self_exe, "parent_child_worker", resource_path.string());
+    CHECK(child_proc != nullptr);
+
+    // 3. Parent sleeps to ensure child has time to block
+    std::this_thread::sleep_for(200ms);
+
+    // 4. Parent releases lock
+    parent_lock = FileLock();
+
+    // 5. Child should now be able to acquire the lock and exit successfully.
+    WaitForSingleObject(child_proc, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(child_proc, &exit_code);
+    CloseHandle(child_proc);
+    CHECK(exit_code == 0);
+#else
+    pid_t pid = spawn_worker_process(self_exe, "parent_child_worker", resource_path.string());
+    CHECK(pid > 0);
+    std::this_thread::sleep_for(200ms);
+    parent_lock = FileLock();
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
+}
 
 void test_timed_lock()
 {
@@ -619,6 +682,15 @@ int main(int argc, char **argv)
             int iterations = std::stoi(argv[3]);
             return worker_main_blocking_contention(argv[2], iterations);
         }
+        else if (mode == "parent_child_worker")
+        {
+            if (argc < 3)
+            {
+                fmt::print(stderr, "Parent-child worker requires a resource path argument.\n");
+                return 2;
+            }
+            return worker_main_parent_child(argv[2]);
+        }
     }
 
     fmt::print("--- FileLock Test Suite ---\n");
@@ -639,6 +711,8 @@ int main(int argc, char **argv)
               [&]() { test_multiprocess_nonblocking(self_exe); });
     TEST_CASE("Multi-Process Blocking Contention (Counter)",
               [&]() { test_multiprocess_blocking_contention(self_exe); });
+    TEST_CASE("Multi-Process Parent-Child Blocking",
+              [&]() { test_multiprocess_parent_child_blocking(self_exe); });
 
     fmt::print("\n--- Test Summary ---\n");
     fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
