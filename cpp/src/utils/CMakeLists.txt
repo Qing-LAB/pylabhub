@@ -11,6 +11,7 @@ cmake_minimum_required(VERSION 3.18)
 # build script. This prevents "silent" build failures where new files are not
 # automatically compiled.
 set(UTILS_SOURCES
+  Lifecycle.cpp
   Logger.cpp
   JsonConfig.cpp
   FileLock.cpp

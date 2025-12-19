@@ -4,22 +4,84 @@ This document provides design and usage notes for the core C++ utilities found i
 
 ---
 
+## Library Lifecycle Management
+
+To ensure robust behavior and graceful shutdown of all components, particularly asynchronous systems like the `Logger`, the utility library provides explicit lifecycle functions. All applications using this library should call them.
+
+-   `pylabhub::utils::Initialize()`: Call this once at the beginning of your application (e.g., at the start of `main`). It ensures all subsystems are ready and runs any registered initializers.
+-   `pylabhub::utils::Finalize()`: Call this once at the very end of your application (e.g., before returning from `main`). It runs all registered finalizers and then guarantees that all pending operations, such as writing log messages, are completed before the program exits.
+
+### Extensibility with Registration Hooks
+
+You can register your own functions to be executed during the `Initialize` and `Finalize` phases.
+
+-   `RegisterInitializer(func)`: Registers a function to be run during initialization.
+-   `RegisterFinalizer(name, func, timeout)`: Registers a named cleanup function to be run during finalization. Finalizers are executed in **Last-In, First-Out (LIFO)** order.
+
+### Usage
+
+```cpp
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
+
+void my_cleanup_function() {
+    // ... clean up custom application resources ...
+}
+
+int main(int argc, char* argv[]) {
+    // Register a finalizer to be called during shutdown.
+    pylabhub::utils::RegisterFinalizer("MyCleanup", my_cleanup_function, std::chrono::seconds(2));
+
+    // Initialize the utility library at the start.
+    pylabhub::utils::Initialize();
+
+    // ... Application logic ...
+    LOGGER_INFO("Application is running.");
+
+    // Finalize the library at the end for graceful shutdown.
+    pylabhub::utils::Finalize();
+
+    return 0;
+}
+```
+
+---
+
+## `Logger`
+
+The `Logger` provides a high-performance, asynchronous, and thread-safe logging utility.
+
+### Design Philosophy
+
+The logger is built on a **command-queue pattern** to ensure that logging calls from application threads have minimal performance impact.
+
+1.  **Non-Blocking API**: Calls like `LOGGER_INFO(...)` are lightweight. They simply package the log message into a command and place it on a queue.
+2.  **Dedicated Worker Thread**: A single background thread is the sole consumer of this queue. It handles all I/O (writing to the console or files), isolating I/O latency from the main application and eliminating complex locking around file handles.
+3.  **Sink Abstraction**: A `Sink` base class allows for easy extension to different logging destinations (e.g., `ConsoleSink`, `FileSink`, `SyslogSink`).
+
+This asynchronous design makes the logger safe for high-throughput applications and prevents logging from becoming a performance bottleneck. Graceful shutdown is managed by the library's `Finalize()` function.
+
+---
+
 ## `JsonConfig`
 
 The `JsonConfig` class provides a robust, thread-safe, and process-safe interface for managing JSON configuration files.
 
 ### Design Philosophy
 
-- **Concurrency:** The class is designed for heavy concurrent use, both from multiple threads within a single process and from multiple cooperating processes.
-- **Robustness:** On-disk file writes are atomic, ensuring that the configuration file is never left in a partially-written or corrupt state, even if the application crashes.
-- **Safety:** The public API is `noexcept`, catching internal errors and translating them into simple boolean return values to prevent exceptions from propagating into consumer code.
-- **ABI Stability:** The library is designed to maintain a stable Application Binary Interface (ABI), which is critical for a shared library that may be updated without forcing consumers to recompile. This is achieved through two complementary techniques:
-    1.  **Pimpl Idiom (`std::unique_ptr<Impl>`)**: All private data members are hidden within a forward-declared `Impl` struct. This means the size and memory layout of the public class (`JsonConfig`) never changes, even if internal variables are added or removed.
-    2.  **Controlled Symbol Export**: The library's build system automatically generates a `pylabhub_utils_export.h` header. Every public class intended for use by consumers is explicitly marked with the `PYLABHUB_UTILS_EXPORT` macro. On Windows, this expands to `__declspec(dllexport)` or `__declspec(dllimport)`, and on other platforms, it controls symbol visibility. This practice ensures that only the intended classes are part of the public API, preventing internal implementation details from accidentally becoming part of the library's ABI.
+-   **Safety and Concurrency**: The class is designed for heavy concurrent use. To guarantee safety, it is **non-movable and non-copyable**. For ownership transfer (e.g., from a factory function), `std::unique_ptr<JsonConfig>` should be used. This design choice completely eliminates a class of potential race conditions.
+-   **Robustness**: On-disk file writes are atomic (via a write-to-temporary-and-rename pattern), ensuring the configuration file is never left in a corrupt state, even if the application crashes.
+-   **Exception Safety**: The public API is `noexcept`, catching internal errors (e.g., from file I/O or JSON parsing) and translating them into simple boolean return values.
+-   **ABI Stability**: The class uses the Pimpl idiom (`std::unique_ptr<Impl>`) and controlled symbol exports to maintain a stable Application Binary Interface (ABI), which is critical for a shared library.
 
 ### Concurrency Model
 
-`JsonConfig` uses a sophisticated two-level locking strategy to balance performance and safety.
+`JsonConfig` uses a two-level locking strategy:
+
+1.  **Inter-Process Safety**: An advisory `FileLock` is used for all disk operations to coordinate safely between multiple processes.
+2.  **Intra-Process Safety**:
+    -   A coarse-grained `std::mutex` (`initMutex`) serializes structurally significant operations like `init`, `save`, and `reload`.
+    -   A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal JSON data for all accessor methods (`get`, `set`, `with_json_read`, etc.), allowing for high-performance, concurrent reads.
 
 ---
 
@@ -29,58 +91,22 @@ The `JsonConfig` class provides a robust, thread-safe, and process-safe interfac
 
 ### Design Philosophy & Usage
 
-- **RAII (Resource Acquisition Is Initialization):** The lock is acquired in the constructor and automatically released when the object goes out of scope. This prevents leaked locks, even in the presence of exceptions or errors.
+-   **RAII (Resource Acquisition Is Initialization):** The lock is acquired in the constructor and automatically released when the object goes out of scope, preventing leaked locks.
+-   **Advisory Nature:** It only prevents contention between processes that *also* use `FileLock`. It does not use mandatory OS-level locks.
+-   **Cross-Platform:** It provides a unified interface over `flock()` on POSIX systems and `LockFileEx()` on Windows.
+-   **Two-Level Locking:** It correctly handles both multi-process and multi-thread contention by using a combination of an OS-level file lock and a process-local mutex registry.
 
-- **Explicit Resource Type:** The constructor requires you to explicitly state whether you are locking a `File` or a `Directory`. This makes the API safer and more self-documenting.
+---
 
-  ```cpp
-  using pylabhub::utils::FileLock;
-  using pylabhub::utils::ResourceType;
+## `AtomicGuard`
 
-  {
-      // Lock a file resource
-      FileLock lock("/path/to/resource.txt", ResourceType::File);
-      if (lock.valid()) {
-          // Lock acquired, proceed with critical section
-      } else {
-          // Failed to acquire lock, handle error
-      }
-  } // Lock is automatically released here
-  ```
+`AtomicGuard` is a high-performance, token-based ownership guard for managing exclusive access to a resource in a concurrent environment.
 
-- **Advisory Nature:** `FileLock` only prevents contention between processes that *also* use `FileLock`. It does not use mandatory OS-level locks and will not prevent a non-cooperating process from accessing the target resource.
+### Design Philosophy
 
-- **Cross-Platform:** It provides a unified interface over `flock()` on POSIX systems and `LockFileEx()` on Windows.
+-   **Hybrid Concurrency**: It uses a lock-free fast path (a single atomic compare-and-swap) for the common cases of `acquire()` and `release()`, ensuring minimal overhead. Complex operations like ownership transfer (`transfer_to`) use a blocking mutex to ensure correctness.
+-   **RAII and Movability**: The guard follows RAII principles for automatic lock release. It is movable (`std::move`) to support modern C++ patterns like returning from factory functions, but it is not copyable.
+-   **ABI Stability**: It uses the Pimpl idiom to guarantee ABI stability for the shared library.
 
-- **Locking Strategy:** To avoid interfering with the target resource, `FileLock` operates on a separate, empty lock file. The naming convention is designed to be unambiguous and prevent collisions between file and directory targets based on the `ResourceType` provided:
-  - **`ResourceType::File`:** For a target file like `/path/to/data.json`, the lock file is created as `/path/to/data.json.lock`.
-  - **`ResourceType::Directory`:** For a target directory like `/path/to/my_dir`, the lock file is created as `/path/to/my_dir.dir.lock`.
+It is a sophisticated utility designed for building higher-level concurrency primitives.
 
-- **Locking Modes:** The constructor accepts a `LockMode` to control its behavior when a lock is already held:
-  - `LockMode::Blocking`: (Default) Waits indefinitely until the lock can be acquired.
-  - `LockMode::NonBlocking`: Returns immediately if the lock cannot be acquired. `valid()` will be `false`.
-  - **Timed:** A constructor overload accepts a `std::chrono::milliseconds` duration, attempting to acquire the lock until the timeout expires.
-
-### Concurrency Model
-
-`FileLock` uses a two-level locking strategy to ensure correctness for both multi-threaded and multi-process scenarios:
-
-1.  **Process-Local Lock:** An in-memory, thread-safe registry (`std::mutex` and `std::condition_variable`) is used to serialize lock attempts *within the same process*. This is critical for providing consistent behavior on platforms like Windows where native file locks are per-process and do not block other threads in the same process.
-
-2.  **OS-Level Lock:** Once the process-local lock is acquired, the class attempts to acquire the system-wide OS lock (`flock`/`LockFileEx`) on the designated `.lock` or `.dir.lock` file. This handles contention between different processes.
-
-#### Critical Risk Analysis: Concurrent Move Operations
-
-The high-performance locking model (using `rwMutex` for simple accessors) introduces a critical rule for users of the class:
-
-**WARNING: You MUST externally synchronize move operations.**
-
-
-If one thread attempts to move a `JsonConfig` object while another thread is calling any method on it, a **use-after-free** memory error will occur, leading to a crash.
-
-**Scenario:**
-1.  **Thread A** calls `config.get("key")` and passes the initial checks.
-2.  **Thread B** executes `JsonConfig new_config = std::move(config);`. This action transfers the internal implementation pointer from `config` to `new_config` and deallocates the memory `config` was managing.
-3.  **Thread A** resumes execution and attempts to access its now-dangling internal pointer, causing a crash.
-
-This is a deliberate design trade-off that prioritizes performance. The responsibility is on the consumer to ensure that an object is not being used by one thread while being moved by another. For long-lived, shared objects (like a global configuration singleton), consider making the object `const` or avoiding move operations after initialization.

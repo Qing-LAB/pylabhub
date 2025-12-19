@@ -291,43 +291,6 @@ void test_recursion_guard()
     CHECK(!cfg.has("b")); // The nested set should not have taken effect.
 }
 
-void test_move_semantics()
-{
-    auto cfg_path = g_temp_dir / "move.json";
-    fs::remove(cfg_path);
-
-    // Test move construction
-    {
-        JsonConfig cfg1;
-        cfg1.init(cfg_path, true);
-        cfg1.set("val", 1);
-        CHECK(cfg1.has("val"));
-
-        JsonConfig cfg2(std::move(cfg1));
-        CHECK(cfg2.has("val"));
-        int val = 0;
-        CHECK(cfg2.get("val", val));
-        CHECK(val == 1);
-        // cfg1 is now in a moved-from state, operations should fail gracefully.
-        CHECK(!cfg1.has("val"));
-        CHECK(!cfg1.save());
-    } // cfg2 is destroyed, its Pimpl is valid. cfg1's destructor is a no-op.
-
-    // Test move assignment
-    {
-        JsonConfig cfg3;
-        cfg3.init(cfg_path, true);
-        cfg3.set("val", 3);
-
-        JsonConfig cfg4; // Default constructed
-        cfg4 = std::move(cfg3);
-        int val = 0;
-        CHECK(cfg4.get("val", val));
-        CHECK(val == 3);
-        CHECK(!cfg3.has("val"));
-    }
-}
-
 void test_multithread_contention()
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
@@ -556,7 +519,6 @@ int main(int argc, char **argv)
     TEST_CASE("Basic Accessors (get/set/has/erase/update)", test_basic_accessors);
     TEST_CASE("Reload from External Change", test_reload);
     TEST_CASE("Recursion Guard Deadlock Prevention", test_recursion_guard);
-    TEST_CASE("Move Semantics", test_move_semantics);
     TEST_CASE("Multi-Threaded Contention", test_multithread_contention);
 
     std::string exe_path = argv[0];
