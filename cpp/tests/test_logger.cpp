@@ -524,6 +524,79 @@ void test_multiprocess_logging()
     std::remove(g_log_path.string().c_str());
 }
 
+void test_concurrent_lifecycle_chaos()
+{
+    // This test spawns multiple threads to hammer the logger with different
+    // operations concurrently: logging, flushing, and reconfiguring. A final
+    // thread calls shutdown. The test passes if it completes without crashing,
+    // hanging, or triggering a sanitizer.
+    std::atomic<bool> stop_flag = false;
+    const int DURATION_MS = 500;
+
+    auto worker = [&](int id, auto fn)
+    {
+        while (!stop_flag.load(std::memory_order_relaxed))
+        {
+            fn(id);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    // 4 logging threads
+    for (int i = 0; i < 4; ++i)
+    {
+        threads.emplace_back(worker, i,
+                             [](int id)
+                             {
+                                 LOGGER_INFO("chaos-log-{}: message", id);
+                                 std::this_thread::sleep_for(std::chrono::microseconds(500));
+                             });
+    }
+    // 2 flushing threads
+    for (int i = 0; i < 2; ++i)
+    {
+        threads.emplace_back(worker, i,
+                             [](int)
+                             {
+                                 Logger::instance().flush();
+                                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                             });
+    }
+    // 2 config threads
+    for (int i = 0; i < 2; ++i)
+    {
+        threads.emplace_back(worker, i,
+                             [&](int id)
+                             {
+                                 if (id % 2 == 0)
+                                 {
+                                     Logger::instance().set_console();
+                                 }
+                                 else
+                                 {
+                                     Logger::instance().set_logfile(g_log_path.string());
+                                 }
+                                 Logger::instance().set_write_error_callback(nullptr);
+                                 std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                             });
+    }
+
+    // Let the chaos run for a bit
+    std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
+
+    // Signal shutdown
+    Logger::instance().shutdown();
+    stop_flag.store(true);
+
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+
+    CHECK(true); // Pass if we didn't crash or hang
+}
+
+
 // --- Test Runner ---
 
 void run_test_in_process(const std::string &test_name)
@@ -618,6 +691,8 @@ int main(int argc, char **argv)
             test_shutdown_idempotency();
         else if (test_name == "test_reentrant_error_callback")
             test_reentrant_error_callback();
+        else if (test_name == "test_concurrent_lifecycle_chaos")
+            test_concurrent_lifecycle_chaos();
         else if (test_name == "test_write_error_callback_async")
             test_write_error_callback_async();
         else if (test_name == "test_platform_sinks")
@@ -652,6 +727,7 @@ int main(int argc, char **argv)
                                                  "test_flush_waits_for_queue",
                                                  "test_shutdown_idempotency",
                                                  "test_reentrant_error_callback",
+                                                 "test_concurrent_lifecycle_chaos",
                                                  "test_write_error_callback_async",
                                                  "test_platform_sinks",
                                                  "test_multiprocess_logging"};
