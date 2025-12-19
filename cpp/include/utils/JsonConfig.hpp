@@ -10,10 +10,19 @@
  * handling both in-process (multi-threaded) and cross-process concurrency.
  *
  * 1.  **Concurrency Model**:
- *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This mechanism does *not* provide mandatory locking against processes that do not respect this advisory lock.
+ *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other
+ * processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the
+ * configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a
+ * non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This
+ * mechanism does *not* provide mandatory locking against processes that do not respect this
+ * advisory lock.
  *     - **Intra-Process (Thread) Safety**: Employs a two-level locking scheme.
- *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant** operations like `init`, `save`, `reload`, and `replace`. This protects the object's structural integrity.
- *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json` data object for simple key-value accessors (`get`, `set`, `with_json_read`, etc.), allowing high-performance concurrent reads.
+ *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant**
+ * operations like `init`, `save`, `reload`, and `replace`. This protects the object's structural
+ * integrity.
+ *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json`
+ * data object for simple key-value accessors (`get`, `set`, `with_json_read`, etc.), allowing
+ * high-performance concurrent reads.
  *
  * 2.  **Atomic On-Disk Writes**: The `save()` operation uses a robust
  *     `atomic_write_json` helper. This function writes the new content to a
@@ -135,8 +144,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
 
     // Provides a safe, non-throwing way to retrieve a value.
     // Returns true on success, false if key is not found or type conversion fails.
-    template <typename T>
-    bool get(const std::string &key, T &out_value) const noexcept;
+    template <typename T> bool get(const std::string &key, T &out_value) const noexcept;
 
     // Returns the value for a given key, or a default value if the key does not
     // exist or a type conversion error occurs.
@@ -156,7 +164,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         std::filesystem::path configPath;
         nlohmann::json data;
         mutable std::shared_mutex rwMutex; // Protects `data` for fine-grained reads/writes.
-        mutable std::mutex initMutex;      // Protects all structural state and serializes lifecycle/structural operations.
+        mutable std::mutex initMutex;      // Protects all structural state and serializes
+                                           // lifecycle/structural operations.
         std::atomic<bool> dirty{false};    // true if memory may be newer than disk
 
         Impl() : data(json::object()) {}
@@ -185,7 +194,8 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
     // Detect and refuse nested calls on the same instance for this thread to prevent deadlocks.
     if (RecursionGuard::is_recursing(key))
     {
-        LOGGER_WARN("JsonConfig::with_json_write - nested call detected on same instance; refusing to re-enter.");
+        LOGGER_WARN("JsonConfig::with_json_write - nested call detected on same instance; refusing "
+                    "to re-enter.");
         return false;
     }
     RecursionGuard guard(key);
@@ -239,7 +249,8 @@ template <typename F> bool JsonConfig::with_json_read(F &&cb) const noexcept
         // Detect and refuse nested calls to prevent deadlocks.
         if (RecursionGuard::is_recursing(key))
         {
-            LOGGER_WARN("JsonConfig::with_json_read - nested call detected on same instance; refusing to re-enter.");
+            LOGGER_WARN("JsonConfig::with_json_read - nested call detected on same instance; "
+                        "refusing to re-enter.");
             return false;
         }
         RecursionGuard guard(key);
@@ -296,8 +307,7 @@ template <typename T> bool JsonConfig::set(const std::string &key, T const &valu
     }
 }
 
-template <typename T>
-bool JsonConfig::get(const std::string &key, T &out_value) const noexcept
+template <typename T> bool JsonConfig::get(const std::string &key, T &out_value) const noexcept
 {
     try
     {

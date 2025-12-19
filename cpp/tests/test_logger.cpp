@@ -26,8 +26,8 @@
 #include <windows.h>
 #else
 #include <cerrno>      // For EACCES
-#include <fcntl.h>       // For open()
-#include <signal.h>      // For kill()
+#include <fcntl.h>     // For open()
+#include <signal.h>    // For kill()
 #include <sys/stat.h>  // For chmod, S_IRUSR, etc.
 #include <sys/types.h> // For pid_t
 #include <sys/wait.h>  // For waitpid() and associated macros
@@ -47,7 +47,7 @@ static int tests_failed = 0;
         if (!(condition))                                                                          \
         {                                                                                          \
             tests_failed++;                                                                        \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);  \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
             exit(1);                                                                               \
         }                                                                                          \
     } while (0)
@@ -56,7 +56,7 @@ static int tests_failed = 0;
     do                                                                                             \
     {                                                                                              \
         tests_failed++;                                                                            \
-        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);              \
+        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);               \
         exit(1);                                                                                   \
     } while (0)
 
@@ -88,7 +88,7 @@ static size_t count_lines(const std::string &s)
     return count;
 }
 
-static bool wait_for_string_in_file(const fs::path &path, const std::string &expected, \
+static bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
                                     std::chrono::milliseconds timeout = std::chrono::seconds(5))
 {
     auto start = std::chrono::steady_clock::now();
@@ -257,8 +257,10 @@ void test_multithread_stress()
         if (contents.find(fmt::format("thread {} message", t)) != std::string::npos)
         {
             found_threads++;
+            fmt::print("Found thread {} in log\n", t);
         }
     }
+    fmt::print("Total threads found so far: {}\n", found_threads);
     CHECK(found_threads == LOG_THREADS);
     CHECK(contents.find("Switched log to Console") != std::string::npos);
     CHECK(contents.find("Switched log to file") != std::string::npos);
@@ -293,9 +295,8 @@ void test_write_error_callback_async()
 {
 #if defined(_WIN32)
     std::remove(g_log_path.string().c_str());
-    HANDLE h =
-        CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS, 
-                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
     CHECK(h != INVALID_HANDLE_VALUE);
 
     Logger &L = Logger::instance();
@@ -401,7 +402,7 @@ void test_multiprocess_logging()
         PROCESS_INFORMATION pi{};
         si.cb = sizeof(si);
         if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-                             &si, &pi))
+                            &si, &pi))
         {
             FAIL_TEST("CreateProcessA failed");
         }
@@ -468,7 +469,7 @@ void run_test_in_process(const std::string &test_name)
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
     if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
-                         &pi))
+                        &pi))
     {
         tests_failed++;
         fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\n", GetLastError());
@@ -485,10 +486,10 @@ void run_test_in_process(const std::string &test_name)
         fmt::print("  --- PASSED ---\n");
     }
     else
-        {
+    {
         tests_failed++;
         fmt::print(stderr, "  --- FAILED in child process ---\n");
-        }
+    }
 #else
     pid_t pid = fork();
     if (pid == -1)
@@ -571,12 +572,15 @@ int main(int argc, char **argv)
     }
 
     fmt::print("--- Logger Test Suite (Process-Isolated) ---\n");
-    const std::vector<std::string> test_names = {
-        "test_basic_logging",          "test_log_level_filtering",
-        "test_bad_format_string",      "test_default_sink_and_switching",
-        "test_multithread_stress",     "test_flush_waits_for_queue",
-        "test_write_error_callback_async", "test_platform_sinks",
-        "test_multiprocess_logging"};
+    const std::vector<std::string> test_names = {"test_basic_logging",
+                                                 "test_log_level_filtering",
+                                                 "test_bad_format_string",
+                                                 "test_default_sink_and_switching",
+                                                 "test_multithread_stress",
+                                                 "test_flush_waits_for_queue",
+                                                 "test_write_error_callback_async",
+                                                 "test_platform_sinks",
+                                                 "test_multiprocess_logging"};
 
     for (const auto &name : test_names)
     {

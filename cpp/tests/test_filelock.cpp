@@ -122,9 +122,9 @@ static int worker_main(const std::string &resource_path_str)
         if (lock.error_code())
         {
             // On failure, print the error to stderr for easier debugging in CI.
-            std::string err_msg = fmt::format("worker: failed to acquire lock: code={} msg='{}'\n",
-                                              lock.error_code().value(),
-                                              lock.error_code().message());
+            std::string err_msg =
+                fmt::format("worker: failed to acquire lock: code={} msg='{}'\n",
+                            lock.error_code().value(), lock.error_code().message());
 #if defined(PLATFORM_WIN64)
             // On Windows, CreateProcess is used, so fmt::print to stderr is generally safe.
             fmt::print(stderr, "{}", err_msg);
@@ -181,8 +181,8 @@ void test_blocking_lock()
         [&]()
         {
             auto start = std::chrono::steady_clock::now();
-            FileLock thread_lock(
-                resource_path, ResourceType::File, LockMode::Blocking); // This should block
+            FileLock thread_lock(resource_path, ResourceType::File,
+                                 LockMode::Blocking); // This should block
             auto end = std::chrono::steady_clock::now();
 
             CHECK(thread_lock.valid());
@@ -394,8 +394,7 @@ void test_timed_lock()
     FileLock timed_lock_succeed(resource_path, ResourceType::File, 100ms);
     if (!timed_lock_succeed.valid())
     {
-        fmt::print(stderr,
-                   "  timed_lock_succeed failed with error: {}\n",
+        fmt::print(stderr, "  timed_lock_succeed failed with error: {}\n",
                    timed_lock_succeed.error_code().message());
     }
     CHECK(timed_lock_succeed.valid());
@@ -421,9 +420,8 @@ void test_directory_path_locking()
         CHECK(fs::exists(expected_lock_file));
         CHECK(!fs::exists(regular_file_lock_path));
 
-        FileLock non_conflicting_lock(
-            g_temp_dir / "dir_to_lock", ResourceType::File,
-            LockMode::NonBlocking);
+        FileLock non_conflicting_lock(g_temp_dir / "dir_to_lock", ResourceType::File,
+                                      LockMode::NonBlocking);
         CHECK(non_conflicting_lock.valid());
     }
 
@@ -432,14 +430,15 @@ void test_directory_path_locking()
         fs::path cwd = fs::current_path();
         auto expected_lock_file =
             FileLock::get_expected_lock_fullname_for(".", ResourceType::Directory);
-        fmt::print(
-            "  - CWD: '{}', expecting lock: '{}'\n", cwd.string(), expected_lock_file.string());
+        fmt::print("  - CWD: '{}', expecting lock: '{}'\n", cwd.string(),
+                   expected_lock_file.string());
 
         FileLock lock(".", ResourceType::Directory, LockMode::NonBlocking);
         CHECK(lock.valid());
         CHECK(fs::exists(expected_lock_file));
-        lock = FileLock("non_existence_removal", ResourceType::File, LockMode::NonBlocking);            // Release lock
-        fs::remove(expected_lock_file); // Clean up for next test
+        lock = FileLock("non_existence_removal", ResourceType::File,
+                        LockMode::NonBlocking); // Release lock
+        fs::remove(expected_lock_file);         // Clean up for next test
     }
 
 #if !defined(PLATFORM_WIN64)
@@ -465,8 +464,7 @@ void test_directory_path_locking()
         fs::path correct_root_lock_file = "/pylabhub_root.dir.lock";
 
         fmt::print("  - Path to root: '{}', expecting lock file: '{}', generated: '{}'\n",
-                   path_to_root.string(),
-                   correct_root_lock_file.string(),
+                   path_to_root.string(), correct_root_lock_file.string(),
                    generated_lock_file.string());
 
         CHECK(generated_lock_file == correct_root_lock_file);

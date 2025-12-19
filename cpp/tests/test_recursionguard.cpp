@@ -2,12 +2,12 @@
 // Unit test for pylabhub::utils::RecursionGuard
 
 #include "utils/RecursionGuard.hpp"
+#include <fmt/core.h>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
-#include <fmt/core.h>
-#include <memory>
 
 using namespace pylabhub::utils;
 
@@ -68,7 +68,6 @@ void recursive_function(int depth, bool expect_recursing)
         recursive_function(depth - 1, /*expect_recursing=*/true);
     }
 }
-
 
 void test_single_object_recursion()
 {
