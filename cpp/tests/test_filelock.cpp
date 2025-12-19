@@ -363,7 +363,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, resource_path.string());
+        HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker", resource_path.string());
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -383,7 +383,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<pid_t> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(self_exe, resource_path.string());
+        pid_t pid = spawn_worker_process(self_exe, "nonblocking_worker", resource_path.string());
         CHECK(pid > 0);
         pids.push_back(pid);
     }
