@@ -229,7 +229,8 @@ class PYLABHUB_UTILS_EXPORT Logger
     {
         log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void system_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args>
+    void system_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_SYSTEM, fmt_str, std::forward<Args>(args)...);
     }

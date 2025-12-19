@@ -21,7 +21,8 @@
  *
  * int main(int argc, char* argv[]) {
  *     // Register a finalizer to be called during shutdown.
- *     pylabhub::utils::RegisterFinalizer("MyCleanup", my_cleanup_function, std::chrono::seconds(2));
+ *     pylabhub::utils::RegisterFinalizer("MyCleanup", my_cleanup_function,
+ * std::chrono::seconds(2));
  *
  *     // Initialize the utility library at the start.
  *     pylabhub::utils::Initialize();
@@ -83,8 +84,7 @@ PYLABHUB_UTILS_EXPORT void RegisterInitializer(std::function<void()> func);
  * @param timeout The maximum time to wait for the function to complete. If it
  *                times out, the shutdown process will log a warning and continue.
  */
-PYLABHUB_UTILS_EXPORT void RegisterFinalizer(std::string name,
-                                             std::function<void()> func,
+PYLABHUB_UTILS_EXPORT void RegisterFinalizer(std::string name, std::function<void()> func,
                                              std::chrono::milliseconds timeout);
 
 } // namespace pylabhub::utils

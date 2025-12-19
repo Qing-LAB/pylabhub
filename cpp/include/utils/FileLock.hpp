@@ -94,9 +94,8 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * @param type The type of the resource.
      * @return The absolute path to the corresponding lock file.
      */
-    static std::filesystem::path get_expected_lock_fullname_for(
-        const std::filesystem::path &path,
-        ResourceType type) noexcept;
+    static std::filesystem::path get_expected_lock_fullname_for(const std::filesystem::path &path,
+                                                                ResourceType type) noexcept;
 
     /**
      * @brief Constructs a FileLock and attempts to acquire the lock.
@@ -105,8 +104,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
      *             the lock file's naming convention.
      * @param mode The locking mode (Blocking or NonBlocking).
      */
-    explicit FileLock(const std::filesystem::path &path,
-                      ResourceType type,
+    explicit FileLock(const std::filesystem::path &path, ResourceType type,
                       LockMode mode = LockMode::Blocking) noexcept;
 
     /**
@@ -116,8 +114,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
      *             the lock file's naming convention.
      * @param timeout The maximum duration to wait for the lock.
      */
-    explicit FileLock(const std::filesystem::path &path,
-                      ResourceType type,
+    explicit FileLock(const std::filesystem::path &path, ResourceType type,
                       std::chrono::milliseconds timeout) noexcept;
 
     /// @brief Move constructor. Transfers ownership of an existing lock.

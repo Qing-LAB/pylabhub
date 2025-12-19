@@ -6,8 +6,8 @@
  ******************************************************************************/
 
 #include <algorithm> // for std::find
-#include <vector>
 #include <type_traits>
+#include <vector>
 
 namespace pylabhub::utils
 {
@@ -50,10 +50,7 @@ class RecursionGuard
 {
   public:
     // RAII guard. Pushes key onto thread-local stack on construction, pops on destruction.
-    explicit RecursionGuard(const void *key) : key_(key)
-    {
-        get_recursion_stack().push_back(key_);
-    }
+    explicit RecursionGuard(const void *key) : key_(key) { get_recursion_stack().push_back(key_); }
     // Destructor must not throw. Vector operations on pointers are noexcept on
     // all mainstream implementations, but wrap defensively to guarantee noexcept.
     ~RecursionGuard() noexcept
