@@ -664,11 +664,11 @@ void Impl::shutdown()
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger()
 {
-    if (pImpl)
-    {
-        // Fallback shutdown for cases where Finalize() is not used
-        pImpl->shutdown();
-    }
+    // The std::unique_ptr<Impl> pImpl is destroyed here.
+    // This automatically calls the Impl destructor (~Impl), which contains
+    // the shutdown logic (joining threads, flushing, and issuing warnings
+    // if explicit shutdown was not performed).
+    // No explicit call to pImpl->shutdown() is needed here.
 }
 
 Logger &Logger::instance()

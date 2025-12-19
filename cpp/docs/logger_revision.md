@@ -22,6 +22,11 @@ The only lock acquired by application threads is a brief, short-lived lock to pu
 
 Methods like `set_logfile` or `set_console` are now fully asynchronous. They return immediately after queueing a command for the worker to execute, preventing the application from stalling on I/O.
 
+### 1.5 Asynchronous Error Handling
+To prevent a critical class of deadlocks, sink I/O errors are handled via a second, dedicated dispatcher thread. If an error occurs in the main worker thread (e.g., a file cannot be written to), the user-provided error callback is not invoked directly. Instead, it is posted to a `CallbackDispatcher` queue.
+
+This dispatcher's sole purpose is to execute these callbacks on its own thread, completely decoupling them from the logger's primary worker. This design makes it safe for the user's error callback to make re-entrant calls back to the logger (e.g., `LOGGER_ERROR("Sink failure detected!")`) without causing the application to hang.
+
 ## 2. API Overview
 
 The public API remains conceptually similar but is now fully asynchronous.
@@ -29,7 +34,7 @@ The public API remains conceptually similar but is now fully asynchronous.
 - `set_console()`, `set_logfile()`, `set_syslog()`, `set_eventlog()`: Non-blocking methods that queue a command for the worker to switch the active sink.
 - `log_...()` / `LOGGER_...` macros: Non-blocking calls that queue a log message.
 - `flush()`: A synchronous, blocking call that waits until the worker has processed all commands currently in the queue.
-- `shutdown()`: A synchronous call that flushes the queue and then permanently stops the worker thread, ensuring a graceful exit.
+- `shutdown()`: A synchronous, idempotent call that performs a graceful two-phase shutdown. It first stops the main logger thread, ensuring all messages are flushed, and then stops the error callback dispatcher thread.
 
 ## 3. Thread Safety & Deadlock Resolution
 
@@ -37,6 +42,7 @@ The previous design suffered from deadlocks due to complex interactions between 
 
 - **Serialization**: All operations are serialized into a single command queue, executed in order by one thread. There is no possibility of a `set_logfile` operation racing with a `write` operation, as they are handled sequentially.
 - **No Contention**: Since only the worker thread opens/closes/writes to files, there is no inter-thread contention for I/O resources, and thus no need for complex locking around them. The `flock`-related deadlock is now impossible.
+- **Re-entrancy Safety**: The `CallbackDispatcher` ensures that user-provided error callbacks can safely call back into the logger without causing a deadlock, as the callback is executed on a different thread.
 
 ## 4. PImpl and ABI Safety
 
@@ -47,3 +53,10 @@ The new design maintains the PImpl (`std::unique_ptr<Impl>`) idiom to ensure a s
 - The `Logger` destructor is correctly defined in the `.cpp` file, ensuring the `Impl` can be safely destroyed without its definition being exposed in the public header.
 
 This maintains the strong ABI compatibility guarantees of the original design.
+
+## 5. Lifecycle Management
+
+To prevent log messages from being lost during static deinitialization, the logger's lifecycle should be managed explicitly by the application.
+
+- **`pylabhub::utils::Finalize()`**: This function should be called before `main()` returns. It guarantees that the logger is shut down gracefully, flushing all pending messages and callbacks.
+- **Destructor Fallback and Warning**: If `Finalize()` is not called, the `Logger`'s destructor will still trigger a safe shutdown to prevent resource leaks or crashes. However, it will also print a warning to `stderr` to alert the developer that the explicit shutdown was missed, as messages from other static destructors may have been lost. This encourages correct library usage.

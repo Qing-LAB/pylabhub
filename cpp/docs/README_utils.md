@@ -11,6 +11,8 @@ To ensure robust behavior and graceful shutdown of all components, particularly 
 -   `pylabhub::utils::Initialize()`: Call this once at the beginning of your application (e.g., at the start of `main`). It ensures all subsystems are ready and runs any registered initializers.
 -   `pylabhub::utils::Finalize()`: Call this once at the very end of your application (e.g., before returning from `main`). It runs all registered finalizers and then guarantees that all pending operations, such as writing log messages, are completed before the program exits.
 
+**Note on Implicit Shutdown:** If `Finalize()` is not called, the destructors of static objects (like the Logger) will still perform a cleanup to prevent resource leaks or crashes. However, a warning message will be printed to `stderr` to alert the developer, as log messages from other static destructors may be lost. Using `Finalize()` is the only way to guarantee a predictable shutdown order.
+
 ### Extensibility with Registration Hooks
 
 You can register your own functions to be executed during the `Initialize` and `Finalize` phases.
@@ -58,6 +60,7 @@ The logger is built on a **command-queue pattern** to ensure that logging calls 
 1.  **Non-Blocking API**: Calls like `LOGGER_INFO(...)` are lightweight. They simply package the log message into a command and place it on a queue.
 2.  **Dedicated Worker Thread**: A single background thread is the sole consumer of this queue. It handles all I/O (writing to the console or files), isolating I/O latency from the main application and eliminating complex locking around file handles.
 3.  **Sink Abstraction**: A `Sink` base class allows for easy extension to different logging destinations (e.g., `ConsoleSink`, `FileSink`, `SyslogSink`).
+4.  **Asynchronous Error Handling**: To prevent deadlocks, sink I/O errors are handled by a second dispatcher thread. This makes it safe for a user's error callback to make re-entrant calls back into the logger without hanging the application.
 
 This asynchronous design makes the logger safe for high-throughput applications and prevents logging from becoming a performance bottleneck. Graceful shutdown is managed by the library's `Finalize()` function.
 
