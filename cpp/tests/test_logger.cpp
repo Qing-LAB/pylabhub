@@ -207,9 +207,9 @@ void test_multithread_stress()
     L.set_level(Logger::Level::L_DEBUG);
     CHECK(wait_for_string_in_file(g_log_path, "Switched log to file"));
 
-    const int LOG_THREADS = 16;
-    const int MESSAGES_PER_THREAD = 500;
-    const int SINK_SWITCHES = 50;
+    const int LOG_THREADS = 32;
+    const int MESSAGES_PER_THREAD = 1000;
+    const int SINK_SWITCHES = 100;
 
     std::vector<std::thread> threads;
     threads.reserve(LOG_THREADS + 1);
@@ -254,13 +254,12 @@ void test_multithread_stress()
     size_t found_threads = 0;
     for (int t = 0; t < LOG_THREADS; ++t)
     {
-        if (contents.find(fmt::format("thread {} message", t)) != std::string::npos)
+        // Just check for one message from each thread
+        if (contents.find(fmt::format("thread {} message 0", t)) != std::string::npos)
         {
             found_threads++;
-            fmt::print("Found thread {} in log\n", t);
         }
     }
-    fmt::print("Total threads found so far: {}\n", found_threads);
     CHECK(found_threads == LOG_THREADS);
     CHECK(contents.find("Switched log to Console") != std::string::npos);
     CHECK(contents.find("Switched log to file") != std::string::npos);
@@ -290,6 +289,75 @@ void test_flush_waits_for_queue()
     size_t lines_after = count_lines(contents_after);
     CHECK(lines_after - lines_before == MESSAGES);
 }
+
+void test_shutdown_idempotency()
+{
+    // This test is simple: call shutdown from multiple threads.
+    // The idempotent flag should prevent any crashes or deadlocks.
+    // The test passes if it completes without hanging.
+    const int THREADS = 16;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < THREADS; ++i)
+    {
+        threads.emplace_back([]() { Logger::instance().shutdown(); });
+    }
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+    // After shutdown, logging should be a no-op.
+    LOGGER_INFO("This message should not be logged.");
+    // We can't easily check that it *wasn't* logged without re-initializing,
+    // so we just rely on the fact that the test didn't hang.
+    CHECK(true);
+}
+
+void test_reentrant_error_callback()
+{
+    std::remove(g_log_path.string().c_str());
+
+    Logger &L = Logger::instance();
+    L.set_logfile(g_log_path.string());
+
+    std::atomic<bool> callback_invoked = false;
+    L.set_write_error_callback(
+        [&](const std::string &msg)
+        {
+            // This is the key part of the test: the error callback itself
+            // tries to log a message. Without the async dispatcher, this
+            // would deadlock.
+            LOGGER_SYSTEM("Re-entrant log from error callback: {}", msg);
+            callback_invoked = true;
+        });
+
+    // To trigger an error, switch to a sink that we know will fail.
+    fs::path readonly_dir = fs::temp_directory_path() / "pylab_readonly_dir_test_reentrant";
+    fs::remove_all(readonly_dir);
+    fs::create_directory(readonly_dir);
+#if !defined(_WIN32)
+    chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // 0500
+#else
+    // On Windows, make the directory read-only.
+    // Note: This is less robust than POSIX permissions.
+    fs::permissions(readonly_dir, fs::perms::owner_read | fs::perms::owner_exec);
+#endif
+
+    fs::path locked_log_path = readonly_dir / "test.log";
+    L.set_logfile(locked_log_path.string());
+    LOGGER_INFO("This message will be dropped and should trigger an error.");
+    L.flush();
+
+    // The re-entrant message should appear in the *previous* valid sink.
+    CHECK(wait_for_string_in_file(g_log_path, "Re-entrant log from error callback"));
+    CHECK(callback_invoked.load());
+
+#if defined(_WIN32)
+    // Clean up permissions on Windows
+    fs::permissions(readonly_dir, fs::perms::owner_all);
+#endif
+    fs::remove_all(readonly_dir);
+}
+
 
 void test_write_error_callback_async()
 {
@@ -364,7 +432,7 @@ void multiproc_child_main()
     L.set_logfile(g_log_path.string(), true);
     L.set_level(Logger::Level::L_TRACE);
 
-    for (int i = 0; i < 100; ++i)
+    for (int i = 0; i < 200; ++i)
     {
 #if defined(_WIN32)
         LOGGER_INFO("child-msg pid={} idx={}", GetCurrentProcessId(), i);
@@ -386,8 +454,8 @@ void test_multiprocess_logging()
     LOGGER_INFO("parent-process-start");
     L.flush();
 
-    const int CHILDREN = 5;
-    const int MESSAGES_PER_CHILD = 100;
+    const int CHILDREN = 10;
+    const int MESSAGES_PER_CHILD = 200;
 
 #if defined(_WIN32)
     std::vector<HANDLE> procs;
@@ -546,6 +614,10 @@ int main(int argc, char **argv)
             test_multithread_stress();
         else if (test_name == "test_flush_waits_for_queue")
             test_flush_waits_for_queue();
+        else if (test_name == "test_shutdown_idempotency")
+            test_shutdown_idempotency();
+        else if (test_name == "test_reentrant_error_callback")
+            test_reentrant_error_callback();
         else if (test_name == "test_write_error_callback_async")
             test_write_error_callback_async();
         else if (test_name == "test_platform_sinks")
@@ -578,6 +650,8 @@ int main(int argc, char **argv)
                                                  "test_default_sink_and_switching",
                                                  "test_multithread_stress",
                                                  "test_flush_waits_for_queue",
+                                                 "test_shutdown_idempotency",
+                                                 "test_reentrant_error_callback",
                                                  "test_write_error_callback_async",
                                                  "test_platform_sinks",
                                                  "test_multiprocess_logging"};
@@ -594,6 +668,7 @@ int main(int argc, char **argv)
     fs::remove(g_log_path, ec);
     fs::remove(fs::temp_directory_path() / "pylabhub_multiprocess_test.log", ec);
     fs::remove_all(fs::temp_directory_path() / "pylab_readonly_dir_test", ec);
+    fs::remove_all(fs::temp_directory_path() / "pylab_readonly_dir_test_reentrant", ec);
 
     return tests_failed == 0 ? 0 : 1;
 }

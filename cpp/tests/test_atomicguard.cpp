@@ -145,7 +145,7 @@ void test_raii_acquire_failure()
 void test_concurrent_acquire()
 {
     AtomicOwner owner;
-    constexpr int THREADS = 8;
+    constexpr int THREADS = 32;
     std::atomic<int> success_count{0};
 
     std::vector<std::thread> threads;
@@ -154,7 +154,7 @@ void test_concurrent_acquire()
         threads.emplace_back(
             [&]()
             {
-                auto until = std::chrono::steady_clock::now() + 200ms;
+                auto until = std::chrono::steady_clock::now() + 400ms;
                 while (std::chrono::steady_clock::now() < until)
                 {
                     // Create a new guard for each attempt, testing the RAII case.
@@ -197,7 +197,7 @@ void test_transfer_single_thread()
 void test_concurrent_transfers()
 {
     AtomicOwner owner;
-    constexpr int NUM_GUARDS = 4;
+    constexpr int NUM_GUARDS = 8;
     std::vector<AtomicGuard> guards;
     for (int i = 0; i < NUM_GUARDS; ++i)
     {
@@ -206,8 +206,8 @@ void test_concurrent_transfers()
 
     CHECK(guards[0].acquire()); // Start with guard 0 as owner.
 
-    constexpr int NUM_THREADS = 8;
-    constexpr int TRANSFERS_PER_THREAD = 100;
+    constexpr int NUM_THREADS = 16;
+    constexpr int TRANSFERS_PER_THREAD = 500;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < NUM_THREADS; ++i)

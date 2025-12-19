@@ -5,6 +5,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <deque>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -29,6 +31,73 @@
 
 namespace pylabhub::utils
 {
+
+// --- Private Callback Dispatcher for handling re-entrant calls safely ---
+class CallbackDispatcher
+{
+  public:
+    CallbackDispatcher() : shutdown_requested_(false) { worker_ = std::thread([this] { this->run(); }); }
+
+    ~CallbackDispatcher() { shutdown(); }
+
+    void post(std::function<void()> fn)
+    {
+        if (shutdown_requested_.load(std::memory_order_relaxed))
+            return;
+        {
+            std::lock_guard<std::mutex> lg(mutex_);
+            queue_.push_back(std::move(fn));
+        }
+        cv_.notify_one();
+    }
+
+    void shutdown()
+    {
+        if (shutdown_requested_.exchange(true))
+        {
+            return; // Already shutting down or shut down
+        }
+        cv_.notify_one();
+        if (worker_.joinable())
+        {
+            worker_.join();
+        }
+    }
+
+
+  private:
+    void run()
+    {
+        for (;;)
+        {
+            std::function<void()> fn;
+            {
+                std::unique_lock<std::mutex> ul(mutex_);
+                cv_.wait(ul, [this] { return shutdown_requested_.load() || !queue_.empty(); });
+                if (shutdown_requested_.load() && queue_.empty())
+                {
+                    return;
+                }
+                fn = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            try
+            {
+                fn();
+            }
+            catch (...)
+            {
+                // Exceptions in user callbacks are swallowed
+            }
+        }
+    }
+
+    std::deque<std::function<void()>> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::thread worker_;
+    std::atomic<bool> shutdown_requested_;
+};
 
 // --- Command and Sink Definitions ---
 
@@ -377,9 +446,6 @@ struct FlushCommand
 {
     std::shared_ptr<std::promise<void>> promise;
 };
-struct ShutdownCommand
-{
-};
 struct SetErrorCallbackCommand
 {
     std::function<void(const std::string &)> callback;
@@ -387,7 +453,7 @@ struct SetErrorCallbackCommand
 
 using Command =
     std::variant<LogMessage, SetConsoleSinkCommand, SetFileSinkCommand, SetSyslogSinkCommand,
-                 SetEventLogSinkCommand, FlushCommand, ShutdownCommand, SetErrorCallbackCommand>;
+                 SetEventLogSinkCommand, FlushCommand, SetErrorCallbackCommand>;
 
 // --- Private Implementation (Pimpl) ---
 struct Impl
@@ -397,18 +463,20 @@ struct Impl
 
     void worker_loop();
     void enqueue_command(Command &&cmd);
+    void shutdown();
 
     // Worker thread and queue
     std::thread worker_thread_;
     std::vector<Command> queue_;
     std::mutex queue_mutex_;
     std::condition_variable cv_;
-    std::atomic<bool> done_{false};
+    std::atomic<bool> shutdown_requested_{false};
 
     // Logger state (worker thread only)
     std::atomic<Logger::Level> level_{Logger::Level::L_DEBUG};
     std::unique_ptr<Sink> sink_;
     std::function<void(const std::string &)> error_callback_;
+    CallbackDispatcher callback_dispatcher_;
 };
 
 Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -418,20 +486,17 @@ Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
 
 Impl::~Impl()
 {
-    if (worker_thread_.joinable())
-    {
-        if (!done_.load(std::memory_order_relaxed))
-        {
-            enqueue_command(ShutdownCommand{});
-        }
-        worker_thread_.join();
-    }
+    // Note: shutdown() should be called manually via pylabhub::utils::Finalize()
+    // This is a fallback for cases where it's not.
+    shutdown();
 }
 
 void Impl::enqueue_command(Command &&cmd)
 {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (shutdown_requested_.load(std::memory_order_relaxed))
+            return;
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
@@ -445,10 +510,15 @@ void Impl::worker_loop()
     {
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            cv_.wait(lock, [this] { return !queue_.empty() || done_.load(); });
+            cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
 
-            if (done_.load() && queue_.empty())
+            // Before exiting, process any remaining items, then do a final flush.
+            if (shutdown_requested_.load() && queue_.empty())
+            {
+                if (sink_)
+                    sink_->flush();
                 break;
+            }
             local_queue.swap(queue_);
         }
 
@@ -536,12 +606,6 @@ void Impl::worker_loop()
                                 sink_->flush();
                             arg.promise->set_value();
                         }
-                        else if constexpr (std::is_same_v<T, ShutdownCommand>)
-                        {
-                            if (sink_)
-                                sink_->flush();
-                            done_.store(true);
-                        }
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
                         {
                             error_callback_ = std::move(arg.callback);
@@ -552,16 +616,38 @@ void Impl::worker_loop()
             catch (const std::exception &e)
             {
                 if (error_callback_)
-                    error_callback_(fmt::format("Logger error: {}", e.what()));
+                {
+                    auto cb = error_callback_;
+                    auto msg = fmt::format("Logger error: {}", e.what());
+                    callback_dispatcher_.post([cb, msg]() { cb(msg); });
+                }
                 sink_.reset(); // Stop logging to a faulty sink
             }
         }
         local_queue.clear();
-
-        if (done_.load() && queue_.empty())
-            break;
     }
 }
+
+void Impl::shutdown()
+{
+    // Prevent multiple shutdowns and stop accepting new commands
+    if (shutdown_requested_.exchange(true))
+    {
+        return;
+    }
+
+    // Wake up worker thread to process the shutdown
+    cv_.notify_one();
+    if (worker_thread_.joinable())
+    {
+        worker_thread_.join();
+    }
+
+    // Now that no more callbacks can be generated, shut down the dispatcher.
+    // This will process any remaining callbacks in its queue.
+    callback_dispatcher_.shutdown();
+}
+
 
 // --- Logger Public API Implementation ---
 
@@ -569,7 +655,10 @@ Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger()
 {
     if (pImpl)
-        shutdown();
+    {
+        // Fallback shutdown for cases where Finalize() is not used
+        pImpl->shutdown();
+    }
 }
 
 Logger &Logger::instance()
@@ -611,18 +700,15 @@ void Logger::set_eventlog(const wchar_t *source_name)
 
 void Logger::shutdown()
 {
-    if (!pImpl || pImpl->done_.load())
-        return;
-    pImpl->enqueue_command(ShutdownCommand{});
-    if (pImpl->worker_thread_.joinable())
+    if (pImpl)
     {
-        pImpl->worker_thread_.join();
+        pImpl->shutdown();
     }
 }
 
 void Logger::flush()
 {
-    if (!pImpl)
+    if (!pImpl || pImpl->shutdown_requested_.load())
         return;
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
@@ -660,22 +746,21 @@ bool Logger::should_log(Level lvl) const noexcept
 
 void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
-    if (!pImpl || pImpl->done_.load(std::memory_order_relaxed))
+    if (!pImpl)
         return;
-
-    LogMessage msg{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)};
-    pImpl->enqueue_command(std::move(msg));
+    pImpl->enqueue_command(
+        LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)});
 }
 
 void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
-    if (!pImpl || pImpl->done_.load(std::memory_order_relaxed))
+    if (!pImpl)
         return;
 
     fmt::memory_buffer mb;
     mb.append(body_str);
-    LogMessage msg{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(mb)};
-    pImpl->enqueue_command(std::move(msg));
+    pImpl->enqueue_command(
+        LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(mb)});
 }
 
 } // namespace pylabhub::utils
