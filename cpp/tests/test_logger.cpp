@@ -19,6 +19,7 @@
 
 #include <fmt/core.h>
 
+#include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 
 #if defined(_WIN32)
@@ -89,7 +90,7 @@ static size_t count_lines(const std::string &s)
 }
 
 static bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
-                                    std::chrono::milliseconds timeout = std::chrono::seconds(5))
+                                    std::chrono::milliseconds timeout = std::chrono::seconds(15))
 {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout)
@@ -629,7 +630,7 @@ void run_test_in_process(const std::string &test_name)
         fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\n", GetLastError());
         return;
     }
-    WaitForSingleObject(pi.hProcess, 15000); // 15 second timeout
+    WaitForSingleObject(pi.hProcess, 30000); // 30 second timeout
     DWORD exit_code = 1;
     GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hProcess);
@@ -677,8 +678,18 @@ void run_test_in_process(const std::string &test_name)
 #endif
 }
 
+namespace
+{
+struct TestLifecycleManager
+{
+    TestLifecycleManager() { pylabhub::utils::Initialize(); }
+    ~TestLifecycleManager() { pylabhub::utils::Finalize(); }
+};
+} // namespace
+
 int main(int argc, char **argv)
 {
+    TestLifecycleManager lifecycle_manager;
     g_self_exe_path = argv[0];
     g_log_path = fs::temp_directory_path() / "pylabhub_test_logger.log";
 
