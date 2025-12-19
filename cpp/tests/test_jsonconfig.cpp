@@ -297,8 +297,8 @@ void test_multithread_contention()
     JsonConfig cfg;
     cfg.init(cfg_path, true);
 
-    const int THREADS = 8;
-    const int ITERS = 100;
+    const int THREADS = 16;
+    const int ITERS = 500;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < THREADS; ++i)
@@ -347,7 +347,7 @@ void test_multiprocess_contention(const std::string &self_exe)
         CHECK(creator.save());
     }
 
-    const int PROCS = 8;
+    const int PROCS = 16;
     int success_count = 0;
 
 #if defined(PLATFORM_WIN64)

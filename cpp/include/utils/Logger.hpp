@@ -162,10 +162,13 @@ class PYLABHUB_UTILS_EXPORT Logger
     Level level() const;
 
     /**
-     * @brief Sets a callback to be invoked upon a write error.
+     * @brief Sets a callback to be invoked upon a sink write error.
      *
-     * The callback will be executed from the worker thread's context.
-     * @param cb A function taking a const std::string& with the error message.
+     * The callback is executed on a separate, dedicated thread, making it safe
+     * to call logger functions from within the callback without causing a deadlock.
+     * Any exceptions thrown by the callback are caught and ignored.
+     *
+     * @param cb A function taking a const std::string& containing the error message.
      */
     void set_write_error_callback(std::function<void(const std::string &)> cb);
 
