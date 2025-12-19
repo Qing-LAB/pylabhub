@@ -418,11 +418,24 @@ void test_platform_sinks()
 #if defined(_WIN32)
     L.set_eventlog(L"PyLabHubTestLogger");
     LOGGER_INFO("Testing Windows Event Log sink.");
+    L.flush();
+    fmt::print(stderr, "\n  MANUAL VERIFICATION REQUIRED for Windows Event Log:\n");
+    fmt::print(stderr, "  1. Open Event Viewer (eventvwr.msc).\n");
+    fmt::print(stderr, "  2. Navigate to 'Windows Logs' -> 'Application'.\n");
+    fmt::print(stderr,
+               "  3. Look for an Information-level message from source "
+               "'PyLabHubTestLogger' containing 'Testing Windows Event Log sink.'.\n\n");
 #else
     L.set_syslog("pylab-logger-test");
     LOGGER_INFO("Testing syslog sink.");
-#endif
     L.flush();
+    fmt::print(stderr, "\n  MANUAL VERIFICATION REQUIRED for Syslog:\n");
+    fmt::print(stderr, "  1. Open your system's terminal.\n");
+    fmt::print(stderr,
+               "  2. Run 'journalctl -r | grep \"pylab-logger-test\"' or "
+               "'cat /var/log/syslog | grep \"pylab-logger-test\"'.\n");
+    fmt::print(stderr, "  3. Look for a message containing 'Testing syslog sink.'.\n\n");
+#endif
     CHECK(true);
 }
 
