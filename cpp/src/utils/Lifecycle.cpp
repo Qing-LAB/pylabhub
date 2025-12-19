@@ -35,8 +35,7 @@ void RegisterInitializer(std::function<void()> func)
     g_initializers.push_back(std::move(func));
 }
 
-void RegisterFinalizer(std::string name,
-                       std::function<void()> func,
+void RegisterFinalizer(std::string name, std::function<void()> func,
                        std::chrono::milliseconds timeout)
 {
     std::lock_guard<std::mutex> lock(g_registry_mutex);
@@ -108,8 +107,7 @@ void Finalize()
 
             if (status == std::future_status::timeout)
             {
-                LOGGER_WARN("Finalizer '{}' timed out after {}ms.",
-                            finalizer.name,
+                LOGGER_WARN("Finalizer '{}' timed out after {}ms.", finalizer.name,
                             finalizer.timeout.count());
             }
             else

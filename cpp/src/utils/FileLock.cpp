@@ -74,8 +74,8 @@ static std::string wstring_to_utf8(const std::wstring &wstr)
     int size_needed =
         WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
     std::string strTo(size_needed, 0);
-    WideCharToMultiByte(
-        CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL,
+                        NULL);
     return strTo;
 }
 
@@ -156,8 +156,7 @@ struct FileLockImpl
     bool valid = false;         // True if the lock is currently held.
     std::error_code ec;         // Stores the last error if `valid` is false.
     std::string lock_key;       // The canonical key for the lock path in g_proc_locks.
-    std::shared_ptr<ProcLockState>
-        proc_state; // The process-local state for this lock.
+    std::shared_ptr<ProcLockState> proc_state; // The process-local state for this lock.
 
 #if defined(PLATFORM_WIN64)
     void *handle = nullptr; // The Windows file handle (HANDLE) for the .lock file.
@@ -203,17 +202,15 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
         std::lock_guard<std::mutex> lg(g_registry_mtx);
         if (--p->proc_state->owners == 0)
         {
-            LOGGER_TRACE(
-                "FileLock: Last process-local owner for '{}' released. Notifying waiters.",
-                p->lock_key);
+            LOGGER_TRACE("FileLock: Last process-local owner for '{}' released. Notifying waiters.",
+                         p->lock_key);
             g_proc_locks.erase(p->lock_key);
             p->proc_state->cv.notify_all();
         }
         else
         {
             LOGGER_TRACE("FileLock: Process-local lock for '{}' released. {} owners remain.",
-                         p->lock_key,
-                         p->proc_state->owners);
+                         p->lock_key, p->proc_state->owners);
         }
     }
 
@@ -222,14 +219,12 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
 }
 
 // Forward declaration for the private locking function.
-static void open_and_lock(FileLockImpl *pImpl,
-                          ResourceType type,
-                          LockMode mode,
+static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                           std::optional<std::chrono::milliseconds> timeout);
 
 // This function is now a public static member of FileLock.
 std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesystem::path &target,
-                                                  ResourceType type) noexcept
+                                                               ResourceType type) noexcept
 {
     try
     {
@@ -263,15 +258,16 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
     {
         // Filesystem operations can throw. In a noexcept function, the best we
         // can do is log and return an empty path to signal failure.
-        LOGGER_ERROR("FileLock::get_expected_lock_fullname_for threw an exception for target '{}': {}",
-                     target.string(),
-                     e.what());
+        LOGGER_ERROR(
+            "FileLock::get_expected_lock_fullname_for threw an exception for target '{}': {}",
+            target.string(), e.what());
         return {};
     }
     catch (...)
     {
-        LOGGER_ERROR("FileLock::get_expected_lock_fullname_for threw an unknown exception for target '{}'",
-                     target.string());
+        LOGGER_ERROR(
+            "FileLock::get_expected_lock_fullname_for threw an unknown exception for target '{}'",
+            target.string());
         return {};
     }
 }
@@ -290,8 +286,7 @@ FileLock::FileLock(const std::filesystem::path &path, ResourceType type, LockMod
 }
 
 // Timed constructor: attempts to open and lock for a given duration.
-FileLock::FileLock(const std::filesystem::path &path,
-                   ResourceType type,
+FileLock::FileLock(const std::filesystem::path &path, ResourceType type,
                    std::chrono::milliseconds timeout) noexcept
     : pImpl(new FileLockImpl)
 {
@@ -321,9 +316,7 @@ std::error_code FileLock::error_code() const noexcept
 }
 
 // Private helper that performs the actual locking logic on the Impl struct.
-static void open_and_lock(FileLockImpl *pImpl,
-                          ResourceType type,
-                          LockMode mode,
+static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                           std::optional<std::chrono::milliseconds> timeout)
 {
     if (!pImpl)
@@ -351,7 +344,8 @@ static void open_and_lock(FileLockImpl *pImpl,
     {
         pImpl->ec = std::make_error_code(std::errc::invalid_argument);
         pImpl->valid = false;
-        LOGGER_WARN("FileLock: get_expected_lock_fullname_for failed for '{}'", pImpl->path.string());
+        LOGGER_WARN("FileLock: get_expected_lock_fullname_for failed for '{}'",
+                    pImpl->path.string());
         return;
     }
 
@@ -372,8 +366,7 @@ static void open_and_lock(FileLockImpl *pImpl,
         // cannot be safely managed.
         pImpl->ec = std::make_error_code(std::errc::io_error);
         LOGGER_WARN("FileLock: make_lock_key path conversion for '{}' threw: {}.",
-                    lockpath.string(),
-                    e.what());
+                    lockpath.string(), e.what());
         pImpl->valid = false;
         return;
     }
@@ -393,8 +386,9 @@ static void open_and_lock(FileLockImpl *pImpl,
             {
                 pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
                 pImpl->valid = false;
-                LOGGER_DEBUG("FileLock: Non-blocking lock on '{}' failed: already locked in-process.",
-                             pImpl->path.string());
+                LOGGER_DEBUG(
+                    "FileLock: Non-blocking lock on '{}' failed: already locked in-process.",
+                    pImpl->path.string());
                 // This lock never acquired ownership, so detach from the proc_state
                 // to prevent the destructor from decrementing the owner count.
                 pImpl->proc_state.reset();
@@ -430,12 +424,12 @@ static void open_and_lock(FileLockImpl *pImpl,
         // If we are here, we have acquired the process-local lock.
         state->owners++;
         LOGGER_TRACE("FileLock: Acquired process-local lock for '{}'. Owners: {}",
-                     pImpl->path.string(),
-                     state->owners);
+                     pImpl->path.string(), state->owners);
     }
 
     // Helper to undo the process-local lock acquisition on failure
-    auto rollback_proc_local_lock = [&]() {
+    auto rollback_proc_local_lock = [&]()
+    {
         std::lock_guard<std::mutex> lg(g_registry_mtx);
         if (pImpl->proc_state)
         {
@@ -465,8 +459,7 @@ static void open_and_lock(FileLockImpl *pImpl,
             {
                 pImpl->ec = create_ec;
                 LOGGER_WARN("FileLock: create_directories failed for {} err={}",
-                            parent_dir.string(),
-                            create_ec.message());
+                            parent_dir.string(), create_ec.message());
                 pImpl->valid = false;
                 rollback_proc_local_lock();
                 return;
@@ -477,8 +470,7 @@ static void open_and_lock(FileLockImpl *pImpl,
     {
         pImpl->ec = std::make_error_code(std::errc::io_error);
         LOGGER_WARN("FileLock: create_directories threw an exception for {}: {}",
-                    lockpath.parent_path().string(),
-                    e.what());
+                    lockpath.parent_path().string(), e.what());
         pImpl->valid = false;
         rollback_proc_local_lock();
         return;
@@ -489,19 +481,14 @@ static void open_and_lock(FileLockImpl *pImpl,
     {
 #if defined(PLATFORM_WIN64)
         std::wstring lockpath_w = win32_to_long_path(lockpath);
-        HANDLE h = CreateFileW(lockpath_w.c_str(),
-                               GENERIC_READ | GENERIC_WRITE,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               nullptr,
-                               OPEN_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL,
-                               nullptr);
+        HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
 
         if (h == INVALID_HANDLE_VALUE)
         {
             pImpl->ec = std::error_code(GetLastError(), std::system_category());
-            LOGGER_WARN("FileLock: CreateFileW failed for {} err={}",
-                        lockpath.string(),
+            LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string(),
                         pImpl->ec.value());
             pImpl->valid = false;
             rollback_proc_local_lock();
@@ -518,7 +505,8 @@ static void open_and_lock(FileLockImpl *pImpl,
             pImpl->handle = reinterpret_cast<void *>(h);
             pImpl->valid = true;
             pImpl->ec.clear();
-            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str, pImpl->path.string());
+            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str,
+                         pImpl->path.string());
             return; // Success
         }
 
@@ -545,7 +533,8 @@ static void open_and_lock(FileLockImpl *pImpl,
         if (fd == -1)
         {
             pImpl->ec = std::error_code(errno, std::generic_category());
-            LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(), pImpl->ec.message());
+            LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(),
+                        pImpl->ec.message());
             pImpl->valid = false;
             rollback_proc_local_lock();
             return;
@@ -563,7 +552,8 @@ static void open_and_lock(FileLockImpl *pImpl,
             pImpl->fd = fd;
             pImpl->valid = true;
             pImpl->ec.clear();
-            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str, pImpl->path.string());
+            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str,
+                         pImpl->path.string());
             return; // Success
         }
 
@@ -590,7 +580,8 @@ static void open_and_lock(FileLockImpl *pImpl,
             {
                 // Timeout expired.
                 pImpl->ec = std::make_error_code(std::errc::timed_out);
-                LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'", pImpl->path.string());
+                LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'",
+                             pImpl->path.string());
                 pImpl->valid = false;
                 rollback_proc_local_lock();
                 return;

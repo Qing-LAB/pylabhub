@@ -52,7 +52,7 @@ static int tests_failed = 0;
         }                                                                                          \
     } while (0)
 
-#define FAIL_TEST(msg)                                                                  \
+#define FAIL_TEST(msg)                                                                             \
     do                                                                                             \
     {                                                                                              \
         fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);               \
@@ -465,7 +465,10 @@ void test_symlink_attack_prevention_windows()
         DWORD error = GetLastError();
         if (error == ERROR_PRIVILEGE_NOT_HELD || error == ERROR_ACCESS_DENIED)
         {
-            fmt::print(stderr, "  WARNING: Skipping Windows symlink test. Requires SeCreateSymbolicLinkPrivilege or Developer Mode (Error {}).\n", error);
+            fmt::print(stderr,
+                       "  WARNING: Skipping Windows symlink test. Requires "
+                       "SeCreateSymbolicLinkPrivilege or Developer Mode (Error {}).\n",
+                       error);
             return;
         }
         else

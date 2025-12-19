@@ -71,13 +71,20 @@ static const char *level_to_string(Logger::Level lvl)
 {
     switch (lvl)
     {
-    case Logger::Level::L_TRACE: return "TRACE";
-    case Logger::Level::L_DEBUG: return "DEBUG";
-    case Logger::Level::L_INFO: return "INFO";
-    case Logger::Level::L_WARNING: return "WARN";
-    case Logger::Level::L_ERROR: return "ERROR";
-    case Logger::Level::L_SYSTEM: return "SYSTEM";
-    default: return "UNK";
+    case Logger::Level::L_TRACE:
+        return "TRACE";
+    case Logger::Level::L_DEBUG:
+        return "DEBUG";
+    case Logger::Level::L_INFO:
+        return "INFO";
+    case Logger::Level::L_WARNING:
+        return "WARN";
+    case Logger::Level::L_ERROR:
+        return "ERROR";
+    case Logger::Level::L_SYSTEM:
+        return "SYSTEM";
+    default:
+        return "UNK";
     }
 }
 
@@ -112,7 +119,8 @@ class FileSink : public Sink
 #ifdef _WIN32
         (void)use_flock_; // Not supported
         int needed = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        if (needed == 0) throw std::runtime_error("Failed to convert path to wide string");
+        if (needed == 0)
+            throw std::runtime_error("Failed to convert path to wide string");
         std::wstring wpath(needed, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wpath[0], needed);
 
@@ -134,9 +142,11 @@ class FileSink : public Sink
     ~FileSink() override
     {
 #ifdef _WIN32
-        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+        if (handle_ != INVALID_HANDLE_VALUE)
+            CloseHandle(handle_);
 #else
-        if (fd_ != -1) ::close(fd_);
+        if (fd_ != -1)
+            ::close(fd_);
 #endif
     }
 
@@ -144,24 +154,30 @@ class FileSink : public Sink
     {
         auto formatted_message = format_message(msg);
 #ifdef _WIN32
-        if (handle_ == INVALID_HANDLE_VALUE) return;
+        if (handle_ == INVALID_HANDLE_VALUE)
+            return;
         DWORD bytes_written;
         WriteFile(handle_, formatted_message.c_str(),
                   static_cast<DWORD>(formatted_message.length()), &bytes_written, nullptr);
 #else
-        if (fd_ == -1) return;
-        if (use_flock_) ::flock(fd_, LOCK_EX);
+        if (fd_ == -1)
+            return;
+        if (use_flock_)
+            ::flock(fd_, LOCK_EX);
         ::write(fd_, formatted_message.c_str(), formatted_message.length());
-        if (use_flock_) ::flock(fd_, LOCK_UN);
+        if (use_flock_)
+            ::flock(fd_, LOCK_UN);
 #endif
     }
 
     void flush() override
     {
 #ifdef _WIN32
-        if (handle_ != INVALID_HANDLE_VALUE) FlushFileBuffers(handle_);
+        if (handle_ != INVALID_HANDLE_VALUE)
+            FlushFileBuffers(handle_);
 #else
-        if (fd_ != -1) ::fsync(fd_);
+        if (fd_ != -1)
+            ::fsync(fd_);
 #endif
     }
 
@@ -181,10 +197,7 @@ class FileSink : public Sink
 class SyslogSink : public Sink
 {
   public:
-    SyslogSink(const char *ident, int option, int facility)
-    {
-        openlog(ident, option, facility);
-    }
+    SyslogSink(const char *ident, int option, int facility) { openlog(ident, option, facility); }
 
     ~SyslogSink() override { closelog(); }
 
@@ -202,13 +215,20 @@ class SyslogSink : public Sink
     {
         switch (level)
         {
-        case Logger::Level::L_TRACE: return LOG_DEBUG;
-        case Logger::Level::L_DEBUG: return LOG_DEBUG;
-        case Logger::Level::L_INFO: return LOG_INFO;
-        case Logger::Level::L_WARNING: return LOG_WARNING;
-        case Logger::Level::L_ERROR: return LOG_ERR;
-        case Logger::Level::L_SYSTEM: return LOG_CRIT;
-        default: return LOG_INFO;
+        case Logger::Level::L_TRACE:
+            return LOG_DEBUG;
+        case Logger::Level::L_DEBUG:
+            return LOG_DEBUG;
+        case Logger::Level::L_INFO:
+            return LOG_INFO;
+        case Logger::Level::L_WARNING:
+            return LOG_WARNING;
+        case Logger::Level::L_ERROR:
+            return LOG_ERR;
+        case Logger::Level::L_SYSTEM:
+            return LOG_CRIT;
+        default:
+            return LOG_INFO;
         }
     }
 };
@@ -229,12 +249,14 @@ class EventLogSink : public Sink
 
     ~EventLogSink() override
     {
-        if (handle_) DeregisterEventSource(handle_);
+        if (handle_)
+            DeregisterEventSource(handle_);
     }
 
     void write(const LogMessage &msg) override
     {
-        if (!handle_) return;
+        if (!handle_)
+            return;
 
         std::wstring wbody;
         if (!msg.body.empty())
@@ -267,18 +289,24 @@ class EventLogSink : public Sink
         {
         case Logger::Level::L_TRACE:
         case Logger::Level::L_DEBUG:
-        case Logger::Level::L_INFO: return EVENTLOG_INFORMATION_TYPE;
-        case Logger::Level::L_WARNING: return EVENTLOG_WARNING_TYPE;
+        case Logger::Level::L_INFO:
+            return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_WARNING:
+            return EVENTLOG_WARNING_TYPE;
         case Logger::Level::L_ERROR:
-        case Logger::Level::L_SYSTEM: return EVENTLOG_ERROR_TYPE;
-        default: return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_SYSTEM:
+            return EVENTLOG_ERROR_TYPE;
+        default:
+            return EVENTLOG_INFORMATION_TYPE;
         }
     }
 };
 #endif // _WIN32
 
 // --- Control Commands for the queue ---
-struct SetConsoleSinkCommand {};
+struct SetConsoleSinkCommand
+{
+};
 struct SetFileSinkCommand
 {
     std::string path;
@@ -298,7 +326,9 @@ struct FlushCommand
 {
     std::promise<void> promise;
 };
-struct ShutdownCommand {};
+struct ShutdownCommand
+{
+};
 struct SetErrorCallbackCommand
 {
     std::function<void(const std::string &)> callback;
@@ -366,7 +396,8 @@ void Impl::worker_loop()
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || done_.load(); });
 
-            if (done_.load() && queue_.empty()) break;
+            if (done_.load() && queue_.empty())
+                break;
             local_queue.swap(queue_);
         }
 
@@ -375,11 +406,13 @@ void Impl::worker_loop()
             try
             {
                 std::visit(
-                    [this](auto &&arg) {
+                    [this](auto &&arg)
+                    {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
-                            if (sink_) sink_->write(arg);
+                            if (sink_)
+                                sink_->write(arg);
                         }
                         else if constexpr (std::is_same_v<T, SetConsoleSinkCommand>)
                         {
@@ -391,9 +424,8 @@ void Impl::worker_loop()
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<ConsoleSink>();
-                            sink_->write({Logger::Level::L_SYSTEM,
-                                          std::chrono::system_clock::now(), get_native_thread_id(),
-                                          "Switched log to Console"});
+                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                          get_native_thread_id(), "Switched log to Console"});
                         }
                         else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
                         {
@@ -406,8 +438,8 @@ void Impl::worker_loop()
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<FileSink>(arg.path, arg.use_flock);
-                            sink_->write({Logger::Level::L_SYSTEM,
-                                          std::chrono::system_clock::now(), get_native_thread_id(),
+                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                          get_native_thread_id(),
                                           fmt::format("Switched log to file: {}", arg.path)});
                         }
 #if !defined(_WIN32)
@@ -423,9 +455,8 @@ void Impl::worker_loop()
                             sink_ = std::make_unique<SyslogSink>(
                                 arg.ident.empty() ? nullptr : arg.ident.c_str(), arg.option,
                                 arg.facility);
-                            sink_->write({Logger::Level::L_SYSTEM,
-                                          std::chrono::system_clock::now(), get_native_thread_id(),
-                                          "Switched log to Syslog"});
+                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                          get_native_thread_id(), "Switched log to Syslog"});
                         }
 #endif
 #ifdef _WIN32
@@ -439,19 +470,21 @@ void Impl::worker_loop()
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
-                            sink_->write({Logger::Level::L_SYSTEM,
-                                          std::chrono::system_clock::now(), get_native_thread_id(),
+                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                          get_native_thread_id(),
                                           "Switched log to Windows Event Log"});
                         }
 #endif
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                                sink_->flush();
                             arg.promise.set_value();
                         }
                         else if constexpr (std::is_same_v<T, ShutdownCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                                sink_->flush();
                             done_.store(true);
                         }
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
@@ -463,24 +496,25 @@ void Impl::worker_loop()
             }
             catch (const std::exception &e)
             {
-                if (error_callback_) error_callback_(fmt::format("Logger error: {}", e.what()));
+                if (error_callback_)
+                    error_callback_(fmt::format("Logger error: {}", e.what()));
                 sink_.reset(); // Stop logging to a faulty sink
             }
         }
         local_queue.clear();
 
-        if (done_.load() && queue_.empty()) break;
+        if (done_.load() && queue_.empty())
+            break;
     }
 }
 
 // --- Logger Public API Implementation ---
 
-Logger::Logger() : pImpl(std::make_unique<Impl>())
-{
-}
+Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger()
 {
-    if (pImpl) shutdown();
+    if (pImpl)
+        shutdown();
 }
 
 Logger &Logger::instance()
@@ -489,7 +523,10 @@ Logger &Logger::instance()
     return instance;
 }
 
-void Logger::set_console() { pImpl->enqueue_command(SetConsoleSinkCommand{}); }
+void Logger::set_console()
+{
+    pImpl->enqueue_command(SetConsoleSinkCommand{});
+}
 
 void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
@@ -519,7 +556,8 @@ void Logger::set_eventlog(const wchar_t *source_name)
 
 void Logger::shutdown()
 {
-    if (!pImpl || pImpl->done_.load()) return;
+    if (!pImpl || pImpl->done_.load())
+        return;
     pImpl->enqueue_command(ShutdownCommand{});
     if (pImpl->worker_thread_.joinable())
     {
@@ -529,7 +567,8 @@ void Logger::shutdown()
 
 void Logger::flush()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     std::promise<void> promise;
     auto future = promise.get_future();
     pImpl->enqueue_command(FlushCommand{std::move(promise)});
@@ -538,31 +577,36 @@ void Logger::flush()
 
 void Logger::set_level(Level lvl)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->level_.store(lvl, std::memory_order_relaxed);
 }
 
 Logger::Level Logger::level() const
 {
-    if (!pImpl) return Level::L_INFO;
+    if (!pImpl)
+        return Level::L_INFO;
     return pImpl->level_.load(std::memory_order_relaxed);
 }
 
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
 }
 
 bool Logger::should_log(Level lvl) const noexcept
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     return static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
 void Logger::enqueue_log(Level lvl, std::string &&body) noexcept
 {
-    if (!pImpl || pImpl->done_.load(std::memory_order_relaxed)) return;
+    if (!pImpl || pImpl->done_.load(std::memory_order_relaxed))
+        return;
 
     LogMessage msg{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)};
     pImpl->enqueue_command(std::move(msg));

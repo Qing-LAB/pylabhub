@@ -20,8 +20,8 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
-#include <sys/stat.h>
 #include <sys/file.h> // flock
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -412,13 +412,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
                  target.string());
 
     // 1. Create and write to a temporary file.
-    HANDLE h = CreateFileW(tmp_full_w.c_str(),
-                           GENERIC_WRITE,
-                           0,
-                           nullptr,
-                           CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
+    HANDLE h = CreateFileW(tmp_full_w.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE)
     {
         throw std::runtime_error(
@@ -452,12 +447,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     handle_guard.reset(); // Close the handle before rename.
 
     // 2. Atomically replace the original file.
-    if (!ReplaceFileW(target_w.c_str(),
-                      tmp_full_w.c_str(),
-                      nullptr,
-                      REPLACEFILE_WRITE_THROUGH,
-                      nullptr,
-                      nullptr))
+    if (!ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH,
+                      nullptr, nullptr))
     {
         DWORD err = GetLastError();
         // If ReplaceFileW fails because the destination does not exist, this is a file
@@ -466,9 +457,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         {
             if (MoveFileW(tmp_full_w.c_str(), target_w.c_str()))
             {
-                LOGGER_DEBUG(
-                    "atomic_write_json(WIN): MoveFileW succeeded for new file '{}'.",
-                    target.string());
+                LOGGER_DEBUG("atomic_write_json(WIN): MoveFileW succeeded for new file '{}'.",
+                             target.string());
                 return; // Success
             }
             err = GetLastError(); // Update error to the one from MoveFileW
@@ -477,8 +467,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         // If we are here, either ReplaceFileW failed for a reason other than
         // file-not-found, or the fallback MoveFileW also failed.
         DeleteFileW(tmp_full_w.c_str());
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: Replace/Move failed: {}", err));
+        throw std::runtime_error(fmt::format("atomic_write_json: Replace/Move failed: {}", err));
     }
     LOGGER_DEBUG("atomic_write_json(WIN): ReplaceFileW succeeded for target '{}'.",
                  target.string());
@@ -492,9 +481,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     {
         if (S_ISLNK(lstat_buf.st_mode))
         {
-            throw std::runtime_error(
-                "atomic_write_json: target path is a symbolic link, refusing "
-                "to write for security reasons.");
+            throw std::runtime_error("atomic_write_json: target path is a symbolic link, refusing "
+                                     "to write for security reasons.");
         }
     }
     LOGGER_DEBUG("atomic_write_json(POSIX): Symlink check passed for target '{}'.",
@@ -525,12 +513,11 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         throw std::runtime_error(
             fmt::format("atomic_write_json: mkstemp failed: {}", std::strerror(errno)));
     }
-    LOGGER_DEBUG("atomic_write_json(POSIX): Temp file '{}' created (FD: {}).",
-                 tmpl_buf.data(),
-                 fd);
+    LOGGER_DEBUG("atomic_write_json(POSIX): Temp file '{}' created (FD: {}).", tmpl_buf.data(), fd);
 
     std::string tmp_path = tmpl_buf.data();
-    auto cleanup_temp_file = [&]() {
+    auto cleanup_temp_file = [&]()
+    {
         if (fd != -1)
             ::close(fd);
         ::unlink(tmp_path.c_str());
@@ -588,8 +575,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
             if (::fsync(dfd) != 0)
             {
                 ::close(dfd);
-                throw std::runtime_error(fmt::format(
-                    "atomic_write_json: fsync(dir) failed: {}", std::strerror(errno)));
+                throw std::runtime_error(
+                    fmt::format("atomic_write_json: fsync(dir) failed: {}", std::strerror(errno)));
             }
             ::close(dfd);
             LOGGER_DEBUG("atomic_write_json(POSIX): Synced parent directory.");
