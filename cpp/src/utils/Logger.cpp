@@ -14,7 +14,7 @@
 #include <vector>
 
 #include <fmt/chrono.h>
-#include <fmt/ostream.h>
+#include <fmt/format.h>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -26,22 +26,6 @@
 #include <syslog.h>
 #include <unistd.h>
 #endif
-
-// Helper: get a platform-native thread id
-static uint64_t get_native_thread_id() noexcept
-{
-#if defined(_WIN32)
-    return static_cast<uint64_t>(::GetCurrentThreadId());
-#elif defined(__APPLE__)
-    uint64_t tid;
-    pthread_threadid_np(nullptr, &tid);
-    return tid;
-#elif defined(__linux__)
-    return static_cast<uint64_t>(syscall(SYS_gettid));
-#else
-    return std::hash<std::thread::id>()(std::this_thread::get_id());
-#endif
-}
 
 namespace pylabhub::utils
 {
@@ -88,19 +72,85 @@ static const char *level_to_string(Logger::Level lvl)
     }
 }
 
-// Helper: formatted local time with sub-second resolution
-static std::string formatted_time(std::chrono::system_clock::time_point timestamp)
+// Helper: get a platform-native thread id
+static uint64_t get_native_thread_id() noexcept
 {
-    // Use {fmt} to format the time portably. {:%Y-%m-%d %H:%M:%S.%f} provides
-    // microsecond precision.
-    return fmt::format("{:%Y-%m-%d %H:%M:%S}", timestamp);
+#if defined(_WIN32)
+    return static_cast<uint64_t>(::GetCurrentThreadId());
+#elif defined(__APPLE__)
+    uint64_t tid;
+    pthread_threadid_np(nullptr, &tid);
+    return tid;
+#elif defined(__linux__)
+    return static_cast<uint64_t>(syscall(SYS_gettid));
+#else
+    return std::hash<std::thread::id>()(std::this_thread::get_id());
+#endif
 }
 
+// --- Helper: formatted local time with sub-second resolution (robust) ---
+// Replaces previous formatted_time(...) implementation.
+// Behaviour:
+//  - If the build system detected fmt chrono subseconds support (HAVE_FMT_CHRONO_SUBSECONDS),
+//    use single-step fmt formatting on a microsecond-truncated time_point.
+//  - Otherwise, fall back to computing the fractional microsecond part and append it
+//    manually using a two-step format.
+static std::string formatted_time(std::chrono::system_clock::time_point timestamp)
+{
+#if defined(HAVE_FMT_CHRONO_SUBSECONDS) && HAVE_FMT_CHRONO_SUBSECONDS
+    auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
+    #if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
+        // use %f
+        return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
+    #elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
+        // fmt prints fraction without %f
+        return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
+    #else
+        // defensive fallback to manual two-step
+        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
+        int fractional_us = static_cast<int>((tp_us - secs).count());
+        auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
+        return fmt::format("{}.{:06d}", sec_part, fractional_us);
+    #endif
+#else
+    // no runtime support detected — fallback to manual two-step method
+    auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
+    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
+    int fractional_us = static_cast<int>((tp_us - secs).count());
+    auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
+    return fmt::format("{}.{:06d}", sec_part, fractional_us);
+#endif
+}
+
+
+// --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
+template <typename... Args>
+static fmt::memory_buffer make_buffer(fmt::format_string<Args...> fmt_str, Args &&...args)
+{
+    fmt::memory_buffer mb;
+    mb.reserve(128); // small reserve to avoid many reallocs
+    fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
+    return mb;
+}
+// --Helper: turn a string_view into a fmt::memory_buffer (runtime format)
+template <typename... Args>
+static fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
+{
+    fmt::memory_buffer mb;
+    mb.reserve(128);
+    fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
+    return mb;
+}
+
+// --Helper: format a LogMessage into a string
 static std::string format_message(const LogMessage &msg)
 {
-    return fmt::format("{} [{}] [tid={}] {}\n", formatted_time(msg.timestamp),
-                       level_to_string(msg.level), msg.thread_id,
-                       std::string_view(msg.body.data(), msg.body.size()));
+    std::string time_str = formatted_time(msg.timestamp);
+    std::string level_str = level_to_string(msg.level);
+    std::string thread_str = fmt::format("{}", msg.thread_id);
+    std::string body_str = std::string(msg.body.data(), msg.body.size());
+
+    return fmt::format("[{}] [{}] [{}] {}\n", time_str, level_str, thread_str, body_str);
 }
 
 // --- Concrete Sinks ---
@@ -421,13 +471,13 @@ void Impl::worker_loop()
                             {
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(), get_native_thread_id(),
-                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Console")});
+                                              make_buffer("Switched log to Console")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<ConsoleSink>();
                             sink_->write({Logger::Level::L_SYSTEM,
                                           std::chrono::system_clock::now(), get_native_thread_id(),
-                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Console")});
+                                          make_buffer("Switched log to Console")});
                         }
                         else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
                         {
@@ -436,13 +486,13 @@ void Impl::worker_loop()
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
                                               get_native_thread_id(),
-                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to file: {}", arg.path)});
+                                              make_buffer("Switched log to file: {}", arg.path)});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<FileSink>(arg.path, arg.use_flock);
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                           get_native_thread_id(),
-                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to file: {}", arg.path)});
+                                          make_buffer("Switched log to file: {}", arg.path)});
                         }
 #if !defined(_WIN32)
                         else if constexpr (std::is_same_v<T, SetSyslogSinkCommand>)
@@ -453,14 +503,14 @@ void Impl::worker_loop()
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
                                               get_native_thread_id(),
-                                              fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Syslog")});
+                                              make_buffer("Switched log to Syslog")});
                             }
                             sink_ = std::make_unique<SyslogSink>(
                                 arg.ident.empty() ? nullptr : arg.ident.c_str(), arg.option,
                                 arg.facility);
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                           get_native_thread_id(),
-                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Syslog")});
+                                          make_buffer("Switched log to Syslog")});
                         }
 #endif
 #ifdef _WIN32
@@ -471,20 +521,20 @@ void Impl::worker_loop()
                                 sink_->write(
                                     {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                      get_native_thread_id(),
-                                     fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Windows Event Log")});
+                                     make_buffer("Switched log to Windows Event Log")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
                             sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
                                           get_native_thread_id(),
-                                          fmt::format_to_buffer(fmt::memory_buffer(), "Switched log to Windows Event Log")});
+                                          make_buffer("Switched log to Windows Event Log")});
                         }
 #endif
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
                             if (sink_)
                                 sink_->flush();
-                            arg.promise.set_value();
+                            arg.promise->set_value();
                         }
                         else if constexpr (std::is_same_v<T, ShutdownCommand>)
                         {
