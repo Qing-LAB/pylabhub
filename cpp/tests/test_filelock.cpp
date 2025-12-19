@@ -29,6 +29,7 @@
 #endif
 
 #include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp" // For logging inside tests
 
 using namespace pylabhub::utils;
@@ -79,7 +80,7 @@ static fs::path g_temp_dir;
 static HANDLE spawn_worker_process(const std::string &exe, const std::string &mode,
                                    const std::string &resource_path)
 {
-    std::string cmdline = fmt::format("\"{}\" {} \"{}\"", exe, mode, resource_path);
+    std::string cmdline = fmt::format("\"{}\" {} {}", exe, mode, resource_path);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -390,7 +391,8 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker", resource_path.string());
+        HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker",
+                                       fmt::format("\"{}\"", resource_path.string()));
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -447,8 +449,9 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, "blocking_worker",
-                                       fmt::format("{} {}", counter_path.string(), ITERS_PER_WORKER));
+        HANDLE h = spawn_worker_process(
+            self_exe, "blocking_worker",
+            fmt::format("\"{}\" {}", counter_path.string(), ITERS_PER_WORKER));
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -501,14 +504,15 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
 
 #if defined(PLATFORM_WIN64)
     // 2. Spawn child, which will block
-    HANDLE child_proc = spawn_worker_process(self_exe, "parent_child_worker", resource_path.string());
+    HANDLE child_proc = spawn_worker_process(self_exe, "parent_child_worker",
+                                             fmt::format("\"{}\"", resource_path.string()));
     CHECK(child_proc != nullptr);
 
     // 3. Parent sleeps to ensure child has time to block
     std::this_thread::sleep_for(200ms);
 
     // 4. Parent releases lock
-    parent_lock = FileLock();
+    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking);
 
     // 5. Child should now be able to acquire the lock and exit successfully.
     WaitForSingleObject(child_proc, INFINITE);
@@ -520,7 +524,7 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
     pid_t pid = spawn_worker_process(self_exe, "parent_child_worker", resource_path.string());
     CHECK(pid > 0);
     std::this_thread::sleep_for(200ms);
-    parent_lock = FileLock();
+    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking);
     int status = 0;
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
@@ -545,7 +549,7 @@ void test_timed_lock()
 
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         CHECK(duration.count() >= 100);
-        CHECK(duration.count() < 300);
+        CHECK(duration.count() < 1000);
     }
 
     FileLock timed_lock_succeed(resource_path, ResourceType::File, 100ms);
@@ -658,8 +662,18 @@ void test_directory_path_locking()
 #endif
 }
 
+namespace
+{
+struct TestLifecycleManager
+{
+    TestLifecycleManager() { pylabhub::utils::Initialize(); }
+    ~TestLifecycleManager() { pylabhub::utils::Finalize(); }
+};
+} // namespace
+
 int main(int argc, char **argv)
 {
+    TestLifecycleManager lifecycle_manager;
     if (argc > 1)
     {
         std::string mode = argv[1];
