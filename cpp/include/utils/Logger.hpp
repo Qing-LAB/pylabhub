@@ -29,6 +29,13 @@
  *     within the worker and can be reported via a callback, preventing logging
  *     failures from crashing the main application.
  *
+ * **Shutdown and Static Destruction Order**:
+ * As a static singleton, the logger is subject to the "static deinitialization
+ * order fiasco." If the destructor of another static object logs a message, it
+ * may do so after the logger has been shut down, resulting in lost messages.
+ * To guarantee a graceful shutdown, applications should call the top-level
+ * `pylabhub::utils::Finalize()` function before returning from `main()`.
+ *
  * **Thread Safety**
  * - All public methods are thread-safe.
  * - Logging calls and configuration changes from multiple threads are serialized
