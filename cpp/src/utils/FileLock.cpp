@@ -142,6 +142,7 @@ static std::mutex g_registry_mtx;
 struct ProcLockState
 {
     int owners = 0; // number of FileLock holders in this process for that path
+    int waiters = 0; // number of threads waiting for this lock in this process
     std::condition_variable cv;
 };
 static std::unordered_map<std::string, std::shared_ptr<ProcLockState>> g_proc_locks;
@@ -205,7 +206,10 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
             LOGGER_TRACE("FileLock: Last process-local owner for '{}' released. Notifying waiters.",
                          p->lock_key);
             p->proc_state->cv.notify_all();
-            g_proc_locks.erase(p->lock_key);
+            if (p->proc_state->waiters == 0)
+            {
+                g_proc_locks.erase(p->lock_key);
+            }
         }
         else
         {
@@ -373,12 +377,13 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
 
     { // Scoped lock for the global registry
         std::unique_lock<std::mutex> regl(g_registry_mtx);
-        auto state = g_proc_locks[pImpl->lock_key];
-        if (!state)
+        auto &state_ref = g_proc_locks[pImpl->lock_key];
+        if (!state_ref)
         {
-            state = std::make_shared<ProcLockState>();
+            state_ref = std::make_shared<ProcLockState>();
         }
-        pImpl->proc_state = state; // Store the state for the destructor to use.
+        pImpl->proc_state = state_ref; // Store the state for the destructor to use.
+        auto state = pImpl->proc_state; // Local shared_ptr copy to ensure safety
 
         if (mode == LockMode::NonBlocking)
         {
@@ -389,6 +394,13 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                 LOGGER_DEBUG(
                     "FileLock: Non-blocking lock on '{}' failed: already locked in-process.",
                     pImpl->path.string());
+                
+                // Check if we need to clean up the empty entry we might have just created/accessed
+                if (state->owners == 0 && state->waiters == 0)
+                {
+                    g_proc_locks.erase(pImpl->lock_key);
+                }
+
                 // This lock never acquired ownership, so detach from the proc_state
                 // to prevent the destructor from decrementing the owner count.
                 pImpl->proc_state.reset();
@@ -401,24 +413,49 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
             {
                 LOGGER_TRACE("FileLock: Lock on '{}' waiting for in-process release.",
                              pImpl->path.string());
-            }
+                
+                bool acquired = false;
+                
+                // Scope the waiter guard so it destructs (waiters--) before we handle failure cleanup
+                {
+                    // RAII guard to ensure waiters is decremented even if an exception occurs
+                    struct ScopedWaiter {
+                        std::shared_ptr<ProcLockState> s;
+                        ScopedWaiter(std::shared_ptr<ProcLockState> state) : s(std::move(state)) { s->waiters++; }
+                        ~ScopedWaiter() { s->waiters--; }
+                    };
+                    ScopedWaiter waiter_guard(state);
 
-            // Wait until the lock is no longer owned by any other thread in this process.
-            if (timeout)
-            {
-                if (!state->cv.wait_for(regl, *timeout, [&] { return state->owners == 0; }))
+                    if (timeout)
+                    {
+                        if (state->cv.wait_for(regl, *timeout, [&] { return state->owners == 0; }))
+                        {
+                            acquired = true;
+                        }
+                    }
+                    else
+                    {
+                        state->cv.wait(regl, [&] { return state->owners == 0; });
+                        acquired = true;
+                    }
+                } // waiter_guard dies here, decrementing waiters
+
+                if (!acquired)
                 {
                     // Timed out waiting for the in-process lock.
                     pImpl->ec = std::make_error_code(std::errc::timed_out);
                     pImpl->valid = false;
                     LOGGER_DEBUG("FileLock: Timed out waiting for in-process lock on '{}'",
                                  pImpl->path.string());
+                    
+                    // Now it is safe to check for cleanup because the guard has released its count
+                    if (state->owners == 0 && state->waiters == 0)
+                    {
+                        g_proc_locks.erase(pImpl->lock_key);
+                    }
+                    pImpl->proc_state.reset();
                     return;
                 }
-            }
-            else
-            {
-                state->cv.wait(regl, [&] { return state->owners == 0; });
             }
         }
         // If we are here, we have acquired the process-local lock.
@@ -436,7 +473,10 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
             if (--pImpl->proc_state->owners == 0)
             {
                 pImpl->proc_state->cv.notify_all();
-                g_proc_locks.erase(pImpl->lock_key);
+                if (pImpl->proc_state->waiters == 0)
+                {
+                    g_proc_locks.erase(pImpl->lock_key);
+                }
             }
             pImpl->proc_state.reset();
         }

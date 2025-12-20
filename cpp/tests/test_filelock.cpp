@@ -78,9 +78,13 @@ static fs::path g_temp_dir;
 
 #if defined(PLATFORM_WIN64)
 static HANDLE spawn_worker_process(const std::string &exe, const std::string &mode,
-                                   const std::string &resource_path)
+                                   const std::vector<std::string> &args)
 {
-    std::string cmdline = fmt::format("\"{}\" {} {}", exe, mode, resource_path);
+    std::string cmdline = fmt::format("\"{}\" {}", exe, mode);
+    for (const auto &arg : args) {
+        cmdline += fmt::format(" \"{}\"", arg);
+    }
+
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -98,14 +102,23 @@ static HANDLE spawn_worker_process(const std::string &exe, const std::string &mo
 }
 #else
 static pid_t spawn_worker_process(const std::string &exe, const std::string &mode,
-                                  const std::string &resource_path)
+                                  const std::vector<std::string> &args)
 {
     pid_t pid = fork();
     if (pid == 0)
     {
         // Child process
-        execl(exe.c_str(), exe.c_str(), mode.c_str(), resource_path.c_str(), nullptr);
-        _exit(127); // Should not be reached if execl is successful
+        // Prepare arguments for execv
+        std::vector<char*> argv;
+        argv.push_back(const_cast<char*>(exe.c_str()));
+        argv.push_back(const_cast<char*>(mode.c_str()));
+        for (const auto &arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+
+        execv(exe.c_str(), argv.data());
+        _exit(127); // Should not be reached if execv is successful
     }
     return pid;
 }
@@ -392,7 +405,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     for (int i = 0; i < PROCS; ++i)
     {
         HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker",
-                                       fmt::format("\"{}\"", resource_path.string()));
+                                       {resource_path.string()});
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -412,7 +425,7 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     std::vector<pid_t> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(self_exe, "nonblocking_worker", resource_path.string());
+        pid_t pid = spawn_worker_process(self_exe, "nonblocking_worker", {resource_path.string()});
         CHECK(pid > 0);
         pids.push_back(pid);
     }
@@ -451,7 +464,7 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
     {
         HANDLE h = spawn_worker_process(
             self_exe, "blocking_worker",
-            fmt::format("\"{}\" {}", counter_path.string(), ITERS_PER_WORKER));
+            {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -469,7 +482,7 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
     for (int i = 0; i < PROCS; ++i)
     {
         pid_t pid = spawn_worker_process(self_exe, "blocking_worker",
-                                         fmt::format("{} {}", counter_path.string(), ITERS_PER_WORKER));
+                                         {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
         CHECK(pid > 0);
         pids.push_back(pid);
     }
@@ -505,7 +518,7 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
 #if defined(PLATFORM_WIN64)
     // 2. Spawn child, which will block
     HANDLE child_proc = spawn_worker_process(self_exe, "parent_child_worker",
-                                             fmt::format("\"{}\"", resource_path.string()));
+                                             {resource_path.string()});
     CHECK(child_proc != nullptr);
 
     // 3. Parent sleeps to ensure child has time to block
@@ -521,7 +534,7 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
     CloseHandle(child_proc);
     CHECK(exit_code == 0);
 #else
-    pid_t pid = spawn_worker_process(self_exe, "parent_child_worker", resource_path.string());
+    pid_t pid = spawn_worker_process(self_exe, "parent_child_worker", {resource_path.string()});
     CHECK(pid > 0);
     std::this_thread::sleep_for(200ms);
     parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking);
