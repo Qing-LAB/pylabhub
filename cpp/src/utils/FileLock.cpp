@@ -419,24 +419,45 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                 // Scope the waiter guard so it destructs (waiters--) before we handle failure cleanup
                 {
                     // RAII guard to ensure waiters is decremented even if an exception occurs
-                    struct ScopedWaiter {
-                        std::shared_ptr<ProcLockState> s;
-                        ScopedWaiter(std::shared_ptr<ProcLockState> state) : s(std::move(state)) { s->waiters++; }
-                        ~ScopedWaiter() { s->waiters--; }
-                    };
-                    ScopedWaiter waiter_guard(state);
-
-                    if (timeout)
+                    struct ScopedWaiter
                     {
-                        if (state->cv.wait_for(regl, *timeout, [&] { return state->owners == 0; }))
+                        ProcLockState &s;
+                        ScopedWaiter(ProcLockState &state) : s(state) { s.waiters++; }
+                        ~ScopedWaiter() { s.waiters--; }
+                    };
+                    ScopedWaiter waiter_guard(*state);
+
+                    try
+                    {
+                        if (timeout)
                         {
+                            if (state->cv.wait_for(regl, *timeout,
+                                                   [&] { return state->owners == 0; }))
+                            {
+                                acquired = true;
+                            }
+                        }
+                        else
+                        {
+                            state->cv.wait(regl, [&] { return state->owners == 0; });
                             acquired = true;
                         }
                     }
-                    else
+                    catch (...)
                     {
-                        state->cv.wait(regl, [&] { return state->owners == 0; });
-                        acquired = true;
+                        // If wait throws (e.g. system_error), we must not crash (this is noexcept).
+                        // waiter_guard destructor has already run (waiters--).
+                        // We must detach from the proc_state and return an error.
+                        pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
+                        pImpl->valid = false;
+                        
+                        // Check if we need to clean up the empty entry we accessed
+                        if (state->owners == 0 && state->waiters == 0)
+                        {
+                            g_proc_locks.erase(pImpl->lock_key);
+                        }
+                        pImpl->proc_state.reset();
+                        return;
                     }
                 } // waiter_guard dies here, decrementing waiters
 
