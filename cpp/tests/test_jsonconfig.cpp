@@ -31,6 +31,7 @@
 #include <unistd.h>
 #endif
 
+#include "utils/Lifecycle.hpp"
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
 
