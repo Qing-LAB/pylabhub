@@ -36,7 +36,10 @@ namespace pylabhub::utils
 class CallbackDispatcher
 {
   public:
-    CallbackDispatcher() : shutdown_requested_(false) { worker_ = std::thread([this] { this->run(); }); }
+    CallbackDispatcher() : shutdown_requested_(false)
+    {
+        worker_ = std::thread([this] { this->run(); });
+    }
 
     ~CallbackDispatcher() { shutdown(); }
 
@@ -63,7 +66,6 @@ class CallbackDispatcher
             worker_.join();
         }
     }
-
 
   private:
     void run()
@@ -168,19 +170,19 @@ static std::string formatted_time(std::chrono::system_clock::time_point timestam
 {
 #if defined(HAVE_FMT_CHRONO_SUBSECONDS) && HAVE_FMT_CHRONO_SUBSECONDS
     auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
-    #if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
-        // use %f
-        return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
-    #elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
-        // fmt prints fraction without %f
-        return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
-    #else
-        // defensive fallback to manual two-step
-        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-        int fractional_us = static_cast<int>((tp_us - secs).count());
-        auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
-        return fmt::format("{}.{:06d}", sec_part, fractional_us);
-    #endif
+#if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
+    // use %f
+    return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
+#elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
+    // fmt prints fraction without %f
+    return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
+#else
+    // defensive fallback to manual two-step
+    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
+    int fractional_us = static_cast<int>((tp_us - secs).count());
+    auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
+    return fmt::format("{}.{:06d}", sec_part, fractional_us);
+#endif
 #else
     // no runtime support detected — fallback to manual two-step method
     auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
@@ -190,7 +192,6 @@ static std::string formatted_time(std::chrono::system_clock::time_point timestam
     return fmt::format("{}.{:06d}", sec_part, fractional_us);
 #endif
 }
-
 
 // --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
 template <typename... Args>
@@ -389,7 +390,8 @@ class EventLogSink : public Sink
             return;
         }
         std::wstring wbody(needed, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()), &wbody[0], needed);
+        MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()),
+                            &wbody[0], needed);
 
         const wchar_t *strings[1] = {wbody.c_str()};
         ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, strings,
@@ -492,10 +494,9 @@ Impl::~Impl()
         // not recommended, as logs from other static destructors may be lost.
         // The explicit pylabhub::utils::Finalize() function is the preferred way
         // to ensure a clean shutdown.
-        fmt::print(stderr,
-                   "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
-                   "Call pylabhub::utils::Finalize() before main() returns to guarantee "
-                   "all logs are flushed.\n");
+        fmt::print(stderr, "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
+                           "Call pylabhub::utils::Finalize() before main() returns to guarantee "
+                           "all logs are flushed.\n");
     }
     // Always call shutdown() as a fallback.
     shutdown();
@@ -550,13 +551,14 @@ void Impl::worker_loop()
                             if (sink_)
                             {
                                 sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(), get_native_thread_id(),
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(),
                                               make_buffer("Switched log to Console")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<ConsoleSink>();
-                            sink_->write({Logger::Level::L_SYSTEM,
-                                          std::chrono::system_clock::now(), get_native_thread_id(),
+                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                          get_native_thread_id(),
                                           make_buffer("Switched log to Console")});
                         }
                         else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
@@ -598,10 +600,10 @@ void Impl::worker_loop()
                         {
                             if (sink_)
                             {
-                                sink_->write(
-                                    {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                     get_native_thread_id(),
-                                     make_buffer("Switched log to Windows Event Log")});
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(),
+                                              make_buffer("Switched log to Windows Event Log")});
                                 sink_->flush();
                             }
                             sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
@@ -656,7 +658,6 @@ void Impl::shutdown()
     // This will process any remaining callbacks in its queue.
     callback_dispatcher_.shutdown();
 }
-
 
 // --- Logger Public API Implementation ---
 

@@ -81,7 +81,8 @@ static HANDLE spawn_worker_process(const std::string &exe, const std::string &mo
                                    const std::vector<std::string> &args)
 {
     std::string cmdline = fmt::format("\"{}\" {}", exe, mode);
-    for (const auto &arg : args) {
+    for (const auto &arg : args)
+    {
         cmdline += fmt::format(" \"{}\"", arg);
     }
 
@@ -109,11 +110,12 @@ static pid_t spawn_worker_process(const std::string &exe, const std::string &mod
     {
         // Child process
         // Prepare arguments for execv
-        std::vector<char*> argv;
-        argv.push_back(const_cast<char*>(exe.c_str()));
-        argv.push_back(const_cast<char*>(mode.c_str()));
-        for (const auto &arg : args) {
-            argv.push_back(const_cast<char*>(arg.c_str()));
+        std::vector<char *> argv;
+        argv.push_back(const_cast<char *>(exe.c_str()));
+        argv.push_back(const_cast<char *>(mode.c_str()));
+        for (const auto &arg : args)
+        {
+            argv.push_back(const_cast<char *>(arg.c_str()));
         }
         argv.push_back(nullptr);
 
@@ -164,13 +166,30 @@ static int worker_main_blocking_contention(const std::string &counter_path_str, 
     Logger::instance().set_level(Logger::Level::L_ERROR);
     fs::path counter_path(counter_path_str);
 
+    // Seed random number generator
+    std::srand(
+        static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
+                                  std::chrono::system_clock::now().time_since_epoch().count()));
+
     for (int i = 0; i < num_iterations; ++i)
     {
+        // Add random pre-lock delay to stagger attempts
+        if (std::rand() % 2 == 0)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
+        }
+
         FileLock lock(counter_path, ResourceType::File, LockMode::Blocking); // Blocking acquire
         if (!lock.valid())
         {
             // This should not happen if the lock is working correctly.
             return 1;
+        }
+
+        // Add random critical section delay
+        if (std::rand() % 10 == 0)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
         }
 
         std::ifstream ifs(counter_path);
@@ -214,7 +233,6 @@ static int worker_main_parent_child(const std::string &resource_path_str)
 
     return 0;
 }
-
 
 // --- Test Cases ---
 
@@ -368,7 +386,7 @@ void test_multithread_nonblocking()
     auto resource_path = g_temp_dir / "multithread.txt";
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
-    const int THREADS = 32;
+    const int THREADS = 64; // Increased from 32
     std::atomic<int> success_count{0};
     std::vector<std::thread> threads;
 
@@ -377,6 +395,8 @@ void test_multithread_nonblocking()
         threads.emplace_back(
             [&]()
             {
+                // Random startup delay
+                std::this_thread::sleep_for(std::chrono::milliseconds(i % 10));
                 FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
                 if (lock.valid())
                 {
@@ -397,15 +417,14 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     auto resource_path = g_temp_dir / "multiprocess.txt";
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
-    const int PROCS = 16;
+    const int PROCS = 32; // Increased from 16
     int success_count = 0;
 
 #if defined(PLATFORM_WIN64)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker",
-                                       {resource_path.string()});
+        HANDLE h = spawn_worker_process(self_exe, "nonblocking_worker", {resource_path.string()});
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -455,16 +474,15 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
         ofs << 0;
     }
 
-    const int PROCS = 8;        // Number of worker processes
-    const int ITERS_PER_WORKER = 50; // Iterations each worker performs
+    const int PROCS = 16;             // Increased from 8
+    const int ITERS_PER_WORKER = 100; // Increased from 50
 
 #if defined(PLATFORM_WIN64)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(
-            self_exe, "blocking_worker",
-            {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
+        HANDLE h = spawn_worker_process(self_exe, "blocking_worker",
+                                        {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
         CHECK(h != nullptr);
         procs.push_back(h);
     }
@@ -517,8 +535,8 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
 
 #if defined(PLATFORM_WIN64)
     // 2. Spawn child, which will block
-    HANDLE child_proc = spawn_worker_process(self_exe, "parent_child_worker",
-                                             {resource_path.string()});
+    HANDLE child_proc =
+        spawn_worker_process(self_exe, "parent_child_worker", {resource_path.string()});
     CHECK(child_proc != nullptr);
 
     // 3. Parent sleeps to ensure child has time to block
