@@ -21,8 +21,9 @@
 
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
+#include "platform.hpp" // Include for PLATFORM_WIN64 macro
 
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
@@ -316,36 +317,55 @@ void test_reentrant_error_callback()
     L.set_write_error_callback(
         [&](const std::string &msg)
         {
+            // This log call is the key part of the test. It ensures that calling the
+            // logger from within an error callback doesn't deadlock.
             LOGGER_SYSTEM("Re-entrant log from error callback: {}", msg);
             callback_invoked = true;
         });
 
+    // To test the error callback, we need to induce a sink creation failure.
+    // The method differs by platform.
+#if defined(PLATFORM_WIN64)
+    // On Windows, setting a directory to read-only does not prevent file creation
+    // within it. The correct but complex way involves modifying directory ACLs,
+    // which is too fragile for a unit test. A robust alternative is to lock the
+    // target log file path exclusively, causing the logger's CreateFileW call to fail.
+    fs::path locked_log_path = fs::temp_directory_path() / "pylab_reentrant_locked.log";
+    std::remove(locked_log_path.string().c_str());
+    HANDLE h = CreateFileA(locked_log_path.string().c_str(), GENERIC_READ, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+#else
+    // On POSIX, we can remove write permissions from a directory. Any attempt to
+    // create a file inside it will then fail.
     fs::path readonly_dir = fs::temp_directory_path() / "pylab_readonly_dir_test_reentrant";
     fs::remove_all(readonly_dir);
     fs::create_directory(readonly_dir);
-#if !defined(_WIN32)
-    chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // 0500
-#else
-    fs::permissions(readonly_dir, fs::perms::owner_read | fs::perms::owner_exec);
+    chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // mode 0500
+    fs::path locked_log_path = readonly_dir / "test.log";
 #endif
 
-    fs::path locked_log_path = readonly_dir / "test.log";
     L.set_logfile(locked_log_path.string());
     LOGGER_INFO("This message will be dropped and should trigger an error.");
     L.flush();
 
+    // The re-entrant log should have been written to the *previous* sink (g_log_path).
     CHECK(wait_for_string_in_file(g_log_path, "Re-entrant log from error callback"));
     CHECK(callback_invoked.load());
 
-#if defined(_WIN32)
-    fs::permissions(readonly_dir, fs::perms::owner_all);
-#endif
+    // Cleanup
+#if defined(PLATFORM_WIN64)
+    CloseHandle(h);
+    fs::remove(locked_log_path);
+#else
+    chmod(readonly_dir.string().c_str(), S_IRWXU); // allow deletion
     fs::remove_all(readonly_dir);
+#endif
 }
 
 void test_write_error_callback_async()
 {
-#if defined(_WIN32)
+#if defined(PLATFORM_WIN64)
     std::remove(g_log_path.string().c_str());
     HANDLE h = CreateFileA(g_log_path.string().c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -368,31 +388,67 @@ void test_write_error_callback_async()
     CHECK(callback_invoked.load());
     CloseHandle(h);
 #else
-    fs::path readonly_dir = fs::temp_directory_path() / "pylab_readonly_dir_test";
-    fs::remove_all(readonly_dir);
-    fs::create_directory(readonly_dir);
-    chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // 0500
-    fs::path locked_log_path = readonly_dir / "test.log";
+    // On POSIX, we test two distinct failure modes.
 
-    Logger &L = Logger::instance();
-    std::atomic<bool> callback_invoked = false;
+    // Test 1: Failure to create a file in a read-only directory.
+    {
+        fmt::print("  - Testing sink failure: read-only directory (POSIX)\n");
+        fs::path readonly_dir = fs::temp_directory_path() / "pylab_readonly_dir_test";
+        fs::remove_all(readonly_dir);
+        fs::create_directory(readonly_dir);
+        chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // 0500
+        fs::path locked_log_path = readonly_dir / "test.log";
 
-    L.set_write_error_callback(
-        [&](const std::string &msg)
+        Logger &L = Logger::instance();
+        std::atomic<bool> callback_invoked = false;
+
+        L.set_write_error_callback(
+            [&](const std::string &msg)
+            {
+                callback_invoked = true;
+                CHECK(msg.find("Failed to open log file") != std::string::npos);
+            });
+
+        L.set_logfile(locked_log_path.string());
+        LOGGER_INFO("This message will be dropped.");
+        L.flush();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        CHECK(callback_invoked.load());
+
+        chmod(readonly_dir.string().c_str(), S_IRWXU);
+        fs::remove_all(readonly_dir);
+    }
+
+    // Test 2: Failure to open an existing read-only file for writing.
+    {
+        fmt::print("  - Testing sink failure: read-only file (POSIX)\n");
+        fs::path readonly_file = fs::temp_directory_path() / "pylab_readonly_file.log";
+        // Create the file, then make it read-only
         {
-            callback_invoked = true;
-            CHECK(msg.find("Failed to open log file") != std::string::npos);
-        });
+            std::ofstream touch(readonly_file);
+        }
+        chmod(readonly_file.string().c_str(), S_IRUSR); // 0400
 
-    L.set_logfile(locked_log_path.string());
-    LOGGER_INFO("This message will be dropped.");
-    L.flush();
+        Logger &L = Logger::instance();
+        std::atomic<bool> callback_invoked = false;
+        L.set_write_error_callback(
+            [&](const std::string &msg)
+            {
+                callback_invoked = true;
+                CHECK(msg.find("Failed to open log file") != std::string::npos);
+            });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    CHECK(callback_invoked.load());
+        L.set_logfile(readonly_file.string());
+        LOGGER_INFO("This message will also be dropped.");
+        L.flush();
 
-    chmod(readonly_dir.string().c_str(), S_IRWXU);
-    fs::remove_all(readonly_dir);
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        CHECK(callback_invoked.load());
+
+        chmod(readonly_file.string().c_str(), S_IRWXU);
+        fs::remove(readonly_file);
+    }
 #endif
 }
 
@@ -428,7 +484,13 @@ void multiproc_child_main(int msg_count)
     L.set_level(Logger::Level::L_TRACE);
 
     // Seed per-process
-    std::srand(static_cast<unsigned int>(getpid() + std::chrono::system_clock::now().time_since_epoch().count()));
+#if defined(PLATFORM_WIN64)
+    std::srand(static_cast<unsigned int>(GetCurrentProcessId() +
+                                          std::chrono::system_clock::now().time_since_epoch().count()));
+#else
+    std::srand(static_cast<unsigned int>(getpid() +
+                                          std::chrono::system_clock::now().time_since_epoch().count()));
+#endif
 
     for (int i = 0; i < msg_count; ++i)
     {
@@ -446,6 +508,12 @@ void multiproc_child_main(int msg_count)
 
 bool run_multiproc_iteration(const std::string& self_exe, int num_children, int msgs_per_child)
 {
+    // On Windows, the logger from the parent process will hold a handle to the log file,
+    // preventing its deletion between iterations. Switching to a console sink forces
+    // the old file sink to be destroyed, releasing the handle.
+    Logger::instance().set_console();
+    Logger::instance().flush();
+
     g_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
     std::remove(g_log_path.string().c_str());
 
@@ -521,7 +589,7 @@ bool run_multiproc_iteration(const std::string& self_exe, int num_children, int 
     }
     
     size_t expected = static_cast<size_t>(num_children) * msgs_per_child;
-    fmt::print("  [Stress: {} procs * {} msgs] Found: {} / Expected: {}$\n", 
+    fmt::print("  [Stress: {} procs * {} msgs] Found: {} / Expected: {}\n", 
                num_children, msgs_per_child, found, expected);
                
     return found == expected;
@@ -731,7 +799,7 @@ int main(int argc, char **argv)
             test_multiprocess_logging();
         else
         {
-            fmt::print(stderr, "Unknown test name: {}$\n", test_name);
+            fmt::print(stderr, "Unknown test name: {}\n", test_name);
             return 1;
         }
         return 0;
@@ -757,7 +825,8 @@ int main(int argc, char **argv)
     }
 
     fmt::print("\n--- Test Summary ---\n");
-    fmt::print("Passed: {}, Failed: {}$\n", tests_passed, tests_failed);
+    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
 
     return tests_failed == 0 ? 0 : 1;
 }
+
