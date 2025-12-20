@@ -297,8 +297,8 @@ void test_multithread_contention()
     JsonConfig cfg;
     cfg.init(cfg_path, true);
 
-    const int THREADS = 16;
-    const int ITERS = 500;
+    const int THREADS = 32;
+    const int ITERS = 1000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < THREADS; ++i)
@@ -306,6 +306,13 @@ void test_multithread_contention()
         threads.emplace_back(
             [&, i]
             {
+                // Seed for this thread
+                std::srand(static_cast<unsigned int>(
+                    std::hash<std::thread::id>{}(std::this_thread::get_id()) + i));
+
+                // Actual random start delay
+                std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
+
                 for (int j = 0; j < ITERS; ++j)
                 {
                     // Mix of reads and writes to stress the locks.
@@ -316,6 +323,12 @@ void test_multithread_contention()
                     else
                     {
                         (void)cfg.get_or<int>("nonexistent", 0);
+                    }
+
+                    // Randomly yield or sleep to increase chance of context switches
+                    if (std::rand() % 50 == 0)
+                    {
+                        std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 50));
                     }
                 }
             });
@@ -498,8 +511,18 @@ void test_symlink_attack_prevention_windows()
 }
 #endif
 
+namespace
+{
+struct TestLifecycleManager
+{
+    TestLifecycleManager() { pylabhub::utils::Initialize(); }
+    ~TestLifecycleManager() { pylabhub::utils::Finalize(); }
+};
+} // namespace
+
 int main(int argc, char **argv)
 {
+    TestLifecycleManager lifecycle_manager;
     // Worker mode: invoked by master to test multiprocess behavior
     if (argc >= 2 && std::strcmp(argv[1], "worker") == 0)
     {

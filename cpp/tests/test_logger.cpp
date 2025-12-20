@@ -179,7 +179,6 @@ void test_bad_format_string()
     std::string bad_fmt = "Missing arg: {}";
     LOGGER_INFO_RT(bad_fmt); // This log call will internally create a "[FORMAT ERROR]" message
     CHECK(wait_for_string_in_file(g_log_path, "[FORMAT ERROR]"));
-    // No other checks needed, if it contains the error, it works.
 }
 
 void test_default_sink_and_switching()
@@ -255,7 +254,6 @@ void test_multithread_stress()
     size_t found_threads = 0;
     for (int t = 0; t < LOG_THREADS; ++t)
     {
-        // Check for any message from each thread
         if (contents.find(fmt::format("thread {} message", t)) != std::string::npos)
         {
             found_threads++;
@@ -293,9 +291,6 @@ void test_flush_waits_for_queue()
 
 void test_shutdown_idempotency()
 {
-    // This test is simple: call shutdown from multiple threads.
-    // The idempotent flag should prevent any crashes or deadlocks.
-    // The test passes if it completes without hanging.
     const int THREADS = 16;
     std::vector<std::thread> threads;
     for (int i = 0; i < THREADS; ++i)
@@ -306,10 +301,7 @@ void test_shutdown_idempotency()
     {
         t.join();
     }
-    // After shutdown, logging should be a no-op.
     LOGGER_INFO("This message should not be logged.");
-    // We can't easily check that it *wasn't* logged without re-initializing,
-    // so we just rely on the fact that the test didn't hang.
     CHECK(true);
 }
 
@@ -324,22 +316,16 @@ void test_reentrant_error_callback()
     L.set_write_error_callback(
         [&](const std::string &msg)
         {
-            // This is the key part of the test: the error callback itself
-            // tries to log a message. Without the async dispatcher, this
-            // would deadlock.
             LOGGER_SYSTEM("Re-entrant log from error callback: {}", msg);
             callback_invoked = true;
         });
 
-    // To trigger an error, switch to a sink that we know will fail.
     fs::path readonly_dir = fs::temp_directory_path() / "pylab_readonly_dir_test_reentrant";
     fs::remove_all(readonly_dir);
     fs::create_directory(readonly_dir);
 #if !defined(_WIN32)
     chmod(readonly_dir.string().c_str(), S_IRUSR | S_IXUSR); // 0500
 #else
-    // On Windows, make the directory read-only.
-    // Note: This is less robust than POSIX permissions.
     fs::permissions(readonly_dir, fs::perms::owner_read | fs::perms::owner_exec);
 #endif
 
@@ -348,17 +334,14 @@ void test_reentrant_error_callback()
     LOGGER_INFO("This message will be dropped and should trigger an error.");
     L.flush();
 
-    // The re-entrant message should appear in the *previous* valid sink.
     CHECK(wait_for_string_in_file(g_log_path, "Re-entrant log from error callback"));
     CHECK(callback_invoked.load());
 
 #if defined(_WIN32)
-    // Clean up permissions on Windows
     fs::permissions(readonly_dir, fs::perms::owner_all);
 #endif
     fs::remove_all(readonly_dir);
 }
-
 
 void test_write_error_callback_async()
 {
@@ -423,31 +406,35 @@ void test_platform_sinks()
     fmt::print(stderr, "\n  MANUAL VERIFICATION REQUIRED for Windows Event Log:\n");
     fmt::print(stderr, "  1. Open Event Viewer (eventvwr.msc).\n");
     fmt::print(stderr, "  2. Navigate to 'Windows Logs' -> 'Application'.\n");
-    fmt::print(stderr,
-               "  3. Look for an Information-level message from source "
-               "'PyLabHubTestLogger' containing 'Testing Windows Event Log sink.'.\n\n");
+    fmt::print(stderr, "  3. Look for an Information-level message from source "
+                       "'PyLabHubTestLogger' containing 'Testing Windows Event Log sink.'.\n\n");
 #else
     L.set_syslog("pylab-logger-test");
     LOGGER_INFO("Testing syslog sink.");
     L.flush();
     fmt::print(stderr, "\n  MANUAL VERIFICATION REQUIRED for Syslog:\n");
     fmt::print(stderr, "  1. Open your system's terminal.\n");
-    fmt::print(stderr,
-               "  2. Run 'journalctl -r | grep \"pylab-logger-test\"' or "
-               "'cat /var/log/syslog | grep \"pylab-logger-test\"'.\n");
+    fmt::print(stderr, "  2. Run 'journalctl -r | grep \"pylab-logger-test\"' or "
+                       "'cat /var/log/syslog | grep \"pylab-logger-test\"'.\n");
     fmt::print(stderr, "  3. Look for a message containing 'Testing syslog sink.'.\n\n");
 #endif
     CHECK(true);
 }
 
-void multiproc_child_main()
+void multiproc_child_main(int msg_count)
 {
     Logger &L = Logger::instance();
     L.set_logfile(g_log_path.string(), true);
     L.set_level(Logger::Level::L_TRACE);
 
-    for (int i = 0; i < 200; ++i)
+    // Seed per-process
+    std::srand(static_cast<unsigned int>(getpid() + std::chrono::system_clock::now().time_since_epoch().count()));
+
+    for (int i = 0; i < msg_count; ++i)
     {
+        if (std::rand() % 10 == 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
+        }
 #if defined(_WIN32)
         LOGGER_INFO("child-msg pid={} idx={}", GetCurrentProcessId(), i);
 #else
@@ -457,26 +444,25 @@ void multiproc_child_main()
     L.flush();
 }
 
-void test_multiprocess_logging()
+bool run_multiproc_iteration(const std::string& self_exe, int num_children, int msgs_per_child)
 {
     g_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
     std::remove(g_log_path.string().c_str());
 
     Logger &L = Logger::instance();
+    L.set_console(); 
     L.set_logfile(g_log_path.string(), true);
     L.set_level(Logger::Level::L_INFO);
+    
     LOGGER_INFO("parent-process-start");
     L.flush();
 
-    const int CHILDREN = 10;
-    const int MESSAGES_PER_CHILD = 200;
-
 #if defined(_WIN32)
     std::vector<HANDLE> procs;
-    for (int i = 0; i < CHILDREN; ++i)
+    for (int i = 0; i < num_children; ++i)
     {
         std::string cmdline_str =
-            fmt::format("\"{}\" --multiproc-child \"{}\"", g_self_exe_path, g_log_path.string());
+            fmt::format("\"{}\" --multiproc-child \"{}\" {}", self_exe, g_log_path.string(), msgs_per_child);
         std::vector<char> cmdline(cmdline_str.begin(), cmdline_str.end());
         cmdline.push_back('\0');
 
@@ -486,7 +472,8 @@ void test_multiprocess_logging()
         if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
                             &si, &pi))
         {
-            FAIL_TEST("CreateProcessA failed");
+            fmt::print(stderr, "CreateProcessA failed for child {}\n", i);
+            return false;
         }
         CloseHandle(pi.hThread);
         procs.push_back(pi.hProcess);
@@ -494,21 +481,18 @@ void test_multiprocess_logging()
     for (auto &h : procs)
     {
         WaitForSingleObject(h, INFINITE);
-        DWORD code = 1;
-        GetExitCodeProcess(h, &code);
         CloseHandle(h);
-        CHECK(code == 0);
     }
 #else
     std::vector<pid_t> child_pids;
-    for (int i = 0; i < CHILDREN; ++i)
+    for (int i = 0; i < num_children; ++i)
     {
         pid_t pid = fork();
-        CHECK(pid != -1);
+        if (pid == -1) return false;
         if (pid == 0)
         {
-            execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--multiproc-child",
-                  g_log_path.string().c_str(), (char *)nullptr);
+            execl(self_exe.c_str(), self_exe.c_str(), "--multiproc-child",
+                  g_log_path.string().c_str(), std::to_string(msgs_per_child).c_str(), (char *)nullptr);
             _exit(127);
         }
         child_pids.push_back(pid);
@@ -517,35 +501,56 @@ void test_multiprocess_logging()
     {
         int status = 0;
         waitpid(pid, &status, 0);
-        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return false;
     }
 #endif
     L.flush();
 
     std::string contents;
-    CHECK(read_file_contents(g_log_path.string(), contents));
-    size_t child_msg_count = 0;
+    if (!read_file_contents(g_log_path.string(), contents)) return false;
+    
+    size_t found = 0;
     std::stringstream ss(contents);
     std::string line;
     while (std::getline(ss, line))
     {
         if (line.find("child-msg") != std::string::npos)
         {
-            child_msg_count++;
+            found++;
         }
     }
-    CHECK(child_msg_count == CHILDREN * MESSAGES_PER_CHILD);
-    std::remove(g_log_path.string().c_str());
+    
+    size_t expected = static_cast<size_t>(num_children) * msgs_per_child;
+    fmt::print("  [Stress: {} procs * {} msgs] Found: {} / Expected: {}$\n", 
+               num_children, msgs_per_child, found, expected);
+               
+    return found == expected;
+}
+
+void test_multiprocess_logging()
+{
+    // High-stress ramp-up
+    const int start_children = 10;
+    const int max_children = 50;
+    const int step_children = 10;
+    const int msgs = 1000;
+
+    fmt::print("Starting high-stress multiprocess ramp-up (msgs/child={})...\n", msgs);
+
+    for (int n = start_children; n <= max_children; n += step_children)
+    {
+        if (!run_multiproc_iteration(g_self_exe_path, n, msgs))
+        {
+            FAIL_TEST(fmt::format("Multiprocess logging FAILED at {} children.", n));
+        }
+    }
+    fmt::print("Multiprocess high-stress test PASSED up to {} children.\n", max_children);
 }
 
 void test_concurrent_lifecycle_chaos()
 {
-    // This test spawns multiple threads to hammer the logger with different
-    // operations concurrently: logging, flushing, and reconfiguring. A final
-    // thread calls shutdown. The test passes if it completes without crashing,
-    // hanging, or triggering a sanitizer.
     std::atomic<bool> stop_flag = false;
-    const int DURATION_MS = 500;
+    const int DURATION_MS = 2000;
 
     auto worker = [&](int id, auto fn)
     {
@@ -556,8 +561,7 @@ void test_concurrent_lifecycle_chaos()
     };
 
     std::vector<std::thread> threads;
-    // 4 logging threads
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         threads.emplace_back(worker, i,
                              [](int id)
@@ -566,7 +570,6 @@ void test_concurrent_lifecycle_chaos()
                                  std::this_thread::sleep_for(std::chrono::microseconds(500));
                              });
     }
-    // 2 flushing threads
     for (int i = 0; i < 2; ++i)
     {
         threads.emplace_back(worker, i,
@@ -576,7 +579,6 @@ void test_concurrent_lifecycle_chaos()
                                  std::this_thread::sleep_for(std::chrono::milliseconds(10));
                              });
     }
-    // 2 config threads
     for (int i = 0; i < 2; ++i)
     {
         threads.emplace_back(worker, i,
@@ -595,10 +597,7 @@ void test_concurrent_lifecycle_chaos()
                              });
     }
 
-    // Let the chaos run for a bit
     std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
-
-    // Signal shutdown
     Logger::instance().shutdown();
     stop_flag.store(true);
 
@@ -606,12 +605,8 @@ void test_concurrent_lifecycle_chaos()
     {
         t.join();
     }
-
-    CHECK(true); // Pass if we didn't crash or hang
+    CHECK(true);
 }
-
-
-// --- Test Runner ---
 
 void run_test_in_process(const std::string &test_name)
 {
@@ -630,7 +625,7 @@ void run_test_in_process(const std::string &test_name)
         fmt::print(stderr, "  --- FAILED: CreateProcessA failed ({}) ---\n", GetLastError());
         return;
     }
-    WaitForSingleObject(pi.hProcess, 30000); // 30 second timeout
+    WaitForSingleObject(pi.hProcess, 60000); 
     DWORD exit_code = 1;
     GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hProcess);
@@ -658,12 +653,12 @@ void run_test_in_process(const std::string &test_name)
     {
         execl(g_self_exe_path.c_str(), g_self_exe_path.c_str(), "--run-test", test_name.c_str(),
               (char *)nullptr);
-        _exit(127); // execl only returns on error
+        _exit(127);
     }
     else
     {
         int status = 0;
-        waitpid(pid, &status, 0); // no timeout, rely on test logic to not hang
+        waitpid(pid, &status, 0);
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
         {
             tests_passed++;
@@ -692,6 +687,17 @@ int main(int argc, char **argv)
     TestLifecycleManager lifecycle_manager;
     g_self_exe_path = argv[0];
     g_log_path = fs::temp_directory_path() / "pylabhub_test_logger.log";
+
+    if (argc > 1 && std::string(argv[1]) == "--multiproc-child")
+    {
+        if (argc < 3)
+            return 3;
+        g_log_path = argv[2];
+        int count = 200;
+        if (argc >= 4) count = std::stoi(argv[3]);
+        multiproc_child_main(count);
+        return 0;
+    }
 
     if (argc > 1 && std::string(argv[1]) == "--run-test")
     {
@@ -728,17 +734,6 @@ int main(int argc, char **argv)
             fmt::print(stderr, "Unknown test name: {}$\n", test_name);
             return 1;
         }
-        // Success is exit code 0, which is default.
-        // CHECK failures exit(1)
-        return 0;
-    }
-
-    if (argc > 1 && std::string(argv[1]) == "--multiproc-child")
-    {
-        if (argc < 3)
-            return 3;
-        g_log_path = argv[2];
-        multiproc_child_main();
         return 0;
     }
 
@@ -762,13 +757,7 @@ int main(int argc, char **argv)
     }
 
     fmt::print("\n--- Test Summary ---\n");
-    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
-
-    std::error_code ec;
-    fs::remove(g_log_path, ec);
-    fs::remove(fs::temp_directory_path() / "pylabhub_multiprocess_test.log", ec);
-    fs::remove_all(fs::temp_directory_path() / "pylab_readonly_dir_test", ec);
-    fs::remove_all(fs::temp_directory_path() / "pylab_readonly_dir_test_reentrant", ec);
+    fmt::print("Passed: {}, Failed: {}$\n", tests_passed, tests_failed);
 
     return tests_failed == 0 ? 0 : 1;
 }

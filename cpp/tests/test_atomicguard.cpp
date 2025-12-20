@@ -56,7 +56,7 @@ static int tests_failed = 0;
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
+            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);  \
             throw std::runtime_error("Test case failed");                                          \
         }                                                                                          \
     } while (0)
@@ -145,16 +145,23 @@ void test_raii_acquire_failure()
 void test_concurrent_acquire()
 {
     AtomicOwner owner;
-    constexpr int THREADS = 32;
+    constexpr int THREADS = 64;
     std::atomic<int> success_count{0};
 
     std::vector<std::thread> threads;
     for (int i = 0; i < THREADS; ++i)
     {
         threads.emplace_back(
-            [&]()
+            [&, i]()
             {
-                auto until = std::chrono::steady_clock::now() + 400ms;
+                // Seed for this thread
+                std::srand(static_cast<unsigned int>(
+                    std::hash<std::thread::id>{}(std::this_thread::get_id()) + i));
+
+                // Random start delay
+                std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
+
+                auto until = std::chrono::steady_clock::now() + 1000ms;
                 while (std::chrono::steady_clock::now() < until)
                 {
                     // Create a new guard for each attempt, testing the RAII case.
@@ -163,7 +170,13 @@ void test_concurrent_acquire()
                     {
                         success_count++;
                         CHECK(g.active());
-                        std::this_thread::sleep_for(1ms);
+
+                        // Random critical section hold time
+                        if (std::rand() % 5 == 0)
+                        {
+                            std::this_thread::sleep_for(
+                                std::chrono::microseconds(std::rand() % 100));
+                        }
                     } // g's destructor is called here, releasing the lock.
                 }
             });
@@ -197,7 +210,7 @@ void test_transfer_single_thread()
 void test_concurrent_transfers()
 {
     AtomicOwner owner;
-    constexpr int NUM_GUARDS = 8;
+    constexpr int NUM_GUARDS = 16;
     std::vector<AtomicGuard> guards;
     for (int i = 0; i < NUM_GUARDS; ++i)
     {
@@ -206,8 +219,8 @@ void test_concurrent_transfers()
 
     CHECK(guards[0].acquire()); // Start with guard 0 as owner.
 
-    constexpr int NUM_THREADS = 16;
-    constexpr int TRANSFERS_PER_THREAD = 500;
+    constexpr int NUM_THREADS = 32;
+    constexpr int TRANSFERS_PER_THREAD = 2000;
     std::vector<std::thread> threads;
 
     for (int i = 0; i < NUM_THREADS; ++i)
@@ -215,11 +228,19 @@ void test_concurrent_transfers()
         threads.emplace_back(
             [&]()
             {
+                // Seed for this thread
+                unsigned int seed = static_cast<unsigned int>(
+                    std::hash<std::thread::id>{}(std::this_thread::get_id()));
+
                 for (int j = 0; j < TRANSFERS_PER_THREAD; ++j)
                 {
                     // Transfer between pseudo-random pairs to stress the locks.
-                    int src_idx = (j * 3 + i) % NUM_GUARDS;
-                    int dest_idx = (j * 5 + i + 1) % NUM_GUARDS;
+                    seed = seed * 1103515245 + 12345;
+                    int src_idx = (seed / 65536) % NUM_GUARDS;
+
+                    seed = seed * 1103515245 + 12345;
+                    int dest_idx = (seed / 65536) % NUM_GUARDS;
+
                     if (src_idx == dest_idx)
                         continue;
 
@@ -370,7 +391,7 @@ void test_noop_destructor_scenarios()
     // Test 2: A guard that is attached but never acquires.
     // Its destructor should also be a no-op because has_ever_acquired_ is false.
     AtomicOwner owner;
-    { // The internal `is_active_` flag will be false.
+    {
         AtomicGuard g(&owner);
         CHECK(!g.active());
     } // Destructor runs here.
@@ -467,7 +488,7 @@ void trigger_abort_logic()
 #if defined(PLATFORM_WIN64)
 static HANDLE spawn_child_process(const std::string &exe, const std::string &arg)
 {
-    std::string cmdline = fmt::format("\"{}\" {}", exe, arg);
+    std::string cmdline = fmt::format("\"{}\" {}\n", exe, arg);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -559,7 +580,7 @@ int main(int argc, char **argv)
               [&]() { test_destructor_abort_on_invariant_violation(self_exe); });
 
     fmt::print("\n--- Test Summary ---\n");
-    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
+    fmt::print("Passed: {}, Failed: \n", tests_passed, tests_failed);
 
     return tests_failed == 0 ? 0 : 1;
 }
