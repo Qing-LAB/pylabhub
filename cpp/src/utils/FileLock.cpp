@@ -583,9 +583,9 @@ static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
 {
 #if defined(PLATFORM_WIN64)
     std::wstring lockpath_w = win32_to_long_path(lockpath);
-    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
     {
