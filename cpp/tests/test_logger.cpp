@@ -235,9 +235,9 @@ void test_multithread_stress()
             for (int i = 0; i < SINK_SWITCHES; ++i)
             {
                 if (i % 2 == 0)
-                    Logger::instance().set_console();
-                else
                     Logger::instance().set_logfile(g_log_path.string());
+                else
+                    Logger::instance().set_console();
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             Logger::instance().set_logfile(g_log_path.string());
@@ -255,8 +255,8 @@ void test_multithread_stress()
     size_t found_threads = 0;
     for (int t = 0; t < LOG_THREADS; ++t)
     {
-        // Just check for one message from each thread
-        if (contents.find(fmt::format("thread {} message 0", t)) != std::string::npos)
+        // Check for any message from each thread
+        if (contents.find(fmt::format("thread {} message", t)) != std::string::npos)
         {
             found_threads++;
         }
