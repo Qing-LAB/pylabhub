@@ -15,6 +15,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <mutex> // Required for std::mutex and std::lock_guard
+#include <condition_variable> // Required for std::condition_variable
 
 #include <fmt/core.h>
 
@@ -412,6 +414,52 @@ void test_multithread_nonblocking()
     CHECK(success_count.load() == 1);
 }
 
+#if defined(PLATFORM_WIN64)
+void test_share_delete_on_windows()
+{
+    auto resource_path = g_temp_dir / "share_delete.txt";
+    auto lock_path =
+        FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File);
+    fs::remove(lock_path);
+
+    std::atomic<bool> delete_succeeded = false;
+    std::atomic<bool> lock_acquired = false;
+    std::condition_variable cv;
+    std::mutex mtx;
+
+    std::thread t1(
+        [&]()
+        {
+            FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
+            CHECK(lock.valid());
+
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                lock_acquired = true;
+            }
+            cv.notify_one();
+
+            // Wait for the main thread to attempt deletion
+            std::this_thread::sleep_for(200ms);
+        });
+
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        cv.wait(lk, [&] { return lock_acquired.load(); });
+    }
+
+    // Now that the other thread has the lock, try to delete the lock file.
+    // This should succeed because of FILE_SHARE_DELETE.
+    std::error_code ec;
+    fs::remove(lock_path, ec);
+    delete_succeeded = !ec;
+
+    t1.join();
+
+    CHECK(delete_succeeded);
+}
+#endif
+
 void test_multiprocess_nonblocking(const std::string &self_exe)
 {
     auto resource_path = g_temp_dir / "multiprocess.txt";
@@ -750,6 +798,9 @@ int main(int argc, char **argv)
     TEST_CASE("Automatic Directory Creation", test_directory_creation);
     TEST_CASE("Directory Path Locking", test_directory_path_locking);
     TEST_CASE("Multi-Threaded Non-Blocking Lock", test_multithread_nonblocking);
+#if defined(PLATFORM_WIN64)
+    TEST_CASE("Windows FILE_SHARE_DELETE Test", test_share_delete_on_windows);
+#endif
 
     std::string self_exe = argv[0];
     TEST_CASE("Multi-Process Non-Blocking Lock",
