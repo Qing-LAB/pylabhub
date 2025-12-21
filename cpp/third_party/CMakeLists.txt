@@ -68,6 +68,7 @@ include(libzmq)
 
 # setup XOPToolKit
 include(XOPToolKit)
+include(cmake/googletest.cmake)
 
 # ---------------------------------------------------------------------------
 # As a result of the above includes, the third-party subprojects should now be

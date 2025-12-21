@@ -1,12 +1,8 @@
-// test_jsonconfig.cpp
-// Unit test for JsonConfig: function tests, multithread and multiprocess tests.
+// tests/test_jsonconfig.cpp
 //
-// Usage:
-//  ./test_jsonconfig          <- run all tests (master)
-//  ./test_jsonconfig worker <path> <id> <- worker mode used by multiprocess test
-//
-// Exit code 0 = success. Non-zero indicates failure in one of the test cases.
+// Unit test for JsonConfig, converted to GoogleTest.
 
+#include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -21,6 +17,9 @@
 #include <fmt/core.h>
 
 #include "platform.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/JsonConfig.hpp"
+#include "utils/Logger.hpp"
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -31,65 +30,20 @@
 #include <unistd.h>
 #endif
 
-#include "utils/Lifecycle.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/Logger.hpp"
-
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-// --- Test Harness ---
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-#define CHECK(condition)                                                                           \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
-            fmt::print(stderr, "  CHECK FAILED: {} at {}:{}\n", #condition, __FILE__, __LINE__);   \
-            throw std::runtime_error("Test case failed");                                          \
-        }                                                                                          \
-    } while (0)
-
-#define FAIL_TEST(msg)                                                                             \
-    do                                                                                             \
-    {                                                                                              \
-        fmt::print(stderr, "  TEST FAILED: {} at {}:{}\n", msg, __FILE__, __LINE__);               \
-        throw std::runtime_error("Test case failed: " + std::string(msg));                         \
-    } while (0)
-
-void TEST_CASE(const std::string &name, std::function<void()> test_func)
-{
-    fmt::print("\n=== {} ===\n", name);
-    try
-    {
-        test_func();
-        tests_passed++;
-        fmt::print("  --- PASSED ---\n");
-    }
-    catch (const std::exception &e)
-    {
-        tests_failed++;
-        fmt::print(stderr, "  --- FAILED: {} ---\n", e.what());
-    }
-    catch (...)
-    {
-        tests_failed++;
-        fmt::print(stderr, "  --- FAILED with unknown exception ---\n");
-    }
-}
+namespace {
 
 // --- Test Globals & Helpers ---
 static fs::path g_temp_dir;
+static std::string g_self_exe_path;
 
-// Helper to read a file's content
 static std::string read_file_contents(const fs::path &p)
 {
     std::ifstream in(p);
-    if (!in.is_open())
-        return "";
+    if (!in.is_open()) return "";
     std::stringstream ss;
     ss << in.rdbuf();
     return ss.str();
@@ -98,8 +52,7 @@ static std::string read_file_contents(const fs::path &p)
 // --- Worker Process Logic ---
 
 #if defined(PLATFORM_WIN64)
-static HANDLE spawn_worker_process(const std::string &exe, const std::string &cfgpath,
-                                   const std::string &worker_id)
+static HANDLE spawn_worker_process(const std::string &exe, const std::string &cfgpath, const std::string &worker_id)
 {
     std::string cmdline = fmt::format("\"{}\" worker \"{}\" \"{}\"", exe, cfgpath, worker_id);
     STARTUPINFOW si{};
@@ -118,211 +71,135 @@ static HANDLE spawn_worker_process(const std::string &exe, const std::string &cf
     return pi.hProcess;
 }
 #else
-static pid_t spawn_worker_process(const std::string &exe, const std::string &cfgpath,
-                                  const std::string &worker_id)
+static pid_t spawn_worker_process(const std::string &exe, const std::string &cfgpath, const std::string &worker_id)
 {
     pid_t pid = fork();
     if (pid == 0)
     {
-        // Child
         execl(exe.c_str(), exe.c_str(), "worker", cfgpath.c_str(), worker_id.c_str(), nullptr);
-        _exit(127); // exec failed
+        _exit(127);
     }
     return pid;
 }
 #endif
 
-// Worker mode: each worker will attempt to write a unique marker into the config.
-// Returns 0 on success.
-static int worker_main(const std::string &cfgpath, const std::string &worker_id)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    JsonConfig cfg;
-    if (!cfg.init(cfgpath, false))
-        return 1;
+// --- Test Fixture ---
+class JsonConfigTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        g_temp_dir = fs::temp_directory_path() / "pylabhub_jsonconfig_tests";
+        fs::create_directories(g_temp_dir);
+        fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
+        pylabhub::utils::Initialize();
+    }
 
-    // Attempt to write our ID and save. This will use a non-blocking FileLock internally.
-    // Only one process should succeed.
-    bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
-
-    return ok ? 0 : 2;
-}
+    static void TearDownTestSuite() {
+        pylabhub::utils::Finalize();
+        fs::remove_all(g_temp_dir);
+    }
+};
 
 // --- Test Cases ---
 
-//
-// [Purpose]
-// Verifies the initialization process of the `JsonConfig` object. It checks that
-// `init()` can both create a new configuration file if one doesn't exist and
-// successfully load an existing one.
-//
-// [Method]
-// 1. Defines a path for a config file and ensures it does not exist.
-// 2. Calls `init(path, createIfMissing = true)`.
-// 3. Verifies that the file now exists and that the in-memory JSON object is a
-//    valid, empty object.
-// 4. Calls `init()` again on the same path with a new `JsonConfig` instance to
-//    ensure it can load the existing file without error.
-void test_init_and_create()
+TEST_F(JsonConfigTest, InitAndCreate)
 {
     auto cfg_path = g_temp_dir / "init_create.json";
     fs::remove(cfg_path);
 
     JsonConfig config;
-    CHECK(!fs::exists(cfg_path));
+    ASSERT_FALSE(fs::exists(cfg_path));
 
-    // Init with createIfMissing = true should create the file.
-    CHECK(config.init(cfg_path, true));
-    CHECK(fs::exists(cfg_path));
-    CHECK(config.as_json().is_object());
-    CHECK(config.as_json().empty());
+    ASSERT_TRUE(config.init(cfg_path, true));
+    ASSERT_TRUE(fs::exists(cfg_path));
+    ASSERT_TRUE(config.as_json().is_object());
+    ASSERT_TRUE(config.as_json().empty());
 
-    // Init again on existing file should succeed.
     JsonConfig config2;
-    CHECK(config2.init(cfg_path, false));
-    CHECK(config2.as_json().is_object());
+    ASSERT_TRUE(config2.init(cfg_path, false));
+    ASSERT_TRUE(config2.as_json().is_object());
 }
 
-//
-// [Purpose]
-// Ensures that a `JsonConfig` object that has been default-constructed but not
-// initialized with `init()` behaves safely and predictably. All attempts to modify
-// or read data should fail gracefully without crashing.
-//
-// [Method]
-// - A `JsonConfig` object is created but `init()` is never called.
-// - The test calls all modification-related methods (`set`, `erase`, `update`,
-//   `save`, `replace`, `with_json_write`) and verifies that they all return `false`.
-// - It then calls read-related methods (`has`, `get_or`, `as_json`) and verifies
-//   that they return sensible default/empty values, proving that the uninitialized
-//   state is handled robustly.
-void test_uninitialized_behavior()
+TEST_F(JsonConfigTest, UninitializedBehavior)
 {
-    JsonConfig config; // Default-constructed, not initialized with a path.
+    JsonConfig config;
 
-    // All modification attempts should fail gracefully.
-    CHECK(!config.set("key", "value"));
-    CHECK(!config.erase("key"));
-    CHECK(!config.update("key", [](json &j) { j = 1; }));
-    CHECK(!config.save());
-    CHECK(!config.replace(json::object()));
-    CHECK(!config.with_json_write([](json &j) { j["a"] = 1; }));
+    ASSERT_FALSE(config.set("key", "value"));
+    ASSERT_FALSE(config.erase("key"));
+    ASSERT_FALSE(config.update("key", [](json &j) { j = 1; }));
+    ASSERT_FALSE(config.save());
+    ASSERT_FALSE(config.replace(json::object()));
+    ASSERT_FALSE(config.with_json_write([](json &j) { j["a"] = 1; }));
 
-    // Read operations should be safe but indicate no data.
-    CHECK(!config.has("key"));
-    CHECK(config.get_or<int>("key", 42) == 42);
-    CHECK(config.as_json().is_object());
-    CHECK(config.as_json().empty());
+    ASSERT_FALSE(config.has("key"));
+    ASSERT_EQ(config.get_or<int>("key", 42), 42);
+    ASSERT_TRUE(config.as_json().is_object());
+    ASSERT_TRUE(config.as_json().empty());
 }
 
-//
-// [Purpose]
-// Provides a comprehensive check of the core accessor and mutator methods, ensuring
-// the fundamental "CRUD" (Create, Read, Update, Delete) operations on the JSON
-// data work as expected.
-//
-// [Method]
-// - Initializes a `JsonConfig` object.
-// - Uses `set()` to add values of different types (int, string, object).
-// - Uses `get()`, `get_or()`, and `has()` to verify that the values were written
-//   correctly and can be retrieved.
-// - Uses `erase()` to remove a key and verifies it is gone.
-// - Uses `update()` with a lambda to modify a JSON object in place and verifies
-//   the changes.
-void test_basic_accessors()
+TEST_F(JsonConfigTest, BasicAccessors)
 {
     auto cfg_path = g_temp_dir / "accessors.json";
     JsonConfig cfg;
     cfg.init(cfg_path, true);
 
-    CHECK(cfg.set("int_val", 42));
+    ASSERT_TRUE(cfg.set("int_val", 42));
     int int_val = 0;
-    CHECK(cfg.get("int_val", int_val));
-    CHECK(int_val == 42);
-    CHECK(cfg.get_or<int>("int_val", 0) == 42);
-    CHECK(cfg.get_or<int>("nonexistent", 99) == 99);
+    ASSERT_TRUE(cfg.get("int_val", int_val));
+    ASSERT_EQ(int_val, 42);
+    ASSERT_EQ(cfg.get_or<int>("int_val", 0), 42);
+    ASSERT_EQ(cfg.get_or<int>("nonexistent", 99), 99);
 
-    CHECK(cfg.has("int_val"));
-    CHECK(!cfg.has("nonexistent"));
+    ASSERT_TRUE(cfg.has("int_val"));
+    ASSERT_FALSE(cfg.has("nonexistent"));
 
-    CHECK(cfg.set("str_val", "hello"));
+    ASSERT_TRUE(cfg.set("str_val", "hello"));
     std::string str_val;
-    CHECK(cfg.get("str_val", str_val));
-    CHECK(str_val == "hello");
+    ASSERT_TRUE(cfg.get("str_val", str_val));
+    ASSERT_EQ(str_val, "hello");
 
-    CHECK(cfg.erase("str_val"));
-    CHECK(!cfg.has("str_val"));
+    ASSERT_TRUE(cfg.erase("str_val"));
+    ASSERT_FALSE(cfg.has("str_val"));
 
-    CHECK(cfg.update("obj",
+    ASSERT_TRUE(cfg.update("obj",
                      [](json &j)
                      {
                          j["x"] = 100;
                          j["s"] = "world";
                      }));
     json j;
-    CHECK(cfg.get("obj", j));
-    CHECK(j["x"] == 100);
-    CHECK(j["s"] == "world");
+    ASSERT_TRUE(cfg.get("obj", j));
+    ASSERT_EQ(j["x"], 100);
+    ASSERT_EQ(j["s"], "world");
 }
 
-//
-// [Purpose]
-// Verifies that the `reload()` method correctly updates the in-memory configuration
-// to match changes made directly to the underlying file on disk.
-//
-// [Method]
-// 1. Initializes a config and saves a known state to the file (`"value": 1`).
-// 2. Modifies the file on disk "externally" (by directly opening and writing to it),
-//    changing the value and adding a new key.
-// 3. Verifies that the in-memory `JsonConfig` object still holds the *old* data.
-// 4. Calls `reload()`.
-// 5. Verifies that the in-memory object now reflects the new data from the file,
-//    confirming the reload was successful.
-void test_reload()
+TEST_F(JsonConfigTest, Reload)
 {
     auto cfg_path = g_temp_dir / "reload.json";
     JsonConfig cfg;
     cfg.init(cfg_path, true);
 
     cfg.set("value", 1);
-    CHECK(cfg.save());
+    ASSERT_TRUE(cfg.save());
 
-    // Modify the file externally.
     {
         std::ofstream out(cfg_path);
         out << R"({ "value": 2, "new_key": "external" })";
     }
 
-    // The in-memory value should still be the old one.
     int value = 0;
-    CHECK(cfg.get("value", value));
-    CHECK(value == 1);
-    CHECK(!cfg.has("new_key"));
+    ASSERT_TRUE(cfg.get("value", value));
+    ASSERT_EQ(value, 1);
+    ASSERT_FALSE(cfg.has("new_key"));
 
-    // Reload should update the in-memory state.
-    CHECK(cfg.reload());
-    CHECK(cfg.get("value", value));
-    CHECK(value == 2);
+    ASSERT_TRUE(cfg.reload());
+    ASSERT_TRUE(cfg.get("value", value));
+    ASSERT_EQ(value, 2);
     std::string new_key;
-    CHECK(cfg.get("new_key", new_key));
-    CHECK(new_key == "external");
+    ASSERT_TRUE(cfg.get("new_key", new_key));
+    ASSERT_EQ(new_key, "external");
 }
 
-//
-// [Purpose]
-// Tests a critical internal safety feature: the recursion guard. This guard
-// prevents deadlocks that would occur if a `JsonConfig` method were called from
-// within the lambda of another `JsonConfig` method that holds a lock (like
-// `with_json_read` or `with_json_write`).
-//
-// [Method]
-// - Read-after-Read: Calls `with_json_read()` and, inside its lambda, makes a
-//   nested call to `get()`. The test checks that this nested `get()` call fails
-//   (returns `false`) as predicted by the recursion guard.
-// - Write-after-Write: Calls `with_json_write()` and, inside its lambda, makes a
-//   nested call to `set()`. The test checks that the nested `set()` fails and that
-//   only the changes from the outer `with_json_write()` call are persisted.
-void test_recursion_guard()
+TEST_F(JsonConfigTest, RecursionGuard)
 {
     auto cfg_path = g_temp_dir / "recursion.json";
     JsonConfig cfg;
@@ -330,50 +207,29 @@ void test_recursion_guard()
     cfg.set("key", 123);
     cfg.save();
 
-    // Test nested call from with_json_read -> get()
     bool read_ok = cfg.with_json_read(
         [&]([[maybe_unused]] const json &data)
         {
-            // This nested call should be rejected by the recursion guard.
-            // The new get() returns false on failure, so we check that.
             int val;
-            CHECK(!cfg.get("key", val));
+            ASSERT_FALSE(cfg.get("key", val));
         });
-    // The outer call should still succeed.
-    CHECK(read_ok);
+    ASSERT_TRUE(read_ok);
 
-    // Test nested call from with_json_write -> set()
     bool write_ok = cfg.with_json_write(
         [&](json &data)
         {
             data["a"] = 1;
-            // This nested call should be rejected and return false.
             bool nested_set_ok = cfg.set("b", 2);
-            CHECK(!nested_set_ok);
+            ASSERT_FALSE(nested_set_ok);
         });
-    // The outer call should succeed and save the change from `data["a"] = 1;`
-    CHECK(write_ok);
+    ASSERT_TRUE(write_ok);
     int a_val = 0;
-    CHECK(cfg.get("a", a_val));
-    CHECK(a_val == 1);
-    CHECK(!cfg.has("b")); // The nested set should not have taken effect.
+    ASSERT_TRUE(cfg.get("a", a_val));
+    ASSERT_EQ(a_val, 1);
+    ASSERT_FALSE(cfg.has("b"));
 }
 
-//
-// [Purpose]
-// A stress test to verify the thread-safety of the `JsonConfig` object. It
-// bombards the object with concurrent read and write operations from many
-// threads to flush out potential race conditions or deadlocks.
-//
-// [Method]
-// - Spawns a large number of threads.
-// - Each thread executes a loop of mixed read (`get_or`) and write (`set`)
-//   operations, with random delays to increase the chance of context-switching
-//   at critical moments.
-// - The test passes if it completes without crashing or deadlocking, and if the
-//   final saved configuration file contains some of the expected data, proving
-//   that the internal locks are working correctly to protect shared state.
-void test_multithread_contention()
+TEST_F(JsonConfigTest, MultiThreadContention)
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
     JsonConfig cfg;
@@ -388,16 +244,11 @@ void test_multithread_contention()
         threads.emplace_back(
             [&, i]
             {
-                // Seed for this thread
                 std::srand(static_cast<unsigned int>(
                     std::hash<std::thread::id>{}(std::this_thread::get_id()) + i));
-
-                // Actual random start delay
                 std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
-
                 for (int j = 0; j < ITERS; ++j)
                 {
-                    // Mix of reads and writes to stress the locks.
                     if (j % 10 == 0)
                     {
                         cfg.set(fmt::format("t{}_j{}", i, j), true);
@@ -406,8 +257,6 @@ void test_multithread_contention()
                     {
                         (void)cfg.get_or<int>("nonexistent", 0);
                     }
-
-                    // Randomly yield or sleep to increase chance of context switches
                     if (std::rand() % 50 == 0)
                     {
                         std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 50));
@@ -421,42 +270,23 @@ void test_multithread_contention()
         t.join();
     }
 
-    CHECK(cfg.save());
+    ASSERT_TRUE(cfg.save());
 
-    // Verify some of the data was written.
     JsonConfig verifier;
     verifier.init(cfg_path, false);
-    CHECK(verifier.has("t0_j0"));
-    CHECK(verifier.has("t1_j90"));
+    ASSERT_TRUE(verifier.has("t0_j0"));
+    ASSERT_TRUE(verifier.has("t1_j90"));
 }
 
-//
-// [Purpose]
-// Verifies that the file-level locking provides mutual exclusion across multiple
-// independent *processes*.
-//
-// [Method]
-// 1. Spawns a large number of child processes.
-// 2. Each child process runs the `worker_main` logic, which attempts to perform a
-//    guarded write operation (`with_json_write`) to a shared config file. This
-//    operation internally uses a non-blocking `FileLock`.
-// 3. The worker exits with 0 on success (if it acquired the lock and wrote) or a
-//    non-zero code on failure.
-// 4. The parent process checks that at least one worker succeeded. In a non-blocking
-//    scenario, it is possible for more than one to succeed if their execution does
-//    not perfectly overlap, but the key is that the file is not corrupted and the
-//    locking mechanism works. The test verifies the file was written to by one of
-//    the workers.
-void test_multiprocess_contention(const std::string &self_exe)
+TEST_F(JsonConfigTest, MultiProcessContention)
 {
     auto cfg_path = g_temp_dir / "multiprocess_contention.json";
     fs::remove(cfg_path);
 
-    // Create the initial file.
     {
         JsonConfig creator;
         creator.init(cfg_path, true);
-        CHECK(creator.save());
+        ASSERT_TRUE(creator.save());
     }
 
     const int PROCS = 16;
@@ -466,11 +296,10 @@ void test_multiprocess_contention(const std::string &self_exe)
     std::vector<HANDLE> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(self_exe, cfg_path.string(), fmt::format("win-{}", i));
-        CHECK(h != nullptr);
+        HANDLE h = spawn_worker_process(g_self_exe_path, cfg_path.string(), fmt::format("win-{}", i));
+        ASSERT_TRUE(h != nullptr);
         procs.push_back(h);
     }
-
     for (auto h : procs)
     {
         WaitForSingleObject(h, INFINITE);
@@ -486,11 +315,10 @@ void test_multiprocess_contention(const std::string &self_exe)
     std::vector<pid_t> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(self_exe, cfg_path.string(), fmt::format("posix-{}", i));
-        CHECK(pid > 0);
+        pid_t pid = spawn_worker_process(g_self_exe_path, cfg_path.string(), fmt::format("posix-{}", i));
+        ASSERT_GT(pid, 0);
         pids.push_back(pid);
     }
-
     for (pid_t pid : pids)
     {
         int status = 0;
@@ -502,204 +330,71 @@ void test_multiprocess_contention(const std::string &self_exe)
     }
 #endif
 
-    // In a non-blocking scenario, it's possible for more than one to succeed if they
-    // don't overlap perfectly, but we expect at least one to have succeeded.
-    CHECK(success_count > 0);
-
-    // Verify that the file contains a "worker" key.
+    ASSERT_GT(success_count, 0);
     JsonConfig verifier;
     verifier.init(cfg_path, false);
-    CHECK(verifier.has("worker"));
+    ASSERT_TRUE(verifier.has("worker"));
 }
 
-//
-// [Purpose]
-// A critical security test to ensure the `save()` operation is not vulnerable
-// to a symbolic link (symlink) attack. This prevents a scenario where the config
-// file is replaced with a symlink pointing to a sensitive system file, which could
-// then be overwritten.
-//
-// [Method]
-// 1. A "sensitive" target file (`real_file.txt`) is created.
-// 2. A symbolic link is created, pointing from the expected config path to the
-//    sensitive file.
-// 3. A `JsonConfig` object is initialized with the symlink path. Reading from it
-//    succeeds, as it just follows the link.
-// 4. The test then modifies the in-memory config and calls `save()`.
-// 5. It *must* verify that `save()` returns `false`, indicating failure. The
-//    underlying atomic write mechanism is expected to detect that the path is a
-//    symlink and refuse to write to it.
-// 6. Finally, it checks that the content of the sensitive `real_file.txt` was
-//    *not* modified, proving the attack was prevented.
-#if PYLABHUB_IS_POSIX
-void test_symlink_attack_prevention()
-{
-    auto real_file = g_temp_dir / "real_file.txt";
-    auto symlink_path = g_temp_dir / "config.json";
-    fs::remove(real_file);
-    fs::remove(symlink_path);
-
-    // Create a "sensitive" file with VALID JSON content.
-    {
-        std::ofstream out(real_file);
-        out << R"({ "original": "data" })";
-    }
-
-    // Create a symlink pointing to it.
-    fs::create_symlink(real_file, symlink_path);
-    CHECK(fs::is_symlink(symlink_path));
-
-    JsonConfig cfg;
-    // init() will now succeed because reload() can parse the JSON.
-    CHECK(cfg.init(symlink_path, false));
-    std::string original;
-    CHECK(cfg.get("original", original));
-    CHECK(original == "data");
-
-    // Now, attempt to save. This should fail because atomic_write_json
-    // detects the symlink path and throws an exception, which save()
-    // catches and converts to a `false` return value.
-    cfg.set("malicious", "data");
-    CHECK(!cfg.save());
-
-    // Verify the sensitive file was not overwritten with malicious data.
-    // It should still contain the original valid JSON.
-    json j = json::parse(read_file_contents(real_file));
-    CHECK(j["original"] == "data");
-    CHECK(j.find("malicious") == j.end());
-}
-#endif
-
-//
-// [Purpose]
-// A critical security test to ensure the `save()` operation is not vulnerable
-// to a symbolic link (symlink) attack. This prevents a scenario where the config
-// file is replaced with a symlink pointing to a sensitive system file, which could
-// then be overwritten.
-//
-// [Method]
-// 1. A "sensitive" target file (`real_file.txt`) is created.
-// 2. A symbolic link is created, pointing from the expected config path to the
-//    sensitive file.
-// 3. A `JsonConfig` object is initialized with the symlink path. Reading from it
-//    succeeds, as it just follows the link.
-// 4. The test then modifies the in-memory config and calls `save()`.
-// 5. It *must* verify that `save()` returns `false`, indicating failure. The
-//    underlying atomic write mechanism is expected to detect that the path is a
-//    symlink and refuse to write to it.
-// 6. Finally, it checks that the content of the sensitive `real_file.txt` was
-//    *not* modified, proving the attack was prevented.
 #if defined(PLATFORM_WIN64)
-void test_symlink_attack_prevention_windows()
+TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
 {
     auto real_file = g_temp_dir / "real_file.txt";
     auto symlink_path = g_temp_dir / "config_win.json";
     fs::remove(real_file);
     fs::remove(symlink_path);
 
-    // Create a "sensitive" file with VALID JSON content.
     {
         std::ofstream out(real_file);
-        out << R"({ "original": "data" })";
+        out << R"({ \"original\": \"data\" })";
     }
 
-    // Create a symbolic link. Requires specific privileges/developer mode.
-    // Use `win32_to_long_path` helper for CreateSymbolicLinkW.
     std::wstring symlink_w = pylabhub::utils::win32_to_long_path(symlink_path);
     std::wstring real_w = pylabhub::utils::win32_to_long_path(real_file);
 
     if (!CreateSymbolicLinkW(symlink_w.c_str(), real_w.c_str(), 0))
     {
-        // If symlink creation fails (e.g., due to insufficient permissions),
-        // we skip the test and report a warning.
-        DWORD error = GetLastError();
-        if (error == ERROR_PRIVILEGE_NOT_HELD || error == ERROR_ACCESS_DENIED)
-        {
-            fmt::print(stderr,
-                       "  WARNING: Skipping Windows symlink test. Requires "
-                       "SeCreateSymbolicLinkPrivilege or Developer Mode (Error {}).\n",
-                       error);
-            return;
-        }
-        else
-        {
-            FAIL_TEST("Failed to create symbolic link for test.");
-        }
+        GTEST_SKIP() << "Skipping Windows symlink test: Requires SeCreateSymbolicLinkPrivilege or Developer Mode.";
     }
-    CHECK(fs::is_symlink(symlink_path));
+    ASSERT_TRUE(fs::is_symlink(symlink_path));
 
     JsonConfig cfg;
-    // init() will now succeed as reload() can parse the JSON through the symlink.
-    CHECK(cfg.init(symlink_path, false));
+    ASSERT_TRUE(cfg.init(symlink_path, false));
     std::string original;
-    CHECK(cfg.get("original", original));
-    CHECK(original == "data");
+    ASSERT_TRUE(cfg.get("original", original));
+    ASSERT_EQ(original, "data");
 
-    // Now, attempt to save. This should fail because atomic_write_json
-    // detects the reparse point and throws an exception. save() catches
-    // this and returns `false`.
     cfg.set("malicious", "data");
-    CHECK(!cfg.save());
+    ASSERT_FALSE(cfg.save());
 
-    // Verify the sensitive file was not overwritten with malicious data.
     json j = json::parse(read_file_contents(real_file));
-    CHECK(j["original"] == "data");
-    CHECK(j.find("malicious") == j.end());
+    ASSERT_EQ(j["original"], "data");
+    ASSERT_EQ(j.find("malicious"), j.end());
 }
 #endif
 
-namespace
+// Worker function
+int worker_main(const std::string &cfgpath, const std::string &worker_id)
 {
-struct TestLifecycleManager
-{
-    TestLifecycleManager() { pylabhub::utils::Initialize(); }
-    ~TestLifecycleManager() { pylabhub::utils::Finalize(); }
-};
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    JsonConfig cfg;
+    if (!cfg.init(cfgpath, false))
+        return 1;
+    bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
+    return ok ? 0 : 2;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
-    TestLifecycleManager lifecycle_manager;
-    // Worker mode: invoked by master to test multiprocess behavior
     if (argc >= 2 && std::strcmp(argv[1], "worker") == 0)
     {
-        if (argc < 4)
-        {
-            fmt::print(stderr, "Worker mode requires a config path and worker ID.\n");
-            return 2;
-        }
+        if (argc < 4) return 2;
         return worker_main(argv[2], argv[3]);
     }
 
-    // Main test runner
-    fmt::print("--- JsonConfig Test Suite ---\n");
-    g_temp_dir = fs::temp_directory_path() / "pylabhub_jsonconfig_tests";
-    fs::create_directories(g_temp_dir);
-    fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
-
-    TEST_CASE("Initialization and Creation", test_init_and_create);
-    TEST_CASE("Uninitialized Object Behavior", test_uninitialized_behavior);
-    TEST_CASE("Basic Accessors (get/set/has/erase/update)", test_basic_accessors);
-    TEST_CASE("Reload from External Change", test_reload);
-    TEST_CASE("Recursion Guard Deadlock Prevention", test_recursion_guard);
-    TEST_CASE("Multi-Threaded Contention", test_multithread_contention);
-
-    std::string exe_path = argv[0];
-    TEST_CASE("Multi-Process Contention", [&] { test_multiprocess_contention(exe_path); });
-
-#if PYLABHUB_IS_POSIX
-    TEST_CASE("Symlink Attack Prevention (POSIX-only)", test_symlink_attack_prevention);
-#endif
-
-#if defined(PLATFORM_WIN64)
-    TEST_CASE("Symlink Attack Prevention (Windows-only)", test_symlink_attack_prevention_windows);
-#endif
-
-    fmt::print("\n--- Test Summary ---\n");
-    fmt::print("Passed: {}, Failed: {}\n", tests_passed, tests_failed);
-
-    // Final cleanup
-    fs::remove_all(g_temp_dir);
-
-    return tests_failed == 0 ? 0 : 1;
+    g_self_exe_path = argv[0];
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

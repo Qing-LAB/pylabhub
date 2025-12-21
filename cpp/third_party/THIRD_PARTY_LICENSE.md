@@ -3,6 +3,7 @@
 
 | Library       | Version | License     | Path                                  | Source URL                            |
 | ------------- | ------- | ----------- | ------------------------------------- | ------------------------------------- |
+| GoogleTest    | 1.12.1  | BSD 3-Clause| cpp/third_party/googletest/   | https://github.com/google/googletest  |
 | nlohmann/json | v3.12.0 | MIT         | cpp/third_party/include/nlohmann/     | https://github.com/nlohmann/json      |
 | libzmq        | v4.3.5  | MPL-2.0     | cpp/third_party/libzmq/               | https://github.com/zeromq/libzmq      |
 | {fmt}         | v12.1.0 | MIT         | cpp/third_party/fmt/                  | https://github.com/fmtlib/fmt         |
