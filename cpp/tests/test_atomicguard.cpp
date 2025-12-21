@@ -84,6 +84,16 @@ void TEST_CASE(const std::string &name, std::function<void()> test_func)
 
 // --- Test Cases ---
 
+//
+// [Purpose]
+// Tests the fundamental, explicit acquire and release cycle of the lock.
+//
+// [Method]
+// 1. Creates a guard and verifies it starts in an inactive state.
+// 2. Calls `acquire()` and checks that the guard becomes active and that the
+//    underlying `AtomicOwner`'s state is updated to the guard's unique token.
+// 3. Calls `release()` and checks that the guard becomes inactive and the owner
+//    is once again free.
 void test_basic_acquire_release()
 {
     AtomicOwner owner;
@@ -100,6 +110,19 @@ void test_basic_acquire_release()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Verifies the RAII (Resource Acquisition Is Initialization) functionality, where
+// a lock is acquired upon construction and automatically released upon destruction
+// when the guard goes out of scope.
+//
+// [Method]
+// - Creates a guard within a new scope, passing `true` to the constructor to
+//   acquire the lock immediately.
+// - Verifies that the guard is active and owns the lock within the scope.
+// - After the scope exits, the guard's destructor is automatically called.
+// - The test then verifies that the `AtomicOwner` is free, confirming that the
+//   destructor correctly released the lock.
 void test_raii_and_token_persistence()
 {
     AtomicOwner owner;
@@ -114,6 +137,17 @@ void test_raii_and_token_persistence()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Verifies a critical RAII edge case: a guard that acquires a lock and then
+// explicitly releases it should not attempt a second release in its destructor.
+// A double-release would be a serious bug.
+//
+// [Method]
+// - A guard acquires and then explicitly calls `release()`.
+// - The guard then goes out of scope, invoking its destructor.
+// - The test passes if it completes without `PANIC`ing, which would happen if
+//   the destructor incorrectly tried to release a lock it no longer holds.
 void test_explicit_release_and_destruction()
 {
     AtomicOwner owner;
@@ -130,6 +164,17 @@ void test_explicit_release_and_destruction()
     // If we get here, the test passed (no abort).
 }
 
+//
+// [Purpose]
+// Tests the RAII constructor's behavior when the lock cannot be acquired because
+// it is already held by another entity.
+//
+// [Method]
+// - Manually sets the `AtomicOwner` to a locked state.
+// - Creates a guard with `acquire_on_construction = true`. This attempt to
+//   acquire the lock should fail.
+// - Verifies that the newly created guard is in an inactive state.
+// - The guard's destructor should be a no-op, as it never acquired the lock.
 void test_raii_acquire_failure()
 {
     AtomicOwner owner;
@@ -142,6 +187,20 @@ void test_raii_acquire_failure()
     owner.store(0); // Clean up.
 }
 
+//
+// [Purpose]
+// A stress test to verify the atomicity and correctness of the lock acquisition
+// and release mechanism under high thread contention.
+//
+// [Method]
+// - Spawns a large number of threads.
+// - Each thread repeatedly attempts to acquire the lock, holds it for a random,
+//   brief period to simulate work, and then releases it upon guard destruction.
+// - This creates a high-contention scenario where many threads are racing to
+//   acquire the same lock.
+// - The test passes if at least one acquisition was successful across all threads
+//   and the `AtomicOwner` is free at the end, indicating all locks were correctly
+//   released without deadlocks or crashes.
 void test_concurrent_acquire()
 {
     AtomicOwner owner;
@@ -189,6 +248,17 @@ void test_concurrent_acquire()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Verifies the basic functionality of transferring lock ownership from one guard
+// to another within a single thread.
+//
+// [Method]
+// 1. Guard `a` acquires the lock.
+// 2. Guard `a` transfers ownership to guard `b` via `transfer_to()`.
+// 3. Verifies that `a` is now inactive and `b` is active, and that the
+//    `AtomicOwner`'s state reflects `b`'s token.
+// 4. Guard `b` releases the lock, and the owner state is verified to be free.
 void test_transfer_single_thread()
 {
     AtomicOwner owner;
@@ -207,6 +277,21 @@ void test_transfer_single_thread()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// A high-contention stress test for the lock transfer mechanism. This test is
+// designed to flush out race conditions in the `transfer_to` logic.
+//
+// [Method]
+// - A pool of `AtomicGuard` objects is created.
+// - A large number of threads are spawned, each of which performs thousands of
+//   transfer attempts between pseudo-randomly chosen pairs of guards from the pool.
+// - Because many threads are attempting transfers simultaneously, many attempts
+//   will fail (which is expected). The goal is not to check individual transfer
+//   success, but to ensure the atomicity of the operation.
+// - The final check is critical: after all threads complete, exactly one guard
+//   out of the entire pool must be active. This proves that ownership was never
+//   lost or duplicated during the chaotic transfers.
 void test_concurrent_transfers()
 {
     AtomicOwner owner;
@@ -280,6 +365,21 @@ void test_concurrent_transfers()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Tests the ability to transfer lock ownership from a guard in one thread to a
+// guard in a different thread. This is a key scenario for some synchronization
+// patterns where one thread prepares a resource and another consumes it.
+//
+// [Method]
+// 1. The main thread's `guard_A` acquires the lock.
+// 2. A second thread is spawned, which attaches its `guard_B` to the same owner
+//    and then busy-waits until it becomes active.
+// 3. The main thread transfers ownership from `guard_A` to `guard_B`.
+// 4. The second thread should now acquire ownership, perform its checks, release
+//    the lock, and exit.
+// 5. The main thread joins the second thread and verifies the entire sequence
+//    completed successfully.
 void test_transfer_between_threads()
 {
     AtomicOwner owner;
@@ -312,6 +412,17 @@ void test_transfer_between_threads()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Ensures that `transfer_to` correctly fails if the source and destination guards
+// are associated with two different `AtomicOwner` instances.
+//
+// [Method]
+// - Two separate `AtomicOwner`s (`o1`, `o2`) are created.
+// - Guard `a` is attached to `o1`, and guard `b` is attached to `o2`.
+// - `a` acquires its lock.
+// - The test attempts to transfer from `a` to `b`, which must fail.
+// - It verifies that `a` remains active after the failed transfer attempt.
 void test_transfer_rejects_different_owners()
 {
     AtomicOwner o1, o2;
@@ -324,6 +435,19 @@ void test_transfer_rejects_different_owners()
     CHECK(a.release());
 }
 
+//
+// [Purpose]
+// Verifies correct destructor behavior in a transfer scenario. The guard that
+// transfers ownership *away* should not release the lock, while the guard that
+// receives ownership *should* release it upon destruction.
+//
+// [Method]
+// - Inside a scope, guard `a` acquires a lock.
+// - Ownership is transferred from `a` to `b`.
+// - The scope is exited. `a` is destructed first, then `b`.
+// - The test verifies that the `AtomicOwner` is free *after* the scope, which
+//   proves that `a`'s destructor did nothing and `b`'s destructor correctly
+//   released the lock.
 void test_destructor_with_transfer()
 {
     AtomicOwner owner;
@@ -340,6 +464,18 @@ void test_destructor_with_transfer()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Tests the ability to dynamically attach a guard to an owner after construction
+// and later detach it.
+//
+// [Method]
+// - A default-constructed (unattached) guard is created.
+// - An attempt to `acquire` fails, as expected.
+// - The guard is attached to an owner using `attach_and_acquire()`, and its
+//   active state is verified.
+// - After release, the guard is detached via `detach_no_release()`.
+// - A final `acquire` attempt fails, proving the guard is once again unattached.
 void test_attach_and_detach()
 {
     AtomicOwner owner;
@@ -358,6 +494,19 @@ void test_attach_and_detach()
     CHECK(!guard.acquire()); // Fails again
 }
 
+//
+// [Purpose]
+// Checks a specific corner case: if a guard is detached from its owner while it
+// is still active (i.e., holding the lock), its destructor must not cause a PANIC.
+// This simulates a deliberate "leak" of the lock.
+//
+// [Method]
+// - A guard acquires a lock.
+// - It then calls `detach_no_release()`, which nullifies its internal owner pointer.
+// - When the guard is destructed, it should not PANIC because it no longer has a
+//   valid owner pointer to operate on.
+// - The test verifies that the `AtomicOwner` remains locked, as expected from the
+//   deliberate leak.
 void test_detach_and_destruction()
 {
     AtomicOwner owner;
@@ -378,6 +527,17 @@ void test_detach_and_destruction()
     owner.store(0);                      // Manually clean up for subsequent tests.
 }
 
+//
+// [Purpose]
+// Verifies that the destructor is a safe no-op for guards that were created
+// but never successfully acquired a lock.
+//
+// [Method]
+// - Scenario 1: A default-constructed guard is never attached to an owner.
+// - Scenario 2: A guard is attached to an owner but never calls `acquire()`.
+// - In both cases, the guards are destructed when they go out of scope. The test
+//   passes if it completes without crashing, proving the destructors handled these
+//   no-op cases correctly.
 void test_noop_destructor_scenarios()
 {
     // Test 1: A guard that is never attached to an owner.
@@ -398,6 +558,16 @@ void test_noop_destructor_scenarios()
     CHECK(owner.is_free());
 }
 
+//
+// [Purpose]
+// Verifies that the `AtomicOwner` class correctly supports C++ move semantics.
+//
+// [Method]
+// - Tests move construction: An `AtomicOwner` is constructed with an initial state,
+//   then moved to a new owner. The test verifies the new owner has the state and
+//   the old owner is left in a valid (but unspecified) state.
+// - Tests move assignment: An `AtomicOwner` is assigned from a moved temporary,
+//   and the state transfer is verified.
 void test_atomicowner_move_semantics()
 {
     uint64_t initial_state = 999;
@@ -424,6 +594,18 @@ void test_atomicowner_move_semantics()
     }
 }
 
+//
+// [Purpose]
+// Verifies that the `AtomicGuard` class correctly supports C++ move semantics,
+// allowing for the transfer of lock ownership between guard instances.
+//
+// [Method]
+// - Tests move construction: An active guard `a` is moved into a new guard `b`.
+//   The test verifies that `b` is now active and owns the lock, and that when `b`
+//   is destructed, the lock is correctly released.
+// - Tests move assignment: An active guard `c` is moved into an existing,
+//   inactive guard `d`. The test verifies `d` now holds the lock and correctly
+//   releases it upon destruction.
 void test_atomicguard_move_semantics()
 {
     AtomicOwner owner;
@@ -488,7 +670,7 @@ void trigger_abort_logic()
 #if defined(PLATFORM_WIN64)
 static HANDLE spawn_child_process(const std::string &exe, const std::string &arg)
 {
-    std::string cmdline = fmt::format("\"{}\" {}\n", exe, arg);
+    std::string cmdline = fmt::format("\"{}\" {}", exe, arg);
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -518,6 +700,23 @@ static pid_t spawn_child_process(const std::string &exe, const std::string &arg)
 }
 #endif
 
+//
+// [Purpose]
+// This is a negative test to verify a critical safety invariant: if the underlying
+// owner state changes unexpectedly while a guard believes it holds the lock, the
+// guard's destructor MUST abort the program to prevent silent data corruption.
+//
+// [Method]
+// 1. Defines a function `trigger_abort_logic` that:
+//    a. Acquires a lock with a guard.
+//    b. Manually tampers with the `AtomicOwner`'s state, simulating corruption
+//       or another entity "stealing" the lock.
+//    c. The guard is destructed. It expects to own the lock, but sees a different
+//       token in the owner. This mismatch triggers an assertion and `std::abort()`.
+// 2. This test spawns a child process that runs only `trigger_abort_logic`.
+// 3. The parent process waits for the child and checks that it terminated with a
+//    non-zero exit code (on Windows) or was signaled by `SIGABRT` (on POSIX),
+//    confirming the safety mechanism worked as intended.
 void test_destructor_abort_on_invariant_violation(const std::string &self_exe)
 {
     fmt::print("  Spawning child process to test abort condition...\n");
