@@ -11,7 +11,11 @@ To ensure robust behavior and graceful shutdown of all components, particularly 
 -   `pylabhub::utils::Initialize()`: Call this once at the beginning of your application (e.g., at the start of `main`). It ensures all subsystems are ready and runs any registered initializers.
 -   `pylabhub::utils::Finalize()`: Call this once at the very end of your application (e.g., before returning from `main`). It runs all registered finalizers and then guarantees that all pending operations, such as writing log messages, are completed before the program exits.
 
-**Note on Implicit Shutdown:** If `Finalize()` is not called, the destructors of static objects (like the Logger) will still perform a cleanup to prevent resource leaks or crashes. However, a warning message will be printed to `stderr` to alert the developer, as log messages from other static destructors may be lost. Using `Finalize()` is the only way to guarantee a predictable shutdown order.
+**Important Note on Explicit Shutdown:** Calling `Finalize()` is mandatory for ensuring a robust and graceful shutdown.
+
+If `Finalize()` is not called, the destructors of static objects (like the `Logger`) will be invoked by the C++ runtime during program termination. While a warning will be printed to `stderr`, `shutdown()` is **not** automatically called. Attempting to perform a `shutdown()` during static deinitialization can cause deadlocks and crashes, particularly on Windows. This is because the operating system holds internal locks (the "loader lock") during process teardown, and complex operations like thread synchronization are unsafe in this context.
+
+Therefore, the only safe and portable way to shut down the library is to explicitly call `Finalize()` from `main()` before the program exits. The RAII pattern (e.g., creating a lifecycle management object on the stack in `main`) is the recommended way to guarantee this.
 
 ### Extensibility with Registration Hooks
 

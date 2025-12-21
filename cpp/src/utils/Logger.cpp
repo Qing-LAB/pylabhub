@@ -479,6 +479,7 @@ struct Impl
     std::unique_ptr<Sink> sink_;
     std::function<void(const std::string &)> error_callback_;
     CallbackDispatcher callback_dispatcher_;
+    std::atomic<bool> shutdown_completed_{false};
 };
 
 Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -490,16 +491,18 @@ Impl::~Impl()
 {
     if (!shutdown_requested_.load())
     {
-        // Shutdown was not called explicitly. This is not an error, but it's
-        // not recommended, as logs from other static destructors may be lost.
-        // The explicit pylabhub::utils::Finalize() function is the preferred way
-        // to ensure a clean shutdown.
+        // This destructor is called when the static Logger instance is destroyed at program exit.
+        // We only issue a warning if shutdown was not called explicitly via pylabhub::utils::Finalize().
+        //
+        // **IMPORTANT**: We DO NOT call shutdown() here as a fallback.
+        // Doing so can lead to deadlocks on Windows. During static object destruction,
+        // the OS holds internal locks (the "loader lock"). Calling shutdown() involves thread
+        // synchronization, which is unsafe in this context and can cause the process to hang.
+        // The explicit Finalize() call from main() is the only safe way to shut down.
         fmt::print(stderr, "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
                            "Call pylabhub::utils::Finalize() before main() returns to guarantee "
                            "all logs are flushed.\n");
     }
-    // Always call shutdown() as a fallback.
-    shutdown();
 }
 
 void Impl::enqueue_command(Command &&cmd)
@@ -642,7 +645,7 @@ void Impl::worker_loop()
 void Impl::shutdown()
 {
     // Prevent multiple shutdowns and stop accepting new commands
-    if (shutdown_requested_.exchange(true))
+    if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
     {
         return;
     }
@@ -657,6 +660,8 @@ void Impl::shutdown()
     // Now that no more callbacks can be generated, shut down the dispatcher.
     // This will process any remaining callbacks in its queue.
     callback_dispatcher_.shutdown();
+
+    shutdown_completed_.store(true);
 }
 
 // --- Logger Public API Implementation ---
