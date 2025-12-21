@@ -21,6 +21,8 @@
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
 
+#include "test_main.h"
+
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -38,7 +40,6 @@ namespace {
 
 // --- Test Globals & Helpers ---
 static fs::path g_temp_dir;
-static std::string g_self_exe_path;
 
 static std::string read_file_contents(const fs::path &p)
 {
@@ -98,6 +99,20 @@ protected:
         fs::remove_all(g_temp_dir);
     }
 };
+
+} // anonymous namespace
+
+// Worker function
+int jsonconfig_worker_main(const std::string &cfgpath, const std::string &worker_id)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    JsonConfig cfg;
+    if (!cfg.init(cfgpath, false))
+        return 1;
+    bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
+    return ok ? 0 : 2;
+}
+
 
 // --- Test Cases ---
 

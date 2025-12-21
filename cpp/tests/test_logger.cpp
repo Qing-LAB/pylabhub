@@ -23,6 +23,8 @@
 #include "utils/Logger.hpp"
 #include "platform.hpp"
 
+#include "test_main.h"
+
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -40,11 +42,11 @@ using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
+fs::path g_multiproc_log_path;
+
 namespace {
 
-// --- Test Globals & Helpers ---
-static std::string g_self_exe_path;
-static fs::path g_multiproc_log_path;
+// --- Test Globals & Helpers (remain in anonymous namespace) ---
 
 static bool read_file_contents(const std::string &path, std::string &out)
 {
@@ -127,145 +129,15 @@ protected:
     }
 };
 
-// --- Test Cases ---
+} // anonymous namespace (end of helpers and fixtures)
 
-TEST_F(LoggerTest, BasicLogging)
-{
-    fs::path log_path = GetUniqueLogPath("BasicLogging");
-
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path.string());
-    L.set_level(Logger::Level::L_TRACE);
-    L.flush();
-
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
-    
-    std::string contents_before;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
-    size_t lines_before = count_lines(contents_before);
-
-    LOGGER_INFO("unit-test: ascii message {}", 42);
-    LOGGER_DEBUG("unit-test: debug {:.2f}", 3.14159);
-    LOGGER_INFO("unit-test: utf8 test {} {}", "☃", "日本語");
-
-    L.flush();
-
-    std::string contents_after;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_after));
-    size_t lines_after = count_lines(contents_after);
-    ASSERT_EQ(lines_after - lines_before, 3);
-
-    EXPECT_NE(contents_after.find("unit-test: ascii message 42"), std::string::npos);
-    EXPECT_NE(contents_after.find("unit-test: debug 3.14"), std::string::npos);
-    EXPECT_NE(contents_after.find("☃"), std::string::npos);
-    EXPECT_NE(contents_after.find("日本語"), std::string::npos);
-}
-
-TEST_F(LoggerTest, LogLevelFiltering)
-{
-    fs::path log_path = GetUniqueLogPath("LogLevelFiltering");
-
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path.string());
-    L.flush();
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
-
-    std::string contents_before;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
-    size_t lines_before = count_lines(contents_before);
-
-    L.set_level(Logger::Level::L_WARNING);
-    LOGGER_INFO("This should NOT be logged.");
-    LOGGER_DEBUG("This should also NOT be logged.");
-    LOGGER_WARN("This WARNING should be logged.");
-    L.set_level(Logger::Level::L_TRACE);
-    LOGGER_DEBUG("This DEBUG should now be logged.");
-    L.flush();
-
-    std::string contents_after;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_after));
-    size_t lines_after = count_lines(contents_after);
-    ASSERT_EQ(lines_after - lines_before, 2);
-
-    EXPECT_EQ(contents_after.find("This should NOT be logged."), std::string::npos);
-    EXPECT_NE(contents_after.find("This WARNING should be logged."), std::string::npos);
-    EXPECT_NE(contents_after.find("This DEBUG should now be logged."), std::string::npos);
-}
-
-TEST_F(LoggerTest, BadFormatString)
-{
-    fs::path log_path = GetUniqueLogPath("BadFormatString");
-
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path.string());
-    L.set_level(Logger::Level::L_INFO);
-    L.flush();
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
-    
-    std::string bad_fmt = "Missing arg: {}";
-    LOGGER_INFO_RT(bad_fmt);
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "[FORMAT ERROR]"));
-}
-
-TEST_F(LoggerTest, DefaultSinkAndSwitching)
-{
-    fs::path log_path = GetUniqueLogPath("DefaultSinkAndSwitching");
-
-    Logger &L = Logger::instance();
-    L.set_level(Logger::Level::L_INFO);
-    LOGGER_INFO("This message should go to the default console sink (stderr).");
-    L.flush();
-
-    L.set_logfile(log_path.string());
-    L.flush();
-    LOGGER_INFO("This message should be logged to the file.");
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "This message should be logged to the file."));
-
-    std::string contents;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents));
-    EXPECT_EQ(contents.find("This message should go to the default console sink"), std::string::npos);
-    EXPECT_NE(contents.find("Switched log to file"), std::string::npos);
-}
-
-TEST_F(LoggerTest, FlushWaitsForQueue)
-{
-    fs::path log_path = GetUniqueLogPath("FlushWaitsForQueue");
-
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path.string());
-    L.set_level(Logger::Level::L_TRACE);
-    L.flush();
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
-
-    std::string contents_before;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
-    size_t lines_before = count_lines(contents_before);
-
-    const int MESSAGES = 500;
-    for (int i = 0; i < MESSAGES; ++i)
-    {
-        LOGGER_INFO("flush-test: msg={}", i);
-    }
-    L.flush();
-
-    std::string contents_after;
-    ASSERT_TRUE(read_file_contents(log_path.string(), contents_after));
-    size_t lines_after = count_lines(contents_after);
-    ASSERT_EQ(lines_after - lines_before, MESSAGES);
-}
-
-// The multi-process and some lifecycle tests need their own main or special handling,
-// so they are kept separate for now or adapted.
-
-} // namespace
-
-// --- Multi-Process Test Logic ---
-// This part needs to be runnable via a command-line flag from the main test executable.
+// --- Multi-Process Test Logic (MOVED OUT OF ANONYMOUS NAMESPACE) ---
 
 void multiproc_child_main(int msg_count)
 {
     pylabhub::utils::Initialize();
     Logger &L = Logger::instance();
+    // g_multiproc_log_path is now a global accessible to this function.
     L.set_logfile(g_multiproc_log_path.string(), true);
     L.set_level(Logger::Level::L_TRACE);
     std::srand(static_cast<unsigned int>(getpid() + std::chrono::system_clock::now().time_since_epoch().count()));

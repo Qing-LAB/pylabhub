@@ -1,0 +1,6 @@
+#pragma once
+#include <string>
+#include <filesystem>
+
+// This header provides common variables for tests that need to spawn workers.
+extern std::string g_self_exe_path;

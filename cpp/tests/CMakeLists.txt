@@ -19,7 +19,6 @@ target_link_libraries(run_tests
   PRIVATE
   pylabhub::utils
   pylabhub::third_party::gtest
-  pylabhub::third_party::gtest_main
 )
 
 target_compile_features(run_tests PRIVATE cxx_std_20)
