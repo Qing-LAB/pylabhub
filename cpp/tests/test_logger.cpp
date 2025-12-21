@@ -182,19 +182,18 @@ static pid_t spawn_multiproc_child(const std::string &exe, const fs::path& log_p
 }
 #endif
 
-bool run_multiproc_iteration(const std::string& self_exe, int num_children, int msgs_per_child)
+bool run_multiproc_iteration(const std::string& self_exe, const fs::path& log_path, int num_children, int msgs_per_child)
 {
     fmt::print(stdout, "  Multiprocess iteration: {} children, {} msgs/child...\n", num_children,
                msgs_per_child);
     
-    g_multiproc_log_path = fs::temp_directory_path() / "pylabhub_multiprocess_test.log";
-    fs::remove(g_multiproc_log_path);
+    fs::remove(log_path);
 
 #if defined(PLATFORM_WIN64)
     std::vector<HANDLE> procs;
     for (int i = 0; i < num_children; ++i)
     {
-        HANDLE h = spawn_multiproc_child(self_exe, g_multiproc_log_path, msgs_per_child);
+        HANDLE h = spawn_multiproc_child(self_exe, log_path, msgs_per_child);
         if (!h) return false;
         procs.push_back(h);
     }
@@ -207,7 +206,7 @@ bool run_multiproc_iteration(const std::string& self_exe, int num_children, int 
     std::vector<pid_t> child_pids;
     for (int i = 0; i < num_children; ++i)
     {
-        pid_t pid = spawn_multiproc_child(self_exe, g_multiproc_log_path, msgs_per_child);
+        pid_t pid = spawn_multiproc_child(self_exe, log_path, msgs_per_child);
         if (pid == -1) return false;
         child_pids.push_back(pid);
     }
@@ -220,7 +219,7 @@ bool run_multiproc_iteration(const std::string& self_exe, int num_children, int 
 #endif
 
     std::string contents;
-    if (!read_file_contents(g_multiproc_log_path.string(), contents)) return false;
+    if (!read_file_contents(log_path.string(), contents)) return false;
     
     size_t found = count_lines(contents);
     size_t expected = static_cast<size_t>(num_children) * msgs_per_child;
@@ -230,7 +229,7 @@ bool run_multiproc_iteration(const std::string& self_exe, int num_children, int 
     return found == expected;
 }
 
-TEST(LoggerMultiProcessTest, HighContention)
+TEST_F(LoggerTest, HighContention)
 {
     const int start_children = 10;
     const int max_children = 30; // Reduced for CI speed
@@ -239,26 +238,11 @@ TEST(LoggerMultiProcessTest, HighContention)
 
     fmt::print("Starting high-stress multiprocess ramp-up (msgs/child={})...\n", msgs);
 
+    auto log_path = GetUniqueLogPath("multiprocess_high_contention");
+
     for (int n = start_children; n <= max_children; n += step_children)
     {
-        ASSERT_TRUE(run_multiproc_iteration(g_self_exe_path, n, msgs)) 
+        ASSERT_TRUE(run_multiproc_iteration(g_self_exe_path, log_path, n, msgs))
             << "Multiprocess logging FAILED at " << n << " children.";
     }
-}
-
-
-int main(int argc, char **argv) {
-    // Handle multi-process worker mode
-    if (argc > 1 && std::string(argv[1]) == "--multiproc-child") {
-        if (argc < 4) return 3;
-        g_multiproc_log_path = argv[2];
-        int count = std::stoi(argv[3]);
-        multiproc_child_main(count);
-        return 0;
-    }
-
-    // If not a worker, run all GTest tests
-    g_self_exe_path = argv[0];
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

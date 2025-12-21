@@ -159,18 +159,7 @@ int worker_main_blocking_contention(const std::string &counter_path_str, int num
     return 0;
 }
 
-int worker_main_parent_child(const std::string &resource_path_str)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    fs::path resource_path(resource_path_str);
-    auto start = std::chrono::steady_clock::now();
-    FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
-    auto end = std::chrono::steady_clock::now();
-    if (!lock.valid()) return 1;
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    if (duration.count() < 100) return 2;
-    return 0;
-}
+
 
 // --- Test Cases ---
 // All test cases (TEST_F) use the g_self_exe_path from test_main.h implicitly via spawn_worker_process.
