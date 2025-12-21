@@ -7,6 +7,9 @@
 #include <functional>
 #include <memory>
 
+#include "test_main.h"
+
+
 using namespace pylabhub::utils;
 
 namespace {

@@ -23,6 +23,8 @@
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 
+#include "test_main.h"
+
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -35,11 +37,12 @@ using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-namespace {
+// Removed: static std::string g_self_exe_path; // Now extern from test_main.h
+
+namespace { // Anonymous namespace for helper functions and test fixture only
 
 // --- Test Globals & Helpers ---
-static fs::path g_temp_dir;
-static std::string g_self_exe_path; // Will be set from argv[0] in main
+static fs::path g_temp_dir; // This can stay local to this test's helpers/fixtures
 
 // --- Worker Process Logic ---
 
@@ -107,8 +110,71 @@ protected:
     }
 };
 
-// --- Test Cases ---
+} // anonymous namespace (end of helpers and fixtures)
 
+
+// Worker function implementations (MOVED OUT OF ANONYMOUS NAMESPACE)
+int worker_main_nonblocking_test(const std::string &resource_path_str)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path resource_path(resource_path_str);
+    FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+    if (!lock.valid())
+    {
+        return 1;
+    }
+    std::this_thread::sleep_for(3s);
+    return 0;
+}
+
+int worker_main_blocking_contention(const std::string &counter_path_str, int num_iterations)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path counter_path(counter_path_str);
+    std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
+                                  std::chrono::system_clock::now().time_since_epoch().count()));
+    for (int i = 0; i < num_iterations; ++i)
+    {
+        if (std::rand() % 2 == 0)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
+        }
+        FileLock lock(counter_path, ResourceType::File, LockMode::Blocking);
+        if (!lock.valid()) return 1;
+        if (std::rand() % 10 == 0)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
+        }
+        std::ifstream ifs(counter_path);
+        int current_value = 0;
+        if (ifs.is_open())
+        {
+            ifs >> current_value;
+            ifs.close();
+        }
+        std::ofstream ofs(counter_path);
+        ofs << (current_value + 1);
+        ofs.close();
+    }
+    return 0;
+}
+
+int worker_main_parent_child(const std::string &resource_path_str)
+{
+    Logger::instance().set_level(Logger::Level::L_ERROR);
+    fs::path resource_path(resource_path_str);
+    auto start = std::chrono::steady_clock::now();
+    FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
+    auto end = std::chrono::steady_clock::now();
+    if (!lock.valid()) return 1;
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    if (duration.count() < 100) return 2;
+    return 0;
+}
+
+// --- Test Cases ---
+// All test cases (TEST_F) use the g_self_exe_path from test_main.h implicitly via spawn_worker_process.
+// No further changes needed for test cases themselves.
 TEST_F(FileLockTest, BasicNonBlocking)
 {
     auto resource_path = g_temp_dir / "basic_resource.txt";
@@ -342,89 +408,3 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     ASSERT_EQ(final_value, PROCS * ITERS_PER_WORKER);
 }
 
-// Worker function implementations (must be in the unnamed namespace)
-int worker_main_nonblocking_test(const std::string &resource_path_str)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    fs::path resource_path(resource_path_str);
-    FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
-    if (!lock.valid())
-    {
-        return 1;
-    }
-    std::this_thread::sleep_for(3s);
-    return 0;
-}
-
-int worker_main_blocking_contention(const std::string &counter_path_str, int num_iterations)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    fs::path counter_path(counter_path_str);
-    std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
-                                  std::chrono::system_clock::now().time_since_epoch().count()));
-    for (int i = 0; i < num_iterations; ++i)
-    {
-        if (std::rand() % 2 == 0)
-        {
-            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
-        }
-        FileLock lock(counter_path, ResourceType::File, LockMode::Blocking);
-        if (!lock.valid()) return 1;
-        if (std::rand() % 10 == 0)
-        {
-            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
-        }
-        std::ifstream ifs(counter_path);
-        int current_value = 0;
-        if (ifs.is_open())
-        {
-            ifs >> current_value;
-            ifs.close();
-        }
-        std::ofstream ofs(counter_path);
-        ofs << (current_value + 1);
-        ofs.close();
-    }
-    return 0;
-}
-
-int worker_main_parent_child(const std::string &resource_path_str)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    fs::path resource_path(resource_path_str);
-    auto start = std::chrono::steady_clock::now();
-    FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
-    auto end = std::chrono::steady_clock::now();
-    if (!lock.valid()) return 1;
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    if (duration.count() < 100) return 2;
-    return 0;
-}
-
-} // namespace
-
-int main(int argc, char **argv)
-{
-    // Handle worker process modes first
-    if (argc > 1)
-    {
-        std::string mode = argv[1];
-        if (mode == "nonblocking_worker")
-        {
-            return (argc < 3) ? 2 : worker_main_nonblocking_test(argv[2]);
-        }
-        else if (mode == "blocking_worker")
-        {
-            return (argc < 4) ? 2 : worker_main_blocking_contention(argv[2], std::stoi(argv[3]));
-        }
-        else if (mode == "parent_child_worker")
-        {
-            return (argc < 3) ? 2 : worker_main_parent_child(argv[2]);
-        }
-    }
-
-    // If not in worker mode, run the tests
-    g_self_exe_path = argv[0];
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
