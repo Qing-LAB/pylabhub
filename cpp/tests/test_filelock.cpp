@@ -246,11 +246,18 @@ static int worker_main_parent_child(const std::string &resource_path_str)
 
 // --- Test Cases ---
 
-// Tests the fundamental non-blocking lock behavior.
-// 1. Acquires a lock and verifies it is valid.
-// 2. Tries to acquire the *same lock* again from the same thread and verifies
-//    that this second attempt fails (intra-process locking).
-// 3. Releases the first lock and verifies that a new lock can be acquired.
+//
+// [Purpose]
+// Tests the fundamental non-blocking lock behavior within a single process. It verifies
+// the complete acquire-fail-release-reacquire lifecycle.
+//
+// [Method]
+// 1. Acquires a non-blocking lock and checks that it is valid.
+// 2. Attempts to acquire the *same lock* again from the same thread, which must fail
+//    as the resource is already locked. This verifies intra-process locking.
+// 3. The first lock is released when it goes out of scope.
+// 4. A final attempt to acquire the lock succeeds, proving that the lock was
+//    correctly released.
 void test_basic_nonblocking()
 {
     auto resource_path = g_temp_dir / "basic_resource.txt";
@@ -271,12 +278,20 @@ void test_basic_nonblocking()
     CHECK(lock3.valid());
 }
 
-// Tests the blocking lock behavior between two threads.
-// 1. The main thread acquires a blocking lock.
-// 2. A second thread is spawned and attempts to acquire the same blocking lock.
-// 3. Verifies that the second thread is waiting (blocked).
-// 4. The main thread releases the lock.
-// 5. Verifies that the second thread successfully acquires the lock and finishes.
+//
+// [Purpose]
+// Verifies that a blocking lock correctly causes a thread to wait until the lock
+// is released by another thread.
+//
+// [Method]
+// 1. The main thread acquires a blocking lock on a resource.
+// 2. A second thread is spawned, which immediately tries to acquire the same
+//    blocking lock.
+// 3. The main thread sleeps for a moment, then checks that the second thread has *not*
+//    yet acquired the lock, proving it is blocked.
+// 4. The main thread releases its lock.
+// 5. The second thread should now be able to acquire the lock and finish. The test
+//    waits for the thread to join and verifies it completed successfully.
 void test_blocking_lock()
 {
     auto resource_path = g_temp_dir / "blocking_resource.txt";
@@ -313,9 +328,19 @@ void test_blocking_lock()
     CHECK(thread_has_lock.load());
 }
 
-// Verifies the correctness of the move constructor and move assignment operator.
-// Ensures that lock ownership is properly transferred and that the moved-from
-// object becomes invalid and releases no resources.
+//
+// [Purpose]
+// Verifies the correctness of the C++ move semantics (move constructor and move
+// assignment) for the FileLock class.
+//
+// [Method]
+// This test ensures that when a FileLock object is moved:
+// 1. Ownership of the underlying file lock is properly transferred to the new object.
+// 2. The moved-from object becomes invalid and releases no resources upon its
+//    destruction (preventing a double-release).
+// 3. It covers move construction, move assignment to a new object, move assignment
+//    to an already-valid object (which must release its old lock first), and the
+//    edge case of self-move assignment.
 void test_move_semantics()
 {
     auto resource1 = g_temp_dir / "move1.txt";
@@ -390,8 +415,17 @@ void test_move_semantics()
     }
 }
 
-// Tests that the FileLock constructor can create the necessary parent
-// directories for the lock file if they do not already exist.
+//
+// [Purpose]
+// Tests that the FileLock constructor can create the necessary parent directories
+// for the underlying `.lock` file if they do not already exist.
+//
+// [Method]
+// 1. Defines a resource path inside a directory that does not exist.
+// 2. Deletes the directory to ensure a clean state.
+// 3. Creates a `FileLock` for the resource.
+// 4. Checks that the lock is valid, which implies that the directory and the lock
+//    file within it were successfully created.
 void test_directory_creation()
 {
     auto new_dir = g_temp_dir / "new_dir_for_lock";
@@ -414,8 +448,18 @@ void test_directory_creation()
 
 // --- High Contention Tests ---
 
-// Spawns a large number of threads that all try to acquire the same
-// non-blocking lock at the same time. Verifies that exactly one thread succeeds.
+//
+// [Purpose]
+// A stress test to verify mutual exclusion for non-blocking locks among many
+// threads within the same process.
+//
+// [Method]
+// - Spawns a large number of threads.
+// - Each thread simultaneously attempts to acquire the same non-blocking `FileLock`.
+// - An atomic counter (`success_count`) tracks how many threads successfully
+//   acquired the lock.
+// - After all threads complete, the test verifies that `success_count` is
+//   exactly 1, proving that only one thread was granted the lock at any time.
 void test_multithread_nonblocking()
 {
     auto resource_path = g_temp_dir / "multithread.txt";
@@ -448,9 +492,19 @@ void test_multithread_nonblocking()
     CHECK(success_count.load() == 1);
 }
 
-// Spawns a large number of *processes* that all try to acquire the same
-// non-blocking lock. This is the core test for cross-process exclusion.
-// It verifies that exactly one process succeeds.
+//
+// [Purpose]
+// This is the core test for cross-process mutual exclusion. It spawns a large
+// number of separate processes that all contend for the same non-blocking lock.
+//
+// [Method]
+// 1. Spawns a large number of child processes.
+// 2. Each child process runs the `nonblocking_worker` logic, which attempts to
+//    acquire the non-blocking lock and exits with code 0 on success or 1 on failure.
+// 3. The parent process waits for all children to exit and counts how many exited
+//    with code 0 (success).
+// 4. The test verifies that the final success count is exactly 1, proving that the
+//    file lock correctly arbitrated access across multiple processes.
 void test_multiprocess_nonblocking(const std::string &self_exe)
 {
     auto resource_path = g_temp_dir / "multiprocess.txt";
@@ -502,10 +556,22 @@ void test_multiprocess_nonblocking(const std::string &self_exe)
     CHECK(success_count == 1);
 }
 
-// Spawns many processes that repeatedly contend for a *blocking* lock to
-// increment a counter in a shared file. This tests the lock's ability to
-// protect a critical section from race conditions under heavy load.
-// The test passes if the final counter value is correct.
+//
+// [Purpose]
+// A realistic, high-contention stress test for blocking locks across multiple
+// processes. It simulates a classic critical section problem (a shared counter)
+// to verify the lock's ability to prevent race conditions.
+//
+// [Method]
+// 1. A shared file is created and initialized with the value "0".
+// 2. A large number of child processes are spawned.
+// 3. Each child runs the `blocking_worker` logic: it loops many times, and in each
+//    loop it acquires a *blocking* lock, reads the number from the file, increments
+//    it, and writes it back.
+// 4. After all processes have completed their loops, the parent process reads the
+//    final value from the file.
+// 5. The test passes if the final value is equal to (num_processes * num_iterations),
+//    proving that the lock correctly serialized access and prevented lost updates.
 void test_multiprocess_blocking_contention(const std::string &self_exe)
 {
     auto counter_path = g_temp_dir / "counter.txt";
@@ -569,13 +635,20 @@ void test_multiprocess_blocking_contention(const std::string &self_exe)
     CHECK(final_value == PROCS * ITERS_PER_WORKER);
 }
 
-// Tests a simple parent/child blocking scenario.
-// 1. The parent process acquires a lock.
-// 2. The parent spawns a child process.
-// 3. The child attempts to acquire the same lock (and should block).
-// 4. The parent sleeps, then releases the lock.
-// 5. The parent waits for the child, which should now be able to finish.
-//    The child internally checks that it was actually forced to wait.
+//
+// [Purpose]
+// Tests a simple parent-child blocking scenario to ensure a child process will
+// wait for a lock held by its parent.
+//
+// [Method]
+// 1. The parent process acquires a blocking lock.
+// 2. The parent spawns a child process which immediately attempts to acquire the
+//    same lock.
+// 3. The parent sleeps for a significant duration, then releases the lock.
+// 4. The parent waits for the child to exit. The child process itself contains
+//    logic to verify that it was blocked for a sufficient amount of time before
+//    it could acquire the lock. The parent checks the child's exit code to
+//    confirm this internal check passed.
 void test_multiprocess_parent_child_blocking(const std::string &self_exe)
 {
     auto resource_path = g_temp_dir / "parent_child_block.txt";
@@ -614,11 +687,21 @@ void test_multiprocess_parent_child_blocking(const std::string &self_exe)
 #endif
 }
 
-// Tests the timed lock constructor.
-// 1. Acquires a lock.
-// 2. Verifies that a second, timed lock attempt on the same resource fails
-//    with a 'timed_out' error and takes the expected amount of time.
-// 3. Verifies that a timed lock attempt on a free resource succeeds.
+//
+// [Purpose]
+// Tests the `FileLock` constructor that accepts a timeout, verifying both the
+// timeout failure case and the success case.
+//
+// [Method]
+// 1. Timeout Failure:
+//    - The main thread acquires a blocking lock.
+//    - It then attempts to acquire a second, timed lock on the same resource.
+//    - It checks that this second lock is invalid, that the error code is
+//      `std::errc::timed_out`, and that the time elapsed was roughly equal to
+//      the specified timeout.
+// 2. Success Case:
+//    - After the first lock is released, it attempts to acquire a timed lock again.
+//    - This attempt should succeed immediately without error.
 void test_timed_lock()
 {
     auto resource_path = g_temp_dir / "timed.txt";
@@ -651,10 +734,21 @@ void test_timed_lock()
     CHECK(!timed_lock_succeed.error_code());
 }
 
-// Tests the lock file naming convention for directory paths.
-// Ensures that locking a directory creates a `.dir.lock` file in the parent,
-// preventing name collisions with locks on files of the same name.
-// Also tests edge cases like locking the current directory (".").
+//
+// [Purpose]
+// Tests the lock file naming convention and behavior when locking directory paths,
+// including edge cases like the current directory (".") and the root directory ("/").
+//
+// [Method]
+// 1. Standard Directory: Verifies that locking a path as a `ResourceType::Directory`
+//    creates a distinctly named lock file (e.g., `.../.dir.lock`) and that this does
+//    not conflict with a `ResourceType::File` lock on a resource with the same path.
+// 2. Current Directory: Verifies that locking "." correctly creates the lock file
+//    in the parent of the current working directory.
+// 3. Root Directory (POSIX-only): Verifies that paths resolving to the filesystem
+//    root (e.g., from excessive `..`) generate the correct, expected lock file
+//    path (e.g., `/pylabhub_root.dir.lock`). It attempts to acquire the lock but
+//    does not fail the test if it can't, as this often requires special permissions.
 void test_directory_path_locking()
 {
     fmt::print("  - Testing standard directory\n");

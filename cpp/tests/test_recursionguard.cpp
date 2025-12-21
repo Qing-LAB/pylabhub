@@ -69,6 +69,23 @@ void recursive_function(int depth, bool expect_recursing)
     }
 }
 
+//
+// [Purpose]
+// Tests the primary use case of the `RecursionGuard`: detecting direct re-entrant
+// calls for a single object.
+//
+// [Method]
+// - A helper function, `recursive_function`, creates a `RecursionGuard` on a
+//   global object (`some_object`).
+// - The test first checks that, before any calls, `is_recursing()` is false.
+// - It then calls `recursive_function(3)`, which will recursively call itself
+//   three times.
+// - Inside `recursive_function`, it's verified that `is_recursing()` is `false`
+//   at the beginning of the *outermost* call, but `true` for all subsequent
+//   *inner* (recursive) calls. This confirms the guard correctly identifies
+//   re-entrance.
+// - After the top-level call returns, the test verifies that `is_recursing()`
+//   is once again false.
 void test_single_object_recursion()
 {
     CHECK(!RecursionGuard::is_recursing(&some_object));
@@ -76,6 +93,21 @@ void test_single_object_recursion()
     CHECK(!RecursionGuard::is_recursing(&some_object));
 }
 
+//
+// [Purpose]
+// Verifies that `RecursionGuard`s for different object instances are tracked
+// independently. A guard on one object should not affect the recursion state
+// of another.
+//
+// [Method]
+// 1. Creates a guard `g1` for `some_object`. Verifies `is_recursing()` is true
+//    for `some_object` but false for `another_object`.
+// 2. Within the scope of `g1`, creates a nested guard `g2` for `another_object`.
+//    Verifies `is_recursing()` is now true for *both* objects.
+// 3. `g2` is destructed. Verifies the state for `another_object` returns to
+//    false, while `some_object` remains true.
+// 4. `g1` is destructed. Verifies the state for `some_object` also returns to
+//    false.
 void test_multiple_objects()
 {
     CHECK(!RecursionGuard::is_recursing(&some_object));
@@ -100,6 +132,21 @@ void test_multiple_objects()
     CHECK(!RecursionGuard::is_recursing(&another_object));
 }
 
+//
+// [Purpose]
+// Tests robustness against an edge case where nested guards are destructed out of
+// LIFO (Last-In, First-Out) order. A naive stack-based implementation might fail
+// here, but a robust implementation should handle it gracefully.
+//
+// [Method]
+// 1. Creates guard `g1` for `some_object` on the heap.
+// 2. Creates guard `g2` for `another_object` on the heap.
+// 3. Destroys `g1` (the "outer" guard) *before* `g2` (the "inner" guard).
+// 4. Verifies that the recursion state for `some_object` is correctly cleared,
+//    while the state for `another_object` remains unaffected.
+// 5. Destroys `g2` and verifies its state is also cleared. This proves the
+//    internal tracking mechanism is not a simple stack and can handle out-of-order
+//    cleanup.
 void test_out_of_order_destruction()
 {
     CHECK(!RecursionGuard::is_recursing(&some_object));

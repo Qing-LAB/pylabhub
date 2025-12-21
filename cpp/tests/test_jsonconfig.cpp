@@ -150,6 +150,19 @@ static int worker_main(const std::string &cfgpath, const std::string &worker_id)
 
 // --- Test Cases ---
 
+//
+// [Purpose]
+// Verifies the initialization process of the `JsonConfig` object. It checks that
+// `init()` can both create a new configuration file if one doesn't exist and
+// successfully load an existing one.
+//
+// [Method]
+// 1. Defines a path for a config file and ensures it does not exist.
+// 2. Calls `init(path, createIfMissing = true)`.
+// 3. Verifies that the file now exists and that the in-memory JSON object is a
+//    valid, empty object.
+// 4. Calls `init()` again on the same path with a new `JsonConfig` instance to
+//    ensure it can load the existing file without error.
 void test_init_and_create()
 {
     auto cfg_path = g_temp_dir / "init_create.json";
@@ -170,6 +183,19 @@ void test_init_and_create()
     CHECK(config2.as_json().is_object());
 }
 
+//
+// [Purpose]
+// Ensures that a `JsonConfig` object that has been default-constructed but not
+// initialized with `init()` behaves safely and predictably. All attempts to modify
+// or read data should fail gracefully without crashing.
+//
+// [Method]
+// - A `JsonConfig` object is created but `init()` is never called.
+// - The test calls all modification-related methods (`set`, `erase`, `update`,
+//   `save`, `replace`, `with_json_write`) and verifies that they all return `false`.
+// - It then calls read-related methods (`has`, `get_or`, `as_json`) and verifies
+//   that they return sensible default/empty values, proving that the uninitialized
+//   state is handled robustly.
 void test_uninitialized_behavior()
 {
     JsonConfig config; // Default-constructed, not initialized with a path.
@@ -189,6 +215,20 @@ void test_uninitialized_behavior()
     CHECK(config.as_json().empty());
 }
 
+//
+// [Purpose]
+// Provides a comprehensive check of the core accessor and mutator methods, ensuring
+// the fundamental "CRUD" (Create, Read, Update, Delete) operations on the JSON
+// data work as expected.
+//
+// [Method]
+// - Initializes a `JsonConfig` object.
+// - Uses `set()` to add values of different types (int, string, object).
+// - Uses `get()`, `get_or()`, and `has()` to verify that the values were written
+//   correctly and can be retrieved.
+// - Uses `erase()` to remove a key and verifies it is gone.
+// - Uses `update()` with a lambda to modify a JSON object in place and verifies
+//   the changes.
 void test_basic_accessors()
 {
     auto cfg_path = g_temp_dir / "accessors.json";
@@ -225,6 +265,19 @@ void test_basic_accessors()
     CHECK(j["s"] == "world");
 }
 
+//
+// [Purpose]
+// Verifies that the `reload()` method correctly updates the in-memory configuration
+// to match changes made directly to the underlying file on disk.
+//
+// [Method]
+// 1. Initializes a config and saves a known state to the file (`"value": 1`).
+// 2. Modifies the file on disk "externally" (by directly opening and writing to it),
+//    changing the value and adding a new key.
+// 3. Verifies that the in-memory `JsonConfig` object still holds the *old* data.
+// 4. Calls `reload()`.
+// 5. Verifies that the in-memory object now reflects the new data from the file,
+//    confirming the reload was successful.
 void test_reload()
 {
     auto cfg_path = g_temp_dir / "reload.json";
@@ -255,6 +308,20 @@ void test_reload()
     CHECK(new_key == "external");
 }
 
+//
+// [Purpose]
+// Tests a critical internal safety feature: the recursion guard. This guard
+// prevents deadlocks that would occur if a `JsonConfig` method were called from
+// within the lambda of another `JsonConfig` method that holds a lock (like
+// `with_json_read` or `with_json_write`).
+//
+// [Method]
+// - Read-after-Read: Calls `with_json_read()` and, inside its lambda, makes a
+//   nested call to `get()`. The test checks that this nested `get()` call fails
+//   (returns `false`) as predicted by the recursion guard.
+// - Write-after-Write: Calls `with_json_write()` and, inside its lambda, makes a
+//   nested call to `set()`. The test checks that the nested `set()` fails and that
+//   only the changes from the outer `with_json_write()` call are persisted.
 void test_recursion_guard()
 {
     auto cfg_path = g_temp_dir / "recursion.json";
@@ -292,6 +359,20 @@ void test_recursion_guard()
     CHECK(!cfg.has("b")); // The nested set should not have taken effect.
 }
 
+//
+// [Purpose]
+// A stress test to verify the thread-safety of the `JsonConfig` object. It
+// bombards the object with concurrent read and write operations from many
+// threads to flush out potential race conditions or deadlocks.
+//
+// [Method]
+// - Spawns a large number of threads.
+// - Each thread executes a loop of mixed read (`get_or`) and write (`set`)
+//   operations, with random delays to increase the chance of context-switching
+//   at critical moments.
+// - The test passes if it completes without crashing or deadlocking, and if the
+//   final saved configuration file contains some of the expected data, proving
+//   that the internal locks are working correctly to protect shared state.
 void test_multithread_contention()
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
@@ -349,6 +430,23 @@ void test_multithread_contention()
     CHECK(verifier.has("t1_j90"));
 }
 
+//
+// [Purpose]
+// Verifies that the file-level locking provides mutual exclusion across multiple
+// independent *processes*.
+//
+// [Method]
+// 1. Spawns a large number of child processes.
+// 2. Each child process runs the `worker_main` logic, which attempts to perform a
+//    guarded write operation (`with_json_write`) to a shared config file. This
+//    operation internally uses a non-blocking `FileLock`.
+// 3. The worker exits with 0 on success (if it acquired the lock and wrote) or a
+//    non-zero code on failure.
+// 4. The parent process checks that at least one worker succeeded. In a non-blocking
+//    scenario, it is possible for more than one to succeed if their execution does
+//    not perfectly overlap, but the key is that the file is not corrupted and the
+//    locking mechanism works. The test verifies the file was written to by one of
+//    the workers.
 void test_multiprocess_contention(const std::string &self_exe)
 {
     auto cfg_path = g_temp_dir / "multiprocess_contention.json";
@@ -414,6 +512,25 @@ void test_multiprocess_contention(const std::string &self_exe)
     CHECK(verifier.has("worker"));
 }
 
+//
+// [Purpose]
+// A critical security test to ensure the `save()` operation is not vulnerable
+// to a symbolic link (symlink) attack. This prevents a scenario where the config
+// file is replaced with a symlink pointing to a sensitive system file, which could
+// then be overwritten.
+//
+// [Method]
+// 1. A "sensitive" target file (`real_file.txt`) is created.
+// 2. A symbolic link is created, pointing from the expected config path to the
+//    sensitive file.
+// 3. A `JsonConfig` object is initialized with the symlink path. Reading from it
+//    succeeds, as it just follows the link.
+// 4. The test then modifies the in-memory config and calls `save()`.
+// 5. It *must* verify that `save()` returns `false`, indicating failure. The
+//    underlying atomic write mechanism is expected to detect that the path is a
+//    symlink and refuse to write to it.
+// 6. Finally, it checks that the content of the sensitive `real_file.txt` was
+//    *not* modified, proving the attack was prevented.
 #if PYLABHUB_IS_POSIX
 void test_symlink_attack_prevention()
 {
@@ -453,6 +570,25 @@ void test_symlink_attack_prevention()
 }
 #endif
 
+//
+// [Purpose]
+// A critical security test to ensure the `save()` operation is not vulnerable
+// to a symbolic link (symlink) attack. This prevents a scenario where the config
+// file is replaced with a symlink pointing to a sensitive system file, which could
+// then be overwritten.
+//
+// [Method]
+// 1. A "sensitive" target file (`real_file.txt`) is created.
+// 2. A symbolic link is created, pointing from the expected config path to the
+//    sensitive file.
+// 3. A `JsonConfig` object is initialized with the symlink path. Reading from it
+//    succeeds, as it just follows the link.
+// 4. The test then modifies the in-memory config and calls `save()`.
+// 5. It *must* verify that `save()` returns `false`, indicating failure. The
+//    underlying atomic write mechanism is expected to detect that the path is a
+//    symlink and refuse to write to it.
+// 6. Finally, it checks that the content of the sensitive `real_file.txt` was
+//    *not* modified, proving the attack was prevented.
 #if defined(PLATFORM_WIN64)
 void test_symlink_attack_prevention_windows()
 {
