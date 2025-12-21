@@ -45,6 +45,7 @@
  ******************************************************************************/
 
 #include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 #include "utils/PathUtil.hpp"
 
@@ -58,6 +59,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <set>
 
 #if defined(PLATFORM_WIN64)
 #include <sstream>
@@ -131,6 +133,11 @@ namespace pylabhub::utils
 // more polling) and responsiveness (longer sleep means slower reaction to a
 // released lock). 20ms is a reasonable default.
 static constexpr std::chrono::milliseconds LOCK_POLLING_INTERVAL = std::chrono::milliseconds(20);
+
+// Global registry for tracking created lock files on all platforms
+// to allow for cleanup at program exit.
+static std::mutex g_lockfile_registry_mtx;
+static std::set<std::string> g_lockfile_registry;
 
 // --- Process-local lock registry ---
 // This registry ensures that even on Windows (where native file locks are
@@ -578,12 +585,25 @@ enum class OsLockResult
     Error
 };
 
+// Tries to acquire the OS-level lock once (non-blocking).
+//
+// ** Platform-Specific Cleanup Behavior **
+//
+// - **Windows**: Uses `CreateFileW` with `FILE_FLAG_DELETE_ON_CLOSE`. This
+//   leverages the kernel to automatically and safely delete the lock file when
+//   the handle is closed. This is the most robust method.
+//
+// - **POSIX**: Relies on a global registry of created lock files. A finalizer
+//   function (`FileLock::cleanup()`) must be called at program exit to perform
+//   a best-effort cleanup of these files. The simpler `unlink-after-lock` idiom
+//   is NOT used because it breaks the named rendezvous point required for
+//   competing processes to find each other.
 static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
                                              const std::filesystem::path &lockpath)
 {
 #if defined(PLATFORM_WIN64)
     std::wstring lockpath_w = win32_to_long_path(lockpath);
-    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_WRITE,
+    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
@@ -601,6 +621,10 @@ static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
 
     if (ok)
     {
+        {
+            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+            g_lockfile_registry.insert(lockpath.string());
+        }
         pImpl->handle = reinterpret_cast<void *>(h);
         pImpl->ec.clear();
         return OsLockResult::Acquired;
@@ -633,6 +657,10 @@ static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
     int flock_op = LOCK_EX | LOCK_NB;
     if (flock(fd, flock_op) == 0)
     {
+        {
+            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+            g_lockfile_registry.insert(lockpath.string());
+        }
         pImpl->fd = fd;
         pImpl->ec.clear();
         return OsLockResult::Acquired;
@@ -693,5 +721,37 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
     }
 }
+
+void FileLock::cleanup()
+{
+    std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+    LOGGER_DEBUG("FileLock: Cleaning up {} registered lock files.", g_lockfile_registry.size());
+    for (const auto &path_str : g_lockfile_registry)
+    {
+        std::error_code ec;
+        // This is a best-effort cleanup at program exit.
+        std::filesystem::remove(std::filesystem::path(path_str), ec);
+    }
+    g_lockfile_registry.clear();
+}
+
+namespace
+{
+// This static object's constructor will register the cleanup function
+// to be called by the global Finalize().
+struct FileLockFinalizer
+{
+    FileLockFinalizer()
+    {
+        // Register FileLock::cleanup to be called during shutdown.
+        // A short timeout is fine, as it's a fast, best-effort cleanup.
+        RegisterFinalizer("FileLock::cleanup", &FileLock::cleanup, std::chrono::seconds(1));
+    }
+};
+
+// Create this object to register the finalizer on all platforms.
+static FileLockFinalizer g_finalizer_instance;
+
+} // namespace
 
 } // namespace pylabhub::utils
