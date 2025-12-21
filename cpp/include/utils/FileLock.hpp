@@ -123,6 +123,15 @@ class PYLABHUB_UTILS_EXPORT FileLock
     /// @brief Move assignment operator. Transfers ownership of an existing lock.
     FileLock &operator=(FileLock &&other) noexcept;
 
+    /**
+     * @brief [POSIX-only] Cleans up any leftover lock files created by the application.
+     *
+     * This function is intended to be called once at program exit to ensure
+     * filesystem hygiene. It is a no-op on Windows, where lock files are
+     * cleaned up automatically by the OS.
+     */
+    static void cleanup();
+
     // Non-copyable to prevent accidental duplication of lock ownership.
     FileLock(const FileLock &) = delete;
     FileLock &operator=(const FileLock &) = delete;
