@@ -387,29 +387,3 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     ASSERT_EQ(j.find("malicious"), j.end());
 }
 #endif
-
-// Worker function
-int worker_main(const std::string &cfgpath, const std::string &worker_id)
-{
-    Logger::instance().set_level(Logger::Level::L_ERROR);
-    JsonConfig cfg;
-    if (!cfg.init(cfgpath, false))
-        return 1;
-    bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
-    return ok ? 0 : 2;
-}
-
-} // namespace
-
-int main(int argc, char **argv)
-{
-    if (argc >= 2 && std::strcmp(argv[1], "worker") == 0)
-    {
-        if (argc < 4) return 2;
-        return worker_main(argv[2], argv[3]);
-    }
-
-    g_self_exe_path = argv[0];
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}

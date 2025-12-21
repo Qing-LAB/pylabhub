@@ -28,9 +28,6 @@ int main(int argc, char **argv) {
         if (mode == "blocking_worker") {
             return (argc < 4) ? 2 : worker_main_blocking_contention(argv[2], std::stoi(argv[3]));
         }
-        if (mode == "parent_child_worker") {
-            return (argc < 3) ? 2 : worker_main_parent_child(argv[2]);
-        }
         
         // --- Dispatch to jsonconfig worker ---
         if (mode == "worker") {
