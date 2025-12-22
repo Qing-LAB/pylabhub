@@ -172,18 +172,25 @@ endfunction()
 #   )
 #
 function(pylabhub_get_library_staging_commands)
-  cmake_parse_arguments(ARG "" "TARGET;DESTINATION;OUT_COMMANDS" "" ${ARGN})
+  cmake_parse_arguments(ARG "" "TARGET;DESTINATION;OUT_COMMANDS;ABSOLUTE_DIR" "" ${ARGN})
 
   if(NOT ARG_TARGET OR NOT ARG_DESTINATION OR NOT ARG_OUT_COMMANDS)
     message(FATAL_ERROR "pylabhub_get_library_staging_commands requires TARGET, "
                         "DESTINATION, and OUT_COMMANDS arguments.")
   endif()
+
   if(NOT TARGET ${ARG_TARGET})
     message(FATAL_ERROR "pylabhub_get_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
 
-  set(RUNTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
-  set(LINKTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/lib")
+  if(${ARG_ABSOLUTE_DIR})
+    set(RUNTIME_DEST_DIR "${ARG_DESTINATION}")
+    set(LINKTIME_DEST_DIR "${ARG_DESTINATION}")
+  else()
+    set(RUNTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
+    set(LINKTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/lib")
+  endif()
+     
   get_target_property(TGT_TYPE ${ARG_TARGET} TYPE)
 
   set(commands_list "")
@@ -192,21 +199,25 @@ function(pylabhub_get_library_staging_commands)
     if(PLATFORM_WIN64)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
+      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
       if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
-         list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-         "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+        message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
       endif()
     else()
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
       # runtime and linking. Stage it to the specified destination (e.g., 'bin').
+      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")      
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       # On Linux, also place a copy/symlink in the 'lib' directory for consumers to find during linking.
       if(PLATFORM_LINUX)
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
+        message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
           list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
                "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
         endif()
@@ -214,6 +225,7 @@ function(pylabhub_get_library_staging_commands)
     endif()
   elseif(TGT_TYPE STREQUAL "STATIC_LIBRARY")
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
+    message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: static lib staging dir: ${LINKTIME_DEST_DIR}")
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
          "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
   endif()

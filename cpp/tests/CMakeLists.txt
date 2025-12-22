@@ -89,7 +89,33 @@ add_dependencies(stage_tests utils_tests multiprocess_tests)
 
 # --- CTest Integration ---
 # Discover tests in each executable. CTest will run them as separate test groups.
-gtest_discover_tests(utils_tests)
-gtest_discover_tests(multiprocess_tests)
+set(TEST_DLL_DIR "${PYLABHUB_STAGING_DIR}/bin")
+message(STATUS "  ** Setting test DLL directory to: ${TEST_DLL_DIR}")
+gtest_discover_tests(utils_tests
+    WORKING_DIRECTORY "${TEST_DLL_DIR}"
+    PROPERTIES
+        ENVIRONMENT "PATH=${TEST_DLL_DIR}"
+)
+gtest_discover_tests(multiprocess_tests
+    WORKING_DIRECTORY "${TEST_DLL_DIR}"
+    PROPERTIES
+        ENVIRONMENT "PATH=${TEST_DLL_DIR}"
+)
+
+# Copy runtime dependencies (pylabhub-utils.dll) next to test executables
+# so they can be found by gtest_discover_tests at build time.
+add_custom_command(TARGET utils_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:pylabhub::utils>"
+            "$<TARGET_FILE_DIR:utils_tests>"
+    COMMENT "Copying runtime dependencies for utils_tests"
+)
+
+add_custom_command(TARGET multiprocess_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:pylabhub::utils>"
+            "$<TARGET_FILE_DIR:multiprocess_tests>"
+    COMMENT "Copying runtime dependencies for multiprocess_tests"
+)
 
 message(STATUS "Configured test executables: utils_tests, multiprocess_tests")

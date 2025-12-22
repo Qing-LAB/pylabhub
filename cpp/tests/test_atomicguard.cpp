@@ -2,7 +2,7 @@
 //
 // Unit tests for pylabhub::utils::AtomicGuard.
 
-#include <gtest/gtest.hh>
+#include <gtest/gtest.h>
 
 #include <cstdlib>
 #include <atomic>
