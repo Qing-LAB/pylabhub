@@ -6,6 +6,7 @@
 // Declared in test_filelock.cpp
 int worker_main_nonblocking_test(const std::string& resource_path_str);
 int worker_main_blocking_contention(const std::string& counter_path_str, int num_iterations);
+int worker_main_parent_child(const std::string& resource_path_str);
 
 // Declared in test_jsonconfig.cpp
 int jsonconfig_worker_main(const std::string& cfgpath, const std::string& worker_id);

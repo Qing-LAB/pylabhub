@@ -125,10 +125,20 @@ fi
 echo "Found $file_count files. Creating archive..."
 
 # Second, create the archive by piping the list directly to tar.
+# Define the prefix modification based on OS
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS (BSD tar) uses -s
+    TRANSFORM_FLAG=("-s" ",^,${ARCHIVE_ROOT_DIR}/,")
+else
+    # Linux (GNU tar) uses --transform
+    TRANSFORM_FLAG=("--transform" "s,^,${ARCHIVE_ROOT_DIR}/,")
+fi
+
 git ls-files -z | grep -vazE "$GREP_EXCLUDE_REGEX" | tar -czvf "$OUTPUT_FILE" \
     --null \
     --files-from - \
-    --transform "s,^,${ARCHIVE_ROOT_DIR}/,"
+    "${TRANSFORM_FLAG[@]}"
+
 
 if [ $? -eq 0 ]; then
   echo "--------------------------------------------------"
