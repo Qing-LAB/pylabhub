@@ -4,7 +4,8 @@ tools/pack_source.ps1
 Archives project source files into a gzipped tarball.
 
 - Uses 'git ls-files' to reliably list all tracked files.
-- Excludes third_party/, build artifacts, IDE folders, etc.
+- Excludes third_party/ (except third_party/CMakeLists.txt and third_party/cmake/**),
+  build artifacts, IDE folders, and common archive files.
 - Packages sources under a versioned root directory.
 - If tar supports --transform, use it; otherwise create a staging tree.
 --------------------------------------------------------------------
@@ -43,7 +44,7 @@ if ($Help) {
 $ScriptPath = $MyInvocation.MyCommand.Path
 if (-not $ScriptPath) {
     # When run interactively, MyInvocation.MyCommand.Path can be empty
-    $ScriptDir = Get-Location
+    $ScriptDir = (Get-Location).Path
 } else {
     $ScriptDir = Split-Path -Parent $ScriptPath
 }
@@ -69,7 +70,6 @@ $ProjectName = Split-Path $ProjectRoot -Leaf
 if (-not $Output) {
     $Output = Join-Path $ProjectRoot "$ProjectName-src.tar.gz"
 } else {
-    # If output is relative, make it absolute relative to current dir
     try {
         $resolvedOut = Resolve-Path -LiteralPath $Output -ErrorAction SilentlyContinue
         if ($resolvedOut) {
@@ -78,10 +78,7 @@ if (-not $Output) {
             $Output = (Resolve-Path (Join-Path (Get-Location) $Output)).Path
         }
     } catch {
-        # fallback: build absolute path manually
-        if ([System.IO.Path]::IsPathRooted($Output)) {
-            # keep as-is
-        } else {
+        if (-not [System.IO.Path]::IsPathRooted($Output)) {
             $Output = Join-Path (Get-Location) $Output
         }
     }
@@ -97,19 +94,21 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-if ($SourceDir.Path -ne $ProjectRoot.Path) {
+# Normalize PathInfo vs string for comparisons below
+if ($SourceDir -is [System.Management.Automation.PathInfo]) { $SourceDirPath = $SourceDir.Path } else { $SourceDirPath = $SourceDir }
+if ($ProjectRoot -is [System.Management.Automation.PathInfo]) { $ProjectRootPath = $ProjectRoot.Path } else { $ProjectRootPath = $ProjectRoot }
+
+if ($SourceDirPath -ne $ProjectRootPath) {
     Write-Warning "Specified source directory differs from detected project root."
-    Write-Warning "  Script implies root: $ProjectRoot"
-    Write-Warning "  Provided source:     $SourceDir"
+    Write-Warning "  Script implies root: $ProjectRootPath"
+    Write-Warning "  Provided source:     $SourceDirPath"
 }
 
 # --- Exclusion patterns (regex, anchored) ---
 $ExcludePatterns = @(
-    '^third_party/',
+    # Note: we will handle third_party specially below, so DO NOT include ^third_party/ here.
     '^build/',
-    '^\.git',
-    '^\.idea/',
-    '^\.vscode/',
+    '^\.(git|idea|vscode)/',
     '^cmake-build-debug/',
     '\.zip$',
     '\.tar\.gz$',
@@ -118,7 +117,7 @@ $ExcludePatterns = @(
 $ExcludeRegex = ($ExcludePatterns -join '|')
 
 Write-Host "--------------------------------------------------"
-Write-Host "Project root:     $SourceDir"
+Write-Host "Project root:     $SourceDirPath"
 Write-Host "Output archive:   $Output"
 Write-Host "Archive root dir: $ProjectName-src"
 Write-Host "--------------------------------------------------"
@@ -132,13 +131,40 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# convert to array of lines and filter exclusions
+# --- Build $Files with special third_party rules ---
 $Files = @()
+
+# Strict third_party allowlist (exactly these):
+#  - third_party/CMakeLists.txt
+#  - third_party/cmake/** (the 'cmake' directory directly under third_party and its contents)
+$tpAllowRegexes = @(
+    '^third_party/CMakeLists\.txt$',  # exact top-level CMakeLists
+    '^third_party/cmake(/|/.*)'       # third_party/cmake and its contents
+)
+
 foreach ($line in $gitOutput -split "`n") {
     $trimmed = $line.Trim("`r", "`n")
     if ($trimmed -eq '') { continue }
-    if ($trimmed -notmatch $ExcludeRegex) {
-        $Files += $trimmed
+
+    if ($trimmed -like 'third_party/*') {
+        # Only accept if it matches our strict allowlist for third_party
+        $allowed = $false
+        foreach ($r in $tpAllowRegexes) {
+            if ($trimmed -match $r) { $allowed = $true; break }
+        }
+        if (-not $allowed) { continue }  # skip everything else inside third_party
+
+        # For allowed third_party entries still apply global exclusions (e.g. .zip)
+        if ($trimmed -notmatch $ExcludeRegex) {
+            $Files += $trimmed
+        } else {
+            # excluded by general rule (e.g., archive file) -> skip
+        }
+    } else {
+        # Not under third_party: apply the normal exclusions
+        if ($trimmed -notmatch $ExcludeRegex) {
+            $Files += $trimmed
+        }
     }
 }
 
@@ -173,12 +199,9 @@ if (TarSupportsTransform) {
     # Create a temporary list file (one file per line)
     $ListFile = [System.IO.Path]::GetTempFileName()
     try {
-        # Ensure Unix line endings in list file (some tar implementations accept either)
+        # Ensure Unix line endings in list file
         $Files -join "`n" | Set-Content -NoNewline -Encoding UTF8 $ListFile
 
-        # Attempt to call tar with files-from + transform.
-        # Note: Some tar builds accept --null/--files-from -; others accept --files-from <file>
-        # We wrote the list to a temp file so we avoid null-delimited issues on Windows.
         & tar.exe -czvf $Output --files-from $ListFile --transform "s,^,$ArchiveRoot/,"
         if ($LASTEXITCODE -ne 0) {
             throw "tar returned non-zero exit code: $LASTEXITCODE"
@@ -199,7 +222,7 @@ if (TarSupportsTransform) {
 
         # Copy each selected file into the staging tree preserving directory structure
         foreach ($f in $Files) {
-            $srcPath = Join-Path $SourceDir $f
+            $srcPath = Join-Path $SourceDirPath $f
             $destPath = Join-Path $StagingRoot $f
             $destDir  = Split-Path -Parent $destPath
             if (-not (Test-Path $destDir)) {
