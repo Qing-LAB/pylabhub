@@ -1,84 +1,294 @@
-# pyLabHub C++ Build System: Final Architecture Summary
+# pyLabHub C++ Build System: Architecture and Developer's Guide
 
-This document provides a definitive overview of the CMake build system designed for the pyLabHub C++ project. It outlines the core design principles, the overall structure, and the conventions developers should follow.
+This document provides a definitive overview of the CMake build system for the pyLabHub C++ project. It outlines the core design principles and includes a practical guide for developers to perform common tasks.
 
 ## 1. Core Design Principles
 
-Our architecture is built on a foundation of modern CMake practices, emphasizing **clarity, robustness, and maintainability**. The key principles are:
+Our architecture is built on modern CMake practices, emphasizing **clarity, robustness, and maintainability**.
 
-*   **Separation of Build and Stage**: The system makes a clear distinction between *building* artifacts and *staging* them.
-    *   **Build**: A standard build (`cmake --build .`) compiles sources and produces artifacts (libraries, executables) in the CMake build tree (`build/src/`, etc.). It does **not** copy them to the staging area. Assembly of complex artifacts (like the macOS `.xop` bundle) may happen as a `POST_BUILD` step, but the result remains within the build tree, ready for staging.
-    *   **Stage**: A dedicated target, `stage_all`, is responsible for populating the staging directory. Running `cmake --build . --target stage_all` executes all necessary copy operations, creating a complete, runnable layout of the project.
+*   **Unified Staging**: The cornerstone of the design is the unified staging directory (`build/stage/`). All build artifacts—executables, libraries, headers, and resources—are copied into this single location. This creates a self-contained, runnable package that mirrors the final installation, simplifying development and testing.
 
-*   **Unified Staging**: The cornerstone of the design is the unified staging directory (`${PYLABHUB_STAGING_DIR}`). After a successful build, running the `stage_all` target copies all artifacts—executables, libraries, headers, and bundles—into this single location. This creates a self-contained, runnable version of the project that mirrors the final installation layout, making local development and testing simple and reliable.
+*   **Separation of Build and Stage**: The system clearly distinguishes between *building* artifacts (compiling) and *staging* them (copying to the stage directory). A standard `cmake --build .` compiles everything, but a separate `cmake --build . --target stage_all` is required to populate the staging area.
 
-*   **Isolation & Abstraction**: Each third-party dependency is configured in a "sandbox" using a `snapshot_cache_var`/`restore_cache_var` mechanism to prevent its build settings from "leaking" and affecting other parts of the build. Consumers of these dependencies link against stable, namespaced `ALIAS` targets (e.g., `pylabhub::third_party::fmt`), completely abstracting away the underlying build details.
+*   **Isolation & Abstraction**: Third-party dependencies are configured in isolated "sandboxes" using a `snapshot_cache_var`/`restore_cache_var` mechanism to prevent their build settings from "leaking." Consumers link against stable, namespaced `ALIAS` targets (e.g., `pylabhub::third_party::fmt`), abstracting away the underlying build details.
 
-*   **Top-Down Control & Modularity**: The build system is broken down into logical, single-responsibility modules (`cmake/`, `third_party/`, `src/`, `tests/`). High-level build policies are defined as user-facing `CACHE` options (e.g., `BUILD_TESTS`, `THIRD_PARTY_INSTALL`), which are then interpreted by the appropriate modules. This provides a clear, centralized API for developers to tune the build.
+*   **Top-Down Control & Modularity**: The build system is broken into logical, single-responsibility modules (`cmake/`, `third_party/`, `src/`, `tests/`). High-level build policies are defined as user-facing `CACHE` options (e.g., `BUILD_TESTS`), providing a clear, centralized API.
 
-*   **Robust Symbol Visibility and Export**: For shared libraries (like `pylabhub::utils`), the build system uses modern CMake practices to control which symbols are exported, ensuring a stable Application Binary Interface (ABI).
-    *   **Generated Headers**: Instead of a manual `__declspec(dllexport/dllimport)` macro, the system uses CMake's `generate_export_header` function for each shared library. This creates a `<target_name>_export.h` file in the build directory (e.g., `pylabhub_utils_export.h`).
-    *   **Target-Specific Macros**: This generated header contains a target-specific macro (e.g., `PYLABHUB_UTILS_EXPORT`) that automatically resolves to `__declspec(dllexport)` when building the library, `__declspec(dllimport)` when consuming it, or becomes empty for static builds. Public classes in the library must be decorated with this macro.
-    *   **Default Hidden Visibility**: On non-Windows platforms (GCC/Clang), all shared library targets are compiled with `-fvisibility=hidden`. This means that only the symbols explicitly marked with the export macro are made public, reducing symbol table bloat and preventing accidental ABI exposure.
-    *   **Header Staging**: The generated export header is a required public header for any consumer of the library. As such, it is automatically copied to the staging directory (`${PYLABHUB_STAGING_DIR}/include/`) as part of the library's staging process.
+*   **Robust Symbol Visibility and Export**: The system uses CMake's `generate_export_header` and `-fvisibility=hidden` (on GCC/Clang) to ensure a stable Application Binary Interface (ABI) for all shared libraries, preventing accidental symbol exposure.
 
-    This entire mechanism serves the standard C++ compilation model where consumers of the library compile against its public headers. The headers provide the necessary **declarations** (class layouts, function signatures), while the export/import macros ensure the linker can connect the consumer's code to the shared library's **definitions** (the actual implementation) at runtime. For this to work, it is essential that the full set of public headers, including the generated `..._export.h` file, is correctly staged and installed for the consumer to find.
+---
 
-*   **Clear Separation of Concerns**: We have established a clear hierarchy of components:
-    *   **Core Components** (`pylabhub::utils`, `pylabhub::core`, `pylabhub::app`): These are integral to the project and are **always** built. Their artifacts are staged by the `stage_core_artifacts` target.
-    *   **Third-Party Libraries**: These are external dependencies whose staging is controlled by the `THIRD_PARTY_INSTALL` option and handled by the `stage_third_party_deps` target.
-    *   **Optional Components** (`tests`, `IgorXOP`): The building and staging of these components are controlled by their own dedicated options (`BUILD_TESTS` and `BUILD_XOP`, respectively).
-*   **Installation**: The final `install` target is optional and controlled by `PYLABHUB_CREATE_INSTALL_TARGET`. It performs a direct copy of the staged directory, providing a clean separation between building for development and creating a distributable package.
+## 2. Visualizing the Build System
 
-## 2. Build System Structure & Component Layout
+### Build and Stage Workflow
 
-The project is organized into a clear hierarchy, with each component playing a specific role:
+This diagram shows the high-level workflow from configuration to final installation.
 
-*   **Top-Level (`/cpp/`)**
-    *   `CMakeLists.txt`: The main orchestrator. It sets up the project, defines the staging infrastructure (`PYLABHUB_STAGING_DIR`, `stage_all` target), includes helper modules, and adds the subdirectories for third-party, source, and test builds. It also contains the final, optional `install()` rule.
-    *   `cmake/`: Contains helper modules that define the global build environment:
-        *   `PlatformAndCompiler.cmake`: Centralizes platform detection and global compiler flags.
-        *   `ToplevelOptions.cmake`: Defines all primary user-facing options (`BUILD_TESTS`, `PYLABHUB_CREATE_INSTALL_TARGET`, etc.).
-        *   `StageHelpers.cmake`: Provides a consistent API for staging artifacts. Key functions include `pylabhub_stage_executable`, `pylabhub_stage_libraries`, `pylabhub_stage_headers`, and the lower-level `pylabhub_get_library_staging_commands`.
+```mermaid
+graph TD
+    A[Start: Clean Directory] --> B{cmake -S . -B build};
+    B --> C{cmake --build build};
+    C --> D{Run `stage_all` Target?};
+    D -- No --> E[Artifacts are in `build/` tree only. <br> Good for compile checks.];
+    D -- Yes --> F{cmake --build build --target stage_all};
+    F --> G[Staging directory `build/stage/` is populated. <br> Project is now runnable and testable.];
+    G --> H{cmake --install build};
+    H --> I[Staged content is copied to `CMAKE_INSTALL_PREFIX`];
+```
 
-*   **Third-Party Dependencies (`/cpp/third_party/`)**
-    *   This is a self-contained framework for managing all external dependencies.
-    *   `CMakeLists.txt`: The entry point for the third-party system. It includes the core policy helper and then includes each individual library wrapper script. It defines the `stage_third_party_deps` target and makes the global `stage_all` target depend on it.
-    *   `cmake/`: Contains the logic for the framework, including `ThirdPartyPolicyAndHelper.cmake` (which defines tunable options and helper functions) and individual `<lib>.cmake` wrapper scripts for each dependency.
+### Dependency Abstraction
 
-*   **Source Code (`/cpp/src/`)**
-    *   Contains the project's own source code and build scripts.
-    *   The source is organized into several components defined in `CMakeLists.txt` files within `src` and its subdirectories:
-        *   A shared utility library (`pylabhub::utils`) is built from the `src/utils` directory.
-        *   A static core library (`pylabhub::core`) and a main executable (`pylabhub::app`) are built from the remaining sources.
-    *   **Source File Management**: The project uses a hybrid approach. Core components like `pylabhub::utils` explicitly list their source files for maximum build robustness. Other components, like `pylabhub::core`, may use `file(GLOB_RECURSE)` for convenience. While pragmatic, this requires developers to manually re-run CMake when adding or removing source files.
-    *   **Staging and Dependencies**: These targets are pure consumers of the dependency targets provided by the `third_party` framework, linking against the stable `pylabhub::third_party::*` aliases. They use the staging helper functions to schedule their artifacts to be copied to the staging directory. For example, `pylabhub_stage_executable` is used for `pylabhub::app`, and `pylabhub_get_library_staging_commands` is used for `pylabhub::core` and `pylabhub::utils`. These commands are attached to the `stage_core_artifacts` target, ensuring that staging only occurs when `stage_all` is explicitly built.
+This shows how a consumer (`pylabhub::core`) is decoupled from the actual third-party library (`libzmq`) via stable, intermediate targets.
 
-*   **Igor Pro XOP (`/cpp/src/IgorXOP/`)**
-    *   This optional component, controlled by the `BUILD_XOP` option, builds a macOS bundle (`.xop`) for integration with Igor Pro.
-    *   Its `CMakeLists.txt` handles the specific requirements of bundle creation, including setting bundle properties and packaging resources. The resulting `.xop` bundle is staged to the appropriate location by the `stage_all` target.
+```mermaid
+graph TD
+    subgraph "Third-Party Build"
+        A[third_party/libzmq] -- Builds --> B(libzmq-static);
+    end
+    
+    subgraph "Third-Party Abstraction Layer"
+        C(pylabhub_zmq) -- Wraps --> B;
+        D{pylabhub::third_party::zmq} -.- ALIAS --> C;
+    end
+    
+    subgraph "Project Code"
+        E[pylabhub::core] -- Links against --> D;
+    end
 
-*   **Test Suite (`/cpp/tests/`)**
-    *   Contains the project's test suite. The `CMakeLists.txt` here defines the test executables and links them against the project's internal libraries (e.g., `pylabhub::core`).
-    *   If `BUILD_TESTS` is `ON`, a `stage_tests` target is created to copy the test executables to the staging directory's `bin` folder. This ensures they can find runtime dependencies (like the `pylabhub-utils` shared library) which are also staged there.
+    style B fill:#e6f3ff,stroke:#66a3ff,stroke-width:2px
+    style D fill:#e6ffe6,stroke:#33cc33,stroke-width:2px
+```
 
-## 3. Naming Conventions
+### Staging Target Dependencies
 
-A consistent naming scheme is used throughout the project to ensure clarity:
+The `stage_all` target orchestrates several smaller, modular staging targets.
 
-*   **Targets**:
-    *   **Third-Party Aliases**: `pylabhub::third_party::<name>` (e.g., `pylabhub::third_party::zmq`). This is the stable, namespaced alias for all internal project code to use.
-    *   **Internal Targets**: `pylabhub::<name>` (e.g., `pylabhub::core`, `pylabhub::utils`).
-*   **Variables & Options**: The system uses a clear prefixing scheme to denote the scope and purpose of variables.
-    *   **Global Policies**: `PYLABHUB_*` or `BUILD_*` (e.g., `PYLABHUB_CREATE_INSTALL_TARGET`, `BUILD_TESTS`).
-    *   **Third-Party Policies**: `THIRD_PARTY_*` (e.g., `THIRD_PARTY_INSTALL`).
-    *   **Internal/Temporary**: Prefixed with an underscore (`_`) to denote them as local to the current scope.
+```mermaid
+graph TD
+    subgraph "Top-Level Targets"
+        stage_all;
+    end
+    
+    subgraph "Component Staging Targets"
+        stage_core_artifacts;
+        stage_third_party_deps;
+        stage_tests;
+        stage_pylabhubxop;
+    end
 
-## 4. Expected Behaviors & Workflow
+    stage_all --> stage_core_artifacts;
+    stage_all --> stage_third_party_deps;
+    stage_all --> stage_tests;
+    stage_all --> stage_pylabhubxop;
+    
+    stage_core_artifacts --> stage_third_party_deps;
+```
 
-The build system is predictable and easy to use for various development scenarios. The key distinction is between building and staging.
+---
 
-*   **Build**: A simple `cmake -S . -B build && cmake --build build` will configure and build all enabled project targets. Artifacts are created in the build tree but **not** copied to the staging area.
-*   **Stage**: After a successful build, run `cmake --build build --target stage_all`. This will populate the `build/stage/` directory with all libraries, executables, headers, and resources, creating a complete, runnable package.
-*   **Testing**: After staging, you can run executables directly from `build/stage/bin/`. To run the test suite, run `ctest --test-dir build`. CTest is configured to run the executables from their staged location.
-*   **Packaging/Installation**: To create a full, distributable package, enable all relevant options (`-DTHIRD_PARTY_INSTALL=ON`, `-DPYLABHUB_CREATE_INSTALL_TARGET=ON`) and run `cmake --install build` after a successful staging step.
+## 3. Developer's Cookbook: Common Tasks
+
+This section provides practical recipes for common development tasks.
+
+### Recipe 1: How to Add a New Executable
+
+Let's add a new standalone executable named `my-tool`.
+
+1.  **Create the source file and a `CMakeLists.txt`:**
+    ```bash
+    # In /cpp directory
+    mkdir -p src/my_tool
+    touch src/my_tool/main.cpp
+    touch src/my_tool/CMakeLists.txt
+    ```
+
+2.  **Edit `src/my_tool/main.cpp`:**
+    ```cpp
+    #include <iostream>
+    int main() {
+        std::cout << "Hello from my-tool!\n";
+        return 0;
+    }
+    ```
+
+3.  **Edit `src/my_tool/CMakeLists.txt`:**
+    This file defines the executable, links it to project libraries, and tells the build system how to stage it.
+
+    ```cmake
+    # src/my_tool/CMakeLists.txt
+    add_executable(my-tool main.cpp)
+    add_executable(pylabhub::my-tool ALIAS my-tool)
+
+    # Link against project libraries (e.g., pylabhub::utils)
+    target_link_libraries(my-tool PRIVATE pylabhub::utils)
+
+    # Create a local staging target
+    add_custom_target(stage_my_tool COMMENT "Staging my-tool executable")
+
+    # Attach the staging command to our local target
+    pylabhub_stage_executable(
+      TARGET my-tool
+      DESTINATION bin       # Stage to build/stage/bin/
+      ATTACH_TO stage_my_tool
+    )
+
+    # Register our local staging target with the global 'stage_core_artifacts'
+    add_dependencies(stage_my_tool my-tool)
+    set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_my_tool)
+    ```
+
+4.  **Include the new subdirectory in `src/CMakeLists.txt`:**
+    ```cmake
+    # In src/CMakeLists.txt
+    # ...
+    add_subdirectory(utils)
+    add_subdirectory(my_tool) # <-- Add this line
+    # ...
+    ```
+
+5.  **Build:**
+    Re-run CMake, then build. The executable will be staged to `build/stage/bin/my-tool`.
+
+### Recipe 2: How to Add a New Internal Shared Library
+
+Let's add `pylabhub::power-utils` as a new shared library.
+
+1.  **Create the directory structure:**
+    ```bash
+    mkdir -p src/power_utils
+    touch src/power_utils/CMakeLists.txt
+    touch src/power_utils/power.hpp
+    touch src/power_utils/power.cpp
+    ```
+
+2.  **Edit `src/power_utils/CMakeLists.txt`:**
+    ```cmake
+    # src/power_utils/CMakeLists.txt
+    add_library(pylabhub-power-utils SHARED power.cpp)
+    add_library(pylabhub::power-utils ALIAS pylabhub-power-utils)
+
+    # Use CMake's feature for handling DLL exports/imports
+    include(GenerateExportHeader)
+    generate_export_header(pylabhub-power-utils
+      BASE_NAME POWER_UTILS
+      EXPORT_MACRO_NAME PYLABHUB_POWER_UTILS_EXPORT
+      EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_power_utils_export.h"
+    )
+
+    target_include_directories(pylabhub-power-utils
+      PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> # For the export header
+        $<INSTALL_INTERFACE:include/power_utils>
+    )
+
+    target_link_libraries(pylabhub-power-utils PUBLIC pylabhub::utils)
+    
+    # Staging Logic
+    pylabhub_get_library_staging_commands(
+      TARGET pylabhub-power-utils
+      DESTINATION bin # Stage .dll/.so to bin/
+      OUT_COMMANDS stage_commands
+    )
+    add_custom_target(stage_power_utils ${stage_commands}
+      COMMENT "Staging power-utils library"
+    )
+    add_custom_command(TARGET stage_power_utils POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/power.hpp"
+        "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_power_utils_export.h"
+        DESTINATION "${PYLABHUB_STAGING_DIR}/include/power_utils/"
+      COMMENT "Staging power-utils public headers"
+    )
+
+    add_dependencies(stage_power_utils pylabhub-power-utils)
+    set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_power_utils)
+    ```
+
+3.  **Update `power.hpp` to use the export macro:**
+    ```cpp
+    #include "pylabhub_power_utils_export.h" // Generated header
+
+    class PYLABHUB_POWER_UTILS_EXPORT PowerManager {
+    public:
+        void boost();
+    };
+    ```
+
+4.  **Include the new subdirectory in `src/CMakeLists.txt`:**
+    ```cmake
+    # In src/CMakeLists.txt
+    add_subdirectory(utils)
+    add_subdirectory(power_utils) # <-- Add this line
+    ```
+
+### Recipe 3: How to Add a New Third-Party Library (Compiled)
+
+Let's add a fictional pre-compiled library `super-lib`.
+
+1.  **Place the files in `third_party/`:**
+    *   Headers: `third_party/super-lib/include/super-lib/super.h`
+    *   Libraries: `third_party/super-lib/lib/super.lib` (and `.dll`, etc.)
+
+2.  **Create a CMake wrapper script at `third_party/cmake/super-lib.cmake`:**
+    ```cmake
+    # third_party/cmake/super-lib.cmake
+    _expose_wrapper(pylabhub_super-lib pylabhub::third_party::super-lib)
+    
+    # Find the library and header files
+    find_path(SUPERLIB_INCLUDE_DIR NAMES super.h PATHS "${CMAKE_CURRENT_SOURCE_DIR}/super-lib/include")
+    find_library(SUPERLIB_LIBRARY NAMES super PATHS "${CMAKE_CURRENT_SOURCE_DIR}/super-lib/lib")
+
+    # Link the found files to the wrapper target
+    target_include_directories(pylabhub_super-lib INTERFACE ${SUPERLIB_INCLUDE_DIR})
+    target_link_libraries(pylabhub_super-lib INTERFACE ${SUPERLIB_LIBRARY})
+    
+    # Stage the artifacts if THIRD_PARTY_INSTALL is ON
+    if(THIRD_PARTY_INSTALL)
+      pylabhub_stage_headers(
+        DIRECTORIES ${SUPERLIB_INCLUDE_DIR}
+        SUBDIR super-lib # Stage to build/stage/include/super-lib
+      )
+      # Manually stage the pre-compiled library files
+      add_custom_command(TARGET stage_third_party_deps POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${SUPERLIB_LIBRARY}"
+          "${PYLABHUB_STAGING_DIR}/lib/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/super-lib/bin/super.dll" # Example for DLL
+          "${PYLABHUB_STAGING_DIR}/bin/"
+        COMMENT "Staging pre-compiled super-lib artifacts"
+      )
+    endif()
+    ```
+
+3.  **Include the wrapper in `third_party/CMakeLists.txt`:**
+    ```cmake
+    # In third_party/CMakeLists.txt
+    # ...
+    include(cmake/fmt.cmake)
+    include(cmake/libzmq.cmake)
+    include(cmake/super-lib.cmake) # <-- Add this line
+    ```
+
+### Recipe 4: How to Add a New Test
+
+The test suite is designed for simplicity.
+
+1.  **Create a new test file in the `tests/` directory:**
+    Name it something like `test_power_utils.cpp`.
+
+2.  **Write your test using GoogleTest:**
+    ```cpp
+    // tests/test_power_utils.cpp
+    #include "test_main.h"
+    #include "power_utils/power.hpp" // Your new library's header
+    
+    TEST(PowerUtilsTest, CanBoost) {
+        PowerManager pm;
+        // Your test logic here...
+        ASSERT_NO_THROW(pm.boost());
+    }
+    ```
+
+3.  **Done.** The `file(GLOB ...)` command in `tests/CMakeLists.txt` automatically finds all `*.cpp` files. `gtest_discover_tests` then finds all `TEST` macros within them. Just re-run the build.
