@@ -18,10 +18,9 @@
 #include "platform.hpp"
 
 // For death tests, ensure PANIC calls std::abort() to be detectable by the test framework.
-#ifdef PANIC
-#undef PANIC
-#endif
+#if !defined(PANIC)
 #define PANIC(msg) std::abort()
+#endif
 
 #include "utils/AtomicGuard.hpp"
 
