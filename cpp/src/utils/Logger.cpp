@@ -666,6 +666,15 @@ void Impl::shutdown()
 
 // --- Logger Public API Implementation ---
 
+namespace
+{
+// Use a mutex-guarded unique_ptr for the singleton to allow for explicit
+// destruction and re-creation in tests, which is not possible with a
+// function-local static (`static Logger instance;`).
+std::unique_ptr<Logger> g_instance;
+std::mutex g_instance_mutex;
+} // namespace
+
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger()
 {
@@ -678,9 +687,30 @@ Logger::~Logger()
 
 Logger &Logger::instance()
 {
-    static Logger instance;
-    return instance;
+    if (!g_instance)
+    {
+        std::lock_guard<std::mutex> lock(g_instance_mutex);
+        if (!g_instance)
+        {
+            // Note: Logger constructor is private, so we must wrap the call to
+            // `new Logger()` in a helper class that can access it.
+            struct LoggerMaker : public Logger
+            {
+                LoggerMaker() : Logger() {}
+            };
+            g_instance = std::make_unique<LoggerMaker>();
+        }
+    }
+    return *g_instance;
 }
+
+#ifdef PYLABHUB_TESTING
+void Logger::resetForTesting()
+{
+    std::lock_guard<std::mutex> lock(g_instance_mutex);
+    g_instance.reset();
+}
+#endif
 
 void Logger::set_console()
 {

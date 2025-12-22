@@ -73,7 +73,7 @@ TEST(RecursionGuardTest, MultipleObjects)
         {
             RecursionGuard g2(&another_object);
             ASSERT_TRUE(RecursionGuard::is_recursing(&some_object));
-            ASSERT_TRUE(RecursionGuard::is_recursING(&another_object));
+            ASSERT_TRUE(RecursionGuard::is_recursing(&another_object));
         }
 
         ASSERT_TRUE(RecursionGuard::is_recursing(&some_object));

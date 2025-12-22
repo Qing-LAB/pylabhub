@@ -109,7 +109,12 @@ protected:
         // Ensure logger is using console and file handles released before cleanup.
         Logger::instance().set_console();
         Logger::instance().flush();
+        
+        // Finalize the subsystems for the test that just ran.
         pylabhub::utils::Finalize();
+
+        // Reset the entire lifecycle/logger system for the *next* test.
+        pylabhub::utils::ResetForTesting();
 
         for (const auto& p : paths_to_clean_) {
             try {
@@ -233,6 +238,7 @@ TEST_F(LoggerTest, DefaultSinkAndSwitching)
     L.flush();
 
     L.set_logfile(log_path.string());
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
     LOGGER_INFO("This message should be logged to the file.");
     ASSERT_TRUE(wait_for_string_in_file(log_path, "This message should be logged to the file."));
 
@@ -290,6 +296,10 @@ TEST_F(LoggerTest, MultithreadStress)
     });
 
     for (auto &t : threads) t.join();
+    // Ensure the logger is definitively set to the log file before flushing and verifying.
+    L.set_logfile(chaos_log_path.string());
+    ASSERT_TRUE(wait_for_string_in_file(chaos_log_path, "Switched log to file"));
+
     L.flush();
 
     std::string contents;
