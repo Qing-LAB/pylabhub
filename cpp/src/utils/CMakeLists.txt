@@ -91,6 +91,13 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
 )
 
+# If tests are being built, we need to compile the test-only reset logic
+# into this library so it can be exported and used by the test executables.
+if(BUILD_TESTS)
+  target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_TESTING)
+  message(STATUS "pylabhub-utils: Compiling with test-only reset logic enabled.")
+endif()
+
 # ---------- Probe: Detect fmt::chrono subsecond formatting style ----------
 if (TARGET pylabhub-utils)
   message(STATUS "Performing test: probing fmt chrono subseconds support...")

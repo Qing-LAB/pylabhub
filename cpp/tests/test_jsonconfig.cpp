@@ -254,7 +254,7 @@ TEST_F(JsonConfigTest, MultiThreadContention)
                 for (int j = 0; j < ITERS; ++j)
                 {
                     if (j % 10 == 0) {
-                        cfg.set(fmt::format("t{}_j{}", i, j), true); // Write lock
+                        cfg.set(fmt::format("t{}_j যৌ", i, j), true); // Write lock
                     } else {
                         (void)cfg.get_or<int>("nonexistent", 0); // Read lock
                     }
@@ -292,10 +292,10 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     int success_count = 0;
 
 #if defined(PLATFORM_WIN64)
-    std::vector<HANDLE> procs;
+    std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(g_self_exe_path, "jsonconfig.write_id", {cfg_path.string(), fmt::format("win-{}", i)});
+        ProcessHandle h = spawn_worker_process(g_self_exe_path, "jsonconfig.write_id", std::vector<std::string>{cfg_path.string(), fmt::format("win-{}", i)});
         ASSERT_TRUE(h != nullptr);
         procs.push_back(h);
     }
@@ -308,14 +308,14 @@ TEST_F(JsonConfigTest, MultiProcessContention)
         CloseHandle(h);
     }
 #else
-    std::vector<pid_t> pids;
+    std::vector<ProcessHandle> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(g_self_exe_path, "jsonconfig.write_id", {cfg_path.string(), fmt::format("posix-{}", i)});
+        ProcessHandle pid = spawn_worker_process(g_self_exe_path, "jsonconfig.write_id", std::vector<std::string>{cfg_path.string(), fmt::format("posix-{}", i)});
         ASSERT_GT(pid, 0);
         pids.push_back(pid);
     }
-    for (pid_t pid : pids)
+    for (auto pid : pids)
     {
         int status = 0;
         waitpid(pid, &status, 0);

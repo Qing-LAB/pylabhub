@@ -149,6 +149,19 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     void shutdown();
 
+#ifdef PYLABHUB_TESTING
+    /**
+     * @brief [TESTING ONLY] Resets the logger singleton instance.
+     *
+     * This function is only available in test builds. It destroys the current
+     * logger instance, including its worker thread, allowing a subsequent call
+     * to `instance()` to create a fresh one. This is essential for tests that
+     * need to initialize and shut down the logger multiple times within the
+     * same process.
+     */
+    void resetForTesting();
+#endif
+
     /**
      * @brief Waits for the logger to process all currently queued messages.
      *
