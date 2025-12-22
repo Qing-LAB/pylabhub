@@ -1,8 +1,11 @@
 // tests/test_jsonconfig.cpp
 //
-// Unit test for JsonConfig, converted to GoogleTest.
+// Unit test for JsonConfig, converted to GoogleTest and corrected to match
+// original coverage (POSIX/Windows symlink tests, worker entrypoint name,
+// fixed string literal and other issues).
 
 #include <gtest/gtest.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -21,7 +24,7 @@
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
 
-#include "test_main.h"
+#include "test_main.h" // provides extern std::string g_self_exe_path
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -50,7 +53,7 @@ static std::string read_file_contents(const fs::path &p)
     return ss.str();
 }
 
-// --- Worker Process Logic ---
+// --- Worker Process Logic (helpers for spawning children) ---
 
 #if defined(PLATFORM_WIN64)
 static HANDLE spawn_worker_process(const std::string &exe, const std::string &cfgpath, const std::string &worker_id)
@@ -84,7 +87,7 @@ static pid_t spawn_worker_process(const std::string &exe, const std::string &cfg
 }
 #endif
 
-// --- Test Fixture ---
+// Test fixture to initialize/finalize lifecycle once per suite.
 class JsonConfigTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
@@ -96,13 +99,13 @@ protected:
 
     static void TearDownTestSuite() {
         pylabhub::utils::Finalize();
-        fs::remove_all(g_temp_dir);
+        try { fs::remove_all(g_temp_dir); } catch (...) {}
     }
 };
 
 } // anonymous namespace
 
-// Worker function
+// Worker function with external linkage so test_main.cpp can call it in "worker" mode.
 int jsonconfig_worker_main(const std::string &cfgpath, const std::string &worker_id)
 {
     Logger::instance().set_level(Logger::Level::L_ERROR);
@@ -113,8 +116,7 @@ int jsonconfig_worker_main(const std::string &cfgpath, const std::string &worker
     return ok ? 0 : 2;
 }
 
-
-// --- Test Cases ---
+// --- Tests ---
 
 TEST_F(JsonConfigTest, InitAndCreate)
 {
@@ -155,7 +157,7 @@ TEST_F(JsonConfigTest, BasicAccessors)
 {
     auto cfg_path = g_temp_dir / "accessors.json";
     JsonConfig cfg;
-    cfg.init(cfg_path, true);
+    ASSERT_TRUE(cfg.init(cfg_path, true));
 
     ASSERT_TRUE(cfg.set("int_val", 42));
     int int_val = 0;
@@ -191,11 +193,12 @@ TEST_F(JsonConfigTest, Reload)
 {
     auto cfg_path = g_temp_dir / "reload.json";
     JsonConfig cfg;
-    cfg.init(cfg_path, true);
+    ASSERT_TRUE(cfg.init(cfg_path, true));
 
     cfg.set("value", 1);
     ASSERT_TRUE(cfg.save());
 
+    // Modify the file externally.
     {
         std::ofstream out(cfg_path);
         out << R"({ "value": 2, "new_key": "external" })";
@@ -218,9 +221,9 @@ TEST_F(JsonConfigTest, RecursionGuard)
 {
     auto cfg_path = g_temp_dir / "recursion.json";
     JsonConfig cfg;
-    cfg.init(cfg_path, true);
+    ASSERT_TRUE(cfg.init(cfg_path, true));
     cfg.set("key", 123);
-    cfg.save();
+    ASSERT_TRUE(cfg.save());
 
     bool read_ok = cfg.with_json_read(
         [&]([[maybe_unused]] const json &data)
@@ -248,7 +251,7 @@ TEST_F(JsonConfigTest, MultiThreadContention)
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
     JsonConfig cfg;
-    cfg.init(cfg_path, true);
+    ASSERT_TRUE(cfg.init(cfg_path, true));
 
     const int THREADS = 32;
     const int ITERS = 1000;
@@ -280,15 +283,12 @@ TEST_F(JsonConfigTest, MultiThreadContention)
             });
     }
 
-    for (auto &t : threads)
-    {
-        t.join();
-    }
+    for (auto &t : threads) t.join();
 
     ASSERT_TRUE(cfg.save());
 
     JsonConfig verifier;
-    verifier.init(cfg_path, false);
+    ASSERT_TRUE(verifier.init(cfg_path, false));
     ASSERT_TRUE(verifier.has("t0_j0"));
     ASSERT_TRUE(verifier.has("t1_j90"));
 }
@@ -300,7 +300,7 @@ TEST_F(JsonConfigTest, MultiProcessContention)
 
     {
         JsonConfig creator;
-        creator.init(cfg_path, true);
+        ASSERT_TRUE(creator.init(cfg_path, true));
         ASSERT_TRUE(creator.save());
     }
 
@@ -320,10 +320,7 @@ TEST_F(JsonConfigTest, MultiProcessContention)
         WaitForSingleObject(h, INFINITE);
         DWORD exit_code = 1;
         GetExitCodeProcess(h, &exit_code);
-        if (exit_code == 0)
-        {
-            success_count++;
-        }
+        if (exit_code == 0) success_count++;
         CloseHandle(h);
     }
 #else
@@ -338,39 +335,32 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     {
         int status = 0;
         waitpid(pid, &status, 0);
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-        {
-            success_count++;
-        }
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) success_count++;
     }
 #endif
 
     ASSERT_GT(success_count, 0);
     JsonConfig verifier;
-    verifier.init(cfg_path, false);
+    ASSERT_TRUE(verifier.init(cfg_path, false));
     ASSERT_TRUE(verifier.has("worker"));
 }
 
-#if defined(PLATFORM_WIN64)
-TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
+#if PYLABHUB_IS_POSIX
+TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 {
     auto real_file = g_temp_dir / "real_file.txt";
-    auto symlink_path = g_temp_dir / "config_win.json";
+    auto symlink_path = g_temp_dir / "config.json";
     fs::remove(real_file);
     fs::remove(symlink_path);
 
+    // Create a "sensitive" file with VALID JSON content.
     {
         std::ofstream out(real_file);
-        out << R"({ \"original\": \"data\" })";
+        out << R"({ "original": "data" })";
     }
 
-    std::wstring symlink_w = pylabhub::utils::win32_to_long_path(symlink_path);
-    std::wstring real_w = pylabhub::utils::win32_to_long_path(real_file);
-
-    if (!CreateSymbolicLinkW(symlink_w.c_str(), real_w.c_str(), 0))
-    {
-        GTEST_SKIP() << "Skipping Windows symlink test: Requires SeCreateSymbolicLinkPrivilege or Developer Mode.";
-    }
+    // Create a symlink pointing to it.
+    fs::create_symlink(real_file, symlink_path);
     ASSERT_TRUE(fs::is_symlink(symlink_path));
 
     JsonConfig cfg;
@@ -387,3 +377,43 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     ASSERT_EQ(j.find("malicious"), j.end());
 }
 #endif
+
+#if defined(PLATFORM_WIN64)
+TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
+{
+    auto real_file = g_temp_dir / "real_file.txt";
+    auto symlink_path = g_temp_dir / "config_win.json";
+    fs::remove(real_file);
+    fs::remove(symlink_path);
+
+    {
+        std::ofstream out(real_file);
+        out << R"({ "original": "data" })";
+    }
+
+    std::wstring symlink_w = pylabhub::utils::win32_to_long_path(symlink_path);
+    std::wstring real_w = pylabhub::utils::win32_to_long_path(real_file);
+
+    if (!CreateSymbolicLinkW(symlink_w.c_str(), real_w.c_str(), 0))
+    {
+        GTEST_SKIP() << "Skipping Windows symlink test: Requires SeCreateSymbolicLinkPrivilege or Developer Mode.";
+    }
+
+    ASSERT_TRUE(fs::is_symlink(symlink_path));
+
+    JsonConfig cfg;
+    ASSERT_TRUE(cfg.init(symlink_path, false));
+    std::string original;
+    ASSERT_TRUE(cfg.get("original", original));
+    ASSERT_EQ(original, "data");
+
+    cfg.set("malicious", "data");
+    ASSERT_FALSE(cfg.save());
+
+    json j = json::parse(read_file_contents(real_file));
+    ASSERT_EQ(j["original"], "data");
+    ASSERT_EQ(j.find("malicious"), j.end());
+}
+#endif
+
+// End of file
