@@ -47,7 +47,30 @@ namespace {
 // --- Test Fixture ---
 // Creates a temporary directory for lock files and ensures the utils lifecycle
 // is managed for the entire test suite.
+class FileLockTest : public ::testing::Test {
+protected:
+    static fs::path g_temp_dir_;
 
+    static void SetUpTestSuite() {
+        g_temp_dir_ = fs::temp_directory_path() / "pylabhub_filelock_tests";
+        fs::create_directories(g_temp_dir_);
+        fmt::print("Using temporary directory: {}\n", g_temp_dir_.string());
+        pylabhub::utils::Initialize();
+    }
+
+    static void TearDownTestSuite() {
+        pylabhub::utils::Finalize();
+        // Best-effort cleanup
+        try {
+            fs::remove_all(g_temp_dir_);
+        } catch (...) {
+            // ignore
+        }
+    }
+
+    // Short helper to get the fixture temp dir
+    fs::path temp_dir() const { return g_temp_dir_; }
+};
 
 fs::path FileLockTest::g_temp_dir_;
 
@@ -337,10 +360,10 @@ TEST_F(FileLockTest, MultiProcessNonBlocking)
     int success_count = 0;
 
 #if defined(PLATFORM_WIN64)
-    std::vector<HANDLE> procs;
+    std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", {resource_path.string()});
+        ProcessHandle h = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", std::vector<std::string>{resource_path.string()});
         ASSERT_TRUE(h != nullptr);
         procs.push_back(h);
     }
@@ -354,15 +377,15 @@ TEST_F(FileLockTest, MultiProcessNonBlocking)
         CloseHandle(h);
     }
 #else
-    std::vector<pid_t> pids;
+    std::vector<ProcessHandle> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", {resource_path.string()});
+        ProcessHandle pid = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", std::vector<std::string>{resource_path.string()});
         ASSERT_GT(pid, 0);
         pids.push_back(pid);
     }
 
-    for (pid_t pid : pids)
+    for (auto pid : pids)
     {
         int status = 0;
         waitpid(pid, &status, 0);
@@ -395,11 +418,11 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     const int ITERS_PER_WORKER = 100;
 
 #if defined(PLATFORM_WIN64)
-    std::vector<HANDLE> procs;
+    std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        HANDLE h = spawn_worker_process(g_self_exe_path, "filelock.contention_increment",
-                                        {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
+        ProcessHandle h = spawn_worker_process(g_self_exe_path, "filelock.contention_increment",
+                                        std::vector<std::string>{counter_path.string(), std::to_string(ITERS_PER_WORKER)});
         ASSERT_TRUE(h != nullptr);
         procs.push_back(h);
     }
@@ -413,16 +436,16 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         ASSERT_EQ(exit_code, 0);
     }
 #else
-    std::vector<pid_t> pids;
+    std::vector<ProcessHandle> pids;
     for (int i = 0; i < PROCS; ++i)
     {
-        pid_t pid = spawn_worker_process(g_self_exe_path, "filelock.contention_increment",
-                                         {counter_path.string(), std::to_string(ITERS_PER_WORKER)});
+        ProcessHandle pid = spawn_worker_process(g_self_exe_path, "filelock.contention_increment",
+                                         std::vector<std::string>{counter_path.string(), std::to_string(ITERS_PER_WORKER)});
         ASSERT_GT(pid, 0);
         pids.push_back(pid);
     }
 
-    for (pid_t pid : pids)
+    for (auto pid : pids)
     {
         int status = 0;
         waitpid(pid, &status, 0);
@@ -455,7 +478,7 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     ASSERT_TRUE(parent_lock.valid());
 
 #if defined(PLATFORM_WIN64)
-    HANDLE child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", {resource_path.string()});
+    ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", std::vector<std::string>{resource_path.string()});
     ASSERT_TRUE(child_proc != nullptr);
 
     std::this_thread::sleep_for(200ms);
@@ -467,7 +490,7 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     CloseHandle(child_proc);
     ASSERT_EQ(exit_code, 0);
 #else
-    pid_t pid = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", {resource_path.string()});
+    ProcessHandle pid = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", std::vector<std::string>{resource_path.string()});
     ASSERT_GT(pid, 0);
 
     std::this_thread::sleep_for(200ms);

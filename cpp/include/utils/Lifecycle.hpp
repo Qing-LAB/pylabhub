@@ -87,4 +87,17 @@ PYLABHUB_UTILS_EXPORT void RegisterInitializer(std::function<void()> func);
 PYLABHUB_UTILS_EXPORT void RegisterFinalizer(std::string name, std::function<void()> func,
                                              std::chrono::milliseconds timeout);
 
+#ifdef PYLABHUB_TESTING
+/**
+ * @brief [TESTING ONLY] Resets the lifecycle management system to its initial state.
+ *
+ * This function is only available in test builds. It resets the initialization
+ * flag, clears all registered initializers and finalizers, and resets the
+ * underlying logger instance. This is critical for test suites where multiple
+ * tests need to independently initialize and shut down the utility library within
+ * the same process.
+ */
+PYLABHUB_UTILS_EXPORT void ResetForTesting();
+#endif
+
 } // namespace pylabhub::utils

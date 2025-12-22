@@ -17,7 +17,11 @@ add_library(pylabhub_test_helpers STATIC
 
 # The helpers need to link against the utils library for its own implementation
 # (e.g., workers use FileLock, JsonConfig, etc.)
-target_link_libraries(pylabhub_test_helpers PRIVATE pylabhub::utils)
+target_link_libraries(pylabhub_test_helpers
+  PRIVATE
+    pylabhub::utils
+    pylabhub::third_party::gtest
+)
 
 target_include_directories(pylabhub_test_helpers
   PUBLIC

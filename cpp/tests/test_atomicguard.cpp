@@ -2,7 +2,7 @@
 //
 // Unit tests for pylabhub::utils::AtomicGuard.
 
-#include <gtest/gtest.hh>
+#include <gtest/gtest.h>
 
 #include <cstdlib>
 #include <atomic>
@@ -210,7 +210,11 @@ TEST(AtomicGuardTest, ConcurrentTransfers)
     ASSERT_EQ(active_count, 1);
     ASSERT_NE(owner.load(), 0u);
 
-    for (auto &g : guards) if (g.active()) ASSERT_TRUE(g.release());
+    for (auto &g : guards) {
+        if (g.active()) {
+            ASSERT_TRUE(g.release());
+        }
+    }
     ASSERT_TRUE(owner.is_free());
 }
 

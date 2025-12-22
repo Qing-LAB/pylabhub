@@ -132,4 +132,21 @@ void Finalize()
     Logger::instance().shutdown();
 }
 
+#ifdef PYLABHUB_TESTING
+void ResetForTesting()
+{
+    // 1. Reset the underlying singleton instance in the logger.
+    // This is the most critical step, as it allows a new logger thread to be created.
+    Logger::instance().resetForTesting();
+
+    // 2. Reset the initialization state flag.
+    g_is_initialized.store(false);
+
+    // 3. Clear any callbacks that were registered during a test.
+    std::lock_guard<std::mutex> lock(g_registry_mutex);
+    g_initializers.clear();
+    g_finalizers.clear();
+}
+#endif
+
 } // namespace pylabhub::utils

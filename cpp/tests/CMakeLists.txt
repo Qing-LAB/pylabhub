@@ -34,7 +34,7 @@ target_link_libraries(utils_tests
 )
 
 target_compile_features(utils_tests PRIVATE cxx_std_20)
-target_compile_definitions(utils_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
+target_compile_definitions(utils_tests PRIVATE LOGGER_COMPILE_LEVEL=0 PYLABHUB_TESTING)
 if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(utils_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
 endif()
@@ -59,7 +59,7 @@ target_link_libraries(multiprocess_tests
 )
 
 target_compile_features(multiprocess_tests PRIVATE cxx_std_20)
-target_compile_definitions(multiprocess_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
+target_compile_definitions(multiprocess_tests PRIVATE LOGGER_COMPILE_LEVEL=0 PYLABHUB_TESTING)
 if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(multiprocess_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
 endif()

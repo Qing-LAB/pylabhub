@@ -124,7 +124,7 @@ bool run_multiproc_iteration(const std::string& self_exe, const fs::path& log_pa
     std::vector<ProcessHandle> procs;
     for (int i = 0; i < num_children; ++i)
     {
-        ProcessHandle h = spawn_worker_process(self_exe, "logger.stress_log", {log_path.string(), std::to_string(msgs_per_child)});
+        ProcessHandle h = spawn_worker_process(self_exe, "logger.stress_log", std::vector<std::string>{log_path.string(), std::to_string(msgs_per_child)});
         if (!h) { fmt::print(stderr, "Failed to spawn child (win)\n"); return false; }
         procs.push_back(h);
     }
@@ -137,7 +137,7 @@ bool run_multiproc_iteration(const std::string& self_exe, const fs::path& log_pa
     std::vector<ProcessHandle> child_pids;
     for (int i = 0; i < num_children; ++i)
     {
-        ProcessHandle pid = spawn_worker_process(self_exe, "logger.stress_log", {log_path.string(), std::to_string(msgs_per_child)});
+        ProcessHandle pid = spawn_worker_process(self_exe, "logger.stress_log", std::vector<std::string>{log_path.string(), std::to_string(msgs_per_child)});
         if (pid == -1) { fmt::print(stderr, "Failed to spawn child (posix)\n"); return false; }
         child_pids.push_back(pid);
     }
