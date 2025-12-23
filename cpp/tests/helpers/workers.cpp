@@ -25,11 +25,18 @@ using namespace std::chrono_literals;
 
 namespace worker
 {
+    // NOTE: Each worker function below is executed in a new child process via
+    // the test entrypoint. Therefore, each worker must manage its own lifecycle
+    // for the pylabhub::utils library. The Initialize() and Finalize() calls
+    // are not redundant; they are essential for the stability of each child process.
+    // The lifecycle functions are idempotent, making them safe to call here.
+
     // --- FileLock Workers ---
     namespace filelock
     {
         int nonblocking_acquire(const std::string &resource_path_str)
         {
+            pylabhub::utils::Initialize();
             Logger::instance().set_level(Logger::Level::L_ERROR);
             fs::path resource_path(resource_path_str);
 
@@ -47,14 +54,17 @@ namespace worker
                     ::write(STDERR_FILENO, err_msg.c_str(), err_msg.length());
         #endif
                 }
+                pylabhub::utils::Finalize();
                 return 1;
             }
             std::this_thread::sleep_for(3s);
+            pylabhub::utils::Finalize();
             return 0;
         }
 
         int contention_increment(const std::string &counter_path_str, int num_iterations)
         {
+            pylabhub::utils::Initialize();
             Logger::instance().set_level(Logger::Level::L_ERROR);
             fs::path counter_path(counter_path_str);
             std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
@@ -63,7 +73,7 @@ namespace worker
             {
                 if (std::rand() % 2 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500)); }
                 FileLock lock(counter_path, ResourceType::File, LockMode::Blocking);
-                if (!lock.valid()) return 1;
+                if (!lock.valid()) { pylabhub::utils::Finalize(); return 1; }
                 if (std::rand() % 10 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); }
                 int current_value = 0;
                 {
@@ -75,19 +85,22 @@ namespace worker
                     ofs << (current_value + 1);
                 }
             }
+            pylabhub::utils::Finalize();
             return 0;
         }
 
         int parent_child_block(const std::string &resource_path_str)
         {
+            pylabhub::utils::Initialize();
             Logger::instance().set_level(Logger::Level::L_ERROR);
             fs::path resource_path(resource_path_str);
             auto start = std::chrono::steady_clock::now();
             FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
             auto end = std::chrono::steady_clock::now();
-            if (!lock.valid()) return 1;
+            if (!lock.valid()) { pylabhub::utils::Finalize(); return 1; }
             auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            if (dur.count() < 100) return 2;
+            if (dur.count() < 100) { pylabhub::utils::Finalize(); return 2; }
+            pylabhub::utils::Finalize();
             return 0;
         }
     } // namespace filelock
@@ -97,13 +110,71 @@ namespace worker
     {
         int write_id(const std::string &cfgpath, const std::string &worker_id)
         {
-            Logger::instance().set_level(Logger::Level::L_ERROR);
-            JsonConfig cfg;
-            if (!cfg.init(cfgpath, false)) return 1;
-            bool ok = cfg.with_json_write([&](json &j) { j["worker"] = worker_id; });
-            return ok ? 0 : 2;
+            pylabhub::utils::Initialize();
+            // Temporarily use DEBUG level for this worker for detailed test logging
+            Logger::instance().set_level(Logger::Level::L_DEBUG);
+            JsonConfig cfg(cfgpath); // init with path
+
+            bool success = false;
+            const int max_retries = 200;
+
+            std::srand(
+                static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
+                                          std::chrono::system_clock::now().time_since_epoch().count()));
+
+            for (int retry = 0; retry < max_retries; ++retry)
+            {
+                LOGGER_DEBUG("Worker {} attempting to lock, try #{}", worker_id, retry);
+                // Try to acquire the lock with a timeout.
+                if (cfg.lock_for(100ms))
+                {
+                    LOGGER_DEBUG("Worker {} ACQUIRED lock, try #{}", worker_id, retry);
+                    int attempts_for_this_worker = retry + 1;
+
+                    json before_data = cfg.as_json();
+
+                    // Perform the read-modify-write operation.
+                    int global_attempts = cfg.get_or<int>("total_attempts", 0);
+                    cfg.set("total_attempts", global_attempts + attempts_for_this_worker);
+                    cfg.set("last_worker_id", worker_id);
+                    cfg.set(worker_id, true); // Mark that this worker has successfully written.
+
+                    json after_data = cfg.as_json();
+
+                    LOGGER_DEBUG("Worker {} read data: {}. writing data: {}", worker_id,
+                                 before_data.dump(), after_data.dump());
+
+                    if (cfg.save())
+                    {
+                        LOGGER_DEBUG("Worker {} SAVE SUCCEEDED", worker_id);
+                        success = true;
+                    }
+                    else
+                    {
+                        LOGGER_ERROR("Worker {} SAVE FAILED even after acquiring lock.", worker_id);
+                    }
+
+                    cfg.unlock(); // IMPORTANT: always unlock.
+                    if (success)
+                    {
+                        break; // Success! Exit retry loop.
+                    }
+                }
+                else
+                {
+                    LOGGER_DEBUG("Worker {} FAILED to acquire lock, try #{}", worker_id, retry);
+                }
+
+                // If lock failed, wait a random interval (jitter) and retry.
+                std::chrono::milliseconds random_delay(10 + (std::rand() % 41));
+                std::this_thread::sleep_for(random_delay);
+            }
+
+            pylabhub::utils::Finalize();
+            return success ? 0 : 1;
         }
     } // namespace jsonconfig
+
 
     // --- Logger Workers ---
     namespace logger

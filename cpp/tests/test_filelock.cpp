@@ -72,7 +72,33 @@ protected:
     fs::path temp_dir() const { return g_temp_dir_; }
 };
 
+// Test fixture for FileLock tests.
+class FileLockTest : public ::testing::Test {
+protected:
+    // Static member to hold the path to the temporary directory.
+    // Used by tests to create lock files in a clean, isolated location.
+    static fs::path g_temp_dir_;
+
+    // Per-test temporary path for resources.
+    fs::path temp_dir() const { return g_temp_dir_; }
+
+    static void SetUpTestSuite() {
+        g_temp_dir_ = fs::temp_directory_path() / "pylabhub_filelock_tests";
+        fs::create_directories(g_temp_dir_);
+        fmt::print("Using temporary directory for FileLock tests: {}\n", g_temp_dir_.string());
+    }
+
+    static void TearDownTestSuite() {
+        try { fs::remove_all(g_temp_dir_); } catch (...) {}
+    }
+
+    // SetUp and TearDown for individual tests if needed
+    // void SetUp() override {}
+    // void TearDown() override {}
+};
+
 fs::path FileLockTest::g_temp_dir_;
+
 
 
 // What: Verifies basic non-blocking lock acquisition and release.
@@ -474,15 +500,15 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     // Parent acquires the lock.
-    FileLock parent_lock(resource_path, ResourceType::File, LockMode::Blocking);
-    ASSERT_TRUE(parent_lock.valid());
+    auto parent_lock = std::make_unique<FileLock>(resource_path, ResourceType::File, LockMode::Blocking);
+    ASSERT_TRUE(parent_lock->valid());
 
 #if defined(PLATFORM_WIN64)
     ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", std::vector<std::string>{resource_path.string()});
     ASSERT_TRUE(child_proc != nullptr);
 
     std::this_thread::sleep_for(200ms);
-    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking); // Release lock.
+    parent_lock.reset(); // Release lock explicitly.
 
     WaitForSingleObject(child_proc, INFINITE);
     DWORD exit_code = 1;
@@ -494,7 +520,7 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     ASSERT_GT(pid, 0);
 
     std::this_thread::sleep_for(200ms);
-    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking); // Release lock.
+    parent_lock.reset(); // Release lock explicitly.
 
     int status = 0;
     waitpid(pid, &status, 0);

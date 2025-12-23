@@ -3,67 +3,71 @@
 
 /*******************************************************************************
  * @file JsonConfig.hpp
- * @brief Thread-safe and process-safe JSON configuration manager.
+ * @brief In-memory JSON configuration manager with explicit file locking.
  *
  * **Design Philosophy**
- * `JsonConfig` provides a robust interface for managing configuration files,
- * handling both in-process (multi-threaded) and cross-process concurrency.
  *
- * 1.  **Concurrency Model**:
- *     - **Inter-Process Safety**: Uses an *advisory* `FileLock` mechanism. This means that other
- * processes *using `JsonConfig`* will cooperate and only one process will attempt to write to the
- * configuration file at a time. All file operations (`save`, `reload`, `replace`) acquire a
- * non-blocking advisory file lock, following a "fail-fast" policy to avoid deadlocks. This
- * mechanism does *not* provide mandatory locking against processes that do not respect this
- * advisory lock.
- *     - **Intra-Process (Thread) Safety**: Employs a two-level locking scheme.
- *       - A coarse-grained `std::mutex` (`initMutex`) serializes all **structurally significant**
- * operations like `init`, `save`, `reload`, and `replace`. This protects the object's structural
- * integrity.
- *       - A fine-grained `std::shared_mutex` (`rwMutex`) protects the internal `nlohmann::json`
- * data object for simple key-value accessors (`get`, `set`, `with_json_read`, etc.), allowing
- * high-performance concurrent reads.
+ * `JsonConfig` is designed as an in-memory data manager. The caller is responsible
+ * for managing all file I/O transactions through an explicit, stateful locking model.
  *
- * 2.  **Atomic On-Disk Writes**: The `save()` operation uses a robust
+ * 1.  **Stateful, Explicit Locking**:
+ *     - To perform a read-modify-write operation, the caller MUST first acquire an
+ *       exclusive file lock using `lock()` or `lock_for()`.
+ *     - A successful `lock()` call automatically reloads the configuration from disk,
+ *       ensuring the in-memory state is fresh and preventing "lost update" race
+ *       conditions in multi-process environments.
+ *     - Write operations (`save`, `replace`, `set`, etc.) are guarded and will
+ *       fail if the object is not in a `locked` state.
+ *     - The lock must be explicitly released with `unlock()` to allow other
+ *       processes to access the file.
+ *
+ * 2.  **Concurrency Model**:
+ *     - **Inter-Process Safety**: A `FileLock` object, managed internally, provides
+ *       exclusive, process-safe write access to the underlying file.
+ *     - **Intra-Process (Thread) Safety**: A `std::shared_mutex` (`rwMutex`)
+ *       protects the internal `nlohmann::json` data object, allowing concurrent
+ *       reads from multiple threads. Write operations require a unique lock.
+ *
+ * 3.  **Atomic On-Disk Writes**: The `save()` operation uses a robust
  *     `atomic_write_json` helper. This function writes the new content to a
- *     temporary file in the same directory, `fsync`s it, and then atomically
- *     renames it over the original file. This guarantees that a configuration
- *     file is never left in a corrupted, partially-written state, even if the
- *     application crashes mid-write.
+ *     temporary file in the same directory and then atomically renames it over the
+ *     original file. This guarantees that a configuration file is never left in a
+ *     corrupted, partially-written state, even if the application crashes mid-write.
  *
- * 3.  **API Design**:
- *     - **Template Accessors**: `get`, `set`, `get_or`, etc., provide a simple,
- *       type-safe way to access top-level keys.
- *     - **Callback-Based Access**: `with_json_read` and `with_json_write`
- *       provide efficient, block-based access to the underlying `json` object,
- *       avoiding unnecessary copies for complex operations.
- *     - **Exception Safety**: All public methods are `noexcept` and are designed
- *       to catch internal exceptions (e.g., from file I/O or JSON parsing),
- *       log an error, and return `false`. This ensures that a configuration
- *       error cannot crash the application.
+ * 4.  **API Design**:
+ *     - **Locking**: `lock()`, `lock_for()`, `unlock()`, and `is_locked()` provide
+ *       full control over the file transaction lifecycle.
+ *     - **Read-only Access**: `get()`, `get_or()`, `has()`, and `as_json()`
+ *       operate on the current in-memory data and do not require a lock.
+ *     - **Write Access**: `save()`, `replace()`, `set()`, `erase()`, `update()`, and
+ *       `with_json_write()` all require the object to be locked first.
+ *     - **Exception Safety**: All public methods are `noexcept`.
  *
- * 4.  **Shared Library Friendliness (ABI Stability)**: The implementation is
- *     hidden behind a `std::unique_ptr` (the Pimpl idiom). This ensures that
- *     changes to private members do not alter the class's size or layout,
- *     maintaining a stable Application Binary Interface (ABI), which is critical
- *     for shared libraries.
+ * 5.  **Shared Library Friendliness (ABI Stability)**: The implementation is
+ *     hidden behind a `std::unique_ptr` (the Pimpl idiom), ensuring a stable
+ *     Application Binary Interface (ABI).
  *
- * **Usage**
+ * **Usage (Multi-Process Read-Modify-Write)**
  * ```cpp
  * #include "utils/JsonConfig.hpp"
+ * #include <chrono>
  *
- * // Initialize with a path
- * JsonConfig config;
- * if (!config.init("/path/to/config.json", true)) { // create if missing
- *     // Handle initialization failure
+ * JsonConfig config("/path/to/config.json");
+ *
+ * // Lock the config file with a timeout. This also reloads it from disk.
+ * if (config.lock_for(std::chrono::seconds(5))) {
+ *     // Read, modify, and save the data
+ *     int current_value = config.get_or<int>("counter", 0);
+ *     config.set("counter", current_value + 1);
+ *
+ *     if (config.save()) {
+ *         // Save was successful
+ *     }
+ *
+ *     config.unlock(); // Release the lock for other processes
+ * } else {
+ *     // Failed to acquire lock
  * }
- *
- * // Set a value
- * config.set("port", 8080);
- * config.save();
- *
- * // Get a value with a default
- * std::string host = config.get_or<std::string>("host", "localhost");
  * ```
  ******************************************************************************/
 
@@ -113,47 +117,51 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     JsonConfig(JsonConfig &&) = delete;
     JsonConfig &operator=(JsonConfig &&) = delete;
 
-    // Non-template operations (implemented in JsonConfig.cpp)
+    // ----- Initialization -----
     bool init(const std::filesystem::path &configFile, bool createIfMissing);
+
+    // ----- Explicit Locking API -----
+    // Acquires an exclusive file lock, blocking until the lock is obtained.
+    // On success, reloads the config from disk to prevent lost updates.
+    bool lock(LockMode mode = LockMode::Blocking);
+
+    // Acquires an exclusive file lock, waiting for the specified duration.
+    // On success, reloads the config from disk.
+    template <typename Rep, typename Period>
+    bool lock_for(const std::chrono::duration<Rep, Period> &timeout);
+
+    // Releases the exclusive file lock.
+    void unlock();
+
+    // Checks if the config object currently holds the file lock.
+    bool is_locked() const;
+
+    // ----- I/O Methods (require lock) -----
+    // Saves the in-memory JSON state to disk. Requires lock to be held.
     bool save() noexcept;
-    bool reload() noexcept;
+    // Replaces the entire in-memory JSON object and saves to disk. Requires lock.
     bool replace(const json &newData) noexcept;
+
+    // ----- In-Memory Read API (no lock required) -----
     json as_json() const noexcept;
-
-    // with_json_write: exclusive write callback. It holds _initMutex during the callback,
-    // provides the user callback with exclusive access to the json data, and then
-    // atomically saves the result to disk. Returns true if the entire operation
-    // succeeds. It is noexcept and will catch exceptions from the user callback.
-    template <typename F> bool with_json_write(F &&fn) noexcept;
-
-    // with_json_read: read-only callback that receives const json& under a shared lock.
-    // Returns true on success; false if the instance is not initialized or if the callback throws.
-    // noexcept and const so callers can safely call it without exceptions escaping.
+    // Callback-based read access to the underlying json object.
     template <typename F> bool with_json_read(F &&cb) const noexcept;
 
-    // ---------------- High-Performance Template Accessors ----------------
-    // The following methods are optimized for high-contention, read-heavy workloads.
-    // They use only the fine-grained `rwMutex` for data protection, bypassing the
-    // coarser structural lock (`initMutex`) to allow for maximum concurrency.
-    //
-    // See `cpp/docs/README_utils.md` for a detailed discussion of the concurrency
-    // model and the requirement for external synchronization of move operations.
-    // ----------------------------------------------------------------------
-    // Top-level key helpers. Implemented in-header (templates).
+    // ----- In-Memory Write API (require lock) -----
+    // Callback-based write access. The user callback gets exclusive access.
+    // The final state is NOT automatically saved; call save() explicitly.
+    template <typename F> bool with_json_write(F &&fn) noexcept;
+    // Sets a top-level key/value. Requires lock.
     template <typename T> bool set(const std::string &key, T const &value) noexcept;
-
-    // Provides a safe, non-throwing way to retrieve a value.
-    // Returns true on success, false if key is not found or type conversion fails.
-    template <typename T> bool get(const std::string &key, T &out_value) const noexcept;
-
-    // Returns the value for a given key, or a default value if the key does not
-    // exist or a type conversion error occurs.
-    template <typename T> T get_or(const std::string &key, T const &default_value) const noexcept;
-
-    bool has(const std::string &key) const noexcept;
+    // Erases a top-level key. Requires lock.
     bool erase(const std::string &key) noexcept;
-
+    // Updates a key's value via a callback. Creates key if it doesn't exist. Requires lock.
     template <typename Func> bool update(const std::string &key, Func &&updater) noexcept;
+
+    // ----- High-Performance Template Accessors (no lock required) -----
+    template <typename T> bool get(const std::string &key, T &out_value) const noexcept;
+    template <typename T> T get_or(const std::string &key, T const &default_value) const noexcept;
+    bool has(const std::string &key) const noexcept;
 
   private:
     // private impl holds the JSON + locks + dirty flag
@@ -164,9 +172,10 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         std::filesystem::path configPath;
         nlohmann::json data;
         mutable std::shared_mutex rwMutex; // Protects `data` for fine-grained reads/writes.
-        mutable std::mutex initMutex;      // Protects all structural state and serializes
-                                           // lifecycle/structural operations.
-        std::atomic<bool> dirty{false};    // true if memory may be newer than disk
+        mutable std::mutex
+            initMutex; // Protects all structural state and serializes lifecycle/structural ops.
+        std::atomic<bool> dirty{false}; // true if memory may be newer than disk
+        std::unique_ptr<FileLock> fileLock; // Manages the process-wide file lock.
 
         Impl() : data(json::object()) {}
         ~Impl() = default;
@@ -175,38 +184,60 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     // The Pimpl idiom provides a stable ABI, which is critical for shared libraries.
     std::unique_ptr<Impl> pImpl;
 
-    // save_locked: performs the actual atomic on-disk write. Caller must hold _initMutex.
-    bool save_locked(std::error_code &ec);
-
-    // reload_locked: performs the actual file read. Caller must hold _initMutex.
-    bool reload_locked() noexcept;
+    // Raw I/O helpers. Caller must hold file lock and initMutex.
+    bool save_under_lock_io(std::error_code &ec);
+    bool reload_under_lock_io() noexcept;
 
   private:
     // atomic, cross-platform write helper (definition in JsonConfig.cpp)
     static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j);
 };
 
+// ---------------- Explicit Locking: lock_for ----------------
+template <typename Rep, typename Period>
+bool JsonConfig::lock_for(const std::chrono::duration<Rep, Period> &timeout)
+{
+    if (!pImpl || pImpl->configPath.empty())
+    {
+        LOGGER_ERROR("JsonConfig::lock_for: cannot lock an uninitialized config object.");
+        return false;
+    }
+
+    // Use the timeout constructor of FileLock
+    auto timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+    pImpl->fileLock =
+        std::make_unique<FileLock>(pImpl->configPath, ResourceType::File, timeout_ms);
+
+    if (pImpl->fileLock->valid())
+    {
+        // Lock acquired, now reload to get the freshest data.
+        if (reload_under_lock_io())
+        {
+            return true;
+        }
+        else
+        {
+            // If reload fails, we can't guarantee a safe state, so release the lock.
+            pImpl->fileLock.reset(); // This calls destructor and releases lock
+            LOGGER_ERROR("JsonConfig::lock_for: failed to reload config after acquiring lock.");
+            return false;
+        }
+    }
+
+    // Failed to acquire lock
+    pImpl->fileLock.reset();
+    return false;
+}
+
 // ---------------- with_json_write ----------------
 template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
 {
-    const void *key = static_cast<const void *>(this);
-
-    // Detect and refuse nested calls on the same instance for this thread to prevent deadlocks.
-    if (RecursionGuard::is_recursing(key))
+    if (!is_locked())
     {
-        LOGGER_WARN("JsonConfig::with_json_write - nested call detected on same instance; refusing "
-                    "to re-enter.");
+        LOGGER_ERROR("JsonConfig::with_json_write: write operations require the config to be "
+                     "locked first.");
         return false;
     }
-    RecursionGuard guard(key);
-
-    // Refuse to operate if the object has not been initialized with a file path.
-    if (!pImpl || pImpl->configPath.empty())
-    {
-        LOGGER_ERROR("JsonConfig::with_json_write: cannot modify uninitialized config object.");
-        return false;
-    }
-    std::lock_guard<std::mutex> lg(pImpl->initMutex);
 
     try
     {
@@ -218,26 +249,18 @@ template <typename F> bool JsonConfig::with_json_write(F &&fn) noexcept
 
         // If the callback completes without throwing, mark the data as dirty.
         pImpl->dirty.store(true, std::memory_order_release);
+        return true;
     }
     catch (const std::exception &e)
     {
         LOGGER_ERROR("JsonConfig::with_json_write: callback threw an exception: {}", e.what());
-        return false; // Callback failed, do not save.
+        return false;
     }
     catch (...)
     {
         LOGGER_ERROR("JsonConfig::with_json_write: callback threw an unknown exception");
-        return false; // Callback failed, do not save.
+        return false;
     }
-
-    // After the callback successfully modifies the data, save it to disk.
-    std::error_code ec;
-    bool saved = save_locked(ec);
-    if (!saved)
-    {
-        LOGGER_ERROR("JsonConfig::with_json_write: save_locked failed: {}", ec.message());
-    }
-    return saved;
 }
 
 // ---------------- with_json_read ----------------
@@ -278,24 +301,15 @@ template <typename F> bool JsonConfig::with_json_read(F &&cb) const noexcept
 
 template <typename T> bool JsonConfig::set(const std::string &key, T const &value) noexcept
 {
+    if (!is_locked())
+    {
+        LOGGER_ERROR(
+            "JsonConfig::set: write operations require the config to be locked first.");
+        return false;
+    }
+
     try
     {
-        const void *key_ptr = static_cast<const void *>(this);
-        if (RecursionGuard::is_recursing(key_ptr))
-        {
-            LOGGER_WARN(
-                "JsonConfig::set - nested call detected on same instance; refusing to re-enter.");
-            return false;
-        }
-        RecursionGuard guard(key_ptr);
-
-        // Refuse to set data if the object has not been initialized with a file path.
-        // This prevents creating a "pathless" config that can't be saved.
-        if (!pImpl || pImpl->configPath.empty())
-        {
-            LOGGER_ERROR("JsonConfig::set: cannot set value on uninitialized config object.");
-            return false;
-        }
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         pImpl->data[key] = value;
         pImpl->dirty.store(true, std::memory_order_release);
@@ -402,19 +416,14 @@ inline bool JsonConfig::has(const std::string &key) const noexcept
 
 inline bool JsonConfig::erase(const std::string &key) noexcept
 {
+    if (!is_locked())
+    {
+        LOGGER_ERROR(
+            "JsonConfig::erase: write operations require the config to be locked first.");
+        return false;
+    }
     try
     {
-        const void *key_ptr = static_cast<const void *>(this);
-        if (RecursionGuard::is_recursing(key_ptr))
-        {
-            LOGGER_WARN(
-                "JsonConfig::erase - nested call detected on same instance; refusing to re-enter.");
-            return false;
-        }
-        RecursionGuard guard(key_ptr);
-
-        if (!pImpl)
-            return false;
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         auto it = pImpl->data.find(key);
         if (it == pImpl->data.end())
@@ -432,23 +441,14 @@ inline bool JsonConfig::erase(const std::string &key) noexcept
 template <typename Func> bool JsonConfig::update(const std::string &key, Func &&updater) noexcept
 {
     static_assert(std::is_invocable_v<Func, json &>, "update(Func) must be invocable as f(json&)");
+    if (!is_locked())
+    {
+        LOGGER_ERROR(
+            "JsonConfig::update: write operations require the config to be locked first.");
+        return false;
+    }
     try
     {
-        const void *key_ptr = static_cast<const void *>(this);
-        if (RecursionGuard::is_recursing(key_ptr))
-        {
-            LOGGER_WARN("JsonConfig::update - nested call detected on same instance; refusing to "
-                        "re-enter.");
-            return false;
-        }
-        RecursionGuard guard(key_ptr);
-
-        // Refuse to update data if the object has not been initialized with a file path.
-        if (!pImpl || pImpl->configPath.empty())
-        {
-            LOGGER_ERROR("JsonConfig::update: cannot update value on uninitialized config object.");
-            return false;
-        }
         std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
         json &target = pImpl->data[key]; // create if missing
         updater(target);
