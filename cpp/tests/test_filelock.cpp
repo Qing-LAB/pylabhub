@@ -477,15 +477,15 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     fs::remove(FileLock::get_expected_lock_fullname_for(resource_path, ResourceType::File));
 
     // Parent acquires the lock.
-    FileLock parent_lock(resource_path, ResourceType::File, LockMode::Blocking);
-    ASSERT_TRUE(parent_lock.valid());
+    auto parent_lock = std::make_unique<FileLock>(resource_path, ResourceType::File, LockMode::Blocking);
+    ASSERT_TRUE(parent_lock->valid());
 
 #if defined(PLATFORM_WIN64)
     HANDLE child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", {resource_path.string()});
     ASSERT_TRUE(child_proc != nullptr);
 
     std::this_thread::sleep_for(200ms);
-    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking); // Release lock.
+    parent_lock.reset(); // Release lock explicitly.
 
     WaitForSingleObject(child_proc, INFINITE);
     DWORD exit_code = 1;
@@ -497,7 +497,7 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     ASSERT_GT(pid, 0);
 
     std::this_thread::sleep_for(200ms);
-    parent_lock = FileLock({}, ResourceType::File, LockMode::NonBlocking); // Release lock.
+    parent_lock.reset(); // Release lock explicitly.
 
     int status = 0;
     waitpid(pid, &status, 0);

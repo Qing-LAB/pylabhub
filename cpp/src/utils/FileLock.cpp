@@ -585,23 +585,12 @@ enum class OsLockResult
     Error
 };
 
-// Tries to acquire the OS-level lock once (non-blocking).
-//
-// ** Platform-Specific Cleanup Behavior **
-//
-// - **Windows**: Uses `CreateFileW` with `FILE_FLAG_DELETE_ON_CLOSE`. This
-//   leverages the kernel to automatically and safely delete the lock file when
-//   the handle is closed. This is the most robust method.
-//
-// - **POSIX**: Relies on a global registry of created lock files. A finalizer
-//   function (`FileLock::cleanup()`) must be called at program exit to perform
-//   a best-effort cleanup of these files. The simpler `unlink-after-lock` idiom
-//   is NOT used because it breaks the named rendezvous point required for
-//   competing processes to find each other.
-static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
-                                             const std::filesystem::path &lockpath)
-{
 #if defined(PLATFORM_WIN64)
+// Windows implementation of OS-level lock acquisition.
+// Opens a file handle, attempts to acquire an exclusive lock, and closes the handle if unsuccessful.
+static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
+                                                 const std::filesystem::path &lockpath)
+{
     std::wstring lockpath_w = win32_to_long_path(lockpath);
     HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -630,47 +619,35 @@ static OsLockResult try_acquire_os_lock_once(FileLockImpl *pImpl,
         return OsLockResult::Acquired;
     }
 
-    CloseHandle(h);
+    CloseHandle(h); // Close handle if not acquired
     pImpl->ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
     return OsLockResult::Busy;
-
-#else
-    // POSIX implementation
-    int open_flags = O_CREAT | O_RDWR;
-#ifdef O_CLOEXEC
-    open_flags |= O_CLOEXEC;
-#endif
-    int fd = ::open(lockpath.c_str(), open_flags, 0666);
-
-    if (fd == -1)
-    {
-        pImpl->ec = std::error_code(errno, std::generic_category());
-        LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(), pImpl->ec.message());
-        return OsLockResult::Error;
-    }
-#ifndef O_CLOEXEC
-    int oldfl = fcntl(fd, F_GETFD);
-    if (oldfl != -1)
-        fcntl(fd, F_SETFD, oldfl | FD_CLOEXEC);
+}
 #endif
 
-    int flock_op = LOCK_EX | LOCK_NB;
+#if !defined(PLATFORM_WIN64)
+// POSIX implementation of OS-level lock acquisition.
+// Attempts flock on an already open file descriptor.
+static OsLockResult try_acquire_os_lock_once_posix(FileLockImpl *pImpl, int fd)
+{
+    int flock_op = LOCK_EX | LOCK_NB; // Always non-blocking for this helper
+
     if (flock(fd, flock_op) == 0)
     {
-        {
-            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.insert(lockpath.string());
-        }
-        pImpl->fd = fd;
         pImpl->ec.clear();
         return OsLockResult::Acquired;
     }
 
-    ::close(fd);
+    if (errno == EWOULDBLOCK)
+    {
+        return OsLockResult::Busy;
+    }
+
+    // A real error occurred during flock.
     pImpl->ec = std::error_code(errno, std::generic_category());
-    return OsLockResult::Busy;
-#endif
+    return OsLockResult::Error;
 }
+#endif
 
 static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
                              LockMode mode, std::optional<std::chrono::milliseconds> timeout)
@@ -680,9 +657,11 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
     if (timeout)
         mode_str = "timed blocking";
 
+#if defined(PLATFORM_WIN64)
+    // Windows implementation: uses try_acquire_os_lock_once_win for open and lock
     while (true)
     {
-        OsLockResult result = try_acquire_os_lock_once(pImpl, lockpath);
+        OsLockResult result = try_acquire_os_lock_once_win(pImpl, lockpath);
 
         if (result == OsLockResult::Acquired)
         {
@@ -691,21 +670,87 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
                          pImpl->path.string());
             return true;
         }
-
-        if (result == OsLockResult::Error)
+        if (result == OsLockResult::Error) { return false; }
+        if (mode == LockMode::NonBlocking) { return false; }
+        if (timeout && std::chrono::steady_clock::now() - start_time >= *timeout)
         {
-            // pImpl->ec is already set by try_acquire_os_lock_once
+            pImpl->ec = std::make_error_code(std::errc::timed_out);
+            LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'", pImpl->path.string());
+            return false;
+        }
+        std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
+    }
+#else
+    // POSIX implementation: open fd once, then loop flock.
+    int open_flags = O_CREAT | O_RDWR;
+#ifdef O_CLOEXEC
+    open_flags |= O_CLOEXEC;
+#endif
+    int fd = ::open(lockpath.c_str(), open_flags, 0666);
+    if (fd == -1)
+    {
+        pImpl->ec = std::error_code(errno, std::generic_category());
+        LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(), pImpl->ec.message());
+        return false;
+    }
+
+#ifndef O_CLOEXEC
+    int oldfl = fcntl(fd, F_GETFD);
+    if (oldfl != -1)
+        fcntl(fd, F_SETFD, oldfl | FD_CLOEXEC);
+#endif
+
+    // Store fd in pImpl as it will be used by the deleter.
+    pImpl->fd = fd;
+    
+    // Add lock file to registry if successfully opened.
+    {
+        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+        g_lockfile_registry.insert(lockpath.string());
+    }
+
+    while (true)
+    {
+        int flock_op = LOCK_EX;
+        // If non-blocking or timed, use LOCK_NB for polling.
+        if (mode == LockMode::NonBlocking || timeout.has_value())
+        {
+            flock_op |= LOCK_NB;
+        }
+
+        if (flock(pImpl->fd, flock_op) == 0)
+        {
+            // Lock acquired
+            pImpl->ec.clear();
+            pImpl->valid = true;
+            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str,
+                         pImpl->path.string());
+            return true;
+        }
+
+        // flock failed.
+        if (errno != EWOULDBLOCK) // True error, not just busy
+        {
+            pImpl->ec = std::error_code(errno, std::generic_category());
+            LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string(), pImpl->ec.message());
+            ::close(pImpl->fd); // Close fd on true error
+            pImpl->fd = -1;
             return false;
         }
 
-        // Result is Busy. Check if we should retry.
+        // Lock is busy (EWOULDBLOCK).
         if (mode == LockMode::NonBlocking)
         {
+            pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
             LOGGER_DEBUG("FileLock: Non-blocking lock failed for '{}'", pImpl->path.string());
+            ::close(pImpl->fd); // Close fd on non-blocking failure
+            pImpl->fd = -1;
             return false;
         }
 
-        // Blocking or Timed Blocking
+        // Busy in Blocking or Timed Blocking mode, so retry.
+        // For LockMode::Blocking without timeout, flock(LOCK_EX) would have blocked indefinitely
+        // and not returned EWOULDBLOCK. So this path is only taken for timed locks.
         if (timeout)
         {
             auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -714,12 +759,14 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
                 pImpl->ec = std::make_error_code(std::errc::timed_out);
                 LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'",
                              pImpl->path.string());
+                ::close(pImpl->fd); // Close fd on timeout
+                pImpl->fd = -1;
                 return false;
             }
         }
-
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
     }
+#endif
 }
 
 void FileLock::cleanup()
