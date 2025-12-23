@@ -346,7 +346,7 @@ add_custom_target(stage_${XOP_TARGET}
   COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
   VERBATIM
 )
-add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
+add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)

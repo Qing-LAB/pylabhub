@@ -251,7 +251,7 @@ pylabhub_get_library_staging_commands(
 
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")
 # add_custom_target(stage_pylabhub_utils_for_tests ${stage_commands_for_tests} COMMENT "Staging pylabhub-utils library for tests")
-add_dependencies(stage_pylabhub_utils pylabhub-utils)
+add_dependencies(stage_pylabhub_utils pylabhub-utils create_staging_dirs)
 # add_dependencies(stage_pylabhub_utils_for_tests pylabhub-utils)
 
 # Also stage the generated export header alongside the library.
