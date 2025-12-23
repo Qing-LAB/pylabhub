@@ -297,8 +297,8 @@ TEST_F(LoggerTest, MultithreadStress)
 
     for (auto &t : threads) t.join();
     // Ensure the logger is definitively set to the log file before flushing and verifying.
-    L.set_logfile(chaos_log_path.string());
-    ASSERT_TRUE(wait_for_string_in_file(chaos_log_path, "Switched log to file"));
+    L.set_logfile(log_path.string());
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
 
     L.flush();
 
