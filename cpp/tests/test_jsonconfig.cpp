@@ -223,72 +223,126 @@ TEST_F(JsonConfigTest, RecursionGuardForReads)
     ASSERT_TRUE(read_ok);
 }
 
-// What: A stress test for thread-safety with concurrent reads and writes.
-// How: Multiple threads contend for access. Writers attempt to lock, increment
-//      a counter, save, and unlock. Readers concurrently try to read the counter.
-//      This tests the interaction between the file lock and the internal mutex.
 TEST_F(JsonConfigTest, MultiThreadContention)
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
-    JsonConfig cfg;
-    ASSERT_TRUE(cfg.init(cfg_path, true));
-    // Pre-populate with a value
-    ASSERT_TRUE(cfg.lock());
-    ASSERT_TRUE(cfg.set("counter", 0));
-    ASSERT_TRUE(cfg.save());
-    cfg.unlock();
+
+    // Pre-populate with initial data using a dedicated instance.
+    {
+        JsonConfig setup_cfg;
+        ASSERT_TRUE(setup_cfg.init(cfg_path, true));
+        ASSERT_TRUE(setup_cfg.lock());
+        setup_cfg.set("counter", 0);
+        setup_cfg.set("write_log", json::array());
+        ASSERT_TRUE(setup_cfg.save());
+        setup_cfg.unlock();
+    }
 
     const int THREADS = 16;
     const int ITERS = 100;
     std::vector<std::thread> threads;
-    std::atomic<int> failures = 0;
+    std::atomic<int> save_failures = 0;
+    std::atomic<int> read_failures = 0;
+    std::atomic<int> successful_writes = 0;
 
     for (int i = 0; i < THREADS; ++i)
     {
+        // Each thread gets its own JsonConfig instance, but they all point to the
+        // same file path. The underlying FileLock will correctly arbitrate access
+        // between these separate objects. This is the intended use pattern.
+        //
+        // ANTI-PATTERN: Do NOT share a single JsonConfig object across threads that
+        // perform lock/unlock cycles. This can lead to a race condition where
+        // Thread A holds a lock, but Thread B (on the same object) calls unlock()
+        // before Thread A is finished, causing Thread A's subsequent `save()` to fail.
         threads.emplace_back(
-            [&, i]
+            [=, &save_failures, &read_failures, &successful_writes]
             {
+                JsonConfig cfg(cfg_path);
                 std::srand(static_cast<unsigned int>(
                     std::hash<std::thread::id>{}(std::this_thread::get_id()) + i));
+                int last_read_value = -1;
+
                 for (int j = 0; j < ITERS; ++j)
                 {
-                    // 1 in 10 chance to be a writer
-                    if (std::rand() % 10 == 0)
+                    // 1 in 4 chance to be a writer
+                    if (std::rand() % 4 == 0)
                     {
                         if (cfg.lock_for(100ms))
                         {
-                            int val = cfg.get_or<int>("counter", 0);
+                            std::string my_id = fmt::format("T{}-{}", i, j);
+                            int val = -1;
+                            // NOTE: We MUST use get() here, not get_or(), because we need to
+                            // know if the read failed. A failed read after a lock indicates
+                            // a serious problem.
+                            if (!cfg.get("counter", val))
+                            {
+                                save_failures++;
+                                cfg.unlock();
+                                continue;
+                            }
+
                             cfg.set("counter", val + 1);
-                            if (!cfg.save()) { failures++; }
+                            cfg.update("write_log",
+                                       [&](json &log) { log.push_back(my_id); });
+
+                            if (cfg.save())
+                            {
+                                successful_writes++;
+                            }
+                            else
+                            {
+                                save_failures++;
+                            }
                             cfg.unlock();
                         }
-                        else
-                        {
-                            failures++;
-                        }
+                        // If lock fails, it's just contention, not an error.
                     }
                     else
                     {
-                        // Reader
-                        (void)cfg.get_or<int>("counter", 0);
+                        // Reader: uses `with_json_read` for a consistent snapshot.
+                        bool read_ok = cfg.with_json_read(
+                            [&](const json &data)
+                            {
+                                int current_value = data.value("counter", -1);
+                                if (current_value < last_read_value)
+                                {
+                                    read_failures++;
+                                }
+                                last_read_value = current_value;
+                            });
+
+                        if (!read_ok)
+                        {
+                            // A read should not fail unless there's a deadlock (which the
+                            // recursion guard prevents) or some other unexpected issue.
+                            read_failures++;
+                        }
                     }
-                    std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
+                    std::this_thread::sleep_for(
+                        std::chrono::microseconds(std::rand() % 200));
                 }
             });
     }
 
     for (auto &t : threads) t.join();
 
-    ASSERT_EQ(failures.load(), 0);
+    ASSERT_EQ(save_failures.load(), 0);
+    ASSERT_EQ(read_failures.load(), 0);
 
-    // Verification
-    ASSERT_TRUE(cfg.lock());
-    int final_counter = cfg.get_or<int>("counter", -1);
-    // The number of writes is statistical, so we just check it's positive
-    // and less than the theoretical max.
-    ASSERT_GT(final_counter, 0);
-    ASSERT_LE(final_counter, THREADS * ITERS);
-    cfg.unlock();
+    // Final verification using a separate instance.
+    JsonConfig verifier_cfg(cfg_path);
+    ASSERT_TRUE(verifier_cfg.lock());
+    int final_counter = verifier_cfg.get_or<int>("counter", -1);
+    json final_log = verifier_cfg.get_or<json>("write_log", json::array());
+
+    EXPECT_EQ(final_counter, successful_writes.load());
+    EXPECT_EQ(final_log.size(), successful_writes.load());
+
+    // Also sanity-check that some writes actually happened.
+    ASSERT_GT(successful_writes.load(), 0);
+
+    verifier_cfg.unlock();
 }
 
 
