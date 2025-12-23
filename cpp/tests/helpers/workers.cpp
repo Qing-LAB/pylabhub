@@ -11,6 +11,7 @@
 #include <fmt/core.h>
 
 #include "platform.hpp"
+#include "format_tools.hpp"
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -22,6 +23,7 @@
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
+using pylabhub::basic::tools::formatted_time;
 
 namespace worker
 {
@@ -86,9 +88,9 @@ namespace worker
                 if (!locked_path_opt) {
                     // This should not happen if the lock is valid.
 #if defined(PLATFORM_WIN64)
-                        fmt::print(stderr, "worker {}: failed to acquire lock.\n", GetCurrentProcessId());
+                        fmt::print(stderr, "[TIME {}] worker {}: failed to acquire lock.\n", formatted_time(std::chrono::system_clock::now()), GetCurrentProcessId());
 #else
-                    fmt::print(stderr, "worker {}: failed to acquire lock.\n", getpid());
+                    fmt::print(stderr, "[TIME {}] worker {}: failed to acquire lock.\n", formatted_time(std::chrono::system_clock::now()), getpid());
 #endif
                     pylabhub::utils::Finalize();
                     return 1;
@@ -104,10 +106,12 @@ namespace worker
                 {
                     std::ofstream ofs(*locked_path_opt);
                     ofs << (current_value + 1);
+                    ofs.flush();
+                    ofs.close();
 #if defined(PLATFORM_WIN64)
-                        fmt::print(stderr, "worker {}: incremented counter to {}\n", GetCurrentProcessId(), current_value + 1);
+                        fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}\n", formatted_time(std::chrono::system_clock::now()), GetCurrentProcessId(), current_value + 1);
 #else
-                    fmt::print(stderr, "worker {}: incremented counter to {}\n", getpid(), current_value + 1);
+                    fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}\n", formatted_time(std::chrono::system_clock::now()), getpid(), current_value + 1);
 #endif
                 }
             }
