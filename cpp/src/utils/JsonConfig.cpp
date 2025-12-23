@@ -98,6 +98,8 @@ bool JsonConfig::lock(LockMode mode)
         return false;
     }
 
+    std::lock_guard<std::mutex> g(pImpl->initMutex);
+
     pImpl->fileLock = std::make_unique<FileLock>(pImpl->configPath, ResourceType::File, mode);
     if (pImpl->fileLock->valid())
     {
@@ -124,13 +126,18 @@ void JsonConfig::unlock()
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> g(pImpl->initMutex);
         pImpl->fileLock.reset();
     }
 }
 
 bool JsonConfig::is_locked() const
 {
-    return pImpl && pImpl->fileLock && pImpl->fileLock->valid();
+    if (!pImpl) {
+        return false;
+    }
+    std::lock_guard<std::mutex> g(pImpl->initMutex);
+    return pImpl->fileLock && pImpl->fileLock->valid();
 }
 
 bool JsonConfig::save() noexcept
@@ -225,8 +232,6 @@ bool JsonConfig::reload_under_lock_io() noexcept
     // Precondition: Caller must hold the file lock.
     try
     {
-        std::lock_guard<std::mutex> g(pImpl->initMutex);
-
         if (pImpl->configPath.empty())
         {
             LOGGER_ERROR(
