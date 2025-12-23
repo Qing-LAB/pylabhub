@@ -1,5 +1,7 @@
+#include "platform.hpp"
 #include "test_entrypoint.h"
 #include "workers.h"
+#include "utils/Lifecycle.hpp"
 
 #include <gtest/gtest.h>
 #include <string>
@@ -49,6 +51,9 @@ int main(int argc, char **argv) {
 
     // If not in worker mode, or if worker dispatch fails, run the tests.
     if (argc >= 1) g_self_exe_path = argv[0];
+    pylabhub::utils::Initialize();
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    int result = RUN_ALL_TESTS();
+    pylabhub::utils::Finalize();
+    return result;
 }

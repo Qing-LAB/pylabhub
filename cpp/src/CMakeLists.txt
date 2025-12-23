@@ -105,7 +105,7 @@ add_custom_command(TARGET stage_main_artifacts POST_BUILD
 )
 
 # Ensure the local staging target depends on both build targets before executing.
-add_dependencies(stage_main_artifacts pylabhub-core pylabhub-app)
+add_dependencies(stage_main_artifacts pylabhub-core pylabhub-app create_staging_dirs)
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_main_artifacts)
 
 message(STATUS "Configured static library 'pylabhub::core' and executable 'pylabhub::app'.")
