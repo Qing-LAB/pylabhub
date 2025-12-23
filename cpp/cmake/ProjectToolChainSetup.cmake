@@ -8,9 +8,6 @@
 # like CMAKE_HOST_SYSTEM_NAME.
 # ===========================================================================
 
-# Include all user-facing options first, so they are available for the logic below.
-include(ToplevelOptions)
-
 # On macOS, ensure we use the Apple-provided toolchain.
 if(FORCE_USE_CLANG_ON_APPLE AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
   # For Makefile/Ninja generators, explicitly setting the compiler path

@@ -111,37 +111,70 @@ namespace worker
         int write_id(const std::string &cfgpath, const std::string &worker_id)
         {
             pylabhub::utils::Initialize();
-            Logger::instance().set_level(Logger::Level::L_ERROR);
-            JsonConfig cfg;
-            
-            bool success = false;
-            int max_retries = 100;
-            
-            // Use a random seed for each worker process to stagger retries.
-            std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
-                                                 std::chrono::system_clock::now().time_since_epoch().count()));
+            // Temporarily use DEBUG level for this worker for detailed test logging
+            Logger::instance().set_level(Logger::Level::L_DEBUG);
+            JsonConfig cfg(cfgpath); // init with path
 
-            for (int retry = 0; retry < max_retries; ++retry) {
-                // Try to initialize and acquire lock
-                if (cfg.init(cfgpath, false)) {
-                    // If init succeeded, try to write. Also record the retry count.
-                    if (cfg.with_json_write([&](json &j) { 
-                        j["worker"] = worker_id;
-                        j["retries"] = retry; // Record retry count
-                    })) {
+            bool success = false;
+            const int max_retries = 200;
+
+            std::srand(
+                static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
+                                          std::chrono::system_clock::now().time_since_epoch().count()));
+
+            for (int retry = 0; retry < max_retries; ++retry)
+            {
+                LOGGER_DEBUG("Worker {} attempting to lock, try #{}", worker_id, retry);
+                // Try to acquire the lock with a timeout.
+                if (cfg.lock_for(100ms))
+                {
+                    LOGGER_DEBUG("Worker {} ACQUIRED lock, try #{}", worker_id, retry);
+                    int attempts_for_this_worker = retry + 1;
+
+                    json before_data = cfg.as_json();
+
+                    // Perform the read-modify-write operation.
+                    int global_attempts = cfg.get_or<int>("total_attempts", 0);
+                    cfg.set("total_attempts", global_attempts + attempts_for_this_worker);
+                    cfg.set("last_worker_id", worker_id);
+                    cfg.set(worker_id, true); // Mark that this worker has successfully written.
+
+                    json after_data = cfg.as_json();
+
+                    LOGGER_DEBUG("Worker {} read data: {}. writing data: {}", worker_id,
+                                 before_data.dump(), after_data.dump());
+
+                    if (cfg.save())
+                    {
+                        LOGGER_DEBUG("Worker {} SAVE SUCCEEDED", worker_id);
                         success = true;
+                    }
+                    else
+                    {
+                        LOGGER_ERROR("Worker {} SAVE FAILED even after acquiring lock.", worker_id);
+                    }
+
+                    cfg.unlock(); // IMPORTANT: always unlock.
+                    if (success)
+                    {
                         break; // Success! Exit retry loop.
                     }
                 }
-                // If init or write failed, wait a random interval (jitter) and retry.
-                std::chrono::milliseconds random_delay(10 + (std::rand() % 41)); // 10ms to 50ms
+                else
+                {
+                    LOGGER_DEBUG("Worker {} FAILED to acquire lock, try #{}", worker_id, retry);
+                }
+
+                // If lock failed, wait a random interval (jitter) and retry.
+                std::chrono::milliseconds random_delay(10 + (std::rand() % 41));
                 std::this_thread::sleep_for(random_delay);
             }
 
             pylabhub::utils::Finalize();
-            return success ? 0 : 1; // Return 0 for success, 1 for any failure
+            return success ? 0 : 1;
         }
     } // namespace jsonconfig
+
 
     // --- Logger Workers ---
     namespace logger
