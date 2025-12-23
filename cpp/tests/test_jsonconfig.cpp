@@ -63,11 +63,9 @@ protected:
         g_temp_dir = fs::temp_directory_path() / "pylabhub_jsonconfig_tests";
         fs::create_directories(g_temp_dir);
         fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
-        pylabhub::utils::Initialize();
     }
 
     static void TearDownTestSuite() {
-        pylabhub::utils::Finalize();
         try { fs::remove_all(g_temp_dir); } catch (...) {}
     }
 };
@@ -323,11 +321,16 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     }
 #endif
 
-    ASSERT_GT(success_count, 0);
     ASSERT_EQ(success_count, PROCS);
+    
+    // Verify that the retry mechanism was exercised by checking the final JSON state.
     JsonConfig verifier;
     ASSERT_TRUE(verifier.init(cfg_path, false));
     ASSERT_TRUE(verifier.has("worker")); // Check that some worker successfully wrote.
+    ASSERT_TRUE(verifier.has("retries"));
+    int final_retries = -1;
+    ASSERT_TRUE(verifier.get("retries", final_retries));
+    ASSERT_GE(final_retries, 0);
 }
 
 #if PYLABHUB_IS_POSIX

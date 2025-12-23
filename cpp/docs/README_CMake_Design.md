@@ -16,6 +16,8 @@ Our architecture is built on modern CMake practices, emphasizing **clarity, robu
 
 *   **Robust Symbol Visibility and Export**: The system uses CMake's `generate_export_header` and `-fvisibility=hidden` (on GCC/Clang) to ensure a stable Application Binary Interface (ABI) for all shared libraries, preventing accidental symbol exposure.
 
+*   **Self-Contained Components**: Each project component (sub-directory) is responsible for defining its own targets and their properties. When a component defines a `stage_*` target, it must also declare a direct dependency on the global `create_staging_dirs` target. This ensures a robust, predictable, and decentralized build order.
+
 ---
 
 ## 2. Visualizing the Build System
@@ -133,7 +135,7 @@ Let's add a new standalone executable named `my-tool`.
     )
 
     # Register our local staging target with the global 'stage_core_artifacts'
-    add_dependencies(stage_my_tool my-tool)
+    add_dependencies(stage_my_tool my-tool create_staging_dirs)
     set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_my_tool)
     ```
 
@@ -201,7 +203,7 @@ Let's add `pylabhub::power-utils` as a new shared library.
       COMMENT "Staging power-utils public headers"
     )
 
-    add_dependencies(stage_power_utils pylabhub-power-utils)
+    add_dependencies(stage_power_utils pylabhub-power-utils create_staging_dirs)
     set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_power_utils)
     ```
 
