@@ -157,6 +157,12 @@ class PYLABHUB_UTILS_EXPORT FileLock
      */
     std::error_code error_code() const noexcept;
 
+    /**
+     * @brief If the lock is valid, returns the absolute path of the resource being protected.
+     * @return An optional containing the path if the lock is held, otherwise an empty optional.
+     */
+    std::optional<std::filesystem::path> get_locked_resource_path() const noexcept;
+
   private:
     // The custom deleter for the Pimpl class.
     // The struct itself must be defined here to be a complete type for

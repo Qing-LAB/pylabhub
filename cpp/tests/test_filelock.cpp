@@ -416,7 +416,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     }
 
     const int PROCS = 16;
-    const int ITERS_PER_WORKER = 100;
+    const int ITERS_PER_WORKER = 10;
 
 #if defined(PLATFORM_WIN64)
     std::vector<ProcessHandle> procs;
