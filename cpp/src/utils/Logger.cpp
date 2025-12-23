@@ -1,6 +1,7 @@
 // src/utils/Logger.cpp
 
 #include "utils/Logger.hpp"
+#include "format_tools.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -159,40 +160,6 @@ static uint64_t get_native_thread_id() noexcept
 #endif
 }
 
-// --- Helper: formatted local time with sub-second resolution (robust) ---
-// Replaces previous formatted_time(...) implementation.
-// Behaviour:
-//  - If the build system detected fmt chrono subseconds support (HAVE_FMT_CHRONO_SUBSECONDS),
-//    use single-step fmt formatting on a microsecond-truncated time_point.
-//  - Otherwise, fall back to computing the fractional microsecond part and append it
-//    manually using a two-step format.
-static std::string formatted_time(std::chrono::system_clock::time_point timestamp)
-{
-#if defined(HAVE_FMT_CHRONO_SUBSECONDS) && HAVE_FMT_CHRONO_SUBSECONDS
-    auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
-#if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
-    // use %f
-    return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
-#elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
-    // fmt prints fraction without %f
-    return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
-#else
-    // defensive fallback to manual two-step
-    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-    int fractional_us = static_cast<int>((tp_us - secs).count());
-    auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
-    return fmt::format("{}.{:06d}", sec_part, fractional_us);
-#endif
-#else
-    // no runtime support detected — fallback to manual two-step method
-    auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
-    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-    int fractional_us = static_cast<int>((tp_us - secs).count());
-    auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
-    return fmt::format("{}.{:06d}", sec_part, fractional_us);
-#endif
-}
-
 // --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
 template <typename... Args>
 static fmt::memory_buffer make_buffer(fmt::format_string<Args...> fmt_str, Args &&...args)
@@ -215,7 +182,7 @@ static fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...arg
 // --Helper: format a LogMessage into a string
 static std::string format_message(const LogMessage &msg)
 {
-    std::string time_str = formatted_time(msg.timestamp);
+    std::string time_str = pylabhub::basic::tools::formatted_time(msg.timestamp);
     std::string level_str = level_to_string(msg.level);
     std::string thread_str = fmt::format("{}", msg.thread_id);
     std::string body_str = std::string(msg.body.data(), msg.body.size());

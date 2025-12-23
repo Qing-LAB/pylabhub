@@ -70,51 +70,75 @@ namespace worker
             Logger::instance().set_level(Logger::Level::L_ERROR);
             fs::path resource_path(counter_path_str);
             
+#if defined(PLATFORM_WIN64)
+            auto PID = GetCurrentProcessId();
+#else
+            auto PID = getpid();
+#endif
+
             std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
                                                  std::chrono::system_clock::now().time_since_epoch().count()));
             for (int i = 0; i < num_iterations; ++i)
             {
-                if (std::rand() % 2 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500)); }
+                //fmt::print(stderr, "[TIME {}] worker {}: iteration {}.\n", formatted_time(std::chrono::system_clock::now()), PID, i);
                 
-                FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
-                if (!lock.valid()) { 
-                    pylabhub::utils::Finalize(); 
-                    return 1; 
+                if (std::rand() % 2 == 0) { 
+                    std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500)); 
                 }
-
-                // Per the advisory lock protocol, we must now get the path to the resource
-                // that the lock is protecting.
-                auto locked_path_opt = lock.get_locked_resource_path();
-                if (!locked_path_opt) {
-                    // This should not happen if the lock is valid.
-#if defined(PLATFORM_WIN64)
-                        fmt::print(stderr, "[TIME {}] worker {}: failed to acquire lock.\n", formatted_time(std::chrono::system_clock::now()), GetCurrentProcessId());
-#else
-                    fmt::print(stderr, "[TIME {}] worker {}: failed to acquire lock.\n", formatted_time(std::chrono::system_clock::now()), getpid());
-#endif
-                    pylabhub::utils::Finalize();
-                    return 1;
-                }
-                
-                if (std::rand() % 10 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); }
-                
-                int current_value = 0;
-                {
-                    std::ifstream ifs(*locked_path_opt);
-                    if (ifs.is_open()) { ifs >> current_value; }
-                }
-                {
-                    std::ofstream ofs(*locked_path_opt);
-                    ofs << (current_value + 1);
-                    ofs.flush();
-                    ofs.close();
-#if defined(PLATFORM_WIN64)
-                        fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}\n", formatted_time(std::chrono::system_clock::now()), GetCurrentProcessId(), current_value + 1);
-#else
-                    fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}\n", formatted_time(std::chrono::system_clock::now()), getpid(), current_value + 1);
-#endif
-                }
+                do{
+                    fmt::print(stderr, "[TIME {}] worker {}: attempting to acquire lock.\n", formatted_time(std::chrono::system_clock::now()), PID);
+                    FileLock filelock(resource_path, ResourceType::File, LockMode::Blocking);
+                    if (!filelock.valid()) { 
+                        pylabhub::utils::Finalize(); 
+                        return 1; 
+                    }
+                    
+                    // Per the advisory lock protocol, we must now get the path to the resource
+                    // that the lock is protecting.
+                    auto locked_path_opt = filelock.get_locked_resource_path();
+                    if (!locked_path_opt) {
+                        // This should not happen if the lock is valid.
+                        fmt::print(stderr, "[TIME {}] worker {}: failed to get locked resource path.\n", 
+                                formatted_time(std::chrono::system_clock::now()), PID);
+                        pylabhub::utils::Finalize();
+                        return 1;
+                    }
+                    
+                    fmt::print(stderr, "[TIME {}] worker {}: acquired lock.\n", formatted_time(std::chrono::system_clock::now()), PID);
+                    int current_value = 0;
+                    try {
+                        if (std::rand() % 10 == 0) { 
+                            std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); 
+                        }
+                        
+                        std::ifstream ifs(*locked_path_opt);
+                        if (ifs.is_open()) { 
+                            ifs >> current_value; 
+                        }
+                    }
+                    catch (...) {
+                        fmt::print(stderr, "[TIME {}] worker {}: failed to read counter.\n", 
+                                formatted_time(std::chrono::system_clock::now()), PID);
+                        return 1;
+                    }
+                    try {
+                        std::ofstream ofs(*locked_path_opt);
+                        ofs << (current_value + 1);
+                        ofs.flush();
+                        ofs.close();
+                            //fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}.\n", 
+                            //        formatted_time(std::chrono::system_clock::now()), PID, current_value + 1);
+                    }
+                    catch (...) {
+                        fmt::print(stderr, "[TIME {}] worker {}: failed to write counter.\n", 
+                                formatted_time(std::chrono::system_clock::now()), PID);
+                        return 1;
+                    }
+                } while(0); // scope of lock ends
+                fmt::print(stderr, "[TIME {}] worker {}: outside FileLock scope, lock should be released.\n", 
+                    formatted_time(std::chrono::system_clock::now()), PID);
             }
+            fmt::print(stderr, "[TIME {}] worker {}: finished.\n", formatted_time(std::chrono::system_clock::now()), PID);
             pylabhub::utils::Finalize();
             return 0;
         }

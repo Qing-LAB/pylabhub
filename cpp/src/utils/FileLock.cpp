@@ -643,30 +643,9 @@ static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
 }
 #endif
 
-#if !defined(PLATFORM_WIN64)
-// POSIX implementation of OS-level lock acquisition.
-// Attempts flock on an already open file descriptor.
-static OsLockResult try_acquire_os_lock_once_posix(FileLockImpl *pImpl, int fd)
-{
-    int flock_op = LOCK_EX | LOCK_NB; // Always non-blocking for this helper
 
-    if (flock(fd, flock_op) == 0)
-    {
-        pImpl->ec.clear();
-        return OsLockResult::Acquired;
-    }
-
-    if (errno == EWOULDBLOCK)
-    {
-        return OsLockResult::Busy;
-    }
-
-    // A real error occurred during flock.
-    pImpl->ec = std::error_code(errno, std::generic_category());
-    return OsLockResult::Error;
-}
-#endif
-
+// OS-level lock acquisition loop for both Windows and POSIX.
+// Handles both blocking and non-blocking modes, including timed blocking.
 static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
                              LockMode mode, std::optional<std::chrono::milliseconds> timeout)
 {
