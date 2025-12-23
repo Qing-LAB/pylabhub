@@ -611,7 +611,7 @@ static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
 {
     std::wstring lockpath_w = win32_to_long_path(lockpath);
     HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE , nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
@@ -737,14 +737,14 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
         // flock failed.
         ::close(fd); // Close the fd for this failed attempt before retrying.
 
-        if (errno != EWOULDBLOCK) // True error, not just busy (like EBADF)
+        if (errno != EWOULDBLOCK && errno != EAGAIN) // True error, not just busy (like EBADF)
         {
             pImpl->ec = std::error_code(errno, std::generic_category());
             LOGGER_WARN("FileLock: flock failed for {} err={}", lockpath.string(), pImpl->ec.message());
             return false;
         }
 
-        // Lock is busy (EWOULDBLOCK).
+        // Lock is busy (EWOULDBLOCK or EAGAIN).
         if (mode == LockMode::NonBlocking)
         {
             pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
@@ -775,18 +775,134 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
 #endif
 }
 
+
+// Static cleanup function to remove stale lock files at program exit.
+// We have to be careful here because deletion of a lock file without knowing
+// whether it is still held by another process can lead to breaking of the locking
+// semantics. Therefore, we attempt to acquire an exclusive lock on each registered
+// lock file before deleting it. If we can acquire the lock, we assume no other
+// process holds it and it is safe to delete. If we cannot acquire the lock,
+// we skip deletion for that file.
+// Also we will first make a copy of the registry to avoid holding the mutex
+// during blocking I/O operations.
+// This function is registered to be called during program finalization.
 void FileLock::cleanup()
 {
-    std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-    LOGGER_DEBUG("FileLock: Cleaning up {} registered lock files.", g_lockfile_registry.size());
-    for (const auto &path_str : g_lockfile_registry)
+    // Snapshot the registry so we don't hold the mutex while doing I/O.
+    std::vector<std::string> candidates;
     {
-        std::error_code ec;
-        // This is a best-effort cleanup at program exit.
-        std::filesystem::remove(std::filesystem::path(path_str), ec);
+        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+        candidates.assign(g_lockfile_registry.begin(), g_lockfile_registry.end());
     }
-    g_lockfile_registry.clear();
+
+    LOGGER_DEBUG("FileLock: Safe-cleaning {} registered lock files.", candidates.size());
+    std::vector<std::string> removed_paths;
+
+    for (const auto &path_str : candidates)
+    {
+        std::filesystem::path p(path_str);
+
+#if defined(PLATFORM_WIN64)
+        bool deleted = false;
+
+        // Open WITHOUT FILE_SHARE_DELETE so other processes cannot delete while our handle is open.
+        std::wstring wpath = pylabhub::utils::win32_to_long_path(p);
+        HANDLE h =
+            CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, // intentionally NO FILE_SHARE_DELETE
+                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            LOGGER_TRACE("FileLock::cleanup: cannot open {}, skipping.", path_str);
+            continue;
+        }
+
+        OVERLAPPED ov = {};
+        BOOL ok = LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov);
+        if (!ok)
+        {
+            // Someone likely holds the lock; do not delete.
+            CloseHandle(h);
+            LOGGER_TRACE("FileLock::cleanup: lock held on {}, skipping.", path_str);
+            continue;
+        }
+
+        // We hold the OS lock on the inode associated with 'h'.
+        // Attempt to delete while still holding the lock/handle.
+        if (DeleteFileW(wpath.c_str()))
+        {
+            LOGGER_TRACE("FileLock::cleanup: removed {}", path_str);
+            deleted = true;
+        }
+        else
+        {
+            DWORD err = GetLastError();
+            LOGGER_TRACE("FileLock::cleanup: DeleteFile failed for {} err={} - skipping delete.",
+                         path_str, static_cast<int>(err));
+            // conservative: if we couldn't delete while holding the lock, skip deletion.
+        }
+
+        // Release lock and close handle (if locked).
+        UnlockFileEx(h, 0, 1, 0, &ov);
+        CloseHandle(h);
+
+        if (deleted)
+            removed_paths.push_back(path_str);
+
+#else
+        bool deleted = false;
+
+        // POSIX: open and try to flock exclusive non-blocking.
+        int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd == -1)
+        {
+            LOGGER_TRACE("FileLock::cleanup: cannot open {}, skipping.", path_str);
+            continue;
+        }
+
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0)
+        {
+            // Could not lock: someone else likely holds it. Close and skip.
+            ::close(fd);
+            LOGGER_TRACE("FileLock::cleanup: lock held on {}, skipping.", path_str);
+            continue;
+        }
+
+        // We hold an exclusive lock on the opened inode. Remove *while still locked*.
+        std::error_code ec;
+        std::filesystem::remove(p, ec);
+        if (ec)
+        {
+            LOGGER_WARN("FileLock::cleanup: remove {} failed: {}", path_str, ec.message());
+        }
+        else
+        {
+            LOGGER_TRACE("FileLock::cleanup: removed {}", path_str);
+            deleted = true;
+        }
+
+        // Now release lock and close the fd.
+        flock(fd, LOCK_UN);
+        ::close(fd);
+
+        if (deleted)
+            removed_paths.push_back(path_str);
+#endif
+    }
+
+    // Remove only the successfully-deleted entries from the global registry.
+    if (!removed_paths.empty())
+    {
+        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+        for (const auto &rp : removed_paths)
+            g_lockfile_registry.erase(rp);
+    }
+
+    LOGGER_DEBUG("FileLock: cleanup done. removed={} skipped={}", removed_paths.size(),
+                 candidates.size() - removed_paths.size());
 }
+
 
 namespace
 {
