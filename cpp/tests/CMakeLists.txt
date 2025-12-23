@@ -84,12 +84,42 @@ pylabhub_stage_executable(
   ATTACH_TO stage_tests
 )
 
-# Ensure staging happens after the executables are built.
-add_dependencies(stage_tests utils_tests multiprocess_tests)
+# Ensure staging happens after the executables are built, and after the staging directories have been created.
+add_dependencies(stage_tests utils_tests multiprocess_tests create_staging_dirs)
 
 # --- CTest Integration ---
-# Discover tests in each executable. CTest will run them as separate test groups.
-gtest_discover_tests(utils_tests)
-gtest_discover_tests(multiprocess_tests)
+
+# 1. DEPENDENCY: Ensure the pylabhub-utils shared library is staged BEFORE
+#    test discovery is run. This is the crucial step that makes the test
+#    executable runnable by gtest_discover_tests.
+add_dependencies(utils_tests stage_pylabhub_utils)
+add_dependencies(multiprocess_tests stage_pylabhub_utils)
+
+# 2. RPATH (for macOS/Linux): Set the RPATH for the test executables so they
+#    can find the staged library at build/run time. On Windows, this has no effect.
+if(NOT WIN32)
+  set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin")
+  set_target_properties(utils_tests multiprocess_tests
+    PROPERTIES
+      BUILD_RPATH "${STAGED_LIB_DIR}"
+  )
+endif()
+
+# 3. DISCOVERY: Now that the library is staged and findable (via RPATH or PATH),
+#    run the discovery process in the staging directory.
+set(TEST_RUNTIME_DIR "${PYLABHUB_STAGING_DIR}/bin")
+message(STATUS "  ** Setting test runtime directory to: ${TEST_RUNTIME_DIR}")
+gtest_discover_tests(utils_tests
+    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
+    PROPERTIES
+        # This is primarily for Windows, but doesn't hurt other platforms.
+        ENVIRONMENT "PATH=${TEST_RUNTIME_DIR}"
+)
+gtest_discover_tests(multiprocess_tests
+    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
+    PROPERTIES
+        # This is primarily for Windows, but doesn't hurt other platforms.
+        ENVIRONMENT "PATH=${TEST_RUNTIME_DIR}"
+)
 
 message(STATUS "Configured test executables: utils_tests, multiprocess_tests")

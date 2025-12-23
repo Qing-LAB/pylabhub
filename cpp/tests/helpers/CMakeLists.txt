@@ -23,6 +23,9 @@ target_link_libraries(pylabhub_test_helpers
     pylabhub::third_party::gtest
 )
 
+# The helpers also need to link against gtest because the entry point uses it.
+target_link_libraries(pylabhub_test_helpers PRIVATE pylabhub::third_party::gtest)
+
 target_include_directories(pylabhub_test_helpers
   PUBLIC
     # Expose the current directory so consumers can #include "test_entrypoint.h", "workers.h"
