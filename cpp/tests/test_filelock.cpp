@@ -72,31 +72,6 @@ protected:
     fs::path temp_dir() const { return g_temp_dir_; }
 };
 
-// Test fixture for FileLock tests.
-class FileLockTest : public ::testing::Test {
-protected:
-    // Static member to hold the path to the temporary directory.
-    // Used by tests to create lock files in a clean, isolated location.
-    static fs::path g_temp_dir_;
-
-    // Per-test temporary path for resources.
-    fs::path temp_dir() const { return g_temp_dir_; }
-
-    static void SetUpTestSuite() {
-        g_temp_dir_ = fs::temp_directory_path() / "pylabhub_filelock_tests";
-        fs::create_directories(g_temp_dir_);
-        fmt::print("Using temporary directory for FileLock tests: {}\n", g_temp_dir_.string());
-    }
-
-    static void TearDownTestSuite() {
-        try { fs::remove_all(g_temp_dir_); } catch (...) {}
-    }
-
-    // SetUp and TearDown for individual tests if needed
-    // void SetUp() override {}
-    // void TearDown() override {}
-};
-
 fs::path FileLockTest::g_temp_dir_;
 
 
