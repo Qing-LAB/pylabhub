@@ -125,6 +125,29 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
     }
 }
 
+// New helpers: canonical registry key and canonical path suitable for OS calls.
+
+// Return canonical, platform-aware string key for registry storage / comparison.
+// Delegates to make_lock_key (which already performs Windows long-path + lowercase).
+static std::string canonical_lock_registry_key(const std::filesystem::path &lockpath)
+{
+    return make_lock_key(lockpath);
+}
+
+// Return a filesystem::path that is safe to use with OS APIs on the current platform.
+// On POSIX this is absolute + lexically_normal; on Windows we convert to a long-path wstring
+// and construct a std::filesystem::path out of the wide string (safe for CreateFileW).
+static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::path &lockpath)
+{
+#if defined(PLATFORM_WIN64)
+    // win32_to_long_path returns a std::wstring long-path representation.
+    std::wstring w = pylabhub::utils::win32_to_long_path(lockpath);
+    return std::filesystem::path(w);
+#else
+    return std::filesystem::absolute(lockpath).lexically_normal();
+#endif
+}
+
 namespace pylabhub::utils
 {
 
@@ -137,7 +160,10 @@ static constexpr std::chrono::milliseconds LOCK_POLLING_INTERVAL = std::chrono::
 // Global registry for tracking created lock files on all platforms
 // to allow for cleanup at program exit.
 static std::mutex g_lockfile_registry_mtx;
-static std::set<std::string> g_lockfile_registry;
+// Map: canonical registry key -> original lockpath string (platform-specific string form).
+// Storing the original path string (value) ensures cleanup/open can use the correct path
+// representation for OS calls (we will convert value back to fs::path via canonical_lock_path_for_os).
+static std::unordered_map<std::string, std::string> g_lockfile_registry;
 
 // --- Process-local lock registry ---
 // This registry ensures that even on Windows (where native file locks are
@@ -609,7 +635,8 @@ enum class OsLockResult
 static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
                                                  const std::filesystem::path &lockpath)
 {
-    std::wstring lockpath_w = win32_to_long_path(lockpath);
+    auto os_path = canonical_lock_path_for_os(lockpath);
+    std::wstring lockpath_w = os_path.wstring();
     HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE , nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -629,8 +656,10 @@ static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
     if (ok)
     {
         {
+            auto reg_key = canonical_lock_registry_key(lockpath);
+            auto reg_val = os_path.string();
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.insert(lockpath.string());
+            g_lockfile_registry.emplace(reg_key, reg_val);
         }
         pImpl->handle = reinterpret_cast<void *>(h);
         pImpl->ec.clear();
@@ -691,6 +720,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
     // This makes the POSIX behavior consistent with the Windows `try_acquire_os_lock_once_win`
     // which effectively opens and closes the handle on each attempt if it fails to lock.
     int fd = -1; // Initialize fd outside the loop.
+    auto os_path = canonical_lock_path_for_os(lockpath);
 
     while (true)
     {
@@ -700,11 +730,11 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
 #ifdef O_CLOEXEC
         open_flags |= O_CLOEXEC;
 #endif
-        fd = ::open(lockpath.c_str(), open_flags, 0666);
+        fd = ::open(os_path.c_str(), open_flags, 0666);
         if (fd == -1)
         {
             pImpl->ec = std::error_code(errno, std::generic_category());
-            LOGGER_WARN("FileLock: open failed for {} err={}", lockpath.string(),
+            LOGGER_WARN("FileLock: open failed for {} err={}", os_path.string(),
                         pImpl->ec.message());
             return false;
         }
@@ -728,8 +758,10 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
             pImpl->fd = fd;
             // Add lock file to registry for cleanup at exit.
             {
+                auto reg_key = canonical_lock_registry_key(lockpath);
+                auto reg_val = os_path.string();
                 std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-                g_lockfile_registry.insert(lockpath.string());
+                g_lockfile_registry.emplace(reg_key, reg_val);
             }
             break; // Lock successfully acquired, exit retry loop.
         }
@@ -788,30 +820,31 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
 // This function is registered to be called during program finalization.
 void FileLock::cleanup()
 {
-    // Snapshot the registry so we don't hold the mutex while doing I/O.
-    std::vector<std::string> candidates;
+    // Copy the registry entries locally (key->path_str) so we don't hold the mutex during blocking I/O.
+    std::vector<std::pair<std::string, std::string>> candidates;
     {
         std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-        candidates.assign(g_lockfile_registry.begin(), g_lockfile_registry.end());
+        candidates.reserve(g_lockfile_registry.size());
+        for (auto &kv : g_lockfile_registry)
+            candidates.emplace_back(kv.first, kv.second);
     }
 
     LOGGER_DEBUG("FileLock: Safe-cleaning {} registered lock files.", candidates.size());
-    std::vector<std::string> removed_paths;
+    std::vector<std::string> removed_keys;
 
-    for (const auto &path_str : candidates)
+    for (const auto &kv : candidates)
     {
-        std::filesystem::path p(path_str);
+        const std::string &reg_key = kv.first;
+        const std::string &path_str = kv.second;
+        std::filesystem::path p(path_str); // construct platform path from stored string
 
 #if defined(PLATFORM_WIN64)
         bool deleted = false;
-
-        // Open WITHOUT FILE_SHARE_DELETE so other processes cannot delete while our handle is open.
         std::wstring wpath = pylabhub::utils::win32_to_long_path(p);
-        HANDLE h =
-            CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE, // intentionally NO FILE_SHARE_DELETE
-                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-
+        HANDLE h = CreateFileW(wpath.c_str(),
+                               GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE)
         {
             LOGGER_TRACE("FileLock::cleanup: cannot open {}, skipping.", path_str);
@@ -822,14 +855,11 @@ void FileLock::cleanup()
         BOOL ok = LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov);
         if (!ok)
         {
-            // Someone likely holds the lock; do not delete.
             CloseHandle(h);
             LOGGER_TRACE("FileLock::cleanup: lock held on {}, skipping.", path_str);
             continue;
         }
 
-        // We hold the OS lock on the inode associated with 'h'.
-        // Attempt to delete while still holding the lock/handle.
         if (DeleteFileW(wpath.c_str()))
         {
             LOGGER_TRACE("FileLock::cleanup: removed {}", path_str);
@@ -838,22 +868,16 @@ void FileLock::cleanup()
         else
         {
             DWORD err = GetLastError();
-            LOGGER_TRACE("FileLock::cleanup: DeleteFile failed for {} err={} - skipping delete.",
-                         path_str, static_cast<int>(err));
-            // conservative: if we couldn't delete while holding the lock, skip deletion.
+            LOGGER_TRACE("FileLock::cleanup: DeleteFile failed for {} err={} - skipping delete.", path_str, static_cast<int>(err));
         }
 
-        // Release lock and close handle (if locked).
         UnlockFileEx(h, 0, 1, 0, &ov);
         CloseHandle(h);
 
-        if (deleted)
-            removed_paths.push_back(path_str);
+        if (deleted) removed_keys.push_back(reg_key);
 
 #else
         bool deleted = false;
-
-        // POSIX: open and try to flock exclusive non-blocking.
         int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
         if (fd == -1)
         {
@@ -863,44 +887,36 @@ void FileLock::cleanup()
 
         if (flock(fd, LOCK_EX | LOCK_NB) != 0)
         {
-            // Could not lock: someone else likely holds it. Close and skip.
             ::close(fd);
             LOGGER_TRACE("FileLock::cleanup: lock held on {}, skipping.", path_str);
             continue;
         }
 
-        // We hold an exclusive lock on the opened inode. Remove *while still locked*.
         std::error_code ec;
         std::filesystem::remove(p, ec);
-        if (ec)
-        {
+        if (ec) {
             LOGGER_WARN("FileLock::cleanup: remove {} failed: {}", path_str, ec.message());
-        }
-        else
-        {
+        } else {
             LOGGER_TRACE("FileLock::cleanup: removed {}", path_str);
             deleted = true;
         }
 
-        // Now release lock and close the fd.
         flock(fd, LOCK_UN);
         ::close(fd);
 
-        if (deleted)
-            removed_paths.push_back(path_str);
+        if (deleted) removed_keys.push_back(reg_key);
 #endif
     }
 
-    // Remove only the successfully-deleted entries from the global registry.
-    if (!removed_paths.empty())
+    // Erase only those entries that were actually removed.
+    if (!removed_keys.empty())
     {
         std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-        for (const auto &rp : removed_paths)
-            g_lockfile_registry.erase(rp);
+        for (const auto &k : removed_keys) g_lockfile_registry.erase(k);
     }
 
-    LOGGER_DEBUG("FileLock: cleanup done. removed={} skipped={}", removed_paths.size(),
-                 candidates.size() - removed_paths.size());
+    LOGGER_DEBUG("FileLock: cleanup done. removed={} skipped={}", removed_keys.size(),
+                 candidates.size() - removed_keys.size());
 }
 
 
