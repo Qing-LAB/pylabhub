@@ -66,23 +66,49 @@ namespace worker
         {
             pylabhub::utils::Initialize();
             Logger::instance().set_level(Logger::Level::L_ERROR);
-            fs::path counter_path(counter_path_str);
+            fs::path resource_path(counter_path_str);
+            
             std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) +
                                                  std::chrono::system_clock::now().time_since_epoch().count()));
             for (int i = 0; i < num_iterations; ++i)
             {
                 if (std::rand() % 2 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500)); }
-                FileLock lock(counter_path, ResourceType::File, LockMode::Blocking);
-                if (!lock.valid()) { pylabhub::utils::Finalize(); return 1; }
+                
+                FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
+                if (!lock.valid()) { 
+                    pylabhub::utils::Finalize(); 
+                    return 1; 
+                }
+
+                // Per the advisory lock protocol, we must now get the path to the resource
+                // that the lock is protecting.
+                auto locked_path_opt = lock.get_locked_resource_path();
+                if (!locked_path_opt) {
+                    // This should not happen if the lock is valid.
+#if defined(PLATFORM_WIN64)
+                        fmt::print(stderr, "worker {}: failed to acquire lock.\n", GetCurrentProcessId());
+#else
+                    fmt::print(stderr, "worker {}: failed to acquire lock.\n", getpid());
+#endif
+                    pylabhub::utils::Finalize();
+                    return 1;
+                }
+                
                 if (std::rand() % 10 == 0) { std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); }
+                
                 int current_value = 0;
                 {
-                    std::ifstream ifs(counter_path);
+                    std::ifstream ifs(*locked_path_opt);
                     if (ifs.is_open()) { ifs >> current_value; }
                 }
                 {
-                    std::ofstream ofs(counter_path);
+                    std::ofstream ofs(*locked_path_opt);
                     ofs << (current_value + 1);
+#if defined(PLATFORM_WIN64)
+                        fmt::print(stderr, "worker {}: incremented counter to {}\n", GetCurrentProcessId(), current_value + 1);
+#else
+                    fmt::print(stderr, "worker {}: incremented counter to {}\n", getpid(), current_value + 1);
+#endif
                 }
             }
             pylabhub::utils::Finalize();
