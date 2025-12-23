@@ -44,7 +44,7 @@ option(PYLABHUB_ZMQ_WITH_NORM "Enable NORM transport in libzmq" OFF)
 option(PYLABHUB_ZMQ_WITH_VMCI "Enable VMCI transport in libzmq" OFF)
 
 # Policy for nlohmann/json.
-option(PREFER_VENDOR_NLOHMANN "Prefer vendored nlohmann/json under third_party/include if present" ON)
+option(USE_VENDOR_NLOHMANN_ONLY "Force the build to use only the vendored nlohmann/json headers." ON)
 
 # ----------------------------------------------------------------------------
 # XOPToolkit / XOPSupport build options

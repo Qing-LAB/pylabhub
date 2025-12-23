@@ -63,11 +63,9 @@ protected:
         g_temp_dir_ = fs::temp_directory_path() / "pylabhub_filelock_tests";
         fs::create_directories(g_temp_dir_);
         fmt::print("Using temporary directory for FileLock tests: {}\n", g_temp_dir_.string());
-        pylabhub::utils::Initialize();
     }
 
     static void TearDownTestSuite() {
-        pylabhub::utils::Finalize();
         try { fs::remove_all(g_temp_dir_); } catch (...) {}
     }
 

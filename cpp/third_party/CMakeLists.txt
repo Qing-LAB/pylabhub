@@ -42,7 +42,7 @@ if(THIRD_PARTY_INSTALL)
   # Ensure the staging directories are created before this target runs.
   # 'create_staging_dirs' is defined in the top-level CMakeLists.txt.
   add_dependencies(stage_third_party_deps create_staging_dirs)
-  add_dependencies(stage_all stage_third_party_deps)
+
   message(STATUS "[pylabhub-third-party] Staging enabled. Build the 'stage_third_party_deps' target to collect artifacts.")
 endif()
 
