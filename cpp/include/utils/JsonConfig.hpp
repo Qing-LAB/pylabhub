@@ -203,6 +203,8 @@ bool JsonConfig::lock_for(const std::chrono::duration<Rep, Period> &timeout)
         return false;
     }
 
+    std::lock_guard<std::mutex> g(pImpl->initMutex);
+
     // Use the timeout constructor of FileLock
     auto timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
     pImpl->fileLock =
