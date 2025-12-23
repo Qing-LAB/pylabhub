@@ -24,6 +24,6 @@ include("${CMAKE_CURRENT_LIST_DIR}/pylabhubTargets.cmake")
 get_target_property(pylabhub_INCLUDE_DIRS pylabhub::utils INTERFACE_INCLUDE_DIRECTORIES)
 
 # For EXECUTABLES, we get the LOCATION of the installed pylabhub::app target
-if(TARGET pylabhub::app)
-    get_target_property(pylabhub_EXECUTABLES pylabhub::app LOCATION)
+if(TARGET pylabhub::hubshell)
+    get_target_property(pylabhub_EXECUTABLES pylabhub::hubshell LOCATION)
 endif()
