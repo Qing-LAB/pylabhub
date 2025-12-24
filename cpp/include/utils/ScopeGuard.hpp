@@ -2,80 +2,72 @@
 #define PYLHUB_SCOPE_GUARD_HPP
 
 #include <utility>
+#include <type_traits>
+#include <optional>
 
 namespace pylabhub::utils
 {
 
-/**
- * @brief A generic RAII scope guard.
- *
- * This class template ensures that a given function or lambda is executed when
- * the ScopeGuard object goes out of scope, unless it has been explicitly dismissed.
- * It's a powerful tool for ensuring cleanup actions (like releasing resources,
- * closing handles, etc.) are always performed, even in the presence of exceptions
- * or multiple return paths.
- *
- * @tparam F The type of the callable object (e.g., lambda, function pointer).
- */
 template <typename F>
 class ScopeGuard
 {
   public:
-    /**
-     * @brief Constructs a ScopeGuard with the given callable.
-     * @param f A callable object (e.g., a lambda) to be executed on destruction.
-     */
-    explicit ScopeGuard(F &&f) : m_func(std::move(f)), m_active(true) {}
+    using FnT = std::decay_t<F>;
 
-    /**
-     * @brief Move constructor. Transfers ownership of the callable from another ScopeGuard.
-     * @param rhs The ScopeGuard to move from.
-     */
-    ScopeGuard(ScopeGuard &&rhs) noexcept : m_func(std::move(rhs.m_func)), m_active(rhs.m_active)
+    explicit ScopeGuard(F &&f) noexcept(std::is_nothrow_move_constructible_v<FnT>)
+        : m_func(std::forward<F>(f)), m_active(true) {}
+
+    ScopeGuard(ScopeGuard &&rhs) noexcept(std::is_nothrow_move_constructible_v<FnT>)
+        : m_func(std::move(rhs.m_func)), m_active(rhs.m_active)
     {
         rhs.dismiss();
     }
 
-    /**
-     * @brief Destructor. Executes the callable if the guard is active.
-     */
-    ~ScopeGuard()
+    ~ScopeGuard() noexcept
     {
         if (m_active)
         {
-            m_func();
+            try {
+                m_func();
+            } catch (...) {
+                // swallow exceptions in destructor
+            }
         }
     }
 
-    /**
-     * @brief Dismisses the guard, preventing the callable from being executed.
-     */
-    void dismiss() { m_active = false; }
-
-    // This class is non-copyable to prevent accidental duplication of the cleanup action.
+    // Prevent copies
     ScopeGuard(const ScopeGuard &) = delete;
     ScopeGuard &operator=(const ScopeGuard &) = delete;
+
+    // Optional: leave move assignment deleted for simplicity (as you had)
     ScopeGuard &operator=(ScopeGuard &&) = delete;
 
+    // Dismiss prevents the callable from running on destruction
+    void dismiss() noexcept { m_active = false; }
+
+    // Run the callable immediately (if active) and then dismiss
+    void invoke() noexcept
+    {
+        if (m_active)
+        {
+            try {
+                m_func();
+            } catch (...) {
+                // swallow or log
+            }
+            m_active = false;
+        }
+    }
+
   private:
-    F m_func;
+    FnT m_func;
     bool m_active;
 };
 
-/**
- * @brief Factory function to create a ScopeGuard.
- *
- * This is a helper function to deduce the type of the lambda automatically,
- * making the creation of a ScopeGuard more concise.
- *
- * @tparam F The type of the callable object.
- * @param f The callable object to be executed by the guard.
- * @return A ScopeGuard object that will execute `f` on destruction.
- */
 template <typename F>
 ScopeGuard<F> make_scope_guard(F &&f)
 {
-    return ScopeGuard<F>(std::move(f));
+    return ScopeGuard<F>(std::forward<F>(f));
 }
 
 } // namespace pylabhub::utils
