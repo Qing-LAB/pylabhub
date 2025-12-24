@@ -3,6 +3,7 @@
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/ScopeGuard.hpp"
 #include <filesystem>
 #include <chrono>
 #include <string>
@@ -38,7 +39,7 @@ namespace worker
     namespace filelock
     {
 
-        bool atomic_write_int(const fs::path &target, int value)
+        bool atomic_write_int(const fs::path &target, unsigned long PID, int value)
         {
             auto tmp = target;
             tmp += ".tmp." + std::to_string(
@@ -49,36 +50,85 @@ namespace worker
 #endif
                              );
 
+#if defined(PLATFORM_WIN64)
+            // Use native Windows I/O for a robust atomic write-flush-rename.
+            HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h == INVALID_HANDLE_VALUE)
             {
-                std::ofstream ofs(tmp, std::ios::trunc);
-                if (!ofs.is_open())
-                    return false;
-                ofs << value;
-                ofs.flush();
-                if (!ofs)
-                    return false;
-            }
-
-#if !defined(PLATFORM_WIN64)
-            // ensure file data is on disk
-            int fd = ::open(tmp.c_str(), O_RDONLY | O_CLOEXEC);
-            if (fd >= 0)
-            {
-                fsync(fd);
-                ::close(fd);
-            }
-#endif
-
-            std::error_code ec;
-            std::filesystem::rename(tmp, target, ec);
-            if (ec)
-            {
-                std::filesystem::remove(tmp);
                 return false;
             }
 
+            // Ensure the handle is closed and the temp file is deleted on any exit path.
+            auto guard = make_scope_guard([&]() {
+                CloseHandle(h);
+                // In case of failure before rename, clean up the temp file.
+                std::error_code ec;
+                fs::remove(tmp, ec);
+            });
+
+            std::string val_str = std::to_string(value);
+            DWORD bytes_written = 0;
+            if (!WriteFile(h, val_str.c_str(), static_cast<DWORD>(val_str.length()),
+                           &bytes_written, NULL) ||
+                bytes_written != val_str.length())
+            {
+                return false; // Guard will cleanup.
+            }
+
+            if (!FlushFileBuffers(h))
+            {
+                return false; // Guard will cleanup.
+            }
+
+#else
+            // Use native POSIX I/O for a robust atomic write-fsync-rename.
+            int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (fd == -1)
+            {
+                return false;
+            }
+
+            // Ensure the handle is closed and the temp file is deleted on any exit path.
+            auto guard = make_scope_guard([&]() {
+                ::close(fd);
+                // In case of failure before rename, clean up the temp file.
+                std::error_code ec;
+                fs::remove(tmp, ec);
+            });
+
+            std::string val_str = std::to_string(value);
+            ssize_t written = ::write(fd, val_str.c_str(), val_str.length());
+            if (written != static_cast<ssize_t>(val_str.length()))
+            {
+                return false; // Guard will cleanup.
+            }
+
+            if (::fsync(fd) != 0)
+            {
+                return false; // Guard will cleanup.
+            }
+#endif
+
+            // If we've reached here, the temp file is correctly written and flushed.
+            // We can now attempt the atomic rename.
+            std::error_code ec;
+            fs::rename(tmp, target, ec);
+            if (ec)
+            {
+                fmt::print(stderr, "atomic_write_int: rename failed from {} to {}: {}\n",
+                           tmp.string(), target.string(), ec.message());
+                fmt::print(stderr, "worker {}: intended value was: {}\n", PID, value);
+                return false; // Guard will still cleanup the temp file.
+            }
+
+            // On success, the temp file is gone, so the guard's cleanup of it is a no-op.
+            // We can dismiss the guard to prevent it from running.
+            guard.dismiss();
+
 #if !defined(PLATFORM_WIN64)
-            // optionally fsync the directory
+            // On POSIX, it's good practice to sync the directory to ensure the rename
+            // operation's metadata is durable.
             int dfd = ::open(target.parent_path().c_str(), O_DIRECTORY | O_RDONLY);
             if (dfd >= 0)
             {
@@ -87,6 +137,63 @@ namespace worker
             }
 #endif
             return true;
+        }
+
+        // Helper to perform a platform-aware native read of an integer from a file.
+        bool native_read_int(const fs::path &target, int &value)
+        {
+#if defined(PLATFORM_WIN64)
+            HANDLE h = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h == INVALID_HANDLE_VALUE) {
+                value = 0; // Treat as 0 if file doesn't exist or can't be opened
+                return false;
+            }
+
+            auto guard = make_scope_guard([&]() { CloseHandle(h); });
+
+            char buffer[128]; // Assuming integer won't exceed this length
+            DWORD bytes_read = 0;
+            if (!ReadFile(h, buffer, sizeof(buffer) - 1, &bytes_read, NULL)) {
+                value = 0;
+                return false;
+            }
+            buffer[bytes_read] = '\0'; // Null-terminate the string
+
+            try {
+                value = std::stoi(buffer);
+            } catch (const std::exception&) {
+                value = 0; // Treat as 0 on parse error
+                return false;
+            }
+            guard.dismiss();
+            return true;
+
+#else
+            int fd = ::open(target.c_str(), O_RDONLY);
+            if (fd == -1) {
+                value = 0; // Treat as 0 if file doesn't exist or can't be opened
+                return false;
+            }
+
+            auto guard = make_scope_guard([&]() { ::close(fd); });
+
+            char buffer[128];
+            ssize_t bytes_read = ::read(fd, buffer, sizeof(buffer) - 1);
+            if (bytes_read <= 0) {
+                value = 0;
+                return false;
+            }
+            buffer[bytes_read] = '\0';
+
+            try {
+                value = std::stoi(buffer);
+            } catch (const std::exception&) {
+                value = 0; // Treat as 0 on parse error
+                return false;
+            }
+            guard.dismiss();
+            return true;
+#endif
         }
 
         int nonblocking_acquire(const std::string &resource_path_str)
@@ -164,20 +271,26 @@ namespace worker
                             std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); 
                         }
                         
-                        std::ifstream ifs(*locked_path_opt);
-                        if (ifs.is_open()) { 
-                            ifs >> current_value; 
+                        // Use the new native_read_int for robust, platform-aware reading.
+                        if (!native_read_int(*locked_path_opt, current_value)) {
+                            // If reading fails (e.g., file doesn't exist or is empty),
+                            // current_value will be 0, which is the desired behavior for an initial counter.
+                            // Log a warning or debug message if needed, but don't fail the worker.
+                            fmt::print(stderr, "[TIME {}] worker {}: native_read_int failed, assuming 0.\n", 
+                                    formatted_time(std::chrono::system_clock::now()), PID);
                         }
                     }
                     catch (...) {
-                        fmt::print(stderr, "[TIME {}] worker {}: failed to read counter.\n", 
+                        fmt::print(stderr, "[TIME {}] worker {}: failed to read counter (exception).\n", 
                                 formatted_time(std::chrono::system_clock::now()), PID);
                         return 1;
                     }
                     try {
-                        atomic_write_int(*locked_path_opt, current_value + 1);
-                        //fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}.\n", 
-                        //        formatted_time(std::chrono::system_clock::now()), PID, current_value + 1);
+                        if(!atomic_write_int(*locked_path_opt, static_cast<unsigned int>(PID), current_value + 1))
+                        {
+                            // This is for debugging the test itself.
+                            fmt::print(stderr, "worker {}: atomic_write_int failed. intended value was: {}\n", PID, current_value + 1);
+                        }
                     }
                     catch (...) {
                         fmt::print(stderr, "[TIME {}] worker {}: failed to write counter.\n", 

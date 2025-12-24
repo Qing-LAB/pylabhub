@@ -89,6 +89,7 @@
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
 #include "utils/RecursionGuard.hpp"
+#include "utils/ScopeGuard.hpp"
 
 #include "pylabhub_utils_export.h"
 // Disable warning C4251 for Pimpl members.
@@ -151,6 +152,11 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     // Callback-based write access. The user callback gets exclusive access.
     // The final state is NOT automatically saved; call save() explicitly.
     template <typename F> bool with_json_write(F &&fn) noexcept;
+
+    // Performs a full, atomic read-modify-write transaction, handling the locking.
+    template <typename Rep, typename Period, typename F>
+    bool lock_and_transaction(const std::chrono::duration<Rep, Period> &timeout, F &&fn) noexcept;
+
     // Sets a top-level key/value. Requires lock.
     template <typename T> bool set(const std::string &key, T const &value) noexcept;
     // Erases a top-level key. Requires lock.
@@ -461,6 +467,42 @@ template <typename Func> bool JsonConfig::update(const std::string &key, Func &&
     {
         return false;
     }
+}
+
+// ---------------- lock_and_transaction ----------------
+template <typename Rep, typename Period, typename F>
+bool JsonConfig::lock_and_transaction(const std::chrono::duration<Rep, Period> &timeout,
+                                      F &&fn) noexcept
+{
+    // This high-level function encapsulates the entire lock-transact-save-unlock cycle.
+    static_assert(std::is_invocable_v<F, json &>, "lock_and_transaction(Func) must be invocable as f(json&)");
+    if (!pImpl)
+    {
+        LOGGER_ERROR("JsonConfig::lock_and_transaction: cannot operate on an uninitialized config object.");
+        return false;
+    }
+
+    // 1. Acquire the inter-process file lock. This also reloads data from disk.
+    if (lock_for(timeout))
+    {
+        // 2. Ensure the file lock is always released on scope exit.
+        auto file_unlock_guard = make_scope_guard([this]() { unlock(); });
+
+        // 3. Perform the user's modification and save the result.
+        // We can reuse the existing `with_json_write` and `save` members.
+        if (with_json_write(std::forward<F>(fn)) && save())
+        {
+            // If both modification and save succeed, the transaction is complete.
+            return true;
+        }
+
+        // If with_json_write or save failed, the error is logged by those functions.
+        // The file_unlock_guard will ensure the lock is released.
+        return false;
+    }
+
+    LOGGER_DEBUG("JsonConfig::lock_and_transaction: failed to acquire file lock within timeout.");
+    return false;
 }
 
 } // namespace pylabhub::utils
