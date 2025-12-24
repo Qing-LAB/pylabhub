@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <unistd.h> // for write(), getpid()
+#include <fcntl.h>  // for open() and O_* flags
 #endif
 
 

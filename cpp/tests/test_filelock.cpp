@@ -415,8 +415,8 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         ofs << 0;
     }
 
-    const int PROCS = 16;
-    const int ITERS_PER_WORKER = 100;
+    const int PROCS = 32;
+    const int ITERS_PER_WORKER = 200;
 
 #if defined(PLATFORM_WIN64)
     std::vector<ProcessHandle> procs;
@@ -460,6 +460,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         std::ifstream ifs(counter_path);
         if (ifs.is_open()) { ifs >> final_value; }
     }
+    fmt::print(stderr, "Final counter value: {}, expected value: {}\n", final_value, PROCS * ITERS_PER_WORKER);
     ASSERT_EQ(final_value, PROCS * ITERS_PER_WORKER);
 }
 
