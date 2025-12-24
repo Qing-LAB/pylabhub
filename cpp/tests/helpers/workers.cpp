@@ -112,6 +112,7 @@ namespace worker
 
             // If we've reached here, the temp file is correctly written and flushed.
             // We can now attempt the atomic rename.
+#if !defined(PLATFORM_WIN64)
             std::error_code ec;
             fs::rename(tmp, target, ec);
             if (ec)
@@ -121,6 +122,15 @@ namespace worker
                 fmt::print(stderr, "worker {}: intended value was: {}\n", PID, value);
                 return false; // Guard will still cleanup the temp file.
             }
+#else
+            if (!::MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING))
+            {
+                fmt::print(stderr, "atomic_write_int: rename failed from {} to {}: {}\n",
+                           tmp.string(), target.string(), GetLastError());
+                fmt::print(stderr, "worker {}: intended value was: {}\n", PID, value);
+                return false; // Guard will still cleanup the temp file.
+            }
+#endif
 
             // On success, the temp file is gone, so the guard's cleanup of it is a no-op.
             // We can dismiss the guard to prevent it from running.
