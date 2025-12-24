@@ -53,6 +53,7 @@
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 #include "utils/PathUtil.hpp"
+#include "utils/ScopeGuard.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -69,9 +70,16 @@
 #if defined(PLATFORM_WIN64)
 #include <sstream>
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 // Helper to convert UTF-16 wstring to UTF-8 string using the Windows API.
 // This replaces the deprecated std::wstring_convert and <codecvt> functionality.
+#if defined(PLATFORM_WIN64)
 static std::string wstring_to_utf8(const std::wstring &wstr)
 {
     if (wstr.empty())
@@ -85,12 +93,6 @@ static std::string wstring_to_utf8(const std::wstring &wstr)
                         NULL);
     return strTo;
 }
-
-#else
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 // Portable canonicalizer for registry key. Produces a stable key for a lock file path.
@@ -641,95 +643,119 @@ static std::error_code ensure_lock_directory(FileLockImpl *pImpl)
     }
 }
 
-enum class OsLockResult
-{
-    Acquired,
-    Busy,
-    Error
-};
-
-#if defined(PLATFORM_WIN64)
-// Windows implementation of OS-level lock acquisition.
-// Opens a file handle, attempts to acquire an exclusive lock, and closes the handle if unsuccessful.
-static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl)
-{
-    const auto &lockpath = pImpl->canonical_lock_file_path;
-    auto os_path = canonical_lock_path_for_os(lockpath);
-    std::wstring lockpath_w = os_path.wstring();
-    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE , nullptr,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-
-    if (h == INVALID_HANDLE_VALUE)
-    {
-        pImpl->ec = std::error_code(GetLastError(), std::system_category());
-        LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string(),
-                    pImpl->ec.value());
-        return OsLockResult::Error;
-    }
-
-    DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
-    OVERLAPPED ov = {};
-    BOOL ok = LockFileEx(h, flags, 0, 1, 0, &ov);
-
-    if (ok)
-    {
-        {
-            auto reg_key = canonical_lock_registry_key(lockpath);
-            auto reg_val = os_path.string();
-            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, reg_val);
-        }
-        pImpl->handle = reinterpret_cast<void *>(h);
-        pImpl->ec.clear();
-        return OsLockResult::Acquired;
-    }
-
-    CloseHandle(h); // Close handle if not acquired
-    pImpl->ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
-    return OsLockResult::Busy;
-}
-#endif
-
 
 // OS-level lock acquisition loop for both Windows and POSIX.
 // Handles both blocking and non-blocking modes, including timed blocking.
 static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
                              std::optional<std::chrono::milliseconds> timeout)
 {
-    const auto start_time = std::chrono::steady_clock::now();
+    const auto &lockpath = pImpl->canonical_lock_file_path;
     const char *mode_str = (mode == LockMode::Blocking) ? "blocking" : "non-blocking";
     if (timeout)
         mode_str = "timed blocking";
 
 #if defined(PLATFORM_WIN64)
-    // Windows implementation: uses try_acquire_os_lock_once_win for open and lock
-    while (true)
-    {
-        OsLockResult result = try_acquire_os_lock_once_win(pImpl);
+    auto os_path = canonical_lock_path_for_os(lockpath);
+    std::wstring lockpath_w = os_path.wstring();
 
-        if (result == OsLockResult::Acquired)
+    HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        pImpl->ec = std::error_code(GetLastError(), std::system_category());
+        LOGGER_WARN("FileLock: CreateFileW failed for {} err={}", lockpath.string(),
+                    pImpl->ec.value());
+        return false;
+    }
+
+    // Ensure handle is closed if lock not acquired.
+    // On success, pImpl->handle will take ownership, so we don't close it here.
+    bool acquired_os_lock = false;
+    auto guard = pylabhub::utils::make_scope_guard([&]() {
+        if (!acquired_os_lock)
         {
-            pImpl->valid = true;
-            LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str,
-                         pImpl->path.string());
-            return true;
+            CloseHandle(h);
         }
-        if (result == OsLockResult::Error)
+    });
+
+    DWORD flags = LOCKFILE_EXCLUSIVE_LOCK;
+    OVERLAPPED ov = {};
+
+    if (mode == LockMode::NonBlocking)
+    {
+        // For non-blocking, just try once with FAIL_IMMEDIATELY.
+        flags |= LOCKFILE_FAIL_IMMEDIATELY;
+        if (LockFileEx(h, flags, 0, 1, 0, &ov))
         {
-            return false;
+            acquired_os_lock = true;
         }
-        if (mode == LockMode::NonBlocking)
+        else
         {
-            return false;
+            pImpl->ec = std::error_code(GetLastError(), std::system_category());
+            LOGGER_DEBUG("FileLock: Non-blocking LockFileEx failed for '{}'", pImpl->path.string());
         }
-        if (timeout && std::chrono::steady_clock::now() - start_time >= *timeout)
+    }
+    else if (timeout)
+    {
+        // For timed blocking, poll with FAIL_IMMEDIATELY and check timeout.
+        const auto start_time = std::chrono::steady_clock::now();
+        flags |= LOCKFILE_FAIL_IMMEDIATELY;
+        while (true)
         {
-            pImpl->ec = std::make_error_code(std::errc::timed_out);
-            LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'", pImpl->path.string());
-            return false;
+            if (LockFileEx(h, flags, 0, 1, 0, &ov))
+            {
+                acquired_os_lock = true;
+                break;
+            }
+            // LockFileEx failed, check for timeout
+            pImpl->ec = std::error_code(GetLastError(), std::system_category());
+            if (std::chrono::steady_clock::now() - start_time >= *timeout)
+            {
+                pImpl->ec = std::make_error_code(std::errc::timed_out);
+                LOGGER_DEBUG("FileLock: Timed out acquiring OS lock for '{}'", pImpl->path.string());
+                return false; // Return false, guard will run
+            }
+            std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
         }
-        std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
+    }
+    else // Blocking mode without timeout
+    {
+        // For blocking, call LockFileEx without FAIL_IMMEDIATELY; it will block until acquired.
+        if (LockFileEx(h, flags, 0, 1, 0, &ov))
+        {
+            acquired_os_lock = true;
+        }
+        else
+        {
+            // This should typically not be reached for a successful blocking lock.
+            // If it is, it indicates a serious error other than busy.
+            pImpl->ec = std::error_code(GetLastError(), std::system_category());
+            LOGGER_WARN("FileLock: Blocking LockFileEx failed unexpectedly for {} with error {}",
+                        lockpath.string(), pImpl->ec.message());
+        }
+    }
+
+    if (acquired_os_lock)
+    {
+        // Add lock file to registry for cleanup at exit.
+        auto reg_key = canonical_lock_registry_key(lockpath);
+        auto reg_val = os_path.string();
+        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+        g_lockfile_registry.emplace(reg_key, reg_val);
+
+        pImpl->handle = reinterpret_cast<void *>(h); // Transfer ownership of handle to pImpl
+        pImpl->ec.clear();
+        pImpl->valid = true;
+        LOGGER_DEBUG("FileLock: Successfully acquired {} lock on '{}'", mode_str,
+                     pImpl->path.string());
+        return true;
+    }
+    else
+    {
+        // Lock acquisition failed (pImpl->ec is already set by LockFileEx failure or timeout).
+        return false; // Return false, guard will run
     }
 #else
     // POSIX implementation.
