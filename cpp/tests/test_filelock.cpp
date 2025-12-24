@@ -295,10 +295,14 @@ TEST_F(FileLockTest, DirectoryPathLocking)
     {
         auto expected_lock_file = FileLock::get_expected_lock_fullname_for(".", ResourceType::Directory);
         fs::remove(expected_lock_file);
-        FileLock lock(".", ResourceType::Directory, LockMode::NonBlocking);
-        ASSERT_TRUE(lock.valid());
-        ASSERT_TRUE(fs::exists(expected_lock_file));
-        fs::remove(expected_lock_file);
+        {
+            FileLock lock(".", ResourceType::Directory, LockMode::NonBlocking);
+            ASSERT_TRUE(lock.valid());
+            ASSERT_TRUE(fs::exists(expected_lock_file));
+        }
+        std::error_code ec;
+        fs::remove(expected_lock_file, ec);
+        ASSERT_FALSE(ec);
     }
 
 #if !defined(PLATFORM_WIN64)
