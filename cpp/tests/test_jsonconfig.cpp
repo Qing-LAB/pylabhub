@@ -117,6 +117,7 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
     ASSERT_FALSE(config.save());
     ASSERT_FALSE(config.replace(json::object()));
     ASSERT_FALSE(config.with_json_write([](json &j) { j["a"] = 1; }));
+    ASSERT_FALSE(config.lock_and_transaction(10ms, [](json &j) { j["a"] = 1; }));
 
     ASSERT_FALSE(config.has("key"));
     ASSERT_EQ(config.get_or<int>("key", 42), 42);
@@ -247,14 +248,6 @@ TEST_F(JsonConfigTest, MultiThreadContention)
 
     for (int i = 0; i < THREADS; ++i)
     {
-        // Each thread gets its own JsonConfig instance, but they all point to the
-        // same file path. The underlying FileLock will correctly arbitrate access
-        // between these separate objects. This is the intended use pattern.
-        //
-        // ANTI-PATTERN: Do NOT share a single JsonConfig object across threads that
-        // perform lock/unlock cycles. This can lead to a race condition where
-        // Thread A holds a lock, but Thread B (on the same object) calls unlock()
-        // before Thread A is finished, causing Thread A's subsequent `save()` to fail.
         threads.emplace_back(
             [=, &save_failures, &read_failures, &successful_writes]
             {
@@ -268,35 +261,34 @@ TEST_F(JsonConfigTest, MultiThreadContention)
                     // 1 in 4 chance to be a writer
                     if (std::rand() % 4 == 0)
                     {
-                        if (cfg.lock_for(100ms))
+                        // Use the new atomic `lock_and_transaction` to perform a safe read-modify-write.
+                        bool write_ok = cfg.lock_and_transaction(
+                            100ms, // Timeout for acquiring the lock
+                            [&](json &data) {
+                                // This lambda is executed while holding the lock,
+                                // and the data is guaranteed to be fresh from disk.
+                                int val = data.value("counter", 0);
+                                data["counter"] = val + 1;
+
+                                std::string my_id = fmt::format("T{}-{}", i, j);
+                                data["write_log"].push_back(my_id);
+                                
+                                // Add a small random delay to hold the lock longer and
+                                // increase the chance of contention for stress-testing.
+                                if (std::rand() % 10 == 0) { 
+                                    std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200)); 
+                                }
+                            });
+
+                        if (write_ok)
                         {
-                            std::string my_id = fmt::format("T{}-{}", i, j);
-                            int val = -1;
-                            // NOTE: We MUST use get() here, not get_or(), because we need to
-                            // know if the read failed. A failed read after a lock indicates
-                            // a serious problem.
-                            if (!cfg.get("counter", val))
-                            {
-                                save_failures++;
-                                cfg.unlock();
-                                continue;
-                            }
-
-                            cfg.set("counter", val + 1);
-                            cfg.update("write_log",
-                                       [&](json &log) { log.push_back(my_id); });
-
-                            if (cfg.save())
-                            {
-                                successful_writes++;
-                            }
-                            else
-                            {
-                                save_failures++;
-                            }
-                            cfg.unlock();
+                            successful_writes++;
                         }
-                        // If lock fails, it's just contention, not an error.
+                        else
+                        {
+                            // A failed write here could be due to timeout, which is
+                            // acceptable under contention. It is not a save failure.
+                        }
                     }
                     else
                     {
@@ -408,11 +400,13 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     for (int i = 0; i < PROCS; ++i)
     {
 #if defined(PLATFORM_WIN64)
-        ASSERT_TRUE(verifier.has(fmt::format("win-{}", i)))
-            << "Worker win-" << i << " failed to write.";
+        std::string key = fmt::format("win-{}", i);
+        ASSERT_TRUE(verifier.has(key))
+            << "Worker " << key << " failed to write.";
 #else
-        ASSERT_TRUE(verifier.has(fmt::format("posix-{}", i)))
-            << "Worker posix-" << i << " failed to write.";
+        std::string key = fmt::format("posix-{}", i);
+        ASSERT_TRUE(verifier.has(key))
+            << "Worker " << key << " failed to write.";
 #endif
     }
 
