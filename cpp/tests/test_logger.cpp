@@ -564,7 +564,7 @@ TEST_F(LoggerTest, ConcurrentLifecycleChaos)
 {
     auto chaos_log_path = GetUniqueLogPath("lifecycle_chaos");
     std::atomic<bool> stop_flag(false);
-    const int DURATION_MS = 2000;
+    const int DURATION_MS = 10000;
 
     auto worker = [&](int id, auto fn) {
         while (!stop_flag.load(std::memory_order_relaxed)) fn(id);
