@@ -74,8 +74,12 @@ struct FileLockImpl;
  * @brief A cross-platform, RAII-style advisory file lock.
  *
  * This class acquires a lock upon construction and releases it upon destruction.
- * It is designed to be safe for both multi-process and multi-threaded scenarios,
- * providing consistent behavior across platforms.
+ * It is designed to be safe for both multi-process and multi-threaded scenarios.
+ * To ensure that different paths to the same underlying resource (e.g., relative
+ * paths, different symlinks) are treated as a single lockable entity, FileLock
+ * automatically resolves resource paths to a canonical form using
+ * `std::filesystem::canonical`. If the resource does not yet exist, it falls
+ * back to `std::filesystem::absolute` to allow for locking before creation.
  *
  * @warning The underlying POSIX lock mechanism (flock) may be unreliable
  *          over network filesystems like NFS. This class is best suited for
@@ -85,14 +89,18 @@ class PYLABHUB_UTILS_EXPORT FileLock
 {
   public:
     /**
-     * @brief Gets the canonical path for the lock file for a given resource.
+     * @brief [Prediction Tool] Gets the canonical path for the lock file for a given resource.
      *
-     * This allows consumers to know the exact path of the lock file that will be used
-     * for a given resource without having to instantiate a FileLock.
+     * This static utility function allows consumers to determine the exact, canonical
+     * path of the lock file that would be used for a resource, without needing to
+     * instantiate a `FileLock` object. It implements the core canonicalization logic:
+     * - It attempts to resolve symlinks via `std::filesystem::canonical`.
+     * - If the path does not exist, it falls back to `std::filesystem::absolute`.
+     * This makes it useful for diagnostics or external cleanup scripts.
      *
      * @param path The path to the resource (file or directory).
      * @param type The type of the resource.
-     * @return The absolute path to the corresponding lock file.
+     * @return The canonical, absolute path to the corresponding lock file.
      */
     static std::filesystem::path get_expected_lock_fullname_for(const std::filesystem::path &path,
                                                                 ResourceType type) noexcept;
@@ -162,6 +170,16 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * @return An optional containing the path if the lock is held, otherwise an empty optional.
      */
     std::optional<std::filesystem::path> get_locked_resource_path() const noexcept;
+
+    /**
+     * @brief [Instance Inspector] If the lock is valid, returns the canonical path of the lock file.
+     *
+     * This member function returns the actual, canonicalized, absolute path of the
+     * lock file being used by this specific `FileLock` instance.
+     *
+     * @return An optional containing the lock file path if the lock is held, otherwise an empty optional.
+     */
+    std::optional<std::filesystem::path> get_canonical_lock_file_path() const noexcept;
 
   private:
     // The custom deleter for the Pimpl class.

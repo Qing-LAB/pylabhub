@@ -5,18 +5,24 @@
  * **Design Philosophy**
  * `FileLock` provides a robust, cross-platform, RAII-style mechanism for
  * managing inter-process *advisory* file locks. It is a critical component for
- * ensuring the integrity of shared resources like configuration files *when all
- * participating processes respect the same locking convention*.
+ * ensuring the integrity of shared resources like configuration files.
  *
  * 1.  **RAII (Resource Acquisition Is Initialization)**: The lock is acquired in
  *     the constructor and automatically released in the destructor. This prevents
  *     leaked locks, even in the presence of exceptions.
- * 2.  **Cross-Platform Abstraction**: The class provides a unified interface over
+ * 2.  **Path Canonicalization**: To ensure that different filesystem paths
+ *     pointing to the same underlying resource (e.g., via relative paths,
+ *     different symlinks) contend for the same lock, `FileLock` canonicalizes
+ *     the resource path. It first attempts to use `std::filesystem::canonical`
+ *     to resolve symlinks, falling back to `std::filesystem::absolute` if the
+ *     resource does not yet exist. This provides robust locking for existing
+ *     files while still supporting the creation of new, locked files.
+ * 3.  **Cross-Platform Abstraction**: The class provides a unified interface over
  *     divergent platform-specific locking primitives:
- * **POSIX**: Uses `flock()` on a dedicated `.lock` file. This is a widely
+ *     - **POSIX**: Uses `flock()` on a dedicated `.lock` file. This is a widely
  *       supported and robust advisory locking mechanism for *local* filesystems.
  *     - **Windows**: Uses `LockFileEx()` on a handle to a dedicated `.lock` file.
- * 3.  **Lock File Strategy**: A separate lock file (e.g., `config.json.lock` for
+ * 4.  **Lock File Strategy**: A separate lock file (e.g., `config.json.lock` for
  *     `config.json`) is used instead of locking the target file directly. This
  *     avoids issues where file content operations might interfere with the lock
  *     itself and simplifies the implementation.
@@ -27,21 +33,20 @@
  *     **WARNING**: The reliability of `flock()` over network filesystems (like NFS)
  *     is not guaranteed and can be implementation-dependent. This locking
  *     mechanism is safest when used on local filesystems.
- * 4.  **Blocking and Non-Blocking Modes**: The lock can be acquired in either
- *     `Blocking` or `NonBlocking` mode. The `NonBlocking` mode allows for a
- *     "fail-fast" policy, which is used by `JsonConfig` to avoid deadlocks or
- *     long waits if another process holds the advisory lock.
- * 5.  **Movability**: The class is movable but not copyable, allowing ownership
+ * 5.  **Blocking and Non-Blocking Modes**: The lock can be acquired in either
+ *     `Blocking` or `NonBlocking` mode, as well as a timed blocking mode. This
+ *     flexibility is used by `JsonConfig` to avoid deadlocks.
+ * 6.  **Movability**: The class is movable but not copyable, allowing ownership
  *     of a lock to be efficiently transferred (e.g., returned from a factory
  *     function) while preventing accidental duplication.
  *
  * **Thread Safety**
  * A `FileLock` instance is designed to provide consistent behavior for both
  * inter-process and intra-process (multi-threaded) contention. While a single
- * `FileLock` object is not safe to be accessed concurrently by multiple threads,
- * the mechanism ensures that multiple `FileLock` instances (even in the same
- * process) attempting to lock the same resource will correctly block or fail
- * according to their `LockMode`.
+ * `FileLock` object is not thread-safe to be accessed concurrently, the
+ * underlying mechanism ensures that multiple `FileLock` instances (even in the
+ * same process) attempting to lock the same resource will correctly block or
+ * fail according to their `LockMode`.
  ******************************************************************************/
 
 #include "utils/FileLock.hpp"
@@ -89,39 +94,29 @@ static std::string wstring_to_utf8(const std::wstring &wstr)
 #endif
 
 // Portable canonicalizer for registry key. Produces a stable key for a lock file path.
-// - Uses absolute + lexical normalization (no symlink resolution).
+// Assumes lockpath is already an absolute, normalized path.
 // - On Windows, convert to long path form and to lower-case to ensure case-insensitive match.
 static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
     try
     {
-        std::filesystem::path abs = std::filesystem::absolute(lockpath).lexically_normal();
-
 #if defined(PLATFORM_WIN64)
         // Convert to long path and lowercase for stable key
         std::wstring longw =
-            pylabhub::utils::win32_to_long_path(abs); // ensure this handles relative -> absolute
+            pylabhub::utils::win32_to_long_path(lockpath); 
         // Lowercase the wchar_t string to normalize case (Windows is case-insensitive)
         for (auto &ch : longw)
             ch = towlower(ch);
         // Convert to UTF-8 using the modern, non-deprecated Windows API.
         return wstring_to_utf8(longw);
 #else
-        return abs.generic_string(); // use generic_string to avoid platform separators
+        return lockpath.generic_string(); // use generic_string to avoid platform separators
 #endif
     }
     catch (...)
     {
-        // Fallback: use plain lexically_normal string (shouldn't usually happen)
-        try
-        {
-            return std::filesystem::absolute(lockpath).lexically_normal().generic_string();
-        }
-        catch (...)
-        {
-            // Last resort: raw string
-            return lockpath.string();
-        }
+        // Fallback: use plain string (shouldn't usually happen with canonical paths)
+        return lockpath.string();
     }
 }
 
@@ -135,16 +130,16 @@ static std::string canonical_lock_registry_key(const std::filesystem::path &lock
 }
 
 // Return a filesystem::path that is safe to use with OS APIs on the current platform.
-// On POSIX this is absolute + lexically_normal; on Windows we convert to a long-path wstring
-// and construct a std::filesystem::path out of the wide string (safe for CreateFileW).
+// Assumes lockpath is already an absolute, normalized path.
 static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::path &lockpath)
 {
 #if defined(PLATFORM_WIN64)
-    // win32_to_long_path returns a std::wstring long-path representation.
+    // The OS path needs the long-path prefix for reliability.
     std::wstring w = pylabhub::utils::win32_to_long_path(lockpath);
     return std::filesystem::path(w);
 #else
-    return std::filesystem::absolute(lockpath).lexically_normal();
+    // On POSIX, the canonical path is already what we need for OS calls.
+    return lockpath;
 #endif
 }
 
@@ -187,6 +182,7 @@ static std::unordered_map<std::string, std::shared_ptr<ProcLockState>> g_proc_lo
 struct FileLockImpl
 {
     std::filesystem::path path; // The original path for which a lock is requested.
+    std::filesystem::path canonical_lock_file_path; // The canonical, absolute path of the lock file (e.g., .json.lock)
     bool valid = false;         // True if the lock is currently held.
     std::error_code ec;         // Stores the last error if `valid` is false.
     std::string lock_key;       // The canonical key for the lock path in g_proc_locks.
@@ -259,15 +255,13 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
 static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                           std::optional<std::chrono::milliseconds> timeout);
 
-static std::optional<std::filesystem::path> prepare_lock_path(FileLockImpl *pImpl,
-                                                              ResourceType type);
-static bool acquire_process_local_lock(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
-                                       LockMode mode,
+static bool prepare_lock_path(FileLockImpl *pImpl, ResourceType type);
+static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
                                        std::optional<std::chrono::milliseconds> timeout);
 static void rollback_process_local_lock(FileLockImpl *pImpl);
-static std::error_code ensure_lock_directory(const std::filesystem::path &lockpath);
-static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
-                             LockMode mode, std::optional<std::chrono::milliseconds> timeout);
+static std::error_code ensure_lock_directory(FileLockImpl *pImpl);
+static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
+                             std::optional<std::chrono::milliseconds> timeout);
 
 // This function is now a public static member of FileLock.
 std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesystem::path &target,
@@ -275,17 +269,28 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
 {
     try
     {
-        // First, resolve the path to an absolute form to handle ., .., and
-        // relative paths safely and consistently. This does not resolve symlinks
-        // and does not require the path to exist.
-        const auto abs_target = std::filesystem::absolute(target).lexically_normal();
+        // To handle different path representations (relative, symlinks), we
+        // resolve the path to a canonical form.
+        std::filesystem::path canonical_target;
+        std::error_code ec;
+
+        // std::filesystem::canonical resolves symlinks but requires the path to exist.
+        canonical_target = std::filesystem::canonical(target, ec);
+
+        // If canonical() fails (e.g., path does not exist), fall back to
+        // absolute() which handles relative paths but not symlinks. This allows
+        // locking a resource before it is created.
+        if (ec)
+        {
+            canonical_target = std::filesystem::absolute(target).lexically_normal();
+        }
 
         if (type == ResourceType::Directory)
         {
             // For a directory, the lock file is named after the directory and
             // lives in its parent directory.
-            auto fname = abs_target.filename();
-            auto parent = abs_target.parent_path();
+            auto fname = canonical_target.filename();
+            auto parent = canonical_target.parent_path();
 
             // If the filename is empty (e.g. for root paths like "/" or "C:\"),
             // use a fixed, safe name for the lock file.
@@ -300,7 +305,7 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
         else
         {
             // For a file, the lock is alongside the file.
-            auto p = abs_target;
+            auto p = canonical_target;
             p += ".lock";
             return p;
         }
@@ -373,6 +378,9 @@ std::optional<std::filesystem::path> FileLock::get_locked_resource_path() const 
         try
         {
             // The pImpl->path stores the original resource path provided by the user.
+            // Using absolute().lexically_normal() here is important because the original
+            // path might not have been fully resolved (e.g., relative path, or a path
+            // that doesn't exist when canonical() was attempted).
             return std::filesystem::absolute(pImpl->path).lexically_normal();
         }
         catch (...)
@@ -380,6 +388,16 @@ std::optional<std::filesystem::path> FileLock::get_locked_resource_path() const 
             // In case std::filesystem::absolute throws, return empty.
             return std::nullopt;
         }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FileLock::get_canonical_lock_file_path() const noexcept
+{
+    if (pImpl && pImpl->valid)
+    {
+        // This path is already canonical and stored.
+        return pImpl->canonical_lock_file_path;
     }
     return std::nullopt;
 }
@@ -408,25 +426,23 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
     }
     LOGGER_DEBUG("FileLock: Attempting to acquire {} lock on '{}'", mode_str, pImpl->path.string());
 
-    // 1. Prepare and validate lock path
-    auto lockpath_opt = prepare_lock_path(pImpl, type);
-    if (!lockpath_opt)
+    // 1. Prepare and validate lock path, storing it in pImpl.
+    if (!prepare_lock_path(pImpl, type))
     {
         // pImpl->ec and logging handled inside prepare_lock_path
         return;
     }
-    auto lockpath = *lockpath_opt;
 
     // 2. Acquire Process-Local Lock
     // This ensures correct blocking behavior between threads in the same process.
-    if (!acquire_process_local_lock(pImpl, lockpath, mode, timeout))
+    if (!acquire_process_local_lock(pImpl, mode, timeout))
     {
         // pImpl->ec and logging handled inside acquire_process_local_lock
         return;
     }
 
     // 3. Ensure OS-level Lock Directory
-    if (auto ec = ensure_lock_directory(lockpath); ec)
+    if (auto ec = ensure_lock_directory(pImpl); ec)
     {
         pImpl->ec = ec;
         pImpl->valid = false;
@@ -435,7 +451,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
     }
 
     // 4. Run OS-level Lock Loop (LockFileEx / flock)
-    if (!run_os_lock_loop(pImpl, lockpath, mode, timeout))
+    if (!run_os_lock_loop(pImpl, mode, timeout))
     {
         // pImpl->ec handled inside run_os_lock_loop
         pImpl->valid = false;
@@ -446,8 +462,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
     // Success
 }
 
-static std::optional<std::filesystem::path> prepare_lock_path(FileLockImpl *pImpl,
-                                                              ResourceType type)
+static bool prepare_lock_path(FileLockImpl *pImpl, ResourceType type)
 {
     auto lockpath = FileLock::get_expected_lock_fullname_for(pImpl->path, type);
     if (lockpath.empty())
@@ -456,26 +471,26 @@ static std::optional<std::filesystem::path> prepare_lock_path(FileLockImpl *pImp
         pImpl->valid = false;
         LOGGER_WARN("FileLock: get_expected_lock_fullname_for failed for '{}'",
                     pImpl->path.string());
-        return std::nullopt;
+        return false;
     }
-    return lockpath;
+    pImpl->canonical_lock_file_path = lockpath; // Store the canonical lock file path
+    return true;
 }
 
-static bool acquire_process_local_lock(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
-                                       LockMode mode,
+static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
                                        std::optional<std::chrono::milliseconds> timeout)
 {
     try
     {
         // Normalize the path to generate a consistent key for the lock registry.
-        pImpl->lock_key = make_lock_key(lockpath);
+        pImpl->lock_key = make_lock_key(pImpl->canonical_lock_file_path);
         LOGGER_TRACE("FileLock: Using lock key '{}'", pImpl->lock_key);
     }
     catch (const std::exception &e)
     {
         pImpl->ec = std::make_error_code(std::errc::io_error);
         LOGGER_WARN("FileLock: make_lock_key path conversion for '{}' threw: {}.",
-                    lockpath.string(), e.what());
+                    pImpl->canonical_lock_file_path.string(), e.what());
         pImpl->valid = false;
         return false;
     }
@@ -600,11 +615,11 @@ static void rollback_process_local_lock(FileLockImpl *pImpl)
     }
 }
 
-static std::error_code ensure_lock_directory(const std::filesystem::path &lockpath)
+static std::error_code ensure_lock_directory(FileLockImpl *pImpl)
 {
     try
     {
-        auto parent_dir = lockpath.parent_path();
+        auto parent_dir = pImpl->canonical_lock_file_path.parent_path();
         if (!parent_dir.empty())
         {
             std::error_code create_ec;
@@ -621,7 +636,7 @@ static std::error_code ensure_lock_directory(const std::filesystem::path &lockpa
     catch (const std::exception &e)
     {
         LOGGER_WARN("FileLock: create_directories threw an exception for {}: {}",
-                    lockpath.parent_path().string(), e.what());
+                    pImpl->canonical_lock_file_path.parent_path().string(), e.what());
         return std::make_error_code(std::errc::io_error);
     }
 }
@@ -636,9 +651,9 @@ enum class OsLockResult
 #if defined(PLATFORM_WIN64)
 // Windows implementation of OS-level lock acquisition.
 // Opens a file handle, attempts to acquire an exclusive lock, and closes the handle if unsuccessful.
-static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
-                                                 const std::filesystem::path &lockpath)
+static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl)
 {
+    const auto &lockpath = pImpl->canonical_lock_file_path;
     auto os_path = canonical_lock_path_for_os(lockpath);
     std::wstring lockpath_w = os_path.wstring();
     HANDLE h = CreateFileW(lockpath_w.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -679,8 +694,8 @@ static OsLockResult try_acquire_os_lock_once_win(FileLockImpl *pImpl,
 
 // OS-level lock acquisition loop for both Windows and POSIX.
 // Handles both blocking and non-blocking modes, including timed blocking.
-static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &lockpath,
-                             LockMode mode, std::optional<std::chrono::milliseconds> timeout)
+static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
+                             std::optional<std::chrono::milliseconds> timeout)
 {
     const auto start_time = std::chrono::steady_clock::now();
     const char *mode_str = (mode == LockMode::Blocking) ? "blocking" : "non-blocking";
@@ -691,7 +706,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
     // Windows implementation: uses try_acquire_os_lock_once_win for open and lock
     while (true)
     {
-        OsLockResult result = try_acquire_os_lock_once_win(pImpl, lockpath);
+        OsLockResult result = try_acquire_os_lock_once_win(pImpl);
 
         if (result == OsLockResult::Acquired)
         {
@@ -723,6 +738,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, const std::filesystem::path &l
     // If a lock attempt fails, the file descriptor must be closed before retrying.
     // This makes the POSIX behavior consistent with the Windows `try_acquire_os_lock_once_win`
     // which effectively opens and closes the handle on each attempt if it fails to lock.
+    const auto &lockpath = pImpl->canonical_lock_file_path;
     int fd = -1; // Initialize fd outside the loop.
     auto os_path = canonical_lock_path_for_os(lockpath);
 
