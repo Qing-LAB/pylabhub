@@ -98,10 +98,22 @@ The `JsonConfig` class provides a robust, thread-safe, and process-safe interfac
 
 ### Design Philosophy & Usage
 
--   **RAII (Resource Acquisition Is Initialization):** The lock is acquired in the constructor and automatically released when the object goes out of scope, preventing leaked locks.
--   **Advisory Nature:** It only prevents contention between processes that *also* use `FileLock`. It does not use mandatory OS-level locks.
--   **Cross-Platform:** It provides a unified interface over `flock()` on POSIX systems and `LockFileEx()` on Windows.
--   **Two-Level Locking:** It correctly handles both multi-process and multi-thread contention by using a combination of an OS-level file lock and a process-local mutex registry.
+-   **RAII (Resource Acquisition Is Initialization):** The lock is acquired in the constructor and automatically released when the object goes out of scope. This prevents leaked locks, even in the presence of exceptions or errors.
+
+-   **Advisory Nature:** It only prevents contention between processes that *also* use this `FileLock` class for the same resource. It does not use mandatory OS-level locks and will not prevent a non-cooperating process from accessing the file.
+
+-   **Path Canonicalization:** To be effective, the locking mechanism must ensure that different paths pointing to the same file (e.g., `../file.txt` vs. `/abs/path/to/file.txt`, or paths involving symlinks) resolve to the *same lock*. `FileLock` handles this automatically by canonicalizing the resource path upon construction. It uses `std::filesystem::canonical` to resolve symlinks, falling back to `std::filesystem::absolute` if the resource doesn't exist yet (to allow locking before creation).
+
+-   **Cross-Platform:** It provides a unified interface over `flock()` on POSIX systems and `LockFileEx()` on Windows, handling the platform-specific details internally.
+
+-   **Two-Level Locking:** It correctly handles both multi-process (inter-process) and multi-thread (intra-process) contention by using a combination of an OS-level file lock and a process-local mutex registry. This ensures that even on Windows, where `LockFileEx` locks are per-process, multiple threads in the same process will correctly wait for each other.
+
+### Public API Highlights
+
+-   `FileLock(path, type, mode)`: Constructor that acquires the lock.
+-   `valid()`: Checks if the lock is held.
+-   `get_expected_lock_fullname_for(path, type)`: A `static` utility to predict the canonical lock file name for a resource without creating a lock.
+-   `get_canonical_lock_file_path()`: An instance method to get the actual lock file path being used by an active lock.
 
 ---
 
