@@ -654,6 +654,12 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     if (timeout)
         mode_str = "timed blocking";
 
+    std::chrono::steady_clock::time_point start_time;
+    if (timeout)
+    {
+        start_time = std::chrono::steady_clock::now();
+    }
+
 #if defined(PLATFORM_WIN64)
     auto os_path = canonical_lock_path_for_os(lockpath);
     std::wstring lockpath_w = os_path.wstring();
@@ -700,7 +706,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     else if (timeout)
     {
         // For timed blocking, poll with FAIL_IMMEDIATELY and check timeout.
-        const auto start_time = std::chrono::steady_clock::now();
         flags |= LOCKFILE_FAIL_IMMEDIATELY;
         while (true)
         {
@@ -764,7 +769,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     // If a lock attempt fails, the file descriptor must be closed before retrying.
     // This makes the POSIX behavior consistent with the Windows `try_acquire_os_lock_once_win`
     // which effectively opens and closes the handle on each attempt if it fails to lock.
-    const auto &lockpath = pImpl->canonical_lock_file_path;
     int fd = -1; // Initialize fd outside the loop.
     auto os_path = canonical_lock_path_for_os(lockpath);
 
