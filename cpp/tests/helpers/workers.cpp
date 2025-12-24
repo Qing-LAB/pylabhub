@@ -36,6 +36,58 @@ namespace worker
     // --- FileLock Workers ---
     namespace filelock
     {
+
+        bool atomic_write_int(const fs::path &target, int value)
+        {
+            auto tmp = target;
+            tmp += ".tmp." + std::to_string(
+#if defined(PLATFORM_WIN64)
+                                 static_cast<unsigned long>(GetCurrentProcessId())
+#else
+                                 static_cast<unsigned long>(getpid())
+#endif
+                             );
+
+            {
+                std::ofstream ofs(tmp, std::ios::trunc);
+                if (!ofs.is_open())
+                    return false;
+                ofs << value;
+                ofs.flush();
+                if (!ofs)
+                    return false;
+            }
+
+#if !defined(PLATFORM_WIN64)
+            // ensure file data is on disk
+            int fd = ::open(tmp.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd >= 0)
+            {
+                fsync(fd);
+                ::close(fd);
+            }
+#endif
+
+            std::error_code ec;
+            std::filesystem::rename(tmp, target, ec);
+            if (ec)
+            {
+                std::filesystem::remove(tmp);
+                return false;
+            }
+
+#if !defined(PLATFORM_WIN64)
+            // optionally fsync the directory
+            int dfd = ::open(target.parent_path().c_str(), O_DIRECTORY | O_RDONLY);
+            if (dfd >= 0)
+            {
+                fsync(dfd);
+                ::close(dfd);
+            }
+#endif
+            return true;
+        }
+
         int nonblocking_acquire(const std::string &resource_path_str)
         {
             pylabhub::utils::Initialize();
@@ -122,12 +174,9 @@ namespace worker
                         return 1;
                     }
                     try {
-                        std::ofstream ofs(*locked_path_opt);
-                        ofs << (current_value + 1);
-                        ofs.flush();
-                        ofs.close();
-                            //fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}.\n", 
-                            //        formatted_time(std::chrono::system_clock::now()), PID, current_value + 1);
+                        atomic_write_int(*locked_path_opt, current_value + 1);
+                        //fmt::print(stderr, "[TIME {}] worker {}: incremented counter to {}.\n", 
+                        //        formatted_time(std::chrono::system_clock::now()), PID, current_value + 1);
                     }
                     catch (...) {
                         fmt::print(stderr, "[TIME {}] worker {}: failed to write counter.\n", 
