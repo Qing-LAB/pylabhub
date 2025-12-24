@@ -284,21 +284,25 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
         {
             // For a directory, the lock file is named after the directory and
             // lives in its parent directory.
-            auto fname_str = abs_target.filename().string();
+            auto fname = abs_target.filename();
             auto parent = abs_target.parent_path();
 
             // If the filename is empty (e.g. for root paths like "/" or "C:\"),
             // use a fixed, safe name for the lock file.
-            if (fname_str.empty() || fname_str == "." || fname_str == "..")
+            if (fname.empty() || fname == "." || fname == "..")
             {
-                fname_str = "pylabhub_root";
+                fname = "pylabhub_root";
             }
-            return parent / (fname_str + ".dir.lock");
+
+            fname += ".dir.lock";
+            return parent / fname;
         }
         else
         {
             // For a file, the lock is alongside the file.
-            return abs_target.string() + ".lock";
+            auto p = abs_target;
+            p += ".lock";
+            return p;
         }
     }
     catch (const std::exception &e)
