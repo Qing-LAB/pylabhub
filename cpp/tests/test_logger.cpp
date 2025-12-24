@@ -146,7 +146,7 @@ TEST_F(LoggerTest, BasicLogging)
     L.set_logfile(log_path.string());
     L.set_level(Logger::Level::L_TRACE);
 
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
     std::string contents_before;
     ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
     size_t lines_before = count_lines(contents_before);
@@ -179,7 +179,7 @@ TEST_F(LoggerTest, LogLevelFiltering)
 
     Logger &L = Logger::instance();
     L.set_logfile(log_path.string());
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
 
     std::string contents_before;
     ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
@@ -215,7 +215,7 @@ TEST_F(LoggerTest, BadFormatString)
     Logger &L = Logger::instance();
     L.set_logfile(log_path.string());
     L.set_level(Logger::Level::L_INFO);
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
 
     std::string bad_fmt = "Missing arg: {}";
     LOGGER_INFO_RT(bad_fmt); // This should not throw but should log an error.
@@ -238,14 +238,14 @@ TEST_F(LoggerTest, DefaultSinkAndSwitching)
     L.flush();
 
     L.set_logfile(log_path.string());
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
     LOGGER_INFO("This message should be logged to the file.");
     ASSERT_TRUE(wait_for_string_in_file(log_path, "This message should be logged to the file."));
 
     std::string contents;
     ASSERT_TRUE(read_file_contents(log_path.string(), contents));
     EXPECT_EQ(contents.find("This message should go to the default console sink"), std::string::npos);
-    EXPECT_NE(contents.find("Switched log to file"), std::string::npos);
+    EXPECT_NE(contents.find("Log sink switched from: Console"), std::string::npos);
 }
 
 // What: A chaos test to verify the logger's thread-safety under heavy load.
@@ -260,7 +260,7 @@ TEST_F(LoggerTest, MultithreadStress)
     Logger &L = Logger::instance();
     L.set_logfile(log_path.string());
     L.set_level(Logger::Level::L_DEBUG);
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
 
     const int LOG_THREADS = scaled_value(32, 8);
     const int MESSAGES_PER_THREAD = scaled_value(1000, 100);
@@ -298,7 +298,7 @@ TEST_F(LoggerTest, MultithreadStress)
     for (auto &t : threads) t.join();
     // Ensure the logger is definitively set to the log file before flushing and verifying.
     L.set_logfile(log_path.string());
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
 
     L.flush();
 
@@ -312,8 +312,10 @@ TEST_F(LoggerTest, MultithreadStress)
             found_threads++;
     }
     EXPECT_EQ(found_threads, static_cast<size_t>(LOG_THREADS));
-    EXPECT_NE(contents.find("Switched log to Console"), std::string::npos);
-    EXPECT_NE(contents.find("Switched log to file"), std::string::npos);
+    // Check that we have messages indicating a switch TO console
+    EXPECT_NE(contents.find("Switching log sink to: Console"), std::string::npos);
+    // Check that we have messages indicating a switch FROM console (i.e., to file)
+    EXPECT_NE(contents.find("Log sink switched from: Console"), std::string::npos);
 }
 
 // What: Ensures the `flush()` command is synchronous and waits for the logger's
@@ -329,7 +331,7 @@ TEST_F(LoggerTest, FlushWaitsForQueue)
     Logger &L = Logger::instance();
     L.set_logfile(log_path.string());
     L.set_level(Logger::Level::L_TRACE);
-    ASSERT_TRUE(wait_for_string_in_file(log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(log_path, "Log sink switched from: Console"));
     std::string contents_before;
     ASSERT_TRUE(read_file_contents(log_path.string(), contents_before));
     size_t lines_before = count_lines(contents_before);
@@ -401,7 +403,7 @@ TEST_F(LoggerTest, ReentrantErrorCallback)
 
     Logger &L = Logger::instance();
     L.set_logfile(initial_log_path.string());
-    ASSERT_TRUE(wait_for_string_in_file(initial_log_path, "Switched log to file"));
+    ASSERT_TRUE(wait_for_string_in_file(initial_log_path, "Log sink switched from: Console"));
 
     std::atomic<bool> callback_invoked(false);
     L.set_write_error_callback([&](const std::string &msg) {
@@ -598,11 +600,11 @@ TEST_F(LoggerTest, ConcurrentLifecycleChaos)
         });
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
-    // The critical action: shut down the logger while worker threads are busy.
-    Logger::instance().shutdown();
-    stop_flag.store(true);
-
-    for (auto &t : threads) t.join();
-    SUCCEED(); // Success is simply not crashing.
-}
+        std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
+        // The critical action: shut down the logger while worker threads are busy.
+        Logger::instance().shutdown();
+        stop_flag.store(true);
+    
+        for (auto &t : threads) t.join();
+        SUCCEED(); // Success is simply not crashing.
+    }

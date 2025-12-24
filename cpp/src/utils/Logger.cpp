@@ -393,23 +393,13 @@ class EventLogSink : public Sink
 #endif // PLATFORM_WIN64
 
 // --- Control Commands for the queue ---
-struct SetConsoleSinkCommand
+struct SetSinkCommand
 {
+    std::unique_ptr<Sink> new_sink;
 };
-struct SetFileSinkCommand
+struct SinkCreationErrorCommand
 {
-    std::string path;
-    bool use_flock;
-};
-struct SetSyslogSinkCommand
-{
-    std::string ident;
-    int option;
-    int facility;
-};
-struct SetEventLogSinkCommand
-{
-    std::wstring source_name;
+    std::string error_message;
 };
 struct FlushCommand
 {
@@ -420,9 +410,8 @@ struct SetErrorCallbackCommand
     std::function<void(const std::string &)> callback;
 };
 
-using Command =
-    std::variant<LogMessage, SetConsoleSinkCommand, SetFileSinkCommand, SetSyslogSinkCommand,
-                 SetEventLogSinkCommand, FlushCommand, SetErrorCallbackCommand>;
+using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand,
+                             FlushCommand, SetErrorCallbackCommand>;
 
 // --- Private Implementation (Pimpl) ---
 struct Impl
@@ -489,18 +478,26 @@ void Impl::worker_loop()
 
     while (true)
     {
+        // The final flush must be done outside the lock, in case the sink blocks.
+        bool do_final_flush_and_break = false;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
 
-            // Before exiting, process any remaining items, then do a final flush.
             if (shutdown_requested_.load() && queue_.empty())
             {
-                if (sink_)
-                    sink_->flush();
-                break;
+                do_final_flush_and_break = true;
             }
             local_queue.swap(queue_);
+        }
+
+        if (do_final_flush_and_break)
+        {
+            if (sink_)
+            {
+                sink_->flush();
+            }
+            break;
         }
 
         for (auto &cmd : local_queue)
@@ -508,80 +505,51 @@ void Impl::worker_loop()
             try
             {
                 std::visit(
-                    [this](auto &&arg)
-                    {
+                    [this](auto &&arg) {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
-                            if (sink_)
+                            if (sink_ &&
+                                arg.level >= level_.load(std::memory_order_relaxed))
                                 sink_->write(arg);
                         }
-                        else if constexpr (std::is_same_v<T, SetConsoleSinkCommand>)
-                        {
-                            if (sink_)
-                            {
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Switched log to Console")});
-                                sink_->flush();
-                            }
-                            sink_ = std::make_unique<ConsoleSink>();
-                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(),
-                                          make_buffer("Switched log to Console")});
-                        }
-                        else if constexpr (std::is_same_v<T, SetFileSinkCommand>)
-                        {
-                            if (sink_)
-                            {
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Switched log to file: {}", arg.path)});
-                                sink_->flush();
-                            }
-                            sink_ = std::make_unique<FileSink>(arg.path, arg.use_flock);
-                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(),
-                                          make_buffer("Switched log to file: {}", arg.path)});
-                        }
-#if !defined(PLATFORM_WIN64)
-                        else if constexpr (std::is_same_v<T, SetSyslogSinkCommand>)
-                        {
-                            if (sink_)
-                            {
-                                sink_->flush();
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Switched log to Syslog")});
-                            }
-                            sink_ = std::make_unique<SyslogSink>(
-                                arg.ident.empty() ? nullptr : arg.ident.c_str(), arg.option,
-                                arg.facility);
-                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(),
-                                          make_buffer("Switched log to Syslog")});
-                        }
-#endif
-#ifdef PLATFORM_WIN64
-                        else if constexpr (std::is_same_v<T, SetEventLogSinkCommand>)
-                        {
-                            if (sink_)
-                            {
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Switched log to Windows Event Log")});
-                                sink_->flush();
-                            }
-                            sink_ = std::make_unique<EventLogSink>(arg.source_name.c_str());
-                            sink_->write({Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                          get_native_thread_id(),
-                                          make_buffer("Switched log to Windows Event Log")});
-                        }
-#endif
+                                                else if constexpr (std::is_same_v<T, SetSinkCommand>)
+                                                {
+                                                    // Store descriptions before the switch
+                                                    std::string old_desc = sink_ ? sink_->description() : "null";
+                                                    std::string new_desc =
+                                                        arg.new_sink ? arg.new_sink->description() : "null";
+
+                                                    if (sink_)
+                                                    {
+                                                        sink_->write({Logger::Level::L_SYSTEM,
+                                                                      std::chrono::system_clock::now(),
+                                                                      get_native_thread_id(),
+                                                                      make_buffer("Switching log sink to: {}",
+                                                                                  new_desc)});
+                                                        sink_->flush();
+                                                    }
+
+                                                    sink_ = std::move(arg.new_sink);
+
+                                                    if (sink_)
+                                                    {
+                                                        sink_->write({Logger::Level::L_SYSTEM,
+                                                                      std::chrono::system_clock::now(),
+                                                                      get_native_thread_id(),
+                                                                      make_buffer("Log sink switched from: {}",
+                                                                                  old_desc)});
+                                                    }
+                                                }
+                                                else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
+                                                {
+                                                    if (error_callback_)
+                                                    {
+                                                        auto cb = error_callback_;
+                                                        callback_dispatcher_.post(
+                                                            [cb, msg = arg.error_message]() { cb(msg); });
+                                                    }
+                                                }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
                             if (sink_)
@@ -681,19 +649,46 @@ void Logger::resetForTesting()
 
 void Logger::set_console()
 {
-    pImpl->enqueue_command(SetConsoleSinkCommand{});
+    try
+    {
+        auto sink = std::make_unique<ConsoleSink>();
+        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
+    }
 }
 
 void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
-    pImpl->enqueue_command(SetFileSinkCommand{utf8_path, use_flock});
+    try
+    {
+        auto sink = std::make_unique<FileSink>(utf8_path, use_flock);
+        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
+    }
 }
 
 void Logger::set_syslog(const char *ident, int option, int facility)
 {
 #if !defined(PLATFORM_WIN64)
-    pImpl->enqueue_command(
-        SetSyslogSinkCommand{ident ? std::string(ident) : std::string(), option, facility});
+    try
+    {
+        auto sink =
+            std::make_unique<SyslogSink>(ident ? ident : "", option, facility);
+        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
+    }
 #else
     (void)ident;
     (void)option;
@@ -704,7 +699,16 @@ void Logger::set_syslog(const char *ident, int option, int facility)
 void Logger::set_eventlog(const wchar_t *source_name)
 {
 #ifdef PLATFORM_WIN64
-    pImpl->enqueue_command(SetEventLogSinkCommand{source_name});
+    try
+    {
+        auto sink = std::make_unique<EventLogSink>(source_name);
+        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
+    }
 #else
     (void)source_name;
 #endif
