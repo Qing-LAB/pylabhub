@@ -6,8 +6,7 @@
  * class, including file I/O, locking, and the platform-specific atomic write
  * helper function.
  ******************************************************************************/
-#include "utils/JsonConfig.hpp"
-#include "utils/PathUtil.hpp"
+
 #include <fmt/format.h>
 #include <fstream>
 #include <iostream>
@@ -24,6 +23,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "format_tools.hpp"
+
+#include "utils/JsonConfig.hpp"
 
 namespace pylabhub::utils
 {

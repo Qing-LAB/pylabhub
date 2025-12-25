@@ -74,12 +74,34 @@ install(TARGETS pylabhub-basic
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
+# This assumes the current CMakeLists is in cpp/src and headers are in cpp/include
+get_filename_component(_this_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)   # e.g. .../project/cpp/src
+get_filename_component(_cpp_dir "${_this_dir}/.." ABSOLUTE)            # .../project/cpp
+set(PYLABHUB_CORE_INCLUDE_DIR "${_cpp_dir}/include")
+
+# then reuse the same logic as above:
+file(GLOB_RECURSE CORE_HEADER_FILES_REL
+  RELATIVE "${PYLABHUB_CORE_INCLUDE_DIR}"
+  "${PYLABHUB_CORE_INCLUDE_DIR}/*.h" "${PYLABHUB_CORE_INCLUDE_DIR}/*.hpp"
+)
+
+# exclude the utils subdirectories (relative paths). Adjust regex anchors as needed.
+# This removes any file whose relative path starts with "utils/" or "IgorXOP/".
+list(FILTER CORE_HEADER_FILES_REL EXCLUDE REGEX "^utils/")
+message(STASUS "  ** header files found for basic library: ${CORE_HEADER_FILES_REL}")
+
+# Convert to absolute paths for install(FILES ...)
+set(CORE_HEADER_FILES "")
+foreach(_rel IN LISTS CORE_HEADER_FILES_REL)
+  list(APPEND CORE_HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
+endforeach()
+
 # Install the public headers associated with the core library.
 install(FILES
-  ${CMAKE_SOURCE_DIR}/include/platform.hpp
-  ${CMAKE_SOURCE_DIR}/include/PythonLoader.hpp
+  ${CORE_HEADER_FILES}
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
 
 # --- Staging ---
 
@@ -101,13 +123,22 @@ pylabhub_stage_executable(
 )
 
 # Stage the public headers for the core library to match the installation.
-add_custom_command(TARGET stage_main_artifacts POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy
-          "${CMAKE_SOURCE_DIR}/include/platform.hpp"
-          "${CMAKE_SOURCE_DIR}/include/PythonLoader.hpp"
-          "${PYLABHUB_STAGING_DIR}/include/"
-  COMMENT "Staging public headers for pylabhub-basic"
-)
+# Stage each header preserving relative subpath
+foreach(_rel IN LISTS CORE_HEADER_FILES_REL)
+  set(_src "${PYLABHUB_CORE_INCLUDE_DIR}/${_rel}")
+  set(_dst_dir "${PYLABHUB_STAGING_DIR}/include/${_rel}")
+  get_filename_component(_dst_dir_path "${_dst_dir}" DIRECTORY)
+  message(STATUS "  ** adding header file ${_src} to be staged")
+  # For each header create two POST_BUILD steps on the staging target:
+  # 1) ensure destination directory exists
+  # 2) copy the file (only if different)
+  add_custom_command(TARGET stage_main_artifacts POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_dst_dir_path}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_src}" "${PYLABHUB_STAGING_DIR}/include/${_rel}"
+    COMMENT "Staging header: ${_rel}"
+    VERBATIM
+  )
+endforeach()
 
 # Ensure the local staging target depends on both build targets before executing.
 add_dependencies(stage_main_artifacts pylabhub-basic pylabhub-hubshell create_staging_dirs)

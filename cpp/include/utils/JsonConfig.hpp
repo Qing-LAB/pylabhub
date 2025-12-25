@@ -84,12 +84,13 @@
 #include <type_traits>
 #include <vector>
 
-#include "PathUtil.hpp"
 #include "nlohmann/json.hpp"
+#include "format_tools.hpp"
+#include "recursion_guard.hpp"
+#include "scope_guard.hpp"
+
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
-#include "utils/RecursionGuard.hpp"
-#include "utils/ScopeGuard.hpp"
 
 #include "pylabhub_utils_export.h"
 // Disable warning C4251 for Pimpl members.
@@ -97,6 +98,8 @@
 #pragma warning(push)
 #pragma warning(disable : 4251)
 #endif
+
+using namespace pylabhub::basics;
 
 namespace pylabhub::utils
 {

@@ -73,14 +73,17 @@ function(pylabhub_stage_headers)
   set(multiValueArgs "TARGETS;DIRECTORIES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT ARG_SUBDIR)
-    message(FATAL_ERROR "pylabhub_stage_headers requires a non-empty SUBDIR argument.")
-  endif()
   if(NOT ARG_ATTACH_TO)
     set(ARG_ATTACH_TO "stage_third_party_deps")
   endif()
 
-  set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+  if(NOT ARG_SUBDIR)
+    message(STATUS " ** pylabhug_stage_headers prepare staging to ${PYLABHUB_STAGING_DIR}/include")
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
+  else()
+    message(STATUS " ** pylabhub_stage_headers prepare staging to ${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+  endif()
 
   # Stage headers from explicit directories
   foreach(DIR IN LISTS ARG_DIRECTORIES)
