@@ -4,7 +4,7 @@
 
 #include <gtest/gtest.h>
 
-#include "utils/RecursionGuard.hpp"
+#include "recursion_guard.hpp"
 
 #include <functional>
 #include <memory>
@@ -14,7 +14,7 @@
 #include <chrono>
 #include <atomic>
 
-using namespace pylabhub::utils;
+using namespace pylabhub::basics;
 
 namespace {
 

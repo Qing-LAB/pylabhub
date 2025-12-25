@@ -2,7 +2,7 @@
 #pragma once
 #include <string>
 
-namespace pyportal
+namespace pylabhub::utils
 {
 #pragma pack(2)
 
@@ -87,4 +87,4 @@ extern "C"
 }
 #endif
 
-} // namespace pyportal
+} // namespace pylabhub::utils

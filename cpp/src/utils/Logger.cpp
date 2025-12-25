@@ -182,7 +182,7 @@ static fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...arg
 // --Helper: format a LogMessage into a string
 static std::string format_message(const LogMessage &msg)
 {
-    std::string time_str = pylabhub::basic::tools::formatted_time(msg.timestamp);
+    std::string time_str = pylabhub::format_tools::formatted_time(msg.timestamp);
     std::string level_str = level_to_string(msg.level);
     std::string thread_str = fmt::format("{}", msg.thread_id);
     std::string body_str = std::string(msg.body.data(), msg.body.size());

@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <optional>
 
-namespace pylabhub::utils
+namespace pylabhub::basics
 {
 
 template <typename F>
