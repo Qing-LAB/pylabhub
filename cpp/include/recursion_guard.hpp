@@ -9,7 +9,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace pylabhub::utils
+namespace pylabhub::basics
 {
 
 // NOTE: This class is intentionally an inline, header-only utility and is NOT
@@ -103,4 +103,4 @@ class RecursionGuard
     const void *key_;
 };
 
-} // namespace pylabhub::utils
+} // namespace pylabhub::basics

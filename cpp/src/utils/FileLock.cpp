@@ -48,13 +48,6 @@
  * same process) attempting to lock the same resource will correctly block or
  * fail according to their `LockMode`.
  ******************************************************************************/
-
-#include "utils/FileLock.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
-#include "utils/PathUtil.hpp"
-#include "utils/ScopeGuard.hpp"
-
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -76,6 +69,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "scope_guard.hpp"
+
+#include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
+
 
 // Helper to convert UTF-16 wstring to UTF-8 string using the Windows API.
 // This replaces the deprecated std::wstring_convert and <codecvt> functionality.

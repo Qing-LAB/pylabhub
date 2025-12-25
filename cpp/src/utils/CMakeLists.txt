@@ -15,8 +15,6 @@ set(UTILS_SOURCES
   Logger.cpp
   JsonConfig.cpp
   FileLock.cpp
-  AtomicGuard.cpp
-  # RecursionGuard.cpp is now a header-only utility.
   # Add any new .cpp files for this library to the list above.
 )
 
