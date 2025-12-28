@@ -46,10 +46,23 @@ endif()
 add_executable(multiprocess_tests
   test_filelock.cpp
   test_jsonconfig.cpp
-  test_logger.cpp
 )
 
+# --- 3. Logger Test Executable ---
+# This executable is built from the refactored, split-out logger test files.
+add_executable(test_logger
+  # Sources are added from the subdirectory
+)
+add_subdirectory(logger)
+
 target_link_libraries(multiprocess_tests
+  PRIVATE
+  pylabhub::utils
+  pylabhub::third_party::gtest
+  pylabhub_test_helpers
+)
+
+target_link_libraries(test_logger
   PRIVATE
   pylabhub::utils
   pylabhub::third_party::gtest
@@ -63,6 +76,15 @@ if(PYLABHUB_LOGGER_DEBUG)
 endif()
 if(MSVC)
   target_compile_options(multiprocess_tests PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+endif()
+
+target_compile_features(test_logger PRIVATE cxx_std_20)
+target_compile_definitions(test_logger PRIVATE LOGGER_COMPILE_LEVEL=0)
+if(PYLABHUB_LOGGER_DEBUG)
+  target_compile_definitions(test_logger PRIVATE _LOGGER_DEBUG_ENABLED=1)
+endif()
+if(MSVC)
+  target_compile_options(test_logger PRIVATE /EHsc /wd5105 /Zc:preprocessor)
 endif()
 
 # --- Staging ---
@@ -81,9 +103,14 @@ pylabhub_stage_executable(
   DESTINATION bin
   ATTACH_TO stage_tests
 )
+pylabhub_stage_executable(
+  TARGET test_logger
+  DESTINATION bin
+  ATTACH_TO stage_tests
+)
 
 # Ensure staging happens after the executables are built, and after the staging directories have been created.
-add_dependencies(stage_tests utils_tests multiprocess_tests create_staging_dirs)
+add_dependencies(stage_tests utils_tests multiprocess_tests test_logger create_staging_dirs)
 
 # --- CTest Integration ---
 
@@ -92,12 +119,13 @@ add_dependencies(stage_tests utils_tests multiprocess_tests create_staging_dirs)
 #    executable runnable by gtest_discover_tests.
 add_dependencies(utils_tests stage_pylabhub_utils)
 add_dependencies(multiprocess_tests stage_pylabhub_utils)
+add_dependencies(test_logger stage_pylabhub_utils)
 
 # 2. RPATH (for macOS/Linux): Set the RPATH for the test executables so they
 #    can find the staged library at build/run time. On Windows, this has no effect.
 if(NOT WIN32)
   set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/tests")
-  set_target_properties(utils_tests multiprocess_tests
+  set_target_properties(utils_tests multiprocess_tests test_logger
     PROPERTIES
       BUILD_RPATH "${STAGED_LIB_DIR}"
   )
@@ -119,5 +147,11 @@ gtest_discover_tests(multiprocess_tests
         # This is primarily for Windows, but doesn't hurt other platforms.
         ENVIRONMENT "PATH=${STAGED_LIB_DIR}"
 )
+gtest_discover_tests(test_logger
+    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
+    PROPERTIES
+        # This is primarily for Windows, but doesn't hurt other platforms.
+        ENVIRONMENT "PATH=${STAGED_LIB_DIR}"
+)
 
-message(STATUS "Configured test executables: utils_tests, multiprocess_tests")
+message(STATUS "Configured test executables: utils_tests, multiprocess_tests, test_logger")
