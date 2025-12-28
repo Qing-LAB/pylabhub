@@ -43,6 +43,39 @@ int main(int argc, char **argv) {
                     worker::logger::stress_log(argv[2], std::stoi(argv[3]));
                     return 0;
                 }
+                if (scenario == "test_basic_logging" && argc > 2) {
+                    return worker::logger::test_basic_logging(argv[2]);
+                }
+                if (scenario == "test_log_level_filtering" && argc > 2) {
+                    return worker::logger::test_log_level_filtering(argv[2]);
+                }
+                if (scenario == "test_bad_format_string" && argc > 2) {
+                    return worker::logger::test_bad_format_string(argv[2]);
+                }
+                if (scenario == "test_default_sink_and_switching" && argc > 2) {
+                    return worker::logger::test_default_sink_and_switching(argv[2]);
+                }
+                if (scenario == "test_multithread_stress" && argc > 2) {
+                    return worker::logger::test_multithread_stress(argv[2]);
+                }
+                if (scenario == "test_flush_waits_for_queue" && argc > 2) {
+                    return worker::logger::test_flush_waits_for_queue(argv[2]);
+                }
+                if (scenario == "test_shutdown_idempotency" && argc > 2) {
+                    return worker::logger::test_shutdown_idempotency(argv[2]);
+                }
+                if (scenario == "test_reentrant_error_callback" && argc > 2) {
+                    return worker::logger::test_reentrant_error_callback(argv[2]);
+                }
+                if (scenario == "test_write_error_callback_async" && argc > 1) {
+                    return worker::logger::test_write_error_callback_async();
+                }
+                if (scenario == "test_platform_sinks" && argc > 1) {
+                    return worker::logger::test_platform_sinks();
+                }
+                if (scenario == "test_concurrent_lifecycle_chaos" && argc > 2) {
+                    return worker::logger::test_concurrent_lifecycle_chaos(argv[2]);
+                }
             }
         }
         // If mode not recognized, fall through to running tests, which will likely fail
@@ -51,9 +84,9 @@ int main(int argc, char **argv) {
 
     // If not in worker mode, or if worker dispatch fails, run the tests.
     if (argc >= 1) g_self_exe_path = argv[0];
-    pylabhub::utils::Initialize();
+    pylabhub::utils::InitializeApplication();
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
-    pylabhub::utils::Finalize();
+    pylabhub::utils::FinalizeApplication();
     return result;
 }
