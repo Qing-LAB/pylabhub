@@ -9,7 +9,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "PREFER_VENDOR_NLOHMANN": "ON",
+        "USE_VENDOR_NLOHMANN_ONLY": "ON",
         "THIRD_PARTY_ZMQ_FORCE_VARIANT": "static",
         "THIRD_PARTY_DISABLE_TESTS": "ON",
         "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"

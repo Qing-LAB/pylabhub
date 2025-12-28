@@ -3,150 +3,304 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib> // For std::abort
 #include <future>
+#include <map>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
+
+#include <fmt/core.h>
 
 namespace
 {
-// A global flag to ensure initialization and finalization are paired correctly.
-std::atomic<bool> g_is_initialized = {false};
 
-// --- Callback Registries ---
-struct Finalizer
+struct InternalModule; // Forward declaration
+
+// The internal representation of a module used for building the dependency graph.
+struct InternalModule
 {
     std::string name;
-    std::function<void()> func;
-    std::chrono::milliseconds timeout;
+    std::function<void()> startup;
+    pylabhub::utils::ModuleShutdown shutdown;
+
+    // ---
+    // Graph properties
+    // ---
+    // The number of modules this one depends on.
+    int in_degree = 0;
+    // A list of modules that depend on this one.
+    std::vector<InternalModule *> dependents;
 };
 
-std::mutex g_registry_mutex;
-std::vector<std::function<void()>> g_initializers;
-std::vector<Finalizer> g_finalizers;
+class LifecycleManager
+{
+public:
+    static LifecycleManager &instance()
+    {
+        static LifecycleManager inst;
+        return inst;
+    }
+
+    LifecycleManager(const LifecycleManager &) = delete;
+    LifecycleManager &operator=(const LifecycleManager &) = delete;
+
+    void registerModule(pylabhub::utils::Module module)
+    {
+        if (m_is_initialized.load(std::memory_order_acquire))
+        {
+            fmt::print(stderr,
+                       "[pylabhub-lifecycle] FATAL: Attempted to register module '{}' after "
+                       "initialization has started. Aborting.\n",
+                       module.name);
+            std::abort();
+        }
+        std::lock_guard<std::mutex> lock(m_registry_mutex);
+        m_registered_modules.push_back(std::move(module));
+    }
+
+    void initialize()
+    {
+        if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
+        {
+            return; // Idempotent
+        }
+
+        fmt::print(stderr, "[pylabhub-lifecycle] Initializing application...\n");
+
+        try
+        {
+            buildGraph();
+            m_startup_order = topologicalSort();
+        }
+        catch (const std::runtime_error &e)
+        {
+            fmt::print(stderr, "[pylabhub-lifecycle] FATAL: Lifecycle dependency error: {}. Aborting.\n",
+                       e.what());
+            std::abort();
+        }
+
+        m_shutdown_order = m_startup_order;
+        std::reverse(m_shutdown_order.begin(), m_shutdown_order.end());
+
+        fmt::print(stderr,
+                   "[pylabhub-lifecycle] Startup sequence determined for {} modules:\n",
+                   m_startup_order.size());
+        for (size_t i = 0; i < m_startup_order.size(); ++i)
+        {
+            fmt::print(stderr, "[pylabhub-lifecycle]   ({}/{}) -> {}\n", i + 1,
+                       m_startup_order.size(), m_startup_order[i]->name);
+        }
+
+        for (const auto *module : m_startup_order)
+        {
+            try
+            {
+                fmt::print(stderr, "[pylabhub-lifecycle] -> Starting module: '{}'\n", module->name);
+                module->startup();
+            }
+            catch (const std::exception &e)
+            {
+                fmt::print(stderr,
+                           "[pylabhub-lifecycle] FATAL: Module '{}' threw an exception during "
+                           "startup: {}. Aborting.\n",
+                           module->name, e.what());
+                std::abort();
+            }
+            catch (...)
+            {
+                fmt::print(stderr,
+                           "[pylabhub-lifecycle] FATAL: Module '{}' threw an unknown exception "
+                           "during startup. Aborting.\n",
+                           module->name);
+                std::abort();
+            }
+        }
+        fmt::print(stderr, "[pylabhub-lifecycle] Application initialization complete.\n");
+    }
+
+    void finalize()
+    {
+        if (!m_is_initialized.load(std::memory_order_acquire) ||
+            m_is_finalized.exchange(true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+
+        fmt::print(stderr, "[pylabhub-lifecycle] Finalizing application...\n");
+        fmt::print(stderr,
+                   "[pylabhub-lifecycle] Shutdown sequence determined for {} modules:\n",
+                   m_shutdown_order.size());
+        for (size_t i = 0; i < m_shutdown_order.size(); ++i)
+        {
+            fmt::print(stderr, "[pylabhub-lifecycle]   ({}/{}) <- {}\n", i + 1,
+                       m_shutdown_order.size(), m_shutdown_order[i]->name);
+        }
+
+        for (const auto *module : m_shutdown_order)
+        {
+            try
+            {
+                fmt::print(stderr, "[pylabhub-lifecycle] <- Shutting down module: '{}'\n",
+                           module->name);
+                std::future<void> future = std::async(std::launch::async, module->shutdown.func);
+                auto status = future.wait_for(module->shutdown.timeout);
+
+                if (status == std::future_status::timeout)
+                {
+                    fmt::print(stderr,
+                               "[pylabhub-lifecycle] WARNING: Shutdown function for module '{}' "
+                               "timed out after {}ms.\n",
+                               module->name, module->shutdown.timeout.count());
+                }
+                else
+                {
+                    future.get(); // re-throws exceptions
+                }
+            }
+            catch (const std::exception &e)
+            {
+                fmt::print(stderr,
+                           "[pylabhub-lifecycle] ERROR: Module '{}' threw an exception during "
+                           "shutdown: {}\n",
+                           module->name, e.what());
+            }
+            catch (...)
+            {
+                fmt::print(stderr,
+                           "[pylabhub-lifecycle] ERROR: Module '{}' threw an unknown exception "
+                           "during shutdown.\n",
+                           module->name);
+            }
+        }
+
+        fmt::print(stderr, "[pylabhub-lifecycle] Application finalization complete.\n");
+    }
+
+private:
+    LifecycleManager() = default;
+    ~LifecycleManager() = default;
+
+    void buildGraph()
+    {
+        std::lock_guard<std::mutex> lock(m_registry_mutex);
+
+        // 1. Create nodes for all registered modules
+        for (const auto &mod_def : m_registered_modules)
+        {
+            if (m_module_graph.count(mod_def.name))
+            {
+                throw std::runtime_error("Duplicate module name detected: '" + mod_def.name + "'.");
+            }
+            m_module_graph[mod_def.name] = {mod_def.name, mod_def.startup, mod_def.shutdown};
+        }
+
+        // 2. Link dependencies and calculate in-degrees
+        for (const auto &mod_def : m_registered_modules)
+        {
+            InternalModule &module = m_module_graph.at(mod_def.name);
+            module.in_degree = mod_def.dependencies.size();
+
+            for (const auto &dep_name : mod_def.dependencies)
+            {
+                auto it = m_module_graph.find(dep_name);
+                if (it == m_module_graph.end())
+                {
+                    throw std::runtime_error("Module '" + mod_def.name +
+                                             "' has an undefined dependency: '" + dep_name + "'.");
+                }
+                // Add 'module' to the list of dependents for 'dep_name'
+                it->second.dependents.push_back(&module);
+            }
+        }
+        // Original registration list no longer needed
+        m_registered_modules.clear();
+    }
+
+    std::vector<InternalModule *> topologicalSort()
+    {
+        std::vector<InternalModule *> sorted_order;
+        sorted_order.reserve(m_module_graph.size());
+        std::vector<InternalModule *> queue;
+
+        // 1. Find all nodes with in-degree 0 and add them to the queue
+        for (auto &pair : m_module_graph)
+        {
+            if (pair.second.in_degree == 0)
+            {
+                queue.push_back(&pair.second);
+            }
+        }
+
+        // 2. Process the queue (Kahn's algorithm)
+        size_t head = 0;
+        while (head < queue.size())
+        {
+            InternalModule *u = queue[head++];
+            sorted_order.push_back(u);
+
+            for (InternalModule *v : u->dependents)
+            {
+                v->in_degree--;
+                if (v->in_degree == 0)
+                {
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        // 3. Check for cycles
+        if (sorted_order.size() != m_module_graph.size())
+        {
+            std::string cycle_node_name;
+            for (const auto &pair : m_module_graph)
+            {
+                if (pair.second.in_degree > 0)
+                {
+                    cycle_node_name = pair.first;
+                    break;
+                }
+            }
+            throw std::runtime_error("Circular dependency detected in modules. Module '" +
+                                     cycle_node_name + "' is part of a cycle.");
+        }
+        return sorted_order;
+    }
+
+    // ---
+    // State
+    // ---
+    std::atomic<bool> m_is_initialized = {false};
+    std::atomic<bool> m_is_finalized = {false};
+    std::mutex m_registry_mutex;
+
+    // ---
+    // Data for lifecycle management
+    // ---
+    std::vector<pylabhub::utils::Module> m_registered_modules;
+    std::map<std::string, InternalModule> m_module_graph;
+    std::vector<InternalModule *> m_startup_order;
+    std::vector<InternalModule *> m_shutdown_order;
+};
 
 } // namespace
 
 namespace pylabhub::utils
 {
 
-void RegisterInitializer(std::function<void()> func)
+void RegisterModule(Module module)
 {
-    std::lock_guard<std::mutex> lock(g_registry_mutex);
-    g_initializers.push_back(std::move(func));
+    LifecycleManager::instance().registerModule(std::move(module));
 }
 
-void RegisterFinalizer(std::string name, std::function<void()> func,
-                       std::chrono::milliseconds timeout)
+void InitializeApplication()
 {
-    std::lock_guard<std::mutex> lock(g_registry_mutex);
-    g_finalizers.push_back({std::move(name), std::move(func), timeout});
+    LifecycleManager::instance().initialize();
 }
 
-void Initialize()
+void FinalizeApplication()
 {
-    if (g_is_initialized.exchange(true))
-    {
-        // Already initialized, do nothing.
-        return;
-    }
-
-    // 1. Eagerly create the logger instance to start its worker thread.
-    Logger::instance();
-    LOGGER_TRACE("pylabub::utils::Initialize - Core subsystems started.");
-
-    // 2. Run all registered user initializers.
-    decltype(g_initializers) initializers_copy;
-    {
-        std::lock_guard<std::mutex> lock(g_registry_mutex);
-        initializers_copy = g_initializers;
-    }
-
-    for (const auto &initializer : initializers_copy)
-    {
-        try
-        {
-            initializer();
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("A registered initializer threw an exception: {}", e.what());
-        }
-        catch (...)
-        {
-            LOGGER_ERROR("A registered initializer threw an unknown exception.");
-        }
-    }
-    LOGGER_TRACE("pylabub::utils::Initialize - All initializers executed.");
+    LifecycleManager::instance().finalize();
 }
-
-void Finalize()
-{
-    if (!g_is_initialized.exchange(false))
-    {
-        // Not initialized or already finalized, do nothing.
-        return;
-    }
-
-    LOGGER_TRACE("pylabub::utils::Finalize - Shutdown process started.");
-
-    // 1. Run all registered user finalizers in LIFO order.
-    decltype(g_finalizers) finalizers_copy;
-    {
-        std::lock_guard<std::mutex> lock(g_registry_mutex);
-        finalizers_copy = g_finalizers;
-        std::reverse(finalizers_copy.begin(), finalizers_copy.end());
-    }
-
-    for (const auto &finalizer : finalizers_copy)
-    {
-        try
-        {
-            LOGGER_TRACE("Executing finalizer: '{}'", finalizer.name);
-            std::future<void> future = std::async(std::launch::async, finalizer.func);
-            auto status = future.wait_for(finalizer.timeout);
-
-            if (status == std::future_status::timeout)
-            {
-                LOGGER_WARN("Finalizer '{}' timed out after {}ms.", finalizer.name,
-                            finalizer.timeout.count());
-            }
-            else
-            {
-                // future.get() will re-throw any exception caught by the async task.
-                future.get();
-                LOGGER_TRACE("Finalizer '{}' completed successfully.", finalizer.name);
-            }
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("Finalizer '{}' threw an exception: {}", finalizer.name, e.what());
-        }
-        catch (...)
-        {
-            LOGGER_ERROR("Finalizer '{}' threw an unknown exception.", finalizer.name);
-        }
-    }
-
-    // 2. Gracefully shut down the logger, flushing all messages.
-    LOGGER_TRACE("pylabub::utils::Finalize - Shutting down core subsystems.");
-    Logger::instance().shutdown();
-}
-
-#ifdef PYLABHUB_TESTING
-void ResetForTesting()
-{
-    // 1. Reset the underlying singleton instance in the logger.
-    // This is the most critical step, as it allows a new logger thread to be created.
-    Logger::instance().resetForTesting();
-
-    // 2. Reset the initialization state flag.
-    g_is_initialized.store(false);
-
-    // 3. Clear any callbacks that were registered during a test.
-    std::lock_guard<std::mutex> lock(g_registry_mutex);
-    g_initializers.clear();
-    g_finalizers.clear();
-}
-#endif
 
 } // namespace pylabhub::utils

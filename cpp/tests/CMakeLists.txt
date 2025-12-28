@@ -18,11 +18,9 @@ add_subdirectory(helpers)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # --- 1. Unit Test Executable ---
-# This executable contains all single-process unit tests. It's fast to link
-# and has minimal dependencies.
+# This executable contains all simple, single-process unit tests.
 add_executable(utils_tests
   test_atomicguard.cpp
-  test_logger.cpp
   test_recursionguard.cpp
 )
 
@@ -34,7 +32,7 @@ target_link_libraries(utils_tests
 )
 
 target_compile_features(utils_tests PRIVATE cxx_std_20)
-target_compile_definitions(utils_tests PRIVATE LOGGER_COMPILE_LEVEL=0 PYLABHUB_TESTING)
+target_compile_definitions(utils_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
 if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(utils_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
 endif()
@@ -43,12 +41,12 @@ if(MSVC)
 endif()
 
 # --- 2. Multi-Process Test Executable ---
-# This executable contains tests that require spawning worker processes.
-# It is kept separate to isolate the complexity of multi-process testing.
+# This executable contains tests that require spawning worker processes to ensure
+# full isolation for stateful, singleton-based components.
 add_executable(multiprocess_tests
   test_filelock.cpp
   test_jsonconfig.cpp
-  test_logger_multiprocess.cpp
+  test_logger.cpp
 )
 
 target_link_libraries(multiprocess_tests
@@ -59,7 +57,7 @@ target_link_libraries(multiprocess_tests
 )
 
 target_compile_features(multiprocess_tests PRIVATE cxx_std_20)
-target_compile_definitions(multiprocess_tests PRIVATE LOGGER_COMPILE_LEVEL=0 PYLABHUB_TESTING)
+target_compile_definitions(multiprocess_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
 if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(multiprocess_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
 endif()

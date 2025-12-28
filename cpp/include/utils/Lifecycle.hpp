@@ -2,45 +2,16 @@
 
 /*******************************************************************************
  * @file Lifecycle.hpp
- * @brief Provides functions to manage the lifecycle of the pylabhub::utils library.
+ * @brief Manages the application lifecycle with dependency-aware modules.
  *
- * This header defines the main entry and exit points for initializing and
- * shutting down the core utilities. To ensure proper resource management,
- * especially for asynchronous systems like the Logger, applications using this
- * library should call these functions.
- *
- * **Usage**
- *
- * In your main application entry point:
- * ```cpp
- * #include "utils/Lifecycle.hpp"
- *
- * void my_cleanup_function() {
- *     // ... clean up resources ...
- * }
- *
- * int main(int argc, char* argv[]) {
- *     // Register a finalizer to be called during shutdown.
- *     pylabhub::utils::RegisterFinalizer("MyCleanup", my_cleanup_function,
- * std::chrono::seconds(2));
- *
- *     // Initialize the utility library at the start.
- *     pylabhub::utils::Initialize();
- *
- *     // ... Application logic ...
- *     LOGGER_INFO("Application is running.");
- *
- *     // Finalize the library at the end for graceful shutdown.
- *     pylabhub::utils::Finalize();
- *
- *     return 0;
- * }
- * ```
+ * This file provides the public interface for the application lifecycle
+ * management system. See docs/README_utils.md for detailed design information.
  ******************************************************************************/
 
 #include <chrono>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "pylabhub_utils_export.h"
 
@@ -48,56 +19,57 @@ namespace pylabhub::utils
 {
 
 /**
- * @brief Initializes the utility library and its subsystems.
- *
- * This function should be called once at the beginning of the application's
- * lifecycle. It ensures that all necessary resources are allocated and
- * background tasks (like the Logger's worker thread) are started. It will
- * also execute any functions registered via `RegisterInitializer`.
+ * @brief A struct defining the shutdown properties for a module.
  */
-PYLABHUB_UTILS_EXPORT void Initialize();
+struct ModuleShutdown
+{
+    std::function<void()> func;
+    std::chrono::milliseconds timeout;
+};
 
 /**
- * @brief Shuts down the utility library and its subsystems gracefully.
+ * @brief A struct containing all lifecycle information for a single module.
+ */
+struct Module
+{
+    std::string name;
+    std::vector<std::string> dependencies;
+    std::function<void()> startup;
+    ModuleShutdown shutdown;
+};
+
+/**
+ * @brief Registers a module with the lifecycle system.
+ *
+ * All modules must be registered *before* `InitializeApplication()` is called.
+ * Attempting to register a module after initialization has started will result
+ * in program termination.
+ *
+ * @param module The module to register.
+ */
+PYLABHUB_UTILS_EXPORT void RegisterModule(Module module);
+
+/**
+ * @brief Initializes the application by executing module startup functions.
+ *
+ * This function should be called once at the start of the application, after all
+ * modules have been registered. It is idempotent.
+ *
+ * It performs a topological sort on the registered modules to determine the
+ * correct startup order and detects any circular dependencies.
+ *
+ * Calling this function "locks" the registration system. Any subsequent calls
+ * to `RegisterModule` will cause the program to terminate.
+ */
+PYLABHUB_UTILS_EXPORT void InitializeApplication();
+
+/**
+ * @brief Shuts down the application by executing module shutdown functions.
  *
  * This function should be called once at the end of the application's
- * lifecycle (e.g., before returning from `main`). It first calls all
- * registered finalizers and then shuts down internal subsystems.
- * Failure to call this may result in lost data.
+ * lifecycle. It is idempotent. It executes shutdown functions in the reverse
+ * order of the startup sequence.
  */
-PYLABHUB_UTILS_EXPORT void Finalize();
-
-/**
- * @brief Registers a function to be called during the `Initialize` phase.
- *
- * @param func The function to be executed.
- */
-PYLABHUB_UTILS_EXPORT void RegisterInitializer(std::function<void()> func);
-
-/**
- * @brief Registers a function to be called during the `Finalize` phase.
- *
- * Finalizers are executed in Last-In, First-Out (LIFO) order.
- *
- * @param name A descriptive name for the finalizer, used for logging.
- * @param func The function to be executed.
- * @param timeout The maximum time to wait for the function to complete. If it
- *                times out, the shutdown process will log a warning and continue.
- */
-PYLABHUB_UTILS_EXPORT void RegisterFinalizer(std::string name, std::function<void()> func,
-                                             std::chrono::milliseconds timeout);
-
-#ifdef PYLABHUB_TESTING
-/**
- * @brief [TESTING ONLY] Resets the lifecycle management system to its initial state.
- *
- * This function is only available in test builds. It resets the initialization
- * flag, clears all registered initializers and finalizers, and resets the
- * underlying logger instance. This is critical for test suites where multiple
- * tests need to independently initialize and shut down the utility library within
- * the same process.
- */
-PYLABHUB_UTILS_EXPORT void ResetForTesting();
-#endif
+PYLABHUB_UTILS_EXPORT void FinalizeApplication();
 
 } // namespace pylabhub::utils

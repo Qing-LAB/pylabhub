@@ -980,7 +980,11 @@ struct FileLockFinalizer
     {
         // Register FileLock::cleanup to be called during shutdown.
         // A short timeout is fine, as it's a fast, best-effort cleanup.
-        RegisterFinalizer("FileLock::cleanup", &FileLock::cleanup, std::chrono::seconds(1));
+        RegisterModule({.name = "pylabhub::utils::FileLockCleanup",
+                        .dependencies = {"pylabhub::utils::Logger"}, // Depends on Logger for logging cleanup status
+                        .startup = [] {},
+                        .shutdown = {.func = &FileLock::cleanup,
+                                     .timeout = std::chrono::seconds(1)}});
     }
 };
 
