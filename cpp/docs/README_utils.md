@@ -4,48 +4,94 @@ This document provides design and usage notes for the core C++ utilities found i
 
 ---
 
-## Library Lifecycle Management
+## Application Lifecycle Management (`pylabhub::utils`)
 
-To ensure robust behavior and graceful shutdown of all components, particularly asynchronous systems like the `Logger`, the utility library provides explicit lifecycle functions. All applications using this library should call them.
+The application lifecycle management system provides a robust, dependency-aware framework for controlling the application's startup and shutdown sequences. It is designed to give developers fine-grained control over the order of operations, ensuring a predictable, safe, and diagnosable application lifecycle.
 
--   `pylabhub::utils::Initialize()`: Call this once at the beginning of your application (e.g., at the start of `main`). It ensures all subsystems are ready and runs any registered initializers.
--   `pylabhub::utils::Finalize()`: Call this once at the very end of your application (e.g., before returning from `main`). It runs all registered finalizers and then guarantees that all pending operations, such as writing log messages, are completed before the program exits.
+The system is governed by a central singleton that enforces these core principles:
 
-**Important Note on Explicit Shutdown:** Calling `Finalize()` is mandatory for ensuring a robust and graceful shutdown.
+1.  **Module-Based Registration**: Instead of separate initializers and finalizers, the system manages "modules". A module is a logical unit with a unique name, a startup function, a shutdown function, and a list of dependencies.
 
-If `Finalize()` is not called, the destructors of static objects (like the `Logger`) will be invoked by the C++ runtime during program termination. While a warning will be printed to `stderr`, `shutdown()` is **not** automatically called. Attempting to perform a `shutdown()` during static deinitialization can cause deadlocks and crashes, particularly on Windows. This is because the operating system holds internal locks (the "loader lock") during process teardown, and complex operations like thread synchronization are unsafe in this context.
+2.  **Dependency-Driven Order**: The execution order is not based on registration order or simple priority, but on an explicitly declared dependency graph. You declare which modules must be started before others, and the system resolves the correct startup sequence using a topological sort. The shutdown sequence is automatically determined to be the exact reverse of the startup sequence.
 
-Therefore, the only safe and portable way to shut down the library is to explicitly call `Finalize()` from `main()` before the program exits. The RAII pattern (e.g., creating a lifecycle management object on the stack in `main`) is the recommended way to guarantee this.
+3.  **Strict Lifecycle Phases**:
+    *   **Registration Phase**: At the start of the program, all modules are registered along with their dependencies.
+    *   **Execution Phase**: `InitializeApplication()` is called. This locks the system, resolves the dependency graph, and runs all module startup functions in the correct order. The application then enters its main operational state.
+    *   **Finalization Phase**: `FinalizeApplication()` is called at program exit to run all module shutdown functions in the correct, reversed order.
 
-### Extensibility with Registration Hooks
+4.  **Early Error Detection**: The system is designed to fail fast. Circular dependencies in the graph are detected during the initialization phase. Attempting to register a module after initialization has begun is a fatal error that terminates the program. This prevents silent failures and hard-to-debug runtime issues.
 
-You can register your own functions to be executed during the `Initialize` and `Finalize` phases.
+### The Three Phases in Detail
 
--   `RegisterInitializer(func)`: Registers a function to be run during initialization.
--   `RegisterFinalizer(name, func, timeout)`: Registers a named cleanup function to be run during finalization. Finalizers are executed in **Last-In, First-Out (LIFO)** order.
+#### 1. The Registration Phase
 
-### Usage
+This is the only phase where modules can be registered.
+
+-   `pylabhub::utils::RegisterModule(Module lifecycle)`: Registers a module with the lifecycle system. The `Module` struct contains all necessary metadata:
+    -   `name`: A unique `std::string` identifier for the module (e.g., "ConfigLoader", "Database").
+    -   `dependencies`: A `std::vector<std::string>` of module names that this module depends on. They will be started *before* this module. An empty vector indicates no dependencies.
+    -   `startup`: The `std::function<void()>` to be called during initialization.
+    -   `shutdown`: A struct containing:
+        -   `func`: The `std::function<void()>` to be called for cleanup during finalization.
+        -   `timeout`: A `std::chrono::milliseconds` value for the shutdown function.
+
+#### 2. The Execution Phase
+
+This phase is initiated by a single function call.
+
+-   `pylabhub::utils::InitializeApplication()`: This function marks the end of the Registration Phase. It should be called once, at the start of `main()`. Its responsibilities are to:
+    1.  Permanently lock the registration system.
+    2.  Build a dependency graph of all registered modules.
+    3.  Perform a topological sort to calculate the startup sequence. If a cycle is detected (e.g., A depends on B, and B depends on A), it will terminate with a fatal error.
+    4.  Store the calculated startup sequence and its reverse for finalization.
+    5.  Execute the module `startup` functions one by one, in the resolved order.
+
+#### 3. The Finalization Phase
+
+This phase is initiated at the end of the program's life.
+
+-   `pylabhub::utils::FinalizeApplication()`: This function should be called once at the very end of `main()`. It runs the module `shutdown` functions according to the sequence determined during initialization (the reverse of the startup order).
+
+### Full Example
 
 ```cpp
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 
-void my_cleanup_function() {
-    // ... clean up custom application resources ...
-}
+// A logging module that has no dependencies
+void setup_logging() { /*...*/ }
+void teardown_logging() { /*...*/ }
+
+// A config module that depends on logging
+void load_config() { /*...*/ }
+void save_config() { /*...*/ }
 
 int main(int argc, char* argv[]) {
-    // Register a finalizer to be called during shutdown.
-    pylabhub::utils::RegisterFinalizer("MyCleanup", my_cleanup_function, std::chrono::seconds(2));
+    // === 1. REGISTRATION PHASE ===
+    pylabhub::utils::RegisterModule({
+        .name = "Logging",
+        .startup = setup_logging,
+        .shutdown = {.func = teardown_logging, .timeout = std::chrono::seconds(1)}
+    });
 
-    // Initialize the utility library at the start.
-    pylabhub::utils::Initialize();
+    pylabhub::utils::RegisterModule({
+        .name = "Config",
+        .dependencies = {"Logging"}, // Depends on the Logging module
+        .startup = load_config,
+        .shutdown = {.func = save_config, .timeout = std::chrono::seconds(2)}
+    });
 
-    // ... Application logic ...
+    // === 2. EXECUTION PHASE ===
+    // Locks registration, resolves dependencies, and runs startup functions.
+    // Here, setup_logging() is guaranteed to run before load_config().
+    pylabhub::utils::InitializeApplication();
+
     LOGGER_INFO("Application is running.");
 
-    // Finalize the library at the end for graceful shutdown.
-    pylabhub::utils::Finalize();
+    // === 3. FINALIZATION PHASE ===
+    // Runs shutdown functions in reverse order of startup.
+    // Here, save_config() is guaranteed to run before teardown_logging().
+    pylabhub::utils::FinalizeApplication();
 
     return 0;
 }

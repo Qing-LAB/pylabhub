@@ -1,6 +1,7 @@
 // src/utils/Logger.cpp
 
 #include "utils/Logger.hpp"
+#include "utils/Lifecycle.hpp"
 #include "format_tools.hpp"
 
 #include <chrono>
@@ -448,25 +449,49 @@ Impl::~Impl()
     if (!shutdown_requested_.load())
     {
         // This destructor is called when the static Logger instance is destroyed at program exit.
-        // We only issue a warning if shutdown was not called explicitly via pylabhub::utils::Finalize().
+        // If shutdown() was not called explicitly via the lifecycle manager, we issue a warning.
         //
-        // **IMPORTANT**: We DO NOT call shutdown() here as a fallback.
-        // Doing so can lead to deadlocks on Windows. During static object destruction,
-        // the OS holds internal locks (the "loader lock"). Calling shutdown() involves thread
-        // synchronization, which is unsafe in this context and can cause the process to hang.
-        // The explicit Finalize() call from main() is the only safe way to shut down.
-        fmt::print(stderr, "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
-                           "Call pylabhub::utils::Finalize() before main() returns to guarantee "
-                           "all logs are flushed.\n");
+        // **IMPORTANT**: We DO NOT call shutdown() here as a fallback. On Windows, this
+        // destructor may run while the OS loader lock is held. Attempting to join a thread
+        // (which shutdown() does) in this state can lead to a deadlock. The explicit
+        // `FinalizeApplication()` call from main() is the only safe way to shut down.
+        fmt::print(stderr,
+                   "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
+                   "Call pylabhub::utils::FinalizeApplication() before main() returns to guarantee "
+                   "all logs are flushed.\n");
     }
 }
 
 void Impl::enqueue_command(Command &&cmd)
 {
+    // Double-checked locking pattern. The first check is lock-free for performance.
+    if (shutdown_requested_.load(std::memory_order_relaxed))
+    {
+        // If shutdown has started, provide a fallback for LogMessage commands
+        // to ensure critical messages are not silently lost.
+        if (std::holds_alternative<LogMessage>(cmd))
+        {
+            const auto &msg = std::get<LogMessage>(cmd);
+            fmt::print(stderr, "[pylabhub::Logger-fallback] Log after shutdown: {}",
+                       format_message(msg));
+        }
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
+        // Final check inside the lock to handle a race condition where shutdown
+        // is requested between the first check and acquiring the lock.
         if (shutdown_requested_.load(std::memory_order_relaxed))
+        {
+            if (std::holds_alternative<LogMessage>(cmd))
+            {
+                const auto &msg = std::get<LogMessage>(cmd);
+                fmt::print(stderr, "[pylabhub::Logger-fallback] Log after shutdown: {}",
+                           format_message(msg));
+            }
             return;
+        }
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
@@ -778,5 +803,26 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
     pImpl->enqueue_command(
         LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(mb)});
 }
+
+namespace
+{
+// This static object's constructor registers the Logger with the application
+// lifecycle manager, ensuring it is properly started and shut down.
+struct LoggerLifecycleRegistrar
+{
+    LoggerLifecycleRegistrar()
+    {
+        // Register the Logger as a foundational module.
+        // Many other modules may depend on it, so it should be available early.
+        RegisterModule({.name = "pylabhub::utils::Logger",
+                        .dependencies = {},
+                        .startup = [] { Logger::instance(); },
+                        .shutdown = {.func = [] { Logger::instance().shutdown(); },
+                                     .timeout = std::chrono::seconds(5)}});
+    }
+};
+// The global instance that triggers the registration.
+static LoggerLifecycleRegistrar g_logger_registrar;
+} // namespace
 
 } // namespace pylabhub::utils
