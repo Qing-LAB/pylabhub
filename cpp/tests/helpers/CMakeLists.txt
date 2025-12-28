@@ -8,11 +8,19 @@ add_library(pylabhub_test_helpers STATIC
   test_entrypoint.h
   test_process_utils.cpp
   test_process_utils.h
-  workers.cpp
+
+  # New refactored worker sources
+  logger_workers.cpp
+  filelock_workers.cpp
+  jsonconfig_workers.cpp
+  shared_test_helpers.cpp
+
+  # Headers for the workers and helpers
   workers.h
   worker_filelock.h
   worker_jsonconfig.h
   worker_logger.h
+  shared_test_helpers.h
 )
 
 # The helpers need to link against the utils library for its own implementation

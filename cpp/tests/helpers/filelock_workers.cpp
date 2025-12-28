@@ -1,26 +1,18 @@
-#include "workers.h"
+#include "helpers/worker_filelock.h"
+#include "helpers/shared_test_helpers.h"
+
 #include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/Logger.hpp"
 #include "utils/Lifecycle.hpp"
+#include "platform.hpp"
+#include "scope_guard.hpp"
 
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <functional>
-#include <iostream>
-#include <memory>
-#include <sstream>
-#include <string>
 #include <thread>
 #include <vector>
-
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "scope_guard.hpp"
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -35,107 +27,14 @@ using namespace pylabhub::utils;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-// ============================================================================ 
-// ANONYMOUS NAMESPACE: SHARED TEST HELPERS
-// ============================================================================ 
-namespace
-{
-
-// TODO: Move these test utilities to a shared helper file.
-
-static bool read_file_contents(const std::string &path, std::string &out)
-{
-    std::ifstream ifs(path, std::ios::binary);
-    if (!ifs) return false;
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-static size_t count_lines(const std::string &s)
-{
-    size_t count = 0;
-    for (char c : s)
-        if (c == '\n') ++count;
-    return count;
-}
-
-static bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
-                                    std::chrono::milliseconds timeout = std::chrono::seconds(15))
-{
-    auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < timeout)
-    {
-        std::string contents;
-        if (read_file_contents(path.string(), contents))
-        {
-            if (contents.find(expected) != std::string::npos) return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    return false;
-}
-
-static std::string test_scale()
-{
-    const char *v = std::getenv("PYLAB_TEST_SCALE");
-    return v ? std::string(v) : std::string();
-}
-
-static int scaled_value(int original, int small_value)
-{
-    if (test_scale() == "small") return small_value;
-    return original;
-}
-
-template <typename Fn>
-int run_gtest_worker(Fn test_logic, const char *test_name)
-{
-    pylabhub::utils::InitializeApplication();
-    auto finalizer =
-        pylabhub::utils::make_scope_guard([] { pylabhub::utils::FinalizeApplication(); });
-
-    try
-    {
-        test_logic();
-    }
-    catch (const ::testing::AssertionException &e)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n", test_name,
-                   e.what());
-        return 1;
-    }
-    catch (const std::exception &e)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: \n", test_name, e.what());
-        return 2;
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] {} threw an unknown exception.\n", test_name);
-        return 3;
-    }
-    return 0; // Success
-}
-
-} // namespace
-
-
-// ============================================================================ 
-// `worker` NAMESPACE: WORKER IMPLEMENTATIONS
-// ============================================================================ 
 namespace worker
 {
-
-// --- FileLock Workers ---
 namespace filelock
 {
 
 // Prototypes for helpers
-bool atomic_write_int(const fs::path &target, int value);
-bool native_read_int(const fs::path &target, int &value);
-
+static bool atomic_write_int(const fs::path &target, int value);
+static bool native_read_int(const fs::path &target, int &value);
 
 int test_basic_non_blocking(const std::string &resource_path_str)
 {
@@ -306,6 +205,7 @@ int nonblocking_acquire(const std::string &resource_path_str)
         ASSERT_FALSE(lock.valid());
      }, "filelock::nonblocking_acquire");
 }
+
 int contention_increment(const std::string &counter_path_str, int num_iterations)
 {
     return run_gtest_worker(
@@ -325,6 +225,7 @@ int contention_increment(const std::string &counter_path_str, int num_iterations
         },
         "filelock::contention_increment");
 }
+
 int parent_child_block(const std::string &resource_path_str)
 {
     return run_gtest_worker(
@@ -340,9 +241,8 @@ int parent_child_block(const std::string &resource_path_str)
         "filelock::parent_child_block");
 }
 
-
 // --- Helper implementations that are not tests themselves ---
-bool atomic_write_int(const fs::path &target, int value)
+static bool atomic_write_int(const fs::path &target, int value)
 {
     auto tmp = target;
     tmp += ".tmp." + std::to_string(
@@ -382,7 +282,7 @@ bool atomic_write_int(const fs::path &target, int value)
 #endif
     return true;
 }
-bool native_read_int(const fs::path &target, int &value)
+static bool native_read_int(const fs::path &target, int &value)
 {
 #if defined(PLATFORM_WIN64)
     HANDLE h = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -410,159 +310,4 @@ bool native_read_int(const fs::path &target, int &value)
 }
 
 } // namespace filelock
-
-// --- JsonConfig Workers ---
-namespace jsonconfig
-{
-int write_id(const std::string &cfgpath, const std::string &worker_id)
-{
-    return run_gtest_worker(
-        [&]() {
-            Logger::instance().set_level(Logger::Level::L_DEBUG);
-            JsonConfig cfg(cfgpath);
-            bool success = false;
-            const int max_retries = 200;
-            std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) + std::chrono::system_clock::now().time_since_epoch().count()));
-            for (int retry = 0; retry < max_retries; ++retry)
-            {
-                if (cfg.lock_for(100ms))
-                {
-                    int global_attempts = cfg.get_or<int>("total_attempts", 0);
-                    cfg.set("total_attempts", global_attempts + 1);
-                    cfg.set("last_worker_id", worker_id);
-                    cfg.set(worker_id, true);
-                    if (cfg.save()) { success = true; }
-                    cfg.unlock();
-                    if (success) { break; }
-                }
-                std::chrono::milliseconds random_delay(10 + (std::rand() % 41));
-                std::this_thread::sleep_for(random_delay);
-            }
-            ASSERT_TRUE(success);
-        },
-        "jsonconfig::write_id");
-}
-} // namespace jsonconfig
-
-
-// --- Logger Workers ---
-namespace logger
-{
-void stress_log(const std::string &log_path, int msg_count)
-{
-    InitializeApplication();
-    auto finalizer = make_scope_guard([] { FinalizeApplication(); });
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path, true);
-    L.set_level(Logger::Level::L_TRACE);
-    for (int i = 0; i < msg_count; ++i)
-    {
-        if (std::rand() % 10 == 0) std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
-#if defined(PLATFORM_WIN64)
-        LOGGER_INFO("child-msg pid={} idx={}", GetCurrentProcessId(), i);
-#else
-        LOGGER_INFO("child-msg pid={} idx={}", getpid(), i);
-#endif
-    }
-    L.flush();
-}
-
-int test_basic_logging(const std::string &log_path_str) { /* ... implementation from before ... */ return 0; }
-int test_log_level_filtering(const std::string &log_path_str) { /* ... */ return 0; }
-int test_bad_format_string(const std::string &log_path_str) { /* ... */ return 0; }
-int test_default_sink_and_switching(const std::string &log_path_str) { /* ... */ return 0; }
-int test_multithread_stress(const std::string &log_path_str) { /* ... */ return 0; }
-int test_flush_waits_for_queue(const std::string &log_path_str) { /* ... */ return 0; }
-int test_shutdown_idempotency(const std::string &log_path_str)
-{
-    return run_gtest_worker(
-        [&]() {
-            fs::path log_path(log_path_str);
-            Logger &L = Logger::instance();
-            L.set_logfile(log_path.string());
-            L.set_level(Logger::Level::L_INFO);
-            LOGGER_INFO("Message before shutdown.");
-            L.flush();
-
-            std::string content_before_shutdown;
-            ASSERT_TRUE(read_file_contents(log_path.string(), content_before_shutdown));
-            EXPECT_NE(content_before_shutdown.find("Message before shutdown"), std::string::npos);
-
-            const int THREADS = 16;
-            std::vector<std::thread> threads;
-            for (int i = 0; i < THREADS; ++i)
-            {
-                threads.emplace_back([]() { pylabhub::utils::FinalizeApplication(); });
-            }
-            for (auto &t : threads)
-                t.join();
-
-            // This log should be gracefully ignored by the fallback mechanism
-            LOGGER_INFO("This message should NOT be logged.");
-
-            // Give a moment for any stray logs to be handled by the fallback
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-            std::string content_after_shutdown;
-            ASSERT_TRUE(read_file_contents(log_path.string(), content_after_shutdown));
-            EXPECT_EQ(content_after_shutdown.find("This message should NOT be logged."),
-                      std::string::npos);
-        },
-        "logger::test_shutdown_idempotency");
-}
-int test_reentrant_error_callback(const std::string &initial_log_path_str) { /* ... */ return 0; }
-int test_write_error_callback_async() { /* ... */ return 0; }
-int test_platform_sinks() { /* ... */ return 0; }
-int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
-{
-    // This test manually manages its lifecycle to test shutdown under load.
-    // It does not use the run_gtest_worker template because the point is to
-    // call FinalizeApplication while other threads are active.
-    pylabhub::utils::InitializeApplication();
-
-    fs::path chaos_log_path(log_path_str);
-    std::atomic<bool> stop_flag(false);
-    const int DURATION_MS = 1000; // Shorter duration for automated test
-
-    auto worker_thread_fn = [&](auto fn) {
-        while (!stop_flag.load(std::memory_order_relaxed))
-            fn();
-    };
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < 4; ++i) {
-        threads.emplace_back(worker_thread_fn, []() {
-            LOGGER_INFO("chaos-log: message");
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
-        });
-    }
-    for (int i = 0; i < 1; ++i) {
-        threads.emplace_back(worker_thread_fn, []() {
-            Logger::instance().flush();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        });
-    }
-    for (int i = 0; i < 1; ++i) {
-        threads.emplace_back(worker_thread_fn, [&]() {
-            if (std::rand() % 2 == 0)
-                Logger::instance().set_console();
-            else
-                Logger::instance().set_logfile(chaos_log_path.string());
-        });
-    }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
-
-    // The critical action: shut down the entire lifecycle while worker threads are busy.
-    pylabhub::utils::FinalizeApplication();
-
-    stop_flag.store(true);
-
-    for (auto &t : threads)
-        t.join();
-
-    return 0; // Success is simply not crashing.
-}
-
-} // namespace logger
 } // namespace worker
