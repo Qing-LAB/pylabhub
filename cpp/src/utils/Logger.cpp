@@ -664,14 +664,6 @@ Logger &Logger::instance()
     return *g_instance;
 }
 
-#ifdef PYLABHUB_TESTING
-void Logger::resetForTesting()
-{
-    std::lock_guard<std::mutex> lock(g_instance_mutex);
-    g_instance.reset();
-}
-#endif
-
 void Logger::set_console()
 {
     try
