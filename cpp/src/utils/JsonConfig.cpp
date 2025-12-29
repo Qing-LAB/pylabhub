@@ -1,41 +1,93 @@
 /*******************************************************************************
  * @file JsonConfig.cpp
- * @brief Implementation of the non-template methods for JsonConfig.
+ * @brief Implementation of the non-template methods for the JsonConfig class.
  *
- * This file contains the implementation for the core logic of the JsonConfig
- * class, including file I/O, locking, and the platform-specific atomic write
- * helper function.
+ * @see include/utils/JsonConfig.hpp
+ *
+ * **Implementation Details**
+ *
+ * This file contains the core logic for the `JsonConfig` class, including
+ * file I/O, locking, and the platform-specific atomic write helper.
+ *
+ * 1.  **Initialization (`init`)**:
+ *     - The `init` method sets the configuration file path.
+ *     - If `createIfMissing` is true, it uses a `FileLock` to safely check for
+ *       the file's existence and create it if it's not there. This prevents a
+ *       Time-of-Check-to-Time-of-Use (TOCTOU) race condition where another
+ *       process could create the file between the `exists` check and the write.
+ *
+ * 2.  **I/O Helpers (`reload_under_lock_io`, `save_under_lock_io`)**:
+ *     - These are the internal workhorses for reading and writing. They are
+ *       prefixed with `_under_lock_io` to signify that the caller MUST already
+ *       hold the inter-process `FileLock`.
+ *     - `reload_under_lock_io`: Reads the entire file, parses it into a new
+ *       `nlohmann::json` object, and then swaps it into place under a unique
+ *       lock on the intra-process `rwMutex`. This minimizes the time that
+ *       writer threads are blocked.
+ *     - `save_under_lock_io`: First checks the `dirty` flag. If the in-memory
+ *       data has not changed, it skips the expensive disk write entirely.
+ *       Otherwise, it calls `atomic_write_json`.
+ *
+ * 3.  **Atomic Write (`atomic_write_json`)**:
+ *     - This static helper function is the key to crash-safe file writes. It
+ *       ensures that the configuration file is never left in a corrupt,
+ *       partially-written state.
+ *     - **On POSIX**: It uses `mkstemp` to create a unique temporary file in the
+ *       same directory. It writes the new content to this file, `fsync`s it to
+ *       ensure it's on disk, and then uses the atomic `rename` system call to
+ *       replace the original file. Finally, it `fsync`s the parent directory
+ *       to ensure the directory entry update is also persisted.
+ *     - **On Windows**: It uses `CreateFileW` to create a unique temporary file.
+ *       After writing and flushing, it uses `ReplaceFileW`. This function is
+ *       the atomic equivalent of the POSIX `rename`. It handles the case where
+ *       the destination file might not exist by falling back to `MoveFileW`.
+ *     - On both platforms, it includes a security check to prevent writing to a
+ *       target path that is a symbolic link.
  ******************************************************************************/
+#include "utils/JsonConfig.hpp"
 
 #include <fmt/format.h>
 #include <fstream>
-#include <iostream>
 #include <system_error>
 
 #if defined(PLATFORM_WIN64)
-#include <vector>
 #include <windows.h>
 #else
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
-#include <sys/file.h> // flock
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 
+// Internal utilities
 #include "format_tools.hpp"
-
-#include "utils/JsonConfig.hpp"
 
 namespace pylabhub::utils
 {
 
 namespace fs = std::filesystem;
-
 using json = nlohmann::json;
 
-// Constructors / dtor
+// The Pimpl struct definition, containing all private member variables.
+struct JsonConfig::Impl
+{
+    std::filesystem::path configPath;
+    nlohmann::json data;
+    mutable std::shared_mutex rwMutex; // Guards `data` for thread-safe reads/writes.
+    mutable std::mutex initMutex;      // Guards structural state like `configPath` and `fileLock`.
+    std::atomic<bool> dirty{false};    // True if `data` may be newer than the on-disk file.
+    std::unique_ptr<FileLock> fileLock; // Manages the inter-process file lock.
+
+    Impl() : data(json::object()) {}
+    ~Impl() = default;
+};
+
+
+// ============================================================================
+// Constructor, Destructor, and Initialization
+// ============================================================================
+
 JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>()) {}
 JsonConfig::JsonConfig(const std::filesystem::path &configFile) : pImpl(std::make_unique<Impl>())
 {
@@ -45,28 +97,25 @@ JsonConfig::~JsonConfig() = default;
 
 bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMissing)
 {
-    // Ensure the implementation object exists.
-    if (!pImpl)
-        pImpl = std::make_unique<Impl>();
+    if (!pImpl) pImpl = std::make_unique<Impl>();
 
-    // Lock to protect against concurrent init operations.
     std::lock_guard<std::mutex> g(pImpl->initMutex);
     pImpl->configPath = configFile;
 
     if (createIfMissing)
     {
-        // Use a FileLock to prevent a Time-of-Check-to-Time-of-Use (TOCTOU) race
+        // Use a temporary, non-blocking FileLock to prevent a TOCTOU race
         // condition where another process could create the file between our `exists`
         // check and our `atomic_write_json` call.
-        FileLock filelock(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
-        if (filelock.valid())
+        FileLock creation_lock(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
+        if (creation_lock.valid())
         {
             std::error_code ec;
             if (!fs::exists(pImpl->configPath, ec))
             {
                 try
                 {
-                    // Create with an empty JSON object.
+                    // Create the file with an empty JSON object.
                     atomic_write_json(pImpl->configPath, json::object());
                 }
                 catch (const std::exception &ex)
@@ -79,19 +128,24 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         }
         else
         {
-            // This is not a fatal error. Another process might be creating it.
-            // The user can attempt to lock and load it later.
+            // This is not a fatal error. It likely means another process is creating
+            // the file, which is fine. The user can attempt to lock and load it later.
             LOGGER_WARN("JsonConfig::init: could not acquire lock to check/create file '{}'. "
                         "Another process may be initializing it.",
                         pImpl->configPath.string());
         }
     }
-    // Initial in-memory state is an empty object. A `lock()` call is required
-    // to load the contents from disk.
+
+    // The initial in-memory state is an empty object. A `lock()` or `lock_for()`
+    // call is required to load the actual contents from disk.
     pImpl->data = json::object();
     pImpl->dirty.store(false, std::memory_order_release);
     return true;
 }
+
+// ============================================================================
+// Public Non-Template Methods
+// ============================================================================
 
 bool JsonConfig::lock(LockMode mode)
 {
@@ -106,7 +160,7 @@ bool JsonConfig::lock(LockMode mode)
     pImpl->fileLock = std::make_unique<FileLock>(pImpl->configPath, ResourceType::File, mode);
     if (pImpl->fileLock->valid())
     {
-        // Lock acquired, now reload to get the freshest data.
+        // Lock acquired. Now reload data from disk to get the freshest state.
         if (reload_under_lock_io())
         {
             return true;
@@ -114,13 +168,13 @@ bool JsonConfig::lock(LockMode mode)
         else
         {
             // If reload fails, we can't guarantee a safe state, so release the lock.
-            pImpl->fileLock.reset(); // Destructor releases lock
+            pImpl->fileLock.reset(); // Destructor releases the OS lock.
             LOGGER_ERROR("JsonConfig::lock: failed to reload config after acquiring lock.");
             return false;
         }
     }
 
-    // Failed to acquire lock
+    // Failed to acquire lock.
     pImpl->fileLock.reset();
     return false;
 }
@@ -136,9 +190,9 @@ void JsonConfig::unlock()
 
 bool JsonConfig::is_locked() const
 {
-    if (!pImpl) {
-        return false;
-    }
+    if (!pImpl) return false;
+
+    // This lock is brief, just to safely check the unique_ptr and its state.
     std::lock_guard<std::mutex> g(pImpl->initMutex);
     return pImpl->fileLock && pImpl->fileLock->valid();
 }
@@ -147,21 +201,20 @@ bool JsonConfig::save() noexcept
 {
     if (!is_locked())
     {
-        LOGGER_ERROR("JsonConfig::save: write operations require the config to be locked first.");
+        LOGGER_ERROR("JsonConfig::save: write operations require a file lock.");
         return false;
     }
 
     try
     {
-        // The file lock is already held. We just need the intra-process lock.
         std::lock_guard<std::mutex> g(pImpl->initMutex);
         std::error_code ec;
-        bool result = save_under_lock_io(ec);
-        if (!result)
+        if (!save_under_lock_io(ec))
         {
             LOGGER_ERROR("JsonConfig::save: save_under_lock_io failed: {}", ec.message());
+            return false;
         }
-        return result;
+        return true;
     }
     catch (const std::exception &e)
     {
@@ -170,15 +223,63 @@ bool JsonConfig::save() noexcept
     }
     catch (...)
     {
-        LOGGER_ERROR("JsonConfig::save: unknown exception");
+        LOGGER_ERROR("JsonConfig::save: unknown exception.");
         return false;
     }
 }
 
+bool JsonConfig::replace(const json &newData) noexcept
+{
+    if (!is_locked())
+    {
+        LOGGER_ERROR("JsonConfig::replace: write operations require a file lock.");
+        return false;
+    }
+
+    try
+    {
+        {
+            std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
+            pImpl->data = newData;
+            pImpl->dirty.store(true, std::memory_order_release);
+        }
+        // After replacing in memory, save to disk.
+        return save();
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("JsonConfig::replace: exception: {}", e.what());
+        return false;
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("JsonConfig::replace: unknown exception.");
+        return false;
+    }
+}
+
+json JsonConfig::as_json() const noexcept
+{
+    try
+    {
+        if (!pImpl) return json::object();
+        // Return a deep copy of the data under a shared (read) lock.
+        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
+        return pImpl->data;
+    }
+    catch (...)
+    {
+        return json::object();
+    }
+}
+
+// ============================================================================
+// Internal I/O Helpers
+// ============================================================================
+
 bool JsonConfig::save_under_lock_io(std::error_code &ec)
 {
-    // Preconditions: Caller MUST hold the file lock and pImpl->initMutex.
-
+    // Precondition: Caller MUST hold pImpl->initMutex and the FileLock.
     ec.clear();
     if (!pImpl)
     {
@@ -188,8 +289,6 @@ bool JsonConfig::save_under_lock_io(std::error_code &ec)
 
     if (pImpl->configPath.empty())
     {
-        LOGGER_ERROR(
-            "JsonConfig::save_under_lock_io: configPath not initialized (call init() first)");
         ec = std::make_error_code(std::errc::no_such_file_or_directory);
         return false;
     }
@@ -197,11 +296,10 @@ bool JsonConfig::save_under_lock_io(std::error_code &ec)
     // Optimization: If the in-memory data hasn't changed, skip the expensive disk write.
     if (!pImpl->dirty.load(std::memory_order_acquire))
     {
-        return true; // Nothing to do.
+        return true;
     }
 
-    // Snapshot the data to be written. This is done under a shared read lock,
-    // minimizing the time we block other reader threads.
+    // Snapshot the data to be written under a read lock to minimize blocking time.
     json toWrite;
     {
         std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
@@ -220,7 +318,7 @@ bool JsonConfig::save_under_lock_io(std::error_code &ec)
     }
     catch (...)
     {
-        LOGGER_ERROR("JsonConfig::save_under_lock_io: atomic_write_json unknown failure");
+        LOGGER_ERROR("JsonConfig::save_under_lock_io: atomic_write_json threw unknown exception.");
         ec = std::make_error_code(std::errc::io_error);
         return false;
     }
@@ -232,63 +330,46 @@ bool JsonConfig::save_under_lock_io(std::error_code &ec)
 
 bool JsonConfig::reload_under_lock_io() noexcept
 {
-    // Precondition: Caller must hold the file lock.
+    // Precondition: Caller MUST hold pImpl->initMutex and the FileLock.
     try
     {
-        if (pImpl->configPath.empty())
-        {
-            LOGGER_ERROR(
-                "JsonConfig::reload_under_lock_io: configPath not initialized (call init() first)");
-            return false;
-        }
+        if (pImpl->configPath.empty()) return false;
 
         std::error_code ec;
         if (!fs::exists(pImpl->configPath, ec))
         {
-            // File doesn't exist. Treat as empty.
+            // If file doesn't exist, the valid state is an empty JSON object.
             pImpl->data = json::object();
             pImpl->dirty.store(false, std::memory_order_release);
             return true;
         }
 
-        // Read and parse the file.
         std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
-            LOGGER_ERROR("JsonConfig::reload_under_lock_io: cannot open file: {}",
-                         pImpl->configPath.string());
+            LOGGER_ERROR("JsonConfig::reload_under_lock_io: cannot open file: {}", pImpl->configPath.string());
             return false;
         }
 
-        json newdata;
-        in >> newdata;
-        if (in.good())
+        json newdata = json::parse(in, nullptr, false);
+        if (newdata.is_discarded())
         {
-            if (newdata.is_null())
-            {
-                newdata = json::object();
-            }
-        }
-        else if (!in.eof())
-        {
-            LOGGER_ERROR("JsonConfig::reload_under_lock_io: parse/read error for {}",
-                         pImpl->configPath.string());
+            LOGGER_ERROR("JsonConfig::reload_under_lock_io: parse error for {}", pImpl->configPath.string());
             return false;
         }
-        else
+
+        if (newdata.is_null() || !newdata.is_object())
         {
-            // File is empty, which is valid. Treat as an empty object.
+            // Treat empty or non-object JSON as an empty object for consistency.
             newdata = json::object();
         }
 
-        // Atomically update the in-memory data.
+        // Atomically update the in-memory data structure.
         {
             std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
             pImpl->data = std::move(newdata);
-            // Memory now matches disk, so the dirty flag can be cleared.
             pImpl->dirty.store(false, std::memory_order_release);
         }
-
         return true;
     }
     catch (const std::exception &e)
@@ -298,212 +379,110 @@ bool JsonConfig::reload_under_lock_io() noexcept
     }
     catch (...)
     {
-        LOGGER_ERROR("JsonConfig::reload_under_lock_io: unknown exception");
+        LOGGER_ERROR("JsonConfig::reload_under_lock_io: unknown exception.");
         return false;
     }
 }
 
-bool JsonConfig::replace(const json &newData) noexcept
-{
-    if (!is_locked())
-    {
-        LOGGER_ERROR(
-            "JsonConfig::replace: write operations require the config to be locked first.");
-        return false;
-    }
-
-    try
-    {
-        {
-            std::unique_lock<std::shared_mutex> w(pImpl->rwMutex);
-            pImpl->data = newData;
-            pImpl->dirty.store(true, std::memory_order_release);
-        }
-        return save();
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("JsonConfig::replace: exception: {}", e.what());
-        return false;
-    }
-    catch (...)
-    {
-        LOGGER_ERROR("JsonConfig::replace: unknown exception");
-        return false;
-    }
-}
-
-json JsonConfig::as_json() const noexcept
-{
-    try
-    {
-        // Return a copy of the data under a shared read lock.
-        // This is thread-safe and allows concurrent reads.
-        if (!pImpl)
-            return json::object();
-        std::shared_lock<std::shared_mutex> r(pImpl->rwMutex);
-        return pImpl->data;
-    }
-    catch (...)
-    {
-        return json::object();
-    }
-}
-
-// ---------------- atomic_write_json implementation ----------------
+// ============================================================================
+// Atomic Write Implementation
+// ============================================================================
 
 void JsonConfig::atomic_write_json(const std::filesystem::path &target, const json &j)
 {
 #if defined(PLATFORM_WIN64)
-    // Windows implementation
+    // --- Windows Implementation ---
     LOGGER_DEBUG("atomic_write_json(WIN): Target: {}", target.string());
 
-    std::filesystem::path parent = target.parent_path();
-    if (parent.empty())
-        parent = ".";
+    fs::path parent = target.parent_path();
+    if (parent.empty()) parent = ".";
 
-    // Ensure the target directory exists.
     std::error_code ec_dir;
-    fs::create_directories(target.parent_path(), ec_dir);
+    fs::create_directories(parent, ec_dir);
     if (ec_dir)
-    {
-        throw std::runtime_error("atomic_write_json: create_directories failed: " +
-                                 ec_dir.message());
-    }
-    LOGGER_DEBUG("atomic_write_json(WIN): Parent directory '{}' ensured.",
-                 target.parent_path().string());
+        throw std::runtime_error("atomic_write_json: create_directories failed: " + ec_dir.message());
 
-    std::wstring filename = target.filename().wstring();
-    std::wstring tmpname = filename + L".tmp" + win32_make_unique_suffix();
-
-    std::filesystem::path tmp_full = parent / std::filesystem::path(tmpname);
+    // Create a unique temporary file name.
+    std::wstring tmpname = target.filename().wstring() + L".tmp" + format_tools::win32_make_unique_suffix();
+    fs::path tmp_full = parent / fs::path(tmpname);
 
     // Convert to long paths to avoid MAX_PATH issues.
-    std::wstring tmp_full_w = win32_to_long_path(tmp_full);
-    std::wstring target_w = win32_to_long_path(target);
+    std::wstring tmp_full_w = format_tools::win32_to_long_path(tmp_full);
+    std::wstring target_w = format_tools::win32_to_long_path(target);
 
-    LOGGER_DEBUG("atomic_write_json(WIN): Temp file path: {}", tmp_full.string());
-
-    // Security: Check if the target is a reparse point (e.g., a symlink).
+    // Security: Refuse to write if the target is a symlink or other reparse point.
     DWORD attributes = GetFileAttributesW(target_w.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
-    {
-        throw std::runtime_error(
-            "atomic_write_json: target path is a reparse point (e.g., symbolic link), "
-            "refusing to write for security reasons.");
-    }
-    LOGGER_DEBUG("atomic_write_json(WIN): Reparse point check passed for target '{}'.",
-                 target.string());
+        throw std::runtime_error("atomic_write_json: target path is a reparse point (e.g., symbolic link), refusing to write.");
 
-    // 1. Create and write to a temporary file.
-    HANDLE h = CreateFileW(tmp_full_w.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    // 1. Create and write to the temporary file.
+    HANDLE h = CreateFileW(tmp_full_w.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE)
-    {
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: CreateFileW(temp) failed: {}", GetLastError()));
-    }
-    LOGGER_DEBUG("atomic_write_json(WIN): Temp file '{}' created.", tmp_full.string());
+        throw std::runtime_error(fmt::format("atomic_write_json: CreateFileW(temp) failed: {}", GetLastError()));
 
-    // RAII for handle
+    // Use a unique_ptr for RAII-style handle management.
     auto close_handle = [&](HANDLE handle) { CloseHandle(handle); };
     std::unique_ptr<void, decltype(close_handle)> handle_guard(h, close_handle);
 
-    std::string out = j.dump(4);
+    std::string out = j.dump(4); // Pretty-print with 4-space indent.
     DWORD written = 0;
-    if (!WriteFile(h, out.data(), static_cast<DWORD>(out.size()), &written, nullptr) ||
-        static_cast<size_t>(written) != out.size())
+    if (!WriteFile(h, out.data(), static_cast<DWORD>(out.size()), &written, nullptr) || static_cast<size_t>(written) != out.size())
     {
         DeleteFileW(tmp_full_w.c_str());
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: WriteFile failed: {}", GetLastError()));
+        throw std::runtime_error(fmt::format("atomic_write_json: WriteFile failed: {}", GetLastError()));
     }
-    LOGGER_DEBUG("atomic_write_json(WIN): Wrote {} bytes to temp file.", written);
 
-    if (!FlushFileBuffers(h))
+    if (!FlushFileBuffers(h)) // Ensure data is persisted to disk.
     {
         DeleteFileW(tmp_full_w.c_str());
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: FlushFileBuffers failed: {}", GetLastError()));
+        throw std::runtime_error(fmt::format("atomic_write_json: FlushFileBuffers failed: {}", GetLastError()));
     }
-    LOGGER_DEBUG("atomic_write_json(WIN): Flushed buffers for temp file.");
-
     handle_guard.reset(); // Close the handle before rename.
 
     // 2. Atomically replace the original file.
-    if (!ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH,
-                      nullptr, nullptr))
+    if (!ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
     {
         DWORD err = GetLastError();
-        // If ReplaceFileW fails because the destination does not exist, this is a file
-        // creation scenario. Fall back to a simple move/rename.
+        // If ReplaceFileW fails because the destination does not exist, fall back to MoveFileW.
         if (err == ERROR_FILE_NOT_FOUND)
         {
-            if (MoveFileW(tmp_full_w.c_str(), target_w.c_str()))
-            {
-                LOGGER_DEBUG("atomic_write_json(WIN): MoveFileW succeeded for new file '{}'.",
-                             target.string());
-                return; // Success
-            }
-            err = GetLastError(); // Update error to the one from MoveFileW
+            if (MoveFileW(tmp_full_w.c_str(), target_w.c_str())) return; // Success.
+            err = GetLastError();
         }
-
-        // If we are here, either ReplaceFileW failed for a reason other than
-        // file-not-found, or the fallback MoveFileW also failed.
         DeleteFileW(tmp_full_w.c_str());
         throw std::runtime_error(fmt::format("atomic_write_json: Replace/Move failed: {}", err));
     }
-    LOGGER_DEBUG("atomic_write_json(WIN): ReplaceFileW succeeded for target '{}'.",
-                 target.string());
 #else
-    // POSIX implementation
+    // --- POSIX Implementation ---
     LOGGER_DEBUG("atomic_write_json(POSIX): Target: {}", target.string());
-    namespace fs = std::filesystem;
 
     struct stat lstat_buf;
     if (lstat(target.c_str(), &lstat_buf) == 0)
     {
         if (S_ISLNK(lstat_buf.st_mode))
-        {
-            throw std::runtime_error("atomic_write_json: target path is a symbolic link, refusing "
-                                     "to write for security reasons.");
-        }
+            throw std::runtime_error("atomic_write_json: target path is a symbolic link, refusing to write.");
     }
-    LOGGER_DEBUG("atomic_write_json(POSIX): Symlink check passed for target '{}'.",
-                 target.string());
 
-    std::string dir = target.parent_path().string();
-    if (dir.empty())
-        dir = ".";
+    fs::path parent = target.parent_path();
+    if (parent.empty()) parent = ".";
 
     std::error_code ec_dir;
-    fs::create_directories(target.parent_path(), ec_dir);
+    fs::create_directories(parent, ec_dir);
     if (ec_dir)
-    {
-        throw std::runtime_error("atomic_write_json: create_directories failed: " +
-                                 ec_dir.message());
-    }
-    LOGGER_DEBUG("atomic_write_json(POSIX): Parent directory '{}' ensured.",
-                 target.parent_path().string());
+        throw std::runtime_error("atomic_write_json: create_directories failed: " + ec_dir.message());
 
-    std::string filename = target.filename().string();
-    std::string tmpl = dir + "/" + filename + ".tmp.XXXXXX";
-    std::vector<char> tmpl_buf(tmpl.begin(), tmpl.end());
+    // Create a unique temporary file path.
+    std::string tmpl_str = (parent / (target.filename().string() + ".tmp.XXXXXX")).string();
+    std::vector<char> tmpl_buf(tmpl_str.begin(), tmpl_str.end());
     tmpl_buf.push_back('\0');
 
     int fd = mkstemp(tmpl_buf.data());
     if (fd == -1)
-    {
-        throw std::runtime_error(
-            fmt::format("atomic_write_json: mkstemp failed: {}", std::strerror(errno)));
-    }
-    LOGGER_DEBUG("atomic_write_json(POSIX): Temp file '{}' created (FD: {}).", tmpl_buf.data(), fd);
+        throw std::runtime_error(fmt::format("atomic_write_json: mkstemp failed: {}", std::strerror(errno)));
 
     std::string tmp_path = tmpl_buf.data();
-    auto cleanup_temp_file = [&]()
-    {
-        if (fd != -1)
-            ::close(fd);
+    auto cleanup_temp_file = [&]() {
+        if (fd != -1) ::close(fd);
         ::unlink(tmp_path.c_str());
     };
 
@@ -512,63 +491,38 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
         std::string out = j.dump(4);
         ssize_t written = ::write(fd, out.data(), out.size());
         if (written < 0 || static_cast<size_t>(written) != out.size())
-        {
-            throw std::runtime_error(
-                fmt::format("atomic_write_json: write failed: {}", std::strerror(errno)));
-        }
-        LOGGER_DEBUG("atomic_write_json(POSIX): Wrote {} bytes to temp file.", written);
+            throw std::runtime_error(fmt::format("atomic_write_json: write failed: {}", std::strerror(errno)));
 
-        if (::fsync(fd) != 0)
-        {
-            throw std::runtime_error(
-                fmt::format("atomic_write_json: fsync(file) failed: {}", std::strerror(errno)));
-        }
-        LOGGER_DEBUG("atomic_write_json(POSIX): Flushed file buffers.");
+        if (::fsync(fd) != 0) // Ensure data is on disk.
+            throw std::runtime_error(fmt::format("atomic_write_json: fsync(file) failed: {}", std::strerror(errno)));
 
+        // Try to preserve original file permissions.
         struct stat st;
         if (stat(target.c_str(), &st) == 0)
         {
             if (fchmod(fd, st.st_mode) != 0)
-            {
-                throw std::runtime_error(
-                    fmt::format("atomic_write_json: fchmod failed: {}", std::strerror(errno)));
-            }
-            LOGGER_DEBUG("atomic_write_json(POSIX): Copied permissions.");
+                throw std::runtime_error(fmt::format("atomic_write_json: fchmod failed: {}", std::strerror(errno)));
         }
 
         if (::close(fd) != 0)
         {
-            fd = -1; // prevent double close
-            throw std::runtime_error(
-                fmt::format("atomic_write_json: close failed: {}", std::strerror(errno)));
+            fd = -1; // Prevent double close in cleanup.
+            throw std::runtime_error(fmt::format("atomic_write_json: close failed: {}", std::strerror(errno)));
         }
         fd = -1;
-        LOGGER_DEBUG("atomic_write_json(POSIX): Closed temp file handle.");
 
+        // Atomically replace original with temp file.
         if (std::rename(tmp_path.c_str(), target.c_str()) != 0)
-        {
-            throw std::runtime_error(
-                fmt::format("atomic_write_json: rename failed: {}", std::strerror(errno)));
-        }
-        LOGGER_DEBUG("atomic_write_json(POSIX): Rename succeeded for target '{}'.",
-                     target.string());
+            throw std::runtime_error(fmt::format("atomic_write_json: rename failed: {}", std::strerror(errno)));
 
-        int dfd = ::open(dir.c_str(), O_DIRECTORY | O_RDONLY);
+        // fsync the parent directory to ensure the rename operation is persisted.
+        int dfd = ::open(parent.c_str(), O_DIRECTORY | O_RDONLY);
         if (dfd >= 0)
         {
+            auto close_dfd = [&](int d) { ::close(d); };
+            std::unique_ptr<int, decltype(close_dfd)> dfd_guard(&dfd, close_dfd);
             if (::fsync(dfd) != 0)
-            {
-                ::close(dfd);
-                throw std::runtime_error(
-                    fmt::format("atomic_write_json: fsync(dir) failed: {}", std::strerror(errno)));
-            }
-            ::close(dfd);
-            LOGGER_DEBUG("atomic_write_json(POSIX): Synced parent directory.");
-        }
-        else
-        {
-            throw std::runtime_error(fmt::format(
-                "atomic_write_json: open(dir) for fsync failed: {}", std::strerror(errno)));
+                throw std::runtime_error(fmt::format("atomic_write_json: fsync(dir) failed: {}", std::strerror(errno)));
         }
     }
     catch (...)
@@ -578,5 +532,9 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const js
     }
 #endif
 }
+
+// Instantiate the Impl struct in the source file.
+// This is required by the Pimpl idiom.
+template struct JsonConfig::Impl;
 
 } // namespace pylabhub::utils
