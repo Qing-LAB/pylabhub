@@ -1,44 +1,98 @@
 /*******************************************************************************
- * @file include/utils/FileLock.hpp
- * @brief Cross-platform advisory file lock RAII wrapper.
- * @author Quan Qing
- * @date 2025-11-15
+ * @file FileLock.hpp
+ * @brief Cross-platform, RAII-style, advisory file lock for inter-process
+ *        and inter-thread synchronization.
  *
+ * @see src/utils/FileLock.cpp
  * @see tests/test_filelock.cpp
+ *
+ * **Design Philosophy**
+ *
+ * `FileLock` provides a robust, cross-platform mechanism for managing exclusive
+ * access to a shared resource, identified by a filesystem path. It is a critical
+ * component for ensuring data integrity in multi-process applications, such as
+ * when reading or writing a shared `JsonConfig` file.
+ *
+ * 1.  **RAII (Resource Acquisition Is Initialization)**: The lock is acquired in
+ *     the constructor and automatically released in the destructor. This modern
+ *     C++ pattern guarantees that locks are always released, even in the
+ *     presence of exceptions, preventing deadlocks caused by leaked lock files.
+ *
+ * 2.  **Two-Layer Locking Model**: `FileLock` provides consistent semantics for
+ *     both inter-process and intra-process (multi-threaded) synchronization.
+ *     - **Inter-Process Lock**: An OS-level file lock (`flock` on POSIX,
+ *       `LockFileEx` on Windows) is used on a dedicated `.lock` file. This
+ *       ensures that only one process can hold the lock at a time.
+ *     - **Intra-Process Lock**: A process-local registry (a map guarded by a
+ *       `std::mutex` and `std::condition_variable`) is used to manage lock
+ *       contention between different threads *within the same process*. This is
+ *       necessary because OS-level file locks can behave differently across
+ *       platforms for threads in the same process. This layer ensures that
+ *       `Blocking` and `NonBlocking` modes work identically everywhere.
+ *
+ * 3.  **Advisory Lock**: This is an *advisory* lock, not a mandatory one. It
+ *     relies on all cooperating processes and threads to use the `FileLock`
+ *     mechanism to access the shared resource. It does NOT prevent a
+ *     non-cooperating process from ignoring the lock and accessing the target
+ *     file directly.
+ *
+ * 4.  **Separate Lock File**: Instead of locking the target resource directly, a
+ *     separate lock file is used (e.g., `/path/to/file.txt.lock`). This avoids
+ *     potential interference with file content operations and simplifies the
+ *     implementation.
+ *
+ * 5.  **Path Canonicalization**: To ensure that different path representations
+ *     (e.g., `/path/./file` vs `/path/file`, or symlinks) all contend for the
+ *     same lock, `FileLock` automatically resolves the resource path to a
+ *     canonical form before creating the lock file path. It uses
+ *     `std::filesystem::canonical` if the path exists, and falls back to
+ *     `std::filesystem::absolute` if it doesn't (to allow locking a resource
+ *     before it is created).
+ *
+ * 6.  **ABI Stability (Pimpl Idiom)**: The class uses the Pimpl idiom to hide
+ *     all implementation details, including platform-specific handles and internal
+ *     locking primitives, ensuring a stable ABI for the shared library.
+ *
+ * **Usage**
+ *
+ * ```cpp
+ * #include "utils/FileLock.hpp"
+ * #include <iostream>
+ * #include <thread>
+ * #include <chrono>
+ *
+ * void perform_exclusive_work(const std::filesystem::path& resource) {
+ *     // Attempt to acquire a lock with a 5-second timeout.
+ *     pylabhub::utils::FileLock lock(resource,
+ *                                 pylabhub::utils::ResourceType::File,
+ *                                 std::chrono::seconds(5));
+ *
+ *     // Always check if the lock was successfully acquired.
+ *     if (lock.valid()) {
+ *         std::cout << "Lock acquired for " << resource << std::endl;
+ *         // ... perform work on the shared resource ...
+ *         std::this_thread::sleep_for(std::chrono::seconds(2));
+ *         std::cout << "Work complete. Releasing lock." << std::endl;
+ *     } else {
+ *         // Handle the case where the lock could not be acquired.
+ *         std::cerr << "Failed to acquire lock for " << resource
+ *                   << ". Error: " << lock.error_code().message() << std::endl;
+ *     }
+ *     // Lock is automatically released here when `lock` goes out of scope.
+ * }
+ * ```
  ******************************************************************************/
 #pragma once
 
-// FileLock.hpp - cross-platform advisory file lock RAII wrapper.
-// Location: include/utils/FileLock.hpp
-//
-// Usage:
-//   FileLock lock(path, LockMode::NonBlocking);
-//   if (!lock.valid()) { handle error: lock.error_code() }
-//
-// Behavior:
-//  - Implements an *advisory* lock. It relies on all cooperating processes and
-//    threads to respect the same locking protocol. It does NOT prevent
-//    non-cooperating parties from accessing the target file.
-//  - Uses a separate lock file to avoid interfering with the target file. The
-//    naming convention is designed to prevent collisions between file and
-//    directory locks:
-//    - For a file `/path/to/file.txt`, the lock is `/path/to/file.txt.lock`.
-//    - For a directory `/path/to/dir/`, the lock is `/path/to/dir.dir.lock`.
-//  - On POSIX, uses flock().
-//  - On Windows, uses LockFileEx().
-//  - Provides unified semantics for both inter-process and intra-process
-//    (i.e., multi-threaded) locking on all platforms.
-//  - Movable but non-copyable.
-
+#include <chrono>
 #include <filesystem>
-#include <memory> // For std::unique_ptr
+#include <memory>
+#include <optional>
 #include <system_error>
 
-#include "platform.hpp"
 #include "pylabhub_utils_export.h"
 
-// Disable warning C4251 for Pimpl members, which is a common practice when
-// exporting classes that use std::unique_ptr with an incomplete type.
+// Disable warning C4251 on MSVC for the std::unique_ptr Pimpl member.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4251)
@@ -57,8 +111,12 @@ enum class LockMode
 };
 
 /**
- * @brief Specifies the type of resource being locked to ensure unambiguous
- * lock file naming.
+ * @brief Specifies the type of resource being locked.
+ *
+ * This is used to generate an unambiguous lock file name, preventing collisions
+ * between a lock for a file and a lock for a directory with the same name.
+ * - File: `/path/to/resource.txt` -> `/path/to/resource.txt.lock`
+ * - Directory: `/path/to/resource/` -> `/path/to/resource.dir.lock`
  */
 enum class ResourceType
 {
@@ -71,17 +129,14 @@ struct FileLockImpl;
 
 /**
  * @class FileLock
- * @brief A cross-platform, RAII-style advisory file lock.
+ * @brief A cross-platform, RAII-style advisory file lock for process and
+ *        thread synchronization.
  *
- * This class acquires a lock upon construction and releases it upon destruction.
- * It is designed to be safe for both multi-process and multi-threaded scenarios.
- * To ensure that different paths to the same underlying resource (e.g., relative
- * paths, different symlinks) are treated as a single lockable entity, FileLock
- * automatically resolves resource paths to a canonical form using
- * `std::filesystem::canonical`. If the resource does not yet exist, it falls
- * back to `std::filesystem::absolute` to allow for locking before creation.
+ * This class acquires a system-wide lock upon construction and automatically
+ * releases it upon destruction. It is designed to be safe for both multi-process
+ * and multi-threaded scenarios.
  *
- * @warning The underlying POSIX lock mechanism (flock) may be unreliable
+ * @warning The underlying POSIX lock mechanism (`flock`) may be unreliable
  *          over network filesystems like NFS. This class is best suited for
  *          local filesystem synchronization.
  */
@@ -89,38 +144,40 @@ class PYLABHUB_UTILS_EXPORT FileLock
 {
   public:
     /**
-     * @brief [Prediction Tool] Gets the canonical path for the lock file for a given resource.
+     * @brief Predicts the canonical path of the lock file for a given resource.
      *
-     * This static utility function allows consumers to determine the exact, canonical
-     * path of the lock file that would be used for a resource, without needing to
-     * instantiate a `FileLock` object. It implements the core canonicalization logic:
-     * - It attempts to resolve symlinks via `std::filesystem::canonical`.
-     * - If the path does not exist, it falls back to `std::filesystem::absolute`.
-     * This makes it useful for diagnostics or external cleanup scripts.
+     * This static utility function allows you to determine the exact, canonical
+     * path of the lock file that *would* be used for a resource, without needing to
+     * instantiate a `FileLock` object. It implements the core path canonicalization
+     * logic used by the constructor.
      *
      * @param path The path to the resource (file or directory).
-     * @param type The type of the resource.
+     * @param type The type of the resource (`File` or `Directory`).
      * @return The canonical, absolute path to the corresponding lock file.
+     *         Returns an empty path on failure.
      */
     static std::filesystem::path get_expected_lock_fullname_for(const std::filesystem::path &path,
                                                                 ResourceType type) noexcept;
 
     /**
      * @brief Constructs a FileLock and attempts to acquire the lock.
+     *
      * @param path The path to the file or resource to be locked.
-     * @param type The type of resource (File or Directory), which determines
+     * @param type The type of resource (`File` or `Directory`), which determines
      *             the lock file's naming convention.
-     * @param mode The locking mode (Blocking or NonBlocking).
+     * @param mode The locking mode (`Blocking` or `NonBlocking`).
      */
     explicit FileLock(const std::filesystem::path &path, ResourceType type,
                       LockMode mode = LockMode::Blocking) noexcept;
 
     /**
      * @brief Constructs a FileLock and attempts to acquire the lock within a given time.
+     *
      * @param path The path to the file or resource to be locked.
-     * @param type The type of resource (File or Directory), which determines
-     *             the lock file's naming convention.
-     * @param timeout The maximum duration to wait for the lock.
+     * @param type The type of resource (`File` or `Directory`).
+     * @param timeout The maximum duration to wait for the lock. If the lock is not
+     *                acquired within this time, the constructor returns and `valid()`
+     *                will be false.
      */
     explicit FileLock(const std::filesystem::path &path, ResourceType type,
                       std::chrono::milliseconds timeout) noexcept;
@@ -132,36 +189,39 @@ class PYLABHUB_UTILS_EXPORT FileLock
     FileLock &operator=(FileLock &&other) noexcept;
 
     /**
-     * @brief [POSIX-only] Cleans up any leftover lock files created by the application.
+     * @brief [Cleanup] Safely removes leftover lock files created by this process.
      *
-     * This function is intended to be called once at program exit to ensure
-     * filesystem hygiene. It is a no-op on Windows, where lock files are
-     * cleaned up automatically by the OS.
+     * This function is registered with the `LifecycleManager` and is automatically
+     * called at program shutdown. It iterates through all locks created by the
+     * current process and attempts to safely remove the associated `.lock` files.
+     * To avoid deleting a lock file still in use by another process, it first
+     * attempts to acquire a non-blocking lock on the file. If successful, the
+     * file is deemed safe to delete.
      */
     static void cleanup();
 
-    // Non-copyable to prevent accidental duplication of lock ownership.
+    // The class is non-copyable to prevent accidental duplication of lock ownership.
     FileLock(const FileLock &) = delete;
     FileLock &operator=(const FileLock &) = delete;
 
     /**
      * @brief Destructor. Releases the lock if it is held.
      *
-     * This must be defined in the .cpp file where FileLockImpl is a complete
-     * type to work correctly with the std::unique_ptr Pimpl idiom.
+     * This is defined in the .cpp file where `FileLockImpl` is a complete
+     * type, which is a requirement of the Pimpl idiom with `std::unique_ptr`.
      */
     ~FileLock();
 
     /**
      * @brief Checks if the lock was successfully acquired and is currently held.
-     * @return true if the lock is valid, false otherwise.
+     * @return `true` if the lock is valid, `false` otherwise.
      */
     bool valid() const noexcept;
 
     /**
      * @brief Gets the error code from the last failed lock acquisition attempt.
-     * @return std::error_code containing the error information. If valid() is
-     *         true, or if no error occurred, the code will be empty.
+     * @return `std::error_code` containing the OS or timeout error. If `valid()`
+     *         is true, the error code will be empty/zero.
      */
     std::error_code error_code() const noexcept;
 
@@ -172,29 +232,28 @@ class PYLABHUB_UTILS_EXPORT FileLock
     std::optional<std::filesystem::path> get_locked_resource_path() const noexcept;
 
     /**
-     * @brief [Instance Inspector] If the lock is valid, returns the canonical path of the lock file.
+     * @brief If the lock is valid, returns the canonical path of the lock file being used.
      *
      * This member function returns the actual, canonicalized, absolute path of the
-     * lock file being used by this specific `FileLock` instance.
+     * `.lock` file being used by this specific `FileLock` instance. Useful for diagnostics.
      *
-     * @return An optional containing the lock file path if the lock is held, otherwise an empty optional.
+     * @return An optional containing the lock file path if the lock is held,
+     *         otherwise an empty optional.
      */
     std::optional<std::filesystem::path> get_canonical_lock_file_path() const noexcept;
 
   private:
-    // The custom deleter for the Pimpl class.
-    // The struct itself must be defined here to be a complete type for
-    // std::unique_ptr, but its operator() is defined in the .cpp file where
-    // FileLockImpl is a complete type.
+    // The custom deleter for the Pimpl class. This is the key to achieving
+    // correct RAII behavior with the Pimpl idiom. Its implementation in the
+    // .cpp file contains the lock release logic.
     struct FileLockImplDeleter
     {
         void operator()(FileLockImpl *p);
     };
 
-    // The only data member is a pointer to the implementation.
-    // Using a custom deleter ensures that the resource release logic is
-    // correctly invoked whenever the unique_ptr destroys the Impl object,
-    // including during move-assignment.
+    // The only data member is a unique_ptr to the implementation, using the
+    // custom deleter. This ensures that the resource release logic is
+-    // correctly invoked whenever the unique_ptr goes out of scope or is reset.
     std::unique_ptr<FileLockImpl, FileLockImplDeleter> pImpl;
 };
 
