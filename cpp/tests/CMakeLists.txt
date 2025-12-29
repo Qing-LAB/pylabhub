@@ -101,17 +101,17 @@ add_custom_target(stage_tests COMMENT "Staging all test executables")
 
 pylabhub_stage_executable(
   TARGET utils_tests
-  DESTINATION bin
+  DESTINATION tests
   ATTACH_TO stage_tests
 )
 pylabhub_stage_executable(
   TARGET multiprocess_tests
-  DESTINATION bin
+  DESTINATION tests
   ATTACH_TO stage_tests
 )
 pylabhub_stage_executable(
   TARGET test_logger
-  DESTINATION bin
+  DESTINATION tests
   ATTACH_TO stage_tests
 )
 
@@ -130,7 +130,8 @@ add_dependencies(test_logger stage_pylabhub_utils)
 # 2. RPATH (for macOS/Linux): Set the RPATH for the test executables so they
 #    can find the staged library at build/run time. On Windows, this has no effect.
 if(NOT WIN32)
-  set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/tests")
+  set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin") 
+  # the dynamic library pylabhub::utils is placed here so we need to setup a RPATH for it
   set_target_properties(utils_tests multiprocess_tests test_logger
     PROPERTIES
       BUILD_RPATH "${STAGED_LIB_DIR}"

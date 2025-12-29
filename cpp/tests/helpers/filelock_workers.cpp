@@ -138,7 +138,7 @@ int test_directory_path_locking(const std::string &base_dir_str)
         [&]() {
             fs::path base_dir(base_dir_str);
             auto dir_to_lock = base_dir / "dir_to_lock";
-            fs::create_directory(dir_to_lock);
+            fs::create_directories(dir_to_lock);
 
             auto expected_dir_lock_file =
                 FileLock::get_expected_lock_fullname_for(dir_to_lock, ResourceType::Directory);
