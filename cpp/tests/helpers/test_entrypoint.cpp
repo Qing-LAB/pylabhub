@@ -100,9 +100,9 @@ int main(int argc, char **argv) {
 
     // If not in worker mode, or if worker dispatch fails, run the tests.
     if (argc >= 1) g_self_exe_path = argv[0];
-    pylabhub_initialize_application();
+    LifecycleManager::instance().initialize();
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
-    pylabhub_finalize_application();
+    LifecycleManager::instance().finalize();
     return result;
 }
