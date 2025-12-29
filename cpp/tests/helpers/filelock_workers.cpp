@@ -1,4 +1,6 @@
 #include "test_preamble.h" // New common preamble
+#include <fstream>
+#include <iomanip>
 
 #include "worker_filelock.h"     // Keep this specific header
 #include "shared_test_helpers.h" // Keep this specific helper header
@@ -11,8 +13,6 @@ namespace filelock
 {
 
 // Prototypes for helpers
-static bool atomic_write_int(const fs::path &target, int value);
-static bool native_read_int(const fs::path &target, int &value);
 
 int test_basic_non_blocking(const std::string &resource_path_str)
 {
@@ -184,24 +184,48 @@ int nonblocking_acquire(const std::string &resource_path_str)
      }, "filelock::nonblocking_acquire");
 }
 
-int contention_increment(const std::string &counter_path_str, int num_iterations)
+int contention_log_access(const std::string &resource_path_str,
+                          const std::string &log_path_str,
+                          int num_iterations)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(counter_path_str);
+            fs::path resource_path(resource_path_str);
+            fs::path log_path(log_path_str);
+            unsigned long pid =
+#if defined(PLATFORM_WIN64)
+                static_cast<unsigned long>(GetCurrentProcessId());
+#else
+                static_cast<unsigned long>(getpid());
+#endif
+
             for (int i = 0; i < num_iterations; ++i)
             {
-                std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
+                // Random sleep to increase contention likelihood at different points
+                std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 20000));
+
                 FileLock filelock(resource_path, ResourceType::File, LockMode::Blocking);
-                ASSERT_TRUE(filelock.valid());
-                auto locked_path_opt = filelock.get_locked_resource_path();
-                ASSERT_TRUE(locked_path_opt);
-                int current_value = 0;
-                native_read_int(*locked_path_opt, current_value);
-                ASSERT_TRUE(atomic_write_int(*locked_path_opt, current_value + 1));
-            }
+                ASSERT_TRUE(filelock.valid()) << "Failed to acquire lock, PID: " << pid;
+
+                auto now_acquire = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+                {
+                    std::ofstream log_stream(log_path, std::ios::app);
+                    ASSERT_TRUE(log_stream.is_open());
+                    log_stream << now_acquire << " " << pid << " ACQUIRE\n";
+                }
+
+                // Hold the lock for a bit
+                std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 20000 + 50));
+
+                auto now_release = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+                 {
+                    std::ofstream log_stream(log_path, std::ios::app);
+                    ASSERT_TRUE(log_stream.is_open());
+                    log_stream << now_release << " " << pid << " RELEASE\n";
+                }
+            } // Lock is released here by FileLock destructor
         },
-        "filelock::contention_increment");
+        "filelock::contention_log_access");
 }
 
 int parent_child_block(const std::string &resource_path_str)
@@ -220,72 +244,6 @@ int parent_child_block(const std::string &resource_path_str)
 }
 
 // --- Helper implementations that are not tests themselves ---
-static bool atomic_write_int(const fs::path &target, int value)
-{
-    auto tmp = target;
-    tmp += ".tmp." + std::to_string(
-#if defined(PLATFORM_WIN64)
-                           static_cast<unsigned long>(GetCurrentProcessId())
-#else
-                           static_cast<unsigned long>(getpid())
-#endif
-                       );
-#if defined(PLATFORM_WIN64)
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    auto guard = pylabhub::basics::make_scope_guard([&]() { CloseHandle(h); std::error_code ec; fs::remove(tmp, ec); });
-    std::string val_str = std::to_string(value);
-    DWORD bytes_written = 0;
-    if (!WriteFile(h, val_str.c_str(), static_cast<DWORD>(val_str.length()), &bytes_written, NULL) || bytes_written != val_str.length()) return false;
-    if (!FlushFileBuffers(h)) return false;
-#else
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (fd == -1) return false;
-    auto guard = pylabhub::basics::make_scope_guard([&]() { ::close(fd); std::error_code ec; fs::remove(tmp, ec); });
-    std::string val_str = std::to_string(value);
-    if (::write(fd, val_str.c_str(), val_str.length()) != static_cast<ssize_t>(val_str.length())) return false;
-    if (::fsync(fd) != 0) return false;
-#endif
-#if !defined(PLATFORM_WIN64)
-    std::error_code ec;
-    fs::rename(tmp, target, ec);
-    if (ec) return false;
-#else
-    if (!::MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) return false;
-#endif
-    guard.invoke();
-#if !defined(PLATFORM_WIN64)
-    int dfd = ::open(target.parent_path().c_str(), O_DIRECTORY | O_RDONLY);
-    if (dfd >= 0) { fsync(dfd); ::close(dfd); }
-#endif
-    return true;
-}
-static bool native_read_int(const fs::path &target, int &value)
-{
-#if defined(PLATFORM_WIN64)
-    HANDLE h = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) { value = 0; return false; }
-    auto guard = pylabhub::basics::make_scope_guard([&]() { CloseHandle(h); });
-    char buffer[128];
-    DWORD bytes_read = 0;
-    if (!ReadFile(h, buffer, sizeof(buffer) - 1, &bytes_read, NULL)) { value = 0; return false; }
-    buffer[bytes_read] = '\0';
-    try { value = std::stoi(buffer); } catch (...) { value = 0; return false; }
-    guard.invoke();
-    return true;
-#else
-    int fd = ::open(target.c_str(), O_RDONLY);
-    if (fd == -1) { value = 0; return false; }
-    auto guard = pylabhub::basics::make_scope_guard([&]() { ::close(fd); });
-    char buffer[128];
-    ssize_t bytes_read = ::read(fd, buffer, sizeof(buffer) - 1);
-    if (bytes_read <= 0) { value = 0; return false; }
-    buffer[bytes_read] = '\0';
-    try { value = std::stoi(buffer); } catch (...) { value = 0; return false; }
-    guard.invoke();
-    return true;
-#endif
-}
 
 } // namespace filelock
 } // namespace worker

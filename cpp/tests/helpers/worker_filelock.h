@@ -8,7 +8,9 @@ namespace worker
     {
         // --- Existing workers for multiprocess tests ---
         int nonblocking_acquire(const std::string& resource_path_str);
-        int contention_increment(const std::string& counter_path_str, int num_iterations);
+        int contention_log_access(const std::string &resource_path_str,
+                                  const std::string &log_path_str,
+                                  int num_iterations);
         int parent_child_block(const std::string& resource_path_str);
 
         // --- NEW workers for single-process tests converted to multiprocess ---

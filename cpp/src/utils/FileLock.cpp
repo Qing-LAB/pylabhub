@@ -972,19 +972,22 @@ void FileLock::cleanup()
 
 namespace
 {
+// C-style callback for the ABI-safe lifecycle API.
+void do_filelock_cleanup() {
+    FileLock::cleanup();
+}
+
 // This static object's constructor will register the cleanup function
 // to be called by the global Finalize().
 struct FileLockFinalizer
 {
     FileLockFinalizer()
     {
-        // Register FileLock::cleanup to be called during shutdown.
-        // A short timeout is fine, as it's a fast, best-effort cleanup.
-        RegisterModule({.name = "pylabhub::utils::FileLockCleanup",
-                        .dependencies = {"pylabhub::utils::Logger"}, // Depends on Logger for logging cleanup status
-                        .startup = [] {},
-                        .shutdown = {.func = &FileLock::cleanup,
-                                     .timeout = std::chrono::seconds(1)}});
+        // Register FileLock::cleanup to be called during shutdown using the new ABI-safe API.
+        pylabhub_module module("pylabhub::utils::FileLockCleanup");
+        module.add_dependency("pylabhub::utils::Logger"); // Depends on Logger for logging.
+        module.set_shutdown(&do_filelock_cleanup, 1000 /*ms*/);
+        pylabhub_register_module(std::move(module));
     }
 };
 

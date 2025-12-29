@@ -27,12 +27,13 @@ int scaled_value(int original, int small_value);
 template <typename Fn>
 int run_gtest_worker(Fn test_logic, const char *test_name)
 {
-    pylabhub::utils::InitializeApplication();
+    pylabhub_initialize_application();
     auto finalizer =
-        pylabhub::basics::make_scope_guard([] { pylabhub::utils::FinalizeApplication(); });
+        pylabhub::basics::make_scope_guard([] { pylabhub_finalize_application(); });
 
     try
     {
+        test_logic();
         test_logic();
     }
     catch (const ::testing::AssertionException &e)

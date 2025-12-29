@@ -61,8 +61,8 @@ if(PYLABHUB_LOGGER_DEBUG_ENABLED)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
 
-# The app links against the core library.
-target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic)
+# The app links against the core library and the utils library.
+target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
 
 # ==============================================================================
 # Installation
