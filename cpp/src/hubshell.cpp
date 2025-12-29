@@ -2,10 +2,10 @@
 
 int main()
 {
-    pylabhub_initialize_application();
+    LifecycleManager::instance().initialize();
 
     // Main application logic will go here.
 
-    pylabhub_finalize_application();
+    LifecycleManager::instance().finalize();
     return 0;
 }
