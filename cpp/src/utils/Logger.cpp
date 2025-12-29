@@ -798,19 +798,25 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 
 namespace
 {
+// C-style callbacks for the ABI-safe lifecycle API.
+void do_logger_startup() {
+    Logger::instance();
+}
+void do_logger_shutdown() {
+    Logger::instance().shutdown();
+}
+
 // This static object's constructor registers the Logger with the application
 // lifecycle manager, ensuring it is properly started and shut down.
 struct LoggerLifecycleRegistrar
 {
     LoggerLifecycleRegistrar()
     {
-        // Register the Logger as a foundational module.
-        // Many other modules may depend on it, so it should be available early.
-        RegisterModule({.name = "pylabhub::utils::Logger",
-                        .dependencies = {},
-                        .startup = [] { Logger::instance(); },
-                        .shutdown = {.func = [] { Logger::instance().shutdown(); },
-                                     .timeout = std::chrono::seconds(5)}});
+        // Register the Logger as a foundational module using the new ABI-safe API.
+        pylabhub_module module("pylabhub::utils::Logger");
+        module.set_startup(&do_logger_startup);
+        module.set_shutdown(&do_logger_shutdown, 5000 /*ms*/);
+        pylabhub_register_module(std::move(module));
     }
 };
 // The global instance that triggers the registration.

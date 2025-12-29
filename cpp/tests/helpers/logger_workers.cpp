@@ -16,8 +16,8 @@ namespace logger
 
 void stress_log(const std::string &log_path, int msg_count)
 {
-    InitializeApplication();
-    auto finalizer = pylabhub::basics::make_scope_guard([] { FinalizeApplication(); });
+    pylabhub_initialize_application();
+    auto finalizer = pylabhub::basics::make_scope_guard([] { pylabhub_finalize_application(); });
     Logger &L = Logger::instance();
     L.set_logfile(log_path, true);
     L.set_level(Logger::Level::L_TRACE);
@@ -156,7 +156,7 @@ int test_shutdown_idempotency(const std::string &log_path_str)
             std::vector<std::thread> threads;
             for (int i = 0; i < THREADS; ++i)
             {
-                threads.emplace_back([]() { pylabhub::utils::FinalizeApplication(); });
+                threads.emplace_back([]() { pylabhub_finalize_application(); });
             }
             for (auto &t : threads)
                 t.join();
@@ -250,7 +250,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     // This test manually manages its lifecycle to test shutdown under load.
     // It does not use the run_gtest_worker template because the point is to
     // call FinalizeApplication while other threads are active.
-    pylabhub::utils::InitializeApplication();
+    pylabhub_initialize_application();
 
     fs::path chaos_log_path(log_path_str);
     std::atomic<bool> stop_flag(false);
@@ -284,7 +284,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
-    pylabhub::utils::FinalizeApplication();
+    pylabhub_finalize_application();
     stop_flag.store(true);
     for (auto &t : threads) t.join();
     return 0; // Success is simply not crashing.

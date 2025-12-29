@@ -23,8 +23,8 @@ int main(int argc, char **argv) {
                 if (scenario == "nonblocking_acquire" && argc > 2) {
                     return worker::filelock::nonblocking_acquire(argv[2]);
                 }
-                if (scenario == "contention_increment" && argc > 3) {
-                    return worker::filelock::contention_increment(argv[2], std::stoi(argv[3]));
+                if (scenario == "contention_log_access" && argc > 4) { // exe, mode, resource, log, iters
+                    return worker::filelock::contention_log_access(argv[2], argv[3], std::stoi(argv[4]));
                 }
                 if (scenario == "parent_child_block" && argc > 2) {
                     return worker::filelock::parent_child_block(argv[2]);
@@ -100,9 +100,9 @@ int main(int argc, char **argv) {
 
     // If not in worker mode, or if worker dispatch fails, run the tests.
     if (argc >= 1) g_self_exe_path = argv[0];
-    pylabhub::utils::InitializeApplication();
+    pylabhub_initialize_application();
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
-    pylabhub::utils::FinalizeApplication();
+    pylabhub_finalize_application();
     return result;
 }
