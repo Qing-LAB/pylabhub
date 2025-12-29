@@ -185,7 +185,7 @@ bool JsonConfig::save_under_lock_io(std::error_code &ec)
         ec = std::make_error_code(std::errc::not_connected);
         return false;
     }
-ba
+
     if (pImpl->configPath.empty())
     {
         LOGGER_ERROR(

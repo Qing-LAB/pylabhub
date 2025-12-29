@@ -4,58 +4,12 @@
 // Each test case is executed in a separate worker process to ensure full
 // isolation of the lifecycle-managed components.
 
-#include "helpers/test_process_utils.h"
-#include <gtest/gtest.h>
+#include "test_preamble.h"
 
-#include <filesystem>
-#include <string>
-#include <vector>
-
-#include "helpers/test_entrypoint.h" // provides extern std::string g_self_exe_path
-#include "platform.hpp"
-#include "utils/FileLock.hpp"
-
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/wait.h>
-#endif
-
+// Specific includes for this test file that are not covered by the preamble
+#include "helpers/test_entrypoint.h"
+#include "helpers/test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
 using namespace test_utils;
-namespace fs = std::filesystem;
-
-namespace
-{
-
-// Waits for a worker process to complete and returns its exit code.
-int wait_for_worker_and_get_exit_code(ProcessHandle handle)
-{
-#if defined(PLATFORM_WIN64)
-    if (handle == NULL_PROC_HANDLE) return -1;
-    if (WaitForSingleObject(handle, 30000) == WAIT_TIMEOUT)
-    {
-        TerminateProcess(handle, 99);
-        CloseHandle(handle);
-        return -99;
-    }
-    DWORD exit_code = 1;
-    GetExitCodeProcess(handle, &exit_code);
-    CloseHandle(handle);
-    return static_cast<int>(exit_code);
-#else
-    if (handle <= 0) return -1;
-    int status = 0;
-    waitpid(handle, &status, 0);
-    if (WIFEXITED(status))
-    {
-        return WEXITSTATUS(status);
-    }
-    return -1;
-#endif
-}
-
-} // namespace
 
 class FileLockTest : public ::testing::Test {
 protected:

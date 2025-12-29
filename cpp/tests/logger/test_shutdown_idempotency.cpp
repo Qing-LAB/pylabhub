@@ -1,4 +1,6 @@
-#include "tests/logger/test_fixture.h"
+#include "test_preamble.h" // New common preamble
+
+#include "test_fixture.h" // Keep this specific fixture header
 
 TEST_F(LoggerTest, ShutdownIdempotency)
 {

@@ -2,19 +2,11 @@
 //
 // Unit test for pylabhub::utils::RecursionGuard, converted to GoogleTest.
 
-#include <gtest/gtest.h>
+#include "test_preamble.h"
 
+// The test preamble should handle most common includes and 'using' declarations.
+// 'recursion_guard.hpp' is a core header for this test file.
 #include "recursion_guard.hpp"
-
-#include <functional>
-#include <memory>
-#include <vector>
-#include <thread>
-#include <future>
-#include <chrono>
-#include <atomic>
-
-using namespace pylabhub::basics;
 
 namespace {
 

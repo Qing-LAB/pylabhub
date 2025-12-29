@@ -36,8 +36,8 @@ target_link_libraries(pylabhub_test_helpers PRIVATE pylabhub::third_party::gtest
 
 target_include_directories(pylabhub_test_helpers
   PUBLIC
-    # Expose the current directory so consumers can #include "test_entrypoint.h", "workers.h"
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/tests>
 )
 
 target_compile_features(pylabhub_test_helpers PRIVATE cxx_std_20)

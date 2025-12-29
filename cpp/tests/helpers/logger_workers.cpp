@@ -1,36 +1,9 @@
-#include "helpers/worker_logger.h"
-#include "helpers/shared_test_helpers.h"
+#include "test_preamble.h" // New common preamble
 
-#include "utils/Logger.hpp"
-#include "utils/Lifecycle.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "scope_guard.hpp"
-
-#include <gtest/gtest.h>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <iostream>
-#include <memory>
-#include <sstream>
-#include <string>
-#include <thread>
-#include <vector>
-
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <unistd.h> // for getpid()
-#endif
-
-using namespace pylabhub::utils;
-namespace fs = std::filesystem;
-using namespace std::chrono_literals;
+#include "worker_logger.h"       // Keep this specific header
+#include "shared_test_helpers.h" // Keep this specific helper header
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+using namespace test_utils;
 
 namespace worker
 {
@@ -44,7 +17,7 @@ namespace logger
 void stress_log(const std::string &log_path, int msg_count)
 {
     InitializeApplication();
-    auto finalizer = make_scope_guard([] { FinalizeApplication(); });
+    auto finalizer = pylabhub::basics::make_scope_guard([] { FinalizeApplication(); });
     Logger &L = Logger::instance();
     L.set_logfile(log_path, true);
     L.set_level(Logger::Level::L_TRACE);

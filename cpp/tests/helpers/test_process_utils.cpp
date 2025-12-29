@@ -1,9 +1,8 @@
-#include "test_process_utils.h"
+#include "test_preamble.h" // New common preamble
 
-#include <fmt/core.h>
-#include <vector>
-#include <string>
-#include <filesystem> // Added for std::filesystem::path
+#include "test_process_utils.h" // Keep this specific header
+
+#include <fmt/core.h> // Keep this for fmt::print
 
 #if defined(PLATFORM_WIN64)
 // Platform-specific implementation is already included in the header

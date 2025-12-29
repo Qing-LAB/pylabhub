@@ -29,7 +29,7 @@ int run_gtest_worker(Fn test_logic, const char *test_name)
 {
     pylabhub::utils::InitializeApplication();
     auto finalizer =
-        pylabhub::utils::make_scope_guard([] { pylabhub::utils::FinalizeApplication(); });
+        pylabhub::basics::make_scope_guard([] { pylabhub::utils::FinalizeApplication(); });
 
     try
     {

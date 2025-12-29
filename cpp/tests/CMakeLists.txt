@@ -24,6 +24,8 @@ add_executable(utils_tests
   test_recursionguard.cpp
 )
 
+target_include_directories(utils_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 target_link_libraries(utils_tests
   PRIVATE
   pylabhub::utils
@@ -48,12 +50,16 @@ add_executable(multiprocess_tests
   test_jsonconfig.cpp
 )
 
+target_include_directories(multiprocess_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 # --- 3. Logger Test Executable ---
 # This executable is built from the refactored, split-out logger test files.
 add_executable(test_logger
   # Sources are added from the subdirectory
 )
 add_subdirectory(logger)
+
+target_include_directories(test_logger PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(multiprocess_tests
   PRIVATE

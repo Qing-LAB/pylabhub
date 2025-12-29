@@ -7,23 +7,12 @@
 //
 // They exercise normal usage plus heavy transfer/move stress scenarios.
 
-#include <gtest/gtest.h>
+#include "test_preamble.h"
 
-#include <chrono>
-#include <future>
-#include <random>
-#include <thread>
-#include <vector>
-#include <atomic>
-#include <sstream>
-#include <deque>
-#include <condition_variable>
-#include <mutex>
-
+// The test preamble should handle most common includes and 'using' declarations.
+// Any includes specific ONLY to atomic_guard might still be needed.
+// 'atomic_guard.hpp' is a core header for this test file.
 #include "atomic_guard.hpp"
-
-using namespace pylabhub::basics;
-using namespace std::chrono_literals;
 
 // Helpers for stress sizes (tweak to make tests faster or heavier).
 static constexpr int LIGHT_THREADS = 8;
