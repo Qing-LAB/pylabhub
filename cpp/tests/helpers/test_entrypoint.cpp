@@ -29,6 +29,27 @@ int main(int argc, char **argv) {
                 if (scenario == "parent_child_block" && argc > 2) {
                     return worker::filelock::parent_child_block(argv[2]);
                 }
+                if (scenario == "test_basic_non_blocking" && argc > 2) {
+                    return worker::filelock::test_basic_non_blocking(argv[2]);
+                }
+                if (scenario == "test_blocking_lock" && argc > 2) {
+                    return worker::filelock::test_blocking_lock(argv[2]);
+                }
+                if (scenario == "test_timed_lock" && argc > 2) {
+                    return worker::filelock::test_timed_lock(argv[2]);
+                }
+                if (scenario == "test_move_semantics" && argc > 3) {
+                    return worker::filelock::test_move_semantics(argv[2], argv[3]);
+                }
+                if (scenario == "test_directory_creation" && argc > 2) {
+                    return worker::filelock::test_directory_creation(argv[2]);
+                }
+                if (scenario == "test_directory_path_locking" && argc > 2) {
+                    return worker::filelock::test_directory_path_locking(argv[2]);
+                }
+                if (scenario == "test_multithreaded_non_blocking" && argc > 2) {
+                    return worker::filelock::test_multithreaded_non_blocking(argv[2]);
+                }
             } else if (module == "jsonconfig") {
                 if (scenario == "write_id" && argc > 3) {
                     return worker::jsonconfig::write_id(argv[2], argv[3]);

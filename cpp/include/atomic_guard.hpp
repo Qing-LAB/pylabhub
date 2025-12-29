@@ -11,7 +11,7 @@ namespace pylabhub::basics {
  * Minimal header-only AtomicOwner + AtomicGuard
  *
  * Design & semantics highlights:
- * - No pimpl, no internal mutex.
+ * - No internal mutex.
  * - Move-only guard semantics: move ctor/assign transfer ownership state.
  * - After a move, the source is left valid, detached, inactive, AND receives
  *   a fresh token so tokens remain unique.

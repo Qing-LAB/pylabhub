@@ -43,7 +43,7 @@ int run_gtest_worker(Fn test_logic, const char *test_name)
     }
     catch (const std::exception &e)
     {
-        fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: \n", test_name, e.what());
+        fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: {}\n", test_name, e.what());
         return 2;
     }
     catch (...)
