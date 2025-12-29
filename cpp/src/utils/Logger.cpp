@@ -1,4 +1,65 @@
-// src/utils/Logger.cpp
+/*******************************************************************************
+ * @file Logger.cpp
+ * @brief Implementation of the high-performance, asynchronous logger.
+ *
+ * @see include/utils/Logger.hpp
+ *
+ * **Implementation Details**
+ *
+ * This file contains the private implementation of the `Logger` class, using the
+ * Pimpl idiom to hide all internal workings and provide a stable ABI.
+ *
+ * 1.  **Command Processing**:
+ *     - The `Command` type is a `std::variant` that can hold different types of
+ *       requests: a `LogMessage` to be written, a `SetSinkCommand` to change
+ *       the output destination, `FlushCommand` for synchronous flushing, etc.
+ *     - The public API functions (e.g., `log_fmt`, `set_logfile`) act as
+ *       producers, creating command objects and pushing them onto a queue.
+ *
+ * 2.  **The Worker Thread (`worker_loop`)**:
+ *     - This is the heart of the logger. It runs in a continuous loop, sleeping
+ *       on a condition variable until the queue is not empty or shutdown is
+ *       requested.
+ *     - To improve performance and reduce lock contention, it "batch-processes"
+ *       commands. It locks the queue, swaps the entire queue content into a
+ *       local vector, and then unlocks. This minimizes the time the queue is
+.
+ *       locked, allowing producer threads to continue their work with minimal
+ *       delay.
+ *     - It then iterates through the local vector of commands, processing each
+ *       one via `std::visit`.
+ *
+ * 3.  **Sink Management**:
+ *     - Sinks are polymorphic `Sink` objects managed by `std::unique_ptr`.
+ *     - When a `SetSinkCommand` is processed, the worker thread first flushes
+ *       the old sink, then replaces it with the new one. Log messages are
+ *       written to the sinks to announce the switch for diagnostic purposes.
+ *     - Sink creation happens on the calling thread. If it fails (e.g., cannot
+ *       open a file), an error command is enqueued, which can trigger the
+ *       error callback.
+ *
+ * 4.  **Error Callback Handling (`CallbackDispatcher`)**:
+ *     - A potential for deadlock exists if a user's error callback directly
+ *       or indirectly calls back into the logger. For example:
+ *       `ErrorCallback -> LogSomething -> Enqueue -> Deadlock` if the main
+ *       queue is locked.
+ *     - To prevent this, the `CallbackDispatcher` runs its own dedicated worker
+ *       thread with its own queue. When the main logger's worker needs to
+ *       invoke the user's callback, it simply "posts" the callback function to
+ *       the dispatcher's queue and continues its work. The dispatcher's thread
+ *       then executes the user callback safely, without any risk of deadlocking
+ *       the main logger.
+ *
+ * 5.  **Lifecycle Integration (`LoggerLifecycleRegistrar`)**:
+ *     - A static global object, `g_logger_registrar`, is created when the
+ *       library is loaded.
+ *     - Its constructor creates and registers a "Logger" module with the
+ *       `LifecycleManager`. This module definition provides pointers to the
+ *       `do_logger_startup` and `do_logger_shutdown` functions.
+ *     - This ensures that `Logger::instance()` is called during application
+ *       initialization and `Logger::instance().shutdown()` is called during
+ *       finalization, automating the logger's lifecycle management.
+ ******************************************************************************/
 
 #include "utils/Logger.hpp"
 #include "utils/Lifecycle.hpp"
@@ -34,7 +95,14 @@
 namespace pylabhub::utils
 {
 
-// --- Private Callback Dispatcher for handling re-entrant calls safely ---
+/**
+ * @class CallbackDispatcher
+ * @brief A helper to safely execute user-provided callbacks on a separate thread.
+ *
+ * This class runs its own internal worker thread and command queue. Its sole
+ * purpose is to decouple the execution of a user's error callback from the
+ * Logger's main worker thread, thereby preventing re-entrant deadlock scenarios.
+ */
 class CallbackDispatcher
 {
   public:
@@ -91,7 +159,8 @@ class CallbackDispatcher
             }
             catch (...)
             {
-                // Exceptions in user callbacks are swallowed
+                // Exceptions in user callbacks are caught and swallowed to
+                // prevent them from terminating the dispatcher thread.
             }
         }
     }
@@ -103,8 +172,11 @@ class CallbackDispatcher
     std::atomic<bool> shutdown_requested_;
 };
 
-// --- Command and Sink Definitions ---
+// ============================================================================
+// Internal Command and Sink Definitions
+// ============================================================================
 
+/** @struct LogMessage @brief Represents a single, formatted log entry. */
 struct LogMessage
 {
     Logger::Level level;
@@ -113,39 +185,44 @@ struct LogMessage
     fmt::memory_buffer body;
 };
 
-// --- Sink Abstraction ---
+/**
+ * @class Sink
+ * @brief The abstract base class for all log destinations.
+ *
+ * A Sink is responsible for the actual I/O of writing a formatted log message.
+ * All methods of a Sink are guaranteed to be called only from the Logger's
+ * single worker thread, so they do not need to be internally thread-safe.
+ */
 class Sink
 {
   public:
     virtual ~Sink() = default;
+    /** @brief Writes a single log message to the destination. */
     virtual void write(const LogMessage &msg) = 0;
+    /** @brief Flushes any buffered output to the destination. */
     virtual void flush() = 0;
+    /** @brief Returns a string description of the sink for diagnostics. */
     virtual std::string description() const = 0;
 };
 
 // --- Helper Functions ---
+
+// Converts a log level enum to its string representation.
 static const char *level_to_string(Logger::Level lvl)
 {
     switch (lvl)
     {
-    case Logger::Level::L_TRACE:
-        return "TRACE";
-    case Logger::Level::L_DEBUG:
-        return "DEBUG";
-    case Logger::Level::L_INFO:
-        return "INFO";
-    case Logger::Level::L_WARNING:
-        return "WARN";
-    case Logger::Level::L_ERROR:
-        return "ERROR";
-    case Logger::Level::L_SYSTEM:
-        return "SYSTEM";
-    default:
-        return "UNK";
+    case Logger::Level::L_TRACE: return "TRACE";
+    case Logger::Level::L_DEBUG: return "DEBUG";
+    case Logger::Level::L_INFO: return "INFO";
+    case Logger::Level::L_WARNING: return "WARN";
+    case Logger::Level::L_ERROR: return "ERROR";
+    case Logger::Level::L_SYSTEM: return "SYSTEM";
+    default: return "UNK";
     }
 }
 
-// Helper: get a platform-native thread id
+// Gets a platform-native thread ID for logging.
 static uint64_t get_native_thread_id() noexcept
 {
 #if defined(PLATFORM_WIN64)
@@ -155,43 +232,26 @@ static uint64_t get_native_thread_id() noexcept
     pthread_threadid_np(nullptr, &tid);
     return tid;
 #elif defined(__linux__)
-    return static_cast<uint64_t>(syscall(SYS_gettid));
+    return static_cast<uint64t>(syscall(SYS_gettid));
 #else
+    // Fallback for other POSIX or unknown systems.
     return std::hash<std::thread::id>()(std::this_thread::get_id());
 #endif
 }
 
-// --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
-template <typename... Args>
-static fmt::memory_buffer make_buffer(fmt::format_string<Args...> fmt_str, Args &&...args)
-{
-    fmt::memory_buffer mb;
-    mb.reserve(128); // small reserve to avoid many reallocs
-    fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
-    return mb;
-}
-// --Helper: turn a string_view into a fmt::memory_buffer (runtime format)
-template <typename... Args>
-static fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
-{
-    fmt::memory_buffer mb;
-    mb.reserve(128);
-    fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
-    return mb;
-}
-
-// --Helper: format a LogMessage into a string
+// Formats a LogMessage into a final, printable string.
 static std::string format_message(const LogMessage &msg)
 {
     std::string time_str = pylabhub::format_tools::formatted_time(msg.timestamp);
-    std::string level_str = level_to_string(msg.level);
-    std::string thread_str = fmt::format("{}", msg.thread_id);
-    std::string body_str = std::string(msg.body.data(), msg.body.size());
-
-    return fmt::format("[{}] [{}] [{}] {}\n", time_str, level_str, thread_str, body_str);
+    return fmt::format("[{}] [{:<6}] [{:5}] {}\n", time_str, level_to_string(msg.level),
+                       msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
 }
 
-// --- Concrete Sinks ---
+// ============================================================================
+// Concrete Sink Implementations
+// ============================================================================
+
+/** @brief A sink that writes log messages to the standard error console. */
 class ConsoleSink : public Sink
 {
   public:
@@ -200,13 +260,15 @@ class ConsoleSink : public Sink
     std::string description() const override { return "Console"; }
 };
 
+/** @brief A sink that writes log messages to a file. */
 class FileSink : public Sink
 {
   public:
     FileSink(const std::string &path, bool use_flock) : path_(path), use_flock_(use_flock)
     {
 #ifdef PLATFORM_WIN64
-        (void)use_flock_; // Not supported
+        (void)use_flock; // Not supported on Windows.
+        // Use Win32 API for correct UTF-8 path handling.
         int needed = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
         if (needed == 0)
             throw std::runtime_error("Failed to convert path to wide string");
@@ -283,6 +345,7 @@ class FileSink : public Sink
 };
 
 #if !defined(PLATFORM_WIN64)
+/** @brief A sink that writes to the POSIX syslog service. */
 class SyslogSink : public Sink
 {
   public:
@@ -295,7 +358,7 @@ class SyslogSink : public Sink
         syslog(level_to_syslog_priority(msg.level), "%.*s", (int)msg.body.size(), msg.body.data());
     }
 
-    void flush() override {} // Not buffered in app
+    void flush() override {} // Not buffered in the application.
 
     std::string description() const override { return "Syslog"; }
 
@@ -304,26 +367,20 @@ class SyslogSink : public Sink
     {
         switch (level)
         {
-        case Logger::Level::L_TRACE:
-            return LOG_DEBUG;
-        case Logger::Level::L_DEBUG:
-            return LOG_DEBUG;
-        case Logger::Level::L_INFO:
-            return LOG_INFO;
-        case Logger::Level::L_WARNING:
-            return LOG_WARNING;
-        case Logger::Level::L_ERROR:
-            return LOG_ERR;
-        case Logger::Level::L_SYSTEM:
-            return LOG_CRIT;
-        default:
-            return LOG_INFO;
+        case Logger::Level::L_TRACE: return LOG_DEBUG;
+        case Logger::Level::L_DEBUG: return LOG_DEBUG;
+        case Logger::Level::L_INFO: return LOG_INFO;
+        case Logger::Level::L_WARNING: return LOG_WARNING;
+        case Logger::Level::L_ERROR: return LOG_ERR;
+        case Logger::Level::L_SYSTEM: return LOG_CRIT;
+        default: return LOG_INFO;
         }
     }
 };
 #endif // !defined(PLATFORM_WIN64)
 
 #ifdef PLATFORM_WIN64
+/** @brief A sink that writes to the Windows Event Log. */
 class EventLogSink : public Sink
 {
   public:
@@ -347,7 +404,7 @@ class EventLogSink : public Sink
         if (!handle_)
             return;
 
-        // Convert UTF-8 from memory_buffer to UTF-16
+        // Convert UTF-8 message body from memory_buffer to a wide string for ReportEventW.
         int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(),
                                          static_cast<int>(msg.body.size()), nullptr, 0);
         if (needed <= 0)
@@ -366,7 +423,7 @@ class EventLogSink : public Sink
                      nullptr);
     }
 
-    void flush() override {} // Not applicable
+    void flush() override {} // Not applicable.
 
     std::string description() const override { return "Windows Event Log"; }
 
@@ -379,42 +436,30 @@ class EventLogSink : public Sink
         {
         case Logger::Level::L_TRACE:
         case Logger::Level::L_DEBUG:
-        case Logger::Level::L_INFO:
-            return EVENTLOG_INFORMATION_TYPE;
-        case Logger::Level::L_WARNING:
-            return EVENTLOG_WARNING_TYPE;
+        case Logger::Level::L_INFO: return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_WARNING: return EVENTLOG_WARNING_TYPE;
         case Logger::Level::L_ERROR:
-        case Logger::Level::L_SYSTEM:
-            return EVENTLOG_ERROR_TYPE;
-        default:
-            return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_SYSTEM: return EVENTLOG_ERROR_TYPE;
+        default: return EVENTLOG_INFORMATION_TYPE;
         }
     }
 };
 #endif // PLATFORM_WIN64
 
-// --- Control Commands for the queue ---
-struct SetSinkCommand
-{
-    std::unique_ptr<Sink> new_sink;
-};
-struct SinkCreationErrorCommand
-{
-    std::string error_message;
-};
-struct FlushCommand
-{
-    std::shared_ptr<std::promise<void>> promise;
-};
-struct SetErrorCallbackCommand
-{
-    std::function<void(const std::string &)> callback;
-};
+// --- Command Definitions ---
+struct SetSinkCommand { std::unique_ptr<Sink> new_sink; };
+struct SinkCreationErrorCommand { std::string error_message; };
+struct FlushCommand { std::shared_ptr<std::promise<void>> promise; };
+struct SetErrorCallbackCommand { std::function<void(const std::string &)> callback; };
 
-using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand,
-                             FlushCommand, SetErrorCallbackCommand>;
+// The variant that holds any possible command for the worker queue.
+using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand, FlushCommand,
+                             SetErrorCallbackCommand>;
 
-// --- Private Implementation (Pimpl) ---
+// ============================================================================
+// Logger Pimpl and Implementation
+// ============================================================================
+
 struct Impl
 {
     Impl();
@@ -424,15 +469,15 @@ struct Impl
     void enqueue_command(Command &&cmd);
     void shutdown();
 
-    // Worker thread and queue
+    // Worker thread and command queue.
     std::thread worker_thread_;
     std::vector<Command> queue_;
     std::mutex queue_mutex_;
     std::condition_variable cv_;
     std::atomic<bool> shutdown_requested_{false};
 
-    // Logger state (worker thread only)
-    std::atomic<Logger::Level> level_{Logger::Level::L_DEBUG};
+    // State exclusively owned and accessed by the worker thread.
+    std::atomic<Logger::Level> level_{Logger::Level::L_INFO};
     std::unique_ptr<Sink> sink_;
     std::function<void(const std::string &)> error_callback_;
     CallbackDispatcher callback_dispatcher_;
@@ -448,16 +493,17 @@ Impl::~Impl()
 {
     if (!shutdown_requested_.load())
     {
-        // This destructor is called when the static Logger instance is destroyed at program exit.
-        // If shutdown() was not called explicitly via the lifecycle manager, we issue a warning.
+        // This destructor is called when the static Logger instance is destroyed.
+        // If shutdown() was not called explicitly (e.g., via the LifecycleManager),
+        // we issue a warning because logs might be lost.
         //
-        // **IMPORTANT**: We DO NOT call shutdown() here as a fallback. On Windows, this
-        // destructor may run while the OS loader lock is held. Attempting to join a thread
-        // (which shutdown() does) in this state can lead to a deadlock. The explicit
-        // `FinalizeApplication()` call from main() is the only safe way to shut down.
+        // **IMPORTANT**: We DO NOT call shutdown() here as a fallback. On Windows,
+        // this destructor may run while the OS loader lock is held. Attempting to
+        // join a thread (which shutdown() does) in this state can cause a deadlock.
+        // The explicit `pylabhub::lifecycle::FinalizeApp()` call is the only safe way.
         fmt::print(stderr,
                    "[pylabhub::Logger WARNING]: Logger was not shut down explicitly. "
-                   "Call pylabhub::utils::FinalizeApplication() before main() returns to guarantee "
+                   "Call pylabhub::lifecycle::FinalizeApp() before main() returns to guarantee "
                    "all logs are flushed.\n");
     }
 }
@@ -467,8 +513,8 @@ void Impl::enqueue_command(Command &&cmd)
     // Double-checked locking pattern. The first check is lock-free for performance.
     if (shutdown_requested_.load(std::memory_order_relaxed))
     {
-        // If shutdown has started, provide a fallback for LogMessage commands
-        // to ensure critical messages are not silently lost.
+        // If shutdown has started, provide a fallback for critical messages
+        // by printing them directly to stderr. This prevents silent loss.
         if (std::holds_alternative<LogMessage>(cmd))
         {
             const auto &msg = std::get<LogMessage>(cmd);
@@ -480,9 +526,9 @@ void Impl::enqueue_command(Command &&cmd)
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        // Final check inside the lock to handle a race condition where shutdown
+        // Final check inside the lock to handle the race condition where shutdown
         // is requested between the first check and acquiring the lock.
-        if (shutdown_requested_.load(std::memory_order_relaxed))
+        if (shutdown_requested_.load(std::memory_order_acquire))
         {
             if (std::holds_alternative<LogMessage>(cmd))
             {
@@ -499,11 +545,10 @@ void Impl::enqueue_command(Command &&cmd)
 
 void Impl::worker_loop()
 {
-    std::vector<Command> local_queue;
+    std::vector<Command> local_queue; // Batch processing queue.
 
     while (true)
     {
-        // The final flush must be done outside the lock, in case the sink blocks.
         bool do_final_flush_and_break = false;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -513,16 +558,15 @@ void Impl::worker_loop()
             {
                 do_final_flush_and_break = true;
             }
+            // Swap the main queue with our empty local one. This is a fast operation
+            // that minimizes the time the mutex is held.
             local_queue.swap(queue_);
         }
 
         if (do_final_flush_and_break)
         {
-            if (sink_)
-            {
-                sink_->flush();
-            }
-            break;
+            if (sink_) sink_->flush();
+            break; // Exit the worker loop.
         }
 
         for (auto &cmd : local_queue)
@@ -534,52 +578,44 @@ void Impl::worker_loop()
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
-                            if (sink_ &&
-                                arg.level >= level_.load(std::memory_order_relaxed))
+                            if (sink_ && arg.level >= level_.load(std::memory_order_relaxed))
                                 sink_->write(arg);
                         }
-                                                else if constexpr (std::is_same_v<T, SetSinkCommand>)
-                                                {
-                                                    // Store descriptions before the switch
-                                                    std::string old_desc = sink_ ? sink_->description() : "null";
-                                                    std::string new_desc =
-                                                        arg.new_sink ? arg.new_sink->description() : "null";
+                        else if constexpr (std::is_same_v<T, SetSinkCommand>)
+                        {
+                            std::string old_desc = sink_ ? sink_->description() : "null";
+                            std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
 
-                                                    if (sink_)
-                                                    {
-                                                        sink_->write({Logger::Level::L_SYSTEM,
-                                                                      std::chrono::system_clock::now(),
-                                                                      get_native_thread_id(),
-                                                                      make_buffer("Switching log sink to: {}",
-                                                                                  new_desc)});
-                                                        sink_->flush();
-                                                    }
-
-                                                    sink_ = std::move(arg.new_sink);
-
-                                                    if (sink_)
-                                                    {
-                                                        sink_->write({Logger::Level::L_SYSTEM,
-                                                                      std::chrono::system_clock::now(),
-                                                                      get_native_thread_id(),
-                                                                      make_buffer("Log sink switched from: {}",
-                                                                                  old_desc)});
-                                                    }
-                                                }
-                                                else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
-                                                {
-                                                    if (error_callback_)
-                                                    {
-                                                        auto cb = error_callback_;
-                                                        callback_dispatcher_.post(
-                                                            [cb, msg = arg.error_message]() { cb(msg); });
-                                                    }
-                                                }
+                            if (sink_)
+                            {
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(),
+                                              fmt::memory_buffer_from("Switching log sink to: " + new_desc)});
+                                sink_->flush();
+                            }
+                            sink_ = std::move(arg.new_sink);
+                            if (sink_)
+                            {
+                                sink_->write({Logger::Level::L_SYSTEM,
+                                              std::chrono::system_clock::now(),
+                                              get_native_thread_id(),
+                                              fmt::memory_buffer_from("Log sink switched from: " + old_desc)});
+                            }
+                        }
+                        else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
+                        {
+                            if (error_callback_)
+                            {
+                                // Post the user callback to the dispatcher to avoid deadlock.
+                                auto cb = error_callback_;
+                                callback_dispatcher_.post([cb, msg = arg.error_message]() { cb(msg); });
+                            }
+                        }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
-                            if (sink_)
-                                sink_->flush();
-                            arg.promise->set_value();
+                            if (sink_) sink_->flush();
+                            arg.promise->set_value(); // Unblock the waiting thread.
                         }
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
                         {
@@ -590,10 +626,11 @@ void Impl::worker_loop()
             }
             catch (const std::exception &e)
             {
+                // Catch exceptions from sink operations and report via callback.
                 if (error_callback_)
                 {
                     auto cb = error_callback_;
-                    auto msg = fmt::format("Logger error: {}", e.what());
+                    auto msg = fmt::format("Logger worker error: {}", e.what());
                     callback_dispatcher_.post([cb, msg]() { cb(msg); });
                 }
             }
@@ -604,13 +641,13 @@ void Impl::worker_loop()
 
 void Impl::shutdown()
 {
-    // Prevent multiple shutdowns and stop accepting new commands
+    // Atomically set shutdown flag and ensure it's only done once.
     if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
     {
         return;
     }
 
-    // Wake up worker thread to process the shutdown
+    // Wake up worker thread to process the shutdown.
     cv_.notify_one();
     if (worker_thread_.joinable())
     {
@@ -618,7 +655,6 @@ void Impl::shutdown()
     }
 
     // Now that no more callbacks can be generated, shut down the dispatcher.
-    // This will process any remaining callbacks in its queue.
     callback_dispatcher_.shutdown();
 
     shutdown_completed_.store(true);
@@ -628,36 +664,29 @@ void Impl::shutdown()
 
 namespace
 {
-// Use a mutex-guarded unique_ptr for the singleton to allow for explicit
-// destruction and re-creation in tests, which is not possible with a
+// A mutex-guarded unique_ptr is used for the singleton to allow for explicit
+// destruction and re-creation in tests. This is not possible with a simple
 // function-local static (`static Logger instance;`).
 std::unique_ptr<Logger> g_instance;
 std::mutex g_instance_mutex;
 } // namespace
 
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
-Logger::~Logger()
-{
-    // The std::unique_ptr<Impl> pImpl is destroyed here.
-    // This automatically calls the Impl destructor (~Impl), which contains
-    // the shutdown logic (joining threads, flushing, and issuing warnings
-    // if explicit shutdown was not performed).
-    // No explicit call to pImpl->shutdown() is needed here.
-}
+
+// The destructor is defaulted. The real cleanup logic is in Impl::~Impl().
+Logger::~Logger() = default;
 
 Logger &Logger::instance()
 {
+    // Use a fast, lock-free check first.
     if (!g_instance)
     {
         std::lock_guard<std::mutex> lock(g_instance_mutex);
         if (!g_instance)
         {
-            // Note: Logger constructor is private, so we must wrap the call to
-            // `new Logger()` in a helper class that can access it.
-            struct LoggerMaker : public Logger
-            {
-                LoggerMaker() : Logger() {}
-            };
+            // Logger's constructor is private, so we must use a friend or a
+            // helper struct to call it.
+            struct LoggerMaker : public Logger { LoggerMaker() : Logger() {} };
             g_instance = std::make_unique<LoggerMaker>();
         }
     }
@@ -668,13 +697,11 @@ void Logger::set_console()
 {
     try
     {
-        auto sink = std::make_unique<ConsoleSink>();
-        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<ConsoleSink>()});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
+        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
     }
 }
 
@@ -682,13 +709,11 @@ void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
     try
     {
-        auto sink = std::make_unique<FileSink>(utf8_path, use_flock);
-        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<FileSink>(utf8_path, use_flock)});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
+        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
     }
 }
 
@@ -697,19 +722,14 @@ void Logger::set_syslog(const char *ident, int option, int facility)
 #if !defined(PLATFORM_WIN64)
     try
     {
-        auto sink =
-            std::make_unique<SyslogSink>(ident ? ident : "", option, facility);
-        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<SyslogSink>(ident ? ident : "", option, facility)});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
+        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
     }
 #else
-    (void)ident;
-    (void)option;
-    (void)facility;
+    (void)ident; (void)option; (void)facility; // Suppress unused parameter warnings.
 #endif
 }
 
@@ -718,31 +738,26 @@ void Logger::set_eventlog(const wchar_t *source_name)
 #ifdef PLATFORM_WIN64
     try
     {
-        auto sink = std::make_unique<EventLogSink>(source_name);
-        pImpl->enqueue_command(SetSinkCommand{std::move(sink)});
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<EventLogSink>(source_name)});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
+        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
     }
 #else
-    (void)source_name;
+    (void)source_name; // Suppress unused parameter warning.
 #endif
 }
 
 void Logger::shutdown()
 {
-    if (pImpl)
-    {
-        pImpl->shutdown();
-    }
+    if (pImpl) pImpl->shutdown();
 }
 
 void Logger::flush()
 {
-    if (!pImpl || pImpl->shutdown_requested_.load())
-        return;
+    if (!pImpl || pImpl->shutdown_requested_.load()) return;
+
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
     pImpl->enqueue_command(FlushCommand{promise});
@@ -751,76 +766,69 @@ void Logger::flush()
 
 void Logger::set_level(Level lvl)
 {
-    if (!pImpl)
-        return;
-    pImpl->level_.store(lvl, std::memory_order_relaxed);
+    if (pImpl) pImpl->level_.store(lvl, std::memory_order_relaxed);
 }
 
 Logger::Level Logger::level() const
 {
-    if (!pImpl)
-        return Level::L_INFO;
-    return pImpl->level_.load(std::memory_order_relaxed);
+    return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
-    if (!pImpl)
-        return;
-    pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
+    if (pImpl) pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
 }
 
 bool Logger::should_log(Level lvl) const noexcept
 {
-    if (!pImpl)
-        return false;
-    return static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
+    return pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
 void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
-    if (!pImpl)
-        return;
-    pImpl->enqueue_command(
-        LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)});
+    if (pImpl)
+    {
+        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)});
+    }
 }
 
 void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
-    if (!pImpl)
-        return;
-
-    fmt::memory_buffer mb;
-    mb.append(body_str);
-    pImpl->enqueue_command(
-        LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(mb)});
+    if (pImpl)
+    {
+        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), fmt::memory_buffer_from(std::move(body_str))});
+    }
 }
 
 namespace
 {
 // C-style callbacks for the ABI-safe lifecycle API.
-void do_logger_startup() {
-    Logger::instance();
-}
-void do_logger_shutdown() {
-    Logger::instance().shutdown();
-}
+void do_logger_startup() { Logger::instance(); }
+void do_logger_shutdown() { Logger::instance().shutdown(); }
 
-// This static object's constructor registers the Logger with the application
-// lifecycle manager, ensuring it is properly started and shut down.
+/**
+ * @struct LoggerLifecycleRegistrar
+ * @brief A static object that automatically registers the Logger with the LifecycleManager.
+ *
+ * When this static object is constructed (at program startup), it defines and
+ * registers the "pylabhub::utils::Logger" module. This ensures the logger is
+* started up and shut down correctly by the main application lifecycle.
+ */
 struct LoggerLifecycleRegistrar
 {
     LoggerLifecycleRegistrar()
     {
-        // Register the Logger as a foundational module using the new ABI-safe API.
-        pylabhub_module module("pylabhub::utils::Logger");
+        ModuleDef module("pylabhub::utils::Logger");
         module.set_startup(&do_logger_startup);
-        module.set_shutdown(&do_logger_shutdown, 5000 /*ms*/);
-        pylabhub_register_module(std::move(module));
+        module.set_shutdown(&do_logger_shutdown, 5000 /*ms timeout*/);
+        // The logger has no dependencies, so it will be one of the first modules to start.
+        LifecycleManager::instance().register_module(std::move(module));
     }
 };
+
 // The global instance that triggers the registration.
 static LoggerLifecycleRegistrar g_logger_registrar;
+
 } // namespace
 
 } // namespace pylabhub::utils
