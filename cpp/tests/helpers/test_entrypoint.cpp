@@ -1,19 +1,14 @@
-#include "platform.hpp"
-#include "test_entrypoint.h"
-#include "workers.h"
-#include "utils/Lifecycle.hpp"
-
-#include <gtest/gtest.h>
-#include <string>
-#include <iostream>
-#include <filesystem>
-#include <cstring>
-#include <cstdlib> // for std::stoi
+#include "test_preamble.h"
 
 // Define the global for the executable path
 std::string g_self_exe_path;
 
 namespace fs = std::filesystem;
+
+#include "test_entrypoint.h"
+#include "workers.h"
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+using namespace test_utils;
 
 int main(int argc, char **argv) {
     // Handle worker process modes first
