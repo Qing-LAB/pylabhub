@@ -1,31 +1,9 @@
-#include "helpers/worker_filelock.h"
-#include "helpers/shared_test_helpers.h"
+#include "test_preamble.h" // New common preamble
 
-#include "utils/FileLock.hpp"
-#include "utils/Lifecycle.hpp"
-#include "platform.hpp"
-#include "scope_guard.hpp"
-
-#include <gtest/gtest.h>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <filesystem>
-#include <thread>
-#include <vector>
-
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <fcntl.h> // for open() and O_* flags
-#include <unistd.h> // for write(), getpid()
-#include <sys/stat.h>
-#endif
-
-using namespace pylabhub::utils;
-namespace fs = std::filesystem;
-using namespace std::chrono_literals;
+#include "worker_filelock.h"     // Keep this specific header
+#include "shared_test_helpers.h" // Keep this specific helper header
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+using namespace test_utils;
 
 namespace worker
 {
@@ -255,7 +233,7 @@ static bool atomic_write_int(const fs::path &target, int value)
 #if defined(PLATFORM_WIN64)
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return false;
-    auto guard = make_scope_guard([&]() { CloseHandle(h); std::error_code ec; fs::remove(tmp, ec); });
+    auto guard = pylabhub::basics::make_scope_guard([&]() { CloseHandle(h); std::error_code ec; fs::remove(tmp, ec); });
     std::string val_str = std::to_string(value);
     DWORD bytes_written = 0;
     if (!WriteFile(h, val_str.c_str(), static_cast<DWORD>(val_str.length()), &bytes_written, NULL) || bytes_written != val_str.length()) return false;
@@ -263,7 +241,7 @@ static bool atomic_write_int(const fs::path &target, int value)
 #else
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd == -1) return false;
-    auto guard = make_scope_guard([&]() { ::close(fd); std::error_code ec; fs::remove(tmp, ec); });
+    auto guard = pylabhub::basics::make_scope_guard([&]() { ::close(fd); std::error_code ec; fs::remove(tmp, ec); });
     std::string val_str = std::to_string(value);
     if (::write(fd, val_str.c_str(), val_str.length()) != static_cast<ssize_t>(val_str.length())) return false;
     if (::fsync(fd) != 0) return false;
@@ -287,7 +265,7 @@ static bool native_read_int(const fs::path &target, int &value)
 #if defined(PLATFORM_WIN64)
     HANDLE h = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) { value = 0; return false; }
-    auto guard = make_scope_guard([&]() { CloseHandle(h); });
+    auto guard = pylabhub::basics::make_scope_guard([&]() { CloseHandle(h); });
     char buffer[128];
     DWORD bytes_read = 0;
     if (!ReadFile(h, buffer, sizeof(buffer) - 1, &bytes_read, NULL)) { value = 0; return false; }
@@ -298,7 +276,7 @@ static bool native_read_int(const fs::path &target, int &value)
 #else
     int fd = ::open(target.c_str(), O_RDONLY);
     if (fd == -1) { value = 0; return false; }
-    auto guard = make_scope_guard([&]() { ::close(fd); });
+    auto guard = pylabhub::basics::make_scope_guard([&]() { ::close(fd); });
     char buffer[128];
     ssize_t bytes_read = ::read(fd, buffer, sizeof(buffer) - 1);
     if (bytes_read <= 0) { value = 0; return false; }

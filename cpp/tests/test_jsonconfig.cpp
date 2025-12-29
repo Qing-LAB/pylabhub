@@ -2,43 +2,15 @@
 //
 // Unit tests for pylabhub::utils::JsonConfig.
 
-#include "helpers/test_process_utils.h"
-#include <gtest/gtest.h>
+#include "test_preamble.h"
 
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <sstream>
-#include <thread>
-#include <vector>
-
-#include <fmt/core.h>
-
-#include "platform.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/Logger.hpp"
-
+// Specific includes for this test file that are not covered by the preamble
 #include "helpers/test_entrypoint.h" // provides extern std::string g_self_exe_path
 #include "helpers/workers.h"
+#include "helpers/test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
 
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
-
-using namespace pylabhub::utils;
+#include <fmt/core.h>
 using namespace test_utils;
-namespace fs = std::filesystem;
-using namespace std::chrono_literals;
 
 // TODO: Add tests for handling corrupted/unparseable JSON files on init() and reload().
 

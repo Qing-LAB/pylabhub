@@ -1,15 +1,8 @@
-#include "shared_test_helpers.h"
+#include "test_preamble.h" // New common preamble
 
-#include "utils/Lifecycle.hpp"
-#include "scope_guard.hpp"
+#include "shared_test_helpers.h" // Keep this specific header
 
-#include <gtest/gtest.h>
-#include <fmt/core.h>
-
-#include <fstream>
-#include <sstream>
-#include <thread>
-#include <cstdlib> // for getenv
+#include <fmt/core.h> // Keep this for fmt::print
 
 bool read_file_contents(const std::string &path, std::string &out)
 {

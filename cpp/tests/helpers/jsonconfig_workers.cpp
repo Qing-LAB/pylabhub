@@ -1,16 +1,9 @@
-#include "helpers/worker_jsonconfig.h"
-#include "helpers/shared_test_helpers.h"
+#include "test_preamble.h" // New common preamble
 
-#include "utils/JsonConfig.hpp"
-#include "utils/Logger.hpp"
-
-#include <gtest/gtest.h>
-#include <chrono>
-#include <cstdlib>
-#include <thread>
-
-using namespace pylabhub::utils;
-using namespace std::chrono_literals;
+#include "worker_jsonconfig.h"   // Keep this specific header
+#include "shared_test_helpers.h" // Keep this specific helper header
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+using namespace test_utils;
 
 namespace worker
 {
