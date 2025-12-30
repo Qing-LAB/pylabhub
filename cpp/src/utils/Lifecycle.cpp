@@ -158,7 +158,7 @@ class LifecycleManagerImpl
         std::function<void()> startup;
         InternalModuleShutdownDef shutdown;
 
-        int in_degree = 0;
+        size_t in_degree = 0;
         std::vector<InternalGraphNode *> dependents;
     };
 

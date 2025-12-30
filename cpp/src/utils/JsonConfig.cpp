@@ -81,9 +81,13 @@ JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMis
         // init populates ec; ctor remains noexcept
     }
 }
-JsonConfig::~JsonConfig() = default;
-JsonConfig::JsonConfig(JsonConfig &&) noexcept = default;
-JsonConfig &JsonConfig::operator=(JsonConfig &&) noexcept = default;
+JsonConfig::~JsonConfig() {}
+JsonConfig::JsonConfig(JsonConfig &&other) noexcept : pImpl(std::move(other.pImpl)) {}
+JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
+{
+    pImpl = std::move(other.pImpl);
+    return *this;
+}
 
 bool JsonConfig::is_initialized() const noexcept
 {
@@ -96,7 +100,7 @@ std::filesystem::path JsonConfig::config_path() const noexcept
 {
     if (!pImpl) return {};
     std::lock_guard<std::mutex> g(pImpl->initMutex);
-    return pImpl->configPath;
+    return std::filesystem::path(pImpl->configPath);
 }
 
 // init / reload / save largely preserved from your prior implementation
@@ -252,10 +256,14 @@ bool JsonConfig::save(std::error_code *ec) noexcept
 // ----------------- Guard constructors / destructors / accessors -----------------
 
 // ReadLock
-JsonConfig::ReadLock::ReadLock() noexcept = default;
-JsonConfig::ReadLock::ReadLock(ReadLock &&other) noexcept = default;
-JsonConfig::ReadLock &JsonConfig::ReadLock::operator=(ReadLock &&other) noexcept = default;
-JsonConfig::ReadLock::~ReadLock() = default;
+JsonConfig::ReadLock::ReadLock() noexcept {}
+JsonConfig::ReadLock::ReadLock(ReadLock &&other) noexcept : d_(std::move(other.d_)) {}
+JsonConfig::ReadLock &JsonConfig::ReadLock::operator=(ReadLock &&other) noexcept
+{
+    d_ = std::move(other.d_);
+    return *this;
+}
+JsonConfig::ReadLock::~ReadLock() {}
 
 const nlohmann::json &JsonConfig::ReadLock::json() const noexcept
 {
@@ -264,10 +272,14 @@ const nlohmann::json &JsonConfig::ReadLock::json() const noexcept
 }
 
 // WriteLock
-JsonConfig::WriteLock::WriteLock() noexcept = default;
-JsonConfig::WriteLock::WriteLock(WriteLock &&) noexcept = default;
-JsonConfig::WriteLock &JsonConfig::WriteLock::operator=(WriteLock &&) noexcept = default;
-JsonConfig::WriteLock::~WriteLock() = default;
+JsonConfig::WriteLock::WriteLock() noexcept {}
+JsonConfig::WriteLock::WriteLock(WriteLock &&other) noexcept : d_(std::move(other.d_)) {}
+JsonConfig::WriteLock &JsonConfig::WriteLock::operator=(WriteLock &&other) noexcept
+{
+    d_ = std::move(other.d_);
+    return *this;
+}
+JsonConfig::WriteLock::~WriteLock() {}
 
 nlohmann::json &JsonConfig::WriteLock::json() noexcept
 {
