@@ -18,4 +18,8 @@
 
 ## 4. Git Commit Practices
 * **Complex Commit Messages:** When composing commit messages, especially those with multiple lines or special characters, ALWAYS use a temporary file for the commit message. This avoids shell escaping issues and ensures the message is correctly preserved.
-    * **Action:** Create a file (e.g., `.gemini_commit_message.txt`) with the desired message content, then use `git commit -F .gemini_commit_message.txt`.
+    * **Action:**
+        1. Create a file (e.g., `.gemini_commit_message.txt`) with the desired message content.
+        2. Use `git commit -F .gemini_commit_message.txt`.
+        3. Ensure the temporary file name is added to `.gitignore`.
+        4. Remove the temporary file after the commit is successful.
