@@ -571,7 +571,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         return false;
     }
 
-    auto guard = pylabhub::utils::make_scope_guard([&]() {
+    auto guard = pylabhub::basics::make_scope_guard([&]() {
         if (!pImpl->valid) CloseHandle(h);
     });
 
