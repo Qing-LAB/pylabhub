@@ -1,41 +1,58 @@
-#include "test_preamble.h" // New common preamble
+// tests/helpers/jsonconfig_workers.cpp
+#include "test_preamble.h"
 
-#include "worker_jsonconfig.h"   // Keep this specific header
-#include "shared_test_helpers.h" // Keep this specific helper header
-#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+#include "worker_jsonconfig.h"
+#include "shared_test_helpers.h"
+#include "test_process_utils.h"
+#include "nlohmann/json.hpp"
+
+using nlohmann::json;
 using namespace test_utils;
 
 namespace worker
 {
 namespace jsonconfig
 {
+
 int write_id(const std::string &cfgpath, const std::string &worker_id)
 {
     return run_gtest_worker(
         [&]() {
-            Logger::instance().set_level(Logger::Level::L_DEBUG);
+            // Each worker repeatedly attempts a with_json_write (which internally saves)
+            // until it succeeds or max_retries is reached.
             JsonConfig cfg(cfgpath);
-            bool success = false;
             const int max_retries = 200;
-            std::srand(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) + std::chrono::system_clock::now().time_since_epoch().count()));
-            for (int retry = 0; retry < max_retries; ++retry)
+            bool success = false;
+
+            std::srand(static_cast<unsigned int>(
+                std::hash<std::thread::id>{}(std::this_thread::get_id()) +
+                std::chrono::system_clock::now().time_since_epoch().count()));
+
+            for (int attempt = 0; attempt < max_retries; ++attempt)
             {
-                if (cfg.lock_for(100ms))
+                std::error_code ec;
+                bool ok = cfg.with_json_write([&](json &data) {
+                    int attempts = data.value("total_attempts", 0);
+                    data["total_attempts"] = attempts + 1;
+                    data[worker_id] = true;
+                    data["last_worker_id"] = worker_id;
+                }, &ec);
+
+                if (ok && ec.value() == 0)
                 {
-                    int global_attempts = cfg.get_or<int>("total_attempts", 0);
-                    cfg.set("total_attempts", global_attempts + 1);
-                    cfg.set("last_worker_id", worker_id);
-                    cfg.set(worker_id, true);
-                    if (cfg.save()) { success = true; }
-                    cfg.unlock();
-                    if (success) { break; }
+                    // success
+                    success = true;
+                    break;
                 }
-                std::chrono::milliseconds random_delay(10 + (std::rand() % 41));
-                std::this_thread::sleep_for(random_delay);
+
+                // Sleep a bit before retrying to reduce hot contention
+                std::this_thread::sleep_for(std::chrono::milliseconds(10 + (std::rand() % 40)));
             }
+
             ASSERT_TRUE(success);
         },
         "jsonconfig::write_id");
 }
+
 } // namespace jsonconfig
 } // namespace worker

@@ -78,6 +78,8 @@
 #include <limits.h> // For PATH_MAX
 #endif
 
+using namespace pylabhub::platform;
+
 // ============================================================================
 // Internal C++ Definitions (Hidden from Public API)
 // ============================================================================
@@ -156,64 +158,6 @@ void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeo
 // ============================================================================
 // LifecycleManager Class Implementation
 // ============================================================================
-
-namespace
-{
-// Anonymous namespace for helpers local to this translation unit.
-
-// Helper to get the current process ID in a cross-platform way.
-long get_pid()
-{
-#if defined(PLATFORM_WIN64)
-    return static_cast<long>(GetCurrentProcessId());
-#else
-    return static_cast<long>(getpid());
-#endif
-}
-
-// Helper to automatically discover the current executable's name for logging.
-std::string get_executable_name()
-{
-    try
-    {
-#if defined(PLATFORM_WIN64)
-        wchar_t path[MAX_PATH] = {0};
-        if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0)
-        {
-            return "unknown_win";
-        }
-        return std::filesystem::path(path).filename().string();
-#elif defined(PLATFORM_LINUX)
-        char result[PATH_MAX];
-        ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
-        if (count > 0)
-        {
-            return std::filesystem::path(std::string(result, count)).filename().string();
-        }
-        return "unknown_linux";
-#elif defined(PLATFORM_APPLE)
-        char path[PATH_MAX];
-        uint32_t size = sizeof(path);
-        if (_NSGetExecutablePath(path, &size) == 0)
-        {
-            return std::filesystem::path(path).filename().string();
-        }
-        return "unknown_apple";
-#endif
-    }
-    catch (const std::exception& e)
-    {
-        // std::filesystem operations can throw on invalid paths.
-        // Log the error but don't crash the lifecycle manager.
-        fmt::print(stderr, "[pylabhub-lifecycle] Warning: get_executable_name failed: {}.\n", e.what());
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "[pylabhub-lifecycle] Warning: get_executable_name failed with unknown exception.\n");
-    }
-    return "unknown";
-}
-} // namespace
 
 // The concrete definition of the LifecycleManagerImpl struct. This holds all state.
 class LifecycleManagerImpl
@@ -400,9 +344,11 @@ class LifecycleManagerImpl
         {
             if (m_module_graph.count(mod_def.name))
             {
-                throw std::runtime_error("Duplicate module name detected: '" + mod_def.name + "'.");
+                throw std::runtime_error("Duplicate module name detected: '" + mod_def.name +
+                                         "'.");
             }
-            m_module_graph[mod_def.name] = {mod_def.name, mod_def.startup, mod_def.shutdown};
+            m_module_graph[mod_def.name] = {mod_def.name, mod_def.startup,
+                                            mod_def.shutdown, 0, {}};
         }
 
         // Second pass: connect dependencies and calculate in-degrees.

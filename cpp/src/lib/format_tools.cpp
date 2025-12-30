@@ -1,5 +1,3 @@
-#include <filesystem>
-#include <string>
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -8,6 +6,7 @@
 #include <sstream>
 #include <windows.h>
 #endif
+#include <string>
 
 #include "platform.hpp"
 #include "format_tools.hpp"
@@ -115,4 +114,4 @@ inline std::wstring win32_make_unique_suffix()
 
 #endif
 
-} // namespace pylabhub::basic::tools
+} // namespace pylabhub::format_tools

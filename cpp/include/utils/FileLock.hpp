@@ -253,7 +253,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
 
     // The only data member is a unique_ptr to the implementation, using the
     // custom deleter. This ensures that the resource release logic is
--    // correctly invoked whenever the unique_ptr goes out of scope or is reset.
+    // correctly invoked whenever the unique_ptr goes out of scope or is reset.
     std::unique_ptr<FileLockImpl, FileLockImplDeleter> pImpl;
 };
 

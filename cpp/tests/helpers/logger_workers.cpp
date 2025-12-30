@@ -173,7 +173,7 @@ int test_shutdown_idempotency(const std::string &log_path_str)
         "logger::test_shutdown_idempotency");
 }
 
-int test_reentrant_error_callback(const std::string &initial_log_path_str)
+int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_log_path_str)
 {
     return run_gtest_worker(
         [&]() {
