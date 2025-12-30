@@ -7,9 +7,11 @@
 #include "helpers/test_entrypoint.h" // provides extern std::string g_self_exe_path
 #include "helpers/workers.h"
 #include "helpers/test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+#include "nlohmann/json.hpp"
 
 #include <fmt/core.h>
 
+using namespace nlohmann;
 using namespace test_utils;
 
 namespace {
@@ -95,7 +97,7 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
     ASSERT_NE(ec.value(), 0);
 
     ec.clear();
-    ASSERT_FALSE(config.with_json_write([&](json &){}, &ec));
+    ASSERT_FALSE(config.with_json_write([&](json &){}, std::chrono::milliseconds{0}, &ec));
     ASSERT_NE(ec.value(), 0);
 }
 
@@ -119,7 +121,7 @@ TEST_F(JsonConfigTest, BasicAccessors)
         j["obj"] = json::object();
         j["obj"]["x"] = 100;
         j["obj"]["s"] = "world";
-    }, &ec));
+    }, std::chrono::milliseconds{0}, &ec));
     ASSERT_FALSE(ec);
 
     // Read back with with_json_read
@@ -133,7 +135,7 @@ TEST_F(JsonConfigTest, BasicAccessors)
     // Update an element with write callback and read it
     ASSERT_TRUE(cfg.with_json_write([&](json &j){
         j["int_val"] = j.value("int_val", 0) + 1;
-    }, &ec));
+    }, std::chrono::milliseconds{0}, &ec));
     ASSERT_FALSE(ec);
 
     ASSERT_TRUE(cfg.with_json_read([&](const json &j){
@@ -157,7 +159,7 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     // Write initial value
     ASSERT_TRUE(cfg.with_json_write([&](json &j){
         j["value"] = 1;
-    }, &ec));
+    }, std::chrono::milliseconds{0}, &ec));
     ASSERT_FALSE(ec);
 
     // Externally modify file
@@ -191,7 +193,7 @@ TEST_F(JsonConfigTest, RecursionGuardForReads)
     ASSERT_FALSE(ec);
 
     // Outer read should succeed; inner attempt to call with_json_read should be refused
-    bool outer_ok = cfg.with_json_read([&](const json &j){
+    bool outer_ok = cfg.with_json_read([&]([[maybe_unused]] const json &j){
         // nested call should be refused (RecursionGuard)
         std::error_code inner_ec;
         bool nested = cfg.with_json_read([&](const json &) {
@@ -220,7 +222,7 @@ TEST_F(JsonConfigTest, MultiThreadContention)
         ASSERT_TRUE(setup_cfg.with_json_write([&](json &data){
             data["counter"] = 0;
             data["write_log"] = json::array();
-        }, &ec));
+        }, std::chrono::milliseconds{0}, &ec));
         ASSERT_FALSE(ec);
     }
 
@@ -248,7 +250,7 @@ TEST_F(JsonConfigTest, MultiThreadContention)
                         data["counter"] = v + 1;
                         std::string id = fmt::format("T{}-{}", i, j);
                         data["write_log"].push_back(id);
-                    }, &ec);
+                    }, std::chrono::milliseconds{0}, &ec);
 
                     if (ok && ec.value() == 0)
                         successful_writes++;
@@ -342,14 +344,25 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     ASSERT_EQ(success_count, PROCS);
 
     JsonConfig verifier(cfg_path);
+    // ec is already declared at the beginning of the test function
+
+#if defined(PLATFORM_WIN64)
+    std::string s_key_fmt = "win-{}";
+#else
+    std::string s_key_fmt = "posix-{}";
+#endif
+
+    std::vector<std::string> keys;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        keys.push_back(fmt::format(fmt::runtime(s_key_fmt), i));
+    }
+
     ASSERT_TRUE(verifier.with_json_read([&](const json &data) {
         for (int i = 0; i < PROCS; ++i)
         {
-#if defined(PLATFORM_WIN64)
-            std::string key = fmt::format("win-{}", i);
-#else
-            std::string key = fmt::format("posix-{}", i);
-#endif
+            std::string key = keys[i];
+
             ASSERT_TRUE(data.contains(key)) << "Worker " << key << " failed to write.";
         }
     }, &ec));
@@ -380,10 +393,9 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
     ASSERT_TRUE(cfg.init(symlink_path, false, &ec));
     ASSERT_FALSE(ec);
 
-    // Attempt to write; atomic_write_json should refuse to write to a symlink.
     bool ok = cfg.with_json_write([&](json &j){
         j["malicious"] = "data";
-    }, &ec);
+    }, std::chrono::milliseconds{0}, &ec);
     ASSERT_FALSE(ok);
     ASSERT_NE(ec.value(), 0);
 
