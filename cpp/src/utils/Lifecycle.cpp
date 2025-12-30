@@ -50,14 +50,11 @@
  *     - Any exception thrown by a shutdown function is caught and logged, but
  *       does not halt the finalization of other modules.
  ******************************************************************************/
+#include "platform.hpp"
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cstdlib> // For std::abort
-#include <filesystem>
 #include <future>
 #include <map>
 #include <mutex>
@@ -66,17 +63,6 @@
 
 #include <fmt/core.h>
 
-#include "platform.hpp"
-#if defined(PLATFORM_WIN64)
-#include <windows.h>
-#elif defined(PLATFORM_APPLE)
-#include <mach-o/dyld.h>
-#include <limits.h> // For PATH_MAX
-#include <unistd.h>
-#else // Linux
-#include <unistd.h>
-#include <limits.h> // For PATH_MAX
-#endif
 
 using namespace pylabhub::platform;
 
