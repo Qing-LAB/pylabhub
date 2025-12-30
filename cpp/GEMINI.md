@@ -15,3 +15,7 @@
 * **DO NOT SCAN:** `third_party/`
     * This folder contains upstream code. It is out of scope for analysis or modification unless explicitly instructed.
 * **Focus Areas:** Focus entirely on our main source directories, `cmake/` configs, and `docs/`.
+
+## 4. Git Commit Practices
+* **Complex Commit Messages:** When composing commit messages, especially those with multiple lines or special characters, ALWAYS use a temporary file for the commit message. This avoids shell escaping issues and ensures the message is correctly preserved.
+    * **Action:** Create a file (e.g., `.gemini_commit_message.txt`) with the desired message content, then use `git commit -F .gemini_commit_message.txt`.
