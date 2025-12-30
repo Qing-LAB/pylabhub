@@ -434,7 +434,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
 
     bool ok = cfg.with_json_write([&](json &j){
         j["malicious"] = "data";
-    }, &ec);
+    }, std::chrono::milliseconds{0}, &ec);
 
     ASSERT_FALSE(ok);
     ASSERT_NE(ec.value(), 0);
