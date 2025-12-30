@@ -60,7 +60,7 @@
  *       initialization and `Logger::instance().shutdown()` is called during
  *       finalization, automating the logger's lifecycle management.
  ******************************************************************************/
-
+#include "platform.hpp"
 #include "utils/Logger.hpp"
 #include "utils/Lifecycle.hpp"
 #include "format_tools.hpp"
@@ -91,6 +91,10 @@
 #include <syslog.h>
 #include <unistd.h>
 #endif
+
+using namespace pylabhub::platform;
+using namespace pylabhub::format_tools;
+
 
 namespace pylabhub::utils
 {
@@ -222,27 +226,10 @@ static const char *level_to_string(Logger::Level lvl)
     }
 }
 
-// Gets a platform-native thread ID for logging.
-static uint64_t get_native_thread_id() noexcept
-{
-#if defined(PLATFORM_WIN64)
-    return static_cast<uint64_t>(::GetCurrentThreadId());
-#elif defined(__APPLE__)
-    uint64_t tid;
-    pthread_threadid_np(nullptr, &tid);
-    return tid;
-#elif defined(__linux__)
-    return static_cast<uint64t>(syscall(SYS_gettid));
-#else
-    // Fallback for other POSIX or unknown systems.
-    return std::hash<std::thread::id>()(std::this_thread::get_id());
-#endif
-}
-
 // Formats a LogMessage into a final, printable string.
 static std::string format_message(const LogMessage &msg)
 {
-    std::string time_str = pylabhub::format_tools::formatted_time(msg.timestamp);
+    std::string time_str = formatted_time(msg.timestamp);
     return fmt::format("[{}] [{:<6}] [{:5}] {}\n", time_str, level_to_string(msg.level),
                        msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
 }
@@ -460,7 +447,7 @@ using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorComman
 // Logger Pimpl and Implementation
 // ============================================================================
 
-struct Impl
+struct Logger::Impl
 {
     Impl();
     ~Impl();
@@ -484,12 +471,12 @@ struct Impl
     std::atomic<bool> shutdown_completed_{false};
 };
 
-Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
+Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
 {
-    worker_thread_ = std::thread(&Impl::worker_loop, this);
+    worker_thread_ = std::thread(&Logger::Impl::worker_loop, this);
 }
 
-Impl::~Impl()
+Logger::Impl::~Impl()
 {
     if (!shutdown_requested_.load())
     {
@@ -508,7 +495,7 @@ Impl::~Impl()
     }
 }
 
-void Impl::enqueue_command(Command &&cmd)
+void Logger::Impl::enqueue_command(Command &&cmd)
 {
     // Double-checked locking pattern. The first check is lock-free for performance.
     if (shutdown_requested_.load(std::memory_order_relaxed))
@@ -543,7 +530,7 @@ void Impl::enqueue_command(Command &&cmd)
     cv_.notify_one();
 }
 
-void Impl::worker_loop()
+void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue; // Batch processing queue.
 
@@ -591,7 +578,7 @@ void Impl::worker_loop()
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
                                               get_native_thread_id(),
-                                              fmt::memory_buffer_from("Switching log sink to: " + new_desc)});
+                                              make_buffer("Switching log sink to: {}", new_desc)});
                                 sink_->flush();
                             }
                             sink_ = std::move(arg.new_sink);
@@ -600,7 +587,7 @@ void Impl::worker_loop()
                                 sink_->write({Logger::Level::L_SYSTEM,
                                               std::chrono::system_clock::now(),
                                               get_native_thread_id(),
-                                              fmt::memory_buffer_from("Log sink switched from: " + old_desc)});
+                                              make_buffer("Log sink switched from: {}", old_desc)});
                             }
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
@@ -639,7 +626,7 @@ void Impl::worker_loop()
     }
 }
 
-void Impl::shutdown()
+void Logger::Impl::shutdown()
 {
     // Atomically set shutdown flag and ensure it's only done once.
     if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
@@ -796,7 +783,7 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), fmt::memory_buffer_from(std::move(body_str))});
+        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), make_buffer("{}", std::move(body_str))});
     }
 }
 

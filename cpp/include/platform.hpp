@@ -113,3 +113,12 @@
     } while (0)
 #endif
 // ----------------------------------------------------------------------------
+
+namespace pylabhub::platform
+{
+
+uint64_t get_native_thread_id() noexcept;
+long get_pid();
+std::string get_executable_name();
+
+} // namespace pylabhub::platform

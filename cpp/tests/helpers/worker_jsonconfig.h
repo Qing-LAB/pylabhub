@@ -1,3 +1,4 @@
+// tests/helpers/worker_jsonconfig.h
 #pragma once
 #include <string>
 
@@ -6,6 +7,10 @@ namespace worker
 {
     namespace jsonconfig
     {
-        int write_id(const std::string& cfgpath, const std::string& worker_id);
+        // Worker invoked as a child process by the tests.
+        // Parameters:
+        //   cfgpath - path to the config file
+        //   worker_id - unique id for this worker (used as a key written to the config)
+        int write_id(const std::string &cfgpath, const std::string &worker_id);
     }
 }

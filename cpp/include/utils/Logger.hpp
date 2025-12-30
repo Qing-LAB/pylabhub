@@ -120,15 +120,15 @@
 namespace pylabhub::utils
 {
 
-// Forward declaration for the Pimpl pattern.
-struct Impl;
-
 /**
  * @class Logger
  * @brief The main logger class, providing a thread-safe singleton instance.
  */
 class PYLABHUB_UTILS_EXPORT Logger
 {
+  // Forward declaration for the Pimpl pattern.
+  struct Impl;
+
   public:
     /** @brief Defines the severity of a log message. */
     enum class Level : int
@@ -419,7 +419,7 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
 #define LOGGER_ERROR(fmt, ...)                                                                     \
     ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_SYSTEM(fmt, ...)                                                                    \
-    ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_opt__(, ) __VA_ARGS__)
+    ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 
 // Macros for runtime format string checking.
 #define LOGGER_TRACE_RT(fmt, ...)                                                                  \
