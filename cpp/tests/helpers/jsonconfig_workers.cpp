@@ -36,7 +36,7 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                     data["total_attempts"] = attempts + 1;
                     data[worker_id] = true;
                     data["last_worker_id"] = worker_id;
-                }, &ec);
+                }, std::chrono::milliseconds{0}, &ec);
 
                 if (ok && ec.value() == 0)
                 {

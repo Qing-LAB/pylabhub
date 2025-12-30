@@ -4,90 +4,33 @@
  * @file JsonConfig.hpp
  * @brief Thread-safe configuration holder with atomic on-disk writes and cross-process advisory locking.
  *
- * Design:
- *  - JsonConfig owns an in-memory `nlohmann::json` instance and manages its lifecycle.
- *  - All persistent I/O (reload/save/atomic writes) and FileLock usage are implemented
- *    in the dynamic library (.cpp) to preserve ABI stability.
- *  - Consumers manipulate the JSON inside short callbacks provided to `with_json_write` /
- *    `with_json_read`. These callbacks are executed under appropriate locks.
- *
- * Error handling:
- *  - Public API methods are noexcept-friendly and return bool. Optional diagnostics
- *    can be collected via an `std::error_code*` out-parameter (default nullptr).
- *
- * Threading & locking:
- *  - `initMutex` (std::mutex) serializes structural operations: init/reload/save and
- *    protects configPath and lifecycle.
- *  - `rwMutex` (std::shared_mutex) permits concurrent shared reads and exclusive writes
- *    to the in-memory JSON object.
- *
- * Usage example:
- *  JsonConfig cfg("/etc/myapp/config.json", true); // init and create if missing
- *  cfg.with_json_write([](nlohmann::json &j){
- *      j["port"] = 1234;
- *  });
- *
- *  cfg.with_json_read([](nlohmann::json const &j){
- *      auto host = j.value("host", std::string("localhost"));
- *  });
+ * Option B implementation (RAII guard objects + non-template factory functions).
  */
 
-#include <functional>
-#include <memory>
-#include <string>
+#include <chrono>
+#include <optional>
 #include <filesystem>
 #include <system_error>
+#include <memory>
+#include <utility>
+#include <type_traits>
 
 #include "nlohmann/json.hpp"
+#include "recursion_guard.hpp"
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
-#include "recursion_guard.hpp"
+
+#include "pylabhub_utils_export.h"
 
 namespace pylabhub::utils
 {
 
-/**
- * @class JsonConfig
- * @brief Process-safe, thread-safe manager for a JSON configuration file.
- *
- * The class provides:
- *  - Atomic on-disk writes (platform-aware, tmp-file + rename + fsync semantics).
- *  - Cross-process advisory locking via FileLock during I/O operations.
- *  - Scoped callback-based access to the in-memory JSON object.
- *
- * ABI-stability notes:
- *  - Implementation (Impl) is private and defined in the .cpp. The header does not expose implementation
- *    details, keeping the class size/layout stable across library versions.
- *
- * All public methods do not throw exceptions (errors reported using std::error_code optional out param).
- */
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
-  public:
-    /**
-     * @brief Default construct an uninitialized JsonConfig instance.
-     *
-     * No file is opened; call init() to bind to a concrete config file.
-     * This constructor is noexcept.
-     */
+public:
     JsonConfig() noexcept;
-
-    /**
-     * @brief Construct and initialize with a config path.
-     * @param configFile path to the config file
-     * @param createIfMissing if true, create an empty JSON file if missing
-     * @param ec optional pointer to std::error_code to receive diagnostic information (nullable)
-     *
-     * This constructor will attempt to initialize and, if requested, create the file.
-     */
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
-                        std::error_code *ec = nullptr);
-
-    /**
-     * @brief Destructor (defined in .cpp where Impl is complete).
-     *
-     * Ensures any owned resources are cleaned up. Non-throwing.
-     */
+                        std::error_code *ec = nullptr) noexcept;
     ~JsonConfig();
 
     JsonConfig(const JsonConfig &) = delete;
@@ -95,118 +38,155 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     JsonConfig(JsonConfig &&) noexcept;
     JsonConfig &operator=(JsonConfig &&) noexcept;
 
-    /**
-     * @brief Initialize or reinitialize the config instance with a file path.
-     * @param configFile path to the config file
-     * @param createIfMissing if true, create an empty JSON file if missing
-     * @param ec optional pointer to std::error_code to receive diagnostic information (nullable)
-     * @return true on success, false on failure (see ec if provided)
-     *
-     * Threading: acquires init-lock to serialize structural operations.
-     */
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
-              std::error_code *ec = nullptr);
-
-    /**
-     * @brief Force reload from disk into memory.
-     * @param ec optional pointer to std::error_code for diagnostics
-     * @return true on success, false on failure
-     *
-     * This acquires a FileLock (advisory) to ensure we read a consistent file.
-     */
+              std::error_code *ec = nullptr) noexcept;
     bool reload(std::error_code *ec = nullptr) noexcept;
-
-    /**
-     * @brief Force save current in-memory JSON to disk atomically.
-     * @param ec optional pointer to std::error_code for diagnostics
-     * @return true on success, false on failure
-     *
-     * The function snapshots the in-memory JSON under lock and performs an
-     * atomic on-disk replace (tmp file + rename + fsync) while holding
-     * the structural lock.
-     */
     bool save(std::error_code *ec = nullptr) noexcept;
 
-    /**
-     * @brief Provide exclusive access to the JSON (modify and save).
-     * @param fn callback accepting nlohmann::json& to modify the config.
-     * @param ec optional pointer to std::error_code for diagnostics
-     * @return true on success (including save), false on failure
-     *
-     * This function:
-     *  - prevents recursive reentry on the same instance/thread,
-     *  - acquires the initMutex, then the exclusive json lock, calls the callback,
-     *    marks the object dirty, and then persists to disk.
-     *
-     * This is implemented as a non-template (std::function) entry point to keep ABI stable.
-     */
-    bool with_json_write_impl(std::function<void(nlohmann::json &)> fn,
-                              std::error_code *ec = nullptr) noexcept;
+    bool is_initialized() const noexcept;
+    std::filesystem::path config_path() const noexcept;
 
-    /**
-     * @brief Provide shared read-only access to the JSON.
-     * @param fn callback accepting nlohmann::json const&
-     * @param ec optional pointer to std::error_code for diagnostics
-     * @return true on success, false on failure
-     */
-    bool with_json_read_impl(std::function<void(nlohmann::json const &)> fn,
-                             std::error_code *ec = nullptr) const noexcept;
-
-    /**
-     * @brief Header-only convenience: accept any callable convertible to std::function.
-     * These inline templates are thin adapters and call the non-template impl methods above.
-     */
-    template <typename F>
-    bool with_json_write(F &&fn, std::error_code *ec = nullptr) noexcept
+    // ----------------- Lightweight guard types -----------------
+    // The Impl for these guards is defined in the .cpp; these types are move-only.
+    class ReadLock
     {
-        try
-        {
-            std::function<void(nlohmann::json &)> cb = std::forward<F>(fn);
-            return with_json_write_impl(std::move(cb), ec);
-        }
-        catch (...)
-        {
-            if (ec) *ec = std::make_error_code(std::errc::operation_canceled);
-            return false;
-        }
-    }
+    public:
+        ReadLock() noexcept;
+        ReadLock(ReadLock &&) noexcept;
+        ReadLock &operator=(ReadLock &&) noexcept;
+        ~ReadLock();
 
+        // Access JSON snapshot (const ref). Safe while this object is alive.
+        const nlohmann::json &json() const noexcept;
+
+        // non-copyable
+        ReadLock(const ReadLock &) = delete;
+        ReadLock &operator=(const ReadLock &) = delete;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> d_;
+        friend class JsonConfig;
+    };
+
+    class WriteLock
+    {
+    public:
+        WriteLock() noexcept;
+        WriteLock(WriteLock &&) noexcept;
+        WriteLock &operator=(WriteLock &&) noexcept;
+        ~WriteLock();
+
+        // Access JSON for modification. Safe while this object is alive.
+        nlohmann::json &json() noexcept;
+
+        // Commit changes to disk while still holding locks (explicit).
+        // Returns true on success; on failure ec is set.
+        bool commit(std::error_code *ec = nullptr) noexcept;
+
+        // non-copyable
+        WriteLock(const WriteLock &) = delete;
+        WriteLock &operator=(const WriteLock &) = delete;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> d_;
+        friend class JsonConfig;
+    };
+
+    // Non-template factory methods implemented in .cpp — they acquire locks and return guard objects.
+    // lock_for_read: acquires checks and a shared lock; returns std::nullopt on failure.
+    std::optional<ReadLock> lock_for_read(std::error_code *ec = nullptr) const noexcept;
+
+    // lock_for_write: acquires an exclusive lock; timeout==0 => block until acquired.
+    // Returns std::nullopt on failure (ec populated if provided).
+    std::optional<WriteLock> lock_for_write(std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
+                                            std::error_code *ec = nullptr) noexcept;
+
+    // ----------------- Template convenience wrappers (no std::function) -----------------
     template <typename F>
     bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
     {
+        static_assert(std::is_invocable_v<F, const nlohmann::json &>,
+                      "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
+        const void *key = static_cast<const void *>(this);
+        if (pylabhub::basics::RecursionGuard::is_recursing(key))
+        {
+            if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+            LOGGER_WARN("JsonConfig::with_json_read - nested call detected; refusing to re-enter.");
+            return false;
+        }
+        pylabhub::basics::RecursionGuard guard(key);
+
+        auto r = lock_for_read(ec);
+        if (!r) return false;
+
         try
         {
-            std::function<void(nlohmann::json const &)> cb = std::forward<F>(fn);
-            return with_json_read_impl(std::move(cb), ec);
+            std::forward<F>(fn)(r->json());
+            if (ec) *ec = std::error_code{};
+            return true;
+        }
+        catch (const std::exception &ex)
+        {
+            LOGGER_ERROR("JsonConfig::with_json_read: exception in user callback: {}", ex.what());
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            return false;
         }
         catch (...)
         {
-            if (ec) *ec = std::make_error_code(std::errc::operation_canceled);
+            LOGGER_ERROR("JsonConfig::with_json_read: unknown exception in user callback");
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
     }
 
-    /**
-     * @brief Check whether this instance has been initialized with a config path.
-     * @return true if initialized
-     */
-    bool is_initialized() const noexcept;
+    template <typename F>
+    bool with_json_write(F &&fn, std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
+                         std::error_code *ec = nullptr) noexcept
+    {
+        static_assert(std::is_invocable_v<F, nlohmann::json &>,
+                      "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
+        const void *key = static_cast<const void *>(this);
+        if (pylabhub::basics::RecursionGuard::is_recursing(key))
+        {
+            if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+            LOGGER_WARN("JsonConfig::with_json_write - nested call detected; refusing to re-enter.");
+            return false;
+        }
+        pylabhub::basics::RecursionGuard guard(key);
 
-    /**
-     * @brief Return the configured path (may be empty).
-     * @return copy of the path
-     */
-    std::filesystem::path config_path() const noexcept;
+        auto w = lock_for_write(timeout, ec);
+        if (!w) return false;
 
-  private:
-    // Implementation hidden (complete definition is in JsonConfig.cpp).
-    struct Impl;
-    std::unique_ptr<Impl> pImpl;
+        try
+        {
+            std::forward<F>(fn)(w->json());
+            bool ok = w->commit(ec);
+            return ok;
+        }
+        catch (const std::exception &ex)
+        {
+            LOGGER_ERROR("JsonConfig::with_json_write: exception in user callback: {}", ex.what());
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+        catch (...)
+        {
+            LOGGER_ERROR("JsonConfig::with_json_write: unknown exception in user callback");
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+    }
 
-    // Platform-aware, atomic write helper used internally.
-    // Declared here for clarity but defined in the .cpp; not part of public API.
-    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
-                                  std::error_code *ec = nullptr);
+private:
+    struct Impl;                ///< forward-declared Pimpl (defined in .cpp)
+    std::unique_ptr<Impl> pImpl;///< owned implementation pointer
+
+    // helper used internally (defined in cpp)
+    static void atomic_write_json(const std::filesystem::path &target,
+                                  const nlohmann::json &j,
+                                  std::error_code *ec = nullptr) noexcept;
 };
 
 } // namespace pylabhub::utils
