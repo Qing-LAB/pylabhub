@@ -25,6 +25,11 @@
 namespace pylabhub::utils
 {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
 public:
@@ -48,7 +53,7 @@ public:
 
     // ----------------- Lightweight guard types -----------------
     // The Impl for these guards is defined in the .cpp; these types are move-only.
-    class ReadLock
+    class PYLABHUB_UTILS_EXPORT ReadLock
     {
     public:
         ReadLock() noexcept;
@@ -69,7 +74,7 @@ public:
         friend class JsonConfig;
     };
 
-    class WriteLock
+    class PYLABHUB_UTILS_EXPORT WriteLock
     {
     public:
         WriteLock() noexcept;
@@ -188,5 +193,9 @@ private:
                                   const nlohmann::json &j,
                                   std::error_code *ec = nullptr) noexcept;
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace pylabhub::utils

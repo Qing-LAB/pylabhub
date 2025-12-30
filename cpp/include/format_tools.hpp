@@ -12,8 +12,8 @@ namespace pylabhub::format_tools {
 // --- Helper: formatted local time with sub-second resolution (robust) ---
 std::string formatted_time(std::chrono::system_clock::time_point timestamp);
 
-inline std::wstring win32_to_long_path(const std::filesystem::path &);
-inline std::wstring win32_make_unique_suffix();
+std::wstring win32_to_long_path(const std::filesystem::path &);
+std::wstring win32_make_unique_suffix();
 
 // --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
 template <typename... Args>

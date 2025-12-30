@@ -38,11 +38,18 @@ bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
     return false;
 }
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996) // 'getenv': This function or variable may be unsafe.
+#endif
 std::string test_scale()
 {
     const char *v = std::getenv("PYLAB_TEST_SCALE");
     return v ? std::string(v) : std::string();
 }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 int scaled_value(int original, int small_value)
 {

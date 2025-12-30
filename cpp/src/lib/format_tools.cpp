@@ -59,7 +59,7 @@ static inline std::wstring normalize_backslashes(std::wstring s)
 /// Convert a path to Win32 long-path form with \\?\ or \\?\UNC\ prefix.
 /// If path is already prefixed, return it unchanged. Caller should pass an absolute or relative
 /// path.
-inline std::wstring win32_to_long_path(const std::filesystem::path &p_in)
+std::wstring win32_to_long_path(const std::filesystem::path &p_in)
 {
     std::filesystem::path abs = p_in;
     if (!abs.is_absolute())
@@ -84,7 +84,7 @@ inline std::wstring win32_to_long_path(const std::filesystem::path &p_in)
 }
 
 /// Generate a reasonably-unique suffix for temp filenames.
-inline std::wstring win32_make_unique_suffix()
+std::wstring win32_make_unique_suffix()
 {
     auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     DWORD pid = GetCurrentProcessId();
@@ -102,7 +102,7 @@ inline std::wstring win32_make_unique_suffix()
 #else
 
 // POSIX stubs (not used on POSIX)
-inline std::wstring win32_to_long_path(const std::filesystem::path &)
+std::wstring win32_to_long_path(const std::filesystem::path &)
 {
     return std::wstring();
 }

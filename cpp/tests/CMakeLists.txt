@@ -127,10 +127,10 @@ add_dependencies(utils_tests stage_pylabhub_utils)
 add_dependencies(multiprocess_tests stage_pylabhub_utils)
 add_dependencies(test_logger stage_pylabhub_utils)
 
+set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin")
 # 2. RPATH (for macOS/Linux): Set the RPATH for the test executables so they
 #    can find the staged library at build/run time. On Windows, this has no effect.
 if(NOT WIN32)
-  set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin") 
   # the dynamic library pylabhub::utils is placed here so we need to setup a RPATH for it
   set_target_properties(utils_tests multiprocess_tests test_logger
     PROPERTIES
@@ -140,25 +140,14 @@ endif()
 
 # 3. DISCOVERY: Now that the library is staged and findable (via RPATH or PATH),
 #    run the discovery process in the staging directory.
-set(TEST_RUNTIME_DIR "${PYLABHUB_STAGING_DIR}/tests")
-message(STATUS "  ** Setting test runtime directory to: ${TEST_RUNTIME_DIR}")
 gtest_discover_tests(utils_tests
-    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
-    PROPERTIES
-        # This is primarily for Windows, but doesn't hurt other platforms.
-        ENVIRONMENT "PATH=${STAGED_LIB_DIR}"
+    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
 )
 gtest_discover_tests(multiprocess_tests
-    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
-    PROPERTIES
-        # This is primarily for Windows, but doesn't hurt other platforms.
-        ENVIRONMENT "PATH=${STAGED_LIB_DIR}"
+    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
 )
 gtest_discover_tests(test_logger
-    WORKING_DIRECTORY "${TEST_RUNTIME_DIR}"
-    PROPERTIES
-        # This is primarily for Windows, but doesn't hurt other platforms.
-        ENVIRONMENT "PATH=${STAGED_LIB_DIR}"
+    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
 )
 
 message(STATUS "Configured test executables: utils_tests, multiprocess_tests, test_logger")
