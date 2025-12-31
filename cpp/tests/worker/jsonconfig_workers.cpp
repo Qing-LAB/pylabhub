@@ -1,15 +1,24 @@
-// tests/helpers/jsonconfig_workers.cpp
-#include "test_preamble.h"
+#include "platform.hpp"
+// Standard Library
+#include <chrono>
+#include <cstdlib>
+#include <functional>
+#include <string>
+#include <system_error>
+#include <thread>
 
-#include "worker_jsonconfig.h"
+// Project-specific
+
+#include "jsonconfig_workers.h"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
+#include "utils/JsonConfig.hpp"
 #include "nlohmann/json.hpp"
 
 using nlohmann::json;
 using namespace test_utils;
 
-namespace worker
+namespace pylabhub::tests::worker
 {
 namespace jsonconfig
 {

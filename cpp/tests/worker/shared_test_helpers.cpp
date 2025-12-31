@@ -1,8 +1,21 @@
-#include "test_preamble.h" // New common preamble
+#include "platform.hpp"
 
+// Standard Library
+#include <chrono>
+#include <cstdlib> // For std::getenv
+#include <fstream> // For std::ifstream
+#include <sstream> // For std::ostringstream
+#include <string>
+#include <thread> // For std::this_thread
+
+// Third-party
+#include <fmt/core.h> // Keep this for fmt::print
+
+// Project-specific
 #include "shared_test_helpers.h" // Keep this specific header
 
-#include <fmt/core.h> // Keep this for fmt::print
+namespace pylabhub::tests::helper
+{
 
 bool read_file_contents(const std::string &path, std::string &out)
 {
@@ -62,3 +75,4 @@ int scaled_value(int original, int small_value)
 // strictly necessary, but can be good practice.
 // (No instantiations needed for now as it will be implicitly instantiated)
 
+} // namespace pylabhub::tests::helpers

@@ -2,7 +2,7 @@
 #include <string>
 
 // Declares worker functions for FileLock multi-process tests.
-namespace worker
+namespace pylabhub::tests::worker
 {
     namespace filelock
     {

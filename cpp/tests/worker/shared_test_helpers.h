@@ -11,6 +11,8 @@
 
 namespace fs = std::filesystem;
 
+namespace pylabhub::tests::helper
+{
 // Helper functions for tests, extracted from the anonymous namespace in workers.cpp.
 
 bool read_file_contents(const std::string &path, std::string &out);
@@ -53,3 +55,5 @@ int run_gtest_worker(Fn test_logic, const char *test_name)
     }
     return 0; // Success
 }
+
+} // namespace pylabhub::tests::helper
