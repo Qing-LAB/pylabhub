@@ -2,7 +2,7 @@
 //
 // Unit tests for pylabhub::utils::JsonConfig (new callback-based design).
 
-#include "test_preamble.h"
+#include "platform.hpp"
 
 #include "helpers/test_entrypoint.h" // provides extern std::string g_self_exe_path
 #include "helpers/workers.h"

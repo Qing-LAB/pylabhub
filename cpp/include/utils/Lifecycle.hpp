@@ -86,7 +86,11 @@
  * ```
  ******************************************************************************/
 
-#include <memory> // For std::unique_ptr
+#include <memory> // For std::unique_#include <atomic>
+#include <vector>
+#include <utility>
+#include <type_traits>
+#include "fmt/core.h"
 
 #include "pylabhub_utils_export.h"
 
@@ -280,6 +284,89 @@ inline void FinalizeApp()
 {
     ::LifecycleManager::instance().finalize();
 }
+
+
+class LifecycleGuard
+{
+public:
+    // Default: no modules provided. If this is the first guard, InitializeApp() is called.
+    LifecycleGuard()
+    {
+        init_owner_if_first({});
+    }
+
+    // Move-only vector constructor: accept a vector that will be moved-from.
+    explicit LifecycleGuard(std::vector<ModuleDef>&& modules)
+    {
+        init_owner_if_first(std::move(modules));
+    }
+
+    // Variadic rvalue convenience: LifecycleGuard(ModuleDef("A"), ModuleDef("B"))
+    template <typename... Mods,
+              typename = std::enable_if_t<
+                  std::conjunction_v<std::is_same<std::decay_t<Mods>, ModuleDef>...>>>
+    explicit LifecycleGuard(Mods&&... mods)
+    {
+        std::vector<ModuleDef> vec;
+        vec.reserve(sizeof...(Mods));
+        (vec.emplace_back(std::forward<Mods>(mods)), ...);
+        init_owner_if_first(std::move(vec));
+    }
+
+    // Non-copyable, non-movable
+    LifecycleGuard(const LifecycleGuard&) = delete;
+    LifecycleGuard& operator=(const LifecycleGuard&) = delete;
+    LifecycleGuard(LifecycleGuard&&) = delete;
+    LifecycleGuard& operator=(LifecycleGuard&&) = delete;
+
+    // Destructor: only the owner will finalize. noexcept to avoid throwing from dtor.
+    ~LifecycleGuard() noexcept
+    {
+        if (m_is_owner)
+        {
+            pylabhub::lifecycle::FinalizeApp();
+        }
+    }
+
+private:
+    // Function-local static atomic flag (ODR-safe header-only)
+    static std::atomic_bool& owner_flag()
+    {
+        static std::atomic_bool flag{false};
+        return flag;
+    }
+
+    // Core logic: attempt to become owner; if successful, register modules and always initialize.
+    void init_owner_if_first(std::vector<ModuleDef>&& modules)
+    {
+        bool expected = false;
+        if (owner_flag().compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        {
+            // This guard is the owner
+            m_is_owner = true;
+
+            // Register modules (move each into manager). If modules is empty, this loop is skipped.
+            for (auto &m : modules)
+            {
+                pylabhub::lifecycle::RegisterModule(std::move(m));
+            }
+
+            // IMPORTANT: always initialize now, even if no modules were supplied.
+            // This guarantees the lifecycle starts as soon as the first guard is established.
+            pylabhub::lifecycle::InitializeApp();
+        }
+        else
+        {
+            // Not the owner: warn and ignore supplied modules.
+            m_is_owner = false;
+            fmt::print(stderr,
+                         "[pylabhub-lifecycle] WARNING: LifecycleGuard constructed but an owner "
+                         "already exists. This guard is a no-op; provided modules (if any) were ignored.\n");
+        }
+    }
+
+    bool m_is_owner{false};
+};
 
 } // namespace lifecycle
 } // namespace pylabhub

@@ -3,7 +3,7 @@
 #include <vector>
 
 // Declares worker functions for Logger multi-process tests.
-namespace worker
+namespace pylabhub::tests::worker
 {
     namespace logger
     {
