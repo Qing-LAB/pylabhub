@@ -1,101 +1,78 @@
-#include "test_preamble.h" // New common preamble
-
-#include "test_process_utils.h" // Keep this specific header
-
-#include <fmt/core.h> // Keep this for fmt::print
-
+#include "test_preamble.h"
+#include "test_process_utils.h"
+#include <fmt/core.h>
+#include "format_tools.hpp"
 #if defined(PLATFORM_WIN64)
-// Platform-specific implementation is already included in the header
-
-// Helper to convert std::string to std::wstring
-static std::wstring s2ws(const std::string& s)
-{
-    int len;
-    int slength = (int)s.length() + 1;
-    len = MultiByteToWideChar(CP_ACP, 0, s.c_str(), slength, 0, 0);
-    std::wstring r(len, L'\0');
-    MultiByteToWideChar(CP_ACP, 0, s.c_str(), slength, &r[0], len);
-    return r;
-}
-
-// Helper to convert std::wstring to std::string
-// This is added because the GetLastError logging uses it, and it was in the code I just tried to replace.
-static std::string ws2s(const std::wstring& s)
-{
-    int len;
-    int slength = (int)s.length() + 1;
-    len = WideCharToMultiByte(CP_ACP, 0, s.c_str(), slength, 0, 0, 0, 0);
-    std::string r(len, '\0');
-    WideCharToMultiByte(CP_ACP, 0, s.c_str(), slength, &r[0], len, 0, 0);
-    return r;
-}
-
+#include <windows.h>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <filesystem>
 #else
 #include <unistd.h> // for fork, execv
 #endif
 
 namespace test_utils
 {
-    #if defined(PLATFORM_WIN64)
+#if defined(PLATFORM_WIN64)
     ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
                                        const std::vector<std::string> &args)
     {
-        // Build a quoted commandline: "<exe>" <mode> "arg1" "arg2" ...
+        // Build ASCII command line: "<exe_path>" <mode> "arg1" "arg2" ...
         std::string cmdline = fmt::format("\"{}\" {}", exe_path, mode);
-        for (const auto &arg : args)
-        {
-            cmdline += fmt::format(" \"{}\"", arg);
-        }
+        for (const auto &a : args)
+            cmdline += fmt::format(" \"{}\"", a);
+
+        // Convert to wide string once and create a mutable buffer (CreateProcessW may modify it)
+        std::wstring wcmd = pylabhub::format_tools::s2ws(cmdline);
+        std::vector<wchar_t> wcmd_buf(wcmd.begin(), wcmd.end());
+        wcmd_buf.push_back(L'\0');
 
         STARTUPINFOW si{};
         PROCESS_INFORMATION pi{};
         si.cb = sizeof(si);
 
-        // Convert cmdline to wstring
-        std::wstring wcmd = s2ws(cmdline);
+        // Use default environment (nullptr) and default working directory (nullptr).
+        // Do NOT pass CREATE_UNICODE_ENVIRONMENT when lpEnvironment is nullptr.
+        DWORD creation_flags = 0;
 
-        // Get the directory of the executable to use as current directory for the child.
-        std::filesystem::path path_exe_path(exe_path);
-        std::wstring w_exe_dir = s2ws(path_exe_path.parent_path().string());
+        BOOL ok = CreateProcessW(
+            /*lpApplicationName*/ nullptr,
+            /*lpCommandLine*/ wcmd_buf.data(),
+            /*lpProcessAttributes*/ nullptr,
+            /*lpThreadAttributes*/ nullptr,
+            /*bInheritHandles*/ FALSE,
+            /*dwCreationFlags*/ creation_flags,
+            /*lpEnvironment*/ nullptr,      // inherit parent's environment
+            /*lpCurrentDirectory*/ nullptr, // inherit parent's working directory
+            /*lpStartupInfo*/ &si,
+            /*lpProcessInformation*/ &pi);
 
-        BOOL create_result = CreateProcessW(nullptr,   // No module name (use command line)
-                                            &wcmd[0],  // Command line
-                                            nullptr,   // Process handle not inheritable
-                                            nullptr,   // Thread handle not inheritable
-                                            FALSE,     // Set handle inheritance to FALSE
-                                            0,         // No creation flags
-                                            nullptr,   // Use parent's environment block
-                                            w_exe_dir.c_str(), // Set starting directory for the child process
-                                            &si,       // STARTUPINFO structure
-                                            &pi);      // PROCESS_INFORMATION structure
-
-        if (!create_result)
+        if (!ok)
         {
-            DWORD error = GetLastError();
-            LPWSTR messageBuffer = nullptr;
+            DWORD err = GetLastError();
+            LPWSTR msgBuf = nullptr;
             FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                                   FORMAT_MESSAGE_IGNORE_INSERTS,
-                               NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                               (LPWSTR)&messageBuffer, 0, NULL);
-            // Convert wide string message to narrow string for fmt::print
-            std::string errorMessage = ws2s(messageBuffer);
-            LocalFree(messageBuffer); // Free the buffer allocated by FormatMessageW
-
-            fmt::print(stderr, "ERROR: CreateProcessW failed. Code: {} - Message: {}\n", error, errorMessage);
+                               FORMAT_MESSAGE_IGNORE_INSERTS,
+                           nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPWSTR)&msgBuf, 0,
+                           nullptr);
+            std::string msg = pylabhub::format_tools::ws2s(msgBuf ? msgBuf : L"(no message)");
+            if (msgBuf)
+                LocalFree(msgBuf);
+            fmt::print(stderr, "ERROR: CreateProcessW failed. Code: {} - Message: {}\n", err, msg);
             return nullptr;
         }
-        
-        CloseHandle(pi.hThread);
+
+        CloseHandle(pi.hThread); // caller is responsible for closing the process handle
         return pi.hProcess;
     }
-    #else
+#else
     ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
                                        const std::vector<std::string> &args)
     {
         pid_t pid = fork();
         if (pid == 0)
         {
-            // Child process: execv expects char* const*
             std::vector<char *> argv;
             argv.push_back(const_cast<char *>(exe_path.c_str()));
             argv.push_back(const_cast<char *>(mode.c_str()));
@@ -104,12 +81,10 @@ namespace test_utils
                 argv.push_back(const_cast<char *>(arg.c_str()));
             }
             argv.push_back(nullptr);
-
             execv(exe_path.c_str(), argv.data());
-            _exit(127); // execv failed
+            _exit(127);
         }
         return pid;
     }
-    #endif
-
+#endif
 } // namespace test_utils

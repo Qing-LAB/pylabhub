@@ -11,6 +11,9 @@ namespace fs = std::filesystem;
 using namespace test_utils;
 
 int main(int argc, char **argv) {
+    // --- DIAGNOSTIC ---
+    const char* path_env = std::getenv("PATH");
+    
     // Handle worker process modes first
     if (argc > 1) {
         std::string mode_str = argv[1];
@@ -20,6 +23,15 @@ int main(int argc, char **argv) {
             std::string scenario = mode_str.substr(dot_pos + 1);
 
             if (module == "filelock") {
+                /*if (path_env)
+                {
+                    fmt::print(stderr, "[spawned for filelock tests] PATH={}", path_env);
+                }
+                else
+                {
+                    fmt::print(stderr, "[spawned for filelock tests] PATH environment variable not found.");
+                }*/
+
                 if (scenario == "nonblocking_acquire" && argc > 2) {
                     return worker::filelock::nonblocking_acquire(argv[2]);
                 }
@@ -51,10 +63,30 @@ int main(int argc, char **argv) {
                     return worker::filelock::test_multithreaded_non_blocking(argv[2]);
                 }
             } else if (module == "jsonconfig") {
+                /*if (path_env)
+                {
+                    fmt::print(stderr, "[spawned for jsonconfig tests] PATH={}", path_env);
+                }
+                else
+                {
+                    fmt::print(stderr,
+                               "[spawned for jsonconfig tests] PATH environment variable not found.");
+                }*/
+
                 if (scenario == "write_id" && argc > 3) {
                     return worker::jsonconfig::write_id(argv[2], argv[3]);
                 }
             } else if (module == "logger") {
+                if (path_env)
+                {
+                    fmt::print(stderr, "[spawned for logger tests] PATH={}", path_env);
+                }
+                else
+                {
+                    fmt::print(stderr,
+                               "[spawned for logger tests] PATH environment variable not found.");
+                }
+
                 if (scenario == "stress_log" && argc > 3) {
                     worker::logger::stress_log(argv[2], std::stoi(argv[3]));
                     return 0;
@@ -99,6 +131,15 @@ int main(int argc, char **argv) {
     }
 
     // If not in worker mode, or if worker dispatch fails, run the tests.
+    /*if (path_env)
+    {
+        fmt::print(stderr, "[main] PATH={}", path_env);
+    }
+    else
+    {
+        fmt::print(stderr, "[main] PATH environment variable not found.");
+    }*/
+
     if (argc >= 1) g_self_exe_path = argv[0];
     LifecycleManager::instance().initialize();
     ::testing::InitGoogleTest(&argc, argv);
