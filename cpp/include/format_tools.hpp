@@ -14,6 +14,8 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp);
 
 std::wstring win32_to_long_path(const std::filesystem::path &);
 std::wstring win32_make_unique_suffix();
+std::wstring s2ws(const std::string &s);
+std::string ws2s(const std::wstring &w);
 
 // --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
 template <typename... Args>

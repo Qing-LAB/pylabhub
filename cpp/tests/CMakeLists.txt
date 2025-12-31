@@ -1,153 +1,94 @@
 # /cpp/tests/CMakeLists.txt
-#
-# Configures the test suite for the project, creating separate test executables
-# for different test categories (e.g., unit tests, multi-process tests).
-
 cmake_minimum_required(VERSION 3.18)
 
 include(GoogleTest)
 include(StageHelpers)
 
-# This helper library contains the main() entry point, worker dispatch logic,
-# and worker function implementations. All test executables will link against it.
 add_subdirectory(helpers)
 
-# Set a predictable output location for all test executables.
-# For multi-configuration generators like Visual Studio, this will create a
-# subdirectory (e.g., 'bin/Debug').
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# Helper: create a test executable with common settings
+function(pylabhub_add_test_executable name)
+  set(options)
+  set(oneValueArgs)
+  set(multiValueArgs SOURCES)
+  cmake_parse_arguments(_args "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-# --- 1. Unit Test Executable ---
-# This executable contains all simple, single-process unit tests.
-add_executable(utils_tests
+  add_executable(${name} ${_args_SOURCES})
+  target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(${name}
+    PRIVATE
+      pylabhub::utils
+      pylabhub::third_party::gtest
+      pylabhub_test_helpers
+  )
+  target_compile_features(${name} PRIVATE cxx_std_20)
+
+  if(MSVC)
+    target_compile_options(${name} PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+  endif()
+endfunction()
+
+# Test executables
+pylabhub_add_test_executable(utils_tests SOURCES
   test_atomicguard.cpp
   test_recursionguard.cpp
 )
 
-target_include_directories(utils_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_link_libraries(utils_tests
-  PRIVATE
-  pylabhub::utils
-  pylabhub::third_party::gtest
-  pylabhub_test_helpers
-)
-
-target_compile_features(utils_tests PRIVATE cxx_std_20)
-target_compile_definitions(utils_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
-if(PYLABHUB_LOGGER_DEBUG)
-  target_compile_definitions(utils_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
-endif()
-if(MSVC)
-  target_compile_options(utils_tests PRIVATE /EHsc /wd5105 /Zc:preprocessor)
-endif()
-
-# --- 2. Multi-Process Test Executable ---
-# This executable contains tests that require spawning worker processes to ensure
-# full isolation for stateful, singleton-based components.
-add_executable(multiprocess_tests
+pylabhub_add_test_executable(multiprocess_tests SOURCES
   test_filelock.cpp
   test_jsonconfig.cpp
 )
 
-target_include_directories(multiprocess_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-# --- 3. Logger Test Executable ---
-# This executable is built from the refactored, split-out logger test files.
-add_executable(test_logger
-  # Sources are added from the subdirectory
+pylabhub_add_test_executable(test_logger SOURCES
+  # if test_logger has sources, list them here; kept empty previously
 )
+# Now add the logger subdir which will append sources to test_logger
 add_subdirectory(logger)
 
-target_include_directories(test_logger PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Place test executables into the staged runtime directory so tests and DLLs are co-located.
+set(STAGED_BIN_DIR "${PYLABHUB_STAGING_DIR}/bin")
 
-target_link_libraries(multiprocess_tests
-  PRIVATE
-  pylabhub::utils
-  pylabhub::third_party::gtest
-  pylabhub_test_helpers
+set_target_properties(utils_tests multiprocess_tests test_logger PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${STAGED_BIN_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${STAGED_BIN_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${STAGED_BIN_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${STAGED_BIN_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${STAGED_BIN_DIR}"
 )
 
-target_link_libraries(test_logger
-  PRIVATE
-  pylabhub::utils
-  pylabhub::third_party::gtest
-  pylabhub_test_helpers
-)
-
-target_compile_features(multiprocess_tests PRIVATE cxx_std_20)
-target_compile_definitions(multiprocess_tests PRIVATE LOGGER_COMPILE_LEVEL=0)
-if(PYLABHUB_LOGGER_DEBUG)
-  target_compile_definitions(multiprocess_tests PRIVATE _LOGGER_DEBUG_ENABLED=1)
-endif()
-if(MSVC)
-  target_compile_options(multiprocess_tests PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+# Ensure an aggregator 'stage_tests' target exists for staging macros to attach to
+if (NOT TARGET stage_tests)
+  add_custom_target(stage_tests COMMENT "Aggregate target for staging test executables")
 endif()
 
-target_compile_features(test_logger PRIVATE cxx_std_20)
-target_compile_definitions(test_logger PRIVATE LOGGER_COMPILE_LEVEL=0)
-if(PYLABHUB_LOGGER_DEBUG)
-  target_compile_definitions(test_logger PRIVATE _LOGGER_DEBUG_ENABLED=1)
-endif()
-if(MSVC)
-  target_compile_options(test_logger PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+# Ensure staged library is available before staging/running tests
+if (TARGET stage_pylabhub_utils)
+  add_dependencies(stage_tests stage_pylabhub_utils)
 endif()
 
-# --- Staging ---
-# The master 'stage_tests' target will trigger the staging of all individual
-# test executables. This ensures they can find shared libraries from the main
-# project at runtime.
-add_custom_target(stage_tests COMMENT "Staging all test executables")
+# Stage each test executable into the staging tree
+pylabhub_stage_executable(TARGET utils_tests DESTINATION tests ATTACH_TO stage_tests)
+pylabhub_stage_executable(TARGET multiprocess_tests DESTINATION tests ATTACH_TO stage_tests)
+pylabhub_stage_executable(TARGET test_logger DESTINATION tests ATTACH_TO stage_tests)
 
-pylabhub_stage_executable(
-  TARGET utils_tests
-  DESTINATION tests
-  ATTACH_TO stage_tests
-)
-pylabhub_stage_executable(
-  TARGET multiprocess_tests
-  DESTINATION tests
-  ATTACH_TO stage_tests
-)
-pylabhub_stage_executable(
-  TARGET test_logger
-  DESTINATION tests
-  ATTACH_TO stage_tests
-)
-
-# Ensure staging happens after the executables are built, and after the staging directories have been created.
-add_dependencies(stage_tests utils_tests multiprocess_tests test_logger create_staging_dirs)
-
-# --- CTest Integration ---
-
-# 1. DEPENDENCY: Ensure the pylabhub-utils shared library is staged BEFORE
-#    test discovery is run. This is the crucial step that makes the test
-#    executable runnable by gtest_discover_tests.
+# Make test targets depend on the staged library so building tests stages the lib first
 add_dependencies(utils_tests stage_pylabhub_utils)
 add_dependencies(multiprocess_tests stage_pylabhub_utils)
 add_dependencies(test_logger stage_pylabhub_utils)
 
+# Staging layout variables
 set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin")
-# 2. RPATH (for macOS/Linux): Set the RPATH for the test executables so they
-#    can find the staged library at build/run time. On Windows, this has no effect.
-if(NOT WIN32)
-  # the dynamic library pylabhub::utils is placed here so we need to setup a RPATH for it
-  set_target_properties(utils_tests multiprocess_tests test_logger
-    PROPERTIES
-      BUILD_RPATH "${STAGED_LIB_DIR}"
-  )
-endif()
+set(STAGED_RUNTIME_DIR "${PYLABHUB_STAGING_DIR}/bin")  # runtime dir = staged bin
+set(STAGED_TEST_DIR "${PYLABHUB_STAGING_DIR}/tests")
 
-# 3. DISCOVERY: Now that the library is staged and findable (via RPATH or PATH),
-#    run the discovery process in the staging directory.
-gtest_discover_tests(utils_tests
-    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
-)
-gtest_discover_tests(multiprocess_tests
-    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
-)
-gtest_discover_tests(test_logger
-    WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/bin"
-)
+# Discover tests and apply per-discovered-test properties (working dir + PATH)
+foreach(tgt IN ITEMS utils_tests multiprocess_tests test_logger)
+  gtest_discover_tests(${tgt}
+    WORKING_DIRECTORY "${STAGED_RUNTIME_DIR}"
+    TEST_PROPERTIES
+      "WORKING_DIRECTORY=${STAGED_RUNTIME_DIR}"
+      "ENVIRONMENT=PATH=${STAGED_LIB_DIR};$ENV{PATH}"
+  )
+endforeach()
 
 message(STATUS "Configured test executables: utils_tests, multiprocess_tests, test_logger")

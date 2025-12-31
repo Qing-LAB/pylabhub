@@ -99,6 +99,46 @@ std::wstring win32_make_unique_suffix()
     return ss.str();
 }
 
+std::wstring s2ws(const std::string &s)
+{
+    if (s.empty())
+        return {};
+
+    int required =
+        MultiByteToWideChar(CP_UTF8, // UTF-8 input
+                            MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+
+    if (required <= 0)
+        return {};
+
+    std::wstring w(required, L'\0');
+
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()),
+                        w.data(), required);
+
+    return w;
+}
+
+std::string ws2s(const std::wstring &w)
+{
+    if (w.empty())
+        return {};
+
+    int required = WideCharToMultiByte(CP_UTF8, // UTF-8 output
+                                       WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
+                                       nullptr, 0, nullptr, nullptr);
+
+    if (required <= 0)
+        return {};
+
+    std::string s(required, '\0');
+
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
+                        s.data(), required, nullptr, nullptr);
+
+    return s;
+}
+
 #else
 
 // POSIX stubs (not used on POSIX)
@@ -107,11 +147,23 @@ std::wstring win32_to_long_path(const std::filesystem::path &)
     return std::wstring();
 }
 
-inline std::wstring win32_make_unique_suffix()
+std::wstring win32_make_unique_suffix()
 {
     return std::wstring();
 }
 
+std::wstring s2ws(const std::string& s)
+{
+    return std::wstring();
+}
+
+std::string ws2s(const std::wstring& w)
+{
+    return std::string();
+}
+
 #endif
+
+
 
 } // namespace pylabhub::format_tools
