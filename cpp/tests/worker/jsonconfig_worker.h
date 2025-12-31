@@ -3,7 +3,7 @@
 #include <string>
 
 // Declares worker functions for JsonConfig multi-process tests.
-namespace worker
+namespace pylabhub::tests::worker
 {
     namespace jsonconfig
     {

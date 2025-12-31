@@ -1,11 +1,32 @@
-#include "test_preamble.h" // New common preamble
 
-#include "worker_logger.h"       // Keep this specific header
+#include "platform.hpp"
+
+// Standard Library
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <future>
+#include <string>
+#include <thread>
+#include <vector>
+
+// Platform-specific
+#if defined(PLATFORM_WIN64)
+#include <windows.h>
+#else
+#include <unistd.h> // for getpid
+#endif
+
+// Project-specific
+#include "logger_worker.h"       // Keep this specific header
 #include "shared_test_helpers.h" // Keep this specific helper header
 #include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+#include "utils/Logger.hpp"
+#include "utils/Lifecycle.hpp"
+
 using namespace test_utils;
 
-namespace worker
+namespace pylabhub::tests::worker
 {
 namespace logger
 {
@@ -218,7 +239,7 @@ int test_write_error_callback_async()
             Logger::instance().flush();
 
             auto future_status = err_msg_future.wait_for(2s);
-            ASSERT_EQ(future_status, std::future_status::ready);
+            ASSERT_EQ(future_status, std::future_status::ready) << "Callback was not invoked within the timeout.";
             ASSERT_NE(err_msg_future.get().find("Logger error"), std::string::npos);
 #else
             GTEST_SUCCESS_("Windows does not have a simple equivalent of writing to a directory to force a log error.");

@@ -1,17 +1,5 @@
 // tests/test_atomicguard.cpp
-//
-// Comprehensive tests for the header-only, move-only AtomicGuard + AtomicOwner.
-//
-// These tests assume the header is available as:
-//   #include "utils/AtomicGuard_minimal.hpp"
-//
-// They exercise normal usage plus heavy transfer/move stress scenarios.
-
-#include "test_preamble.h"
-
-// The test preamble should handle most common includes and 'using' declarations.
-// Any includes specific ONLY to atomic_guard might still be needed.
-// 'atomic_guard.hpp' is a core header for this test file.
+#include "platform.hpp"
 #include "atomic_guard.hpp"
 
 // Helpers for stress sizes (tweak to make tests faster or heavier).

@@ -5,13 +5,21 @@
 # and adds them to the parent's test executable target.
 
 # Find all the source files in this directory.
-file(GLOB logger_test_sources
+file(GLOB test_utils_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
 
 # The "test_logger" executable target is defined in the parent CMakeLists.txt.
 # We add our collected source files to it.
-target_sources(test_logger
+target_sources(test_utils
   PRIVATE
-    ${logger_test_sources}
+    ${test_utils_srcs}
 )
+target_compile_features(test_utils PRIVATE cxx_std_20)
+target_link_libraries(test_utils
+  PRIVATE
+    pylabhub_test_helpers
+)
+
+
+

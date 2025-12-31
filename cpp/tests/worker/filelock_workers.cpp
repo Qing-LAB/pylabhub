@@ -1,13 +1,29 @@
-#include "test_preamble.h" // New common preamble
+// Standard Library
+#include "platform.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <filesystem>
 #include <fstream>
-#include <iomanip>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <thread>
 
-#include "worker_filelock.h"     // Keep this specific header
-#include "shared_test_helpers.h" // Keep this specific helper header
-#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+// Third-party
+#include <gtest/gtest.h>
+
+// Project-specific
+#include "filelock_workers.h"
+#include "shared_test_helpers.h"
+#include "test_process_utils.h"
+#include "utils/FileLock.hpp"
+
 using namespace test_utils;
+using namespace pylabhub::utils;
+using namespace std::chrono_literals;
 
-namespace worker
+namespace pylabhub::tests::worker
 {
 namespace filelock
 {
@@ -18,14 +34,14 @@ int test_basic_non_blocking(const std::string &resource_path_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
+            std::filesystem::path resource_path(resource_path_str);
             {
                 FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
                 ASSERT_TRUE(lock.valid());
                 ASSERT_FALSE(lock.error_code());
 
                 FileLock lock2(resource_path, ResourceType::File, LockMode::NonBlocking);
-                ASSERT_FALSE(lock2.valid());
+                ASSERT_FALSE(lock2.valid()) << "Second non-blocking lock should fail.";
             }
             FileLock lock3(resource_path, ResourceType::File, LockMode::NonBlocking);
             ASSERT_TRUE(lock3.valid());
@@ -37,7 +53,7 @@ int test_blocking_lock(const std::string &resource_path_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
+            std::filesystem::path resource_path(resource_path_str);
             std::atomic<bool> thread_valid{false};
             std::atomic<bool> thread_saw_block{false};
 
@@ -68,7 +84,7 @@ int test_timed_lock(const std::string &resource_path_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
+            std::filesystem::path resource_path(resource_path_str);
             {
                 FileLock main_lock(resource_path, ResourceType::File, LockMode::Blocking);
                 ASSERT_TRUE(main_lock.valid());
@@ -93,8 +109,8 @@ int test_move_semantics(const std::string &resource1_str, const std::string &res
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource1(resource1_str);
-            fs::path resource2(resource2_str);
+            std::filesystem::path resource1(resource1_str);
+            std::filesystem::path resource2(resource2_str);
 
             {
                 FileLock lock1(resource1, ResourceType::File, LockMode::NonBlocking);
@@ -115,18 +131,18 @@ int test_directory_creation(const std::string &base_dir_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path new_dir(base_dir_str);
+            std::filesystem::path new_dir(base_dir_str);
             auto resource_to_lock = new_dir / "resource.txt";
             auto actual_lock_file =
                 FileLock::get_expected_lock_fullname_for(resource_to_lock, ResourceType::File);
 
-            fs::remove_all(new_dir);
-            ASSERT_FALSE(fs::exists(new_dir));
+            std::filesystem::remove_all(new_dir);
+            ASSERT_FALSE(std::filesystem::exists(new_dir));
             {
                 FileLock lock(resource_to_lock, ResourceType::File, LockMode::NonBlocking);
                 ASSERT_TRUE(lock.valid());
-                ASSERT_TRUE(fs::exists(new_dir));
-                ASSERT_TRUE(fs::exists(actual_lock_file));
+                ASSERT_TRUE(std::filesystem::exists(new_dir));
+                ASSERT_TRUE(std::filesystem::exists(actual_lock_file));
             }
         },
         "filelock::test_directory_creation");
@@ -136,15 +152,15 @@ int test_directory_path_locking(const std::string &base_dir_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path base_dir(base_dir_str);
+            std::filesystem::path base_dir(base_dir_str);
             auto dir_to_lock = base_dir / "dir_to_lock";
-            fs::create_directories(dir_to_lock);
+            std::filesystem::create_directories(dir_to_lock);
 
             auto expected_dir_lock_file =
                 FileLock::get_expected_lock_fullname_for(dir_to_lock, ResourceType::Directory);
             FileLock lock(dir_to_lock, ResourceType::Directory, LockMode::NonBlocking);
             ASSERT_TRUE(lock.valid());
-            ASSERT_TRUE(fs::exists(expected_dir_lock_file));
+            ASSERT_TRUE(std::filesystem::exists(expected_dir_lock_file));
         },
         "filelock::test_directory_path_locking");
 }
@@ -153,7 +169,7 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
+            std::filesystem::path resource_path(resource_path_str);
             const int THREADS = 32;
             std::atomic<int> success_count{0};
             std::vector<std::thread> threads;
@@ -190,8 +206,8 @@ int contention_log_access(const std::string &resource_path_str,
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
-            fs::path log_path(log_path_str);
+            std::filesystem::path resource_path(resource_path_str);
+            std::filesystem::path log_path(log_path_str);
             unsigned long pid =
 #if defined(PLATFORM_WIN64)
                 static_cast<unsigned long>(GetCurrentProcessId());
@@ -232,7 +248,7 @@ int parent_child_block(const std::string &resource_path_str)
 {
     return run_gtest_worker(
         [&]() {
-            fs::path resource_path(resource_path_str);
+            std::filesystem::path resource_path(resource_path_str);
             auto start = std::chrono::steady_clock::now();
             FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
             auto end = std::chrono::steady_clock::now();

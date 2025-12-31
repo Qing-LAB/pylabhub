@@ -4,11 +4,11 @@
 // Each test case is executed in a separate worker process to ensure full
 // isolation of the lifecycle-managed components.
 
-#include "test_preamble.h"
+#include "platform.hpp"
 
 // Specific includes for this test file that are not covered by the preamble
-#include "helpers/test_entrypoint.h"
-#include "helpers/test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+#include "test_entrypoint.h"
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
 #include <algorithm>
 #include <iostream>
 #include <sstream>
