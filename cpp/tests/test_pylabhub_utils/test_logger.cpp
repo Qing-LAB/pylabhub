@@ -1,10 +1,13 @@
 #include "platform.hpp"
-#include "test_entrypoint.h"   // Keep this specific header
-#include "test_process_utils.h"
-// Standard Library
+#include <gtest/gtest.h>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "test_entrypoint.h"
+#include "test_process_utils.h"
+
+namespace fs = std::filesystem;
 using namespace pylabhub::tests::helper;
 
 class LoggerTest : public ::testing::Test
@@ -143,8 +146,24 @@ TEST_F(LoggerTest, ConcurrentLifecycleChaos)
 TEST_F(LoggerTest, StressLog)
 {
     auto log_path = GetUniqueLogPath("stress_log");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.stress_log",
-                                              {log_path.string(), "1000"});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    const int PROCS = 8;
+    const int MSGS_PER_PROC = 200;
+
+    std::vector<ProcessHandle> procs;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        ProcessHandle h = spawn_worker_process(g_self_exe_path, "logger.stress_log",
+                                                 {log_path.string(), std::to_string(MSGS_PER_PROC)});
+        ASSERT_NE(h, NULL_PROC_HANDLE);
+        procs.push_back(h);
+    }
+
+    for (auto h : procs)
+    {
+        ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
+    }
+
+    std::string log_contents;
+    ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
+    ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
 }

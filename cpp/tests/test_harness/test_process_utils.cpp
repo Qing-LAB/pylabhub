@@ -2,13 +2,14 @@
 #include <cstdio> // For stderr
 #include <string>
 #include <vector>
+#include <fcntl.h> // For open, O_WRONLY
 
 #include "platform.hpp"
 
 #include <fmt/core.h> // For fmt::print
 
 #include "test_process_utils.h"
-#include "utils/format_tools.hpp" // For s2ws, ws2s
+#include "format_tools.hpp" // For s2ws, ws2s
 
 namespace pylabhub::tests::helper
 {
@@ -64,6 +65,21 @@ namespace pylabhub::tests::helper
         CloseHandle(pi.hThread); // caller is responsible for closing the process handle
         return pi.hProcess;
     }
+
+    int wait_for_worker_and_get_exit_code(ProcessHandle handle)
+    {
+        if (handle == NULL_PROC_HANDLE) return -1;
+        DWORD waitResult = WaitForSingleObject(handle, INFINITE);
+        if (waitResult == WAIT_FAILED)
+        {
+            CloseHandle(handle);
+            return -1;
+        }
+        DWORD exit_code = 0;
+        GetExitCodeProcess(handle, &exit_code);
+        CloseHandle(handle);
+        return static_cast<int>(exit_code);
+    }
 #else
     ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
                                        const std::vector<std::string> &args)
@@ -71,6 +87,16 @@ namespace pylabhub::tests::helper
         pid_t pid = fork();
         if (pid == 0)
         {
+            // In child process.
+            // Redirect stdout and stderr to a file to capture any output for debugging.
+            int fd = open("worker_output.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd != -1)
+            {
+                dup2(fd, 1); // stdout
+                dup2(fd, 2); // stderr
+                close(fd);
+            }
+
             std::vector<char *> argv;
             argv.push_back(const_cast<char *>(exe_path.c_str()));
             argv.push_back(const_cast<char *>(mode.c_str()));
@@ -80,9 +106,24 @@ namespace pylabhub::tests::helper
             }
             argv.push_back(nullptr);
             execv(exe_path.c_str(), argv.data());
-            _exit(127);
+            _exit(127); // execv only returns on error
         }
         return pid;
+    }
+
+    int wait_for_worker_and_get_exit_code(ProcessHandle handle)
+    {
+        if (handle == NULL_PROC_HANDLE) return -1;
+        int status = 0;
+        if (waitpid(handle, &status, 0) == -1)
+        {
+            return -1; // waitpid failed
+        }
+        if (WIFEXITED(status))
+        {
+            return WEXITSTATUS(status);
+        }
+        return -1; // Process did not terminate normally
     }
 #endif
 } // namespace test_utils

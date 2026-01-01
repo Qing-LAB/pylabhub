@@ -4,15 +4,27 @@
 
 #include "platform.hpp"
 
-#include "helpers/test_entrypoint.h" // provides extern std::string g_self_exe_path
-#include "helpers/workers.h"
-#include "helpers/test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+#include <gtest/gtest.h>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <chrono>
+
+#include "utils/JsonConfig.hpp"
+#include "test_entrypoint.h" // provides extern std::string g_self_exe_path
+#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
 #include "nlohmann/json.hpp"
 
 #include <fmt/core.h>
 
 using namespace nlohmann;
-using namespace test_utils;
+using namespace pylabhub::tests::helper;
+using namespace pylabhub::utils;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -31,10 +43,22 @@ static std::string read_file_contents(const fs::path &p)
 // Test fixture to manage the temp directory and utils lifecycle.
 class JsonConfigTest : public ::testing::Test {
 protected:
+    // This guard ensures that the required modules (JsonConfig, FileLock, Logger)
+    // are initialized before each test in this suite runs, and finalized after.
+    pylabhub::lifecycle::LifecycleGuard guard;
+
+    JsonConfigTest()
+      : guard(
+            pylabhub::utils::JsonConfig::GetLifecycleModule(),
+            pylabhub::utils::FileLock::GetLifecycleModule(),
+            pylabhub::utils::Logger::GetLifecycleModule()
+        )
+    {}
+
     static void SetUpTestSuite() {
         g_temp_dir = fs::temp_directory_path() / "pylabhub_jsonconfig_tests";
         fs::create_directories(g_temp_dir);
-        fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
+        // fmt::print("Using temporary directory: {}\n", g_temp_dir.string());
     }
 
     static void TearDownTestSuite() {

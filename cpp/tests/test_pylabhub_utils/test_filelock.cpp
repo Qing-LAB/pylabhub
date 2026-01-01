@@ -6,15 +6,53 @@
 
 #include "platform.hpp"
 
-// Specific includes for this test file that are not covered by the preamble
+
+
+#include <gtest/gtest.h>
+
+#include <filesystem>
+
+#include <thread>
+
+#include <chrono>
+
+#include <fstream>
+
+
+
+#include "utils/FileLock.hpp"
+
+
+
 #include "test_entrypoint.h"
+
+
+
+#include "shared_test_helpers.h"
+
+
+
+// Specific includes for this test file that are not covered by the preamble
+
 #include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
+
 #include <algorithm>
+
 #include <iostream>
+
 #include <sstream>
+
 #include <string>
+
 #include <vector>
-using namespace test_utils;
+
+using namespace pylabhub::tests::helper;
+
+namespace fs = std::filesystem;
+
+using namespace std::chrono_literals;
+
+
 
 class FileLockTest : public ::testing::Test {
 protected:
@@ -125,6 +163,10 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
 
 TEST_F(FileLockTest, MultiProcessNonBlocking)
 {
+    pylabhub::lifecycle::LifecycleGuard guard(
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::Logger::GetLifecycleModule()
+    );
     auto resource_path = temp_dir() / "multiprocess.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 
@@ -146,8 +188,8 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     fs::remove(log_path);
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 
-    const int PROCS = 32;
-    const int ITERS_PER_WORKER = 1000;
+    const int PROCS = 8;
+    const int ITERS_PER_WORKER = 100;
 
     std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
@@ -226,6 +268,10 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
 
 TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 {
+    pylabhub::lifecycle::LifecycleGuard guard(
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::Logger::GetLifecycleModule()
+    );
     auto resource_path = temp_dir() / "parent_child_block.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
     

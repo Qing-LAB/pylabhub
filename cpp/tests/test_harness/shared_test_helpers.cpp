@@ -75,4 +75,4 @@ int scaled_value(int original, int small_value)
 // strictly necessary, but can be good practice.
 // (No instantiations needed for now as it will be implicitly instantiated)
 
-} // namespace pylabhub::tests::helpers
+} // namespace pylabhub::tests::helper
