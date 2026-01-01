@@ -32,7 +32,7 @@
 
 // Project-specific Worker Headers
 #include "filelock_workers.h"
-#include "jsonconfig_workers.hh"
+#include "jsonconfig_workers.h"
 #include "logger_workers.h"
 
 // Define the global for the executable path, used by worker-spawning tests

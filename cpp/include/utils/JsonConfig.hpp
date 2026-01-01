@@ -117,7 +117,7 @@ public:
     bool reload(std::error_code *ec = nullptr) noexcept;
     bool save(std::error_code *ec = nullptr) noexcept;
 
-    bool is_initialized() const noexcept;
+
     std::filesystem::path config_path() const noexcept;
 
     // ----------------- Lightweight guard types -----------------

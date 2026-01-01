@@ -86,12 +86,7 @@ JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
     return *this;
 }
 
-bool JsonConfig::is_initialized() const noexcept
-{
-    if (!pImpl) return false;
-    // The check is now against the global static flag
-    return g_jsonconfig_initialized.load(std::memory_order_acquire);
-}
+
 
 std::filesystem::path JsonConfig::config_path() const noexcept
 {
@@ -667,7 +662,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
 }
 
 // Lifecycle Integration
-bool JsonConfig::is_initialized() {
+bool JsonConfig::is_initialized() noexcept {
     return g_jsonconfig_initialized.load(std::memory_order_acquire);
 }
 
