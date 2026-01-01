@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "utils/FileLock.hpp"
+#include "utils/Logger.hpp"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"

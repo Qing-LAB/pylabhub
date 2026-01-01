@@ -125,8 +125,14 @@
 namespace pylabhub::utils
 {
 
+// Forward declare the lifecycle startup function to befriend it.
+void do_logger_startup();
+
 class PYLABHUB_UTILS_EXPORT Logger
 {
+  // Grant access to the startup function so it can start the worker thread.
+  friend void do_logger_startup();
+
   // Forward declaration for the Pimpl pattern.
   struct Impl;
 
@@ -157,6 +163,8 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @brief Checks if the Logger module has been initialized by the LifecycleManager.
      */
     static bool is_initialized() noexcept;
+
+
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.

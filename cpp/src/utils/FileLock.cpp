@@ -548,7 +548,7 @@ void FileLock::cleanup()
 }
 
 // Lifecycle Integration
-bool FileLock::is_initialized() {
+bool FileLock::is_initialized() noexcept {
     return g_filelock_initialized.load(std::memory_order_acquire);
 }
 
