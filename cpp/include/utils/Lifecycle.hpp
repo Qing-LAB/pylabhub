@@ -41,46 +41,32 @@
  *
  * **Usage**
  *
- * Modules are typically registered at static initialization time, and the
- * application's `main` function is responsible for invoking the initialization
- * and finalization routines.
+ * The application's `main` function is responsible for orchestrating the
+ * lifecycle. This is best done with the `LifecycleGuard` RAII helper.
  *
  * ```cpp
- * // ---- in core/Database.cpp ----
  * #include "utils/Lifecycle.hpp"
- *
- * void connect_to_db() { ... }
- * void disconnect_from_db() { ... }
- *
- * // At static initialization, this object will register its module.
- * static struct DatabaseModule {
- *     DatabaseModule() {
- *         // Define the "Database" module.
- *         pylabhub::utils::ModuleDef module("Database");
- *         // It depends on the Logger, so Logger will start first.
- *         module.add_dependency("Logger");
- *         module.set_startup(&connect_to_db);
- *         module.set_shutdown(&disconnect_from_db, 2000); // 2s timeout
- *
- *         // Register it with the central manager.
- *         pylabhub::lifecycle::RegisterModule(std::move(module));
- *     }
- * } g_db_module_registrar;
- *
- * // ---- in main.cpp ----
- * #include "utils/Lifecycle.hpp"
+ * #include "utils/Logger.hpp"
+ * #include "utils/FileLock.hpp"
  *
  * int main(int argc, char* argv[]) {
- *     // All modules are now registered. Initialize the application.
- *     // This will run all startup callbacks in the correct order.
- *     pylabhub::lifecycle::InitializeApp();
+ *     // In main(), create a LifecycleGuard and pass it the ModuleDef objects
+ *     // from all the utilities the application will use.
+ *     pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+ *         pylabhub::utils::Logger::GetLifecycleModule(),
+ *         pylabhub::utils::FileLock::GetLifecycleModule()
+ *         // ... add other modules here ...
+ *     );
+ *
+ *     // The constructor of the guard calls InitializeApp(), which starts all
+ *     // modules in the correct dependency order. It is now safe to use them.
+ *     LOGGER_INFO("Application started successfully.");
  *
  *     // ... main application logic runs here ...
  *
- *     // Before exiting, finalize the application.
- *     // This will run all shutdown callbacks in reverse order.
- *     pylabhub::lifecycle::FinalizeApp();
- *
+ *     // When `app_lifecycle` goes out of scope at the end of main, its
+ *     // destructor automatically calls FinalizeApp(), ensuring a graceful
+ *     // shutdown of all modules.
  *     return 0;
  * }
  * ```

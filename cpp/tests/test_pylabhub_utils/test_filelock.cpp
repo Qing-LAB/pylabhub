@@ -1,59 +1,43 @@
-// tests/test_filelock.cpp
-//
-// Test harness for pylabhub::utils::FileLock.
-// Each test case is executed in a separate worker process to ensure full
-// isolation of the lifecycle-managed components.
-
+// tests/test_pylabhub_utils/test_filelock.cpp
+/**
+ * @file test_filelock.cpp
+ * @brief Unit tests for the FileLock utility.
+ *
+ * This file contains tests for the `pylabhub::utils::FileLock` class.
+ * Many tests delegate their logic to a worker process to ensure that
+ * locking mechanisms are tested in a true multi-process environment.
+ * Other tests verify behavior within a single process, such as multi-threaded
+ * contention and parent-child blocking.
+ */
 #include "platform.hpp"
 
-
-
 #include <gtest/gtest.h>
-
 #include <filesystem>
-
 #include <thread>
-
 #include <chrono>
-
 #include <fstream>
-
-
-
-#include "utils/FileLock.hpp"
-
-
-
-#include "test_entrypoint.h"
-
-
-
-#include "shared_test_helpers.h"
-
-
-
-// Specific includes for this test file that are not covered by the preamble
-
-#include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
-
 #include <algorithm>
-
 #include <iostream>
-
 #include <sstream>
-
 #include <string>
-
 #include <vector>
 
+#include "utils/FileLock.hpp"
+#include "test_entrypoint.h"
+#include "shared_test_helpers.h"
+#include "test_process_utils.h"
+
 using namespace pylabhub::tests::helper;
-
 namespace fs = std::filesystem;
-
 using namespace std::chrono_literals;
 
-
-
+/**
+ * @class FileLockTest
+ * @brief Test fixture for FileLock tests.
+ *
+ * Sets up a temporary directory for test resources and provides helper
+ * methods for cleaning up lock files.
+ */
 class FileLockTest : public ::testing::Test {
 protected:
     static fs::path g_temp_dir_;
@@ -72,11 +56,13 @@ protected:
         }
         catch (...)
         {
+            // Best-effort cleanup
         }
     }
 
     fs::path temp_dir() const { return g_temp_dir_; }
 
+    /// Helper to remove a lock file for a given resource to ensure a clean state.
     void clear_lock_file(const fs::path &resource_path, pylabhub::utils::ResourceType type)
     {
         try
@@ -85,12 +71,14 @@ protected:
         }
         catch (...)
         {
+            // Ignore errors if the file doesn't exist.
         }
     }
 };
 
 fs::path FileLockTest::g_temp_dir_;
 
+/// Tests basic non-blocking lock acquisition logic in a worker process.
 TEST_F(FileLockTest, BasicNonBlocking)
 {
     auto resource_path = temp_dir() / "basic_resource.txt";
@@ -101,6 +89,7 @@ TEST_F(FileLockTest, BasicNonBlocking)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests blocking lock behavior between threads in a worker process.
 TEST_F(FileLockTest, BlockingLock)
 {
     auto resource_path = temp_dir() / "blocking_resource.txt";
@@ -111,6 +100,7 @@ TEST_F(FileLockTest, BlockingLock)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests timed lock acquisition behavior in a worker process.
 TEST_F(FileLockTest, TimedLock)
 {
     auto resource_path = temp_dir() / "timed.txt";
@@ -121,6 +111,7 @@ TEST_F(FileLockTest, TimedLock)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests the move semantics (constructor and assignment) of FileLock in a worker process.
 TEST_F(FileLockTest, MoveSemantics)
 {
     auto resource1 = temp_dir() / "move1.txt";
@@ -133,6 +124,7 @@ TEST_F(FileLockTest, MoveSemantics)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests that parent directories for the lock file are created automatically.
 TEST_F(FileLockTest, DirectoryCreation)
 {
     auto new_dir = temp_dir() / "new_dir_for_lock";
@@ -142,6 +134,7 @@ TEST_F(FileLockTest, DirectoryCreation)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests that a lock can be acquired on a directory path itself.
 TEST_F(FileLockTest, DirectoryPathLocking)
 {
     auto dir_to_lock = temp_dir() / "dir_to_lock_parent";
@@ -151,6 +144,7 @@ TEST_F(FileLockTest, DirectoryPathLocking)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/// Tests non-blocking lock contention between multiple threads in a single worker process.
 TEST_F(FileLockTest, MultiThreadedNonBlocking)
 {
     auto resource_path = temp_dir() / "multithread.txt";
@@ -161,6 +155,13 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/**
+ * @brief Tests non-blocking lock acquisition between two processes.
+ *
+ * This test acquires a lock in the main process and then spawns a worker
+ * process that attempts to acquire the same lock non-blockingly. The worker
+ * is expected to fail immediately.
+ */
 TEST_F(FileLockTest, MultiProcessNonBlocking)
 {
     pylabhub::lifecycle::LifecycleGuard guard(
@@ -170,14 +171,24 @@ TEST_F(FileLockTest, MultiProcessNonBlocking)
     auto resource_path = temp_dir() / "multiprocess.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 
+    // Acquire lock in the main test process
     pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
     ASSERT_TRUE(main_lock.valid());
 
+    // Spawn a worker that will try to acquire the same lock non-blockingly and should fail.
     ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", {resource_path.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
 
+/**
+ * @brief Stress-tests blocking lock contention between multiple processes.
+ *
+ * Spawns multiple worker processes that all contend for the same blocking lock.
+ * Each worker logs timestamps upon acquiring and releasing the lock. The test
+ * verifies the resulting log file to ensure that no two processes held the
+ * lock simultaneously.
+ */
 TEST_F(FileLockTest, MultiProcessBlockingContention)
 {
     auto resource_path = temp_dir() / "contention_resource.txt";
@@ -191,6 +202,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     const int PROCS = 8;
     const int ITERS_PER_WORKER = 100;
 
+    // Spawn worker processes
     std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
     {
@@ -202,6 +214,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         procs.push_back(h);
     }
 
+    // Wait for all workers to finish
     for (auto h : procs)
     {
         ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
@@ -232,14 +245,14 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         }
     }
 
-    // The total number of entries should be exactly twice the total number of iterations
+    // The total number of entries should be exactly twice the total number of iterations.
     ASSERT_EQ(entries.size(), PROCS * ITERS_PER_WORKER * 2);
 
     std::sort(entries.begin(), entries.end());
 
+    // Iterate through the sorted log entries to ensure no overlapping locks.
     int lock_held_count = 0;
     long last_pid_to_acquire = -1;
-
     for (const auto &entry : entries)
     {
         if (entry.action == "ACQUIRE")
@@ -266,6 +279,9 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     ASSERT_EQ(lock_held_count, 0) << "Lock was not released at the end of the test.";
 }
 
+/**
+ * @brief Tests that a child process correctly blocks waiting for a lock held by its parent.
+ */
 TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 {
     pylabhub::lifecycle::LifecycleGuard guard(
@@ -275,14 +291,19 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     auto resource_path = temp_dir() / "parent_child_block.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
     
+    // Acquire lock in the parent process.
     auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
     ASSERT_TRUE(parent_lock->valid());
 
+    // Spawn child process, which should block trying to acquire the same lock.
     ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", {resource_path.string()});
     ASSERT_NE(child_proc, NULL_PROC_HANDLE);
 
+    // Give the child time to block.
     std::this_thread::sleep_for(200ms);
+    // Release the parent lock, allowing the child to proceed.
     parent_lock.reset(); 
 
+    // The child should now be able to acquire the lock and exit successfully.
     ASSERT_EQ(wait_for_worker_and_get_exit_code(child_proc), 0);
 }
