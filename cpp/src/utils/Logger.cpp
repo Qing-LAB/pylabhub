@@ -161,8 +161,7 @@ static const char *level_to_string(Logger::Level lvl)
 static std::string format_message(const LogMessage &msg)
 {
     std::string time_str = formatted_time(msg.timestamp);
-    return fmt::format("[{}] [{:<6}] [{:5}] {}
-", time_str, level_to_string(msg.level),
+    return fmt::format("[{}] [{:<6}] [{:5}] {}", time_str, level_to_string(msg.level),
                        msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
 }
 
@@ -544,7 +543,7 @@ Logger &Logger::instance()
     return *g_instance;
 }
 
-bool Logger::is_initialized() {
+bool Logger::is_initialized() noexcept {
     return g_logger_initialized.load(std::memory_order_acquire);
 }
 
@@ -637,6 +636,8 @@ Logger::Level Logger::level() const
     return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
+
+
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
     check_initialized_and_abort("Logger::set_write_error_callback");
@@ -645,7 +646,7 @@ void Logger::set_write_error_callback(std::function<void(const std::string &)> c
 
 bool Logger::should_log(Level lvl) const noexcept
 {
-    if constexpr (static_cast<int>(lvl) < LOGGER_COMPILE_LEVEL) return false;
+
     return is_initialized() && pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
@@ -667,8 +668,6 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
     }
 }
 
-namespace
-{
 // C-style callbacks for the ABI-safe lifecycle API.
 void do_logger_startup() {
     Logger::instance().pImpl->start_worker();
@@ -680,7 +679,6 @@ void do_logger_shutdown() {
     }
     g_logger_initialized.store(false, std::memory_order_release);
 }
-} // namespace
 
 ModuleDef Logger::GetLifecycleModule()
 {
