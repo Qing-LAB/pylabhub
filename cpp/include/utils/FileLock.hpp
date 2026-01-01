@@ -158,7 +158,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
     /**
      * @brief Checks if the FileLock module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized() noexcept;
+    static bool lifecycle_initialized() noexcept;
 
     /**
      * @brief Predicts the canonical path of the lock file for a given resource.

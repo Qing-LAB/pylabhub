@@ -26,6 +26,9 @@
 #include "scope_guard.hpp"
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
+#include "platform.hpp"
+
+using namespace pylabhub::platform;
 
 // Module-level flag to indicate if the FileLock has been initialized.
 static std::atomic<bool> g_filelock_initialized{false};
@@ -204,7 +207,7 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
 FileLock::FileLock(const std::filesystem::path &path, ResourceType type, LockMode mode) noexcept
     : pImpl(new FileLockImpl)
 {
-    if (!is_initialized()) {
+    if (!lifecycle_initialized()) {
         fmt::print(stderr, "FATAL: FileLock created before its module was initialized via LifecycleManager. Aborting.\n");
         std::abort();
     }
@@ -216,7 +219,7 @@ FileLock::FileLock(const std::filesystem::path &path, ResourceType type,
                    std::chrono::milliseconds timeout) noexcept
     : pImpl(new FileLockImpl)
 {
-    if (!is_initialized()) {
+    if (!lifecycle_initialized()) {
         fmt::print(stderr, "FATAL: FileLock created before its module was initialized via LifecycleManager. Aborting.\n");
         std::abort();
     }
@@ -398,13 +401,14 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
                              std::optional<std::chrono::milliseconds> timeout)
 {
     const auto &lockpath = pImpl->canonical_lock_file_path;
+    
+#if defined(PLATFORM_WIN64)
+    // Windows implementation remains the same
     std::chrono::steady_clock::time_point start_time;
     if (timeout)
     {
         start_time = std::chrono::steady_clock::now();
     }
-
-#if defined(PLATFORM_WIN64)
     auto os_path = canonical_lock_path_for_os(lockpath);
     HANDLE h = CreateFileW(os_path.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
@@ -454,29 +458,58 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
     }
 #else
+    // POSIX implementation refactored
     auto os_path = canonical_lock_path_for_os(lockpath);
+    int open_flags = O_CREAT | O_RDWR;
+    #ifdef O_CLOEXEC
+    open_flags |= O_CLOEXEC;
+    #endif
+
+    int fd = ::open(os_path.c_str(), open_flags, 0666);
+    if (fd == -1)
+    {
+        pImpl->ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+    #ifndef O_CLOEXEC
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    #endif
+    
+    auto guard = pylabhub::basics::make_scope_guard([&]() {
+        if (!pImpl->valid) ::close(fd);
+    });
+
+    // Pure blocking lock: no loop needed, just block on flock.
+    if (mode == LockMode::Blocking && !timeout)
+    {
+        fmt::print(stderr, "FileLock-{}: attempting blocking lock on fd {}\n", get_pid(), fd);
+        if (flock(fd, LOCK_EX) == 0)
+        {
+            auto reg_key = make_lock_key(lockpath);
+            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
+            g_lockfile_registry.emplace(reg_key, os_path.string());
+
+            pImpl->fd = fd;
+            pImpl->valid = true;
+            fmt::print(stderr, "FileLock-{}: acquired blocking lock on fd {}\n", get_pid(), fd);
+            return true;
+        }
+        pImpl->ec = std::error_code(errno, std::generic_category());
+        fmt::print(stderr, "FileLock-{}: failed to acquire blocking lock on fd {}: {}\n", get_pid(), fd, pImpl->ec.message());
+        return false;
+    }
+
+    // Timed or Non-blocking lock: use a polling loop with LOCK_NB.
+    std::chrono::steady_clock::time_point start_time;
+    if (timeout)
+    {
+        start_time = std::chrono::steady_clock::now();
+    }
+    int flock_op = LOCK_EX | LOCK_NB;
+
     while (true)
     {
-        int open_flags = O_CREAT | O_RDWR;
-        #ifdef O_CLOEXEC
-        open_flags |= O_CLOEXEC;
-        #endif
-        int fd = ::open(os_path.c_str(), open_flags, 0666);
-        if (fd == -1)
-        {
-            pImpl->ec = std::error_code(errno, std::generic_category());
-            return false;
-        }
-        #ifndef O_CLOEXEC
-        fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
-        #endif
-
-        int flock_op = LOCK_EX;
-        if (mode == LockMode::NonBlocking || timeout)
-        {
-            flock_op |= LOCK_NB;
-        }
-
+        fmt::print(stderr, "FileLock-{}: attempting non-blocking lock on fd {}\n", get_pid(), fd);
         if (flock(fd, flock_op) == 0)
         {
             auto reg_key = make_lock_key(lockpath);
@@ -485,14 +518,15 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
             
             pImpl->fd = fd;
             pImpl->valid = true;
+            fmt::print(stderr, "FileLock-{}: acquired non-blocking lock on fd {}\n", get_pid(), fd);
             return true;
         }
 
-        ::close(fd);
-
-        if (errno != EWOULDBLOCK && errno != EAGAIN)
+        int err = errno;
+        fmt::print(stderr, "FileLock-{}: non-blocking lock failed on fd {}: {}\n", get_pid(), fd, std::strerror(err));
+        if (err != EWOULDBLOCK && err != EAGAIN)
         {
-            pImpl->ec = std::error_code(errno, std::generic_category());
+            pImpl->ec = std::error_code(err, std::generic_category());
             return false;
         }
         
@@ -548,7 +582,7 @@ void FileLock::cleanup()
 }
 
 // Lifecycle Integration
-bool FileLock::is_initialized() noexcept {
+bool FileLock::lifecycle_initialized() noexcept {
     return g_filelock_initialized.load(std::memory_order_acquire);
 }
 
@@ -558,7 +592,7 @@ void do_filelock_startup() {
     g_filelock_initialized.store(true, std::memory_order_release);
 }
 void do_filelock_cleanup() {
-    if (FileLock::is_initialized()) {
+    if (FileLock::lifecycle_initialized()) {
         FileLock::cleanup();
     }
     g_filelock_initialized.store(false, std::memory_order_release);

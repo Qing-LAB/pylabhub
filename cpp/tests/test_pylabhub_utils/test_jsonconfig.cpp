@@ -24,6 +24,8 @@
 #include "test_process_utils.h"
 #include "nlohmann/json.hpp"
 #include <fmt/core.h>
+#include <fmt/format.h>
+#include "format_tools.hpp"
 
 using namespace nlohmann;
 using namespace pylabhub::tests::helper;
@@ -322,6 +324,13 @@ TEST_F(JsonConfigTest, MultiThreadContention)
     }));
 }
 
+#if defined(PLATFORM_WIN64)
+constexpr std::string prefix_info_fmt = "win-{}";
+#define INVALID_PID_TYPE NULL_PROC_HANDLE
+#else
+constexpr std::string prefix_info_fmt = "posix-{}";
+#define INVALID_PID_TYPE 0
+#endif
 /**
  * @brief Stress-tests write contention between multiple processes.
  */
@@ -339,31 +348,18 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     int success_count = 0;
 
     // Spawn multiple worker processes that all try to write to the same file.
-#if defined(PLATFORM_WIN64)
+
     std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i) {
-        HANDLE h = spawn_worker_process(
+        auto pid = spawn_worker_process(
             g_self_exe_path, "jsonconfig.write_id",
-            {cfg_path.string(), fmt::format("win-{}", i)});
-        ASSERT_NE(h, NULL_PROC_HANDLE);
-        procs.push_back(h);
+            {cfg_path.string(), fmt::to_string(pylabhub::format_tools::make_buffer(prefix_info_fmt, i))});
+        EXPECT_NE(pid, INVALID_PID_TYPE);
+        if (pid != INVALID_PID_TYPE) procs.push_back(pid);
     }
-    for (auto h : procs) {
-        if (wait_for_worker_and_get_exit_code(h) == 0) success_count++;
+    for (auto p : procs) {
+        if (wait_for_worker_and_get_exit_code(p) == 0) success_count++;
     }
-#else
-    std::vector<ProcessHandle> pids;
-    for (int i = 0; i < PROCS; ++i) {
-        pid_t pid = spawn_worker_process(
-            g_self_exe_path, "jsonconfig.write_id",
-            {cfg_path.string(), fmt::format("posix-{}", i)});
-        ASSERT_GT(pid, 0);
-        pids.push_back(pid);
-    }
-    for (auto pid : pids) {
-        if (wait_for_worker_and_get_exit_code(pid) == 0) success_count++;
-    }
-#endif
 
     // All workers should have succeeded.
     ASSERT_EQ(success_count, PROCS);
@@ -372,11 +368,7 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     JsonConfig verifier(cfg_path);
     ASSERT_TRUE(verifier.with_json_read([&](const json &data) {
         for (int i = 0; i < PROCS; ++i) {
-#if defined(PLATFORM_WIN64)
-            std::string key = fmt::format("win-{}", i);
-#else
-            std::string key = fmt::format("posix-{}", i);
-#endif
+            std::string key = fmt::to_string(pylabhub::format_tools::make_buffer(prefix_info_fmt, i));
             ASSERT_TRUE(data.contains(key)) << "Worker " << key << " failed to write.";
         }
     }));
