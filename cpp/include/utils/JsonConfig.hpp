@@ -100,7 +100,7 @@ public:
     /**
      * @brief Checks if the JsonConfig module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized() noexcept;
+    static bool lifecycle_initialized() noexcept;
 
     JsonConfig() noexcept;
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
@@ -111,6 +111,12 @@ public:
     JsonConfig &operator=(const JsonConfig &) = delete;
     JsonConfig(JsonConfig &&) noexcept;
     JsonConfig &operator=(JsonConfig &&) noexcept;
+
+    /**
+     * @brief Checks if this JsonConfig instance has been bound to a file path.
+     * @return true if init() has been called successfully, false otherwise.
+     */
+    bool is_initialized() const noexcept;
 
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;

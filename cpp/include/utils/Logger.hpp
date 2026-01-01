@@ -162,7 +162,7 @@ class PYLABHUB_UTILS_EXPORT Logger
     /**
      * @brief Checks if the Logger module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized() noexcept;
+    static bool lifecycle_initialized() noexcept;
 
 
 

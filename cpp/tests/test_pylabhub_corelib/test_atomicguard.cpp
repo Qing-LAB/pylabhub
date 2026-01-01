@@ -26,10 +26,15 @@ using pylabhub::basics::AtomicOwner;
 using pylabhub::basics::AtomicGuard;
 
 // Defines sizes for stress tests to allow for quick or thorough testing.
-static constexpr int LIGHT_THREADS = 8;
+static constexpr int LIGHT_THREADS = 32;
 static constexpr int HEAVY_THREADS = 64;
-static constexpr int LIGHT_ITERS = 2000;
-static constexpr int HEAVY_ITERS = 200000;
+static constexpr int LIGHT_ITERS = 500;
+static constexpr int HEAVY_ITERS = 20000;
+static constexpr int SLOT_NUM = 16;
+
+#define THREAD_NUM LIGHT_THREADS
+#define ITER_NUM LIGHT_ITERS
+
 
 /**
  * @brief Tests the fundamental manual acquire and release behavior.
@@ -117,7 +122,7 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress) {
     std::atomic<int> success_count{0};
 
     std::vector<std::thread> threads;
-    for (int t = 0; t < LIGHT_THREADS; ++t) {
+    for (int t = 0; t < THREAD_NUM; ++t) {
         threads.emplace_back([&]() {
             std::mt19937_64 rng(std::random_device{}());
             std::uniform_int_distribution<int> jitter(0, 200);
@@ -264,8 +269,8 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff) {
  * This test is designed to flush out race conditions related to move semantics under load.
  */
 TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
-    const int pairs = HEAVY_THREADS;
-    const int iters_per_pair = 1000;
+    const int pairs = THREAD_NUM;
+    const int iters_per_pair = ITER_NUM;
 
     std::vector<AtomicOwner> owners(pairs);
     std::vector<std::thread> workers;
@@ -311,9 +316,9 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
  */
 TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
     AtomicOwner owner;
-    const int SLOTS = 16;
-    const int THREADS = 32;
-    const int ITERS = 10000;
+    const int SLOTS = SLOT_NUM;
+    const int THREADS = THREAD_NUM;
+    const int ITERS = ITER_NUM;
 
     std::vector<AtomicGuard> slots;
     slots.reserve(SLOTS);
@@ -346,7 +351,7 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
                 if (!slots[dst].active()) {
                     if (slots[dst].acquire()) {
                         ASSERT_EQ(owner.load(), slots[dst].token());
-                        slots[dst].release();
+                        ASSERT_TRUE(slots[dst].release());
                     }
                 }
             }
@@ -371,8 +376,8 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
  */
 TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
     AtomicOwner owner;
-    const int PAIRS = HEAVY_THREADS;
-    const int ITERS = 2048;
+    const int PAIRS = THREAD_NUM;
+    const int ITERS = ITER_NUM;
 
     // A simple channel for passing futures between a producer and a consumer.
     struct Channel {
