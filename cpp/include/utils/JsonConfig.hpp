@@ -2,9 +2,68 @@
 
 /**
  * @file JsonConfig.hpp
- * @brief Thread-safe configuration holder with atomic on-disk writes and cross-process advisory locking.
+ * @brief Thread-safe and process-safe JSON configuration manager.
  *
- * Option B implementation (RAII guard objects + non-template factory functions).
+ * @see src/utils/JsonConfig.cpp
+ *
+ * **Design Philosophy**
+ *
+ * `JsonConfig` provides safe, managed access to a JSON configuration file on disk.
+ * It is designed to prevent data corruption when multiple threads or processes
+ * access the same configuration file concurrently.
+ *
+ * 1.  **RAII-Based Locking**: Access to the JSON data is granted via `ReadLock`
+ *     and `WriteLock` guard objects. This ensures that locks are always
+ *     released when the guard goes out of scope, even if exceptions occur.
+ *
+ * 2.  **Cross-Process Safety**: It uses `pylabhub::utils::FileLock` internally
+ *     to acquire a system-wide advisory lock on the JSON file before any read
+ *     or write operation. This prevents multiple processes from modifying the
+ *     file at the same time.
+ *
+ * 3.  **Thread Safety**: It uses a `std::shared_timed_mutex` to manage concurrent
+ *     access from threads within a single process, allowing multiple readers but
+ *     only a single writer.
+ *
+ * 4.  **Atomic Writes**: When saving changes, it writes to a temporary file first
+ *     and then performs an atomic `rename` operation. This guarantees that a
+ *     reader will never see a partially written or corrupt JSON file, even if
+ *     the application crashes mid-save.
+ *
+ * 5.  **Explicit Lifecycle Management**: `JsonConfig` depends on both the `Logger`
+ *     and `FileLock` utilities. Therefore, it is a lifecycle-managed component.
+ *     Its module must be registered and initialized before a `JsonConfig`
+ *     object can be constructed, otherwise the program will abort.
+ *
+ * **Usage**
+ *
+ * ```cpp
+ * #include "utils/Lifecycle.hpp"
+ * #include "utils/JsonConfig.hpp"
+ *
+ * void configure_settings() {
+ *     // In main(), ensure the lifecycle is started:
+ *     // pylabhub::lifecycle::LifecycleGuard guard(
+ *     //     pylabhub::utils::JsonConfig::GetLifecycleModule(),
+ *     //     pylabhub::utils::FileLock::GetLifecycleModule(),
+ *     //     pylabhub::utils::Logger::GetLifecycleModule()
+ *     // );
+ *
+ *     pylabhub::utils::JsonConfig config("settings.json", true); // create if not exists
+ *
+ *     // Atomically read and write settings.
+ *     config.with_json_write([](nlohmann::json& j) {
+ *         j["port"] = 8080;
+ *         j["host"] = "localhost";
+ *     });
+ *
+ *     config.with_json_read([](const nlohmann::json& j) {
+ *         if (j.value("host", "") == "localhost") {
+ *             // ...
+ *         }
+ *     });
+ * }
+ * ```
  */
 
 #include <chrono>
@@ -41,7 +100,7 @@ public:
     /**
      * @brief Checks if the JsonConfig module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized();
+    static bool is_initialized() noexcept;
 
     JsonConfig() noexcept;
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
