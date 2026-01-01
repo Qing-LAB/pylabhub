@@ -1,4 +1,12 @@
-// tests/test_atomicguard.cpp
+// tests/test_pylabhub_corelib/test_atomicguard.cpp
+/**
+ * @file test_atomicguard.cpp
+ * @brief Unit tests for the AtomicGuard and AtomicOwner classes.
+ *
+ * This file contains a suite of tests for the `pylabhub::basics::AtomicGuard`
+ * spinlock implementation. The tests cover basic acquisition and release,
+ * RAII behavior, move semantics, thread safety, and high-contention scenarios.
+ */
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
@@ -17,68 +25,93 @@ using namespace std::chrono_literals;
 using pylabhub::basics::AtomicOwner;
 using pylabhub::basics::AtomicGuard;
 
-// Helpers for stress sizes (tweak to make tests faster or heavier).
+// Defines sizes for stress tests to allow for quick or thorough testing.
 static constexpr int LIGHT_THREADS = 8;
 static constexpr int HEAVY_THREADS = 64;
 static constexpr int LIGHT_ITERS = 2000;
 static constexpr int HEAVY_ITERS = 200000;
 
-// Basic acquire / release behavior
+/**
+ * @brief Tests the fundamental manual acquire and release behavior.
+ * It verifies that a guard can successfully acquire a lock on a free owner,
+ * making the owner non-free, and can subsequently release it, making the owner free again.
+ */
 TEST(AtomicGuardTest, BasicAcquireRelease) {
     AtomicOwner owner;
     AtomicGuard g(&owner);
     ASSERT_NE(g.token(), 0u);
     ASSERT_FALSE(g.active());
 
+    // Acquire the lock and check state
     ASSERT_TRUE(g.acquire());
     ASSERT_TRUE(g.active());
     ASSERT_EQ(owner.load(), g.token());
 
+    // Release the lock and check state
     ASSERT_TRUE(g.release());
     ASSERT_FALSE(g.active());
     ASSERT_TRUE(owner.is_free());
 }
 
-// RAII: acquire on construction and release on destruction
+/**
+ * @brief Tests the RAII (Resource Acquisition Is Initialization) functionality.
+ * The guard should acquire the lock upon construction when requested and
+ * automatically release it upon destruction (when it goes out of scope).
+ */
 TEST(AtomicGuardTest, RaiiAndTokenPersistence) {
     AtomicOwner owner;
     uint64_t token_in_scope = 0;
     {
+        // Construct guard to acquire lock immediately.
         AtomicGuard g(&owner, true);
         ASSERT_NE(g.token(), 0u);
         token_in_scope = g.token();
         ASSERT_TRUE(g.active());
         ASSERT_EQ(owner.load(), token_in_scope);
-    } // destructor releases here
+    } // Lock is automatically released here by the destructor.
     ASSERT_TRUE(owner.is_free());
 }
 
-// Explicit release before destruction
+/**
+ * @brief Ensures that an explicit `release()` call works correctly even with RAII.
+ * If a guard's lock is released manually before destruction, the destructor
+ * should not cause a double-release or error.
+ */
 TEST(AtomicGuardTest, ExplicitReleaseAndDestruction) {
     AtomicOwner owner;
     {
         AtomicGuard g(&owner);
         ASSERT_TRUE(g.acquire());
         ASSERT_TRUE(g.active());
+        // Manually release before destructor is called.
         ASSERT_TRUE(g.release());
         ASSERT_FALSE(g.active());
-    }
+    } // Destructor runs on an inactive guard, which should be a no-op.
     ASSERT_TRUE(owner.is_free());
 }
 
-// Acquire fails if owner pre-locked
+/**
+ * @brief Tests that RAII construction fails to acquire a lock if it's already taken.
+ */
 TEST(AtomicGuardTest, RaiiAcquireFailure) {
     AtomicOwner owner;
-    owner.store(123u);
+    owner.store(123u); // Manually lock the owner.
     {
+        // Attempt to acquire via RAII constructor.
         AtomicGuard g(&owner, true);
+        // The guard should be inactive as it failed to acquire the lock.
         ASSERT_FALSE(g.active());
     }
+    // The original lock should remain untouched.
     ASSERT_EQ(owner.load(), 123u);
     owner.store(0u);
 }
 
-// Concurrent acquire stress: many threads create local guards and attempt to acquire
+/**
+ * @brief Stress test for concurrent lock acquisition from multiple threads.
+ * Multiple threads repeatedly attempt to acquire and release the same lock
+ * to ensure mutual exclusion is maintained under contention.
+ */
 TEST(AtomicGuardTest, ConcurrentAcquireStress) {
     AtomicOwner owner;
     std::atomic<int> success_count{0};
@@ -93,10 +126,11 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress) {
                 AtomicGuard g(&owner);
                 if (g.acquire()) {
                     success_count.fetch_add(1, std::memory_order_relaxed);
-                    // simulate variable work
+                    // Simulate variable work inside the critical section.
                     if ((rng() & 0xF) == 0) std::this_thread::sleep_for(std::chrono::microseconds(rng() & 0xFF));
                     [[maybe_unused]] bool ok = g.release();
                 } else {
+                    // Spin with a small delay if lock is not acquired.
                     std::this_thread::sleep_for(std::chrono::microseconds(jitter(rng)));
                 }
             }
@@ -105,99 +139,115 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress) {
 
     for (auto &th : threads) th.join();
 
+    // At least some acquisitions should have succeeded.
     ASSERT_GT(success_count.load(std::memory_order_relaxed), 0);
+    // The lock must be free at the end.
     ASSERT_TRUE(owner.is_free());
 }
 
-// Move construction and move assignment semantics (single-threaded)
+/**
+ * @brief Verifies single-threaded move constructor and move assignment semantics.
+ * Ensures that ownership of an active lock can be correctly transferred from one
+ * guard to another, and that the source guard becomes inactive.
+ */
 TEST(AtomicGuardTest, MoveSemanticsSingleThread) {
     AtomicOwner owner;
     uint64_t tok;
 
-    // Move construction
+    // Test move construction.
     {
         AtomicGuard a(&owner, true);
         ASSERT_TRUE(a.active());
         tok = a.token();
         ASSERT_EQ(owner.load(), tok);
 
-        AtomicGuard b(std::move(a));
-        ASSERT_TRUE(b.active());
+        AtomicGuard b(std::move(a)); // Move ownership to b.
+        ASSERT_TRUE(b.active());      // b should now be active.
         ASSERT_EQ(b.token(), tok);
         ASSERT_EQ(owner.load(), tok);
-    } // b destructor releases
+        ASSERT_FALSE(a.active());     // a should be inactive.
+    } // b's destructor releases the lock.
     ASSERT_TRUE(owner.is_free());
 
-    // Move assignment
+    // Test move assignment.
     {
         AtomicGuard c(&owner, true);
         ASSERT_TRUE(c.active());
         uint64_t token_c = c.token();
 
         AtomicGuard d;
-        d = std::move(c);
+        d = std::move(c); // Move assign ownership to d.
         ASSERT_TRUE(d.active());
         ASSERT_EQ(d.token(), token_c);
         ASSERT_EQ(owner.load(), token_c);
-    }
+        ASSERT_FALSE(c.active());
+    } // d's destructor releases the lock.
     ASSERT_TRUE(owner.is_free());
 }
 
-// Move while active: ensure move preserves ownership and source becomes inactive
+/**
+ * @brief Specifically tests that moving an active guard correctly transfers ownership.
+ */
 TEST(AtomicGuardTest, MoveActiveGuardBehavior) {
     AtomicOwner owner;
     AtomicGuard a(&owner, true);
     ASSERT_TRUE(a.active());
     uint64_t tok = a.token();
 
-    AtomicGuard b(std::move(a)); // move while active
+    AtomicGuard b(std::move(a)); // Move while active.
     ASSERT_TRUE(b.active());
     ASSERT_EQ(b.token(), tok);
     ASSERT_EQ(owner.load(), tok);
-    // a is now detached / inactive; calling methods on a should be safe but inactive
+
+    // The source guard `a` should now be inactive and detached.
+    // Calling methods on it should be safe and reflect its inactive state.
     ASSERT_FALSE(a.active());
+    ASSERT_FALSE(a.release()); // Cannot release an inactive guard.
+    
     ASSERT_TRUE(b.release());
     ASSERT_TRUE(owner.is_free());
 }
 
-// Attach and detach behavior
+/**
+ * @brief Tests the ability to attach a guard to an owner after construction and detach it.
+ */
 TEST(AtomicGuardTest, AttachDetach) {
     AtomicOwner owner;
-    AtomicGuard g;
+    AtomicGuard g; // Create a detached guard.
     ASSERT_FALSE(g.active());
-    ASSERT_FALSE(g.acquire());
+    ASSERT_FALSE(g.acquire()); // Cannot acquire while detached.
 
-    ASSERT_TRUE(g.attach_and_acquire(&owner) ? true : true); // attach_and_acquire returns bool; here accept either
-    // If attach_and_acquire returned false, maybe other test interference; ensure consistent outcome by checking owner status:
-    if (g.active()) {
-        ASSERT_TRUE(g.release());
-    } else {
-        // try a direct acquire
-        ASSERT_TRUE(g.acquire());
-        ASSERT_TRUE(g.release());
-    }
+    // Attach the guard to an owner and acquire the lock.
+    ASSERT_TRUE(g.attach_and_acquire(&owner) ? true : true);
+    ASSERT_TRUE(g.active());
+    ASSERT_EQ(owner.load(), g.token());
+    ASSERT_TRUE(g.release());
 
+    // Detach the guard. It should no longer be able to acquire the lock.
     g.detach_no_release();
     ASSERT_FALSE(g.acquire());
 }
 
-// Producer->consumer move handoff using promise/future (single handoff)
+/**
+ * @brief Tests transferring lock ownership between threads using `std::promise` and `std::future`.
+ * This demonstrates a single, simple handoff of an active guard.
+ */
 TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff) {
     AtomicOwner owner;
 
     std::promise<AtomicGuard> p;
     std::future<AtomicGuard> f = p.get_future();
 
-    // Producer: create and acquire, then move to consumer via promise
+    // Producer thread: creates and acquires a guard, then sends it to the consumer.
     std::thread producer([&]() {
         AtomicGuard g(&owner, true);
         ASSERT_TRUE(g.active());
-        p.set_value(std::move(g));
+        p.set_value(std::move(g)); // Move the guard into the promise.
     });
 
-    // Consumer: receive guard and release
+    // Consumer thread: receives the guard from the future and releases the lock.
     std::thread consumer([&]() {
-        AtomicGuard g = f.get();
+        AtomicGuard g = f.get(); // Receive the moved guard.
         ASSERT_TRUE(g.active());
         ASSERT_EQ(owner.load(), g.token());
         ASSERT_TRUE(g.release());
@@ -209,10 +259,12 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff) {
     ASSERT_TRUE(owner.is_free());
 }
 
-// Heavy repeated producer->consumer handoffs to stress move-based transfers.
-// Many pairs run concurrently to increase contention.
+/**
+ * @brief A stress test involving many concurrent producer-consumer pairs handing off locks.
+ * This test is designed to flush out race conditions related to move semantics under load.
+ */
 TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
-    const int pairs = 64;
+    const int pairs = HEAVY_THREADS;
     const int iters_per_pair = 1000;
 
     std::vector<AtomicOwner> owners(pairs);
@@ -222,6 +274,7 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
     for (int p = 0; p < pairs; ++p) {
         workers.emplace_back([&, p, owner = &owners[p]]() mutable {
             for (int i = 0; i < iters_per_pair; ++i) {
+                // Acquire the lock. Retry briefly if it's contended.
                 AtomicGuard g(owner, true);
                 if (!g.active()) {
                     auto until = std::chrono::steady_clock::now() + 20ms;
@@ -229,9 +282,10 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
                 }
                 ASSERT_TRUE(g.active()) << "Guard should be active before move";
 
+                // Handoff via promise/future to a short-lived local consumer thread.
                 std::promise<AtomicGuard> p2;
                 std::future<AtomicGuard> f2 = p2.get_future();
-                std::thread local_consumer([g = std::move(g), p2 = std::move(p2)]() mutable {
+                std::thread local_consumer([p2 = std::move(p2), g = std::move(g)]() mutable {
                     p2.set_value(std::move(g));
                 });
 
@@ -250,8 +304,11 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff) {
     }
 }
 
-// Concurrent move assignment stress: many threads repeatedly move guards into a shared slot.
-// A slot is protected by an index-based mutex to avoid container races; the goal is to stress the guard move logic itself.
+/**
+ * @brief Stress tests concurrent move assignments into a shared vector of guards.
+ * Many threads randomly pick two guard slots and move one to the other, while also
+ * attempting to acquire/release locks, to stress the move-assignment operator.
+ */
 TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
     AtomicOwner owner;
     const int SLOTS = 16;
@@ -260,11 +317,10 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
 
     std::vector<AtomicGuard> slots;
     slots.reserve(SLOTS);
-    for (int i = 0; i < SLOTS; ++i) slots.emplace_back(&owner); // attached but not acquired
+    for (int i = 0; i < SLOTS; ++i) slots.emplace_back(&owner); // Attached but not acquired.
 
     std::vector<std::mutex> slot_mtx(SLOTS);
 
-    std::atomic<bool> stop{false};
     std::vector<std::thread> threads;
     threads.reserve(THREADS);
 
@@ -277,24 +333,20 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
                 int dst = idxdist(rng);
                 if (src == dst) continue;
 
-                // Acquire small window to move from src->dst; protecting slot access to avoid container races.
+                // Lock both mutexes to safely access the slots vector.
                 std::unique_lock<std::mutex> lk_src(slot_mtx[src], std::defer_lock);
                 std::unique_lock<std::mutex> lk_dst(slot_mtx[dst], std::defer_lock);
                 std::lock(lk_src, lk_dst);
 
-                // Move source into a temporary, then move into dst
+                // Move source into a temporary, then move assign into destination.
                 AtomicGuard tmp = std::move(slots[src]);
                 slots[dst] = std::move(tmp);
-                // After the move, src is detached/inactive
 
-                // Optionally attempt to acquire if slot holds no owner and the guard attached
-                // (This is just to exercise acquires/releases under concurrent move churn.)
+                // To add more pressure, opportunistically try to use the guard.
                 if (!slots[dst].active()) {
-                    [[maybe_unused]] bool ok = slots[dst].acquire();
-                    if (slots[dst].active()) {
-                        // small critical section
+                    if (slots[dst].acquire()) {
                         ASSERT_EQ(owner.load(), slots[dst].token());
-                        [[maybe_unused]] bool ok = slots[dst].release();
+                        slots[dst].release();
                     }
                 }
             }
@@ -303,7 +355,7 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
 
     for (auto &th : threads) th.join();
 
-    // cleanup: release any active
+    // Clean up any remaining active locks.
     for (auto &s : slots) {
         if (s.active()) 
             [[maybe_unused]] bool ok = s.release();
@@ -311,12 +363,18 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress) {
     ASSERT_TRUE(owner.is_free());
 }
 
-// Stress test: create many guards concurrently, move them via futures to consumers, ensure no leaks.
+/**
+ * @brief A large-scale stress test with many producer and consumer threads.
+ * Producers create locks and send them via channelized futures to consumers,
+ * who receive and release them. This tests for leaks and race conditions
+ * in the entire lifecycle of creating, moving, and destroying guards under heavy load.
+ */
 TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
     AtomicOwner owner;
-    const int PAIRS = 128;
-    const int ITERS = 512;
+    const int PAIRS = HEAVY_THREADS;
+    const int ITERS = 2048;
 
+    // A simple channel for passing futures between a producer and a consumer.
     struct Channel {
         std::mutex mtx;
         std::condition_variable cv;
@@ -324,7 +382,6 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
     };
 
     std::vector<std::unique_ptr<Channel>> channels;
-    channels.reserve(PAIRS);
     for (int p = 0; p < PAIRS; ++p) channels.emplace_back(std::make_unique<Channel>());
 
     std::atomic<bool> thread_failure{false};
@@ -337,8 +394,8 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
     for (int p = 0; p < PAIRS; ++p) {
         Channel &ch = *channels[p];
 
-        // Consumer: pop futures and get guards ITERS times
-        consumers.emplace_back([&ch, &owner, &thread_failure, ITERS]() {
+        // Consumer thread: waits for futures, gets the guard, and releases the lock.
+        consumers.emplace_back([&ch, &thread_failure, ITERS]() {
             for (int i = 0; i < ITERS; ++i) {
                 std::future<AtomicGuard> fut;
                 {
@@ -349,7 +406,7 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
                 }
 
                 try {
-                    AtomicGuard g = fut.get(); // moved guard
+                    AtomicGuard g = fut.get();
                     if (g.active()) {
                         bool ok = g.release();
                         if (!ok) thread_failure.store(true, std::memory_order_relaxed);
@@ -360,34 +417,32 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs) {
             }
         });
 
-        // Producer: produce ITERS guards and push future to channel
+        // Producer thread: creates guards, acquires locks, and sends futures to the consumer.
         producers.emplace_back([&ch, &owner, ITERS]() {
             for (int i = 0; i < ITERS; ++i) {
                 std::promise<AtomicGuard> prom;
                 std::future<AtomicGuard> fut = prom.get_future();
 
-                // Create and acquire guard
+                // Create and acquire a guard, with a small retry loop for contention.
                 AtomicGuard g(&owner, true);
                 if (!g.active()) {
-                    // bounded retry
                     auto until = std::chrono::steady_clock::now() + 10ms;
                     while (!g.acquire() && std::chrono::steady_clock::now() < until) {}
                 }
 
-                // publish the future (consumer will get the guard)
+                // Publish the future so the consumer can wait for it.
                 {
                     std::lock_guard<std::mutex> lk(ch.mtx);
                     ch.q.emplace_back(std::move(fut));
                 }
                 ch.cv.notify_one();
 
-                // deliver the guard to the future
+                // Fulfill the promise, moving the guard to the shared state for the consumer.
                 prom.set_value(std::move(g));
             }
         });
     }
 
-    // join all
     for (auto &t : producers) t.join();
     for (auto &t : consumers) t.join();
 

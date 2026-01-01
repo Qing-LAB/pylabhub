@@ -38,54 +38,59 @@
  *     queue. The worker thread processes them in the order they were enqueued,
  *     ensuring that log messages and configuration changes are causally ordered.
  *
- * 5.  **Lifecycle Management & Graceful Shutdown**:
- *     - The Logger is a managed module within the `LifecycleManager` framework.
- *       It automatically registers its own startup and shutdown routines.
+ * 5.  **Explicit Lifecycle Management & Graceful Shutdown**:
+ *     - The Logger is a managed module within the `LifecycleManager` framework,
+ *       but it no longer registers itself automatically. The user is responsible
+ *       for retrieving its module definition via `Logger::GetLifecycleModule()`
+ *       and registering it with a `LifecycleGuard` or `LifecycleManager`.
+ *     - The worker thread is only started when `LifecycleManager::initialize()`
+ *       is called, not in the `Logger`'s constructor.
+ *     - Using the logger before its module is initialized has two behaviors:
+ *       a. **Silent Drop**: Calling a logging macro (e.g., `LOGGER_INFO`) will
+ *          do nothing and the message will be silently dropped.
+ *       b. **Fatal Error**: Calling a configuration method (e.g., `set_level`,
+ *          `set_logfile`, `flush`) will immediately call `std::abort()` and
+ *          terminate the program with a descriptive error message.
  *     - On shutdown, `pylabhub::lifecycle::FinalizeApp()` ensures that the
- *       logger's shutdown method is called. This blocks until the worker thread
- *       has processed all pending messages in the queue, guaranteeing that no
- *       logs are lost on exit.
- *     - This managed approach avoids the "static deinitialization order fiasco,"
- *       where other static objects might try to log messages after the logger
- *       has been destroyed.
+ *       logger's shutdown method is called, which gracefully flushes all
+ *       pending messages before terminating the worker thread.
  *
  * **Usage**
  *
- * The logger is a singleton and is automatically initialized and shut down by
- * the `LifecycleManager`. You only need to include the header and use the
- * logging macros.
+ * The logger is a singleton, but it must be explicitly initialized via the
+ * `LifecycleManager` before use.
  *
  * ```cpp
  * #include "utils/Lifecycle.hpp"
  * #include "utils/Logger.hpp"
+ * #include "utils/FileLock.hpp" // Other modules may be needed
  *
  * void my_application_logic() {
  *     int user_id = 123;
  *     LOGGER_INFO("User {} logged in successfully.", user_id);
- *
- *     // The format string is checked at compile time.
- *     // This would be a compile error: LOGGER_INFO("Value: {}", "hello", 123);
- *
- *     LOGGER_WARN("Configuration value '{}' is deprecated.", "old_setting");
  * }
  *
  * int main() {
- *     // The Logger module is automatically registered.
- *     // Initialize all registered modules, including the Logger.
- *     pylabhub::lifecycle::InitializeApp();
+ *     // The user must now explicitly manage the application lifecycle.
+ *     // This is typically done by creating a LifecycleGuard in main().
+ *     // All required modules must be passed to its constructor.
+ *     pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+ *         pylabhub::utils::Logger::GetLifecycleModule(),
+ *         pylabhub::utils::FileLock::GetLifecycleModule()
+ *         // ... other modules ...
+ *     );
+ *
+ *     // It is now safe to use the logger and other utilities.
  *
  *     // Change the log level at runtime.
  *     pylabhub::utils::Logger::instance().set_level(pylabhub::utils::Logger::Level::L_DEBUG);
  *     LOGGER_DEBUG("This is a debug message.");
  *
- *     // Switch to a log file. This is an asynchronous command.
- *     pylabhub::utils::Logger::instance().set_logfile("my_app.log");
- *
  *     my_application_logic();
  *
- *     // Finalize all modules. This will shut down the logger gracefully,
- *     // ensuring all buffered messages are written to "my_app.log".
- *     pylabhub::lifecycle::FinalizeApp();
+ *     // When `app_lifecycle` goes out of scope at the end of main(), its destructor
+ *     // will automatically call `FinalizeApp()`, shutting down all modules
+ *     // gracefully.
  *
  *     return 0;
  * }
@@ -151,7 +156,7 @@ class PYLABHUB_UTILS_EXPORT Logger
     /**
      * @brief Checks if the Logger module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized();
+    static bool is_initialized() noexcept;
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.

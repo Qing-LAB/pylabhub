@@ -1,3 +1,8 @@
+// tests/test_harness/shared_test_helpers.cpp
+/**
+ * @file shared_test_helpers.cpp
+ * @brief Implements common helper functions and utilities for test cases.
+ */
 #include "platform.hpp"
 
 // Standard Library
@@ -9,10 +14,10 @@
 #include <thread> // For std::this_thread
 
 // Third-party
-#include <fmt/core.h> // Keep this for fmt::print
+#include <fmt/core.h>
 
 // Project-specific
-#include "shared_test_helpers.h" // Keep this specific header
+#include "shared_test_helpers.h"
 
 namespace pylabhub::tests::helper
 {
@@ -70,9 +75,7 @@ int scaled_value(int original, int small_value)
     return original;
 }
 
-// Explicit template instantiation, if needed, or ensure it's used in a way that
-// the compiler can see the definition. Since it's header-only, this might not be
-// strictly necessary, but can be good practice.
-// (No instantiations needed for now as it will be implicitly instantiated)
+// Note: The `run_gtest_worker` template function is defined in the header
+// `shared_test_helpers.h` as it needs to be available to multiple cpp files.
 
 } // namespace pylabhub::tests::helper

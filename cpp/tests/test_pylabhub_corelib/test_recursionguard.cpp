@@ -1,7 +1,13 @@
-// tests/test_recursionguard.cpp
-//
-// Unit test for pylabhub::utils::RecursionGuard, converted to GoogleTest.
-
+// tests/test_pylabhub_corelib/test_recursionguard.cpp
+/**
+ * @file test_recursionguard.cpp
+ * @brief Unit tests for the RecursionGuard class.
+ *
+ * This file contains a suite of tests for the `pylabhub::basics::RecursionGuard`,
+ * a utility designed to detect and prevent unwanted recursion on a per-thread,
+ * per-object basis. The tests cover single-threaded recursion, independence between
+ * objects, non-LIFO destruction order, and thread safety.
+ */
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
@@ -11,9 +17,6 @@
 #include <memory>
 
 #include "platform.hpp"
-
-// The test preamble should handle most common includes and 'using' declarations.
-// 'recursion_guard.hpp' is a core header for this test file.
 #include "recursion_guard.hpp"
 
 using pylabhub::basics::RecursionGuard;
@@ -24,10 +27,14 @@ namespace {
 int some_object = 0;
 int another_object = 0;
 
+/**
+ * @brief A recursive function used to test the RecursionGuard.
+ * @param depth The current recursion depth.
+ * @param expect_recursing True if `is_recursing` should return true before the guard is created.
+ */
 void RecursiveFunction(int depth, bool expect_recursing)
 {
-    // Before creating a guard, we expect the recursion state to match the context
-    // from the calling function.
+    // Before creating the guard, the recursion state should match the expectation from the caller.
     ASSERT_EQ(RecursionGuard::is_recursing(&some_object), expect_recursing);
 
     RecursionGuard g(&some_object);
@@ -36,32 +43,38 @@ void RecursiveFunction(int depth, bool expect_recursing)
 
     if (depth > 0)
     {
-        // For any recursive calls, we now expect them to detect recursion.
+        // Any subsequent recursive calls must detect recursion.
         RecursiveFunction(depth - 1, /*expect_recursing=*/true);
     }
 }
 
 } // namespace
 
-// What: Tests the fundamental behavior of the RecursionGuard within a single thread.
-// How: A function calls itself recursively. It verifies that the outermost call
-//      initially sees no recursion, while all inner calls correctly detect that
-//      they are recursing. It also verifies the state is clean after the top-level
-//      call completes.
+/**
+ * @brief Tests the fundamental behavior of the RecursionGuard within a single thread.
+ *
+ * A function calls itself recursively. It verifies that the outermost call
+ * initially sees no recursion, while all inner calls correctly detect that
+ * they are recursing. It also verifies the state is clean after the top-level
+ * call completes.
+ */
 TEST(RecursionGuardTest, SingleObjectRecursion)
 {
     // Sanity check: ensure the object is not marked as recursing at the start.
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
-    // Start the recursion, expecting the first call to not be a recursion itself.
+    // Start the recursion. The first call is not a recursion itself.
     RecursiveFunction(3, false);
     // After the entire call stack has unwound, ensure the state is clean.
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
 }
 
-// What: Verifies that RecursionGuards for different objects are independent.
-// How: It creates nested guards for two distinct objects and checks that the
-//      recursion state for each object is tracked separately and correctly as the
-//      guards are constructed and destructed.
+/**
+ * @brief Verifies that RecursionGuards for different objects are independent.
+ *
+ * It creates nested guards for two distinct objects and checks that the
+ * recursion state for each object is tracked separately and correctly as the
+ * guards are constructed and destructed.
+ */
 TEST(RecursionGuardTest, MultipleObjects)
 {
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
@@ -78,20 +91,25 @@ TEST(RecursionGuardTest, MultipleObjects)
             ASSERT_TRUE(RecursionGuard::is_recursing(&another_object));
         }
 
+        // g2 is out of scope, 'another_object' should no longer be marked as recursing.
         ASSERT_TRUE(RecursionGuard::is_recursing(&some_object));
         ASSERT_FALSE(RecursionGuard::is_recursing(&another_object));
     }
 
+    // g1 is out of scope, 'some_object' should no longer be marked.
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
     ASSERT_FALSE(RecursionGuard::is_recursing(&another_object));
 }
 
-// What: Tests that the recursion count is handled correctly even if guards
-//       are destructed out of their creation order.
-// How: Two guards are created on the heap using unique_ptrs. The "outer" guard
-//      (g1) is explicitly destroyed before the "inner" guard (g2). The test
-//      verifies that the recursion state for each object is correctly updated
-//      at each step, ensuring the system doesn't rely on strict LIFO stack ordering.
+/**
+ * @brief Tests that the recursion count is handled correctly even if guards
+ * are destructed out of their creation order (non-LIFO).
+ *
+ * Two guards are created on the heap using unique_ptrs. The "outer" guard
+ * (g1) is explicitly destroyed before the "inner" guard (g2). The test
+ * verifies that the recursion state for each object is correctly updated
+ * at each step.
+ */
 TEST(RecursionGuardTest, OutOfOrderDestruction)
 {
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
@@ -108,23 +126,25 @@ TEST(RecursionGuardTest, OutOfOrderDestruction)
     ASSERT_FALSE(RecursionGuard::is_recursing(&some_object));
     ASSERT_TRUE(RecursionGuard::is_recursing(&another_object));
 
+    // Destroy g2.
     g2.reset();
     ASSERT_FALSE(RecursionGuard::is_recursing(&another_object));
 }
 
-// What: Verifies that the RecursionGuard is thread-safe and that its state
-//       is correctly maintained on a per-thread basis.
-// How: This test has two parts:
-//      1. Parallel Interference Test: Multiple threads are spawned, each performing
-//         recursion on its own private, stack-allocated object. It verifies that
-//         the guards in one thread do not affect the state seen by any other thread.
-//      2. Thread-Local State Test: Two threads operate on the *same* shared object
-//         address. Thread A acquires a guard and signals Thread B. Thread B then
-//         verifies that `is_recursing()` returns `false` for it, proving that the
-//         guard's state is truly thread-local.
+/**
+ * @brief Verifies that the RecursionGuard is thread-safe and its state
+ * is correctly maintained on a per-thread basis (using thread_local storage).
+ *
+ * This test has two parts:
+ * 1. Parallel Interference Test: Multiple threads perform recursion on their own
+ *    private objects. It verifies that guards in one thread do not affect others.
+ * 2. Thread-Local State Test: Two threads operate on the *same* shared object.
+ *    Thread A acquires a guard and signals Thread B. Thread B then verifies that
+ *    `is_recursing()` returns `false` for it, proving state is thread-local.
+ */
 TEST(RecursionGuardTest, ThreadSafety)
 {
-    // --- Part 1: Parallel recursion on distinct objects should not interfere. ---
+    // Part 1: Parallel recursion on distinct objects should not interfere.
     constexpr int NUM_THREADS = 8;
     std::atomic<bool> thread_failed{false};
     std::vector<std::thread> threads;
@@ -155,7 +175,7 @@ TEST(RecursionGuardTest, ThreadSafety)
     for (auto &th : threads) th.join();
     ASSERT_FALSE(thread_failed.load()) << "Part 1: One or more threads failed the per-thread recursion check.";
 
-    // --- Part 2: Guard on a shared object in one thread is not visible to another. ---
+    // Part 2: Guard on a shared object in one thread is not visible to another.
     int shared_obj = 0;
     std::promise<void> ready_promise;
     std::future<void> ready_future = ready_promise.get_future();
@@ -166,15 +186,16 @@ TEST(RecursionGuardTest, ThreadSafety)
     // Thread A: Acquires the guard and signals it's ready.
     std::thread threadA([&]() {
         RecursionGuard guard(&shared_obj);
+        ASSERT_TRUE(RecursionGuard::is_recursing(&shared_obj));
         ready_promise.set_value();
-        done_future.wait();
+        done_future.wait(); // Wait until thread B is done checking.
     });
 
     // Thread B: Waits for Thread A, then checks the recursion state.
     std::thread threadB([&]() {
         ready_future.wait();
-        // This is the critical check: Thread B should NOT see the recursion
-        // guard held by Thread A on the same object.
+        // CRITICAL CHECK: Thread B should NOT see the recursion guard held by Thread A
+        // on the same object, because the state is thread-local.
         if (RecursionGuard::is_recursing(&shared_obj)) {
             other_thread_observed_recursing.store(true);
         }

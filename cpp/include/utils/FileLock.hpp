@@ -55,28 +55,33 @@
  *
  * **Usage**
  *
+ * `FileLock` is a lifecycle-managed utility. Its module must be initialized
+ * before a `FileLock` object can be constructed.
+ *
  * ```cpp
+ * #include "utils/Lifecycle.hpp"
  * #include "utils/FileLock.hpp"
- * #include <iostream>
- * #include <thread>
- * #include <chrono>
+ * #include "utils/Logger.hpp" // FileLock depends on Logger
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
+ *     // In main() or test setup, ensure the lifecycle is started:
+ *     // pylabhub::lifecycle::LifecycleGuard guard(
+ *     //     pylabhub::utils::FileLock::GetLifecycleModule(),
+ *     //     pylabhub::utils::Logger::GetLifecycleModule()
+ *     // );
+ *
  *     // Attempt to acquire a lock with a 5-second timeout.
  *     pylabhub::utils::FileLock lock(resource,
  *                                 pylabhub::utils::ResourceType::File,
  *                                 std::chrono::seconds(5));
  *
- *     // Always check if the lock was successfully acquired.
  *     if (lock.valid()) {
- *         std::cout << "Lock acquired for " << resource << std::endl;
- *         // ... perform work on the shared resource ...
- *         std::this_thread::sleep_for(std::chrono::seconds(2));
- *         std::cout << "Work complete. Releasing lock." << std::endl;
+ *         // ... perform work ...
  *     } else {
- *         // Handle the case where the lock could not be acquired.
- *         std::cerr << "Failed to acquire lock for " << resource
- *                   << ". Error: " << lock.error_code().message() << std::endl;
+ *         // Handle failure. Using a logger here is safe because the FileLock
+ *         // module depends on the Logger module.
+ *         LOGGER_ERROR("Failed to acquire lock for {}. Error: {}",
+ *                      resource.string(), lock.error_code().message());
  *     }
  *     // Lock is automatically released here when `lock` goes out of scope.
  * }
@@ -153,7 +158,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
     /**
      * @brief Checks if the FileLock module has been initialized by the LifecycleManager.
      */
-    static bool is_initialized();
+    static bool is_initialized() noexcept;
 
     /**
      * @brief Predicts the canonical path of the lock file for a given resource.

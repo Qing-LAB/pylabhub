@@ -1,3 +1,17 @@
+// tests/test_harness/test_entrypoint.cpp
+/**
+ * @file test_entrypoint.cpp
+ * @brief Main entry point for test executables using the multi-process harness.
+ *
+ * This file contains the `main` function that serves a dual purpose:
+ * 1. If started with no specific arguments, it acts as a standard GoogleTest
+ *    test runner, discovering and executing all linked tests.
+ * 2. If started with a "worker mode" argument (e.g., "filelock.nonblocking_acquire"),
+ *    it acts as a worker process, dispatching to the corresponding worker function.
+ *
+ * This design allows a single test executable to spawn copies of itself to run
+ * isolated, cross-process test scenarios.
+ */
 #include "platform.hpp"
 
 // Standard Library
@@ -14,22 +28,24 @@
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 
-// Define the global for the executable path
+#include "test_entrypoint.h"
+
+// Project-specific Worker Headers
+#include "filelock_workers.h"
+#include "jsonconfig_workers.hh"
+#include "logger_workers.h"
+
+// Define the global for the executable path, used by worker-spawning tests
 std::string g_self_exe_path;
 
 namespace fs = std::filesystem;
 
-#include "test_entrypoint.h"
-// Project-specific Worker Headers
-#include "filelock_workers.h"
-#include "jsonconfig_workers.h"
-#include "logger_workers.h"
-
-
-using namespace pylabhub::tests::worker; // Added to simplify worker function calls
+using namespace pylabhub::tests::worker;
 
 int main(int argc, char **argv) {
-    // Handle worker process modes first
+    // Before running tests, check if the executable was invoked in "worker mode".
+    // A worker mode is specified as the first command-line argument, in the
+    // format "module.scenario".
     if (argc > 1) {
         std::string mode_str = argv[1];
         size_t dot_pos = mode_str.find('.');
@@ -37,11 +53,13 @@ int main(int argc, char **argv) {
             std::string module = mode_str.substr(0, dot_pos);
             std::string scenario = mode_str.substr(dot_pos + 1);
 
+            // Dispatch to the appropriate worker function based on the module and scenario.
+            // The return value of the worker function becomes the exit code of the process.
             if (module == "filelock") {
                 if (scenario == "nonblocking_acquire" && argc > 2) {
                     return filelock::nonblocking_acquire(argv[2]);
                 }
-                if (scenario == "contention_log_access" && argc > 4) { // exe, mode, resource, log, iters
+                if (scenario == "contention_log_access" && argc > 4) {
                     return filelock::contention_log_access(argv[2], argv[3], std::stoi(argv[4]));
                 }
                 if (scenario == "parent_child_block" && argc > 2) {
@@ -113,12 +131,12 @@ int main(int argc, char **argv) {
             }
         }
     }
-    // If mode not recognized, fall through to running tests.
-    // Wrap the main test run in a lifecycle guard to ensure proper init/shutdown.
-    // This is the parent test runner process. It needs all modules that could
-    // be used by any of its child worker processes.
 
+    // If no worker mode was matched, fall through to the standard test runner mode.
+    // Store the executable path for tests that need to spawn workers.
     if (argc >= 1) g_self_exe_path = argv[0];
+
+    // Initialize GoogleTest and run all registered tests.
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
     return result;
