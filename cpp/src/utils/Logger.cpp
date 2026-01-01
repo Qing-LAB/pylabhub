@@ -543,7 +543,7 @@ Logger &Logger::instance()
     return *g_instance;
 }
 
-bool Logger::is_initialized() noexcept {
+bool Logger::lifecycle_initialized() noexcept {
     return g_logger_initialized.load(std::memory_order_acquire);
 }
 
@@ -610,7 +610,7 @@ void Logger::set_eventlog(const wchar_t *source_name)
 void Logger::shutdown()
 {
     // Do not abort if called before init, just do nothing.
-    if (!is_initialized()) { return; }
+    if (!lifecycle_initialized()) { return; }
     if (pImpl) pImpl->shutdown();
 }
 
@@ -647,7 +647,7 @@ void Logger::set_write_error_callback(std::function<void(const std::string &)> c
 bool Logger::should_log(Level lvl) const noexcept
 {
 
-    return is_initialized() && pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
+    return lifecycle_initialized() && pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
 void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
@@ -674,7 +674,7 @@ void do_logger_startup() {
     g_logger_initialized.store(true, std::memory_order_release);
 }
 void do_logger_shutdown() {
-    if (Logger::is_initialized()) {
+    if (Logger::lifecycle_initialized()) {
         Logger::instance().shutdown();
     }
     g_logger_initialized.store(false, std::memory_order_release);

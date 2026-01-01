@@ -152,12 +152,12 @@ std::wstring win32_make_unique_suffix()
     return std::wstring();
 }
 
-std::wstring s2ws(const std::string& s)
+std::wstring s2ws([[maybe_unused]] const std::string& s)
 {
     return std::wstring();
 }
 
-std::string ws2s(const std::wstring& w)
+std::string ws2s([[maybe_unused]] const std::wstring& w)
 {
     return std::string();
 }

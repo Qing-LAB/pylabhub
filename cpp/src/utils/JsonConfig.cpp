@@ -53,7 +53,6 @@ struct JsonConfig::ReadLock::Impl
 struct JsonConfig::WriteLock::Impl
 {
     JsonConfig::Impl *owner = nullptr;
-    std::unique_lock<std::mutex> initLock;
     std::unique_lock<std::shared_timed_mutex> writeLock;
     bool committed = false;
     WriteLock::Impl *self_tag_ptr = nullptr;
@@ -61,7 +60,7 @@ struct JsonConfig::WriteLock::Impl
 
 // ----------------- JsonConfig public methods -----------------
 JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>()) {
-    if (!is_initialized()) {
+    if (!lifecycle_initialized()) {
         fmt::print(stderr, "FATAL: JsonConfig created before its module was initialized via LifecycleManager. Aborting.\n");
         std::abort();
     }
@@ -69,7 +68,7 @@ JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>()) {
 JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMissing,
                        std::error_code *ec) noexcept : pImpl(std::make_unique<Impl>()) 
 {
-    if (!is_initialized()) {
+    if (!lifecycle_initialized()) {
         fmt::print(stderr, "FATAL: JsonConfig created before its module was initialized via LifecycleManager. Aborting.\n");
         std::abort();
     }
@@ -95,30 +94,56 @@ std::filesystem::path JsonConfig::config_path() const noexcept
     return std::filesystem::path(pImpl->configPath);
 }
 
+bool JsonConfig::is_initialized() const noexcept
+{
+    if (!pImpl) return false;
+    std::lock_guard<std::mutex> g(pImpl->initMutex);
+    return !pImpl->configPath.empty();
+}
+
 bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMissing,
                       std::error_code *ec) noexcept
 {
     try
     {
         if (!pImpl) pImpl = std::make_unique<Impl>();
-        std::lock_guard<std::mutex> g(pImpl->initMutex);
-        pImpl->configPath = configFile;
-
-        if (createIfMissing)
         {
-            FileLock fl(configFile, ResourceType::File, LockMode::NonBlocking);
-            if (!fl.valid())
+            // This scope ensures the lock on `initMutex` is released before calling `reload()`.
+            // `reload()` also acquires this same mutex, so calling it without releasing
+            // the lock first would cause a recursive deadlock.
+            std::lock_guard<std::mutex> g(pImpl->initMutex);
+            
+            #if PYLABHUB_IS_POSIX
+            struct stat lstat_buf;
+            if (lstat(configFile.c_str(), &lstat_buf) == 0)
             {
-                if (ec) *ec = fl.error_code();
-                return false;
+                if (S_ISLNK(lstat_buf.st_mode))
+                {
+                    if (ec) *ec = std::make_error_code(std::errc::operation_not_permitted);
+                    LOGGER_ERROR("JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.", configFile.string());
+                    return false;
+                }
             }
+            #endif
+            
+            pImpl->configPath = configFile;
 
-            std::error_code lfs;
-            if (!fs::exists(configFile, lfs))
+            if (createIfMissing)
             {
-                nlohmann::json empty = nlohmann::json::object();
-                atomic_write_json(configFile, empty, ec);
-                if (ec && *ec) return false;
+                FileLock fl(configFile, ResourceType::File, LockMode::NonBlocking);
+                if (!fl.valid())
+                {
+                    if (ec) *ec = fl.error_code();
+                    return false;
+                }
+
+                std::error_code lfs;
+                if (!fs::exists(configFile, lfs))
+                {
+                    nlohmann::json empty = nlohmann::json::object();
+                    atomic_write_json(configFile, empty, ec);
+                    if (ec && *ec) return false;
+                }
             }
         }
         return reload(ec);
@@ -339,13 +364,23 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::chrono::mil
         return std::nullopt;
     }
 
+    // First, check the path using a short-lived lock on the initMutex.
+    {
+        std::lock_guard<std::mutex> g(pImpl->initMutex);
+        if (pImpl->configPath.empty())
+        {
+            if (ec) *ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            return std::nullopt;
+        }
+    }
+
+    // Now that the path is verified, proceed to acquire the actual write lock.
     JsonConfig::WriteLock w;
     w.d_ = std::make_unique<JsonConfig::WriteLock::Impl>();
     w.d_->owner = pImpl.get();
 
     try
     {
-        w.d_->initLock = std::unique_lock<std::mutex>(pImpl->initMutex);
         w.d_->writeLock = std::unique_lock<std::shared_timed_mutex>(pImpl->rwMutex, std::defer_lock);
 
         if (timeout.count() == 0)
@@ -361,12 +396,8 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::chrono::mil
             }
         }
 
-        if (pImpl->configPath.empty())
-        {
-            if (ec) *ec = std::make_error_code(std::errc::no_such_file_or_directory);
-            return std::nullopt;
-        }
-
+        // The check on configPath is no longer needed here, as it was performed above
+        // and the path is immutable after initialization.
         if (ec) *ec = std::error_code{};
         return w;
     }
@@ -662,7 +693,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
 }
 
 // Lifecycle Integration
-bool JsonConfig::is_initialized() noexcept {
+bool JsonConfig::lifecycle_initialized() noexcept {
     return g_jsonconfig_initialized.load(std::memory_order_acquire);
 }
 
