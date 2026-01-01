@@ -1,6 +1,21 @@
 // tests/test_atomicguard.cpp
+#include <gtest/gtest.h>
+#include <thread>
+#include <vector>
+#include <atomic>
+#include <chrono>
+#include <random>
+#include <future>
+#include <deque>
+#include <mutex>
+#include <condition_variable>
+
 #include "platform.hpp"
 #include "atomic_guard.hpp"
+
+using namespace std::chrono_literals;
+using pylabhub::basics::AtomicOwner;
+using pylabhub::basics::AtomicGuard;
 
 // Helpers for stress sizes (tweak to make tests faster or heavier).
 static constexpr int LIGHT_THREADS = 8;

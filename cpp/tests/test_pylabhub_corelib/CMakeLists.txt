@@ -1,25 +1,28 @@
-# tests/logger/CMakeLists.txt
+# tests/test_pylabhub_corelib/CMakeLists.txt
+#
+# Configures the test executable for the pylabhub-basic static library.
+# These tests do not require lifecycle management or subprocess workers.
 
-# This file is part of the test suite refactoring.
-# It collects all the individual test source files for the logger test
-# and adds them to the parent's test executable target.
-
-# Find all the source files in this directory.
-file(GLOB test_corelib_srcs
-  "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+add_executable(test_pylabhub_corelib
+  test_atomicguard.cpp
+  test_recursionguard.cpp
 )
 
-# The "test_logger" executable target is defined in the parent CMakeLists.txt.
-# We add our collected source files to it.
-target_sources(test_corelib
+target_link_libraries(test_pylabhub_corelib
   PRIVATE
-    ${test_corelib_srcs}
-)
-target_compile_features(test_corelib PRIVATE cxx_std_20)
-target_link_libraries(test_corelib
-  PRIVATE
-    pylabhub_test_helpers
+    pylabhub::basic
+    pylabhub::third_party::gtest_main
 )
 
+target_compile_features(test_pylabhub_corelib PRIVATE cxx_std_20)
 
+if(MSVC)
+  target_compile_options(test_pylabhub_corelib PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+endif()
 
+# Register the executable for staging and discover its tests
+pylabhub_register_test_for_staging(TARGET test_pylabhub_corelib)
+
+gtest_discover_tests(test_pylabhub_corelib
+  WORKING_DIRECTORY "${STAGED_TEST_DIR}"
+)

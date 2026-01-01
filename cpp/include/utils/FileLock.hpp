@@ -90,6 +90,7 @@
 #include <optional>
 #include <system_error>
 
+#include "utils/Lifecycle.hpp" // For ModuleDef
 #include "pylabhub_utils_export.h"
 
 // Disable warning C4251 on MSVC for the std::unique_ptr Pimpl member.
@@ -143,6 +144,17 @@ struct FileLockImpl;
 class PYLABHUB_UTILS_EXPORT FileLock
 {
   public:
+    /**
+     * @brief Returns a ModuleDef for the FileLock to be used with the LifecycleManager.
+     * The FileLock module only has a shutdown task to clean up stale lock files.
+     */
+    static ModuleDef GetLifecycleModule();
+
+    /**
+     * @brief Checks if the FileLock module has been initialized by the LifecycleManager.
+     */
+    static bool is_initialized();
+
     /**
      * @brief Predicts the canonical path of the lock file for a given resource.
      *
@@ -256,6 +268,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
     // correctly invoked whenever the unique_ptr goes out of scope or is reset.
     std::unique_ptr<FileLockImpl, FileLockImplDeleter> pImpl;
 };
+
 
 } // namespace pylabhub::utils
 
