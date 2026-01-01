@@ -21,8 +21,7 @@
     * **Action:**
         1. Create a file (e.g., `.gemini_commit_message.txt`) with the desired message content.
         2. Use `git commit -F .gemini_commit_message.txt`.
-        3. Ensure the temporary file name is added to `.gitignore`.
-        4. Remove the temporary file after the commit is successful.
+        3. Remove the temporary file after the commit is successful.
 
 ## 5. General Debugging Strategy for Problems in the Code
 * **Strategy:** If an error is not directly related to syntax or semantics, but rather to logic, design, behavior, or interaction between components, the first step is to identify the most important variables, states, or conditions in the flow of the functions and code.
