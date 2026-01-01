@@ -104,10 +104,10 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
+#include "utils/Lifecycle.hpp" // For ModuleDef
 #include "pylabhub_utils_export.h"
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
-// log messages. A larger value can reduce reallocations for long log messages.
 #ifndef LOGGER_FMT_BUFFER_RESERVE
 #define LOGGER_FMT_BUFFER_RESERVE (1024u)
 #endif
@@ -120,10 +120,6 @@
 namespace pylabhub::utils
 {
 
-/**
- * @class Logger
- * @brief The main logger class, providing a thread-safe singleton instance.
- */
 class PYLABHUB_UTILS_EXPORT Logger
 {
   // Forward declaration for the Pimpl pattern.
@@ -146,6 +142,16 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @return A reference to the single global Logger instance.
      */
     static Logger &instance();
+
+    /**
+     * @brief Returns a ModuleDef for the Logger to be used with the LifecycleManager.
+     */
+    static ModuleDef GetLifecycleModule();
+
+    /**
+     * @brief Checks if the Logger module has been initialized by the LifecycleManager.
+     */
+    static bool is_initialized();
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.

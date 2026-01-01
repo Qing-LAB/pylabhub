@@ -26,12 +26,10 @@ std::string test_scale();
 
 int scaled_value(int original, int small_value);
 
-template <typename Fn>
-int run_gtest_worker(Fn test_logic, const char *test_name)
+template <typename Fn, typename... Mods>
+int run_gtest_worker(Fn test_logic, const char *test_name, Mods&&... mods)
 {
-    LifecycleManager::instance().initialize();
-    auto finalizer =
-        pylabhub::basics::make_scope_guard([] { LifecycleManager::instance().finalize(); });
+    pylabhub::lifecycle::LifecycleGuard guard(std::forward<Mods>(mods)...);
 
     try
     {
@@ -39,7 +37,7 @@ int run_gtest_worker(Fn test_logic, const char *test_name)
     }
     catch (const ::testing::AssertionException &e)
     {
-        fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n", test_name,
+        fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n{}\n", test_name,
                    e.what());
         return 1;
     }

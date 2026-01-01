@@ -16,7 +16,8 @@
 #include "nlohmann/json.hpp"
 
 using nlohmann::json;
-using namespace test_utils;
+using namespace pylabhub::tests::helper;
+using namespace pylabhub::utils;
 
 namespace pylabhub::tests::worker
 {
@@ -60,7 +61,11 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
 
             ASSERT_TRUE(success);
         },
-        "jsonconfig::write_id");
+        "jsonconfig::write_id",
+        JsonConfig::GetLifecycleModule(), // Assuming JsonConfig will have this
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 } // namespace jsonconfig

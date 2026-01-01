@@ -33,6 +33,16 @@ namespace pylabhub::utils
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
 public:
+    /**
+     * @brief Returns a ModuleDef for JsonConfig to be used with the LifecycleManager.
+     */
+    static ModuleDef GetLifecycleModule();
+
+    /**
+     * @brief Checks if the JsonConfig module has been initialized by the LifecycleManager.
+     */
+    static bool is_initialized();
+
     JsonConfig() noexcept;
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
                         std::error_code *ec = nullptr) noexcept;

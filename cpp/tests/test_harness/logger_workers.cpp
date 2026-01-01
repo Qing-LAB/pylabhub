@@ -18,13 +18,15 @@
 #endif
 
 // Project-specific
-#include "logger_worker.h"       // Keep this specific header
+#include "logger_workers.h"       // Keep this specific header
 #include "shared_test_helpers.h" // Keep this specific helper header
 #include "test_process_utils.h" // Explicitly include test_process_utils.h for test_utils namespace
 #include "utils/Logger.hpp"
-#include "utils/Lifecycle.hpp"
 
-using namespace test_utils;
+using namespace pylabhub::tests::helper;
+using namespace pylabhub::utils;
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
 
 namespace pylabhub::tests::worker
 {
@@ -35,23 +37,27 @@ namespace logger
 // workers.cpp file (commented as /* ... */). They are left as empty function
 // bodies here. If the original logic exists elsewhere, it should be restored.
 
-void stress_log(const std::string &log_path, int msg_count)
+int stress_log(const std::string &log_path, int msg_count)
 {
-    LifecycleManager::instance().initialize();
-    auto finalizer = pylabhub::basics::make_scope_guard([] { LifecycleManager::instance().finalize(); });
-    Logger &L = Logger::instance();
-    L.set_logfile(log_path, true);
-    L.set_level(Logger::Level::L_TRACE);
-    for (int i = 0; i < msg_count; ++i)
-    {
-        if (std::rand() % 10 == 0) std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
+    return run_gtest_worker(
+        [&]() {
+            Logger &L = Logger::instance();
+            L.set_logfile(log_path, true);
+            L.set_level(Logger::Level::L_TRACE);
+            for (int i = 0; i < msg_count; ++i)
+            {
+                if (std::rand() % 10 == 0) std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
 #if defined(PLATFORM_WIN64)
-        LOGGER_INFO("child-msg pid={} idx={}", GetCurrentProcessId(), i);
+                LOGGER_INFO("child-msg pid={} idx={}", GetCurrentProcessId(), i);
 #else
-        LOGGER_INFO("child-msg pid={} idx={}", getpid(), i);
+                LOGGER_INFO("child-msg pid={} idx={}", getpid(), i);
 #endif
-    }
-    L.flush();
+            }
+            L.flush();
+        },
+        "logger::stress_log",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_basic_logging(const std::string &log_path_str)
@@ -65,7 +71,9 @@ int test_basic_logging(const std::string &log_path_str)
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_NE(contents.find("Hello, world!"), std::string::npos);
         },
-        "logger::test_basic_logging");
+        "logger::test_basic_logging",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_log_level_filtering(const std::string &log_path_str)
@@ -82,7 +90,9 @@ int test_log_level_filtering(const std::string &log_path_str)
             ASSERT_EQ(contents.find("This should be filtered."), std::string::npos);
             ASSERT_NE(contents.find("This should appear."), std::string::npos);
         },
-        "logger::test_log_level_filtering");
+        "logger::test_log_level_filtering",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_bad_format_string(const std::string &log_path_str)
@@ -97,7 +107,9 @@ int test_bad_format_string(const std::string &log_path_str)
             // The fallback format error message should be logged.
             ASSERT_NE(contents.find("[FORMAT ERROR]"), std::string::npos);
         },
-        "logger::test_bad_format_string");
+        "logger::test_bad_format_string",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_default_sink_and_switching(const std::string &log_path_str)
@@ -114,7 +126,9 @@ int test_default_sink_and_switching(const std::string &log_path_str)
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_NE(contents.find("This should be in the file."), std::string::npos);
         },
-        "logger::test_default_sink_and_switching");
+        "logger::test_default_sink_and_switching",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_multithread_stress(const std::string &log_path_str)
@@ -141,7 +155,9 @@ int test_multithread_stress(const std::string &log_path_str)
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_EQ(count_lines(contents), THREADS * MSGS_PER_THREAD);
         },
-        "logger::test_multithread_stress");
+        "logger::test_multithread_stress",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_flush_waits_for_queue(const std::string &log_path_str)
@@ -155,7 +171,9 @@ int test_flush_waits_for_queue(const std::string &log_path_str)
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_EQ(count_lines(contents), 100);
         },
-        "logger::test_flush_waits_for_queue");
+        "logger::test_flush_waits_for_queue",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_shutdown_idempotency(const std::string &log_path_str)
@@ -191,7 +209,9 @@ int test_shutdown_idempotency(const std::string &log_path_str)
             EXPECT_EQ(content_after_shutdown.find("This message should NOT be logged."),
                       std::string::npos);
         },
-        "logger::test_shutdown_idempotency");
+        "logger::test_shutdown_idempotency",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_log_path_str)
@@ -220,7 +240,9 @@ int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_lo
             GTEST_SUCCESS_("Windows does not have a simple equivalent of writing to a directory to force a log error.");
 #endif
         },
-        "logger::test_reentrant_error_callback");
+        "logger::test_reentrant_error_callback",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_write_error_callback_async()
@@ -245,7 +267,9 @@ int test_write_error_callback_async()
             GTEST_SUCCESS_("Windows does not have a simple equivalent of writing to a directory to force a log error.");
 #endif
         },
-        "logger::test_write_error_callback_async");
+        "logger::test_write_error_callback_async",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_platform_sinks()
@@ -263,7 +287,9 @@ int test_platform_sinks()
             Logger::instance().flush();
             GTEST_SUCCESS_("Platform sink test completed without crashing.");
         },
-        "logger::test_platform_sinks");
+        "logger::test_platform_sinks",
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_concurrent_lifecycle_chaos(const std::string &log_path_str)

@@ -278,3 +278,39 @@ function(pylabhub_stage_libraries)
     endif()
   endforeach()
 endfunction()
+
+# --- pylabhub_register_test_for_staging ---
+#
+# Registers a test executable for staging. This function sets the executable's
+# output directory and appends the target name to a global property. The parent
+# CMake scope can then collect all registered test targets and add them as
+# dependencies to the main 'stage_tests' target.
+#
+# This pattern avoids directory scope issues with add_custom_command.
+#
+# Usage:
+#   pylabhub_register_test_for_staging(TARGET <target_name>)
+#
+function(pylabhub_register_test_for_staging)
+  set(options "")
+  set(oneValueArgs "TARGET")
+  set(multiValueArgs "")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_TARGET)
+    message(FATAL_ERROR "pylabhub_register_test_for_staging requires a TARGET argument.")
+  endif()
+
+  if(NOT TARGET ${ARG_TARGET})
+    message(FATAL_ERROR "pylabhub_register_test_for_staging: Target '${ARG_TARGET}' does not exist.")
+  endif()
+
+  # Set the output directory for the executable to be inside the staged 'tests' folder
+  set_target_properties(${ARG_TARGET} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+  )
+
+  # Register this target to a global property so the parent scope can collect it
+  set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})
+endfunction()
+

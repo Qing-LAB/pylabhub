@@ -86,7 +86,8 @@
  * ```
  ******************************************************************************/
 
-#include <memory> // For std::unique_#include <atomic>
+#include <memory> // For std::unique_ptr
+#include <atomic>
 #include <vector>
 #include <utility>
 #include <type_traits>

@@ -18,8 +18,9 @@
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
 #include "utils/FileLock.hpp"
+#include "utils/Logger.hpp"
 
-using namespace test_utils;
+using namespace pylabhub::tests::helper;
 using namespace pylabhub::utils;
 using namespace std::chrono_literals;
 
@@ -46,7 +47,10 @@ int test_basic_non_blocking(const std::string &resource_path_str)
             FileLock lock3(resource_path, ResourceType::File, LockMode::NonBlocking);
             ASSERT_TRUE(lock3.valid());
         },
-        "filelock::test_basic_non_blocking");
+        "filelock::test_basic_non_blocking",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_blocking_lock(const std::string &resource_path_str)
@@ -77,7 +81,10 @@ int test_blocking_lock(const std::string &resource_path_str)
             ASSERT_TRUE(thread_valid.load());
             ASSERT_TRUE(thread_saw_block.load());
         },
-        "filelock::test_blocking_lock");
+        "filelock::test_blocking_lock",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_timed_lock(const std::string &resource_path_str)
@@ -102,7 +109,10 @@ int test_timed_lock(const std::string &resource_path_str)
             FileLock timed_lock_succeed(resource_path, ResourceType::File, 100ms);
             ASSERT_TRUE(timed_lock_succeed.valid());
         },
-        "filelock::test_timed_lock");
+        "filelock::test_timed_lock",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_move_semantics(const std::string &resource1_str, const std::string &resource2_str)
@@ -124,7 +134,10 @@ int test_move_semantics(const std::string &resource1_str, const std::string &res
                 ASSERT_TRUE(lock1_again.valid());
             }
         },
-        "filelock::test_move_semantics");
+        "filelock::test_move_semantics",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_directory_creation(const std::string &base_dir_str)
@@ -145,7 +158,10 @@ int test_directory_creation(const std::string &base_dir_str)
                 ASSERT_TRUE(std::filesystem::exists(actual_lock_file));
             }
         },
-        "filelock::test_directory_creation");
+        "filelock::test_directory_creation",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_directory_path_locking(const std::string &base_dir_str)
@@ -162,7 +178,10 @@ int test_directory_path_locking(const std::string &base_dir_str)
             ASSERT_TRUE(lock.valid());
             ASSERT_TRUE(std::filesystem::exists(expected_dir_lock_file));
         },
-        "filelock::test_directory_path_locking");
+        "filelock::test_directory_path_locking",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int test_multithreaded_non_blocking(const std::string &resource_path_str)
@@ -189,7 +208,10 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
             for (auto &t : threads) t.join();
             ASSERT_EQ(success_count.load(), 1);
         },
-        "filelock::test_multithreaded_non_blocking");
+        "filelock::test_multithreaded_non_blocking",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int nonblocking_acquire(const std::string &resource_path_str)
@@ -197,7 +219,7 @@ int nonblocking_acquire(const std::string &resource_path_str)
     return run_gtest_worker( [&]() {
         FileLock lock(resource_path_str, ResourceType::File, LockMode::NonBlocking);
         ASSERT_FALSE(lock.valid());
-     }, "filelock::nonblocking_acquire");
+     }, "filelock::nonblocking_acquire", FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
 int contention_log_access(const std::string &resource_path_str,
@@ -241,7 +263,10 @@ int contention_log_access(const std::string &resource_path_str,
                 }
             } // Lock is released here by FileLock destructor
         },
-        "filelock::contention_log_access");
+        "filelock::contention_log_access",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 int parent_child_block(const std::string &resource_path_str)
@@ -256,7 +281,10 @@ int parent_child_block(const std::string &resource_path_str)
             auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             ASSERT_GE(dur.count(), 100);
         },
-        "filelock::parent_child_block");
+        "filelock::parent_child_block",
+        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule()
+    );
 }
 
 // --- Helper implementations that are not tests themselves ---
