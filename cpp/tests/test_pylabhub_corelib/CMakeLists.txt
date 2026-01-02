@@ -6,6 +6,7 @@
 add_executable(test_pylabhub_corelib
   test_atomicguard.cpp
   test_recursionguard.cpp
+  test_formattable.cpp
 )
 
 target_link_libraries(test_pylabhub_corelib

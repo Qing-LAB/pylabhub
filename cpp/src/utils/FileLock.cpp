@@ -13,6 +13,7 @@
 #include <utility>
 #include <cerrno>
 #include <cstring>
+#include <atomic>
 
 #if defined(PLATFORM_WIN64)
 #include <sstream>
@@ -502,7 +503,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     int fd = ::open(os_path.c_str(), open_flags, S_IRUSR | S_IWUSR);
     if (fd == -1)
     {
-        // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback,
+        // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback, 
         // we could retry without O_NOFOLLOW. For now, treat ELOOP as an error (safer).
         pImpl->ec = std::error_code(errno, std::generic_category());
         return false;
@@ -636,23 +637,36 @@ bool FileLock::lifecycle_initialized() noexcept {
 
 namespace
 {
-void do_filelock_startup() {
+void do_filelock_startup(const char* arg) {
+    (void)arg;
     g_filelock_initialized.store(true, std::memory_order_release);
 }
-void do_filelock_cleanup() {
-    if (FileLock::lifecycle_initialized()) {
+void do_filelock_cleanup(const char* arg) {
+    bool perform_cleanup = true; // Default to true for safety
+    if (arg && strcmp(arg, "false") == 0) {
+        perform_cleanup = false;
+    }
+
+    if (FileLock::lifecycle_initialized() && perform_cleanup) {
         FileLock::cleanup();
     }
     g_filelock_initialized.store(false, std::memory_order_release);
 }
 }
 
-ModuleDef FileLock::GetLifecycleModule()
+ModuleDef FileLock::GetLifecycleModule(bool cleanup_on_shutdown)
 {
     ModuleDef module("pylabhub::utils::FileLockCleanup");
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_filelock_startup);
-    module.set_shutdown(&do_filelock_cleanup, 2000 /*ms timeout*/);
+
+    if (cleanup_on_shutdown) {
+        module.set_shutdown(&do_filelock_cleanup, 2000);
+    } else {
+        const char* arg = "false";
+        module.set_shutdown(&do_filelock_cleanup, 2000, arg, strlen(arg));
+    }
+
     return module;
 }
 

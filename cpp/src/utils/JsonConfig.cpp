@@ -624,10 +624,12 @@ bool JsonConfig::lifecycle_initialized() noexcept {
 }
 
 namespace {
-void do_jsonconfig_startup() {
+void do_jsonconfig_startup(const char* arg) {
+    (void)arg;
     g_jsonconfig_initialized.store(true, std::memory_order_release);
 }
-void do_jsonconfig_shutdown() {
+void do_jsonconfig_shutdown(const char* arg) {
+    (void)arg;
     g_jsonconfig_initialized.store(false, std::memory_order_release);
 }
 } // namespace

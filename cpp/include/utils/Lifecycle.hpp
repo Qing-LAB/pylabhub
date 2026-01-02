@@ -98,9 +98,10 @@ class LifecycleManagerImpl;
  * @brief A function pointer type for module startup and shutdown callbacks.
  *
  * Using a C-style function pointer is essential for ABI stability, as it has a
- * standardized calling convention, unlike `std::function`.
+ * standardized calling convention, unlike `std::function`. The argument is
+ * optional; `nullptr` will be passed if no argument is provided.
  */
-typedef void (*LifecycleCallback)();
+typedef void (*LifecycleCallback)(const char *arg);
 
 /**
  * @class ModuleDef
@@ -117,6 +118,14 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
 {
   public:
     /**
+     * @brief The maximum allowed length for a callback string argument.
+     *
+     * This limit prevents excessive memory allocation for callback arguments.
+     * An exception will be thrown if this limit is exceeded.
+     */
+    static constexpr size_t MAX_CALLBACK_PARAM_STRLEN = 1024;
+
+    /**
      * @brief Constructs a module definition with a given name.
      * @param name The unique name for this module (e.g., "Logger", "Database").
      *             This name is used for dependency resolution. Must not be null.
@@ -127,7 +136,7 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     ~ModuleDef();
 
     // --- Rule of Five: Movable, but not Copyable ---
-    // The move constructor and assignment operators are defaulted in the .cpp file
+    // The move constructor and assignment operators are defaulted in the .cpp file.
     // to ensure they are generated where ModuleDefImpl is a complete type.
     ModuleDef(ModuleDef &&other) noexcept;
     ModuleDef &operator=(ModuleDef &&other) noexcept;
@@ -137,26 +146,41 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     /**
      * @brief Adds a dependency to this module.
      * @param dependency_name The name of the module that this module depends on.
-     *                        The manager will ensure that the dependency is
-     *                        started before this module.
      */
     void add_dependency(const char *dependency_name);
 
     /**
-     * @brief Sets the startup callback for this module.
-     * @param startup_func A C-style function pointer to be called on startup.
-     *                     This function should contain the module's initialization logic.
+     * @brief Sets the startup callback for this module (no argument).
+     * @param startup_func The callback to be called on startup.
      */
     void set_startup(LifecycleCallback startup_func);
 
     /**
-     * @brief Sets the shutdown callback for this module.
-     * @param shutdown_func A C-style function pointer to be called on shutdown.
-     *                      This function should contain the module's cleanup logic.
-     * @param timeout_ms The time in milliseconds to wait for the shutdown function
-     *                   to complete before it is considered timed out.
+     * @brief Sets the startup callback with a string argument.
+     * @param startup_func The callback to be called on startup.
+     * @param data A pointer to the string data.
+     * @param len The length of the string data.
+     * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
+     */
+    void set_startup(LifecycleCallback startup_func, const char *data, size_t len);
+
+    /**
+     * @brief Sets the shutdown callback for this module (no argument).
+     * @param shutdown_func The callback to be called on shutdown.
+     * @param timeout_ms The timeout in milliseconds for the shutdown function.
      */
     void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms);
+
+    /**
+     * @brief Sets the shutdown callback with a string argument.
+     * @param shutdown_func The callback to be called on shutdown.
+     * @param timeout_ms The timeout in milliseconds for the shutdown function.
+     * @param data A pointer to the string data.
+     * @param len The length of the string data.
+     * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
+     */
+    void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms, const char *data,
+                      size_t len);
 
   private:
     // This friend declaration allows LifecycleManager to access the private pImpl
@@ -164,7 +188,6 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     // break encapsulation for the Pimpl pattern without exposing implementation
     // details publicly.
     friend class LifecycleManager;
-
     std::unique_ptr<ModuleDefImpl> pImpl;
 };
 
@@ -223,6 +246,17 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      */
     void finalize();
 
+    /**
+     * @brief Checks if the lifecycle manager has been initialized.
+     *
+     * This allows callers to verify if `initialize()` has completed. It is useful
+     * for components that might be loaded late (e.g., plugins) to check if it is
+     * too late to register new modules.
+     *
+     * @return `true` if `initialize()` has been called, `false` otherwise.
+     */
+    bool is_initialized();
+
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
     LifecycleManager &operator=(const LifecycleManager &) = delete;
@@ -250,6 +284,15 @@ inline void RegisterModule(ModuleDef&& module_def)
 {
     // The `::` prefix ensures we call the global LifecycleManager class.
     ::LifecycleManager::instance().register_module(std::move(module_def));
+}
+
+/**
+ * @brief A convenience function to check if the application is initialized.
+ * @return `true` if `initialize()` has been called, `false` otherwise.
+ */
+inline bool IsInitialized()
+{
+    return ::LifecycleManager::instance().is_initialized();
 }
 
 /**
@@ -306,7 +349,20 @@ public:
     LifecycleGuard(LifecycleGuard&&) = delete;
     LifecycleGuard& operator=(LifecycleGuard&&) = delete;
 
-    // Destructor: only the owner will finalize. noexcept to avoid throwing from dtor.
+    /**
+     * @brief Destructor that finalizes the application if this guard is the owner.
+     *
+     * @warning The C++ standard does not guarantee the destruction order of static
+     *          objects across different translation units. If you have a static
+     *          object whose destructor depends on a lifecycle-managed service
+     *          (like a logger), it may be destroyed *after* the main `LifecycleGuard`
+     *          has already shut down those services.
+     *
+     *          **Recommendation**: Avoid designs that rely on the destructors of
+     *          static objects to interact with lifecycle services. Instead, manage
+     *          such objects' lifecycles explicitly or ensure they are cleaned up
+     *          before the `LifecycleGuard` goes out of scope.
+     */
     ~LifecycleGuard() noexcept
     {
         if (m_is_owner)

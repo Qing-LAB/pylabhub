@@ -120,5 +120,6 @@ namespace pylabhub::platform
 uint64_t get_native_thread_id() noexcept;
 long get_pid();
 std::string get_executable_name();
+void print_stack_trace() noexcept;
 
 } // namespace pylabhub::platform
