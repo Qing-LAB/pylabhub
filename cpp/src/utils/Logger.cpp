@@ -410,7 +410,7 @@ void Logger::Impl::enqueue_command(Command &&cmd)
 
 void Logger::Impl::worker_loop()
 {
-    std::vector<Command> local_queue; // Batch processing queue.
+    std::vector<Command> local_queue; // Batch processing queue. 
 
     while (true)
     {
@@ -669,11 +669,14 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 }
 
 // C-style callbacks for the ABI-safe lifecycle API.
-void do_logger_startup() {
+// These functions are called by the LifecycleManager.
+void do_logger_startup(const char* arg) {
+    (void)arg; // Argument not used by logger startup.
     Logger::instance().pImpl->start_worker();
     g_logger_initialized.store(true, std::memory_order_release);
 }
-void do_logger_shutdown() {
+void do_logger_shutdown(const char* arg) {
+    (void)arg; // Argument not used by logger shutdown.
     if (Logger::lifecycle_initialized()) {
         Logger::instance().shutdown();
     }
@@ -683,6 +686,7 @@ void do_logger_shutdown() {
 ModuleDef Logger::GetLifecycleModule()
 {
     ModuleDef module("pylabhub::utils::Logger");
+    // Using the no-argument overloads now.
     module.set_startup(&do_logger_startup);
     module.set_shutdown(&do_logger_shutdown, 5000 /*ms timeout*/);
     return module;

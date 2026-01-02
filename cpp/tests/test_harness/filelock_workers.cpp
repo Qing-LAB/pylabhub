@@ -17,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <barrier> // Add this line
 
 // Third-party
 #include <gtest/gtest.h>
@@ -211,34 +212,66 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
     return run_gtest_worker(
         [&]() {
             std::filesystem::path resource_path(resource_path_str);
-            const int THREADS = 32;
-            const int ITERS = 1000;
-            std::atomic<int> success_count{0};
+
+            constexpr int THREADS = 32;
+            constexpr int ITERS = 10000; // outer iterations to expose rare races
+
+            // A reusable barrier for THREADS participants.
+            std::barrier start_barrier(THREADS);
+
+            // Track how many successes occurred in the current iteration.
+            std::atomic<int> iter_success_count{0};
+
+            // Vector that records if any iteration had bad result (for debugging)
+            std::vector<int> per_iter_success(ITERS, 0);
+
+            // Launch worker threads once; each will loop over iterations
             std::vector<std::thread> threads;
             threads.reserve(THREADS);
 
-            // Spawn many threads that all contend for the same non-blocking lock
-            for (int i = 0; i < THREADS; ++i)
+            for (int tid = 0; tid < THREADS; ++tid)
             {
-                threads.emplace_back([&, i]() {
-                    // Small sleep to increase chance of contention
-                    for(int j = 0; j < ITERS; ++j) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(i % 10));
+                threads.emplace_back([&, tid]() {
+                    for (int iter = 0; iter < ITERS; ++iter)
+                    {
+                        // Synchronize all threads at the start of each iteration
+                        start_barrier.arrive_and_wait();
+
+                        // Attempt the non-blocking lock exactly once this phase
                         FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
                         if (lock.valid())
                         {
-                            success_count.fetch_add(1);
-                            // Hold the lock briefly
-                            std::this_thread::sleep_for(std::chrono::milliseconds(ITERS*50));
-                            break;
+                            // Record success for this iteration
+                            iter_success_count.fetch_add(1, std::memory_order_relaxed);
+
+                            // Hold lock briefly so other threads must fail now
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
                         }
+
+                        // One thread (any) can snapshot and store the per-iteration result.
+                        // Use a simple spin to make sure we record once per iter:
+                        if (tid == 0) // choose thread 0 as recorder to reduce races
+                        {
+                            // Small fence to observe iter_success_count
+                            int observed = iter_success_count.exchange(0, std::memory_order_acq_rel);
+                            per_iter_success[iter] = observed;
+                        }
+
+                        // Optional: a short pause to reduce CPU starvation on some CI systems
+                        if ((iter & 0xFF) == 0)
+                            std::this_thread::yield();
                     }
                 });
             }
+
+            // Wait for workers to finish
             for (auto &t : threads) t.join();
 
-            // Only one thread should have successfully acquired the lock
-            ASSERT_EQ(success_count.load(), 1);
+            // Verify: each iteration should have exactly 1 success
+            for (int iter = 0; iter < ITERS; ++iter) {
+                ASSERT_EQ(per_iter_success[iter], 1) << "iteration " << iter << " had "
+                                                     << per_iter_success[iter] << " successes";
+            }
         },
         "filelock::test_multithreaded_non_blocking",
         FileLock::GetLifecycleModule(),
@@ -262,7 +295,7 @@ int contention_log_access(const std::string &resource_path_str,
 {
     return run_gtest_worker(
         [&]() {
-            pylabhub::utils::Logger::get_instance().set_level(pylabhub::utils::LogLevel::INFO);
+            pylabhub::utils::Logger::instance().set_level(pylabhub::utils::Logger::Level::L_INFO);
             std::filesystem::path resource_path(resource_path_str);
             std::filesystem::path log_path(log_path_str);
             unsigned long pid =

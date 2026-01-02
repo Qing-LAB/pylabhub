@@ -9,6 +9,7 @@ add_executable(test_pylabhub_utils
   test_filelock.cpp
   test_jsonconfig.cpp
   test_logger.cpp
+  test_lifecycle.cpp
 
   # Worker implementations from the harness directory
   ../test_harness/filelock_workers.cpp
@@ -21,6 +22,7 @@ target_link_libraries(test_pylabhub_utils
     pylabhub::utils
     pylabhub-test-harness
     pylabhub::third_party::gtest
+    pylabhub::third_party::gmock
 )
 
 target_compile_features(test_pylabhub_utils PRIVATE cxx_std_20)

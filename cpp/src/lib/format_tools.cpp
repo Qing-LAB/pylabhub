@@ -1,4 +1,3 @@
-
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <chrono>
@@ -7,6 +6,8 @@
 #include <windows.h>
 #endif
 #include <string>
+#include <optional>
+#include <string_view>
 
 #include "platform.hpp"
 #include "format_tools.hpp"
@@ -164,6 +165,55 @@ std::string ws2s([[maybe_unused]] const std::wstring& w)
 
 #endif
 
+namespace {
+    // Helper to trim whitespace from both ends of a string_view.
+    // It's defined in an anonymous namespace to limit its scope to this file.
+    constexpr std::string_view trim_whitespace(std::string_view s) {
+        const char* whitespace = " \t\n\r\f\v";
+        s.remove_prefix(std::min(s.find_first_not_of(whitespace), s.size()));
+        s.remove_suffix(std::min(s.size() - s.find_last_not_of(whitespace) - 1, s.size()));
+        return s;
+    }
+}
+
+std::optional<std::string> extract_value_from_string(
+    std::string_view keyword,
+    std::string_view input,
+    char separator,
+    char assignment_symbol)
+{
+    std::string_view::size_type start = 0;
+    while (start < input.size()) {
+        // Find the next separator or the end of the string
+        std::string_view::size_type end = input.find(separator, start);
+        if (end == std::string_view::npos) {
+            end = input.size();
+        }
+
+        // Get the current key-value pair segment
+        std::string_view segment = input.substr(start, end - start);
+        start = end + 1;
+
+        // Find the assignment symbol within the segment
+        std::string_view::size_type assignment_pos = segment.find(assignment_symbol);
+        if (assignment_pos == std::string_view::npos) {
+            continue; // No assignment symbol, so it's not a valid pair
+        }
+
+        // Extract and trim the key
+        std::string_view key_sv = segment.substr(0, assignment_pos);
+        key_sv = trim_whitespace(key_sv);
+
+        // Compare with the desired keyword
+        if (key_sv == keyword) {
+            // Extract, trim, and return the value
+            std::string_view value_sv = segment.substr(assignment_pos + 1);
+            value_sv = trim_whitespace(value_sv);
+            return std::string(value_sv);
+        }
+    }
+    return std::nullopt; // Keyword not found
+}
 
 
 } // namespace pylabhub::format_tools
