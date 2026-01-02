@@ -161,7 +161,7 @@ static const char *level_to_string(Logger::Level lvl)
 static std::string format_message(const LogMessage &msg)
 {
     std::string time_str = formatted_time(msg.timestamp);
-    return fmt::format("[{}] [{:<6}] [{:5}] {}", time_str, level_to_string(msg.level),
+    return fmt::format("[{}] [{:<6}] [{:5}] {}\n", time_str, level_to_string(msg.level),
                        msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
 }
 

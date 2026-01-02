@@ -212,6 +212,7 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
         [&]() {
             std::filesystem::path resource_path(resource_path_str);
             const int THREADS = 32;
+            const int ITERS = 1000;
             std::atomic<int> success_count{0};
             std::vector<std::thread> threads;
             threads.reserve(THREADS);
@@ -221,13 +222,16 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
             {
                 threads.emplace_back([&, i]() {
                     // Small sleep to increase chance of contention
-                    std::this_thread::sleep_for(std::chrono::milliseconds(i % 10));
-                    FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
-                    if (lock.valid())
-                    {
-                        success_count.fetch_add(1);
-                        // Hold the lock briefly
-                        std::this_thread::sleep_for(50ms);
+                    for(int j = 0; j < ITERS; ++j) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(i % 10));
+                        FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+                        if (lock.valid())
+                        {
+                            success_count.fetch_add(1);
+                            // Hold the lock briefly
+                            std::this_thread::sleep_for(std::chrono::milliseconds(ITERS*50));
+                            break;
+                        }
                     }
                 });
             }
@@ -258,6 +262,7 @@ int contention_log_access(const std::string &resource_path_str,
 {
     return run_gtest_worker(
         [&]() {
+            pylabhub::utils::Logger::get_instance().set_level(pylabhub::utils::LogLevel::INFO);
             std::filesystem::path resource_path(resource_path_str);
             std::filesystem::path log_path(log_path_str);
             unsigned long pid =
