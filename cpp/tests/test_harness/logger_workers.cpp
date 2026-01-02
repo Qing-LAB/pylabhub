@@ -46,6 +46,7 @@ int stress_log(const std::string &log_path, int msg_count)
     return run_gtest_worker(
         [&]() {
             Logger &L = Logger::instance();
+            L.set_log_sink_messages_enabled(false); // Disable sink switch messages for this test
             L.set_logfile(log_path, true); // Append mode
             L.set_level(Logger::Level::L_TRACE);
             for (int i = 0; i < msg_count; ++i)
@@ -58,6 +59,7 @@ int stress_log(const std::string &log_path, int msg_count)
                 LOGGER_INFO("child-msg pid={} idx={}", getpid(), i);
 #endif
             }
+            L.set_log_sink_messages_enabled(true); // Re-enable for subsequent tests if any
             L.flush();
         },
         "logger::stress_log",
@@ -330,6 +332,8 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     // This test manually manages its lifecycle to test shutdown under load.
     // It does not use run_gtest_worker, as the goal is to call finalize()
     // while other threads are actively using the logger.
+    // Register the Logger module with the LifecycleManager.
+    pylabhub::lifecycle::RegisterModule(Logger::GetLifecycleModule());
     LifecycleManager::instance().initialize();
 
     fs::path chaos_log_path(log_path_str);
