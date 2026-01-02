@@ -169,10 +169,16 @@ namespace {
     // Helper to trim whitespace from both ends of a string_view.
     // It's defined in an anonymous namespace to limit its scope to this file.
     constexpr std::string_view trim_whitespace(std::string_view s) {
-        const char* whitespace = " \t\n\r\f\v";
-        s.remove_prefix(std::min(s.find_first_not_of(whitespace), s.size()));
-        s.remove_suffix(std::min(s.size() - s.find_last_not_of(whitespace) - 1, s.size()));
-        return s;
+        constexpr std::string_view whitespace = " \t\n\r\f\v";
+
+        auto first = s.find_first_not_of(whitespace);
+        if (first == std::string_view::npos) {
+            // all whitespace
+            return std::string_view{};
+        }
+        auto last = s.find_last_not_of(whitespace);
+        // substr takes (pos, count). last >= first so count = last-first+1
+        return s.substr(first, last - first + 1);
     }
 }
 
