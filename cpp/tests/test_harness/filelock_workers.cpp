@@ -334,7 +334,7 @@ int contention_log_access(const std::string &resource_path_str,
             } // Lock is released here by FileLock destructor
         },
         "filelock::contention_log_access",
-        FileLock::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(false), //do not clean up the lock file when process ends
         Logger::GetLifecycleModule()
     );
 }
