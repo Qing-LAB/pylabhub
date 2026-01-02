@@ -11,15 +11,19 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <cerrno>
+#include <cstring>
 
 #if defined(PLATFORM_WIN64)
 #include <sstream>
 #include <windows.h>
 #else
 #include <fcntl.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/file.h> // added for flock
 #endif
 
 #include "format_tools.hpp"
@@ -59,7 +63,13 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
             ch = towlower(ch);
         return wstring_to_utf8(longw);
 #else
-        return lockpath.generic_string();
+        // Use the lexically-normal absolute representation for a deterministic key
+        try {
+            auto abs = std::filesystem::absolute(lockpath).lexically_normal();
+            return abs.generic_string();
+        } catch(...) {
+            return lockpath.generic_string();
+        }
 #endif
     }
     catch (...)
@@ -126,14 +136,22 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
     if (p->valid)
     {
 #if defined(PLATFORM_WIN64)
-        OVERLAPPED ov = {};
-        UnlockFileEx((HANDLE)p->handle, 0, 1, 0, &ov);
-        CloseHandle((HANDLE)p->handle);
-        p->handle = nullptr;
+        if (p->handle)
+        {
+            OVERLAPPED ov = {};
+            UnlockFileEx((HANDLE)p->handle, 0, 1, 0, &ov);
+            CloseHandle((HANDLE)p->handle);
+            p->handle = nullptr;
+        }
 #else
-        flock(p->fd, LOCK_UN);
-        ::close(p->fd);
-        p->fd = -1;
+        if (p->fd != -1)
+        {
+            // Release using flock (kernel advisory whole-file unlock)
+            // Best-effort: ignore errors on unlock/close path.
+            flock(p->fd, LOCK_UN);
+            ::close(p->fd);
+            p->fd = -1;
+        }
 #endif
     }
 
@@ -238,7 +256,7 @@ std::optional<std::filesystem::path> FileLock::get_locked_resource_path() const 
 {
     if (pImpl && pImpl->valid)
     {
-        try { 
+        try {
             return std::filesystem::absolute(pImpl->path).lexically_normal();
         }
         catch (...) {
@@ -274,7 +292,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
         rollback_process_local_lock(pImpl);
         return;
     }
-
+    // fmt::print(stderr, "DEBUG: Acquiring OS-level lock for '{}'\n", pImpl->canonical_lock_file_path.string());
     if (!run_os_lock_loop(pImpl, mode, timeout))
     {
         rollback_process_local_lock(pImpl);
@@ -403,14 +421,22 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     const auto &lockpath = pImpl->canonical_lock_file_path;
     
 #if defined(PLATFORM_WIN64)
-    // Windows implementation remains the same
+    // Windows implementation
     std::chrono::steady_clock::time_point start_time;
     if (timeout)
     {
         start_time = std::chrono::steady_clock::now();
     }
     auto os_path = canonical_lock_path_for_os(lockpath);
-    HANDLE h = CreateFileW(os_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+    std::wstring wpath;
+    try {
+        wpath = pylabhub::format_tools::win32_to_long_path(os_path);
+    } catch(...) {
+        pImpl->ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
 
@@ -437,15 +463,17 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, os_path.string());
+            g_lockfile_registry.emplace(reg_key, wstring_to_utf8(wpath));
 
             pImpl->handle = reinterpret_cast<void *>(h);
             pImpl->valid = true;
             return true;
         }
 
-        pImpl->ec = std::error_code(GetLastError(), std::system_category());
-        if (mode == LockMode::NonBlocking || pImpl->ec.value() != ERROR_LOCK_VIOLATION)
+        DWORD err = GetLastError();
+        pImpl->ec = std::error_code(static_cast<int>(err), std::system_category());
+
+        if (mode == LockMode::NonBlocking || err != ERROR_LOCK_VIOLATION)
         {
             return false;
         }
@@ -458,96 +486,116 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
     }
 #else
-    // POSIX implementation refactored
+    // POSIX implementation (flock-based advisory locks)
     auto os_path = canonical_lock_path_for_os(lockpath);
+
+    // Open flags - create and read/write. Use O_CLOEXEC when available.
     int open_flags = O_CREAT | O_RDWR;
     #ifdef O_CLOEXEC
     open_flags |= O_CLOEXEC;
     #endif
+    #ifdef O_NOFOLLOW
+    // Do not follow symlinks for the lock file itself if supported.
+    open_flags |= O_NOFOLLOW;
+    #endif
 
-    int fd = ::open(os_path.c_str(), open_flags, 0666);
+    int fd = ::open(os_path.c_str(), open_flags, S_IRUSR | S_IWUSR);
     if (fd == -1)
     {
+        // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback,
+        // we could retry without O_NOFOLLOW. For now, treat ELOOP as an error (safer).
         pImpl->ec = std::error_code(errno, std::generic_category());
         return false;
     }
     #ifndef O_CLOEXEC
-    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    // set FD_CLOEXEC manually if O_CLOEXEC not available
+    int flags = fcntl(fd, F_GETFD);
+    if (flags != -1)
+    {
+        fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
     #endif
-    
+
     auto guard = pylabhub::basics::make_scope_guard([&]() {
-        if (!pImpl->valid) ::close(fd);
+        if (!pImpl->valid && fd != -1) ::close(fd);
     });
 
-    // Pure blocking lock: no loop needed, just block on flock.
+    // If purely blocking with no timeout, just perform flock blocking call directly
     if (mode == LockMode::Blocking && !timeout)
     {
-        fmt::print(stderr, "FileLock-{}: attempting blocking lock on fd {}\n", get_pid(), fd);
+        LOGGER_INFO("PID {} - Attempting blocking flock(fd={}, LOCK_EX) for {}", getpid(), fd, os_path.string());
         if (flock(fd, LOCK_EX) == 0)
         {
+            LOGGER_INFO("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(), fd, os_path.string());
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
             g_lockfile_registry.emplace(reg_key, os_path.string());
 
             pImpl->fd = fd;
             pImpl->valid = true;
-            fmt::print(stderr, "FileLock-{}: acquired blocking lock on fd {}\n", get_pid(), fd);
             return true;
         }
-        pImpl->ec = std::error_code(errno, std::generic_category());
-        fmt::print(stderr, "FileLock-{}: failed to acquire blocking lock on fd {}: {}\n", get_pid(), fd, pImpl->ec.message());
-        return false;
+        else
+        {
+            int err = errno;
+            LOGGER_ERROR("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd, os_path.string(), std::strerror(err));
+            pImpl->ec = std::error_code(err, std::generic_category());
+            return false;
+        }
     }
 
-    // Timed or Non-blocking lock: use a polling loop with LOCK_NB.
+    // Timed or Non-blocking acquisition: try flock with LOCK_NB and poll until timeout if necessary.
     std::chrono::steady_clock::time_point start_time;
-    if (timeout)
-    {
-        start_time = std::chrono::steady_clock::now();
-    }
+    if (timeout) start_time = std::chrono::steady_clock::now();
+
     int flock_op = LOCK_EX | LOCK_NB;
 
     while (true)
     {
-        fmt::print(stderr, "FileLock-{}: attempting non-blocking lock on fd {}\n", get_pid(), fd);
+        LOGGER_INFO("PID {} - Attempting non-blocking flock(fd={}, LOCK_EX | LOCK_NB) for {}", getpid(), fd, os_path.string());
         if (flock(fd, flock_op) == 0)
         {
+            LOGGER_INFO("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(), fd, os_path.string());
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
             g_lockfile_registry.emplace(reg_key, os_path.string());
             
             pImpl->fd = fd;
             pImpl->valid = true;
-            fmt::print(stderr, "FileLock-{}: acquired non-blocking lock on fd {}\n", get_pid(), fd);
             return true;
         }
 
         int err = errno;
-        fmt::print(stderr, "FileLock-{}: non-blocking lock failed on fd {}: {}\n", get_pid(), fd, std::strerror(err));
+        LOGGER_INFO("PID {} - Non-blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd, os_path.string(), std::strerror(err));
+        // Busy/resource unavailable errors: EWOULDBLOCK or EAGAIN indicate lock is held by someone else.
         if (err != EWOULDBLOCK && err != EAGAIN)
         {
             pImpl->ec = std::error_code(err, std::generic_category());
             return false;
         }
-        
+
         if (mode == LockMode::NonBlocking)
         {
             pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
             return false;
         }
-        
+
         if (timeout && (std::chrono::steady_clock::now() - start_time >= *timeout))
         {
             pImpl->ec = std::make_error_code(std::errc::timed_out);
             return false;
         }
+
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
+        continue;
     }
+
 #endif
 }
 
 void FileLock::cleanup()
 {
+    /* Cleanup stale lock files */
     std::vector<std::pair<std::string, std::string>> candidates;
     {
         std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);

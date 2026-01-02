@@ -394,11 +394,16 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
     }
 
     // Create a symlink pointing from the config path to the sensitive file.
-        JsonConfig cfg;
-        std::error_code ec;
-        ASSERT_TRUE(cfg.init(symlink_path, false, &ec));
-        ASSERT_FALSE(ec);
-    // Attempting to write should fail because the path is a symlink.
+    fs::create_symlink(real_file, symlink_path);
+
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_FALSE(cfg.init(symlink_path, false, &ec));
+    // This should fail now, since init checks for symlinks
+    ASSERT_TRUE(ec);
+    ASSERT_EQ(ec.value(), static_cast<int>(std::errc::operation_not_permitted));
+
+    // Attempting to write should also fail, as a double check.
     bool ok = cfg.with_json_write([&](json &j){
         j["malicious"] = "data";
     }, std::chrono::milliseconds{0}, &ec);
