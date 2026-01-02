@@ -142,7 +142,7 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
 
     // Write should fail.
     ec.clear();
-    ASSERT_FALSE(config.with_json_write([&](json &){}, std::chrono::milliseconds{0}, &ec));
+    ASSERT_FALSE(config.with_json_write([&](json &){}, &ec));
     ASSERT_NE(ec.value(), 0);
 }
 
@@ -166,7 +166,7 @@ TEST_F(JsonConfigTest, BasicAccessors)
         j["obj"] = json::object();
         j["obj"]["x"] = 100;
         j["obj"]["s"] = "world";
-    }, std::chrono::milliseconds{0}, &ec));
+    }, &ec));
     ASSERT_FALSE(ec);
 
     // Read back and verify the values.
@@ -181,7 +181,7 @@ TEST_F(JsonConfigTest, BasicAccessors)
     // Update a value and verify the change.
     ASSERT_TRUE(cfg.with_json_write([&](json &j){
         j["int_val"] = j.value("int_val", 0) + 1;
-    }, std::chrono::milliseconds{0}, &ec));
+    }, &ec));
     ASSERT_FALSE(ec);
 
     ASSERT_TRUE(cfg.with_json_read([&](const json &j){
@@ -203,7 +203,7 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     ASSERT_FALSE(ec);
 
     // Write an initial value.
-    ASSERT_TRUE(cfg.with_json_write([&](json &j){ j["value"] = 1; }, std::chrono::milliseconds{0}, &ec));
+    ASSERT_TRUE(cfg.with_json_write([&](json &j){ j["value"] = 1; }, &ec));
     ASSERT_FALSE(ec);
 
     // Modify the file externally.
@@ -266,7 +266,7 @@ TEST_F(JsonConfigTest, MultiThreadContention)
         ASSERT_TRUE(setup_cfg.with_json_write([&](json &data){
             data["counter"] = 0;
             data["write_log"] = json::array();
-        }, std::chrono::milliseconds{0}, &ec));
+        }, &ec));
         ASSERT_FALSE(ec);
     }
 
@@ -287,11 +287,12 @@ TEST_F(JsonConfigTest, MultiThreadContention)
                 if (std::rand() % 4 == 0) // ~25% chance of being a writer
                 {
                     std::error_code ec;
+                    // Use a 0ms timeout for a non-blocking try-lock pattern
                     bool ok = cfg.with_json_write([&](json &data) {
                         int v = data.value("counter", 0);
                         data["counter"] = v + 1;
                         data["write_log"].push_back(fmt::format("T{}-{}", i, j));
-                    }, std::chrono::milliseconds{0}, &ec);
+                    }, &ec, std::chrono::milliseconds(0));
 
                     if (ok && ec.value() == 0) successful_writes++;
                 }
@@ -406,7 +407,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
     // Attempting to write should also fail, as a double check.
     bool ok = cfg.with_json_write([&](json &j){
         j["malicious"] = "data";
-    }, std::chrono::milliseconds{0}, &ec);
+    }, &ec);
     ASSERT_FALSE(ok);
     ASSERT_NE(ec.value(), 0);
 
@@ -445,7 +446,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     // Write should fail.
     bool ok = cfg.with_json_write([&](json &j){
         j["malicious"] = "data";
-    }, std::chrono::milliseconds{0}, &ec);
+    }, &ec);
 
     ASSERT_FALSE(ok);
     ASSERT_NE(ec.value(), 0);

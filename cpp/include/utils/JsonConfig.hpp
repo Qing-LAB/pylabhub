@@ -183,8 +183,8 @@ public:
     }
 
     template <typename F>
-    bool with_json_write(F &&fn, std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
-                         std::error_code *ec = nullptr) noexcept
+    bool with_json_write(F &&fn, std::error_code *ec = nullptr,
+                         std::optional<std::chrono::milliseconds> timeout = std::nullopt) noexcept
     {
         static_assert(std::is_invocable_v<F, nlohmann::json &>,
                       "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
@@ -196,10 +196,18 @@ public:
         }
         basics::RecursionGuard guard(this);
 
-        FileLock fLock(config_path(), ResourceType::File, timeout);
-        if (!fLock.valid())
+        std::unique_ptr<FileLock> fLock;
+        if (timeout.has_value()) {
+            // A timeout was provided, use the timed lock constructor.
+            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
+        } else {
+            // No timeout was provided, use the blocking lock constructor.
+            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
+        }
+        
+        if (!fLock || !fLock->valid())
         {
-            if (ec) *ec = fLock.error_code();
+            if (ec) *ec = fLock->error_code();
             return false;
         }
 
