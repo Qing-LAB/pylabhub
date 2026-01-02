@@ -23,6 +23,9 @@
 #endif
 
 #include "utils/JsonConfig.hpp"
+#include "utils/FileLock.hpp"
+#include "utils/Logger.hpp"
+
 
 namespace pylabhub::utils
 {
@@ -31,13 +34,11 @@ namespace fs = std::filesystem;
 // Module-level flag to indicate if the JsonConfig has been initialized.
 static std::atomic<bool> g_jsonconfig_initialized{false};
 
-// Use shared_timed_mutex to support timed try-lock_for semantics
 struct JsonConfig::Impl
 {
     std::filesystem::path configPath;
     nlohmann::json data = nlohmann::json::object();
     std::mutex initMutex;
-    std::shared_timed_mutex rwMutex;
     std::atomic<bool> dirty{false};
     Impl() = default;
     ~Impl() = default;
@@ -45,15 +46,13 @@ struct JsonConfig::Impl
 
 struct JsonConfig::ReadLock::Impl
 {
-    JsonConfig::Impl *owner = nullptr;
-    std::shared_lock<std::shared_timed_mutex> rlock;
+    JsonConfig *owner = nullptr;
     ReadLock::Impl *self_tag_ptr = nullptr;
 };
 
 struct JsonConfig::WriteLock::Impl
 {
-    JsonConfig::Impl *owner = nullptr;
-    std::unique_lock<std::shared_timed_mutex> writeLock;
+    JsonConfig *owner = nullptr;
     bool committed = false;
     WriteLock::Impl *self_tag_ptr = nullptr;
 };
@@ -108,11 +107,8 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
     {
         if (!pImpl) pImpl = std::make_unique<Impl>();
         {
-            // This scope ensures the lock on `initMutex` is released before calling `reload()`.
-            // `reload()` also acquires this same mutex, so calling it without releasing
-            // the lock first would cause a recursive deadlock.
             std::lock_guard<std::mutex> g(pImpl->initMutex);
-            
+
             #if PYLABHUB_IS_POSIX
             struct stat lstat_buf;
             if (lstat(configFile.c_str(), &lstat_buf) == 0)
@@ -125,18 +121,11 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
                 }
             }
             #endif
-            
+
             pImpl->configPath = configFile;
 
             if (createIfMissing)
             {
-                FileLock fl(configFile, ResourceType::File, LockMode::NonBlocking);
-                if (!fl.valid())
-                {
-                    if (ec) *ec = fl.error_code();
-                    return false;
-                }
-
                 std::error_code lfs;
                 if (!fs::exists(configFile, lfs))
                 {
@@ -160,34 +149,13 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
     }
 }
 
-bool JsonConfig::reload(std::error_code *ec) noexcept
+bool JsonConfig::private_load_from_disk_unsafe(std::error_code* ec) noexcept
 {
     try
     {
-        if (!pImpl)
-        {
-            if (ec) *ec = std::make_error_code(std::errc::not_connected);
-            return false;
-        }
-
-        std::lock_guard<std::mutex> g(pImpl->initMutex);
-        if (pImpl->configPath.empty())
-        {
-            if (ec) *ec = std::make_error_code(std::errc::no_such_file_or_directory);
-            return false;
-        }
-
-        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::NonBlocking);
-        if (!fl.valid())
-        {
-            if (ec) *ec = fl.error_code();
-            return false;
-        }
-
         std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
-            std::unique_lock<std::shared_timed_mutex> w(pImpl->rwMutex);
             pImpl->data = nlohmann::json::object();
             pImpl->dirty.store(false, std::memory_order_release);
             if (ec) *ec = std::error_code{};
@@ -196,11 +164,9 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
 
         nlohmann::json newdata;
         in >> newdata;
-        {
-            std::unique_lock<std::shared_timed_mutex> w(pImpl->rwMutex);
-            pImpl->data = std::move(newdata);
-            pImpl->dirty.store(false, std::memory_order_release);
-        }
+
+        pImpl->data = std::move(newdata);
+        pImpl->dirty.store(false, std::memory_order_release);
 
         if (ec) *ec = std::error_code{};
         return true;
@@ -217,6 +183,54 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
     }
 }
 
+bool JsonConfig::reload(std::error_code *ec) noexcept
+{
+    try
+    {
+        if (!pImpl)
+        {
+            if (ec) *ec = std::make_error_code(std::errc::not_connected);
+            return false;
+        }
+
+        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
+        if (!fl.valid())
+        {
+            if (ec) *ec = fl.error_code();
+            return false;
+        }
+
+        return private_load_from_disk_unsafe(ec);
+    }
+    catch (const std::exception &ex)
+    {
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+    catch (...)
+    {
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+}
+
+bool JsonConfig::private_commit_to_disk_unsafe(std::error_code* ec) noexcept
+{
+    try
+    {
+        nlohmann::json snapshot = pImpl->data;
+        atomic_write_json(pImpl->configPath, snapshot, ec);
+        if (ec && *ec) return false;
+        pImpl->dirty.store(false, std::memory_order_release);
+        return true;
+    }
+    catch(...)
+    {
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+}
+
 bool JsonConfig::save(std::error_code *ec) noexcept
 {
     try
@@ -227,24 +241,14 @@ bool JsonConfig::save(std::error_code *ec) noexcept
             return false;
         }
 
-        std::lock_guard<std::mutex> g(pImpl->initMutex);
-        if (pImpl->configPath.empty())
+        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
+        if (!fl.valid())
         {
-            if (ec) *ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            if (ec) *ec = fl.error_code();
             return false;
         }
 
-        nlohmann::json snapshot;
-        {
-            std::shared_lock<std::shared_timed_mutex> r(pImpl->rwMutex);
-            snapshot = pImpl->data;
-        }
-
-        atomic_write_json(pImpl->configPath, snapshot, ec);
-        if (ec && *ec) return false;
-
-        pImpl->dirty.store(false, std::memory_order_release);
-        return true;
+        return private_commit_to_disk_unsafe(ec);
     }
     catch (const std::exception &ex)
     {
@@ -274,7 +278,7 @@ const nlohmann::json &JsonConfig::ReadLock::json() const noexcept
         static const nlohmann::json null_json = nlohmann::json::value_t::null;
         return null_json;
     }
-    return d_->owner->data;
+    return d_->owner->pImpl->data;
 }
 
 JsonConfig::WriteLock::WriteLock() noexcept {}
@@ -293,7 +297,7 @@ nlohmann::json &JsonConfig::WriteLock::json() noexcept
         static nlohmann::json dummy = nlohmann::json::object();
         return dummy;
     }
-    return d_->owner->data;
+    return d_->owner->pImpl->data;
 }
 
 bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
@@ -304,22 +308,11 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
         return false;
     }
 
-    try
-    {
-        nlohmann::json snapshot = d_->owner->data;
-        atomic_write_json(d_->owner->configPath, snapshot, ec);
-        if (ec && *ec) return false;
-        d_->owner->dirty.store(false, std::memory_order_release);
-        d_->committed = true;
-        if (ec) *ec = std::error_code{};
-        return true;
-    }
-    catch (...)
-    {
-        if (ec) *ec = std::make_error_code(std::errc::io_error);
-        return false;
-    }
+    bool ok = d_->owner->private_commit_to_disk_unsafe(ec);
+    if (ok) d_->committed = true;
+    return ok;
 }
+
 
 // Factory functions
 std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *ec) const noexcept
@@ -341,22 +334,12 @@ std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *e
 
     JsonConfig::ReadLock r;
     r.d_ = std::make_unique<JsonConfig::ReadLock::Impl>();
-    r.d_->owner = pImpl.get();
-    try
-    {
-        r.d_->rlock = std::shared_lock<std::shared_timed_mutex>(pImpl->rwMutex);
-    }
-    catch (...)
-    {
-        if (ec) *ec = std::make_error_code(std::errc::resource_unavailable_try_again);
-        return std::nullopt;
-    }
+    r.d_->owner = const_cast<JsonConfig*>(this);
     if (ec) *ec = std::error_code{};
     return r;
 }
 
-std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::chrono::milliseconds timeout,
-                                                               std::error_code *ec) noexcept
+std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code *ec) noexcept
 {
     if (!pImpl)
     {
@@ -364,7 +347,6 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::chrono::mil
         return std::nullopt;
     }
 
-    // First, check the path using a short-lived lock on the initMutex.
     {
         std::lock_guard<std::mutex> g(pImpl->initMutex);
         if (pImpl->configPath.empty())
@@ -374,43 +356,12 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::chrono::mil
         }
     }
 
-    // Now that the path is verified, proceed to acquire the actual write lock.
     JsonConfig::WriteLock w;
     w.d_ = std::make_unique<JsonConfig::WriteLock::Impl>();
-    w.d_->owner = pImpl.get();
+    w.d_->owner = this;
 
-    try
-    {
-        w.d_->writeLock = std::unique_lock<std::shared_timed_mutex>(pImpl->rwMutex, std::defer_lock);
-
-        if (timeout.count() == 0)
-        {
-            w.d_->writeLock.lock();
-        }
-        else
-        {
-            if (!w.d_->writeLock.try_lock_for(timeout))
-            {
-                if (ec) *ec = std::make_error_code(std::errc::timed_out);
-                return std::nullopt;
-            }
-        }
-
-        // The check on configPath is no longer needed here, as it was performed above
-        // and the path is immutable after initialization.
-        if (ec) *ec = std::error_code{};
-        return w;
-    }
-    catch (const std::system_error &se)
-    {
-        if (ec) *ec = se.code();
-        return std::nullopt;
-    }
-    catch (...)
-    {
-        if (ec) *ec = std::make_error_code(std::errc::io_error);
-        return std::nullopt;
-    }
+    if (ec) *ec = std::error_code{};
+    return w;
 }
 
 void JsonConfig::atomic_write_json(const std::filesystem::path &target,
@@ -444,7 +395,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
         {
             DWORD err = GetLastError();
             if (ec) *ec = std::make_error_code(static_cast<std::errc>(err));
-            LOGGER_ERROR("atomic_write_json: CreateFileW(temp) failed for '{}'. Error: {}", tmp_full.string(), err);
+            LOGGER_ERROR("atomic_write_json: CreateFileW(temp) failed for '{}'. Error:{}", tmp_full.string(), err);
             return;
         }
 
@@ -458,7 +409,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
             CloseHandle(h);
             DeleteFileW(tmp_full_w.c_str());
             if (ec) *ec = std::make_error_code(static_cast<std::errc>(err));
-            LOGGER_ERROR("atomic_write_json: WriteFile failed for '{}'. Error: {}", tmp_full.string(), err);
+            LOGGER_ERROR("atomic_write_json: WriteFile failed for '{}'. Error:{}", tmp_full.string(), err);
             return;
         }
 
@@ -468,7 +419,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
             CloseHandle(h);
             DeleteFileW(tmp_full_w.c_str());
             if (ec) *ec = std::make_error_code(static_cast<std::errc>(err));
-            LOGGER_ERROR("atomic_write_json: FlushFileBuffers failed for '{}'. Error: {}", tmp_full.string(), err);
+            LOGGER_ERROR("atomic_write_json: FlushFileBuffers failed for '{}'. Error:{}", tmp_full.string(), err);
             return;
         }
 
@@ -490,7 +441,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
         if (!replaced)
         {
             if (ec) *ec = std::make_error_code(std::errc::io_error);
-            LOGGER_ERROR("atomic_write_json: ReplaceFileW failed for '{}' after retries. Error: {}", target.string(), last_error);
+            LOGGER_ERROR("atomic_write_json: ReplaceFileW failed for '{}' after retries. Error:{}", target.string(), last_error);
             DeleteFileW(tmp_full_w.c_str());
             return;
         }
@@ -611,39 +562,14 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
             }
             fd = -1;
 
-            int target_fd = ::open(target.c_str(), O_CREAT | O_RDWR, 0666);
-            if (target_fd == -1)
-            {
-                int errnum = errno;
-                ::unlink(tmp_path.c_str());
-                if (ec) *ec = std::make_error_code(static_cast<std::errc>(errnum));
-                LOGGER_ERROR("atomic_write_json: open(target) failed for '{}'. Error: {}", target.string(), std::strerror(errnum));
-                return;
-            }
-
-            if (::flock(target_fd, LOCK_EX | LOCK_NB) != 0)
-            {
-                int errnum = errno;
-                ::close(target_fd);
-                ::unlink(tmp_path.c_str());
-                if (ec) *ec = std::make_error_code(static_cast<std::errc>(errnum));
-                LOGGER_ERROR("atomic_write_json: flock(target) failed for '{}'. Error: {}", target.string(), std::strerror(errnum));
-                return;
-            }
-
             if (std::rename(tmp_path.c_str(), target.c_str()) != 0)
             {
                 int errnum = errno;
-                ::flock(target_fd, LOCK_UN);
-                ::close(target_fd);
                 ::unlink(tmp_path.c_str());
                 if (ec) *ec = std::make_error_code(static_cast<std::errc>(errnum));
                 LOGGER_ERROR("atomic_write_json: rename failed for '{}'. Error: {}", target.string(), std::strerror(errnum));
                 return;
             }
-
-            ::flock(target_fd, LOCK_UN);
-            ::close(target_fd);
 
             int dfd = ::open(dir.c_str(), O_DIRECTORY | O_RDONLY);
             if (dfd >= 0)
