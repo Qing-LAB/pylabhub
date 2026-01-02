@@ -30,8 +30,8 @@ public:
 
     AtomicOwner(const AtomicOwner &) = delete;
     AtomicOwner &operator=(const AtomicOwner &) = delete;
-    AtomicOwner(AtomicOwner &&) noexcept = default;
-    AtomicOwner &operator=(AtomicOwner &&) noexcept = default;
+    AtomicOwner(AtomicOwner &&) noexcept = delete; // atomic state cannot be moved
+    AtomicOwner &operator=(AtomicOwner &&) noexcept = delete; // atomic state cannot be moved
 
     uint64_t load() const noexcept { return state_.load(std::memory_order_acquire); }
     void store(uint64_t v) noexcept { state_.store(v, std::memory_order_release); }
