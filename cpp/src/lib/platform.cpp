@@ -17,7 +17,11 @@
 #endif
 #endif
 #if defined(PYLABHUB_PLATFORM_APPLE)
-#include <limits.h> // For PATH_MAX
+#include <mach-o/dyld.h>     // _NSGetExecutablePath
+#include <libproc.h>         // proc_pidpath
+#include <limits.h>          // PATH_MAX
+#include <unistd.h>          // getpid, realpath
+#include <vector>
 #endif
 
 #include "fmt/core.h"
@@ -73,18 +77,50 @@ std::string get_executable_name()
             return std::filesystem::path(std::string(result, count)).filename().string();
         }
         return "unknown_linux";
+        
 #elif defined(PYLABHUB_PLATFORM_APPLE)
-        char path[PATH_MAX];
-        uint32_t size = sizeof(path);
-        if (_NSGetExecutablePath(path, &size) == 0)
-        {
-            return std::filesystem::path(path).filename().string();
+
+        // 1) Try _NSGetExecutablePath (handles sizing via size parameter)
+        uint32_t size = 0;
+        // first call to discover required size
+        if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0) {
+            std::vector<char> buf(size);
+            if (_NSGetExecutablePath(buf.data(), &size) == 0) {
+                // canonicalize to resolve symlinks
+                char resolved[PATH_MAX];
+                if (realpath(buf.data(), resolved) != nullptr) {
+                    return std::filesystem::path(resolved).filename().string();
+                }
+                return std::filesystem::path(buf.data()).filename().string();
+            }
+        } else {
+            // _NSGetExecutablePath returned 0 with size == 0 (unusual) — try small stack buffer
+            char smallbuf[PATH_MAX];
+            size = sizeof(smallbuf);
+            if (_NSGetExecutablePath(smallbuf, &size) == 0) {
+                char resolved[PATH_MAX];
+                if (realpath(smallbuf, resolved) != nullptr) {
+                    return std::filesystem::path(resolved).filename().string();
+                }
+                return std::filesystem::path(smallbuf).filename().string();
+            }
         }
-        return "unknown_apple";
-#else
-        return "unknown";
+
+        // 2) Fallback: proc_pidpath (often available and returns full path)
+        {
+            char procbuf[PROC_PIDPATHINFO_MAXSIZE];
+            int ret = proc_pidpath(getpid(), procbuf, sizeof(procbuf));
+            if (ret > 0) {
+                char resolved[PATH_MAX];
+                if (realpath(procbuf, resolved) != nullptr) {
+                    return std::filesystem::path(resolved).filename().string();
+                }
+                return std::filesystem::path(procbuf).filename().string();
+            }
+        }
+
 #endif
-    }
+    } // try
     catch (const std::exception& e)
     {
         // std::filesystem operations can throw on invalid paths.
