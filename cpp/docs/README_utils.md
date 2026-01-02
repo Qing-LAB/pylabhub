@@ -75,6 +75,22 @@ The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, a
     }
     ```
 
+*   **Lifecycle and Shutdown Behavior**:
+    The Logger is a lifecycle-aware component managed by the `LifecycleManager`. Its shutdown process is designed to be robust and prevent data loss, even in chaotic scenarios.
+
+    *   **Initialization**: The logger's background worker thread is started during the application's `initialize` phase. Attempting to use the logger before this phase is a fatal error and will cause the application to `abort()`.
+
+    *   **Shutdown Process**:
+        1.  When the application's `finalize` phase begins, the logger transitions to a `ShuttingDown` state.
+        2.  In this state, any new calls to logger functions (e.g., `LOGGER_INFO`, `set_level`) from other threads are immediately and silently ignored. This prevents deadlocks and makes the shutdown process robust against race conditions from threads that have not yet terminated.
+        3.  The logger's background thread continues to run until it has processed all messages that were already in its queue before the shutdown was initiated.
+        4.  After the queue is empty, the worker performs one final, automatic `flush()` on the current sink (e.g., file or console) to ensure all messages are written to the output.
+        5.  The worker thread then cleanly exits.
+
+    *   **Corner Cases**:
+        *   **Logging During/After Shutdown**: If any part of the application attempts to log while the logger is shutting down or after it has shut down, the call is safely and silently ignored. The application will not crash.
+        *   **`flush()` During/After Shutdown**: Calling `Logger::instance().flush()` while the logger is shutting down or has shut down is a safe no-op. It will return immediately without blocking or throwing an error.
+
 ### `JsonConfig`
 
 The `pylabhub::utils::JsonConfig` class provides a robust, process-safe interface for managing JSON configuration files.

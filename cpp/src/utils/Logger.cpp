@@ -41,17 +41,32 @@ using namespace pylabhub::format_tools;
 namespace pylabhub::utils
 {
 
-// Module-level flag to indicate if the logger has been initialized.
-static std::atomic<bool> g_logger_initialized{false};
+// Represents the lifecycle state of the logger.
+enum class LoggerState
+{
+    Uninitialized,
+    Initialized,
+    ShuttingDown,
+    Shutdown
+};
+
+// Global atomic to track the logger's state.
+static std::atomic<LoggerState> g_logger_state{LoggerState::Uninitialized};
+
 
 // Centralized check function
-static void check_initialized_and_abort(const char* function_name) {
-    if (!g_logger_initialized.load(std::memory_order_acquire)) {
+static bool logger_is_loggable(const char *function_name)
+{
+    const auto state = g_logger_state.load(std::memory_order_acquire);
+    if (state == LoggerState::Uninitialized)
+    {
         fmt::print(stderr,
-                   "FATAL: Logger method '{}' was called before the Logger module was initialized via LifecycleManager. Aborting.\n",
+                   "FATAL: Logger method '{}' was called before the Logger module was "
+                   "initialized via LifecycleManager. Aborting.\n",
                    function_name);
         std::abort();
     }
+    return state == LoggerState::Initialized;
 }
 
 /**
@@ -557,12 +572,12 @@ Logger &Logger::instance()
 }
 
 bool Logger::lifecycle_initialized() noexcept {
-    return g_logger_initialized.load(std::memory_order_acquire);
+    return g_logger_state.load(std::memory_order_acquire) != LoggerState::Uninitialized;
 }
 
 void Logger::set_console()
 {
-    check_initialized_and_abort("Logger::set_console");
+    if (!logger_is_loggable("Logger::set_console")) return;
     try
     {
         pImpl->enqueue_command(SetSinkCommand{std::make_unique<ConsoleSink>()});
@@ -575,7 +590,7 @@ void Logger::set_console()
 
 void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
-    check_initialized_and_abort("Logger::set_logfile");
+    if (!logger_is_loggable("Logger::set_logfile")) return;
     try
     {
         pImpl->enqueue_command(SetSinkCommand{std::make_unique<FileSink>(utf8_path, use_flock)});
@@ -588,7 +603,7 @@ void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 
 void Logger::set_syslog(const char *ident, int option, int facility)
 {
-    check_initialized_and_abort("Logger::set_syslog");
+    if (!logger_is_loggable("Logger::set_syslog")) return;
 #if !defined(PLATFORM_WIN64)
     try
     {
@@ -605,7 +620,7 @@ void Logger::set_syslog(const char *ident, int option, int facility)
 
 void Logger::set_eventlog(const wchar_t *source_name)
 {
-    check_initialized_and_abort("Logger::set_eventlog");
+    if (!logger_is_loggable("Logger::set_eventlog")) return;
 #ifdef PLATFORM_WIN64
     try
     {
@@ -629,8 +644,10 @@ void Logger::shutdown()
 
 void Logger::flush()
 {
-    check_initialized_and_abort("Logger::flush");
-    if (!pImpl || pImpl->shutdown_requested_.load()) return;
+    if (!logger_is_loggable("Logger::flush")) return;
+    // This check is needed to prevent a deadlock where enqueue_command does nothing
+    // because shutdown has started, and we wait on the future forever.
+    if (pImpl->shutdown_requested_.load()) return;
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
     pImpl->enqueue_command(FlushCommand{promise});
@@ -639,13 +656,13 @@ void Logger::flush()
 
 void Logger::set_level(Level lvl)
 {
-    check_initialized_and_abort("Logger::set_level");
+    if (!logger_is_loggable("Logger::set_level")) return;
     if (pImpl) pImpl->level_.store(lvl, std::memory_order_relaxed);
 }
 
 Logger::Level Logger::level() const
 {
-    check_initialized_and_abort("Logger::level");
+    if (!logger_is_loggable("Logger::level")) return Level::L_INFO;
     return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
@@ -653,25 +670,27 @@ Logger::Level Logger::level() const
 
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
-    check_initialized_and_abort("Logger::set_write_error_callback");
+    if (!logger_is_loggable("Logger::set_write_error_callback")) return;
     if (pImpl) pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
 }
 
 void Logger::set_log_sink_messages_enabled(bool enabled)
 {
-    check_initialized_and_abort("Logger::set_log_sink_messages_enabled");
+    if (!logger_is_loggable("Logger::set_log_sink_messages_enabled")) return;
     if (pImpl) pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled});
 }
 
 bool Logger::should_log(Level lvl) const noexcept
 {
+    const auto state = g_logger_state.load(std::memory_order_acquire);
+    if (state != LoggerState::Initialized) return false;
 
-    return lifecycle_initialized() && pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
+    return pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
 void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
-    check_initialized_and_abort("Logger::enqueue_log");
+    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized) return;
     if (pImpl)
     {
         pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)});
@@ -680,7 +699,7 @@ void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 
 void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
-    check_initialized_and_abort("Logger::enqueue_log");
+    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized) return;
     if (pImpl)
     {
         pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), make_buffer("{}", std::move(body_str))});
@@ -692,14 +711,19 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 void do_logger_startup(const char* arg) {
     (void)arg; // Argument not used by logger startup.
     Logger::instance().pImpl->start_worker();
-    g_logger_initialized.store(true, std::memory_order_release);
+    g_logger_state.store(LoggerState::Initialized, std::memory_order_release);
 }
 void do_logger_shutdown(const char* arg) {
     (void)arg; // Argument not used by logger shutdown.
-    if (Logger::lifecycle_initialized()) {
+    LoggerState expected = LoggerState::Initialized;
+    // Atomically change state from Initialized to ShuttingDown.
+    // If it wasn't Initialized, another thread is already shutting it down, so we do nothing.
+    if (g_logger_state.compare_exchange_strong(expected, LoggerState::ShuttingDown,
+                                               std::memory_order_acq_rel))
+    {
         Logger::instance().shutdown();
+        g_logger_state.store(LoggerState::Shutdown, std::memory_order_release);
     }
-    g_logger_initialized.store(false, std::memory_order_release);
 }
 
 ModuleDef Logger::GetLifecycleModule()
