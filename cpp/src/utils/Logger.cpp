@@ -347,8 +347,10 @@ struct SinkCreationErrorCommand { std::string error_message; };
 struct FlushCommand { std::shared_ptr<std::promise<void>> promise; };
 struct SetErrorCallbackCommand { std::function<void(const std::string &)> callback; };
 
+struct SetLogSinkMessagesCommand { bool enabled; };
+
 using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand, FlushCommand,
-                             SetErrorCallbackCommand>;
+                             SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
 
 // Logger Pimpl and Implementation
 struct Logger::Impl
@@ -371,6 +373,7 @@ struct Logger::Impl
     std::function<void(const std::string &)> error_callback_;
     CallbackDispatcher callback_dispatcher_;
     std::atomic<bool> shutdown_completed_{false};
+    std::atomic<bool> m_log_sink_messages_enabled_{true}; // New member
 };
 
 Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -448,24 +451,30 @@ void Logger::Impl::worker_loop()
                         }
                         else if constexpr (std::is_same_v<T, SetSinkCommand>)
                         {
-                            std::string old_desc = sink_ ? sink_->description() : "null";
-                            std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
+                            if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
+                            {
+                                std::string old_desc = sink_ ? sink_->description() : "null";
+                                std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
 
-                            if (sink_)
-                            {
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Switching log sink to: {}", new_desc)});
-                                sink_->flush();
-                            }
-                            sink_ = std::move(arg.new_sink);
-                            if (sink_)
-                            {
-                                sink_->write({Logger::Level::L_SYSTEM,
-                                              std::chrono::system_clock::now(),
-                                              get_native_thread_id(),
-                                              make_buffer("Log sink switched from: {}", old_desc)});
+                                if (sink_)
+                                {
+                                    sink_->write({Logger::Level::L_SYSTEM,
+                                                  std::chrono::system_clock::now(),
+                                                  get_native_thread_id(),
+                                                  make_buffer("Switching log sink to: {}", new_desc)});
+                                    sink_->flush();
+                                }
+                                sink_ = std::move(arg.new_sink);
+                                if (sink_)
+                                {
+                                    sink_->write({Logger::Level::L_SYSTEM,
+                                                  std::chrono::system_clock::now(),
+                                                  get_native_thread_id(),
+                                                  make_buffer("Log sink switched from: {}", old_desc)});
+                                }
+                            } else {
+                                // If messages are disabled, just switch the sink without logging.
+                                sink_ = std::move(arg.new_sink);
                             }
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
@@ -485,6 +494,10 @@ void Logger::Impl::worker_loop()
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
                         {
                             error_callback_ = std::move(arg.callback);
+                        }
+                        else if constexpr (std::is_same_v<T, SetLogSinkMessagesCommand>)
+                        {
+                            m_log_sink_messages_enabled_.store(arg.enabled, std::memory_order_relaxed);
                         }
                     },
                     std::move(cmd));
@@ -642,6 +655,12 @@ void Logger::set_write_error_callback(std::function<void(const std::string &)> c
 {
     check_initialized_and_abort("Logger::set_write_error_callback");
     if (pImpl) pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
+}
+
+void Logger::set_log_sink_messages_enabled(bool enabled)
+{
+    check_initialized_and_abort("Logger::set_log_sink_messages_enabled");
+    if (pImpl) pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled});
 }
 
 bool Logger::should_log(Level lvl) const noexcept
