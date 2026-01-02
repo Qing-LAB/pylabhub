@@ -254,6 +254,13 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     void set_write_error_callback(std::function<void(const std::string &)> cb);
 
+    /**
+     * @brief Asynchronously enables or disables logging of internal sink switching messages.
+     * @param enabled If true, sink switching messages will be logged; otherwise, they will be suppressed.
+     */
+    void set_log_sink_messages_enabled(bool enabled);
+
+
     // --- Compile-Time Formatting API (Header-Only Templates) ---
     // These functions use `fmt::format_string` to validate the format string
     // against the arguments at compile time.
