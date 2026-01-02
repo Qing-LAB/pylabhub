@@ -140,6 +140,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
     catch (const std::exception &ex)
     {
         if (ec) *ec = std::make_error_code(std::errc::io_error);
+        LOGGER_ERROR("JsonConfig::init: exception during init: {}", ex.what());
         return false;
     }
     catch (...)
@@ -174,6 +175,8 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code* ec) noexcept
     catch (const std::exception &ex)
     {
         if (ec) *ec = std::make_error_code(std::errc::io_error);
+        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: exception during load: {}",
+                     ex.what());
         return false;
     }
     catch (...)
@@ -189,22 +192,30 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
     {
         if (!pImpl)
         {
-            if (ec) *ec = std::make_error_code(std::errc::not_connected);
+            if (ec)
+                *ec = std::make_error_code(std::errc::not_connected);
             return false;
         }
 
         FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
         if (!fl.valid())
         {
-            if (ec) *ec = fl.error_code();
+            if (ec)
+                *ec = fl.error_code();
             return false;
         }
 
-        return private_load_from_disk_unsafe(ec);
+        if (!private_load_from_disk_unsafe(ec))
+        {
+            LOGGER_ERROR("JsonConfig::reload: failed to load {} from disk", pImpl->configPath.string());
+            return false;
+        }
+        return true;
     }
     catch (const std::exception &ex)
     {
         if (ec) *ec = std::make_error_code(std::errc::io_error);
+        LOGGER_ERROR("JsonConfig::reload: exception during reload: {}", ex.what());
         return false;
     }
     catch (...)
@@ -248,11 +259,17 @@ bool JsonConfig::save(std::error_code *ec) noexcept
             return false;
         }
 
-        return private_commit_to_disk_unsafe(ec);
+        if (!private_commit_to_disk_unsafe(ec))
+        {
+            LOGGER_ERROR("JsonConfig::save: failed to save {} to disk", pImpl->configPath.string());
+            return false;
+        }
+        return true;
     }
     catch (const std::exception &ex)
     {
         if (ec) *ec = std::make_error_code(std::errc::io_error);
+        LOGGER_ERROR("JsonConfig::save: exception during save: {}", ex.what());
         return false;
     }
     catch (...)
@@ -441,7 +458,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
 
         if (!replaced)
         {
-            if(last_error == ERROR_FILE_NOT_FOOUNDD) {
+            if(last_error == ERROR_FILE_NOT_FOUND) {
                 // If the target file does not exist, try MoveFileEx as a fallback
                 if (!MoveFileExW(tmp_full_w.c_str(), target_w.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
                 {
