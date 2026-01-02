@@ -151,9 +151,12 @@ class PYLABHUB_UTILS_EXPORT FileLock
   public:
     /**
      * @brief Returns a ModuleDef for the FileLock to be used with the LifecycleManager.
-     * The FileLock module only has a shutdown task to clean up stale lock files.
+     *
+     * @param cleanup_on_shutdown If true, a shutdown task will be registered to
+     *                            clean up stale lock files.
+     * @return A configured ModuleDef for the FileLock utility.
      */
-    static ModuleDef GetLifecycleModule();
+    static ModuleDef GetLifecycleModule(bool cleanup_on_shutdown = true);
 
     /**
      * @brief Checks if the FileLock module has been initialized by the LifecycleManager.

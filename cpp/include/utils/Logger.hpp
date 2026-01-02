@@ -126,12 +126,12 @@ namespace pylabhub::utils
 {
 
 // Forward declare the lifecycle startup function to befriend it.
-void do_logger_startup();
+void do_logger_startup(const char*);
 
 class PYLABHUB_UTILS_EXPORT Logger
 {
   // Grant access to the startup function so it can start the worker thread.
-  friend void do_logger_startup();
+  friend void do_logger_startup(const char*);
 
   // Forward declaration for the Pimpl pattern.
   struct Impl;

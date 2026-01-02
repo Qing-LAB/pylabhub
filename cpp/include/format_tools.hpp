@@ -4,6 +4,8 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <optional>
+#include <string_view>
 #include <fmt/chrono.h>
 
 
@@ -11,6 +13,27 @@ namespace pylabhub::format_tools {
 
 // --- Helper: formatted local time with sub-second resolution (robust) ---
 std::string formatted_time(std::chrono::system_clock::time_point timestamp);
+
+/**
+ * @brief Extracts a value from a dictionary-like string.
+ *
+ * This function parses a string containing key-value pairs (e.g.,
+ * "key1=val1; key2=val2") and returns the value for a specified key.
+ * It handles whitespace around separators and assignment symbols.
+ *
+ * @param input The string_view to parse.
+ * @param separator The character separating key-value pairs.
+ * @param assignment_symbol The character separating a key from its value.
+ * @param keyword The key to search for.
+ * @return An std::optional<std::string> containing the value if found,
+ *         otherwise std::nullopt.
+ */
+std::optional<std::string> extract_value_from_string(
+    std::string_view keyword,
+    std::string_view input,
+    char separator = ';',
+    char assignment_symbol = '=');
+
 
 std::wstring win32_to_long_path(const std::filesystem::path &);
 std::wstring win32_make_unique_suffix();
