@@ -275,7 +275,7 @@ JsonConfig::ReadLock::~ReadLock() {}
 const nlohmann::json &JsonConfig::ReadLock::json() const noexcept
 {
     if (!d_ || !d_->owner) {
-        static const nlohmann::json null_json = nlohmann::json::value_t::null;
+        static const nlohmann::json null_json = nlohmann::json();
         return null_json;
     }
     return d_->owner->pImpl->data;
@@ -434,16 +434,30 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target,
             replaced = ReplaceFileW(target_w.c_str(), tmp_full_w.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
             if (replaced) break;
             last_error = GetLastError();
+            // If sharing violation, wait and retry
             if (last_error != ERROR_SHARING_VIOLATION) break;
             Sleep(REPLACE_DELAY_MS);
         }
 
         if (!replaced)
         {
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
-            LOGGER_ERROR("atomic_write_json: ReplaceFileW failed for '{}' after retries. Error:{}", target.string(), last_error);
-            DeleteFileW(tmp_full_w.c_str());
-            return;
+            if(last_error == ERROR_FILE_NOT_FOOUNDD) {
+                // If the target file does not exist, try MoveFileEx as a fallback
+                if (!MoveFileExW(tmp_full_w.c_str(), target_w.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                {
+                    last_error = GetLastError();
+                    LOGGER_ERROR("atomic_write_json: MoveFileW fallback failed for '{}' -> '{}'. Error:{}", tmp_full.string(), target.string(), last_error);
+                    DeleteFileW(tmp_full_w.c_str());
+                    if (ec) *ec = std::make_error_code(std::errc::io_error);
+                    return;
+                } 
+            }
+            else {
+                LOGGER_ERROR("atomic_write_json: ReplaceFileW failed for '{}' after retries. Error:{}", target.string(), last_error);
+                DeleteFileW(tmp_full_w.c_str());
+                if (ec) *ec = std::make_error_code(std::errc::io_error);
+                return;
+            }
         }
 
         if (ec) *ec = std::error_code{};
