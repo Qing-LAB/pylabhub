@@ -1,37 +1,42 @@
 #include "utils/Lifecycle.hpp"
-#include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
 #include "shared_test_helpers.h" // For StringCapture
 
-#include <vector>
 #include <string>
+#include <vector>
 
-namespace {
+namespace
+{
 // A simple module that does nothing, for testing registration.
 void null_callback(const char *) {}
 
 // Global/static atomic counter for the test
 std::atomic<int> global_startup_counter{0};
 
-void global_startup_callback(const char* arg) {
+void global_startup_callback(const char *arg)
+{
     (void)arg; // Unused
     global_startup_counter++;
 }
 
-class LifecycleTest : public ::testing::Test {
-protected:
+class LifecycleTest : public ::testing::Test
+{
+  protected:
     // void SetUp() override {
     //     // Reset the owner flag before each test to ensure isolation.
     //     // This is a bit of a hack, but necessary for testing the singleton guard.
     //     bool expected = true;
-    //     pylabhub::lifecycle::LifecycleGuard::owner_flag().compare_exchange_strong(expected, false);
+    //     pylabhub::lifecycle::LifecycleGuard::owner_flag().compare_exchange_strong(expected,
+    //     false);
     // }
 };
 
 // Test that creating multiple LifecycleGuards results in only one owner
 // and that a warning is printed for subsequent guards.
-TEST_F(LifecycleTest, MultipleGuardsWarning) {
+TEST_F(LifecycleTest, MultipleGuardsWarning)
+{
     testing::internal::CaptureStderr();
 
     // The first guard should become the owner.
@@ -42,11 +47,13 @@ TEST_F(LifecycleTest, MultipleGuardsWarning) {
     pylabhub::lifecycle::LifecycleGuard guard2;
 
     std::string output = testing::internal::GetCapturedStderr();
-    EXPECT_THAT(output, testing::HasSubstr("WARNING: LifecycleGuard constructed but an owner already exists."));
+    EXPECT_THAT(output, testing::HasSubstr(
+                            "WARNING: LifecycleGuard constructed but an owner already exists."));
 }
 
 // Test that modules are correctly registered and initialized.
-TEST_F(LifecycleTest, ModuleRegistrationAndInitialization) {
+TEST_F(LifecycleTest, ModuleRegistrationAndInitialization)
+{
     testing::internal::CaptureStderr();
 
     global_startup_counter = 0; // Reset for this test
@@ -65,7 +72,8 @@ TEST_F(LifecycleTest, ModuleRegistrationAndInitialization) {
 }
 
 // Test that the is_initialized flag works as expected.
-TEST_F(LifecycleTest, IsInitializedFlag) {
+TEST_F(LifecycleTest, IsInitializedFlag)
+{
     EXPECT_FALSE(pylabhub::lifecycle::IsInitialized());
     {
         pylabhub::lifecycle::LifecycleGuard guard;
@@ -79,12 +87,15 @@ TEST_F(LifecycleTest, IsInitializedFlag) {
 
 // Test that attempting to register a module after initialization aborts.
 // This requires running in a separate process.
-TEST_F(LifecycleTest, RegisterAfterInitAborts) {
+TEST_F(LifecycleTest, RegisterAfterInitAborts)
+{
     pylabhub::lifecycle::LifecycleGuard guard;
-    EXPECT_DEATH({
-        ModuleDef module_a("LateModule");
-        pylabhub::lifecycle::RegisterModule(std::move(module_a));
-    }, "Attempted to register module 'LateModule' after initialization has started");
+    EXPECT_DEATH(
+        {
+            ModuleDef module_a("LateModule");
+            pylabhub::lifecycle::RegisterModule(std::move(module_a));
+        },
+        "Attempted to register module 'LateModule' after initialization has started");
 }
 
 } // namespace

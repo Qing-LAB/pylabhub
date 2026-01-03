@@ -109,8 +109,8 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#include "utils/Lifecycle.hpp" // For ModuleDef
 #include "pylabhub_utils_export.h"
+#include "utils/Lifecycle.hpp" // For ModuleDef
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
 #ifndef LOGGER_FMT_BUFFER_RESERVE
@@ -126,15 +126,15 @@ namespace pylabhub::utils
 {
 
 // Forward declare the lifecycle startup function to befriend it.
-void do_logger_startup(const char*);
+void do_logger_startup(const char *);
 
 class PYLABHUB_UTILS_EXPORT Logger
 {
-  // Grant access to the startup function so it can start the worker thread.
-  friend void do_logger_startup(const char*);
+    // Grant access to the startup function so it can start the worker thread.
+    friend void do_logger_startup(const char *);
 
-  // Forward declaration for the Pimpl pattern.
-  struct Impl;
+    // Forward declaration for the Pimpl pattern.
+    struct Impl;
 
   public:
     /** @brief Defines the severity of a log message. */
@@ -163,8 +163,6 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @brief Checks if the Logger module has been initialized by the LifecycleManager.
      */
     static bool lifecycle_initialized() noexcept;
-
-
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.
@@ -256,10 +254,10 @@ class PYLABHUB_UTILS_EXPORT Logger
 
     /**
      * @brief Asynchronously enables or disables logging of internal sink switching messages.
-     * @param enabled If true, sink switching messages will be logged; otherwise, they will be suppressed.
+     * @param enabled If true, sink switching messages will be logged; otherwise, they will be
+     * suppressed.
      */
     void set_log_sink_messages_enabled(bool enabled);
-
 
     // --- Compile-Time Formatting API (Header-Only Templates) ---
     // These functions use `fmt::format_string` to validate the format string
@@ -306,28 +304,23 @@ class PYLABHUB_UTILS_EXPORT Logger
     template <typename... Args>
     void log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
 
-    template <typename... Args>
-    void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args>
-    void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args>
-    void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args>
-    void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args>
-    void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
         log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }

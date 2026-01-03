@@ -10,14 +10,14 @@
  * verifying their results.
  */
 #include "platform.hpp"
-#include <gtest/gtest.h>
 #include <filesystem>
+#include <gtest/gtest.h>
 #include <string>
 #include <vector>
 
+#include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
-#include "shared_test_helpers.h"
 
 namespace fs = std::filesystem;
 using namespace pylabhub::tests::helper;
@@ -31,7 +31,7 @@ using namespace pylabhub::tests::helper;
  */
 class LoggerTest : public ::testing::Test
 {
-protected:
+  protected:
     std::vector<fs::path> paths_to_clean_;
 
     void TearDown() override
@@ -40,7 +40,8 @@ protected:
         {
             try
             {
-                if (fs::exists(p)) fs::remove(p);
+                if (fs::exists(p))
+                    fs::remove(p);
             }
             catch (...)
             {
@@ -57,7 +58,8 @@ protected:
         // Ensure the file does not exist from a previous failed run.
         try
         {
-            if (fs::exists(p)) fs::remove(p);
+            if (fs::exists(p))
+                fs::remove(p);
         }
         catch (...)
         {
@@ -90,8 +92,8 @@ TEST_F(LoggerTest, LogLevelFiltering)
 TEST_F(LoggerTest, BadFormatString)
 {
     auto log_path = GetUniqueLogPath("bad_format_string");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_bad_format_string",
-                                              {log_path.string()});
+    ProcessHandle proc =
+        spawn_worker_process(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
@@ -110,8 +112,8 @@ TEST_F(LoggerTest, DefaultSinkAndSwitching)
 TEST_F(LoggerTest, MultithreadStress)
 {
     auto log_path = GetUniqueLogPath("multithread_stress");
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "logger.test_multithread_stress", {log_path.string()});
+    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_multithread_stress",
+                                              {log_path.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
@@ -191,7 +193,7 @@ TEST_F(LoggerTest, StressLog)
     for (int i = 0; i < PROCS; ++i)
     {
         ProcessHandle h = spawn_worker_process(g_self_exe_path, "logger.stress_log",
-                                                 {log_path.string(), std::to_string(MSGS_PER_PROC)});
+                                               {log_path.string(), std::to_string(MSGS_PER_PROC)});
         ASSERT_NE(h, NULL_PROC_HANDLE);
         procs.push_back(h);
     }

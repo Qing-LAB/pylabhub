@@ -11,22 +11,22 @@
  */
 #include "platform.hpp"
 
-#include <gtest/gtest.h>
-#include <filesystem>
-#include <thread>
-#include <chrono>
-#include <fstream>
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <gtest/gtest.h>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "shared_test_helpers.h"
+#include "test_entrypoint.h"
+#include "test_process_utils.h"
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
-#include "test_entrypoint.h"
-#include "shared_test_helpers.h"
-#include "test_process_utils.h"
 
 using namespace pylabhub::tests::helper;
 namespace fs = std::filesystem;
@@ -39,8 +39,9 @@ using namespace std::chrono_literals;
  * Sets up a temporary directory for test resources and provides helper
  * methods for cleaning up lock files.
  */
-class FileLockTest : public ::testing::Test {
-protected:
+class FileLockTest : public ::testing::Test
+{
+  protected:
     static fs::path g_temp_dir_;
 
     static void SetUpTestSuite()
@@ -68,7 +69,8 @@ protected:
     {
         try
         {
-            fs::remove(pylabhub::utils::FileLock::get_expected_lock_fullname_for(resource_path, type));
+            fs::remove(
+                pylabhub::utils::FileLock::get_expected_lock_fullname_for(resource_path, type));
         }
         catch (...)
         {
@@ -95,8 +97,8 @@ TEST_F(FileLockTest, BlockingLock)
 {
     auto resource_path = temp_dir() / "blocking_resource.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "filelock.test_blocking_lock", {resource_path.string()});
+    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_blocking_lock",
+                                              {resource_path.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
@@ -119,8 +121,8 @@ TEST_F(FileLockTest, MoveSemantics)
     auto resource2 = temp_dir() / "move2.txt";
     clear_lock_file(resource1, pylabhub::utils::ResourceType::File);
     clear_lock_file(resource2, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "filelock.test_move_semantics", {resource1.string(), resource2.string()});
+    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_move_semantics",
+                                              {resource1.string(), resource2.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
@@ -165,19 +167,19 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
  */
 TEST_F(FileLockTest, MultiProcessNonBlocking)
 {
-    pylabhub::lifecycle::LifecycleGuard guard(
-        pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::Logger::GetLifecycleModule()
-    );
+    pylabhub::lifecycle::LifecycleGuard guard(pylabhub::utils::FileLock::GetLifecycleModule(),
+                                              pylabhub::utils::Logger::GetLifecycleModule());
     auto resource_path = temp_dir() / "multiprocess.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 
     // Acquire lock in the main test process
-    pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
+    pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File,
+                                        pylabhub::utils::LockMode::Blocking);
     ASSERT_TRUE(main_lock.valid());
 
     // Spawn a worker that will try to acquire the same lock non-blockingly and should fail.
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire", {resource_path.string()});
+    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire",
+                                              {resource_path.string()});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
@@ -207,10 +209,9 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     std::vector<ProcessHandle> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        ProcessHandle h =
-            spawn_worker_process(g_self_exe_path, "filelock.contention_log_access",
-                                 {resource_path.string(), log_path.string(),
-                                  std::to_string(ITERS_PER_WORKER)});
+        ProcessHandle h = spawn_worker_process(
+            g_self_exe_path, "filelock.contention_log_access",
+            {resource_path.string(), log_path.string(), std::to_string(ITERS_PER_WORKER)});
         ASSERT_NE(h, NULL_PROC_HANDLE);
         procs.push_back(h);
     }
@@ -258,18 +259,16 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     {
         if (entry.action == "ACQUIRE")
         {
-            ASSERT_EQ(lock_held_count, 0)
-                << "Lock acquired while already held! PID " << entry.pid
-                << " tried to acquire while PID " << last_pid_to_acquire
-                << " held it. Timestamp: " << entry.timestamp;
+            ASSERT_EQ(lock_held_count, 0) << "Lock acquired while already held! PID " << entry.pid
+                                          << " tried to acquire while PID " << last_pid_to_acquire
+                                          << " held it. Timestamp: " << entry.timestamp;
             lock_held_count++;
             last_pid_to_acquire = entry.pid;
         }
         else if (entry.action == "RELEASE")
         {
-            ASSERT_EQ(lock_held_count, 1)
-                << "Lock released while not held! PID " << entry.pid
-                << " tried to release. Timestamp: " << entry.timestamp;
+            ASSERT_EQ(lock_held_count, 1) << "Lock released while not held! PID " << entry.pid
+                                          << " tried to release. Timestamp: " << entry.timestamp;
             ASSERT_EQ(entry.pid, last_pid_to_acquire)
                 << "Mismatch in lock release! PID " << last_pid_to_acquire
                 << " acquired the lock, but PID " << entry.pid << " released it.";
@@ -285,25 +284,25 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
  */
 TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 {
-    pylabhub::lifecycle::LifecycleGuard guard(
-        pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::Logger::GetLifecycleModule()
-    );
+    pylabhub::lifecycle::LifecycleGuard guard(pylabhub::utils::FileLock::GetLifecycleModule(),
+                                              pylabhub::utils::Logger::GetLifecycleModule());
     auto resource_path = temp_dir() / "parent_child_block.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    
+
     // Acquire lock in the parent process.
-    auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
+    auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(
+        resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
     ASSERT_TRUE(parent_lock->valid());
 
     // Spawn child process, which should block trying to acquire the same lock.
-    ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block", {resource_path.string()});
+    ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block",
+                                                    {resource_path.string()});
     ASSERT_NE(child_proc, NULL_PROC_HANDLE);
 
     // Give the child time to block.
     std::this_thread::sleep_for(200ms);
     // Release the parent lock, allowing the child to proceed.
-    parent_lock.reset(); 
+    parent_lock.reset();
 
     // The child should now be able to acquire the lock and exit successfully.
     ASSERT_EQ(wait_for_worker_and_get_exit_code(child_proc), 0);

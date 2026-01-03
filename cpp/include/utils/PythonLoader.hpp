@@ -83,7 +83,6 @@
 #define HOST_IMPORT
 #endif
 
-
 namespace pylabhub::utils
 {
 
@@ -94,8 +93,9 @@ namespace pylabhub::utils
 /** @brief Parameter block for an XOP function to set the Python path. */
 typedef struct
 {
-    char path[MAX_PATH]; ///< [in] A C-string containing the UTF-8 path to the Python installation or virtual environment.
-    double result;       ///< [out] Igor Pro requires a 'result' member for the function return value.
+    char path[MAX_PATH]; ///< [in] A C-string containing the UTF-8 path to the Python installation
+                         ///< or virtual environment.
+    double result; ///< [out] Igor Pro requires a 'result' member for the function return value.
 } PySetPythonParams;
 
 /** @brief Parameter block for an XOP function to set the Python cleanup script. */
@@ -121,8 +121,9 @@ typedef struct
 /** @brief Parameter block for an XOP function to execute a Python script. */
 typedef struct
 {
-    char varName[MAX_OBJ_NAME + 1]; ///< [in] The name of an Igor Pro string variable containing the script to run.
-    double result;                  ///< [out] The function return value.
+    char varName[MAX_OBJ_NAME +
+                 1]; ///< [in] The name of an Igor Pro string variable containing the script to run.
+    double result;   ///< [out] The function return value.
 } PyExecParams;
 
 /** @brief Parameter block for an XOP function to clean up the interpreter. */

@@ -95,8 +95,8 @@
 #include <optional>
 #include <system_error>
 
-#include "utils/Lifecycle.hpp" // For ModuleDef
 #include "pylabhub_utils_export.h"
+#include "utils/Lifecycle.hpp" // For ModuleDef
 
 // Disable warning C4251 on MSVC for the std::unique_ptr Pimpl member.
 #if defined(_MSC_VER)
@@ -153,11 +153,10 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * @brief Returns a ModuleDef for the FileLock to be used with the LifecycleManager.
      *
      * @param cleanup_on_shutdown If true, a shutdown task will be registered to
-     *                            clean up stale lock files with best effort. By default, this is set to
-     *                            false to leave .lock files intact after the process/application
-     *                            exits. Under highly contentioned scenarios, cleaning .lock files may
-     *                            cause competing processes to acquire access to the same .lock file by
-     *                            mistake, leading to potential data corruption.
+     *                            clean up stale lock files with best effort. By default, this is
+     * set to false to leave .lock files intact after the process/application exits. Under highly
+     * contentioned scenarios, cleaning .lock files may cause competing processes to acquire access
+     * to the same .lock file by mistake, leading to potential data corruption.
      * @return A configured ModuleDef for the FileLock utility.
      */
     static ModuleDef GetLifecycleModule(bool cleanup_on_shutdown = false);
@@ -280,7 +279,6 @@ class PYLABHUB_UTILS_EXPORT FileLock
     // correctly invoked whenever the unique_ptr goes out of scope or is reset.
     std::unique_ptr<FileLockImpl, FileLockImplDeleter> pImpl;
 };
-
 
 } // namespace pylabhub::utils
 

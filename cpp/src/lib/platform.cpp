@@ -3,24 +3,24 @@
 #include <filesystem>
 #include <string>
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#include <windows.h>
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 #include <memory>    // For std::unique_ptr
+#include <windows.h>
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 #else
-#include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 #if defined(PYLABHUB_IS_POSIX)
-#include <execinfo.h> // For backtrace, backtrace_symbols
 #include <cxxabi.h>   // For __cxa_demangle
+#include <execinfo.h> // For backtrace, backtrace_symbols
 #endif
 #endif
 #if defined(PYLABHUB_PLATFORM_APPLE)
-#include <mach-o/dyld.h>     // _NSGetExecutablePath
-#include <libproc.h>         // proc_pidpath
-#include <limits.h>          // PATH_MAX
-#include <unistd.h>          // getpid, realpath
+#include <libproc.h>     // proc_pidpath
+#include <limits.h>      // PATH_MAX
+#include <mach-o/dyld.h> // _NSGetExecutablePath
+#include <unistd.h>      // getpid, realpath
 #include <vector>
 #endif
 
@@ -77,29 +77,36 @@ std::string get_executable_name()
             return std::filesystem::path(std::string(result, count)).filename().string();
         }
         return "unknown_linux";
-        
+
 #elif defined(PYLABHUB_PLATFORM_APPLE)
 
         // 1) Try _NSGetExecutablePath (handles sizing via size parameter)
         uint32_t size = 0;
         // first call to discover required size
-        if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0) {
+        if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0)
+        {
             std::vector<char> buf(size);
-            if (_NSGetExecutablePath(buf.data(), &size) == 0) {
+            if (_NSGetExecutablePath(buf.data(), &size) == 0)
+            {
                 // canonicalize to resolve symlinks
                 char resolved[PATH_MAX];
-                if (realpath(buf.data(), resolved) != nullptr) {
+                if (realpath(buf.data(), resolved) != nullptr)
+                {
                     return std::filesystem::path(resolved).filename().string();
                 }
                 return std::filesystem::path(buf.data()).filename().string();
             }
-        } else {
+        }
+        else
+        {
             // _NSGetExecutablePath returned 0 with size == 0 (unusual) — try small stack buffer
             char smallbuf[PATH_MAX];
             size = sizeof(smallbuf);
-            if (_NSGetExecutablePath(smallbuf, &size) == 0) {
+            if (_NSGetExecutablePath(smallbuf, &size) == 0)
+            {
                 char resolved[PATH_MAX];
-                if (realpath(smallbuf, resolved) != nullptr) {
+                if (realpath(smallbuf, resolved) != nullptr)
+                {
                     return std::filesystem::path(resolved).filename().string();
                 }
                 return std::filesystem::path(smallbuf).filename().string();
@@ -110,9 +117,11 @@ std::string get_executable_name()
         {
             char procbuf[PROC_PIDPATHINFO_MAXSIZE];
             int ret = proc_pidpath(getpid(), procbuf, sizeof(procbuf));
-            if (ret > 0) {
+            if (ret > 0)
+            {
                 char resolved[PATH_MAX];
-                if (realpath(procbuf, resolved) != nullptr) {
+                if (realpath(procbuf, resolved) != nullptr)
+                {
                     return std::filesystem::path(resolved).filename().string();
                 }
                 return std::filesystem::path(procbuf).filename().string();
@@ -121,15 +130,16 @@ std::string get_executable_name()
 
 #endif
     } // try
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
         // std::filesystem operations can throw on invalid paths.
         // Log the error but don't crash the lifecycle manager.
-        fmt::print(stderr, "[pylabhub-lifecycle] Warning: get_executable_name failed: {}.\n", e.what());
+        debug_msg("[pylabhub-lifecycle] Warning: get_executable_name failed: {}.", e.what());
     }
     catch (...)
     {
-        fmt::print(stderr, "[pylabhub-lifecycle] Warning: get_executable_name failed with unknown exception.\n");
+        debug_msg(
+            "[pylabhub-lifecycle] Warning: get_executable_name failed with unknown exception.");
     }
     return "unknown";
 }
