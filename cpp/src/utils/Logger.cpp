@@ -34,7 +34,6 @@
 #include <unistd.h>
 #endif
 
-using namespace pylabhub::platform;
 using namespace pylabhub::format_tools;
 
 namespace pylabhub::utils
@@ -58,9 +57,9 @@ static bool logger_is_loggable(const char *function_name)
     const auto state = g_logger_state.load(std::memory_order_acquire);
     if (state == LoggerState::Uninitialized)
     {
-        panic("Logger method '{}' was called before the Logger module was "
-              "initialized via LifecycleManager. Aborting.",
-              function_name);
+        PLH_PANIC("Logger method '{}' was called before the Logger module was "
+                  "initialized via LifecycleManager. Aborting.",
+                  function_name);
     }
     return state == LoggerState::Initialized;
 }
@@ -512,7 +511,7 @@ void Logger::Impl::worker_loop()
                                 {
                                     sink_->write(
                                         {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                         get_native_thread_id(),
+                                         pylabhub::platform::get_native_thread_id(),
                                          make_buffer("Switching log sink to: {}", new_desc)});
                                     sink_->flush();
                                 }
@@ -521,7 +520,7 @@ void Logger::Impl::worker_loop()
                                 {
                                     sink_->write(
                                         {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                         get_native_thread_id(),
+                                         pylabhub::platform::get_native_thread_id(),
                                          make_buffer("Log sink switched from: {}", old_desc)});
                                 }
                             }
@@ -765,7 +764,8 @@ void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
     if (pImpl)
     {
         pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
-                                          get_native_thread_id(), std::move(body)});
+                                          pylabhub::platform::get_native_thread_id(),
+                                          std::move(body)});
     }
 }
 
@@ -776,7 +776,7 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
     if (pImpl)
     {
         pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
-                                          get_native_thread_id(),
+                                          pylabhub::platform::get_native_thread_id(),
                                           make_buffer("{}", std::move(body_str))});
     }
 }

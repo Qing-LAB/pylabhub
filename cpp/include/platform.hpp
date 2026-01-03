@@ -103,10 +103,12 @@ long get_pid();
 std::string get_executable_name();
 void print_stack_trace() noexcept;
 
-// ------------------------ panic (compile-time checked) ----------------------
+// --- Internal Implementation (not for direct use) ---
+namespace internal
+{
 template <typename... Args>
-[[noreturn]] inline void panic(fmt::format_string<Args...> fmt_str, Args &&...args,
-                               std::source_location loc = std::source_location::current())
+[[noreturn]] inline void panic_impl(std::source_location loc, fmt::format_string<Args...> fmt_str,
+                                    Args &&...args)
 {
     // Print a fatal error and abort. No stack trace here by design.
     fmt::print(stderr, "FATAL ERROR: ");
@@ -115,22 +117,18 @@ template <typename... Args>
     std::abort();
 }
 
-// ------------------------ debug_msg (compile-time checked) -----------------
-// Fast path: compile-time checked format string, no exceptions.
 template <typename... Args>
-inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args,
-                      std::source_location loc = std::source_location::current())
+inline void debug_msg_impl(std::source_location loc, fmt::format_string<Args...> fmt_str,
+                           Args &&...args)
 {
     fmt::print(stderr, "DEBUG MESSAGE: ");
     fmt::print(stderr, fmt_str, std::forward<Args>(args)...);
     fmt::print(stderr, " in {} at line {}\n", loc.file_name(), loc.line());
 }
 
-// ------------------------ debug_msg_rt (runtime format, safe) ---------------
-// Runtime path: accepts runtime format strings (e.g. from config). Never throws.
 template <typename... Args>
-inline void debug_msg_rt(std::string_view fmt_str, Args &&...args,
-                         std::source_location loc = std::source_location::current()) noexcept
+inline void debug_msg_rt_impl(std::source_location loc, std::string_view fmt_str,
+                              Args &&...args) noexcept
 {
     try
     {
@@ -149,11 +147,19 @@ inline void debug_msg_rt(std::string_view fmt_str, Args &&...args,
                    loc.file_name(), loc.line());
     }
 }
-
+} // namespace internal
 } // namespace pylabhub::platform
 
-// ---------------------------------------------------------------------------
-// Default PANIC macro (callers may define their own PANIC before including this)
-#ifndef PANIC
-#define PANIC(...) pylabhub::platform::panic(__VA_ARGS__)
-#endif
+// --- Public API Macros ---
+// Use macros to ensure std::source_location::current() captures the call site.
+// __VA_OPT__ is a C++20 standard feature that handles the case where no variadic arguments are
+// passed.
+#define PLH_PANIC(fmt, ...)                                                                        \
+    ::pylabhub::platform::internal::panic_impl(std::source_location::current(),                    \
+                                               FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_DEBUG(fmt, ...)                                                                        \
+    ::pylabhub::platform::internal::debug_msg_impl(std::source_location::current(),                \
+                                                   FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_DEBUG_RT(fmt, ...)                                                                     \
+    ::pylabhub::platform::internal::debug_msg_rt_impl(                                             \
+        std::source_location::current() __VA_OPT__(, ) fmt __VA_OPT__(, ) __VA_ARGS__)

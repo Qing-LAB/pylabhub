@@ -11,18 +11,20 @@ add_executable(test_pylabhub_utils
   test_logger.cpp
   test_lifecycle.cpp
 
-  # Worker implementations from the harness directory
-  ../test_harness/filelock_workers.cpp
-  ../test_harness/jsonconfig_workers.cpp
-  ../test_harness/logger_workers.cpp
+  # Worker implementations
+  filelock_workers.cpp
+  jsonconfig_workers.cpp
+  logger_workers.cpp
+  worker_dispatcher.cpp
 )
 
+# This test executable uses the generic main() from the pylabhub::test_framework.
+# It also compiles 'worker_dispatcher.cpp', which defines and registers a set of
+# worker scenarios specific to the pylabhub-utils tests. This dispatcher is then
+# called by the framework's main() if the executable is run in a worker mode.
 target_link_libraries(test_pylabhub_utils
   PRIVATE
-    pylabhub::utils
-    pylabhub-test-harness
-    pylabhub::third_party::gtest
-    pylabhub::third_party::gmock
+    pylabhub::test_framework
 )
 
 target_compile_features(test_pylabhub_utils PRIVATE cxx_std_20)

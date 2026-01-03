@@ -28,7 +28,6 @@
 
 namespace pylabhub::utils
 {
-using pylabhub::platform::panic;
 namespace fs = std::filesystem;
 
 // Module-level flag to indicate if the JsonConfig has been initialized.
@@ -62,7 +61,7 @@ JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {
-        panic(
+        PLH_PANIC(
             "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
 }
@@ -72,7 +71,7 @@ JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMis
 {
     if (!lifecycle_initialized())
     {
-        panic(
+        PLH_PANIC(
             "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
     if (!init(configFile, createIfMissing, ec))

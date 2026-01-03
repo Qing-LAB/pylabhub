@@ -134,11 +134,11 @@ std::string get_executable_name()
     {
         // std::filesystem operations can throw on invalid paths.
         // Log the error but don't crash the lifecycle manager.
-        debug_msg("[pylabhub-lifecycle] Warning: get_executable_name failed: {}.", e.what());
+        PLH_DEBUG("[pylabhub-lifecycle] Warning: get_executable_name failed: {}.", e.what());
     }
     catch (...)
     {
-        debug_msg(
+        PLH_DEBUG(
             "[pylabhub-lifecycle] Warning: get_executable_name failed with unknown exception.");
     }
     return "unknown";
