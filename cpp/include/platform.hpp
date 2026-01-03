@@ -8,9 +8,14 @@
  ******************************************************************************/
 #pragma once
 
-#include <cstdio>        // For fprintf, stderr
-#include <cstdlib>       // For std::abort
-#include <fmt/ostream.h> // For fmt::print to FILE*
+#include <cstdio>             // stderr, std::fprintf
+#include <cstdlib>            // std::abort
+#include <source_location>    // std::source_location
+#include <string>
+#include <cstdint>
+#include <utility>            // std::forward
+#include <fmt/core.h>
+#include <fmt/format.h>
 
 // Prefer the build-system provided macros (PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD,
 // PLATFORM_LINUX, PLATFORM_UNKNOWN). If they are not defined by the build system, fall back to
@@ -72,7 +77,7 @@
 #define PLATFORM_UNKNOWN 1
 #endif
 
-// --- Require C++17 or later --------------------------------------------------
+// --- Require C++20 or later --------------------------------------------------
 // This header (and the codebase) uses C++17 features: inline variables,
 // std::scoped_lock, and others. Fail early with a clear message when an
 // older language standard is used.
@@ -89,37 +94,72 @@
 #endif
 #endif
 
-// --- Fatal Error Handling ---------------------------------------------------
-#ifndef PANIC
-/**
- * @brief Macro for handling fatal, unrecoverable errors.
- *
- * By default, this macro prints a message to stderr and calls `std::abort()`,
- * which terminates the program immediately. Users can override this behavior by
- * defining `PANIC()` before including this header, for example, to integrate
- * with a custom crash reporting framework.
- *
- * Example of overriding PANIC:
- * ```cpp
- * #define PANIC(msg) my_custom_panic_handler(__FILE__, __LINE__, msg)
- * #include "platform.hpp"
- * ```
- */
-#define PANIC(msg)                                                                                 \
-    do                                                                                             \
-    {                                                                                              \
-        fmt::print(stderr, "FATAL ERROR: {}\n", msg);                                              \
-        std::abort();                                                                              \
-    } while (0)
-#endif
-// ----------------------------------------------------------------------------
 
-namespace pylabhub::platform
-{
+namespace pylabhub::platform {
 
+// --- platform helpers (declare, define elsewhere) ---------------------------
 uint64_t get_native_thread_id() noexcept;
 long get_pid();
 std::string get_executable_name();
 void print_stack_trace() noexcept;
 
+// ------------------------ panic (compile-time checked) ----------------------
+template <typename... Args>
+[[noreturn]] inline void panic(
+    fmt::format_string<Args...> fmt_str,
+    Args&&... args,
+    std::source_location loc = std::source_location::current()
+) {
+    // Print a fatal error and abort. No stack trace here by design.
+    fmt::print(stderr, "FATAL ERROR: ");
+    fmt::print(stderr, fmt_str, std::forward<Args>(args)...);
+    fmt::print(stderr, " in {} at line {}\n", loc.file_name(), loc.line());
+    std::abort();
+}
+
+// ------------------------ debug_msg (compile-time checked) -----------------
+// Fast path: compile-time checked format string, no exceptions.
+template <typename... Args>
+inline void debug_msg(
+    fmt::format_string<Args...> fmt_str,
+    Args&&... args,
+    std::source_location loc = std::source_location::current()
+) {
+    fmt::print(stderr, "DEBUG MESSAGE: ");
+    fmt::print(stderr, fmt_str, std::forward<Args>(args)...);
+    fmt::print(stderr, " in {} at line {}\n", loc.file_name(), loc.line());
+}
+
+// ------------------------ debug_msg_rt (runtime format, safe) ---------------
+// Runtime path: accepts runtime format strings (e.g. from config). Never throws.
+template <typename... Args>
+inline void debug_msg_rt(
+    std::string_view fmt_str,
+    Args&&... args,
+    std::source_location loc = std::source_location::current()
+) noexcept
+{
+    try {
+        fmt::print(stderr, "DEBUG MESSAGE: ");
+        fmt::vprint(stderr, fmt_str, fmt::make_format_args(std::forward<Args>(args)...));
+        fmt::print(stderr, " in {} at line {}\n", loc.file_name(), loc.line());
+    }
+    catch (const fmt::format_error& e) {
+        fmt::print(stderr,
+                   "DEBUG MESSAGE FORMAT ERROR: '{}' ({}) in {} at line {}\n",
+                   fmt_str, e.what(), loc.file_name(), loc.line());
+    }
+    catch (...) {
+        fmt::print(stderr,
+                   "DEBUG MESSAGE ERROR: '{}' (unknown) in {} at line {}\n",
+                   fmt_str, loc.file_name(), loc.line());
+    }
+}
+
 } // namespace pylabhub::platform
+
+// ---------------------------------------------------------------------------
+// Default PANIC macro (callers may define their own PANIC before including this)
+#ifndef PANIC
+#define PANIC(...) pylabhub::platform::panic(__VA_ARGS__)
+#endif
