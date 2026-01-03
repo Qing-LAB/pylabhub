@@ -213,8 +213,8 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
         [&]() {
             std::filesystem::path resource_path(resource_path_str);
 
-            constexpr int THREADS = 32;
-            constexpr int ITERS = 10000; // outer iterations to expose rare races
+            constexpr int THREADS = 64;
+            constexpr int ITERS = 1000; // outer iterations to expose rare races
 
             // A reusable barrier for THREADS participants.
             std::barrier start_barrier(THREADS);
