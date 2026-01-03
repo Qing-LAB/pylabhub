@@ -8,20 +8,21 @@
  * per-object basis. The tests cover single-threaded recursion, independence between
  * objects, non-LIFO destruction order, and thread safety.
  */
+#include <atomic>
+#include <functional>
+#include <future>
 #include <gtest/gtest.h>
+#include <memory>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <future>
-#include <functional>
-#include <memory>
 
 #include "platform.hpp"
 #include "recursion_guard.hpp"
 
 using pylabhub::basics::RecursionGuard;
 
-namespace {
+namespace
+{
 
 // Test Functions and Objects used by the tests below.
 int some_object = 0;
@@ -152,28 +153,36 @@ TEST(RecursionGuardTest, ThreadSafety)
 
     for (int t = 0; t < NUM_THREADS; ++t)
     {
-        threads.emplace_back([&]() {
-            int local_obj = 0; // Each thread uses its own stack-allocated object.
-            std::function<void(int, bool)> recur = [&](int depth, bool expect_recursing) {
-                if (RecursionGuard::is_recursing(&local_obj) != expect_recursing) {
-                    thread_failed.store(true);
-                    return;
-                }
-                RecursionGuard g(&local_obj);
-                if (!RecursionGuard::is_recursing(&local_obj)) {
-                    thread_failed.store(true);
-                    return;
-                }
-                if (depth > 0) {
-                    recur(depth - 1, true);
-                }
-            };
-            recur(3, false);
-        });
+        threads.emplace_back(
+            [&]()
+            {
+                int local_obj = 0; // Each thread uses its own stack-allocated object.
+                std::function<void(int, bool)> recur = [&](int depth, bool expect_recursing)
+                {
+                    if (RecursionGuard::is_recursing(&local_obj) != expect_recursing)
+                    {
+                        thread_failed.store(true);
+                        return;
+                    }
+                    RecursionGuard g(&local_obj);
+                    if (!RecursionGuard::is_recursing(&local_obj))
+                    {
+                        thread_failed.store(true);
+                        return;
+                    }
+                    if (depth > 0)
+                    {
+                        recur(depth - 1, true);
+                    }
+                };
+                recur(3, false);
+            });
     }
 
-    for (auto &th : threads) th.join();
-    ASSERT_FALSE(thread_failed.load()) << "Part 1: One or more threads failed the per-thread recursion check.";
+    for (auto &th : threads)
+        th.join();
+    ASSERT_FALSE(thread_failed.load())
+        << "Part 1: One or more threads failed the per-thread recursion check.";
 
     // Part 2: Guard on a shared object in one thread is not visible to another.
     int shared_obj = 0;
@@ -184,27 +193,32 @@ TEST(RecursionGuardTest, ThreadSafety)
     std::atomic<bool> other_thread_observed_recursing{false};
 
     // Thread A: Acquires the guard and signals it's ready.
-    std::thread threadA([&]() {
-        RecursionGuard guard(&shared_obj);
-        ASSERT_TRUE(RecursionGuard::is_recursing(&shared_obj));
-        ready_promise.set_value();
-        done_future.wait(); // Wait until thread B is done checking.
-    });
+    std::thread threadA(
+        [&]()
+        {
+            RecursionGuard guard(&shared_obj);
+            ASSERT_TRUE(RecursionGuard::is_recursing(&shared_obj));
+            ready_promise.set_value();
+            done_future.wait(); // Wait until thread B is done checking.
+        });
 
     // Thread B: Waits for Thread A, then checks the recursion state.
-    std::thread threadB([&]() {
-        ready_future.wait();
-        // CRITICAL CHECK: Thread B should NOT see the recursion guard held by Thread A
-        // on the same object, because the state is thread-local.
-        if (RecursionGuard::is_recursing(&shared_obj)) {
-            other_thread_observed_recursing.store(true);
-        }
-        done_promise.set_value();
-    });
+    std::thread threadB(
+        [&]()
+        {
+            ready_future.wait();
+            // CRITICAL CHECK: Thread B should NOT see the recursion guard held by Thread A
+            // on the same object, because the state is thread-local.
+            if (RecursionGuard::is_recursing(&shared_obj))
+            {
+                other_thread_observed_recursing.store(true);
+            }
+            done_promise.set_value();
+        });
 
     threadA.join();
     threadB.join();
 
-    ASSERT_FALSE(other_thread_observed_recursing.load()) << "Part 2: Other thread incorrectly observed recursion on a shared object.";
+    ASSERT_FALSE(other_thread_observed_recursing.load())
+        << "Part 2: Other thread incorrectly observed recursion on a shared object.";
 }
-

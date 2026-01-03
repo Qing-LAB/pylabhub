@@ -56,7 +56,6 @@
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.
 
-
 static int AddCStringToHandle( // Concatenates C string to handle.
     const char *theStr, Handle theHand)
 {

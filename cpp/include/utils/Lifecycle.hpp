@@ -72,12 +72,12 @@
  * ```
  ******************************************************************************/
 
-#include <memory> // For std::unique_ptr
-#include <atomic>
-#include <vector>
-#include <utility>
-#include <type_traits>
 #include "fmt/core.h"
+#include <atomic>
+#include <memory> // For std::unique_ptr
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "pylabhub_utils_export.h"
 
@@ -269,8 +269,10 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
     std::unique_ptr<LifecycleManagerImpl> pImpl;
 };
 
-namespace pylabhub {
-namespace lifecycle {
+namespace pylabhub
+{
+namespace lifecycle
+{
 
 /**
  * @brief A convenience function to register a module with the LifecycleManager.
@@ -280,7 +282,7 @@ namespace lifecycle {
  *
  * @param module_def A ModuleDef object, which will be moved into the manager.
  */
-inline void RegisterModule(ModuleDef&& module_def)
+inline void RegisterModule(ModuleDef &&module_def)
 {
     // The `::` prefix ensures we call the global LifecycleManager class.
     ::LifecycleManager::instance().register_module(std::move(module_def));
@@ -315,27 +317,22 @@ inline void FinalizeApp()
     ::LifecycleManager::instance().finalize();
 }
 
-
 class LifecycleGuard
 {
-public:
+  public:
     // Default: no modules provided. If this is the first guard, InitializeApp() is called.
-    LifecycleGuard()
-    {
-        init_owner_if_first({});
-    }
+    LifecycleGuard() { init_owner_if_first({}); }
 
     // Move-only vector constructor: accept a vector that will be moved-from.
-    explicit LifecycleGuard(std::vector<ModuleDef>&& modules)
+    explicit LifecycleGuard(std::vector<ModuleDef> &&modules)
     {
         init_owner_if_first(std::move(modules));
     }
 
     // Variadic rvalue convenience: LifecycleGuard(ModuleDef("A"), ModuleDef("B"))
-    template <typename... Mods,
-              typename = std::enable_if_t<
-                  std::conjunction_v<std::is_same<std::decay_t<Mods>, ModuleDef>...>>>
-    explicit LifecycleGuard(Mods&&... mods)
+    template <typename... Mods, typename = std::enable_if_t<std::conjunction_v<
+                                    std::is_same<std::decay_t<Mods>, ModuleDef>...>>>
+    explicit LifecycleGuard(Mods &&...mods)
     {
         std::vector<ModuleDef> vec;
         vec.reserve(sizeof...(Mods));
@@ -344,10 +341,10 @@ public:
     }
 
     // Non-copyable, non-movable
-    LifecycleGuard(const LifecycleGuard&) = delete;
-    LifecycleGuard& operator=(const LifecycleGuard&) = delete;
-    LifecycleGuard(LifecycleGuard&&) = delete;
-    LifecycleGuard& operator=(LifecycleGuard&&) = delete;
+    LifecycleGuard(const LifecycleGuard &) = delete;
+    LifecycleGuard &operator=(const LifecycleGuard &) = delete;
+    LifecycleGuard(LifecycleGuard &&) = delete;
+    LifecycleGuard &operator=(LifecycleGuard &&) = delete;
 
     /**
      * @brief Destructor that finalizes the application if this guard is the owner.
@@ -371,16 +368,16 @@ public:
         }
     }
 
-private:
+  private:
     // Function-local static atomic flag (ODR-safe header-only)
-    static std::atomic_bool& owner_flag()
+    static std::atomic_bool &owner_flag()
     {
         static std::atomic_bool flag{false};
         return flag;
     }
 
     // Core logic: attempt to become owner; if successful, register modules and always initialize.
-    void init_owner_if_first(std::vector<ModuleDef>&& modules)
+    void init_owner_if_first(std::vector<ModuleDef> &&modules)
     {
         bool expected = false;
         if (owner_flag().compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -402,9 +399,10 @@ private:
         {
             // Not the owner: warn and ignore supplied modules.
             m_is_owner = false;
-            fmt::print(stderr,
-                         "[pylabhub-lifecycle] WARNING: LifecycleGuard constructed but an owner "
-                         "already exists. This guard is a no-op; provided modules (if any) were ignored.\n");
+            pylabhub::platform::debug_msg(
+                "[pylabhub-lifecycle] WARNING: LifecycleGuard constructed but an owner "
+                "already exists. This guard is a no-op; provided modules (if any) were ignored.");
+            pylabhub::platform::print_stack_trace();
         }
     }
 
