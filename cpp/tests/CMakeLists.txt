@@ -22,7 +22,7 @@ if (TARGET stage_pylabhub_utils)
 endif()
 
 # Configure all test sub-projects
-add_subdirectory(test_harness)
+add_subdirectory(test_framework)
 add_subdirectory(test_pylabhub_corelib)
 add_subdirectory(test_pylabhub_utils)
 

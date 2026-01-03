@@ -65,8 +65,6 @@
 #include <fmt/core.h>   // For fmt::print
 #include <fmt/ranges.h> // For fmt::join on vectors
 
-using namespace pylabhub::platform;
-
 // ============================================================================
 // Internal C++ Definitions (Hidden from Public API)
 // ============================================================================
@@ -234,7 +232,11 @@ void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeo
 class LifecycleManagerImpl
 {
   public:
-    LifecycleManagerImpl() : m_pid(get_pid()), m_app_name(get_executable_name()) {}
+    LifecycleManagerImpl()
+        : m_pid(pylabhub::platform::get_pid()),
+          m_app_name(pylabhub::platform::get_executable_name())
+    {
+    }
 
     /**
      * @brief Represents the current status of a module during its lifecycle.
@@ -272,9 +274,9 @@ class LifecycleManagerImpl
         // Fail fast if registration is attempted after initialization has begun.
         if (m_is_initialized.load(std::memory_order_acquire))
         {
-            panic("[pylabhub-lifecycle] [{}:{}] FATAL: Attempted to register module '{}' after "
-                  "initialization has started. Aborting.",
-                  m_app_name, m_pid, module_def.name);
+            PLH_PANIC("[pylabhub-lifecycle] [{}:{}] FATAL: Attempted to register module '{}' after "
+                      "initialization has started. Aborting.",
+                      m_app_name, m_pid, module_def.name);
         }
         std::lock_guard<std::mutex> lock(m_registry_mutex);
         m_registered_modules.push_back(std::move(module_def));
@@ -407,7 +409,6 @@ void LifecycleManagerImpl::printStatusAndAbort(const std::string &error_msg,
     }
     fmt::print(stderr, "----------------------------------------\n\n");
 
-    // Always print a stack trace for fatal errors to aid debugging.
     pylabhub::platform::print_stack_trace();
     std::abort();
 }
@@ -427,7 +428,7 @@ void LifecycleManagerImpl::initialize()
         return;
     }
 
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Initializing application...", m_app_name, m_pid);
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Initializing application...", m_app_name, m_pid);
 
     try
     {
@@ -445,11 +446,11 @@ void LifecycleManagerImpl::initialize()
     std::reverse(m_shutdown_order.begin(), m_shutdown_order.end());
 
     // Log the determined startup sequence for diagnostics.
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Startup sequence determined for {} modules:",
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Startup sequence determined for {} modules:",
               m_app_name, m_pid, m_startup_order.size());
     for (size_t i = 0; i < m_startup_order.size(); ++i)
     {
-        debug_msg("[pylabhub-lifecycle] [{}:{}]   ({}/{}) -> {}", m_app_name, m_pid, i + 1,
+        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}]   ({}/{}) -> {}", m_app_name, m_pid, i + 1,
                   m_startup_order.size(), m_startup_order[i]->name);
     }
 
@@ -458,7 +459,7 @@ void LifecycleManagerImpl::initialize()
     {
         try
         {
-            debug_msg("[pylabhub-lifecycle] [{}:{}] -> Starting module: '{}'", m_app_name, m_pid,
+            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] -> Starting module: '{}'", m_app_name, m_pid,
                       module->name);
             module->status = ModuleStatus::Initializing; // Mark module as currently initializing
             if (module->startup)
@@ -482,7 +483,7 @@ void LifecycleManagerImpl::initialize()
             printStatusAndAbort("Module threw an unknown exception during startup.", module->name);
         }
     }
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Application initialization complete.", m_app_name,
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Application initialization complete.", m_app_name,
               m_pid);
 }
 
@@ -503,12 +504,12 @@ void LifecycleManagerImpl::finalize()
         return;
     }
 
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Finalizing application...", m_app_name, m_pid);
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Shutdown sequence determined for {} modules:",
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Finalizing application...", m_app_name, m_pid);
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Shutdown sequence determined for {} modules:",
               m_app_name, m_pid, m_shutdown_order.size());
     for (size_t i = 0; i < m_shutdown_order.size(); ++i)
     {
-        debug_msg("[pylabhub-lifecycle] [{}:{}]   ({}/{}) <- {}", m_app_name, m_pid, i + 1,
+        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}]   ({}/{}) <- {}", m_app_name, m_pid, i + 1,
                   m_shutdown_order.size(), m_shutdown_order[i]->name);
     }
 
@@ -521,7 +522,7 @@ void LifecycleManagerImpl::finalize()
             // (Modules that failed during startup are already marked as such).
             if (module->status == ModuleStatus::Started && module->shutdown.func)
             {
-                debug_msg("[pylabhub-lifecycle] [{}:{}] <- Shutting down module: '{}'", m_app_name,
+                PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] <- Shutting down module: '{}'", m_app_name,
                           m_pid, module->name);
 
                 // Run the shutdown function asynchronously to handle timeouts.
@@ -530,7 +531,7 @@ void LifecycleManagerImpl::finalize()
 
                 if (status == std::future_status::timeout)
                 {
-                    debug_msg("[pylabhub-lifecycle] [{}:{}] WARNING: Shutdown for module '{}' "
+                    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] WARNING: Shutdown for module '{}' "
                               "timed out after {}ms. Continuing with other modules.",
                               m_app_name, m_pid, module->name, module->shutdown.timeout.count());
                     // Module status is left as Started or whatever it was if it timed out,
@@ -546,7 +547,7 @@ void LifecycleManagerImpl::finalize()
                      module->status == ModuleStatus::Initializing)
             {
                 // Modules that were not started or were initializing should not attempt shutdown
-                debug_msg("[pylabhub-lifecycle] [{}:{}] Module '{}' was not fully started (status: "
+                PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Module '{}' was not fully started (status: "
                           "{}) -> Skipping shutdown.",
                           m_app_name, m_pid, module->name,
                           static_cast<int>(module->status)); // Cast to int for printing enum value
@@ -556,21 +557,21 @@ void LifecycleManagerImpl::finalize()
         catch (const std::exception &e)
         {
             // Exceptions during shutdown are logged with a stack trace but are not fatal.
-            debug_msg("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an exception during "
+            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an exception during "
                       "shutdown: {}.",
                       m_app_name, m_pid, module->name, e.what());
             pylabhub::platform::print_stack_trace();
         }
         catch (...)
         {
-            debug_msg("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an unknown "
-                      "exception during shutdown.",
+            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an unknown exception "
+                      "during shutdown.",
                       m_app_name, m_pid, module->name);
             pylabhub::platform::print_stack_trace();
         }
     }
 
-    debug_msg("[pylabhub-lifecycle] [{}:{}] Application finalization complete.", m_app_name, m_pid);
+    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Application finalization complete.", m_app_name, m_pid);
 }
 
 /**

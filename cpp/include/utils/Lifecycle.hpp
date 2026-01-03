@@ -79,6 +79,7 @@
 #include <utility>
 #include <vector>
 
+#include "platform.hpp"
 #include "pylabhub_utils_export.h"
 
 // Disable warning C4251 on MSVC. This is a common practice for exported classes
@@ -273,6 +274,7 @@ namespace pylabhub
 {
 namespace lifecycle
 {
+using namespace pylabhub::platform;
 
 /**
  * @brief A convenience function to register a module with the LifecycleManager.
@@ -399,10 +401,10 @@ class LifecycleGuard
         {
             // Not the owner: warn and ignore supplied modules.
             m_is_owner = false;
-            pylabhub::platform::debug_msg(
+            PLH_DEBUG(
                 "[pylabhub-lifecycle] WARNING: LifecycleGuard constructed but an owner "
                 "already exists. This guard is a no-op; provided modules (if any) were ignored.");
-            pylabhub::platform::print_stack_trace();
+            print_stack_trace();
         }
     }
 

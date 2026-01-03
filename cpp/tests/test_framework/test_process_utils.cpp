@@ -17,8 +17,6 @@
 
 namespace pylabhub::tests::helper
 {
-using pylabhub::platform::debug_msg;
-using pylabhub::platform::print_stack_trace;
 #if defined(PLATFORM_WIN64)
 ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
                                    const std::vector<std::string> &args)
@@ -63,8 +61,8 @@ ProcessHandle spawn_worker_process(const std::string &exe_path, const std::strin
         std::string msg = pylabhub::format_tools::ws2s(msgBuf ? msgBuf : L"(no message)");
         if (msgBuf)
             LocalFree(msgBuf);
-        debug_msg("ERROR: CreateProcessW failed. Code: {} - Message: {}", err, msg);
-        print_stack_trace();
+        PLH_DEBUG("ERROR: CreateProcessW failed. Code: {} - Message: {}", err, msg);
+        pylabhub::platform::print_stack_trace();
         return nullptr;
     }
 
