@@ -2,10 +2,10 @@
  * @file Logger.cpp
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
-#include "platform.hpp"
 #include "utils/Logger.hpp"
-#include "utils/Lifecycle.hpp"
 #include "format_tools.hpp"
+#include "platform.hpp"
+#include "utils/Lifecycle.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -37,7 +37,6 @@
 using namespace pylabhub::platform;
 using namespace pylabhub::format_tools;
 
-
 namespace pylabhub::utils
 {
 
@@ -53,18 +52,15 @@ enum class LoggerState
 // Global atomic to track the logger's state.
 static std::atomic<LoggerState> g_logger_state{LoggerState::Uninitialized};
 
-
 // Centralized check function
 static bool logger_is_loggable(const char *function_name)
 {
     const auto state = g_logger_state.load(std::memory_order_acquire);
     if (state == LoggerState::Uninitialized)
     {
-        fmt::print(stderr,
-                   "FATAL: Logger method '{}' was called before the Logger module was "
-                   "initialized via LifecycleManager. Aborting.\n",
-                   function_name);
-        std::abort();
+        panic("Logger method '{}' was called before the Logger module was "
+              "initialized via LifecycleManager. Aborting.",
+              function_name);
     }
     return state == LoggerState::Initialized;
 }
@@ -163,13 +159,20 @@ static const char *level_to_string(Logger::Level lvl)
 {
     switch (lvl)
     {
-    case Logger::Level::L_TRACE: return "TRACE";
-    case Logger::Level::L_DEBUG: return "DEBUG";
-    case Logger::Level::L_INFO: return "INFO";
-    case Logger::Level::L_WARNING: return "WARN";
-    case Logger::Level::L_ERROR: return "ERROR";
-    case Logger::Level::L_SYSTEM: return "SYSTEM";
-    default: return "UNK";
+    case Logger::Level::L_TRACE:
+        return "TRACE";
+    case Logger::Level::L_DEBUG:
+        return "DEBUG";
+    case Logger::Level::L_INFO:
+        return "INFO";
+    case Logger::Level::L_WARNING:
+        return "WARN";
+    case Logger::Level::L_ERROR:
+        return "ERROR";
+    case Logger::Level::L_SYSTEM:
+        return "SYSTEM";
+    default:
+        return "UNK";
     }
 }
 
@@ -283,18 +286,26 @@ class SyslogSink : public Sink
     }
     void flush() override {}
     std::string description() const override { return "Syslog"; }
+
   private:
     static int level_to_syslog_priority(Logger::Level level)
     {
         switch (level)
         {
-        case Logger::Level::L_TRACE: return LOG_DEBUG;
-        case Logger::Level::L_DEBUG: return LOG_DEBUG;
-        case Logger::Level::L_INFO: return LOG_INFO;
-        case Logger::Level::L_WARNING: return LOG_WARNING;
-        case Logger::Level::L_ERROR: return LOG_ERR;
-        case Logger::Level::L_SYSTEM: return LOG_CRIT;
-        default: return LOG_INFO;
+        case Logger::Level::L_TRACE:
+            return LOG_DEBUG;
+        case Logger::Level::L_DEBUG:
+            return LOG_DEBUG;
+        case Logger::Level::L_INFO:
+            return LOG_INFO;
+        case Logger::Level::L_WARNING:
+            return LOG_WARNING;
+        case Logger::Level::L_ERROR:
+            return LOG_ERR;
+        case Logger::Level::L_SYSTEM:
+            return LOG_CRIT;
+        default:
+            return LOG_INFO;
         }
     }
 };
@@ -319,7 +330,8 @@ class EventLogSink : public Sink
     }
     void write(const LogMessage &msg) override
     {
-        if (!handle_) return;
+        if (!handle_)
+            return;
         int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(),
                                          static_cast<int>(msg.body.size()), nullptr, 0);
         if (needed <= 0)
@@ -338,6 +350,7 @@ class EventLogSink : public Sink
     }
     void flush() override {}
     std::string description() const override { return "Windows Event Log"; }
+
   private:
     HANDLE handle_ = nullptr;
     static WORD level_to_eventlog_type(Logger::Level level)
@@ -346,23 +359,42 @@ class EventLogSink : public Sink
         {
         case Logger::Level::L_TRACE:
         case Logger::Level::L_DEBUG:
-        case Logger::Level::L_INFO: return EVENTLOG_INFORMATION_TYPE;
-        case Logger::Level::L_WARNING: return EVENTLOG_WARNING_TYPE;
+        case Logger::Level::L_INFO:
+            return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_WARNING:
+            return EVENTLOG_WARNING_TYPE;
         case Logger::Level::L_ERROR:
-        case Logger::Level::L_SYSTEM: return EVENTLOG_ERROR_TYPE;
-        default: return EVENTLOG_INFORMATION_TYPE;
+        case Logger::Level::L_SYSTEM:
+            return EVENTLOG_ERROR_TYPE;
+        default:
+            return EVENTLOG_INFORMATION_TYPE;
         }
     }
 };
 #endif
 
 // Command Definitions
-struct SetSinkCommand { std::unique_ptr<Sink> new_sink; };
-struct SinkCreationErrorCommand { std::string error_message; };
-struct FlushCommand { std::shared_ptr<std::promise<void>> promise; };
-struct SetErrorCallbackCommand { std::function<void(const std::string &)> callback; };
+struct SetSinkCommand
+{
+    std::unique_ptr<Sink> new_sink;
+};
+struct SinkCreationErrorCommand
+{
+    std::string error_message;
+};
+struct FlushCommand
+{
+    std::shared_ptr<std::promise<void>> promise;
+};
+struct SetErrorCallbackCommand
+{
+    std::function<void(const std::string &)> callback;
+};
 
-struct SetLogSinkMessagesCommand { bool enabled; };
+struct SetLogSinkMessagesCommand
+{
+    bool enabled;
+};
 
 using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand, FlushCommand,
                              SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
@@ -398,7 +430,8 @@ Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
 
 Logger::Impl::~Impl()
 {
-    if (worker_thread_.joinable() && !shutdown_requested_.load()) {
+    if (worker_thread_.joinable() && !shutdown_requested_.load())
+    {
         // This situation should be avoided by using the LifecycleManager.
     }
 }
@@ -420,7 +453,8 @@ void Logger::Impl::enqueue_command(Command &&cmd)
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        if (shutdown_requested_.load(std::memory_order_acquire)) return;
+        if (shutdown_requested_.load(std::memory_order_acquire))
+            return;
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
@@ -428,7 +462,7 @@ void Logger::Impl::enqueue_command(Command &&cmd)
 
 void Logger::Impl::worker_loop()
 {
-    std::vector<Command> local_queue; // Batch processing queue. 
+    std::vector<Command> local_queue; // Batch processing queue.
 
     while (true)
     {
@@ -448,7 +482,8 @@ void Logger::Impl::worker_loop()
 
         if (do_final_flush_and_break)
         {
-            if (sink_) sink_->flush();
+            if (sink_)
+                sink_->flush();
             break; // Exit the worker loop.
         }
 
@@ -457,7 +492,8 @@ void Logger::Impl::worker_loop()
             try
             {
                 std::visit(
-                    [this](auto &&arg) {
+                    [this](auto &&arg)
+                    {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
@@ -469,25 +505,28 @@ void Logger::Impl::worker_loop()
                             if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
                             {
                                 std::string old_desc = sink_ ? sink_->description() : "null";
-                                std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
+                                std::string new_desc =
+                                    arg.new_sink ? arg.new_sink->description() : "null";
 
                                 if (sink_)
                                 {
-                                    sink_->write({Logger::Level::L_SYSTEM,
-                                                  std::chrono::system_clock::now(),
-                                                  get_native_thread_id(),
-                                                  make_buffer("Switching log sink to: {}", new_desc)});
+                                    sink_->write(
+                                        {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                         get_native_thread_id(),
+                                         make_buffer("Switching log sink to: {}", new_desc)});
                                     sink_->flush();
                                 }
                                 sink_ = std::move(arg.new_sink);
                                 if (sink_)
                                 {
-                                    sink_->write({Logger::Level::L_SYSTEM,
-                                                  std::chrono::system_clock::now(),
-                                                  get_native_thread_id(),
-                                                  make_buffer("Log sink switched from: {}", old_desc)});
+                                    sink_->write(
+                                        {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
+                                         get_native_thread_id(),
+                                         make_buffer("Log sink switched from: {}", old_desc)});
                                 }
-                            } else {
+                            }
+                            else
+                            {
                                 // If messages are disabled, just switch the sink without logging.
                                 sink_ = std::move(arg.new_sink);
                             }
@@ -498,12 +537,14 @@ void Logger::Impl::worker_loop()
                             {
                                 // Post the user callback to the dispatcher to avoid deadlock.
                                 auto cb = error_callback_;
-                                callback_dispatcher_.post([cb, msg = arg.error_message]() { cb(msg); });
+                                callback_dispatcher_.post([cb, msg = arg.error_message]()
+                                                          { cb(msg); });
                             }
                         }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
-                            if (sink_) sink_->flush();
+                            if (sink_)
+                                sink_->flush();
                             arg.promise->set_value(); // Unblock the waiting thread.
                         }
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
@@ -512,7 +553,8 @@ void Logger::Impl::worker_loop()
                         }
                         else if constexpr (std::is_same_v<T, SetLogSinkMessagesCommand>)
                         {
-                            m_log_sink_messages_enabled_.store(arg.enabled, std::memory_order_relaxed);
+                            m_log_sink_messages_enabled_.store(arg.enabled,
+                                                               std::memory_order_relaxed);
                         }
                     },
                     std::move(cmd));
@@ -552,7 +594,7 @@ namespace
 {
 std::unique_ptr<Logger> g_instance;
 std::mutex g_instance_mutex;
-}
+} // namespace
 
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger() = default;
@@ -564,63 +606,77 @@ Logger &Logger::instance()
         std::lock_guard<std::mutex> lock(g_instance_mutex);
         if (!g_instance)
         {
-            struct LoggerMaker : public Logger { LoggerMaker() : Logger() {} };
+            struct LoggerMaker : public Logger
+            {
+                LoggerMaker() : Logger() {}
+            };
             g_instance = std::make_unique<LoggerMaker>();
         }
     }
     return *g_instance;
 }
 
-bool Logger::lifecycle_initialized() noexcept {
+bool Logger::lifecycle_initialized() noexcept
+{
     return g_logger_state.load(std::memory_order_acquire) != LoggerState::Uninitialized;
 }
 
 void Logger::set_console()
 {
-    if (!logger_is_loggable("Logger::set_console")) return;
+    if (!logger_is_loggable("Logger::set_console"))
+        return;
     try
     {
         pImpl->enqueue_command(SetSinkCommand{std::make_unique<ConsoleSink>()});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
     }
 }
 
 void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
-    if (!logger_is_loggable("Logger::set_logfile")) return;
+    if (!logger_is_loggable("Logger::set_logfile"))
+        return;
     try
     {
         pImpl->enqueue_command(SetSinkCommand{std::make_unique<FileSink>(utf8_path, use_flock)});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
     }
 }
 
 void Logger::set_syslog(const char *ident, int option, int facility)
 {
-    if (!logger_is_loggable("Logger::set_syslog")) return;
+    if (!logger_is_loggable("Logger::set_syslog"))
+        return;
 #if !defined(PLATFORM_WIN64)
     try
     {
-        pImpl->enqueue_command(SetSinkCommand{std::make_unique<SyslogSink>(ident ? ident : "", option, facility)});
+        pImpl->enqueue_command(
+            SetSinkCommand{std::make_unique<SyslogSink>(ident ? ident : "", option, facility)});
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
     }
 #else
-    (void)ident; (void)option; (void)facility;
+    (void)ident;
+    (void)option;
+    (void)facility;
 #endif
 }
 
 void Logger::set_eventlog(const wchar_t *source_name)
 {
-    if (!logger_is_loggable("Logger::set_eventlog")) return;
+    if (!logger_is_loggable("Logger::set_eventlog"))
+        return;
 #ifdef PLATFORM_WIN64
     try
     {
@@ -628,7 +684,8 @@ void Logger::set_eventlog(const wchar_t *source_name)
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
     }
 #else
     (void)source_name;
@@ -638,16 +695,22 @@ void Logger::set_eventlog(const wchar_t *source_name)
 void Logger::shutdown()
 {
     // Do not abort if called before init, just do nothing.
-    if (!lifecycle_initialized()) { return; }
-    if (pImpl) pImpl->shutdown();
+    if (!lifecycle_initialized())
+    {
+        return;
+    }
+    if (pImpl)
+        pImpl->shutdown();
 }
 
 void Logger::flush()
 {
-    if (!logger_is_loggable("Logger::flush")) return;
+    if (!logger_is_loggable("Logger::flush"))
+        return;
     // This check is needed to prevent a deadlock where enqueue_command does nothing
     // because shutdown has started, and we wait on the future forever.
-    if (pImpl->shutdown_requested_.load()) return;
+    if (pImpl->shutdown_requested_.load())
+        return;
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
     pImpl->enqueue_command(FlushCommand{promise});
@@ -656,64 +719,78 @@ void Logger::flush()
 
 void Logger::set_level(Level lvl)
 {
-    if (!logger_is_loggable("Logger::set_level")) return;
-    if (pImpl) pImpl->level_.store(lvl, std::memory_order_relaxed);
+    if (!logger_is_loggable("Logger::set_level"))
+        return;
+    if (pImpl)
+        pImpl->level_.store(lvl, std::memory_order_relaxed);
 }
 
 Logger::Level Logger::level() const
 {
-    if (!logger_is_loggable("Logger::level")) return Level::L_INFO;
+    if (!logger_is_loggable("Logger::level"))
+        return Level::L_INFO;
     return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
-
-
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
-    if (!logger_is_loggable("Logger::set_write_error_callback")) return;
-    if (pImpl) pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
+    if (!logger_is_loggable("Logger::set_write_error_callback"))
+        return;
+    if (pImpl)
+        pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
 }
 
 void Logger::set_log_sink_messages_enabled(bool enabled)
 {
-    if (!logger_is_loggable("Logger::set_log_sink_messages_enabled")) return;
-    if (pImpl) pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled});
+    if (!logger_is_loggable("Logger::set_log_sink_messages_enabled"))
+        return;
+    if (pImpl)
+        pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled});
 }
 
 bool Logger::should_log(Level lvl) const noexcept
 {
     const auto state = g_logger_state.load(std::memory_order_acquire);
-    if (state != LoggerState::Initialized) return false;
+    if (state != LoggerState::Initialized)
+        return false;
 
-    return pImpl && static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
+    return pImpl &&
+           static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
 void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
-    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized) return;
+    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+        return;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), std::move(body)});
+        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
+                                          get_native_thread_id(), std::move(body)});
     }
 }
 
 void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
-    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized) return;
+    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+        return;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(), get_native_thread_id(), make_buffer("{}", std::move(body_str))});
+        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
+                                          get_native_thread_id(),
+                                          make_buffer("{}", std::move(body_str))});
     }
 }
 
 // C-style callbacks for the ABI-safe lifecycle API.
 // These functions are called by the LifecycleManager.
-void do_logger_startup(const char* arg) {
+void do_logger_startup(const char *arg)
+{
     (void)arg; // Argument not used by logger startup.
     Logger::instance().pImpl->start_worker();
     g_logger_state.store(LoggerState::Initialized, std::memory_order_release);
 }
-void do_logger_shutdown(const char* arg) {
+void do_logger_shutdown(const char *arg)
+{
     (void)arg; // Argument not used by logger shutdown.
     LoggerState expected = LoggerState::Initialized;
     // Atomically change state from Initialized to ShuttingDown.

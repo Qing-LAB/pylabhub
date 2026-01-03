@@ -13,10 +13,10 @@
 #include <thread>
 
 #include "jsonconfig_workers.h"
+#include "nlohmann/json.hpp"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
 #include "utils/JsonConfig.hpp"
-#include "nlohmann/json.hpp"
 
 using nlohmann::json;
 using namespace pylabhub::tests::helper;
@@ -30,7 +30,8 @@ namespace jsonconfig
 int write_id(const std::string &cfgpath, const std::string &worker_id)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             // Each worker repeatedly attempts to acquire a write lock and modify the file.
             // This simulates high-contention scenarios for the JsonConfig class.
             JsonConfig cfg(cfgpath);
@@ -47,12 +48,15 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                 std::error_code ec;
                 // Attempt a non-blocking write. The lambda is only executed if the
                 // file lock is acquired successfully.
-                bool ok = cfg.with_json_write([&](json &data) {
-                    int attempts = data.value("total_attempts", 0);
-                    data["total_attempts"] = attempts + 1;
-                    data[worker_id] = true;
-                    data["last_worker_id"] = worker_id;
-                }, &ec, std::chrono::milliseconds(0));
+                bool ok = cfg.with_json_write(
+                    [&](json &data)
+                    {
+                        int attempts = data.value("total_attempts", 0);
+                        data["total_attempts"] = attempts + 1;
+                        data[worker_id] = true;
+                        data["last_worker_id"] = worker_id;
+                    },
+                    &ec, std::chrono::milliseconds(0));
 
                 if (ok && ec.value() == 0)
                 {
@@ -67,12 +71,9 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
 
             ASSERT_TRUE(success);
         },
-        "jsonconfig::write_id",
-        JsonConfig::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        Logger::GetLifecycleModule()
-    );
+        "jsonconfig::write_id", JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule());
 }
 
 } // namespace jsonconfig
-} // namespace worker
+} // namespace pylabhub::tests::worker

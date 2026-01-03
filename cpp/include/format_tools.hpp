@@ -3,13 +3,13 @@
 
 #include <chrono>
 #include <filesystem>
-#include <string>
-#include <optional>
-#include <string_view>
 #include <fmt/chrono.h>
+#include <optional>
+#include <string>
+#include <string_view>
 
-
-namespace pylabhub::format_tools {
+namespace pylabhub::format_tools
+{
 
 // --- Helper: formatted local time with sub-second resolution (robust) ---
 std::string formatted_time(std::chrono::system_clock::time_point timestamp);
@@ -28,12 +28,9 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp);
  * @return An std::optional<std::string> containing the value if found,
  *         otherwise std::nullopt.
  */
-std::optional<std::string> extract_value_from_string(
-    std::string_view keyword,
-    std::string_view input,
-    char separator = ';',
-    char assignment_symbol = '=');
-
+std::optional<std::string> extract_value_from_string(std::string_view keyword,
+                                                     std::string_view input, char separator = ';',
+                                                     char assignment_symbol = '=');
 
 std::wstring win32_to_long_path(const std::filesystem::path &);
 std::wstring win32_make_unique_suffix();
@@ -58,4 +55,4 @@ fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
     fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
     return mb;
 }
-}
+} // namespace pylabhub::format_tools

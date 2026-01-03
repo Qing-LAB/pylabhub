@@ -1,21 +1,22 @@
 #ifndef PYLHUB_SCOPE_GUARD_HPP
 #define PYLHUB_SCOPE_GUARD_HPP
 
-#include <utility>
-#include <type_traits>
 #include <optional>
+#include <type_traits>
+#include <utility>
 
 namespace pylabhub::basics
 {
 
-template <typename F>
-class ScopeGuard
+template <typename F> class ScopeGuard
 {
   public:
     using FnT = std::decay_t<F>;
 
     explicit ScopeGuard(F &&f) noexcept(std::is_nothrow_move_constructible_v<FnT>)
-        : m_func(std::forward<F>(f)), m_active(true) {}
+        : m_func(std::forward<F>(f)), m_active(true)
+    {
+    }
 
     ScopeGuard(ScopeGuard &&rhs) noexcept(std::is_nothrow_move_constructible_v<FnT>)
         : m_func(std::move(rhs.m_func)), m_active(rhs.m_active)
@@ -27,9 +28,12 @@ class ScopeGuard
     {
         if (m_active)
         {
-            try {
+            try
+            {
                 m_func();
-            } catch (...) {
+            }
+            catch (...)
+            {
                 // swallow exceptions in destructor
             }
         }
@@ -50,9 +54,12 @@ class ScopeGuard
     {
         if (m_active)
         {
-            try {
+            try
+            {
                 m_func();
-            } catch (...) {
+            }
+            catch (...)
+            {
                 // swallow or log
             }
             m_active = false;
@@ -64,12 +71,11 @@ class ScopeGuard
     bool m_active;
 };
 
-template <typename F>
-ScopeGuard<F> make_scope_guard(F &&f)
+template <typename F> ScopeGuard<F> make_scope_guard(F &&f)
 {
     return ScopeGuard<F>(std::forward<F>(f));
 }
 
-} // namespace pylabhub::utils
+} // namespace pylabhub::basics
 
 #endif // PYLHUB_SCOPE_GUARD_HPP

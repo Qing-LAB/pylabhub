@@ -38,12 +38,12 @@
  */
 
 #include <chrono>
-#include <optional>
 #include <filesystem>
-#include <system_error>
 #include <memory>
-#include <utility>
+#include <optional>
+#include <system_error>
 #include <type_traits>
+#include <utility>
 
 #include "nlohmann/json.hpp"
 #include "recursion_guard.hpp"
@@ -62,7 +62,7 @@ namespace pylabhub::utils
 
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
-public:
+  public:
     /**
      * @brief Returns a ModuleDef for JsonConfig to be used with the LifecycleManager.
      */
@@ -94,13 +94,12 @@ public:
     bool reload(std::error_code *ec = nullptr) noexcept;
     bool save(std::error_code *ec = nullptr) noexcept;
 
-
     std::filesystem::path config_path() const noexcept;
 
     // ----------------- Lightweight guard types (Pimpl handles) -----------------
     class PYLABHUB_UTILS_EXPORT ReadLock
     {
-    public:
+      public:
         ReadLock() noexcept;
         ReadLock(ReadLock &&) noexcept;
         ReadLock &operator=(ReadLock &&) noexcept;
@@ -108,7 +107,8 @@ public:
         const nlohmann::json &json() const noexcept;
         ReadLock(const ReadLock &) = delete;
         ReadLock &operator=(const ReadLock &) = delete;
-    private:
+
+      private:
         struct Impl;
         std::unique_ptr<Impl> d_;
         friend class JsonConfig;
@@ -116,7 +116,7 @@ public:
 
     class PYLABHUB_UTILS_EXPORT WriteLock
     {
-    public:
+      public:
         WriteLock() noexcept;
         WriteLock(WriteLock &&) noexcept;
         WriteLock &operator=(WriteLock &&) noexcept;
@@ -125,23 +125,24 @@ public:
         bool commit(std::error_code *ec = nullptr) noexcept;
         WriteLock(const WriteLock &) = delete;
         WriteLock &operator=(const WriteLock &) = delete;
-    private:
+
+      private:
         struct Impl;
         std::unique_ptr<Impl> d_;
         friend class JsonConfig;
     };
 
-
     // ----------------- Template convenience wrappers -----------------
-    template <typename F>
-    bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
+    template <typename F> bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
     {
-        static_assert(std::is_invocable_v<F, const nlohmann::json &>,
-                      "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
+        static_assert(
+            std::is_invocable_v<F, const nlohmann::json &>,
+            "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
 
         if (basics::RecursionGuard::is_recursing(this))
         {
-            if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+            if (ec)
+                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
             LOGGER_WARN("JsonConfig::with_json_read - nested call detected; refusing to re-enter.");
             return false;
         }
@@ -150,34 +151,39 @@ public:
         FileLock fLock(config_path(), ResourceType::File, LockMode::Blocking);
         if (!fLock.valid())
         {
-            if (ec) *ec = fLock.error_code();
+            if (ec)
+                *ec = fLock.error_code();
             return false;
         }
 
-        if (!const_cast<JsonConfig*>(this)->private_load_from_disk_unsafe(ec))
+        if (!const_cast<JsonConfig *>(this)->private_load_from_disk_unsafe(ec))
         {
             return false;
         }
 
         auto r = lock_for_read(ec);
-        if (!r) return false;
+        if (!r)
+            return false;
 
         try
         {
             std::forward<F>(fn)(r->json());
-            if (ec) *ec = std::error_code{};
+            if (ec)
+                *ec = std::error_code{};
             return true;
         }
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("JsonConfig::with_json_read: exception in user callback: {}", ex.what());
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            if (ec)
+                *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
         catch (...)
         {
             LOGGER_ERROR("JsonConfig::with_json_read: unknown exception in user callback");
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            if (ec)
+                *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
     }
@@ -190,24 +196,31 @@ public:
                       "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
         if (basics::RecursionGuard::is_recursing(this))
         {
-            if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-            LOGGER_WARN("JsonConfig::with_json_write - nested call detected; refusing to re-enter.");
+            if (ec)
+                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+            LOGGER_WARN(
+                "JsonConfig::with_json_write - nested call detected; refusing to re-enter.");
             return false;
         }
         basics::RecursionGuard guard(this);
 
         std::unique_ptr<FileLock> fLock;
-        if (timeout.has_value()) {
+        if (timeout.has_value())
+        {
             // A timeout was provided, use the timed lock constructor.
             fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
-        } else {
-            // No timeout was provided, use the blocking lock constructor.
-            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
         }
-        
+        else
+        {
+            // No timeout was provided, use the blocking lock constructor.
+            fLock =
+                std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
+        }
+
         if (!fLock || !fLock->valid())
         {
-            if (ec) *ec = fLock->error_code();
+            if (ec)
+                *ec = fLock->error_code();
             return false;
         }
 
@@ -217,7 +230,8 @@ public:
         }
 
         auto w = lock_for_write(ec);
-        if (!w) return false;
+        if (!w)
+            return false;
 
         try
         {
@@ -228,32 +242,33 @@ public:
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("JsonConfig::with_json_write: exception in user callback: {}", ex.what());
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            if (ec)
+                *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
         catch (...)
         {
             LOGGER_ERROR("JsonConfig::with_json_write: unknown exception in user callback");
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            if (ec)
+                *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
     }
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 
-    // Non-template factory methods implemented in .cpp — they acquire locks and return guard objects.
+    // Non-template factory methods implemented in .cpp — they acquire locks and return guard
+    // objects.
     std::optional<ReadLock> lock_for_read(std::error_code *ec = nullptr) const noexcept;
     std::optional<WriteLock> lock_for_write(std::error_code *ec = nullptr) noexcept;
 
-
-    bool private_load_from_disk_unsafe(std::error_code* ec) noexcept;
-    bool private_commit_to_disk_unsafe(std::error_code* ec) noexcept;
+    bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
+    bool private_commit_to_disk_unsafe(std::error_code *ec) noexcept;
 
     // helper used internally (defined in cpp)
-    static void atomic_write_json(const std::filesystem::path &target,
-                                  const nlohmann::json &j,
+    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
                                   std::error_code *ec = nullptr) noexcept;
 };
 

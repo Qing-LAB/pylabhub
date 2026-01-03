@@ -5,14 +5,15 @@
 #include <sstream>
 #include <windows.h>
 #endif
-#include <string>
 #include <optional>
+#include <string>
 #include <string_view>
 
-#include "platform.hpp"
 #include "format_tools.hpp"
+#include "platform.hpp"
 
-namespace pylabhub::format_tools {
+namespace pylabhub::format_tools
+{
 
 // --- Helper: formatted local time with sub-second resolution (robust) ---
 // Replaces previous formatted_time(...) implementation.
@@ -153,46 +154,49 @@ std::wstring win32_make_unique_suffix()
     return std::wstring();
 }
 
-std::wstring s2ws([[maybe_unused]] const std::string& s)
+std::wstring s2ws([[maybe_unused]] const std::string &s)
 {
     return std::wstring();
 }
 
-std::string ws2s([[maybe_unused]] const std::wstring& w)
+std::string ws2s([[maybe_unused]] const std::wstring &w)
 {
     return std::string();
 }
 
 #endif
 
-namespace {
-    // Helper to trim whitespace from both ends of a string_view.
-    // It's defined in an anonymous namespace to limit its scope to this file.
-    constexpr std::string_view trim_whitespace(std::string_view s) {
-        constexpr std::string_view whitespace = " \t\n\r\f\v";
+namespace
+{
+// Helper to trim whitespace from both ends of a string_view.
+// It's defined in an anonymous namespace to limit its scope to this file.
+constexpr std::string_view trim_whitespace(std::string_view s)
+{
+    constexpr std::string_view whitespace = " \t\n\r\f\v";
 
-        auto first = s.find_first_not_of(whitespace);
-        if (first == std::string_view::npos) {
-            // all whitespace
-            return std::string_view{};
-        }
-        auto last = s.find_last_not_of(whitespace);
-        // substr takes (pos, count). last >= first so count = last-first+1
-        return s.substr(first, last - first + 1);
+    auto first = s.find_first_not_of(whitespace);
+    if (first == std::string_view::npos)
+    {
+        // all whitespace
+        return std::string_view{};
     }
+    auto last = s.find_last_not_of(whitespace);
+    // substr takes (pos, count). last >= first so count = last-first+1
+    return s.substr(first, last - first + 1);
 }
+} // namespace
 
-std::optional<std::string> extract_value_from_string(
-    std::string_view keyword,
-    std::string_view input,
-    char separator,
-    char assignment_symbol)
+std::optional<std::string> extract_value_from_string(std::string_view keyword,
+                                                     std::string_view input, char separator,
+                                                     char assignment_symbol)
 {
     std::string_view::size_type start = 0;
-    while (start < input.size()) {
+    while (start < input.size())
+    {
         // Find the next separator or the end of the string
         std::string_view::size_type end = input.find(separator, start);
-        if (end == std::string_view::npos) {
+        if (end == std::string_view::npos)
+        {
             end = input.size();
         }
 
@@ -202,7 +206,8 @@ std::optional<std::string> extract_value_from_string(
 
         // Find the assignment symbol within the segment
         std::string_view::size_type assignment_pos = segment.find(assignment_symbol);
-        if (assignment_pos == std::string_view::npos) {
+        if (assignment_pos == std::string_view::npos)
+        {
             continue; // No assignment symbol, so it's not a valid pair
         }
 
@@ -211,7 +216,8 @@ std::optional<std::string> extract_value_from_string(
         key_sv = trim_whitespace(key_sv);
 
         // Compare with the desired keyword
-        if (key_sv == keyword) {
+        if (key_sv == keyword)
+        {
             // Extract, trim, and return the value
             std::string_view value_sv = segment.substr(assignment_pos + 1);
             value_sv = trim_whitespace(value_sv);
@@ -220,6 +226,5 @@ std::optional<std::string> extract_value_from_string(
     }
     return std::nullopt; // Keyword not found
 }
-
 
 } // namespace pylabhub::format_tools

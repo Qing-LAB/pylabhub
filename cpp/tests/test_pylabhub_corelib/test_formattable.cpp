@@ -4,9 +4,12 @@
 using namespace pylabhub::format_tools;
 
 // Test fixture for format tools tests
-class FormatToolsTest : public ::testing::Test {};
+class FormatToolsTest : public ::testing::Test
+{
+};
 
-TEST_F(FormatToolsTest, ExtractValueFromString) {
+TEST_F(FormatToolsTest, ExtractValueFromString)
+{
     // Basic test case
     std::string input1 = "key1=value1;key2=value2;key3=value3";
     EXPECT_EQ(extract_value_from_string("key2", input1, ';', '='), "value2");

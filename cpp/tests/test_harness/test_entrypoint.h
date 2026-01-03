@@ -1,7 +1,7 @@
 // tests/test_harness/test_entrypoint.h
 #pragma once
-#include <string>
 #include <filesystem>
+#include <string>
 
 /**
  * @file test_entrypoint.h

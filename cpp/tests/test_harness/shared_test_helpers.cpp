@@ -25,7 +25,8 @@ namespace pylabhub::tests::helper
 bool read_file_contents(const std::string &path, std::string &out)
 {
     std::ifstream ifs(path, std::ios::binary);
-    if (!ifs) return false;
+    if (!ifs)
+        return false;
     std::ostringstream ss;
     ss << ifs.rdbuf();
     out = ss.str();
@@ -36,12 +37,13 @@ size_t count_lines(const std::string &s)
 {
     size_t count = 0;
     for (char c : s)
-        if (c == '\n') ++count;
+        if (c == '\n')
+            ++count;
     return count;
 }
 
 bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
-                                    std::chrono::milliseconds timeout)
+                             std::chrono::milliseconds timeout)
 {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout)
@@ -49,7 +51,8 @@ bool wait_for_string_in_file(const fs::path &path, const std::string &expected,
         std::string contents;
         if (read_file_contents(path.string(), contents))
         {
-            if (contents.find(expected) != std::string::npos) return true;
+            if (contents.find(expected) != std::string::npos)
+                return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -71,7 +74,8 @@ std::string test_scale()
 
 int scaled_value(int original, int small_value)
 {
-    if (test_scale() == "small") return small_value;
+    if (test_scale() == "small")
+        return small_value;
     return original;
 }
 
