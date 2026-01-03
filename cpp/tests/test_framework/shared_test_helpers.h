@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <string>
 
+#include "platform.hpp"
 #include "scope_guard.hpp"
 #include "utils/Lifecycle.hpp"
 
@@ -23,8 +24,88 @@ namespace fs = std::filesystem;
  */
 namespace pylabhub::tests::helper
 {
-using pylabhub::platform::debug_msg;
-using pylabhub::platform::print_stack_trace;
+
+#if defined(PYLABHUB_IS_POSIX)
+#include <fcntl.h>
+#include <unistd.h>
+#else // Windows
+#include <io.h>
+#endif
+
+class StringCapture
+{
+  public:
+    explicit StringCapture(int fd_to_capture) : fd_to_capture_(fd_to_capture), original_fd_(-1)
+    {
+#if defined(PYLABHUB_IS_POSIX)
+        if (pipe(pipe_fds_) != 0)
+            return;
+        original_fd_ = dup(fd_to_capture_);
+        dup2(pipe_fds_[1], fd_to_capture_);
+        close(pipe_fds_[1]);
+#else // Windows
+        if (_pipe(pipe_fds_, 1024, _O_BINARY) != 0)
+            return;
+        original_fd_ = _dup(fd_to_capture_);
+        _dup2(pipe_fds_[1], fd_to_capture_);
+        _close(pipe_fds_[1]);
+#endif
+    }
+
+    ~StringCapture()
+    {
+        if (original_fd_ != -1)
+        {
+#if defined(PYLABHUB_IS_POSIX)
+            dup2(original_fd_, fd_to_capture_);
+            close(original_fd_);
+#else // Windows
+            _dup2(original_fd_, fd_to_capture_);
+            _close(original_fd_);
+#endif
+        }
+    }
+
+    std::string GetOutput()
+    {
+        if (original_fd_ != -1)
+        {
+#if defined(PYLABHUB_IS_POSIX)
+            fflush(stderr);
+            dup2(original_fd_, fd_to_capture_);
+            close(original_fd_);
+#else // Windows
+            fflush(stderr);
+            _dup2(original_fd_, fd_to_capture_);
+            _close(original_fd_);
+#endif
+            original_fd_ = -1; // Mark as restored
+        }
+
+        std::string output;
+        std::vector<char> buffer(1024);
+        ssize_t bytes_read;
+#if defined(PYLABHUB_IS_POSIX)
+        while ((bytes_read = read(pipe_fds_[0], buffer.data(), buffer.size())) > 0)
+        {
+            output.append(buffer.data(), bytes_read);
+        }
+        close(pipe_fds_[0]);
+#else // Windows
+        while ((bytes_read = _read(pipe_fds_[0], buffer.data(), buffer.size())) > 0)
+        {
+            output.append(buffer.data(), bytes_read);
+        }
+        _close(pipe_fds_[0]);
+#endif
+        return output;
+    }
+
+  private:
+    int fd_to_capture_;
+    int original_fd_;
+    int pipe_fds_[2];
+};
 
 /**
  * @brief Reads the entire contents of a file into a string.
@@ -98,20 +179,20 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     }
     catch (const ::testing::AssertionException &e)
     {
-        debug_msg("[WORKER FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
-        print_stack_trace();
+        PLH_DEBUG("[WORKER FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
+        pylabhub::platform::print_stack_trace();
         return 1;
     }
     catch (const std::exception &e)
     {
-        debug_msg("[WORKER FAILURE] {} threw an exception: {}", test_name, e.what());
-        print_stack_trace();
+        PLH_DEBUG("[WORKER FAILURE] {} threw an exception: {}", test_name, e.what());
+        pylabhub::platform::print_stack_trace();
         return 2;
     }
     catch (...)
     {
-        debug_msg("[WORKER FAILURE] {} threw an unknown exception.", test_name);
-        print_stack_trace();
+        PLH_DEBUG("[WORKER FAILURE] {} threw an unknown exception.", test_name);
+        pylabhub::platform::print_stack_trace();
         return 3;
     }
     return 0; // Success

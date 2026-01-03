@@ -93,7 +93,6 @@ static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::p
 
 namespace pylabhub::utils
 {
-using pylabhub::platform::panic;
 
 static constexpr std::chrono::milliseconds LOCK_POLLING_INTERVAL = std::chrono::milliseconds(20);
 
@@ -232,8 +231,8 @@ FileLock::FileLock(const std::filesystem::path &path, ResourceType type, LockMod
 {
     if (!lifecycle_initialized())
     {
-        panic("FATAL: FileLock created before its module was initialized via LifecycleManager. "
-              "Aborting.");
+        PLH_PANIC("FATAL: FileLock created before its module was initialized via LifecycleManager. "
+                  "Aborting.");
     }
     pImpl->path = path;
     open_and_lock(pImpl.get(), type, mode, std::nullopt);
@@ -245,8 +244,8 @@ FileLock::FileLock(const std::filesystem::path &path, ResourceType type,
 {
     if (!lifecycle_initialized())
     {
-        panic("FATAL: FileLock created before its module was initialized via LifecycleManager. "
-              "Aborting.");
+        PLH_PANIC("FATAL: FileLock created before its module was initialized via LifecycleManager. "
+                  "Aborting.");
     }
     pImpl->path = path;
     open_and_lock(pImpl.get(), type, LockMode::Blocking, timeout);
