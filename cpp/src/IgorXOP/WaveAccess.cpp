@@ -48,6 +48,8 @@
 */
 #include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 #include <fmt/format.h>
 #include <stdio.h>
 
@@ -140,7 +142,8 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
     // Now, store all of the info in the handle to return to Igor.
 
     result_buf_tuple =
-        fmt::format_to_n(buf, sizeof(buf) - 1, "Wave name: \'{}\'; type: {}; dimensions: {}", waveName, waveType, numDimensions);
+        fmt::format_to_n(buf, sizeof(buf) - 1, "Wave name: \'{}\'; type: {}; dimensions: {}",
+                         waveName, waveType, numDimensions);
     *result_buf_tuple.out = '\0'; // Null-terminate the string
     if ((result = AddCStringToHandle(buf, p->strH)))
         return result;
@@ -182,8 +185,10 @@ WAGetWaveInfo(WAGetWaveInfoParams *p) // See the top of the file for instruction
             if ((result = MDGetDimensionLabel(p->w, dimension, element, dimLabel)))
                 return result;
             result_buf_inner = fmt::format_to_n(buf, sizeof(buf) - 1, "\'{}\'", dimLabel);
-            if (element < dimensionSizes[dimension] - 1) {
-                result_buf_inner = fmt::format_to_n(result_buf_inner.out, sizeof(buf) - (result_buf_inner.out - buf), ", ");
+            if (element < dimensionSizes[dimension] - 1)
+            {
+                result_buf_inner = fmt::format_to_n(
+                    result_buf_inner.out, sizeof(buf) - (result_buf_inner.out - buf), ", ");
             }
             *result_buf_inner.out = '\0'; // Null-terminate the string
             if ((result = AddCStringToHandle(buf, p->strH)))
@@ -925,6 +930,11 @@ HOST_IMPORT int XOPMain(IORecHandle ioRecHandle)
 {
     XOPInit(ioRecHandle);  // Do standard XOP initialization.
     SetXOPEntry(XOPEntry); // Set entry point for future calls.
+
+    // Initialize our application's shared services (like Logger).
+    // This is safe to call even if other plugins also call it, as it's idempotent.
+    LifecycleManager::instance().initialize();
+    LOGGER_INFO("pylabhubxop64 plugin loaded and logger initialized.");
 
     if (igorVersion < 800)
     {                           // XOP Toolkit 8.00 or later requires Igor Pro 8.00 or later

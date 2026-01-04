@@ -1,83 +1,43 @@
 # /cpp/tests/CMakeLists.txt
-#
-# Configures all test executables for the project.
-
 cmake_minimum_required(VERSION 3.18)
 
-# Include helper modules that provide custom staging functions.
+enable_testing()
+include(GoogleTest)
 include(StageHelpers)
 
-# Define the test executables.
-set(TEST_SOURCES
-  test_logger.cpp
-  test_filelock.cpp
-  test_jsonconfig.cpp
-  test_atomicguard.cpp
-  test_recursionguard.cpp
-)
+# Define staging paths for subdirectories to use
+set(STAGED_TEST_DIR "${PYLABHUB_STAGING_DIR}/tests")
+set(STAGED_LIB_DIR "${PYLABHUB_STAGING_DIR}/bin")
 
-# Create a list of target names from source files.
-set(TEST_TARGETS "")
-foreach(test_src ${TEST_SOURCES})
-  get_filename_component(test_name ${test_src} NAME_WE)
-  list(APPEND TEST_TARGETS ${test_name})
-endforeach()
+# Create an aggregator target for all test-related staging.
+# Sub-projects will register their executables to the PYLABHUB_TEST_EXECUTABLES_TO_STAGE
+# global property. We collect them here and add them as dependencies.
+if(NOT TARGET stage_tests)
+    add_custom_target(stage_tests COMMENT "Aggregate target for staging test executables and dependencies")
+endif()
 
-foreach(test_target ${TEST_TARGETS})
-  add_executable(${test_target} ${test_target}.cpp)
+# Ensure staged library (pylabhub-utils) is available before its dependent tests are staged.
+if (TARGET stage_pylabhub_utils)
+  add_dependencies(stage_tests stage_pylabhub_utils)
+endif()
 
-  # Set the C++ standard for the test executables to C++20.
-  target_compile_features(${test_target} PRIVATE cxx_std_20)
+# Configure all test sub-projects
+add_subdirectory(test_framework)
+add_subdirectory(test_pylabhub_corelib)
+add_subdirectory(test_pylabhub_utils)
+add_subdirectory(test_misc)
 
-  # Check if we are using MSVC
-  if(MSVC)
-    # Enable synchronous exception handling and disable warning C5105.
-    target_compile_options(${test_target} PRIVATE /EHsc /wd5105)
+# Collect all test executables registered by the subdirectories
+get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)
 
-    # Enable the standards-conforming preprocessor
-    target_compile_options(${test_target} PRIVATE /Zc:preprocessor)
-  endif()
+if(test_executables_to_stage)
+  message(STATUS "Found test executables to stage: ${test_executables_to_stage}")
+  # The executables themselves will be copied to the staged 'tests' directory because
+  # pylabhub_register_test_for_staging sets their RUNTIME_OUTPUT_DIRECTORY.
+  # We just need to make the aggregator 'stage_tests' target depend on them to ensure they are built.
+  add_dependencies(stage_tests ${test_executables_to_stage})
+else()
+  message(STATUS "No test executables registered for staging.")
+endif()
 
-  # All tests depend on the pylabhub-utils shared library.
-  # Linking against the namespaced alias is the correct modern CMake approach.
-  target_link_libraries(${test_target} PRIVATE pylabhub::utils)
-
-  # Define the compile-time log level for tests to enable all log messages.
-  # This overrides any default and ensures the LOGGER_* macros are compiled in.
-  target_compile_definitions(${test_target} PRIVATE LOGGER_COMPILE_LEVEL=0)
-
-  if (PYLABHUB_LOGGER_DEBUG)
-    target_compile_definitions(${test_target} PRIVATE _LOGGER_DEBUG_ENABLED=1)
-  endif()
-
-  # Add each test to CTest for `ctest` command integration.
-  # The COMMAND points to the executable in the staging directory. This ensures
-  # that the test runs in an environment identical to deployment, where all
-  # shared libraries are in the same directory.
-  add_test(
-    NAME ${test_target}
-    COMMAND "${PYLABHUB_STAGING_DIR}/bin/${test_target}"
-  )
-endforeach()
-
-# --- Staging ---
-# Create a custom target to stage all test executables to the `bin` directory.
-# This target will be a dependency of the top-level `stage_all` target.
-add_custom_target(stage_tests COMMENT "Staging all test executables")
-
-# Loop through each test target and attach its staging command to `stage_tests`.
-# This pattern follows the one used in `src/CMakeLists.txt` and uses the
-# singular `pylabhub_stage_executable` function, which is known to exist.
-foreach(test_target ${TEST_TARGETS})
-  pylabhub_stage_executable(
-    TARGET ${test_target}
-    DESTINATION bin
-    ATTACH_TO stage_tests
-  )
-endforeach()
-
-# The staging target must depend on the executables it intends to stage.
-# This ensures they are built before the staging commands are run.
-add_dependencies(stage_tests ${TEST_TARGETS})
-
-message(STATUS "Configured test executables: ${TEST_TARGETS}")
+message(STATUS "Configured test sub-projects.")

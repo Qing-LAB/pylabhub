@@ -1,47 +1,167 @@
-# C++ Utilities (`pylabub::utils`) Documentation
+# C++ Utilities (`pylabhub-utils`) Documentation
 
-This document provides design and usage notes for the core C++ utilities found in the `pylabub::utils` namespace.
+This document provides design and usage notes for the core C++ utilities found in the `pylabhub-utils` shared library. The components are primarily located within the `pylabhub::utils` and `pylabhub::lifecycle` C++ namespaces.
 
 ---
 
-## `JsonConfig`
+## 1. `pylabhub-utils` Library Design
 
-The `JsonConfig` class provides a robust, thread-safe, and process-safe interface for managing JSON configuration files.
+`pylabhub-utils` is the primary **shared library** for the pyLabHub C++ application. It contains high-level, application-aware components that provide core functionalities like logging, configuration management, and inter-process synchronization. In the build system, it is exposed via the `pylabhub::utils` CMake alias target.
 
-### Design Philosophy
+### Core Design Principles
 
-- **Concurrency:** The class is designed for heavy concurrent use, both from multiple threads within a single process and from multiple cooperating processes.
-- **Robustness:** On-disk file writes are atomic, ensuring that the configuration file is never left in a partially-written or corrupt state, even if the application crashes.
-- **Safety:** The public API is `noexcept`, catching internal errors and translating them into simple boolean return values to prevent exceptions from propagating into consumer code.
-- **ABI Stability:** It uses the Pimpl idiom (`std::unique_ptr<Impl>`) to hide all private data members, ensuring that future changes to the implementation do not break binary compatibility for shared library consumers.
+*   **Shared and Dynamic**: As a shared library (`.dll` on Windows, `.so` on Linux), it is loaded at runtime by the main application.
+*   **ABI Stability**: This is the most critical design constraint. All public interfaces are designed to be ABI-stable using the Pimpl idiom, C-style interfaces, and controlled symbol exports.
+*   **Lifecycle Aware**: Utilities in this library hook into the `LifecycleManager` to ensure they are initialized and shut down in the correct order.
 
-### Concurrency Model
+---
 
-`JsonConfig` uses a sophisticated two-level locking strategy to balance performance and safety.
+## 2. Application Lifecycle Management (C++ Namespace: `pylabhub::lifecycle`)
 
-#### Level 1: Structural Lock (`initMutex`)
-A coarse-grained `std::mutex` is used to serialize operations that affect the object's structure, lifecycle, or its relationship with the filesystem. This includes:
-- `init()`, `reload()`, `replace()`, `save()`
-- Move constructors and move assignment operators.
+The application lifecycle is managed by the `pylabhub::lifecycle::LifecycleGuard` RAII object. It ensures that modules are started in the correct order based on their declared dependencies and shut down in the reverse order.
 
-This lock ensures that the core state of the object (like its file path or the `Impl` pointer itself) cannot be changed while another thread is in the middle of a critical operation.
+### How to Use
+In `main()`, create a `LifecycleGuard` instance on the stack, passing it the `ModuleDef` objects from all the utilities your application will use. The `LifecycleGuard`'s constructor initializes the application, and its destructor handles graceful shutdown.
 
-#### Level 2: Data Lock (`rwMutex`)
-A fine-grained `std::shared_mutex` is used exclusively to protect access to the in-memory `nlohmann::json` data object.
-- **Read Access** (`get`, `has`, etc.) uses a `std::shared_lock`, allowing for high-throughput concurrent reads from multiple threads.
-- **Write Access** (`set`, `erase`, etc.) uses a `std::unique_lock`, ensuring that only one thread can modify the data at a time.
+### Full Example
 
-### Critical Risk Analysis: Concurrent Move Operations
+```cpp
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
+#include "utils/FileLock.hpp"
+#include "utils/JsonConfig.hpp"
 
-The high-performance locking model (using `rwMutex` for simple accessors) introduces a critical rule for users of the class:
+int main(int argc, char* argv[]) {
+    // Construct the guard with all necessary module definitions
+    pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(true), // Enable cleanup on shutdown
+        pylabhub::utils::JsonConfig::GetLifecycleModule()
+    );
 
-**WARNING: You MUST externally synchronize move operations.**
+    LOGGER_INFO("Application started successfully.");
+    // ... main application logic ...
+    return 0; // app_lifecycle destructor handles shutdown here
+}
+```
 
-If one thread attempts to move a `JsonConfig` object while another thread is calling any method on it, a **use-after-free** memory error will occur, leading to a crash.
+---
 
-**Scenario:**
-1.  **Thread A** calls `config.get("key")` and passes the initial checks.
-2.  **Thread B** executes `JsonConfig new_config = std::move(config);`. This action transfers the internal implementation pointer from `config` to `new_config` and deallocates the memory `config` was managing.
-3.  **Thread A** resumes execution and attempts to access its now-dangling internal pointer, causing a crash.
+## 3. Core Utilities (C++ Namespace: `pylabhub::utils`)
 
-This is a deliberate design trade-off that prioritizes performance. The responsibility is on the consumer to ensure that an object is not being used by one thread while being moved by another. For long-lived, shared objects (like a global configuration singleton), consider making the object `const` or avoiding move operations after initialization.
+### `Logger`
+
+The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, and thread-safe logging utility.
+
+*   **Key Public Interfaces**:
+    *   `Logger::instance()`: Accessor for the singleton logger instance.
+    *   `set_level(Logger::Level lvl)`: Sets the minimum log level to record.
+    *   `set_logfile(path, append)`: Switches the log output to a file.
+    *   `set_console()`: Switches the log output to the console (stderr).
+    *   `flush()`: Blocks until all pending log messages have been written.
+    *   `LOGGER_INFO(format, ...)`: Macro for logging an informational message (also `TRACE`, `DEBUG`, `WARN`, `ERROR`, `SYSTEM`).
+
+*   **Basic Usage**:
+    ```cpp
+    #include "utils/Logger.hpp"
+
+    void my_function() {
+        // Log messages using the fmt::format style
+        LOGGER_INFO("Processing user {} with ID {}", "Alice", 123);
+        LOGGER_WARN("A recoverable issue occurred.");
+
+        // Ensure critical messages are written before continuing
+        Logger::instance().flush();
+    }
+    ```
+
+*   **Lifecycle and Shutdown Behavior**:
+    The Logger is a lifecycle-aware component managed by the `LifecycleManager`. Its shutdown process is designed to be robust and prevent data loss, even in chaotic scenarios.
+
+    *   **Initialization**: The logger's background worker thread is started during the application's `initialize` phase. Attempting to use the logger before this phase is a fatal error and will cause the application to `abort()`.
+
+    *   **Shutdown Process**:
+        1.  When the application's `finalize` phase begins, the logger transitions to a `ShuttingDown` state.
+        2.  In this state, any new calls to logger functions (e.g., `LOGGER_INFO`, `set_level`) from other threads are immediately and silently ignored. This prevents deadlocks and makes the shutdown process robust against race conditions from threads that have not yet terminated.
+        3.  The logger's background thread continues to run until it has processed all messages that were already in its queue before the shutdown was initiated.
+        4.  After the queue is empty, the worker performs one final, automatic `flush()` on the current sink (e.g., file or console) to ensure all messages are written to the output.
+        5.  The worker thread then cleanly exits.
+
+    *   **Corner Cases**:
+        *   **Logging During/After Shutdown**: If any part of the application attempts to log while the logger is shutting down or after it has shut down, the call is safely and silently ignored. The application will not crash.
+        *   **`flush()` During/After Shutdown**: Calling `Logger::instance().flush()` while the logger is shutting down or has shut down is a safe no-op. It will return immediately without blocking or throwing an error.
+
+### `JsonConfig`
+
+The `pylabhub::utils::JsonConfig` class provides a robust, process-safe interface for managing JSON configuration files.
+
+*   **Key Public Interfaces**:
+    *   `JsonConfig(path, create, &ec)`: Constructor to initialize with a file path.
+    *   `init(path, create, &ec)`: Initializes or re-initializes the object.
+    *   `reload(&ec)`: Reloads the configuration from disk.
+    *   `save(&ec)`: Saves the current in-memory configuration to disk.
+    *   `with_json_read(callback, &ec)`: Provides safe, read-only access to the internal JSON object.
+    *   `with_json_write(callback, &ec, timeout)`: Provides safe, write access. `timeout` is a `std::optional<std::chrono::milliseconds>` which defaults to `std::nullopt`, resulting in a blocking write. Provide a duration for a timed write.
+
+*   **Basic Usage**:
+    ```cpp
+    #include "utils/JsonConfig.hpp"
+    #include <string>
+    #include <nlohmann/json.hpp>
+    #include <chrono>
+
+    void access_config(pylabhub::utils::JsonConfig& cfg) {
+        using namespace std::chrono_literals;
+        std::error_code ec;
+
+        // Read a value
+        std::string name;
+        cfg.with_json_read([&](const nlohmann::json& j) {
+            name = j.value("name", "default_name");
+        }, &ec);
+
+        // Write a value using the default blocking behavior
+        cfg.with_json_write([&](nlohmann::json& j) {
+            j["last_access_time"] = std::time(nullptr);
+        }, &ec);
+
+        // Write a value with a 100ms timeout
+        cfg.with_json_write([&](nlohmann::json& j) {
+            j["attempt_count"] = j.value("attempt_count", 0) + 1;
+        }, &ec, 100ms);
+    }
+    ```
+
+### `FileLock`
+
+The `pylabhub::utils::FileLock` class is a cross-platform, RAII-style utility for creating *advisory* inter-process and inter-thread locks.
+
+*   **Key Public Interfaces**:
+    *   `FileLock(path, type, mode)`: RAII constructor that acquires the lock. `mode` can be `Blocking` or `NonBlocking`.
+    *   `FileLock(path, type, timeout)`: RAII constructor that acquires a lock, blocking up to a specified `timeout`.
+    *   `valid()`: Checks if the lock was successfully acquired.
+    *   `get_expected_lock_fullname_for(path, type)`: A static method to predict the lock file's name.
+
+*   **Basic Usage**:
+    ```cpp
+    #include "utils/FileLock.hpp"
+    #include <filesystem>
+
+    void safe_file_write(const std::filesystem::path& resource_path) {
+        // Lock will be acquired in the constructor.
+        pylabhub::utils::FileLock lock(
+            resource_path,
+            pylabhub::utils::ResourceType::File,
+            pylabhub::utils::LockMode::Blocking
+        );
+
+        if (!lock.valid()) {
+            // Failed to acquire lock
+            return;
+        }
+
+        // ... perform safe file operations here ...
+
+    } // Lock is automatically released here when 'lock' goes out of scope.
+    ```
+

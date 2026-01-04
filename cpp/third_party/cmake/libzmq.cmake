@@ -208,6 +208,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   # ---------------------------
   _expose_wrapper(pylabhub_zmq pylabhub::third_party::zmq)
 
+  # --- 5b. Install the wrapper target for export ---
+  # This ensures that pylabhub_zmq is included in the pylabhubTargets export set,
+  # allowing other projects (or other targets within this project) to find its
+  # interface properties (like include directories and link libraries).
+  install(TARGETS pylabhub_zmq EXPORT pylabhubTargets)
+
   if(_zmq_canonical_target)
     # Binary library case: Link the wrapper to the concrete target.
     target_link_libraries(pylabhub_zmq INTERFACE ${_zmq_canonical_target})
