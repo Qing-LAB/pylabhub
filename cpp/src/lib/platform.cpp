@@ -1,30 +1,37 @@
 #include "platform.hpp"
 
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <vector>
+
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
-#include <memory>    // For std::unique_ptr
 #include <windows.h>
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
-#include <unistd.h>
+
 #if defined(PYLABHUB_IS_POSIX)
 #include <cxxabi.h>   // For __cxa_demangle
+#include <dlfcn.h>    // For dladdr
 #include <execinfo.h> // For backtrace, backtrace_symbols
+#include <unistd.h>
 #endif
 #endif
 #if defined(PYLABHUB_PLATFORM_APPLE)
 #include <libproc.h>     // proc_pidpath
 #include <limits.h>      // PATH_MAX
 #include <mach-o/dyld.h> // _NSGetExecutablePath
-#include <unistd.h>      // getpid, realpath
-#include <vector>
 #endif
 
 #include "fmt/core.h"
+#include "fmt/format.h"
+
+#include "debug_info.hpp"
 
 namespace pylabhub::platform
 {
@@ -58,62 +65,96 @@ uint64_t get_native_thread_id() noexcept
 }
 
 // Helper to automatically discover the current executable's name for logging.
-std::string get_executable_name()
+std::string get_executable_name(bool include_path) noexcept
 {
     try
     {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        wchar_t path[MAX_PATH] = {0};
-        if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0)
+        // Loop to handle long paths: start with MAX_PATH and grow if truncated.
+        std::vector<wchar_t> buf;
+        buf.resize(MAX_PATH);
+        DWORD len = 0;
+        for (;;)
         {
-            return "unknown_win";
-        }
-        return std::filesystem::path(path).filename().string();
-#elif defined(PYLABHUB_PLATFORM_LINUX)
-        char result[PATH_MAX];
-        ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
-        if (count > 0)
-        {
-            return std::filesystem::path(std::string(result, count)).filename().string();
-        }
-        return "unknown_linux";
-
-#elif defined(PYLABHUB_PLATFORM_APPLE)
-
-        // 1) Try _NSGetExecutablePath (handles sizing via size parameter)
-        uint32_t size = 0;
-        // first call to discover required size
-        if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0)
-        {
-            std::vector<char> buf(size);
-            if (_NSGetExecutablePath(buf.data(), &size) == 0)
+            len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+            if (len == 0)
             {
-                // canonicalize to resolve symlinks
-                char resolved[PATH_MAX];
-                if (realpath(buf.data(), resolved) != nullptr)
-                {
-                    return std::filesystem::path(resolved).filename().string();
-                }
-                return std::filesystem::path(buf.data()).filename().string();
+                // failure
+                return std::string("unknown_win");
             }
+            if (len < buf.size() - 1)
+            {
+                // success (not truncated)
+                break;
+            }
+            // truncated: enlarge and try again
+            buf.resize(buf.size() * 2);
+        }
+
+        std::filesystem::path p{std::wstring(buf.data(), len)};
+        if (include_path)
+        {
+            // convert to UTF-8 explicitly
+            return platform::format_tools::ws2s(p.native());
         }
         else
         {
-            // _NSGetExecutablePath returned 0 with size == 0 (unusual) — try small stack buffer
-            char smallbuf[PATH_MAX];
-            size = sizeof(smallbuf);
-            if (_NSGetExecutablePath(smallbuf, &size) == 0)
+            return platform::format_tools::ws2s(p.filename().native());
+        }
+
+#elif defined(PYLABHUB_PLATFORM_LINUX)
+        std::vector<char> buf;
+        buf.resize(PATH_MAX);
+        ssize_t count = readlink("/proc/self/exe", buf.data(), buf.size());
+        if (count == -1)
+        {
+            return std::string("unknown_linux");
+        }
+        // if output filled the buffer, it might be truncated:
+        if (static_cast<size_t>(count) >= buf.size())
+        {
+            // grow and retry
+            buf.resize(buf.size() * 2);
+            count = readlink("/proc/self/exe", buf.data(), buf.size());
+            if (count == -1)
+                return std::string("unknown_linux");
+        }
+
+        std::string full(buf.data(), static_cast<size_t>(count));
+        std::filesystem::path p{full};
+        if (include_path)
+            return full;
+        return p.filename().string();
+
+#elif defined(PYLABHUB_PLATFORM_APPLE)
+
+        // 1) Preferred: _NSGetExecutablePath to get path (may be a symlink)
+        uint32_t size = 0;
+        if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0)
+        {
+            std::vector<char> buf(size);
+            if (_NSGetExecutablePath(buf.data(), &size) == 0) // success
             {
+                // normalize path to resolve symlinks
                 char resolved[PATH_MAX];
-                if (realpath(smallbuf, resolved) != nullptr)
+                if (realpath(buf.data(), resolved) != nullptr)
                 {
-                    return std::filesystem::path(resolved).filename().string();
+                    std::filesystem::path p{resolved};
+                    if (include_path)
+                        return std::string(resolved);
+                    return p.filename().string();
                 }
-                return std::filesystem::path(smallbuf).filename().string();
+                else
+                {
+                    std::filesystem::path p{std::string(buf.data(), size)};
+                    if (include_path)
+                        return p.string();
+                    return p.filename().string();
+                }
             }
         }
 
-        // 2) Fallback: proc_pidpath (often available and returns full path)
+        // 2) Fallback: proc_pidpath
         {
             char procbuf[PROC_PIDPATHINFO_MAXSIZE];
             int ret = proc_pidpath(getpid(), procbuf, sizeof(procbuf));
@@ -122,98 +163,36 @@ std::string get_executable_name()
                 char resolved[PATH_MAX];
                 if (realpath(procbuf, resolved) != nullptr)
                 {
+                    if (include_path)
+                        return std::string(resolved);
                     return std::filesystem::path(resolved).filename().string();
                 }
+                if (include_path)
+                    return std::string(procbuf);
                 return std::filesystem::path(procbuf).filename().string();
             }
         }
 
+        return std::string("unknown_macos");
+
+#else
+        (void)include_path;
+        return std::string("unknown");
 #endif
     } // try
     catch (const std::exception &e)
     {
         // std::filesystem operations can throw on invalid paths.
-        // Log the error but don't crash the lifecycle manager.
-        PLH_DEBUG("[pylabhub-lifecycle] Warning: get_executable_name failed: {}.", e.what());
+        fmt::print(stderr,
+                   "Warning: get_executable_name failed: {}.\n",
+                   e.what());
     }
     catch (...)
     {
-        PLH_DEBUG(
-            "[pylabhub-lifecycle] Warning: get_executable_name failed with unknown exception.");
+        fmt::print(stderr,
+                   "Warning: get_executable_name failed with unknown exception.\n");
     }
     return "unknown";
-}
-
-void print_stack_trace() noexcept
-{
-    fmt::print(stderr, "Stack Trace:\n");
-
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    // Windows implementation
-    const int max_frames = 62; // Maximum frames to capture
-    void *stack[max_frames];
-    SYMBOL_INFO *symbol;
-    HANDLE process;
-    DWORD displacement;
-
-    process = GetCurrentProcess();
-    SymInitialize(process, NULL, TRUE); // Initialize symbol handler
-
-    USHORT frames = CaptureStackBackTrace(0, max_frames, stack, NULL);
-
-    symbol = (SYMBOL_INFO *)calloc(sizeof(SYMBOL_INFO) + 256 * sizeof(char), 1);
-    symbol->MaxNameLen = 255;
-    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-
-    for (USHORT i = 0; i < frames; i++)
-    {
-        SymFromAddr(process, (DWORD64)(stack[i]), 0, symbol);
-        fmt::print(stderr, "  {}: {} - 0x{:X}\n", frames - i - 1, symbol->Name, symbol->Address);
-    }
-
-    free(symbol);
-    SymCleanup(process);
-
-#elif defined(PYLABHUB_IS_POSIX)
-    // POSIX implementation (Linux, macOS)
-    const int max_frames = 100;
-    void *callstack[max_frames];
-    int frames = backtrace(callstack, max_frames);
-    char **strs = backtrace_symbols(callstack, frames);
-
-    if (strs == nullptr)
-    {
-        fmt::print(stderr, "  [Unable to get stack symbols]\n");
-        return;
-    }
-
-    for (int i = 0; i < frames; ++i)
-    {
-        std::string s(strs[i]);
-#if defined(__linux__) // Demangling for GCC/Clang on Linux
-        size_t funcstart = s.find('(');
-        size_t funcend = s.find('+', funcstart);
-        if (funcstart != std::string::npos && funcend != std::string::npos)
-        {
-            std::string funcname = s.substr(funcstart + 1, funcend - (funcstart + 1));
-            int status;
-            char *demangled_name = abi::__cxa_demangle(funcname.c_str(), nullptr, nullptr, &status);
-            if (status == 0)
-            {
-                // Replace mangled name with demangled one
-                s.replace(funcstart + 1, funcend - (funcstart + 1), demangled_name);
-            }
-            free(demangled_name);
-        }
-#endif
-        fmt::print(stderr, "  {}\n", s);
-    }
-    free(strs);
-
-#else
-    // Fallback for unknown platforms
-    fmt::print(stderr, "  [Stack trace not available on this platform]\n");
-#endif
 }
 
 } // namespace pylabhub::platform

@@ -79,6 +79,7 @@
 #include <utility>
 #include <vector>
 
+#include "debug_info.hpp"
 #include "platform.hpp"
 #include "pylabhub_utils_export.h"
 
@@ -275,6 +276,7 @@ namespace pylabhub
 namespace lifecycle
 {
 using namespace pylabhub::platform;
+using namespace pylabhub::debug;
 
 /**
  * @brief A convenience function to register a module with the LifecycleManager.

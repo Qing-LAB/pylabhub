@@ -6,6 +6,7 @@
 #include <string>
 
 using namespace pylabhub::platform;
+using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
 
@@ -14,7 +15,7 @@ static std::string GetLocationRegex(const char *file, int line)
 {
     // In the output "in file at line X", escape the filename for regex matching.
     std::string escaped_file = std::regex_replace(file, std::regex(R"(\\)"), R"(\\\\)");
-    return "in " + escaped_file + " at line " + std::to_string(line);
+    return "in " + escaped_file + ":" + std::to_string(line);
 }
 
 TEST(PlatformTest, DebugMsg)
@@ -40,9 +41,9 @@ TEST(PlatformTest, PrintStackTrace)
 
     std::string output = stderr_capture.GetOutput();
 
-    EXPECT_THAT(output, HasSubstr("Stack Trace:"));
+    EXPECT_THAT(output, HasSubstr("Stack Trace (most recent call first):"));
     // Check that there is *some* content after "Stack Trace:"
-    EXPECT_THAT(output, Not(EndsWith("Stack Trace:\n")));
+    EXPECT_THAT(output, Not(EndsWith("Stack Trace (most recent call first):\n")));
 }
 
 // A function that will be called by the panic test.

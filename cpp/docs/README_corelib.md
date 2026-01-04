@@ -26,6 +26,11 @@ The `pylabhub-basic` library provides the following key components, organized by
     *   A collection of utilities and template specializations that integrate with the `fmt` library to provide custom formatting for project-specific types.
 *   **`pylabhub::platform` namespace**:
     *   Contains platform-specific macros, type definitions, and functions to abstract away differences between operating systems.
+*   **`pylabhub::debug` namespace**:
+    *   `print_stack_trace()`: Cross-platform function to print the current call stack for debugging and error reporting.
+    *   `panic()`: A function template (and `PLH_PANIC` macro) for handling fatal, unrecoverable errors by printing a message and stack trace, then aborting the program. Features compile-time format string checks.
+    *   `debug_msg()`: A function template (and `PLH_DEBUG` macro) for printing debug messages with compile-time format string checks and automatic source location reporting.
+    *   `debug_msg_rt()`: A function template (and `PLH_DEBUG_RT` macro) similar to `debug_msg()`, but accepting a runtime format string (e.g., `std::string_view`).
 
 ---
 
@@ -43,6 +48,7 @@ A piece of code is a candidate for the core library if it meets these criteria:
 *   A custom string manipulation function.
 *   A cross-platform file system helper.
 *   A new, general-purpose concurrency primitive.
+*   Generic debugging utilities like stack tracing and assertion handlers.
 
 **Bad Candidates**:
 *   A class that requires application lifecycle management (depends on `utils::Lifecycle`).

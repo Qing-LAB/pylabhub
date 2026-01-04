@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <string>
 
+#include "debug_info.hpp"
 #include "platform.hpp"
 #include "scope_guard.hpp"
 #include "utils/Lifecycle.hpp"
@@ -180,19 +181,19 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     catch (const ::testing::AssertionException &e)
     {
         PLH_DEBUG("[WORKER FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
-        pylabhub::platform::print_stack_trace();
+        pylabhub::debug::print_stack_trace();
         return 1;
     }
     catch (const std::exception &e)
     {
         PLH_DEBUG("[WORKER FAILURE] {} threw an exception: {}", test_name, e.what());
-        pylabhub::platform::print_stack_trace();
+        pylabhub::debug::print_stack_trace();
         return 2;
     }
     catch (...)
     {
         PLH_DEBUG("[WORKER FAILURE] {} threw an unknown exception.", test_name);
-        pylabhub::platform::print_stack_trace();
+        pylabhub::debug::print_stack_trace();
         return 3;
     }
     return 0; // Success

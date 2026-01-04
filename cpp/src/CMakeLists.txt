@@ -67,6 +67,21 @@ endif()
 # The app links against the core library and the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
 
+# by default, we will include debug information in the final build
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(pylabhub-basic PRIVATE -g)
+  target_compile_options(pylabhub-utils PRIVATE -g)
+  target_compile_options(pylabhub-hubshell PRIVATE -g)
+elseif(MSVC)
+  target_compile_options(pylabhub-basic PRIVATE /Zi)
+  target_compile_options(pylabhub-utils PRIVATE /Zi)
+  target_compile_options(pylabhub-hubshell PRIVATE /Zi)
+
+  target_link_options(pylabhub-hubshell PRIVATE /DEBUG>)
+  target_link_options(pylabhub-basic PRIVATE /DEBUG>)
+  target_link_options(pylabhub-utils PRIVATE /DEBUG>)
+endif()
+
 # ==============================================================================
 # Installation
 # ==============================================================================
