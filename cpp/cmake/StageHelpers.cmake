@@ -214,8 +214,10 @@ function(pylabhub_get_library_staging_commands)
       message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
-      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_PDB_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      if(MSVC)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_PDB_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      endif()
       # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
       if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
         message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
