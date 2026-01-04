@@ -149,11 +149,20 @@ function(pylabhub_stage_executable)
 
   set(DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
 
+  set(stage_commands "")
+  list(APPEND stage_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:${ARG_TARGET}>"
+        "${DEST_DIR}/")
+  
+  if(MSVC)
+    list(APPEND stage_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_PDB_FILE:${ARG_TARGET}>"
+          "${DEST_DIR}/")
+  endif()
+
   add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:${ARG_TARGET}>"
-            "${DEST_DIR}/"
-    COMMENT "Staging executable for ${ARG_TARGET} to ${DEST_DIR}"
+    ${stage_commands}
+    COMMENT "Staging executable and symbols for ${ARG_TARGET} to ${DEST_DIR}"
     VERBATIM)
 endfunction()
 
@@ -205,6 +214,8 @@ function(pylabhub_get_library_staging_commands)
       message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_PDB_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
       if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
         message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
@@ -306,9 +317,20 @@ function(pylabhub_register_test_for_staging)
   endif()
 
   # Set the output directory for the executable to be inside the staged 'tests' folder
-  set_target_properties(${ARG_TARGET} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
-  )
+  # For multi-config generators, set the output directory for each configuration explicitly.
+  if(CMAKE_CONFIGURATION_TYPES)
+    foreach(CONFIG IN LISTS CMAKE_CONFIGURATION_TYPES)
+      string(TOUPPER ${CONFIG} CONFIG_UPPER)
+      set_target_properties(${ARG_TARGET} PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER}" "${PYLABHUB_STAGING_DIR}/tests"
+      )
+    endforeach()
+  else()
+    # For single-config generators, set the default output directory.
+    set_target_properties(${ARG_TARGET} PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+    )
+  endif()
 
   # Register this target to a global property so the parent scope can collect it
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})

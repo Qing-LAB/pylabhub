@@ -8,8 +8,8 @@
 #include <vector>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 #include <windows.h>
+#include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 #else
 #include <sys/syscall.h>
@@ -32,6 +32,7 @@
 #include "fmt/format.h"
 
 #include "debug_info.hpp"
+#include "format_tools.hpp"
 
 namespace pylabhub::platform
 {
@@ -95,11 +96,11 @@ std::string get_executable_name(bool include_path) noexcept
         if (include_path)
         {
             // convert to UTF-8 explicitly
-            return platform::format_tools::ws2s(p.native());
+            return pylabhub::format_tools::ws2s(p.native());
         }
         else
         {
-            return platform::format_tools::ws2s(p.filename().native());
+            return pylabhub::format_tools::ws2s(p.filename().native());
         }
 
 #elif defined(PYLABHUB_PLATFORM_LINUX)

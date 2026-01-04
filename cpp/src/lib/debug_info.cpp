@@ -16,12 +16,23 @@
 #include <fmt/core.h>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 5105) // macro expansion producing 'defined' has undefined behavior
+#endif
+
 #define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
 #include <dbghelp.h>
 #include <memory>
 #include <string>
 #include <vector>
-#include <windows.h>
 #pragma comment(lib, "dbghelp.lib")
 #elif defined(PYLABHUB_IS_POSIX)
 #include <algorithm>
@@ -123,12 +134,12 @@ void print_stack_trace() noexcept
             IMAGEHLP_MODULE64 modInfo;
             std::memset(&modInfo, 0, sizeof(modInfo));
             modInfo.SizeOfStruct = sizeof(modInfo);
-            if (SymGetModuleInfo64(process, reinterpret_cast<DWORD64>(addr), &modInfo))
+            if (SymGetModuleInfo64(process, static_cast<DWORD64>(addr), &modInfo))
             {
                 const char *img = modInfo.ImageName         ? modInfo.ImageName
                                   : modInfo.LoadedImageName ? modInfo.LoadedImageName
                                                             : "(unknown)";
-                uintptr_t base = reinterpret_cast<uintptr_t>(modInfo.BaseOfImage);
+                uintptr_t base = static_cast<uintptr_t>(modInfo.BaseOfImage);
                 fmt::print(stderr, "(module: {}) + {:#x}", img,
                            static_cast<unsigned long long>(addr - base));
             }
