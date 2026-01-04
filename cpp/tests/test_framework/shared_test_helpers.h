@@ -23,8 +23,6 @@ namespace fs = std::filesystem;
 
  * lifecycle management and exception handling.
  */
-namespace pylabhub::tests::helper
-{
 
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
@@ -36,6 +34,9 @@ namespace pylabhub::tests::helper
 #define STDERR_FILENO _fileno(stderr)
 typedef int ssize_t;
 #endif
+
+namespace pylabhub::tests::helper
+{
 
 class StringCapture
 {
