@@ -10,6 +10,7 @@
 
 #include "platform.hpp"
 
+#include "debug_info.hpp"
 #include <fmt/core.h>
 
 #include "format_tools.hpp" // For s2ws, ws2s
@@ -62,7 +63,7 @@ ProcessHandle spawn_worker_process(const std::string &exe_path, const std::strin
         if (msgBuf)
             LocalFree(msgBuf);
         PLH_DEBUG("ERROR: CreateProcessW failed. Code: {} - Message: {}", err, msg);
-        pylabhub::platform::print_stack_trace();
+        pylabhub::debug::print_stack_trace();
         return nullptr;
     }
 
