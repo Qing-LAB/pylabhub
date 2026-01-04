@@ -110,6 +110,19 @@ include(ProjectToolChainSetup)
 # ===========================================================================
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
+# --- Set RPATH for staged/installed executables ---
+# This ensures that executables can find shared libraries in a relative path.
+# Binaries are in 'bin/', libraries are in 'lib/'. The RPATH should point
+# from the executable to the library directory.
+# For Linux/macOS, $ORIGIN is a linker directive that resolves to the executable's path.
+if(UNIX)
+  set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+endif()
+# CMAKE_BUILD_WITH_INSTALL_RPATH tells CMake to use the install RPATH for
+# the build tree as well. This makes the executables in `build/stage/bin`
+# runnable without needing `LD_LIBRARY_PATH`.
+set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+
 include(GNUInstallDirs)
 
 # ===========================================================================
@@ -197,6 +210,44 @@ if(MSVC AND PYLABHUB_USE_SANITIZER STREQUAL "Address")
     else()
         message(WARNING "Could not find MSVC ASan runtime DLLs in the compiler directory: ${MSVC_COMPILER_DIR}. ASan-enabled tests may fail to run.")
     endif()
+endif()
+
+# --- Stage Sanitizer Runtimes (non-MSVC) ---
+if(NOT MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
+  set(_sanitizer_cmake_flag "")
+  set(_sanitizer_lib_name "")
+
+  if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
+    set(_sanitizer_cmake_flag "-fsanitize=address")
+    set(_sanitizer_lib_name "libasan.so")
+  elseif(PYLABHUB_USE_SANITIZER STREQUAL "Thread")
+    set(_sanitizer_cmake_flag "-fsanitize=thread")
+    set(_sanitizer_lib_name "libtsan.so")
+  elseif(PYLABHUB_USE_SANITIZER STREQUAL "UndefinedBehavior")
+    set(_sanitizer_cmake_flag "-fsanitize=undefined")
+    set(_sanitizer_lib_name "libubsan.so")
+  endif()
+
+  if(_sanitizer_lib_name)
+    execute_process(
+      COMMAND ${CMAKE_CXX_COMPILER} ${_sanitizer_cmake_flag} --print-file-name=${_sanitizer_lib_name}
+      OUTPUT_VARIABLE _sanitizer_lib_path
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(EXISTS "${_sanitizer_lib_path}")
+      message(STATUS "Found sanitizer runtime for staging: ${_sanitizer_lib_path}")
+      add_custom_command(TARGET create_staging_dirs POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_sanitizer_lib_path}"
+              "${PYLABHUB_STAGING_DIR}/lib/"
+          COMMENT "Staging POSIX sanitizer runtime (${_sanitizer_lib_name})"
+          VERBATIM
+      )
+    else()
+      message(WARNING "Could not find sanitizer runtime '${_sanitizer_lib_name}'. Staged executables may not run from a clean environment.")
+    endif()
+  endif()
 endif()
 
 add_custom_target(stage_all
