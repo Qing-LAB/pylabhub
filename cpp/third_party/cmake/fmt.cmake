@@ -171,8 +171,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
 
     # Stage the header directory
     pylabhub_stage_headers(
-      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
-      SUBDIR "fmt"
+      #the third_party include folder already has /fmt/ in its path
+      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include" 
+      SUBDIR ""
     )
 
     # Stage the library file, if a concrete target was found
@@ -183,7 +184,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for fmt.")
   endif()
 
-  # --- 7. Restore cache variables ---
+  # --- 7. Add to export set for installation ---
+  # The wrapper target must be exported so downstream projects can find it.
+  install(TARGETS pylabhub_fmt
+    EXPORT pylabhubTargets
+  )
+
+  # If fmt was built as a library, its canonical target must also be exported.
+  if(_fmt_canonical_target)
+    install(TARGETS ${_fmt_canonical_target}
+      EXPORT pylabhubTargets
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}
+    )
+  endif()
+
+  # --- 8. Restore cache variables ---
   # Prevent settings from leaking to other sub-projects.
   # ---------------------------
   restore_cache_var(BUILD_SHARED BOOL)

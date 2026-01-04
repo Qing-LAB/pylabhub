@@ -9,13 +9,12 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "PREFER_VENDOR_NLOHMANN": "ON",
+        "USE_VENDOR_NLOHMANN_ONLY": "ON",
         "THIRD_PARTY_ZMQ_FORCE_VARIANT": "static",
         "THIRD_PARTY_DISABLE_TESTS": "ON",
         "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"
       }
     },
-
     {
       "name": "ninja-debug",
       "inherits": "base",
@@ -23,9 +22,29 @@
       "description": "Ninja / Debug (Linux / macOS / Windows Ninja)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/ninja-debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "ENABLE_SANITIZERS": "ON", "BUILD_TESTS": "ON" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "BUILD_TESTS": "ON" }
     },
-
+    {
+      "name": "ninja-debug-asan",
+      "inherits": "ninja-debug",
+      "description": "Ninja / Debug with AddressSanitizer (ASan)",
+      "binaryDir": "${sourceDir}/build/ninja-debug-asan",
+      "cacheVariables": { "PYLABHUB_USE_SANITIZER": "Address" }
+    },
+    {
+      "name": "ninja-debug-tsan",
+      "inherits": "ninja-debug",
+      "description": "Ninja / Debug with ThreadSanitizer (TSan)",
+      "binaryDir": "${sourceDir}/build/ninja-debug-tsan",
+      "cacheVariables": { "PYLABHUB_USE_SANITIZER": "Thread" }
+    },
+    {
+      "name": "ninja-debug-ubsan",
+      "inherits": "ninja-debug",
+      "description": "Ninja / Debug with UndefinedBehaviorSanitizer (UBSan)",
+      "binaryDir": "${sourceDir}/build/ninja-debug-ubsan",
+      "cacheVariables": { "PYLABHUB_USE_SANITIZER": "UndefinedBehavior" }
+    },
     {
       "name": "ninja-release",
       "inherits": "base",
@@ -33,9 +52,8 @@
       "description": "Ninja / Release (Linux / macOS / Windows Ninja)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/ninja-release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "ENABLE_SANITIZERS": "OFF", "BUILD_TESTS": "ON" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "BUILD_TESTS": "ON" }
     },
-
     {
       "name": "msvc-x64-debug",
       "hidden": false,
@@ -51,7 +69,6 @@
         "THIRD_PARTY_ALLOW_UPSTREAM_PCH": "OFF"
       }
     },
-
     {
       "name": "msvc-x64-release",
       "hidden": false,
@@ -72,12 +89,18 @@
   "buildPresets": [
     { "name": "build-ninja-debug",   "configurePreset": "ninja-debug" },
     { "name": "build-ninja-release", "configurePreset": "ninja-release" },
+    { "name": "build-ninja-debug-asan",  "configurePreset": "ninja-debug-asan" },
+    { "name": "build-ninja-debug-tsan",  "configurePreset": "ninja-debug-tsan" },
+    { "name": "build-ninja-debug-ubsan", "configurePreset": "ninja-debug-ubsan" },
     { "name": "build-msvc-debug",    "configurePreset": "msvc-x64-debug", "configuration":  "Debug" },
     { "name": "build-msvc-release",  "configurePreset": "msvc-x64-release", "configuration": "Release" }
   ],
 
   "testPresets": [
     { "name": "test-ninja-debug", "configurePreset": "ninja-debug" },
+    { "name": "test-ninja-debug-asan", "configurePreset": "ninja-debug-asan" },
+    { "name": "test-ninja-debug-tsan", "configurePreset": "ninja-debug-tsan" },
+    { "name": "test-ninja-debug-ubsan", "configurePreset": "ninja-debug-ubsan" },
     { "name": "test-msvc-debug",  "configurePreset": "msvc-x64-debug" }
   ]
 }
