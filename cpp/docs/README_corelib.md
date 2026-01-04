@@ -28,6 +28,7 @@ The `pylabhub-basic` library provides the following key components, organized by
     *   Contains platform-specific macros, type definitions, and functions to abstract away differences between operating systems.
 *   **`pylabhub::debug` namespace**:
     *   `print_stack_trace()`: Cross-platform function to print the current call stack for debugging and error reporting.
+        *   **Note on Windows**: This function uses the `DbgHelp` library (`DbgHelp.dll`). The initialization of this library can conflict with applications that redirect `stderr` to a synchronous pipe for output capture. This can lead to a deadlock if the library writes to `stderr` during its startup. Use with caution in environments that perform synchronous `stderr` redirection.
     *   `panic()`: A function template (and `PLH_PANIC` macro) for handling fatal, unrecoverable errors by printing a message and stack trace, then aborting the program. Features compile-time format string checks.
     *   `debug_msg()`: A function template (and `PLH_DEBUG` macro) for printing debug messages with compile-time format string checks and automatic source location reporting.
     *   `debug_msg_rt()`: A function template (and `PLH_DEBUG_RT` macro) similar to `debug_msg()`, but accepting a runtime format string (e.g., `std::string_view`).

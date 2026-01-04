@@ -57,12 +57,45 @@
 namespace pylabhub::debug
 {
 
+#if defined(PYLABHUB_PLATFORM_WIN64)
+namespace
+{ // Anonymous namespace for internal linkage
+
+class DbgHelpInitializer
+{
+  public:
+    DbgHelpInitializer()
+    {
+        // Initialize DbgHelp for this process.
+        // This is done once when the library is loaded.
+        HANDLE process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+        if (!SymInitialize(process, nullptr, TRUE))
+        {
+            // If initialization fails, we can't get stack traces, but we shouldn't
+            // prevent the program from running. A message will be printed inside
+            // print_stack_trace when symbol functions fail.
+        }
+    }
+
+    ~DbgHelpInitializer()
+    {
+        // Cleanup DbgHelp for this process.
+        SymCleanup(GetCurrentProcess());
+    }
+};
+
+// A static instance to ensure DbgHelp is initialized once per process lifetime.
+static DbgHelpInitializer g_dbghelp_initializer;
+
+} // namespace
+#endif
+
 void print_stack_trace() noexcept
 {
     fmt::print(stderr, "Stack Trace (most recent call first):\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-
     /**
      * @brief Windows-specific implementation of `print_stack_trace`.
      *
@@ -77,14 +110,7 @@ void print_stack_trace() noexcept
     USHORT framesCaptured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
 
     HANDLE process = GetCurrentProcess();
-    // Request line number loading and defer loading by default; undecorate names
-    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
-
-    if (!SymInitialize(process, nullptr, TRUE))
-    {
-        fmt::print(stderr, "  [DbgHelp::SymInitialize failed: {}]\n", GetLastError());
-    }
-
+    
     // Allocate SYMBOL_INFO buffer with room for long name
     constexpr size_t kNameBuf = 1024;
     const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + kNameBuf;
@@ -151,8 +177,6 @@ void print_stack_trace() noexcept
 
         fmt::print(stderr, "\n");
     }
-
-    SymCleanup(process);
 
 #elif defined(PYLABHUB_IS_POSIX)
 

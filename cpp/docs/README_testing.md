@@ -96,3 +96,24 @@ You can also run the executables directly with Google Test's `--gtest_filter`:
 ./test_pylabhub_corelib --gtest_filter=AtomicGuardTest.*
 ```
 
+## 6. Platform-Specific Behavior and Gotchas
+
+### Deadlock on Windows When Capturing `stderr`
+
+When writing tests, a common pattern is to capture standard output or standard error to verify what a function writes to the console. The `StringCapture` helper in `pylabhub-test-harness` is designed for this purpose.
+
+However, there is a significant gotcha on **Windows** when testing functions that use the `DbgHelp` library, such as `pylabhub::debug::print_stack_trace`.
+
+**The Problem:**
+
+- The `StringCapture` helper works by redirecting `stderr` to a **pipe** (a fixed-size in-memory buffer).
+- The `print_stack_trace` function, on its first use, initializes the `DbgHelp` library (`DbgHelp.dll`).
+- This initialization process (`SymInitialize`) is complex and may write its own status messages or errors to `stderr`.
+- If the `DbgHelp` output is large enough to fill the pipe's buffer, the call to `print_stack_trace` will **block** (freeze), waiting for the pipe to be read.
+- However, the test framework is also blocked, waiting for `print_stack_trace` to finish before it can read the pipe. This creates a **deadlock**.
+
+**Solution:**
+
+For any test that validates the output of `pylabhub::debug::print_stack_trace`, do **not** use `StringCapture`. Instead, redirect `stderr` to a temporary file for the duration of the test. This avoids the blocking behavior of pipes and makes the test robust.
+
+See `PlatformTest.PrintStackTrace` in `tests/test_pylabhub_corelib/test_platform.cpp` for a canonical example of this file-based redirection.
