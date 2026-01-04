@@ -8,8 +8,8 @@
 #include <vector>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#include <windows.h>
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
+#include <windows.h>
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 #else
 #include <sys/syscall.h>
@@ -184,14 +184,11 @@ std::string get_executable_name(bool include_path) noexcept
     catch (const std::exception &e)
     {
         // std::filesystem operations can throw on invalid paths.
-        fmt::print(stderr,
-                   "Warning: get_executable_name failed: {}.\n",
-                   e.what());
+        fmt::print(stderr, "Warning: get_executable_name failed: {}.\n", e.what());
     }
     catch (...)
     {
-        fmt::print(stderr,
-                   "Warning: get_executable_name failed with unknown exception.\n");
+        fmt::print(stderr, "Warning: get_executable_name failed with unknown exception.\n");
     }
     return "unknown";
 }

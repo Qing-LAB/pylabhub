@@ -182,7 +182,7 @@ if(NOT MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
   endif()
 
   if(SANITIZER_FLAGS)
-    message(STATUS "*** Enabling ${PYLABHUB_USE_SANITIZER} sanitizer.")
+    message(STATUS "*** Enabling ${PYLABHUB_USE_SANITIZER} sanitizer with flags: ${SANITIZER_FLAGS}.")
     add_compile_options(${SANITIZER_FLAGS})
     add_link_options(${SANITIZER_FLAGS})
   else()
