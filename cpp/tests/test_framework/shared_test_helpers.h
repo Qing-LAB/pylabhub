@@ -26,11 +26,15 @@ namespace fs = std::filesystem;
 namespace pylabhub::tests::helper
 {
 
-#if defined(PYLABHUB_IS_POSIX)
+#if PYLABHUB_IS_POSIX
 #include <fcntl.h>
 #include <unistd.h>
 #else // Windows
 #include <io.h>
+#include <fcntl.h> // For _O_BINARY
+#include <cstdio> // for _fileno, stderr
+#define STDERR_FILENO _fileno(stderr)
+typedef int ssize_t;
 #endif
 
 class StringCapture
@@ -38,7 +42,7 @@ class StringCapture
   public:
     explicit StringCapture(int fd_to_capture) : fd_to_capture_(fd_to_capture), original_fd_(-1)
     {
-#if defined(PYLABHUB_IS_POSIX)
+#if PYLABHUB_IS_POSIX
         if (pipe(pipe_fds_) != 0)
             return;
         original_fd_ = dup(fd_to_capture_);
@@ -57,7 +61,7 @@ class StringCapture
     {
         if (original_fd_ != -1)
         {
-#if defined(PYLABHUB_IS_POSIX)
+#if PYLABHUB_IS_POSIX
             dup2(original_fd_, fd_to_capture_);
             close(original_fd_);
 #else // Windows
@@ -71,7 +75,7 @@ class StringCapture
     {
         if (original_fd_ != -1)
         {
-#if defined(PYLABHUB_IS_POSIX)
+#if PYLABHUB_IS_POSIX
             fflush(stderr);
             dup2(original_fd_, fd_to_capture_);
             close(original_fd_);
@@ -86,16 +90,16 @@ class StringCapture
         std::string output;
         std::vector<char> buffer(1024);
         ssize_t bytes_read;
-#if defined(PYLABHUB_IS_POSIX)
+#if PYLABHUB_IS_POSIX
         while ((bytes_read = read(pipe_fds_[0], buffer.data(), buffer.size())) > 0)
         {
-            output.append(buffer.data(), bytes_read);
+            output.append(buffer.data(), static_cast<unsigned int>(bytes_read));
         }
         close(pipe_fds_[0]);
 #else // Windows
-        while ((bytes_read = _read(pipe_fds_[0], buffer.data(), buffer.size())) > 0)
+        while ((bytes_read = _read(pipe_fds_[0], buffer.data(), static_cast<unsigned int>(buffer.size()))) > 0)
         {
-            output.append(buffer.data(), bytes_read);
+            output.append(buffer.data(), static_cast<unsigned int>(bytes_read));
         }
         _close(pipe_fds_[0]);
 #endif

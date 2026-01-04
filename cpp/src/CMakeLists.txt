@@ -56,6 +56,9 @@ target_link_libraries(pylabhub-basic
 add_executable(pylabhub-hubshell hubshell.cpp)
 add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
 target_compile_features(pylabhub-hubshell PRIVATE cxx_std_20)
+if(MSVC)
+  target_compile_options(pylabhub-hubshell PRIVATE /Zc:preprocessor)
+endif()
 
 # Set the compile-time log level based on the build type (Debug/Release).
 target_compile_definitions(pylabhub-hubshell PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
@@ -77,9 +80,9 @@ elseif(MSVC)
   target_compile_options(pylabhub-utils PRIVATE /Zi)
   target_compile_options(pylabhub-hubshell PRIVATE /Zi)
 
-  target_link_options(pylabhub-hubshell PRIVATE /DEBUG>)
-  target_link_options(pylabhub-basic PRIVATE /DEBUG>)
-  target_link_options(pylabhub-utils PRIVATE /DEBUG>)
+  target_link_options(pylabhub-hubshell PRIVATE /DEBUG)
+  target_link_options(pylabhub-basic PRIVATE /DEBUG)
+  target_link_options(pylabhub-utils PRIVATE /DEBUG)
 endif()
 
 # ==============================================================================
