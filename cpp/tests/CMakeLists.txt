@@ -25,6 +25,7 @@ endif()
 add_subdirectory(test_framework)
 add_subdirectory(test_pylabhub_corelib)
 add_subdirectory(test_pylabhub_utils)
+add_subdirectory(test_misc)
 
 # Collect all test executables registered by the subdirectories
 get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)

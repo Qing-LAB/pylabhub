@@ -51,6 +51,7 @@
  *       does not halt the finalization of other modules.
  ******************************************************************************/
 #include "utils/Lifecycle.hpp"
+#include "debug_info.hpp"
 #include "platform.hpp"
 #include "utils/Logger.hpp" // For LOGGER_ERROR, etc.
 
@@ -409,7 +410,7 @@ void LifecycleManagerImpl::printStatusAndAbort(const std::string &error_msg,
     }
     fmt::print(stderr, "----------------------------------------\n\n");
 
-    pylabhub::platform::print_stack_trace();
+    pylabhub::debug::print_stack_trace();
     std::abort();
 }
 
@@ -560,14 +561,14 @@ void LifecycleManagerImpl::finalize()
             PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an exception during "
                       "shutdown: {}.",
                       m_app_name, m_pid, module->name, e.what());
-            pylabhub::platform::print_stack_trace();
+            pylabhub::debug::print_stack_trace();
         }
         catch (...)
         {
             PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an unknown exception "
                       "during shutdown.",
                       m_app_name, m_pid, module->name);
-            pylabhub::platform::print_stack_trace();
+            pylabhub::debug::print_stack_trace();
         }
     }
 

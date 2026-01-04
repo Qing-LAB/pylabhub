@@ -27,6 +27,7 @@
 #include <unistd.h>
 #endif
 
+#include "debug_info.hpp"
 #include "format_tools.hpp"
 #include "platform.hpp"
 #include "scope_guard.hpp"
