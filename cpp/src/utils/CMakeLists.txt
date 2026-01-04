@@ -235,23 +235,30 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/utils/
 # Define a local custom target to handle staging for this component.
 message(STATUS "Configuring staging for pylabhub-utils library.")
 
-# Always stage to 'bin' for main executables and for non-Windows test executables.
-pylabhub_get_library_staging_commands(
-  TARGET pylabhub-utils
-  DESTINATION bin
-  OUT_COMMANDS stage_commands
-)
-
-# On Windows, the test executables are in a separate 'tests' directory and also need the DLL.
 if(WIN32)
+  # On Windows, stage the DLL next to the executables since RPATH is not used.
+  pylabhub_get_library_staging_commands(
+    TARGET pylabhub-utils
+    DESTINATION bin
+    OUT_COMMANDS stage_commands
+  )
   pylabhub_get_library_staging_commands(
     TARGET pylabhub-utils
     DESTINATION tests
     OUT_COMMANDS stage_commands_for_tests
   )
   list(APPEND stage_commands ${stage_commands_for_tests})
+else()
+  # On POSIX platforms (Linux, macOS), stage the shared library to the 'lib' directory.
+  # The executables are configured with an RPATH to find it there.
+  pylabhub_get_library_staging_commands(
+    TARGET pylabhub-utils
+    DESTINATION lib
+    OUT_COMMANDS stage_commands
+  )
 endif()
 
+# The original logic for WIN32 tests is now inside the platform-specific block.
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")
 add_dependencies(stage_pylabhub_utils pylabhub-utils create_staging_dirs)
 # add_dependencies(stage_pylabhub_utils_for_tests pylabhub-utils)
