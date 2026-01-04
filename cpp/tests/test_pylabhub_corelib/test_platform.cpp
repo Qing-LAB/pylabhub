@@ -1,14 +1,20 @@
-#include "platform.hpp"
-#include "shared_test_helpers.h" // For StringCapture & read_file_contents
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
-
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <regex>
 #include <string>
+
+#if PYLABHUB_IS_POSIX
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h> // for open()
+#endif
+
+#include "platform.hpp"
+#include "shared_test_helpers.h" // For StringCapture & read_file_contents
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -94,7 +100,7 @@ TEST(PlatformTest, PrintStackTrace)
     ASSERT_NE(log_file, nullptr);
 #else
     int stderr_copy = dup(fileno(stderr));
-    int log_fd = open(temp_path_str.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int log_fd = ::open(temp_path_str.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     ASSERT_NE(log_fd, -1);
     dup2(log_fd, fileno(stderr));
     close(log_fd);
