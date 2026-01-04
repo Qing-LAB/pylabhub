@@ -116,7 +116,14 @@ project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 # from the executable to the library directory.
 # For Linux/macOS, $ORIGIN is a linker directive that resolves to the executable's path.
 if(UNIX)
-  set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+  if(APPLE)
+    # On macOS, @loader_path is similar to $ORIGIN but is correctly handled by dyld.
+    # We also need to ensure that the executable is marked as allowing rpath.
+    set(CMAKE_INSTALL_RPATH "@loader_path/../lib")
+    set(CMAKE_MACOSX_RPATH ON)
+  else()
+    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+  endif()
 endif()
 # CMAKE_BUILD_WITH_INSTALL_RPATH tells CMake to use the install RPATH for
 # the build tree as well. This makes the executables in `build/stage/bin`
