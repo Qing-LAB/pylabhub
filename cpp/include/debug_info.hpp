@@ -81,7 +81,6 @@ template <typename... Args>
     std::abort();
 }
 
-
 /**
  * @brief Prints a debug message to `stderr` with compile-time format string checking.
  *

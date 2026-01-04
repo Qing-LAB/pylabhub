@@ -27,10 +27,10 @@ namespace fs = std::filesystem;
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
 #include <unistd.h>
-#else // Windows
-#include <io.h>
+#else              // Windows
+#include <cstdio>  // for _fileno, stderr
 #include <fcntl.h> // For _O_BINARY
-#include <cstdio> // for _fileno, stderr
+#include <io.h>
 #define STDERR_FILENO _fileno(stderr)
 typedef int ssize_t;
 #endif
@@ -98,7 +98,8 @@ class StringCapture
         }
         close(pipe_fds_[0]);
 #else // Windows
-        while ((bytes_read = _read(pipe_fds_[0], buffer.data(), static_cast<unsigned int>(buffer.size()))) > 0)
+        while ((bytes_read = _read(pipe_fds_[0], buffer.data(),
+                                   static_cast<unsigned int>(buffer.size()))) > 0)
         {
             output.append(buffer.data(), static_cast<unsigned int>(bytes_read));
         }

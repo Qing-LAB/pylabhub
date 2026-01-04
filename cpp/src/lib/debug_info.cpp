@@ -11,7 +11,6 @@
  * debugging capabilities crucial for error diagnosis.
  */
 
-
 #include "platform.hpp"
 #include <fmt/core.h>
 
@@ -110,7 +109,7 @@ void print_stack_trace() noexcept
     USHORT framesCaptured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
 
     HANDLE process = GetCurrentProcess();
-    
+
     // Allocate SYMBOL_INFO buffer with room for long name
     constexpr size_t kNameBuf = 1024;
     const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + kNameBuf;
