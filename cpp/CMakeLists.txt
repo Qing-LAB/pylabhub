@@ -168,6 +168,37 @@ add_custom_target(create_staging_dirs
     COMMENT "Initializing staging directories"
 )
 
+# --- Stage MSVC ASan Runtime DLLs (if applicable) ---
+if(MSVC AND PYLABHUB_USE_SANITIZER STREQUAL "Address")
+    get_filename_component(MSVC_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+
+    set(ASAN_DLL_DEBUG "clang_rt.asan_dbg_dynamic-x86_64.dll")
+    set(ASAN_DLL_RELEASE "clang_rt.asan_dynamic-x86_64.dll")
+
+    # Verify that the ASan DLLs exist in the compiler's directory before staging.
+    if(EXISTS "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}" AND EXISTS "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}")
+        add_custom_command(TARGET create_staging_dirs POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}"
+                "${PYLABHUB_STAGING_DIR}/bin/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}"
+                "${PYLABHUB_STAGING_DIR}/bin/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}"
+                "${PYLABHUB_STAGING_DIR}/tests/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}"
+                "${PYLABHUB_STAGING_DIR}/tests/"
+            COMMENT "Staging MSVC ASan runtime DLLs"
+            VERBATIM
+        )
+        message(STATUS "Found and will stage MSVC ASan runtime DLLs from: ${MSVC_COMPILER_DIR}")
+    else()
+        message(WARNING "Could not find MSVC ASan runtime DLLs in the compiler directory: ${MSVC_COMPILER_DIR}. ASan-enabled tests may fail to run.")
+    endif()
+endif()
+
 add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo " "
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
