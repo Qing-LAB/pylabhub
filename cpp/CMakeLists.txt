@@ -220,42 +220,7 @@ if(MSVC AND PYLABHUB_USE_SANITIZER STREQUAL "Address")
 endif()
 
 # --- Stage Sanitizer Runtimes (non-MSVC) ---
-if(NOT MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
-  set(_sanitizer_cmake_flag "")
-  set(_sanitizer_lib_name "")
-
-  if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
-    set(_sanitizer_cmake_flag "-fsanitize=address")
-    set(_sanitizer_lib_name "libasan.so")
-  elseif(PYLABHUB_USE_SANITIZER STREQUAL "Thread")
-    set(_sanitizer_cmake_flag "-fsanitize=thread")
-    set(_sanitizer_lib_name "libtsan.so")
-  elseif(PYLABHUB_USE_SANITIZER STREQUAL "UndefinedBehavior")
-    set(_sanitizer_cmake_flag "-fsanitize=undefined")
-    set(_sanitizer_lib_name "libubsan.so")
-  endif()
-
-  if(_sanitizer_lib_name)
-    execute_process(
-      COMMAND ${CMAKE_CXX_COMPILER} ${_sanitizer_cmake_flag} --print-file-name=${_sanitizer_lib_name}
-      OUTPUT_VARIABLE _sanitizer_lib_path
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-
-    if(EXISTS "${_sanitizer_lib_path}")
-      message(STATUS "Found sanitizer runtime for staging: ${_sanitizer_lib_path}")
-      add_custom_command(TARGET create_staging_dirs POST_BUILD
-          COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              "${_sanitizer_lib_path}"
-              "${PYLABHUB_STAGING_DIR}/lib/"
-          COMMENT "Staging POSIX sanitizer runtime (${_sanitizer_lib_name})"
-          VERBATIM
-      )
-    else()
-      message(WARNING "Could not find sanitizer runtime '${_sanitizer_lib_name}'. Staged executables may not run from a clean environment.")
-    endif()
-  endif()
-endif()
+include(FindSanitizerRuntime)
 
 add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo " "
