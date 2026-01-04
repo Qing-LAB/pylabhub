@@ -16,6 +16,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 using namespace ::testing;
