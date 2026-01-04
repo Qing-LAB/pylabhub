@@ -19,6 +19,10 @@ message(STATUS "[pylabhub-third-party] Configuring GoogleTest submodule...")
 set(INSTALL_GTEST OFF)
 set(INSTALL_GMOCK OFF)
 
+# Tell gtest to hide its symbols, which is good practice when embedding it
+# and can prevent symbol clashes and build errors.
+set(gtest_hide_internal_symbols ON CACHE BOOL "Hide gtest internal symbols" FORCE)
+
 # Add the googletest subdirectory. This will define the `gtest` and `gtest_main` targets.
 # The `EXCLUDE_FROM_ALL` argument ensures that gtest targets are only built if
 # something (like our test executables) explicitly depends on them.
