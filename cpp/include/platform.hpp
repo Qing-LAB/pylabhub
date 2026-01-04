@@ -1,17 +1,4 @@
-/*******************************************************************************
- * @file include/platform.hpp
- * @brief Platform detection macros
- * @author Quan Qing
- * @date 2025-11-15
- * Reviewed by Quan Qing on 2025-11-15
- * First version created by Quan Qing with ChatGPT assistance.
- ******************************************************************************/
 #pragma once
-
-#include <cstdio>        // For fprintf, stderr
-#include <cstdlib>       // For std::abort
-#include <fmt/ostream.h> // For fmt::print to FILE*
-
 // Prefer the build-system provided macros (PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD,
 // PLATFORM_LINUX, PLATFORM_UNKNOWN). If they are not defined by the build system, fall back to
 // compiler predefined macros.
@@ -59,6 +46,7 @@
 #if defined(PYLABHUB_PLATFORM_WIN64) && !defined(PLATFORM_WIN64)
 #define PLATFORM_WIN64 1
 #endif
+
 #if defined(PYLABHUB_PLATFORM_APPLE) && !defined(PLATFORM_APPLE)
 #define PLATFORM_APPLE 1
 #endif
@@ -68,17 +56,18 @@
 #if defined(PYLABHUB_PLATFORM_LINUX) && !defined(PLATFORM_LINUX)
 #define PLATFORM_LINUX 1
 #endif
+
 #if defined(PYLABHUB_PLATFORM_UNKNOWN) && !defined(PLATFORM_UNKNOWN)
 #define PLATFORM_UNKNOWN 1
 #endif
 
-// --- Require C++17 or later --------------------------------------------------
+// --- Require C++20 or later --------------------------------------------------
 // This header (and the codebase) uses C++17 features: inline variables,
 // std::scoped_lock, and others. Fail early with a clear message when an
 // older language standard is used.
-//
-// For GCC/Clang use __cplusplus; for MSVC use _MSVC_LANG (MSVC sets
-// __cplusplus only when /Zc:__cplusplus is enabled).
+// For GCC/Clang use __cplusplus; for MSVC use _MSVC_LANG (MSVC sets // __cplusplus only when
+// /Zc:__cplusplus is enabled).
+
 #if defined(_MSC_VER)
 #if !defined(_MSVC_LANG) || (_MSVC_LANG < 202002L)
 #error "This project requires C++20 or later. Please compile with /std:c++20 or newer (MSVC)."
@@ -89,50 +78,15 @@
 #endif
 #endif
 
-// --- Fatal Error Handling ---------------------------------------------------
-#ifndef PANIC
-/**
- * @brief Macro for handling fatal, unrecoverable errors.
- *
- * By default, this macro prints a message to stderr and calls `std::abort()`,
- * which terminates the program immediately. Users can override this behavior by
- * defining `PANIC()` before including this header, for example, to integrate
- * with a custom crash reporting framework.
- *
- * Example of overriding PANIC:
- * ```cpp
- * #define PANIC(msg) my_custom_panic_handler(__FILE__, __LINE__, msg)
- * #include "platform.hpp"
- * ```
- */
-#define PANIC(msg)                                                                                 \
-    do                                                                                             \
-    {                                                                                              \
-        fmt::print(stderr, "FATAL ERROR: {}\n", msg);                                              \
-        std::abort();                                                                              \
-    } while (0)
-#endif
-// ----------------------------------------------------------------------------
+#include <cstdint>
+#include <string>
 
-// --- Shared Library API Export Macros ---------------------------------------
-// When building a shared library, symbols (classes, functions) intended for
-// public use must be explicitly marked for export. This macro handles the
-// platform-specific syntax.
-//
-// The build system (CMake) should define PYLABHUB_BUILD_DLL when building this
-// project as a shared library.
-#if PYLABHUB_IS_WINDOWS
-#if defined(PYLABHUB_BUILD_DLL)
-#define PYLABHUB_API __declspec(dllexport)
-#else
-#define PYLABHUB_API __declspec(dllimport)
-#endif
-#else // GCC, Clang, etc.
-#define PYLABHUB_API __attribute__((visibility("default")))
-#endif
+namespace pylabhub::platform
+{
 
-// Fallback for static builds or when the macro isn't defined.
-#ifndef PYLABHUB_API
-#define PYLABHUB_API
-#endif
-// ----------------------------------------------------------------------------
+// keep your other forward declarations...
+uint64_t get_native_thread_id() noexcept;
+long get_pid();
+std::string get_executable_name(bool include_path = false) noexcept;
+
+} // namespace pylabhub::platform

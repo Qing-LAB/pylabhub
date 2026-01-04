@@ -10,7 +10,7 @@
 #
 # Expected top-level behavior (caller / parent CMake):
 #   - Define platform macros before including this subdir: PLATFORM_APPLE or PLATFORM_WIN64
-#   - Preferably define&create `pylabhub::corelib` and `XOP::XOPSupport` targets before adding this subdir,
+#   - Preferably define&create `pylabhub::basic` and `XOP::XOPSupport` targets before adding this subdir,
 #     so this subproject can link to them at configure time and acquire include dirs.
 #   - Optionally pass DXOP_INSTALL_ROOT to override post-build staging root.
 #
@@ -157,7 +157,7 @@ endif()
 
 # -------------------------
 # Consume top-level provided helper/core targets if available
-# Parent is expected to create pylabhub::corelib and XOP::XOPSupport (recommended).
+# Parent is expected to create pylabhub::basic and XOP::XOPSupport (recommended).
 # If present, link to them so include dirs and other interface properties propagate.
 # -------------------------
 if(NOT TARGET pylabhub::third_party::XOPToolKit)
@@ -346,7 +346,7 @@ add_custom_target(stage_${XOP_TARGET}
   COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
   VERBATIM
 )
-add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET})
+add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)

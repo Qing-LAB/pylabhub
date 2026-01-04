@@ -1,0 +1,16 @@
+build/
+.vc/
+.vscode/
+.DS_Store
+**/.vs/
+**/.vscode/
+Thumbs.db
+_build/
+**/_build*/
+**/build*/
+**/Makefile
+tmp/
+**/tmp/
+*.lock
+*.core
+.gemini_commit_message.txt

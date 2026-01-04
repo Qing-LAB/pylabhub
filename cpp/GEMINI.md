@@ -15,3 +15,17 @@
 * **DO NOT SCAN:** `third_party/`
     * This folder contains upstream code. It is out of scope for analysis or modification unless explicitly instructed.
 * **Focus Areas:** Focus entirely on our main source directories, `cmake/` configs, and `docs/`.
+
+## 4. Git Commit Practices
+* **Complex Commit Messages:** When composing commit messages, especially those with multiple lines or special characters, ALWAYS use a temporary file for the commit message. This avoids shell escaping issues and ensures the message is correctly preserved.
+    * **Action:**
+        1. Create a file (e.g., `.gemini_commit_message.txt`) with the desired message content.
+        2. Use `git commit -F .gemini_commit_message.txt`.
+        3. Remove the temporary file after the commit is successful.
+
+## 5. General Debugging Strategy for Problems in the Code
+* **Strategy:** If an error is not directly related to syntax or semantics, but rather to logic, design, behavior, or interaction between components, the first step is to identify the most important variables, states, or conditions in the flow of the functions and code.
+* **Action:** Insert debug code to generate clear and useful information, providing intermediate values or states of these key elements that could impact results and contribute to pinpointing the failure/error.
+* **Attention to Detail:** Pay close attention to string formats, especially when a string parameter needs to be used as input to another function that might be strict in its format.
+* **Iterative Fixing:** After obtaining debug information, use thorough reasoning to find possible locations for the fix. Apply the patch, build the code, and re-test. Use the debug information after patching to determine if the fix is effective. Repeat this process, always with debug output available.
+* **Clean Up:** Only remove the debug code when the failures or errors are fully addressed.
