@@ -2,7 +2,7 @@
 #
 # Configures the main project libraries and executables.
 #
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.29)
 
 # Add the utils subdirectory, which defines the pylabhub::utils library.
 # This must be done before defining any targets that depend on it.
@@ -10,6 +10,9 @@ add_subdirectory(utils)
 
 # Gather sources for the core static library.
 # Exclude main.cpp (for the app) and sub-project directories.
+# TODO: For improved build robustness, consider replacing file(GLOB_RECURSE)
+# with an explicit list of source files. This ensures that new files are
+# intentionally added to the build, preventing silent build issues.
 file(GLOB_RECURSE CORE_SOURCES
   RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
   "*.cpp"
