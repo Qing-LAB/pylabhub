@@ -416,9 +416,12 @@ class LifecycleGuard
         {
             // Not the owner: warn and ignore supplied modules.
             m_is_owner = false;
-            PLH_DEBUG(
-                "[pylabhub-lifecycle] WARNING: LifecycleGuard constructed but an owner "
-                "already exists. This guard is a no-op; provided modules (if any) were ignored.");
+            const auto app_name = pylabhub::platform::get_executable_name();
+            const auto pid = pylabhub::platform::get_pid();
+            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] WARNING: LifecycleGuard constructed but an "
+                      "owner already exists. This guard is a no-op; provided modules (if any) "
+                      "were ignored.",
+                      app_name, pid);
             print_stack_trace();
         }
     }

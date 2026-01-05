@@ -1,6 +1,6 @@
 # C++ Core Library (`pylabhub-basic`) Documentation
 
-This document provides design and usage notes for the foundational C++ components found in the `pylabhub-basic` static library. The components are primarily located within the `pylabhub::basics`, `pylabhub::platform`, and `pylabhub::format_tools` C++ namespaces.
+This document provides design and usage notes for the foundational C++ components found in the `pylabhub-basic` static library. These components are organized into several namespaces, including `pylabhub::basics`, `pylabhub::debug`, `pylabhub::platform`, and `pylabhub::format_tools`.
 
 ---
 
@@ -22,16 +22,17 @@ The `pylabhub-basic` library provides the following key components, organized by
     *   `AtomicGuard`: A high-performance, token-based guard for managing exclusive resource access.
     *   `RecursionGuard`: A utility to prevent re-entrant function calls within the same thread.
     *   `ScopeGuard`: A simple, general-purpose RAII guard that executes a function upon scope exit.
-*   **`pylabhub::format_tools` namespace**:
-    *   A collection of utilities and template specializations that integrate with the `fmt` library to provide custom formatting for project-specific types.
-*   **`pylabhub::platform` namespace**:
-    *   Contains platform-specific macros, type definitions, and functions to abstract away differences between operating systems.
 *   **`pylabhub::debug` namespace**:
     *   `print_stack_trace()`: Cross-platform function to print the current call stack for debugging and error reporting.
         *   **Note on Windows**: This function uses the `DbgHelp` library (`DbgHelp.dll`). The initialization of this library can conflict with applications that redirect `stderr` to a synchronous pipe for output capture. This can lead to a deadlock if the library writes to `stderr` during its startup. Use with caution in environments that perform synchronous `stderr` redirection.
     *   `panic()`: A function template (and `PLH_PANIC` macro) for handling fatal, unrecoverable errors by printing a message and stack trace, then aborting the program. Features compile-time format string checks.
     *   `debug_msg()`: A function template (and `PLH_DEBUG` macro) for printing debug messages with compile-time format string checks and automatic source location reporting.
     *   `debug_msg_rt()`: A function template (and `PLH_DEBUG_RT` macro) similar to `debug_msg()`, but accepting a runtime format string (e.g., `std::string_view`).
+*   **`pylabhub::format_tools` namespace**:
+    *   A collection of utilities and template specializations that integrate with the `fmt` library to provide custom formatting for project-specific types.
+*   **`pylabhub::platform` namespace**:
+    *   Contains platform-specific macros, type definitions, and functions to abstract away differences between operating systems.
+
 
 ---
 
@@ -58,6 +59,17 @@ A piece of code is a candidate for the core library if it meets these criteria:
 
 ### How to Add a New Component
 
-1.  **Place Headers**: Add your new header file (e.g., `my_utility.hpp`) to the `include/` directory.
+1.  **Place Headers**: Add your new header file (e.g., `my_utility.hpp`) to the `include/` directory. If it is a component-specific header, place it under a relevant subdirectory (e.g., `include/basics/`).
 2.  **Place Source**: Add the corresponding source file (e.g., `my_utility.cpp`) to the `src/lib/` directory.
-3.  **No CMake Changes Needed**: The `src/CMakeLists.txt` file is configured to automatically discover and compile all `.cpp` files within the `src/` directory (excluding specific sub-project directories). Your new component will be automatically included in the `pylabub::basic` static library during the next build.
+3.  **Update CMake Source List**: Add your new `.cpp` file to the `set(BASIC_LIB_SOURCES ...)` list inside `src/lib/CMakeLists.txt`. This ensures it will be compiled into the `pylabhub-basic` static library.
+
+    ```cmake
+    # In src/lib/CMakeLists.txt
+    set(BASIC_LIB_SOURCES
+      debug_info.cpp
+      format_tools.cpp
+      platform.cpp
+      my_utility.cpp # <-- Add your new source file here
+    )
+    ```
+    This explicit listing is more robust than automatic file discovery and makes dependencies clear.
