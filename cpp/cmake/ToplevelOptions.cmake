@@ -12,9 +12,9 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 
 # Option to enable sanitizers (ASan, TSan, UBSan) on GCC/Clang.
 # This is not compatible with MSVC.
-# Possible values: None, Address, Thread, UndefinedBehavior
-option(PYLABHUB_USE_SANITIZER "Enable sanitizers (Address, Thread, UndefinedBehavior). Not for MSVC." "None")
-set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior")
+# Possible values: None, Address, Thread, UndefinedBehavior, Undefined
+option(PYLABHUB_USE_SANITIZER "Enable sanitizers (Address, Thread, UndefinedBehavior, Undefined). Not for MSVC." "None")
+set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
 
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)

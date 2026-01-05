@@ -138,3 +138,34 @@ int pylabhub::tests::worker::lifecycle::test_register_after_init_aborts()
     // This line should not be reached. If it is, the test has failed.
     return 0;
 }
+
+int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
+{
+    // This worker is expected to be terminated by an abort signal
+    // because "NonExistentModule" does not exist.
+    try
+    {
+        ModuleDef module_a("ModuleA");
+        module_a.add_dependency("NonExistentModule");
+        LifecycleGuard guard(std::move(module_a));
+    }
+    // This line should not be reached. If it is, the test has failed.
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
+{
+    try
+    {
+        ModuleDef module_a("ModuleA");
+        module_a.add_dependency("moduleb"); // Note the lowercase 'm'
+        ModuleDef module_b("ModuleB");
+        LifecycleGuard guard(std::move(module_a), std::move(module_b));
+    }
+    catch (...)
+    {
+        // This should not throw, so if it does, the test fails.
+        return 1;
+    }
+    return 0; // Should succeed
+}
