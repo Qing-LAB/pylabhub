@@ -53,18 +53,14 @@ TEST_F(LifecycleTest, RegisterAfterInitAborts)
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     // The worker process should abort, resulting in a non-zero exit code.
     ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
-}
+} // Closing brace for RegisterAfterInitAborts
 
-// The worker process should abort, resulting in a non-zero exit code.
-ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
-}
-
-// Test that dependency resolution is case-insensitive.
-TEST_F(LifecycleTest, ResolvesCaseInsensitiveDependency)
+// Test that initialization fails if a module has an undefined dependency.
+TEST_F(LifecycleTest, FailsWithUnresolvedDependency)
 {
     ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_case_insensitive_dependency", {});
+        spawn_worker_process(g_self_exe_path, "lifecycle.test_unresolved_dependency", {});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should succeed.
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    // The worker process should abort, resulting in a non-zero exit code.
+    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
 }

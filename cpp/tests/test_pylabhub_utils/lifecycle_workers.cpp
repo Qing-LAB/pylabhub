@@ -116,41 +116,25 @@ int pylabhub::tests::worker::lifecycle::test_register_after_init_aborts()
 {
     // This worker is expected to be terminated by an abort signal.
     // The test runner is responsible for verifying this.
-    try
-    {
-        LifecycleGuard guard;
-        ModuleDef module_a("LateModule");
-        RegisterModule(std::move(module_a));
-    }
-    catch (const std::exception &e)
-    {
-        // We might catch an exception from gtest's death test implementation
-        // depending on the platform. The important part is that we don't exit cleanly.
-        std::cerr << "Caught exception: " << e.what() << std::endl;
-        return 1;
-    }
-    catch (...)
-    {
-        std::cerr << "Caught unknown exception" << std::endl;
-        return 1;
-    }
+    LifecycleGuard guard;
+    ModuleDef module_a("LateModule");
+    RegisterModule(std::move(module_a));
 
     // This line should not be reached. If it is, the test has failed.
-    return 0;
+    return 1;
 }
 
 int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
 {
     // This worker is expected to be terminated by an abort signal
     // because "NonExistentModule" does not exist.
-    try
-    {
-        ModuleDef module_a("ModuleA");
-        module_a.add_dependency("NonExistentModule");
-        LifecycleGuard guard(std::move(module_a));
-    }
-    // This line should not be reached. If it is, the test has failed.
-    return 0;
+    ModuleDef module_a("ModuleA");
+    module_a.add_dependency("NonExistentModule");
+    LifecycleGuard guard(std::move(module_a)); // This is expected to cause an abort
+
+    // This line should not be reached if the abort happens as expected.
+    // If it is reached, the test has failed, as the process should have aborted.
+    return 1;
 }
 
 int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
