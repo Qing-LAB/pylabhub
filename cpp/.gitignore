@@ -14,3 +14,4 @@ tmp/
 *.lock
 *.core
 .gemini_commit_message.txt
+*.log

@@ -70,7 +70,7 @@
 // Internal C++ Definitions (Hidden from Public API)
 // ============================================================================
 
-namespace
+namespace pylabhub::utils::lifecycle_internal
 {
 // These are the internal C++ representations of the module definitions.
 // They use STL types and are hidden from the ABI by the Pimpl idiom.
@@ -91,7 +91,11 @@ struct InternalModuleDef
     std::function<void()> startup;
     InternalModuleShutdownDef shutdown;
 };
-} // namespace
+
+} // namespace pylabhub::utils::lifecycle_internal
+
+namespace pylabhub::utils
+{
 
 // ============================================================================
 // ModuleDef Class Implementation (Pimpl Forwarding)
@@ -102,7 +106,7 @@ struct InternalModuleDef
 class ModuleDefImpl
 {
   public:
-    InternalModuleDef def;
+    lifecycle_internal::InternalModuleDef def;
 };
 
 /**
@@ -261,7 +265,7 @@ class LifecycleManagerImpl
     {
         std::string name;
         std::function<void()> startup;
-        InternalModuleShutdownDef shutdown;
+        lifecycle_internal::InternalModuleShutdownDef shutdown;
         std::vector<std::string> dependencies; // Original dependencies for printing
 
         size_t in_degree = 0;                           // Number of unresolved dependencies
@@ -270,7 +274,7 @@ class LifecycleManagerImpl
     };
 
     // Phase 1: Collect module definitions. This is thread-safe.
-    void registerModule(InternalModuleDef module_def)
+    void registerModule(lifecycle_internal::InternalModuleDef module_def)
     {
         // Fail fast if registration is attempted after initialization has begun.
         if (m_is_initialized.load(std::memory_order_acquire))
@@ -327,7 +331,8 @@ class LifecycleManagerImpl
     std::mutex m_registry_mutex;
 
     // Data structures for building and managing the dependency graph
-    std::vector<InternalModuleDef> m_registered_modules; // Temporary store for initial definitions
+    std::vector<lifecycle_internal::InternalModuleDef>
+        m_registered_modules; // Temporary store for initial definitions
     std::map<std::string, InternalGraphNode> m_module_graph; // The actual dependency graph
     std::vector<InternalGraphNode *> m_startup_order; // Modules in topological order for startup
     std::vector<InternalGraphNode *>
@@ -335,6 +340,7 @@ class LifecycleManagerImpl
 
   public: // Only this function should be public for LifecycleManager to access
     bool is_initialized() const { return m_is_initialized.load(std::memory_order_acquire); }
+    bool is_finalized() const { return m_is_finalized.load(std::memory_order_acquire); }
 };
 
 /**
@@ -426,6 +432,11 @@ void LifecycleManagerImpl::initialize()
     // Idempotency check: only run initialization once.
     if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
     {
+        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Initialization already performed."
+                  "Extra initialization should not be attempted. Nothing will be done and stack "
+                  "trace printed for debugging.",
+                  m_app_name, m_pid);
+        print_stack_trace();
         return;
     }
 
@@ -502,6 +513,11 @@ void LifecycleManagerImpl::finalize()
     if (!m_is_initialized.load(std::memory_order_acquire) ||
         m_is_finalized.exchange(true, std::memory_order_acq_rel))
     {
+        PLH_DEBUG(
+            "[pylabhub-lifecycle] [{}:{}] Finalization already performed or "
+            "initialization not done. Nothing will be done and stack trace printed for debugging.",
+            m_app_name, m_pid);
+        print_stack_trace();
         return;
     }
 
@@ -603,7 +619,23 @@ void LifecycleManagerImpl::buildGraph()
                                         ModuleStatus::Registered};
     }
 
-    // Second pass: connect dependencies and calculate in-degrees.
+    // Helper function to convert a string to lowercase.
+    auto to_lower = [](const std::string &str)
+    {
+        std::string lower_str = str;
+        std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        return lower_str;
+    };
+
+    // Create a map for case-insensitive lookup.
+    std::map<std::string, InternalGraphNode *> name_to_node_map;
+    for (auto &pair : m_module_graph)
+    {
+        name_to_node_map[to_lower(pair.first)] = &pair.second;
+    }
+
+    // Second pass: connect dependencies and calculate in-degrees using case-insensitive matching.
     for (const auto &mod_def : m_registered_modules)
     {
         InternalGraphNode &module_node = m_module_graph.at(mod_def.name);
@@ -611,15 +643,25 @@ void LifecycleManagerImpl::buildGraph()
 
         for (const auto &dep_name : mod_def.dependencies)
         {
-            auto it = m_module_graph.find(dep_name);
-            if (it == m_module_graph.end())
+            std::string lower_dep_name = to_lower(dep_name);
+            auto it = name_to_node_map.find(lower_dep_name);
+
+            if (it == name_to_node_map.end())
             {
-                throw std::runtime_error("Module '" + mod_def.name +
-                                         "' has an undefined dependency: '" + dep_name + "'");
+                // Dependency not found, prepare a detailed error message.
+                std::vector<std::string> available_modules;
+                for (const auto &node_pair : m_module_graph)
+                {
+                    available_modules.push_back(node_pair.first);
+                }
+                std::string error_msg =
+                    fmt::format("Module '{}' has an undefined dependency: "
+                                "'{}'. Available modules are: [{}]",
+                                mod_def.name, dep_name, fmt::join(available_modules, ", "));
+                throw std::runtime_error(error_msg);
             }
-            // `it->second` is the dependency. This module (`module_node`) depends on it,
-            // so this module is a "dependent" of the dependency.
-            it->second.dependents.push_back(&module_node);
+            // `it->second` is the dependency node. `module_node` is the dependent.
+            it->second->dependents.push_back(&module_node);
         }
     }
     // The temporary registration list is no longer needed after graph construction.
@@ -716,3 +758,10 @@ bool LifecycleManager::is_initialized()
 {
     return pImpl->is_initialized();
 }
+
+bool LifecycleManager::is_finalized()
+{
+    return pImpl->is_finalized();
+}
+
+} // namespace pylabhub::utils
