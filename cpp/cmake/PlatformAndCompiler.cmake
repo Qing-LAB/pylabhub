@@ -151,21 +151,11 @@ endif()
 # -------------------------
 # Force MSVC CRT globally
 # -------------------------
-# Vendor XOPSupport uses static CRT (LIBCMT). Force project to use static CRT (/MT)
+# Vendor XOPSupport may use static CRT (LIBCMT). Force project to use static CRT (/MT)
 if(MSVC)
   # Modern CMake: set global MSVC runtime library and force it into the cache.
   # MultiThreaded => /MT (Release), MultiThreadedDebug => /MTd (Debug)
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "CRT library" FORCE)
-
-  # As a redundancy for older CMake versions or generators that respect CMAKE_CXX_FLAGS_*
-  # set the initial flags so targets created later will pick them up.
-  if(NOT DEFINED CMAKE_C_FLAGS_INIT)
-    set(CMAKE_C_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
-  endif()
-  if(NOT DEFINED CMAKE_CXX_FLAGS_INIT)
-    set(CMAKE_CXX_FLAGS_INIT "/MT" CACHE STRING "" FORCE)
-  endif()
-
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "Select the MSVC runtime library." FORCE)
   message(STATUS "Forcing MSVC runtime library to ${CMAKE_MSVC_RUNTIME_LIBRARY}")
   message(STATUS "")
 endif()

@@ -42,8 +42,16 @@ endif()
 # Register the executable for staging and discover its tests
 pylabhub_register_test_for_staging(TARGET test_pylabhub_utils)
 
+# Use the TEST_LAUNCHER property to safely modify the PATH for test discovery
+# and execution. This is the modern, robust way to handle environment
+# variables, especially on Windows where paths can contain spaces.
+# The `cmake -E env --modify` command correctly handles native path separators.
+set_property(TARGET test_pylabhub_utils PROPERTY
+  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${STAGED_LIB_DIR}"
+)
+
+
+
 gtest_discover_tests(test_pylabhub_utils
   WORKING_DIRECTORY "${STAGED_TEST_DIR}"
-  PROPERTIES
-    "ENVIRONMENT=PATH=${STAGED_LIB_DIR}$<$<PLATFORM_ID:Windows>:;$ENV{PATH}>"
 )
