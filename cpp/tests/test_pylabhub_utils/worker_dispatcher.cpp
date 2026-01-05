@@ -3,6 +3,7 @@
 // Project-specific Worker Headers
 #include "filelock_workers.h"
 #include "jsonconfig_workers.h"
+#include "lifecycle_workers.h"
 #include "logger_workers.h"
 
 #include <string>
@@ -75,6 +76,34 @@ static int dispatch_utils_workers(int argc, char **argv)
         if (scenario == "write_id" && argc > 3)
         {
             return pylabhub::tests::worker::jsonconfig::write_id(argv[2], argv[3]);
+        }
+    }
+    else if (module == "lifecycle")
+    {
+        if (scenario == "test_multiple_guards_warning")
+        {
+            return pylabhub::tests::worker::lifecycle::test_multiple_guards_warning();
+        }
+        if (scenario == "test_module_registration_and_initialization")
+        {
+            return pylabhub::tests::worker::lifecycle::
+                test_module_registration_and_initialization();
+        }
+        if (scenario == "test_is_initialized_flag")
+        {
+            return pylabhub::tests::worker::lifecycle::test_is_initialized_flag();
+        }
+        if (scenario == "test_register_after_init_aborts")
+        {
+            return pylabhub::tests::worker::lifecycle::test_register_after_init_aborts();
+        }
+        if (scenario == "test_unresolved_dependency")
+        {
+            return pylabhub::tests::worker::lifecycle::test_unresolved_dependency();
+        }
+        if (scenario == "test_case_insensitive_dependency")
+        {
+            return pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency();
         }
     }
     else if (module == "logger")

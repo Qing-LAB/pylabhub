@@ -1,11 +1,17 @@
+#include "platform.hpp"
+#include "utils/FileLock.hpp"
+#include "utils/JsonConfig.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 
+using namespace pylabhub::utils;
 int main()
 {
-    LifecycleManager::instance().initialize();
+    LifecycleGuard app_lifecycle(pylabhub::utils::Logger::GetLifecycleModule(),
+                                 pylabhub::utils::FileLock::GetLifecycleModule(),
+                                 pylabhub::utils::JsonConfig::GetLifecycleModule());
 
     // Main application logic will go here.
 
-    LifecycleManager::instance().finalize();
     return 0;
 }

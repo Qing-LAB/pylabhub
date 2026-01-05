@@ -15,6 +15,7 @@ add_executable(test_pylabhub_utils
   filelock_workers.cpp
   jsonconfig_workers.cpp
   logger_workers.cpp
+  lifecycle_workers.cpp
   worker_dispatcher.cpp
 )
 
