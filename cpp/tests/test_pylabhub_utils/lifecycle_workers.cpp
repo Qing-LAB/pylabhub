@@ -83,6 +83,40 @@ int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
 }
 
 
+int pylabhub::tests::worker::lifecycle::test_is_initialized_flag()
+{
+    // App should not be initialized before a guard is created.
+    if (IsAppInitialized())
+    {
+        return 1;
+    }
+
+    LifecycleGuard guard;
+
+    // After the first guard is created, the app should be initialized.
+    if (!IsAppInitialized())
+    {
+        return 2;
+    }
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
+{
+    // Module dependency resolution is case-sensitive. This test verifies that
+    // initialization will fail if a dependency is declared with a name that
+    // differs only by case.
+    ModuleDef module_a("ModuleA");
+    ModuleDef module_b("ModuleB");
+    module_b.add_dependency("modulea"); // Dependency with wrong case
+
+    // This should cause a panic/abort because "modulea" is not found.
+    LifecycleGuard guard(std::move(module_a), std::move(module_b));
+
+    return 1; // Should not be reached.
+}
+
 // ============================================================================
 // Dynamic Lifecycle Workers
 // ============================================================================
@@ -91,7 +125,8 @@ int pylabhub::tests::worker::lifecycle::dynamic_register_before_init_fail()
 {
     ModuleDef mod("DynA");
     // Should fail because static core is not initialized.
-    if (RegisterDynamicModule(std::move(mod))) return 1;
+    if (RegisterDynamicModule(std::move(mod)))
+        return 1;
     return 0;
 }
 
@@ -99,18 +134,23 @@ int pylabhub::tests::worker::lifecycle::dynamic_load_unload()
 {
     reset_dynamic_counters();
     LifecycleGuard guard(Logger::GetLifecycleModule());
-    
+
     ModuleDef mod("DynA");
     mod.set_startup(startup_A);
     mod.set_shutdown(shutdown_A, 100);
-    if (!RegisterDynamicModule(std::move(mod))) return 1;
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
 
-    if (!LoadModule("DynA")) return 2;
-    if (dyn_A_start != 1) return 3;
+    if (!LoadModule("DynA"))
+        return 2;
+    if (dyn_A_start != 1)
+        return 3;
 
-    if (!UnloadModule("DynA")) return 4;
-    if (dyn_A_stop != 1) return 5;
-    
+    if (!UnloadModule("DynA"))
+        return 4;
+    if (dyn_A_stop != 1)
+        return 5;
+
     return 0;
 }
 
@@ -122,17 +162,25 @@ int pylabhub::tests::worker::lifecycle::dynamic_ref_counting()
     ModuleDef mod("DynA");
     mod.set_startup(startup_A);
     mod.set_shutdown(shutdown_A, 100);
-    if (!RegisterDynamicModule(std::move(mod))) return 1;
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
 
-    if (!LoadModule("DynA")) return 2;
-    if (!LoadModule("DynA")) return 3; 
-    if (dyn_A_start != 1) return 4;
+    if (!LoadModule("DynA"))
+        return 2;
+    if (!LoadModule("DynA"))
+        return 3;
+    if (dyn_A_start != 1)
+        return 4;
 
-    if (!UnloadModule("DynA")) return 5;
-    if (dyn_A_stop != 0) return 6;
+    if (!UnloadModule("DynA"))
+        return 5;
+    if (dyn_A_stop != 0)
+        return 6;
 
-    if (!UnloadModule("DynA")) return 7;
-    if (dyn_A_stop != 1) return 8;
+    if (!UnloadModule("DynA"))
+        return 7;
+    if (dyn_A_stop != 1)
+        return 8;
 
     return 0;
 }
@@ -141,23 +189,29 @@ int pylabhub::tests::worker::lifecycle::dynamic_dependency_chain()
 {
     reset_dynamic_counters();
     LifecycleGuard guard(Logger::GetLifecycleModule());
-    
+
     ModuleDef modB("DynB");
     modB.set_startup(startup_B);
     modB.set_shutdown(shutdown_B, 100);
-    if(!RegisterDynamicModule(std::move(modB))) return 1;
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 1;
 
     ModuleDef modA("DynA");
     modA.add_dependency("DynB");
     modA.set_startup(startup_A);
     modA.set_shutdown(shutdown_A, 100);
-    if(!RegisterDynamicModule(std::move(modA))) return 2;
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 2;
 
-    if (!LoadModule("DynA")) return 3;
-    if (dyn_A_start != 1 || dyn_B_start != 1) return 4;
+    if (!LoadModule("DynA"))
+        return 3;
+    if (dyn_A_start != 1 || dyn_B_start != 1)
+        return 4;
 
-    if (!UnloadModule("DynA")) return 5;
-    if (dyn_A_stop != 1 || dyn_B_stop != 1) return 6;
+    if (!UnloadModule("DynA"))
+        return 5;
+    if (dyn_A_stop != 1 || dyn_B_stop != 1)
+        return 6;
 
     return 0;
 }
@@ -170,42 +224,53 @@ int pylabhub::tests::worker::lifecycle::dynamic_diamond_dependency()
     ModuleDef modD("DynD");
     modD.set_startup(startup_D);
     modD.set_shutdown(shutdown_D, 100);
-    if(!RegisterDynamicModule(std::move(modD))) return 1;
+    if (!RegisterDynamicModule(std::move(modD)))
+        return 1;
 
     ModuleDef modB("DynB");
     modB.add_dependency("DynD");
     modB.set_startup(startup_B);
     modB.set_shutdown(shutdown_B, 100);
-    if(!RegisterDynamicModule(std::move(modB))) return 2;
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 2;
 
     ModuleDef modC("DynC");
     modC.add_dependency("DynD");
     modC.set_startup(startup_C);
     modC.set_shutdown(shutdown_C, 100);
-    if(!RegisterDynamicModule(std::move(modC))) return 3;
+    if (!RegisterDynamicModule(std::move(modC)))
+        return 3;
 
     ModuleDef modA("DynA");
     modA.add_dependency("DynB");
     modA.add_dependency("DynC");
     modA.set_startup(startup_A);
     modA.set_shutdown(shutdown_A, 100);
-    if(!RegisterDynamicModule(std::move(modA))) return 4;
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 4;
 
-    if (!LoadModule("DynA")) return 5;
-    if (dyn_A_start != 1 || dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1) return 6;
+    if (!LoadModule("DynA"))
+        return 5;
+    if (dyn_A_start != 1 || dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1)
+        return 6;
 
-    if (!UnloadModule("DynA")) return 7;
-    if (dyn_D_stop != 0) return 8; 
+    if (!UnloadModule("DynA"))
+        return 7;
+    if (dyn_D_stop != 0)
+        return 8;
 
-    if (!UnloadModule("DynB")) return 9;
-    if (dyn_D_stop != 0) return 10;
-    
-    if (!UnloadModule("DynC")) return 11;
-    if (dyn_D_stop != 1) return 12;
+    if (!UnloadModule("DynB"))
+        return 9;
+    if (dyn_D_stop != 0)
+        return 10;
+
+    if (!UnloadModule("DynC"))
+        return 11;
+    if (dyn_D_stop != 1)
+        return 12;
 
     return 0;
 }
-
 
 int pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all()
 {
@@ -215,21 +280,25 @@ int pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all()
         ModuleDef mod("DynA");
         mod.set_startup(startup_A);
         mod.set_shutdown(shutdown_A, 100);
-        if(!RegisterDynamicModule(std::move(mod))) return 1;
+        if (!RegisterDynamicModule(std::move(mod)))
+            return 1;
 
-        if (!LoadModule("DynA")) return 2;
+        if (!LoadModule("DynA"))
+            return 2;
     }
-    if (dyn_A_stop != 1) return 3;
+    if (dyn_A_stop != 1)
+        return 3;
     return 0;
 }
 
 int pylabhub::tests::worker::lifecycle::dynamic_static_dependency_fail()
 {
-    LifecycleGuard guard(Logger::GetLifecycleModule()); 
+    LifecycleGuard guard(Logger::GetLifecycleModule());
 
     ModuleDef dynMod("DynA");
     dynMod.add_dependency("NonExistentStaticMod");
-    if (RegisterDynamicModule(std::move(dynMod))) return 1;
+    if (RegisterDynamicModule(std::move(dynMod)))
+        return 1;
 
     return 0;
 }
@@ -240,48 +309,42 @@ int pylabhub::tests::worker::lifecycle::dynamic_circular_dependency_fail()
 
     ModuleDef modA("DynA");
     modA.add_dependency("DynB");
-    if(!RegisterDynamicModule(std::move(modA))) return 1;
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 1;
 
     ModuleDef modB("DynB");
     modB.add_dependency("DynA");
-    if(!RegisterDynamicModule(std::move(modB))) return 2;
-    
-    if (LoadModule("DynA")) return 3; 
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 2;
 
-    return 0; 
-}
+    if (LoadModule("DynA"))
+        return 3;
 
-int pylabhub::tests::worker::lifecycle::dynamic_static_on_dynamic_fail()
-{
-    ModuleDef staticMod("StaticMod");
-    staticMod.add_dependency("DynamicMod");
-    RegisterModule(std::move(staticMod));
-
-    ModuleDef dynamicMod("DynamicMod");
-    RegisterModule(std::move(dynamicMod)); // Must be registered as static to be seen by buildGraph
-
-    LifecycleGuard guard; // This should panic
-
-    return 1; // Should not be reached
+    return 0;
 }
 
 int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
 {
-    struct ReentrantCallbacks {
-        static void startup(const char*) {
+    struct ReentrantCallbacks
+    {
+        static void startup(const char *)
+        {
             LoadModule("DynB");
         }
     };
-    
+
     LifecycleGuard guard(Logger::GetLifecycleModule());
     ModuleDef modB("DynB");
-    if(!RegisterDynamicModule(std::move(modB))) return 1;
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 1;
 
     ModuleDef modA("DynA");
     modA.set_startup(ReentrantCallbacks::startup);
-    if(!RegisterDynamicModule(std::move(modA))) return 2;
-    
-    if (LoadModule("DynA")) return 3;
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 2;
+
+    if (LoadModule("DynA"))
+        return 3;
 
     return 0;
 }

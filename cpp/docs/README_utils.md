@@ -169,7 +169,9 @@ The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, a
 *   **Lifecycle and Shutdown Behavior**:
     The Logger is a lifecycle-aware component managed by the `LifecycleManager`. Its shutdown process is designed to be robust and prevent data loss, even in chaotic scenarios.
 
-    *   **Initialization**: The logger's background worker thread is started during the application's `initialize` phase. Attempting to use the logger before this phase is a fatal error and will cause the application to `abort()`.
+    *   **Initialization**: The logger's background worker thread is started during the application's `initialize` phase. Using the logger before this is complete has two distinct behaviors:
+        *   **Configuration functions** (e.g., `set_level`, `set_logfile`, `flush`) will trigger a fatal error and **abort** the application. This is a fail-fast mechanism to catch incorrect setup.
+        *   **Logging macros** (e.g., `LOGGER_INFO`, `LOGGER_WARN`) will **silently drop** the message. This ensures that stray log calls from static destructors or other pre-main contexts do not cause a crash.
 
     *   **Shutdown Process**:
         1.  When the application's `finalize` phase begins, the logger transitions to a `ShuttingDown` state.

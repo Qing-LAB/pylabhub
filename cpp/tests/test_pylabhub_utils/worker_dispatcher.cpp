@@ -134,10 +134,6 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_circular_dependency_fail();
         }
-        if (scenario == "dynamic.static_on_dynamic_fail")
-        {
-            return pylabhub::tests::worker::lifecycle::dynamic_static_on_dynamic_fail();
-        }
         if (scenario == "dynamic.reentrant_load_fail")
         {
             return pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail();

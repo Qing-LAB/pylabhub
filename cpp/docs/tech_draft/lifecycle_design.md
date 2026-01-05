@@ -76,6 +76,7 @@ The entire design and implementation of the dynamic module system adheres strict
         2. Locks `m_graph_mutation_mutex`.
         3. Validates that the module name is unique and all its dependencies exist in the graph.
         4. Adds a new node to `m_module_graph` and connects it to its dependencies.
+        5. The operation returns `true` on success or `false` on any failure, allowing the caller to handle the outcome.
 - **Dynamic Loading (`load_module`)**:
     - **Timing**: Must be called *after* `initialize()` has completed.
     - **Logic**: `PLH_PANIC`s if called before initialization. Otherwise, it uses a `RecursionGuard`, locks the graph, and calls a recursive helper that:

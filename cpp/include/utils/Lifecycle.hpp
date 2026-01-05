@@ -273,15 +273,18 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
 
     /**
      * @brief Registers a dynamic module with the lifecycle system.
-     *
-     * Dynamic modules are loaded on-demand via `load_module` and can be
-     * unloaded. This call is only valid before `initialize()` has been called,
-     * as it contributes to the global dependency graph.
+     * @details Dynamic modules can be registered at runtime after the static core of the
+     * application has been initialized. They can be loaded and unloaded on-demand.
+     * This call is only valid *after* `initialize()` has been called and *before*
+     * `finalize()` is called. It is thread-safe.
      *
      * @param module_def The fully configured module object, passed by rvalue-reference
      *                   to indicate a transfer of ownership.
+     * @return `true` if the module was successfully registered, `false` if registration
+     *         failed (e.g., a module with the same name exists, or a dependency
+     *         is not found).
      */
-    void register_dynamic_module(ModuleDef &&module_def);
+    bool register_dynamic_module(ModuleDef &&module_def);
 
     /**
      * @brief Loads a dynamic module and its dependencies.
@@ -376,12 +379,18 @@ inline void FinalizeApp()
 
 /**
  * @brief A convenience function to register a dynamic module.
+ * @details This function is a wrapper around `LifecycleManager::instance().register_dynamic_module()`.
+ * Dynamic modules can be registered at runtime after the static core of the
+ * application has been initialized.
+ * This call is only valid *after* `InitializeApp()` has been called.
+ * @see LifecycleManager::register_dynamic_module
  *
  * @param module_def A ModuleDef object, which will be moved into the manager.
+ * @return `true` on successful registration, `false` otherwise.
  */
-inline void RegisterDynamicModule(ModuleDef &&module_def)
+inline bool RegisterDynamicModule(ModuleDef &&module_def)
 {
-    LifecycleManager::instance().register_dynamic_module(std::move(module_def));
+    return LifecycleManager::instance().register_dynamic_module(std::move(module_def));
 }
 
 /**

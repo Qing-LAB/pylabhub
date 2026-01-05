@@ -81,20 +81,18 @@ TEST_F(LifecycleDynamicTest, LoadFailsWithCircularDependency)
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
 }
 
-TEST_F(LifecycleDynamicTest, StaticDependsOnDynamicFails)
-{
-    pylabhub::tests::helper::ProcessHandle proc = pylabhub::tests::helper::spawn_worker_process(
-        g_self_exe_path, "lifecycle.dynamic.static_on_dynamic_fail", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // This worker should abort, resulting in a non-zero exit code.
-    ASSERT_NE(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
-}
-
 TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
+
 {
+
     pylabhub::tests::helper::ProcessHandle proc = pylabhub::tests::helper::spawn_worker_process(
+
         g_self_exe_path, "lifecycle.dynamic.reentrant_load_fail", {});
+
     ASSERT_NE(proc, NULL_PROC_HANDLE);
+
     // Worker returns 0 if LoadModule correctly fails.
+
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
+
 }

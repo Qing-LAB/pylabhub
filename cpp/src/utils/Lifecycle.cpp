@@ -172,8 +172,8 @@ class LifecycleManagerImpl
     const std::string m_app_name;
     std::atomic<bool> m_is_initialized = {false};
     std::atomic<bool> m_is_finalized = {false};
-    std::mutex m_registry_mutex;
-    std::mutex m_graph_mutation_mutex;
+    std::mutex m_registry_mutex; // Protects m_registered_modules before initialization
+    std::mutex m_graph_mutation_mutex; // Protects m_module_graph after initialization
     std::vector<lifecycle_internal::InternalModuleDef> m_registered_modules;
     std::map<std::string, InternalGraphNode> m_module_graph;
     std::vector<InternalGraphNode *> m_startup_order;
@@ -188,6 +188,14 @@ void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModu
     m_registered_modules.push_back(std::move(def));
 }
 
+/**
+ * @brief Registers a new dynamic module at runtime.
+ * @details This method is thread-safe. It acquires a lock on the module graph
+ *          and adds the new module, validating that its name is unique and all
+ *          its dependencies already exist in the graph.
+ * @param def The definition of the dynamic module to register.
+ * @return True if registration was successful, false otherwise.
+ */
 bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalModuleDef def)
 {
     if (!m_is_initialized.load(std::memory_order_acquire))
@@ -237,6 +245,14 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     return true;
 }
 
+/**
+ * @brief Initializes the static modules of the application.
+ * @details This method is idempotent. On the first call, it builds the dependency
+ *          graph from all pre-registered static modules, performs a topological
+ *          sort to determine the startup order, and then executes the startup
+ *          callback for each module in sequence. Any failure during this process
+ *          is considered fatal and will abort the application.
+ */
 void LifecycleManagerImpl::initialize()
 {
     if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
@@ -283,6 +299,14 @@ void LifecycleManagerImpl::initialize()
     PLH_DEBUG("[pylabhub-lifecycle] Application initialization complete.");
 }
 
+/**
+ * @brief Shuts down all application modules.
+ * @details This method is idempotent. It first finds all currently loaded dynamic
+ *          modules, determines the correct shutdown order, and calls their shutdown
+ *          callbacks. It then shuts down all static modules in the reverse of
+ *          their startup order. Shutdown for each module is performed with a
+ *          timeout to prevent hangs.
+ */
 void LifecycleManagerImpl::finalize()
 {
     if (!m_is_initialized.load() || m_is_finalized.exchange(true))
@@ -341,11 +365,20 @@ void LifecycleManagerImpl::finalize()
     PLH_DEBUG("[pylabhub-lifecycle] Application finalization complete.");
 }
 
+/**
+ * @brief Public entry point for loading a dynamic module.
+ * @details This method is thread-safe and uses a `RecursionGuard` to prevent
+ *          re-entrant calls. It finds the requested module in the graph and
+ *          delegates the core loading logic to `loadModuleInternal`.
+ * @param name The name of the module to load.
+ * @return True if the module was loaded successfully, false otherwise.
+ */
 bool LifecycleManagerImpl::loadModule(const char *name)
 {
     if (!is_initialized())
         PLH_PANIC("FATAL: load_module called before initialization.");
-    if (!name) return false;
+    if (!name)
+        return false;
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
         PLH_DEBUG("ERROR: Re-entrant call to load_module('{}') detected.", name);
@@ -362,6 +395,15 @@ bool LifecycleManagerImpl::loadModule(const char *name)
     return loadModuleInternal(it->second);
 }
 
+/**
+ * @brief Internal recursive implementation for loading a dynamic module.
+ * @details This function performs the core logic of loading a module. It handles
+ *          different module statuses, detects circular dependencies, recursively
+ *          loads dependencies, and increments reference counts.
+ * @param node The graph node of the module to be loaded.
+ * @return True on success, false on failure (e.g., circular dependency,
+ *         unmet dependency, or exception during startup).
+ */
 bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
 {
     if (node.dynamic_status == DynamicModuleStatus::LOADED)
@@ -427,9 +469,18 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
     }
 }
 
+/**
+ * @brief Public entry point for unloading a dynamic module.
+ * @details This method is thread-safe and uses a `RecursionGuard` to prevent
+ *          re-entrant calls. It finds the requested module and delegates the
+ *          core unloading logic to `unloadModuleInternal`.
+ * @param name The name of the module to unload.
+ * @return True if the module was found and considered for unloading.
+ */
 bool LifecycleManagerImpl::unloadModule(const char *name)
 {
-    if (!name) return false;
+    if (!name)
+        return false;
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
         PLH_DEBUG("ERROR: Re-entrant call to unload_module('{}').", name);
@@ -444,6 +495,13 @@ bool LifecycleManagerImpl::unloadModule(const char *name)
     return true;
 }
 
+/**
+ * @brief Internal recursive implementation for unloading a dynamic module.
+ * @details This function decrements the module's reference count. If the count
+ *          reaches zero, it executes the shutdown callback and then recursively
+ *          calls itself for the module's dependencies.
+ * @param node The graph node of the module to be unloaded.
+ */
 void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
 {
     if (node.dynamic_status != DynamicModuleStatus::LOADED)
@@ -469,6 +527,14 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
     }
 }
 
+/**
+ * @brief Constructs the initial dependency graph from pre-registered static modules.
+ * @details This function is called once during `initialize`. It populates the
+ *          `m_module_graph` with all modules from `m_registered_modules`,
+ *          then connects the dependency links between them.
+ * @throws std::runtime_error If a duplicate module name is found or a
+ *         dependency points to an undefined module.
+ */
 void LifecycleManagerImpl::buildStaticGraph()
 {
     std::lock_guard<std::mutex> lock(m_registry_mutex);
@@ -491,7 +557,15 @@ void LifecycleManagerImpl::buildStaticGraph()
     m_registered_modules.clear();
 }
 
-std::vector<LifecycleManagerImpl::InternalGraphNode *> 
+/**
+ * @brief Performs a topological sort on a given set of graph nodes.
+ * @details Uses Kahn's algorithm to determine a valid linear ordering of nodes
+ *          based on their dependencies.
+ * @param nodes A vector of pointers to the nodes to be sorted.
+ * @return A vector of node pointers in a valid topological order.
+ * @throws std::runtime_error If a circular dependency is detected in the graph.
+ */
+std::vector<LifecycleManagerImpl::InternalGraphNode *>
 LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &nodes)
 {
     std::vector<InternalGraphNode *> sorted_order;
@@ -523,7 +597,7 @@ LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &no
             if (d > 0)
                 cycle_nodes.push_back(n->name);
         throw std::runtime_error("Circular dependency detected involving: " +
-                                 fmt::format("{}", fmt::join(cycle_nodes, ", "))); 
+                                 fmt::format("{}", fmt::join(cycle_nodes, ", ")));
     }
     return sorted_order;
 }
