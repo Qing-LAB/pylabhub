@@ -3,7 +3,7 @@
 # Configures the pylabhub-utils shared library.
 # This library contains all common utilities for the project.
 #
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.29)
 
 # Define the source files for the utility library explicitly.
 # This is more robust than using file(GLOB), as it ensures that adding or

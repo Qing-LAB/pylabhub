@@ -48,8 +48,11 @@
 */
 #include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
+#include "platform.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
+#include "utils/JsonConfig.hpp"
 #include <fmt/format.h>
 #include <stdio.h>
 
@@ -930,10 +933,12 @@ HOST_IMPORT int XOPMain(IORecHandle ioRecHandle)
 {
     XOPInit(ioRecHandle);  // Do standard XOP initialization.
     SetXOPEntry(XOPEntry); // Set entry point for future calls.
-
+    using namespace pylabhub::utils;
     // Initialize our application's shared services (like Logger).
     // This is safe to call even if other plugins also call it, as it's idempotent.
-    LifecycleManager::instance().initialize();
+    LifecycleGuard guard(FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+                         Logger::GetLifecycleModule()
+    );
     LOGGER_INFO("pylabhubxop64 plugin loaded and logger initialized.");
 
     if (igorVersion < 800)

@@ -82,7 +82,7 @@
 #     of the fully-populated staged directory, providing a clean separation
 #     between development builds and distributable packages.
 # ---------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.29)
 
 # ===========================================================================
 # PHASE 1: Pre-Project Toolchain Configuration

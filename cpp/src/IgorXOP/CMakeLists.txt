@@ -18,7 +18,7 @@
 #   - Cache var: XOP_TARGET_NAME  (name of the cmake target created here)
 #   - Alias: pylabhub::pylabhubxop -> <actual target>
 # ------------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.29)
 project(IgorXOP LANGUAGES C CXX)
 
 # -------------------------
