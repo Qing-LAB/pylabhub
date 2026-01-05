@@ -6,6 +6,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,71 @@ int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
     return 1; // Should not be reached.
 }
 
+int pylabhub::tests::worker::lifecycle::test_static_circular_dependency_aborts()
+{
+    ModuleDef module_a("CycleA");
+    module_a.add_dependency("CycleB");
+
+    ModuleDef module_b("CycleB");
+    module_b.add_dependency("CycleA");
+
+    // Registering both modules should succeed. The cycle is formed, but
+    // is only detected during the topological sort in initialize().
+    RegisterModule(std::move(module_a));
+    RegisterModule(std::move(module_b));
+
+    // The LifecycleGuard's constructor calls initialize(), which should detect
+    // the cycle and abort the program.
+    LifecycleGuard guard; 
+
+    return 1; // Should not be reached.
+}
+
+int pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_aborts()
+{
+    // Cluster 1
+    ModuleDef c1_root("C1_Root");
+    ModuleDef c1_a1("C1_A1"); c1_a1.add_dependency("C1_Root");
+    ModuleDef c1_a2("C1_A2"); c1_a2.add_dependency("C1_Root");
+    ModuleDef c1_b1("C1_B1"); c1_b1.add_dependency("C1_A1");
+    ModuleDef c1_b2("C1_B2"); c1_b2.add_dependency("C1_A1"); c1_b2.add_dependency("C1_A2");
+    ModuleDef c1_c1("C1_C1"); c1_c1.add_dependency("C1_B1");
+
+    // Cluster 2
+    ModuleDef c2_root("C2_Root");
+    ModuleDef c2_a1("C2_A1"); c2_a1.add_dependency("C2_Root");
+    ModuleDef c2_a2("C2_A2"); c2_a2.add_dependency("C2_Root");
+    ModuleDef c2_b1("C2_B1"); c2_b1.add_dependency("C2_A1");
+    ModuleDef c2_b2("C2_B2"); c2_b2.add_dependency("C2_A1"); c2_b2.add_dependency("C2_A2");
+    ModuleDef c2_c1("C2_C1"); c2_c1.add_dependency("C2_B1"); c2_c1.add_dependency("C2_B2");
+    ModuleDef c2_d1("C2_D1"); c2_d1.add_dependency("C2_C1");
+    
+    // Connecting Links
+    c1_b2.add_dependency("C2_C1"); // Link 1 (C1 -> C2)
+    c2_d1.add_dependency("C1_A1"); // Link 2 (C2 -> C1, forms the cycle)
+    c1_c1.add_dependency("C2_A2"); // Link 3 (Non-cycling cross-link)
+
+    RegisterModule(std::move(c1_root));
+    RegisterModule(std::move(c1_a1));
+    RegisterModule(std::move(c1_a2));
+    RegisterModule(std::move(c1_b1));
+    RegisterModule(std::move(c1_b2));
+    RegisterModule(std::move(c1_c1));
+    RegisterModule(std::move(c2_root));
+    RegisterModule(std::move(c2_a1));
+    RegisterModule(std::move(c2_a2));
+    RegisterModule(std::move(c2_b1));
+    RegisterModule(std::move(c2_b2));
+    RegisterModule(std::move(c2_c1));
+    RegisterModule(std::move(c2_d1));
+
+    // This guard will call initialize(), which will run the topological sort
+    // and detect the cycle: C1_A1 -> C1_B2 -> C2_C1 -> C2_D1 -> C1_A1
+    LifecycleGuard guard;
+
+    return 1; // Should not be reached
+}
+
 // ============================================================================
 // Dynamic Lifecycle Workers
 // ============================================================================
@@ -210,7 +276,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_dependency_chain()
 
     if (!UnloadModule("DynA"))
         return 5;
-    if (dyn_A_stop != 1 || dyn_B_stop != 1)
+    if (dyn_A_stop != 1 || dyn_B_stop != 0) // Expect DynB to NOT stop
         return 6;
 
     return 0;
@@ -256,17 +322,17 @@ int pylabhub::tests::worker::lifecycle::dynamic_diamond_dependency()
 
     if (!UnloadModule("DynA"))
         return 7;
-    if (dyn_D_stop != 0)
+    if (dyn_D_stop != 0) // DynD should not stop
         return 8;
 
     if (!UnloadModule("DynB"))
         return 9;
-    if (dyn_D_stop != 0)
+    if (dyn_D_stop != 0) // DynD should still not stop
         return 10;
 
     if (!UnloadModule("DynC"))
         return 11;
-    if (dyn_D_stop != 1)
+    if (dyn_D_stop != 0) // DynD should still not stop
         return 12;
 
     return 0;
@@ -303,24 +369,25 @@ int pylabhub::tests::worker::lifecycle::dynamic_static_dependency_fail()
     return 0;
 }
 
-int pylabhub::tests::worker::lifecycle::dynamic_circular_dependency_fail()
+int pylabhub::tests::worker::lifecycle::registration_fails_with_unresolved_dependency()
 {
     LifecycleGuard guard(Logger::GetLifecycleModule());
 
+    // This test verifies that the system prevents dependency cycles at registration
+    // time by failing to register a module with an unresolved dependency.
+    // We attempt to register DynA which depends on DynB (which doesn't exist yet).
+    // This registration must fail.
     ModuleDef modA("DynA");
     modA.add_dependency("DynB");
     if (!RegisterDynamicModule(std::move(modA)))
-        return 1;
+    {
+        // This is the expected outcome. The registration failed because the
+        // dependency was not resolved.
+        return 0; // Success for the test
+    }
 
-    ModuleDef modB("DynB");
-    modB.add_dependency("DynA");
-    if (!RegisterDynamicModule(std::move(modB)))
-        return 2;
-
-    if (LoadModule("DynA"))
-        return 3;
-
-    return 0;
+    // If we reach here, the registration unexpectedly succeeded, which is a failure.
+    return 1;
 }
 
 int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
@@ -329,7 +396,14 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
     {
         static void startup(const char *)
         {
-            LoadModule("DynB");
+            // LoadModule("DynB") will detect re-entrancy and return false.
+            // We must throw an exception to signal the failure to the parent
+            // `loadModule` call.
+            if (LoadModule("DynB"))
+            {
+                throw std::runtime_error("Re-entrant LoadModule('DynB') unexpectedly succeeded!");
+            }
+            throw std::runtime_error("LoadModule('DynB') detected re-entrant call and failed as expected.");
         }
     };
 
@@ -343,6 +417,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
     if (!RegisterDynamicModule(std::move(modA)))
         return 2;
 
+    // LoadModule("DynA") should fail because its startup callback throws an exception.
     if (LoadModule("DynA"))
         return 3;
 

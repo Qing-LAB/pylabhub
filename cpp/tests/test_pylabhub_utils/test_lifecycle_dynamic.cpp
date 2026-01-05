@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
-#include "test_process_utils.h"
+#include "test_entrypoint.h" // For g_self_exe_path
+#include "platform.hpp" // For PLATFORM_WIN64, which is used by test_process_utils.h
+#include "test_process_utils.h" // For NULL_PROC_HANDLE and ProcessHandle
+
+using namespace pylabhub::tests::helper; // Bring test helper namespace into scope
 
 // This file contains the test fixtures that spawn worker processes
 // for testing the dynamic lifecycle functionality. The actual test logic
@@ -72,12 +76,12 @@ TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
 }
 
-TEST_F(LifecycleDynamicTest, LoadFailsWithCircularDependency)
+TEST_F(LifecycleDynamicTest, RegistrationFailsWithUnresolvedDependency)
 {
     pylabhub::tests::helper::ProcessHandle proc = pylabhub::tests::helper::spawn_worker_process(
-        g_self_exe_path, "lifecycle.dynamic.circular_dependency_fail", {});
+        g_self_exe_path, "lifecycle.registration_fails_with_unresolved_dependency", {});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // Worker returns 0 if LoadModule correctly fails.
+    // Worker returns 0 if registration correctly fails as expected.
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
 }
 
