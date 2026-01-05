@@ -619,7 +619,23 @@ void LifecycleManagerImpl::buildGraph()
                                         ModuleStatus::Registered};
     }
 
-    // Second pass: connect dependencies and calculate in-degrees.
+    // Helper function to convert a string to lowercase.
+    auto to_lower = [](const std::string &str)
+    {
+        std::string lower_str = str;
+        std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        return lower_str;
+    };
+
+    // Create a map for case-insensitive lookup.
+    std::map<std::string, InternalGraphNode *> name_to_node_map;
+    for (auto &pair : m_module_graph)
+    {
+        name_to_node_map[to_lower(pair.first)] = &pair.second;
+    }
+
+    // Second pass: connect dependencies and calculate in-degrees using case-insensitive matching.
     for (const auto &mod_def : m_registered_modules)
     {
         InternalGraphNode &module_node = m_module_graph.at(mod_def.name);
@@ -627,15 +643,25 @@ void LifecycleManagerImpl::buildGraph()
 
         for (const auto &dep_name : mod_def.dependencies)
         {
-            auto it = m_module_graph.find(dep_name);
-            if (it == m_module_graph.end())
+            std::string lower_dep_name = to_lower(dep_name);
+            auto it = name_to_node_map.find(lower_dep_name);
+
+            if (it == name_to_node_map.end())
             {
-                throw std::runtime_error("Module '" + mod_def.name +
-                                         "' has an undefined dependency: '" + dep_name + "'");
+                // Dependency not found, prepare a detailed error message.
+                std::vector<std::string> available_modules;
+                for (const auto &node_pair : m_module_graph)
+                {
+                    available_modules.push_back(node_pair.first);
+                }
+                std::string error_msg =
+                    fmt::format("Module '{}' has an undefined dependency: "
+                                "'{}'. Available modules are: [{}]",
+                                mod_def.name, dep_name, fmt::join(available_modules, ", "));
+                throw std::runtime_error(error_msg);
             }
-            // `it->second` is the dependency. This module (`module_node`) depends on it,
-            // so this module is a "dependent" of the dependency.
-            it->second.dependents.push_back(&module_node);
+            // `it->second` is the dependency node. `module_node` is the dependent.
+            it->second->dependents.push_back(&module_node);
         }
     }
     // The temporary registration list is no longer needed after graph construction.
