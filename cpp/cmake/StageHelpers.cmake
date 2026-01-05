@@ -40,7 +40,7 @@
 #   commands for third-party libraries are attached.
 # ---------------------------------------------------------------------------
 #
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.29)
 
 # --- pylabhub_stage_headers ---
 #
@@ -318,21 +318,13 @@ function(pylabhub_register_test_for_staging)
     message(FATAL_ERROR "pylabhub_register_test_for_staging: Target '${ARG_TARGET}' does not exist.")
   endif()
 
-  # Set the output directory for the executable to be inside the staged 'tests' folder
-  # For multi-config generators, set the output directory for each configuration explicitly.
-  if(CMAKE_CONFIGURATION_TYPES)
-    foreach(CONFIG IN LISTS CMAKE_CONFIGURATION_TYPES)
-      string(TOUPPER ${CONFIG} CONFIG_UPPER)
-      set_target_properties(${ARG_TARGET} PROPERTIES
-        "RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER}" "${PYLABHUB_STAGING_DIR}/tests"
-      )
-    endforeach()
-  else()
-    # For single-config generators, set the default output directory.
-    set_target_properties(${ARG_TARGET} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
-    )
-  endif()
+  # Set the output directory for the executable to be inside the staged 'tests' folder.
+  # For modern CMake versions, setting RUNTIME_OUTPUT_DIRECTORY is sufficient for both
+  # single-config and multi-config generators. CMake will correctly place the
+  # executables in subdirectories like 'Debug' or 'Release' as needed.
+  set_target_properties(${ARG_TARGET} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+  )
 
   # Register this target to a global property so the parent scope can collect it
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})
