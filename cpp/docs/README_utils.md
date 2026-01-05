@@ -1,6 +1,6 @@
 # C++ Utilities (`pylabhub-utils`) Documentation
 
-This document provides design and usage notes for the core C++ utilities found in the `pylabhub-utils` shared library. The components are primarily located within the `pylabhub::utils` and `pylabhub::lifecycle` C++ namespaces.
+This document provides design and usage notes for the core C++ utilities found in the `pylabhub-utils` shared library. The components are primarily located within the `pylabhub::utils` C++ namespace.
 
 ---
 
@@ -16,9 +16,9 @@ This document provides design and usage notes for the core C++ utilities found i
 
 ---
 
-## 2. Application Lifecycle Management (C++ Namespace: `pylabhub::lifecycle`)
+## 2. Application Lifecycle Management (C++ Namespace: `pylabhub::utils`)
 
-The application lifecycle is managed by the `pylabhub::lifecycle::LifecycleGuard` RAII object. It ensures that modules are started in the correct order based on their declared dependencies and shut down in the reverse order.
+The application lifecycle is managed by the `pylabhub::utils::LifecycleGuard` RAII object. It ensures that modules are started in the correct order based on their declared dependencies and shut down in the reverse order.
 
 ### How to Use
 In `main()`, create a `LifecycleGuard` instance on the stack, passing it the `ModuleDef` objects from all the utilities your application will use. The `LifecycleGuard`'s constructor initializes the application, and its destructor handles graceful shutdown.
@@ -33,7 +33,7 @@ In `main()`, create a `LifecycleGuard` instance on the stack, passing it the `Mo
 
 int main(int argc, char* argv[]) {
     // Construct the guard with all necessary module definitions
-    pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+    pylabhub::utils::LifecycleGuard app_lifecycle(
         pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(true), // Enable cleanup on shutdown
         pylabhub::utils::JsonConfig::GetLifecycleModule()

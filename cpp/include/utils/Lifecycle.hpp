@@ -52,7 +52,7 @@
  * int main(int argc, char* argv[]) {
  *     // In main(), create a LifecycleGuard and pass it the ModuleDef objects
  *     // from all the utilities the application will use.
- *     pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+ *     pylabhub::utils::LifecycleGuard app_lifecycle(
  *         pylabhub::utils::Logger::GetLifecycleModule(),
  *         pylabhub::utils::FileLock::GetLifecycleModule()
  *         // ... add other modules here ...
@@ -90,6 +90,9 @@
 #pragma warning(push)
 #pragma warning(disable : 4251)
 #endif
+
+namespace pylabhub::utils
+{
 
 // Forward-declare the implementation structs to hide them from the public API,
 // which is the essence of the Pimpl idiom.
@@ -215,7 +218,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *
      * After this call, the lifecycle system takes ownership of the module
      * definition. All modules must be registered *before* `initialize()` or
-     * `pylabhub::lifecycle::InitializeApp()` is called. Registration after
+     * `pylabhub::utils::InitializeApp()` is called. Registration after
      * initialization has begun will cause a fatal error.
      *
      * @param module_def The fully configured module object, passed by rvalue-reference
@@ -231,7 +234,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * registered modules and will abort the application if a dependency cycle is
      * detected.
      *
-     * @note It is recommended to use the `pylabhub::lifecycle::InitializeApp()`
+     * @note It is recommended to use the `pylabhub::utils::InitializeApp()`
      *       helper function instead of calling this directly.
      */
     void initialize();
@@ -243,7 +246,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * lifecycle. It is idempotent. Shutdown proceeds in the reverse order of
      * initialization.
      *
-     * @note It is recommended to use the `pylabhub::lifecycle::FinalizeApp()`
+     * @note It is recommended to use the `pylabhub::utils::FinalizeApp()`
      *       helper function instead of calling this directly.
      */
     void finalize();
@@ -259,6 +262,15 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      */
     bool is_initialized();
 
+    /**
+     * @brief Checks if the lifecycle manager has been finalized.
+     *
+     * This allows callers to verify if `finalize()` has completed.
+     *
+     * @return `true` if `finalize()` has been called, `false` otherwise.
+     */
+    bool is_finalized();
+
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
     LifecycleManager &operator=(const LifecycleManager &) = delete;
@@ -271,10 +283,6 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
     std::unique_ptr<LifecycleManagerImpl> pImpl;
 };
 
-namespace pylabhub
-{
-namespace lifecycle
-{
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 
@@ -289,16 +297,21 @@ using namespace pylabhub::debug;
 inline void RegisterModule(ModuleDef &&module_def)
 {
     // The `::` prefix ensures we call the global LifecycleManager class.
-    ::LifecycleManager::instance().register_module(std::move(module_def));
+    LifecycleManager::instance().register_module(std::move(module_def));
 }
 
 /**
  * @brief A convenience function to check if the application is initialized.
  * @return `true` if `initialize()` has been called, `false` otherwise.
  */
-inline bool IsInitialized()
+inline bool IsAppInitialized()
 {
-    return ::LifecycleManager::instance().is_initialized();
+    return LifecycleManager::instance().is_initialized();
+}
+
+inline bool IsAppFinalized()
+{
+    return LifecycleManager::instance().is_finalized();
 }
 
 /**
@@ -308,7 +321,7 @@ inline bool IsInitialized()
  */
 inline void InitializeApp()
 {
-    ::LifecycleManager::instance().initialize();
+    LifecycleManager::instance().initialize();
 }
 
 /**
@@ -318,7 +331,7 @@ inline void InitializeApp()
  */
 inline void FinalizeApp()
 {
-    ::LifecycleManager::instance().finalize();
+    LifecycleManager::instance().finalize();
 }
 
 class LifecycleGuard
@@ -368,7 +381,7 @@ class LifecycleGuard
     {
         if (m_is_owner)
         {
-            pylabhub::lifecycle::FinalizeApp();
+            pylabhub::utils::FinalizeApp();
         }
     }
 
@@ -392,12 +405,12 @@ class LifecycleGuard
             // Register modules (move each into manager). If modules is empty, this loop is skipped.
             for (auto &m : modules)
             {
-                pylabhub::lifecycle::RegisterModule(std::move(m));
+                pylabhub::utils::RegisterModule(std::move(m));
             }
 
             // IMPORTANT: always initialize now, even if no modules were supplied.
             // This guarantees the lifecycle starts as soon as the first guard is established.
-            pylabhub::lifecycle::InitializeApp();
+            pylabhub::utils::InitializeApp();
         }
         else
         {
@@ -413,8 +426,7 @@ class LifecycleGuard
     bool m_is_owner{false};
 };
 
-} // namespace lifecycle
-} // namespace pylabhub
+} // namespace pylabhub::utils
 
 #if defined(_MSC_VER)
 #pragma warning(pop)

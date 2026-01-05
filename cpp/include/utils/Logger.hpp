@@ -51,7 +51,7 @@
  *       b. **Fatal Error**: Calling a configuration method (e.g., `set_level`,
  *          `set_logfile`, `flush`) will immediately call `std::abort()` and
  *          terminate the program with a descriptive error message.
- *     - On shutdown, `pylabhub::lifecycle::FinalizeApp()` ensures that the
+ *     - On shutdown, `pylabhub::utils::FinalizeApp()` ensures that the
  *       logger's shutdown method is called, which gracefully flushes all
  *       pending messages before terminating the worker thread.
  *
@@ -74,7 +74,7 @@
  *     // The user must now explicitly manage the application lifecycle.
  *     // This is typically done by creating a LifecycleGuard in main().
  *     // All required modules must be passed to its constructor.
- *     pylabhub::lifecycle::LifecycleGuard app_lifecycle(
+ *     pylabhub::utils::LifecycleGuard app_lifecycle(
  *         pylabhub::utils::Logger::GetLifecycleModule(),
  *         pylabhub::utils::FileLock::GetLifecycleModule()
  *         // ... other modules ...
@@ -214,7 +214,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      * This function is blocking. It queues a shutdown command and waits until
      * the worker thread has processed all pending messages and terminated. This
      * guarantees that all logs are written before the function returns.
-     * @note This is typically called automatically by `pylabhub::lifecycle::FinalizeApp()`.
+     * @note This is typically called automatically by `pylabhub::utils::FinalizeApp()`.
      */
     void shutdown();
 
