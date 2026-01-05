@@ -54,3 +54,17 @@ TEST_F(LifecycleTest, RegisterAfterInitAborts)
     // The worker process should abort, resulting in a non-zero exit code.
     ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
 }
+
+// The worker process should abort, resulting in a non-zero exit code.
+ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
+}
+
+// Test that dependency resolution is case-insensitive.
+TEST_F(LifecycleTest, ResolvesCaseInsensitiveDependency)
+{
+    ProcessHandle proc =
+        spawn_worker_process(g_self_exe_path, "lifecycle.test_case_insensitive_dependency", {});
+    ASSERT_NE(proc, NULL_PROC_HANDLE);
+    // The worker process should succeed.
+    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+}

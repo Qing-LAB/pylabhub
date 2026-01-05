@@ -3,87 +3,72 @@
 # top-level CMakeLists.txt.
 
 if(NOT MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
-  set(_sanitizer_cmake_flag "")
-  set(_asan_lib_names "")
-  set(_tsan_lib_names "")
-  set(_ubsan_lib_names "")
-  set(_sanitizer_comment_name "Sanitizer runtime") # Default comment name
 
-  if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
+  # Determine the name and flag for the selected sanitizer.
+  string(TOLOWER "${PYLABHUB_USE_SANITIZER}" _san_name_lower)
+  set(_san_lib_shortname "")
+  set(_sanitizer_cmake_flag "")
+
+  if(_san_name_lower STREQUAL "address")
+    set(_san_lib_shortname "asan")
     set(_sanitizer_cmake_flag "-fsanitize=address")
-    set(_asan_lib_names "libclang_rt.asan_osx_dynamic.dylib" "libclang_rt.asan_osx_dynamic" "libclang_rt.asan_osx" "libasan") # Prioritize specific macOS, then more general.
-    set(_sanitizer_comment_name "AddressSanitizer runtime")
-  elseif(PYLABHUB_USE_SANITIZER STREQUAL "Thread")
+  elseif(_san_name_lower STREQUAL "thread")
+    set(_san_lib_shortname "tsan")
     set(_sanitizer_cmake_flag "-fsanitize=thread")
-    set(_tsan_lib_names "libclang_rt.tsan_osx_dynamic" "libclang_rt.tsan_osx" "libtsan")
-    set(_sanitizer_comment_name "ThreadSanitizer runtime")
-  elseif(PYLABHUB_USE_SANITIZER STREQUAL "UndefinedBehavior")
-    set(_sanitizer_cmake_flag "-fsanitize=undefined")
-    set(_ubsan_lib_names "libclang_rt.ubsan_osx_dynamic" "libclang_rt.ubsan_osx" "libubsan")
-    set(_sanitizer_comment_name "UndefinedBehaviorSanitizer runtime")
+  elseif(_san_name_lower STREQUAL "undefinedbehavior" OR _san_name_lower STREQUAL "undefined")
+    set(_san_lib_shortname "ubsan")
+    set(_sanitizer_cmake_flag "-fsanitize=undefined") # Use the correct canonical flag
   endif()
 
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+  set(_sanitizer_comment_name "${PYLABHUB_USE_SANITIZER}Sanitizer runtime")
+
+  # Use a robust linker-trace method to find the library path.
+  if(_san_lib_shortname AND _sanitizer_cmake_flag)
+    if(PLATFORM_APPLE)
+      set(_sanitizer_lib_suffix "dylib")
+    else()
+      set(_sanitizer_lib_suffix "so")
+    endif()
+
+    file(WRITE "${CMAKE_BINARY_DIR}/empty.c" "int main() { return 0; }")
+
     execute_process(
-      COMMAND ${CMAKE_CXX_COMPILER} -print-resource-dir
-      OUTPUT_VARIABLE _clang_resource_dir
-      OUTPUT_STRIP_TRAILING_WHITESPACE
+      COMMAND ${CMAKE_CXX_COMPILER} "${_sanitizer_cmake_flag}" "-Wl,-t" "${CMAKE_BINARY_DIR}/empty.c" -o "${CMAKE_BINARY_DIR}/a.out"
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      RESULT_VARIABLE _link_result
+      OUTPUT_VARIABLE _link_trace
+      ERROR_VARIABLE _link_trace
     )
-    if(EXISTS "${_clang_resource_dir}")
-        if(PLATFORM_APPLE)
-            set(_sanitizer_search_path "${_clang_resource_dir}/lib/darwin")
-        else()
-            set(_sanitizer_search_path "${_clang_resource_dir}/lib")
+    file(REMOVE "${CMAKE_BINARY_DIR}/empty.c" "${CMAKE_BINARY_DIR}/a.out")
+
+    if(_link_result EQUAL 0)
+      # Split the trace output into lines and find the one containing our library.
+      string(REPLACE "\n" ";" _trace_lines "${_link_trace}")
+      set(_found_path "")
+      foreach(_line IN LISTS _trace_lines)
+        # Find a line that contains the sanitizer's short name and the correct suffix.
+        # This is flexible enough to find "libasan.so" or "libclang_rt.asan_osx.dylib".
+        if(_line MATCHES ".*${_san_lib_shortname}.*\\.${_sanitizer_lib_suffix}")
+          # Extract the first substring that looks like an absolute file path.
+          string(REGEX MATCH "([/][^ \r\n\t]+)" _path_candidate "${_line}")
+          if(_path_candidate AND EXISTS "${_path_candidate}")
+            set(_found_path "${_path_candidate}")
+            break() # Found a valid path, stop searching.
+          endif()
         endif()
-    endif()
-
-    if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
-      find_library(_sanitizer_lib_path NAMES ${_asan_lib_names}
-                   HINTS "${_sanitizer_search_path}")
-      if(NOT _sanitizer_lib_path)
-          find_library(_sanitizer_lib_path NAMES ${_asan_lib_names})
-      endif()
-    elseif(PYLABHUB_USE_SANITIZER STREQUAL "Thread")
-      find_library(_sanitizer_lib_path NAMES ${_tsan_lib_names}
-                   HINTS "${_sanitizer_search_path}")
-      if(NOT _sanitizer_lib_path)
-          find_library(_sanitizer_lib_path NAMES ${_tsan_lib_names})
-      endif()
-    elseif(PYLABHUB_USE_SANITIZER STREQUAL "UndefinedBehavior")
-      find_library(_sanitizer_lib_path NAMES ${_ubsan_lib_names}
-                   HINTS "${_sanitizer_search_path}")
-      if(NOT _sanitizer_lib_path)
-          find_library(_sanitizer_lib_path NAMES ${_ubsan_lib_names})
-      endif()
-    endif()
-
-  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
-      execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} ${_sanitizer_cmake_flag} --print-file-name=libasan.so
-        OUTPUT_VARIABLE _sanitizer_lib_path
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
-    elseif(PYLABHUB_USE_SANITIZER STREQUAL "Thread")
-      execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} ${_sanitizer_cmake_flag} --print-file-name=libtsan.so
-        OUTPUT_VARIABLE _sanitizer_lib_path
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
-    elseif(PYLABHUB_USE_SANITIZER STREQUAL "UndefinedBehavior")
-      execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} ${_sanitizer_cmake_flag} --print-file-name=libubsan.so
-        OUTPUT_VARIABLE _sanitizer_lib_path
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
+      endforeach()
+      set(_sanitizer_lib_path "${_found_path}")
+    else()
+      message(WARNING "Sanitizer '${PYLABHUB_USE_SANITIZER}' is not supported by the current compiler/platform. The '${_sanitizer_cmake_flag}' flag failed during a test compilation.")
+      set(_sanitizer_lib_path "")
     endif()
   else()
-    message(WARNING "Sanitizer runtime staging not supported for compiler ID: ${CMAKE_CXX_COMPILER_ID}")
+      message(WARNING "Sanitizer '${PYLABHUB_USE_SANITIZER}' is not a recognized option for library staging.")
   endif()
+
 
   # After finding the library path, stage it.
   if(_sanitizer_lib_path)
-    # Get the actual filename for commenting purposes.
     get_filename_component(_sanitizer_actual_filename "${_sanitizer_lib_path}" NAME)
     message(STATUS "Found sanitizer runtime for staging: ${_sanitizer_lib_path}")
     add_custom_command(TARGET create_staging_dirs POST_BUILD

@@ -97,6 +97,14 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::test_register_after_init_aborts();
         }
+        if (scenario == "test_unresolved_dependency")
+        {
+            return pylabhub::tests::worker::lifecycle::test_unresolved_dependency();
+        }
+        if (scenario == "test_case_insensitive_dependency")
+        {
+            return pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency();
+        }
     }
     else if (module == "logger")
     {
