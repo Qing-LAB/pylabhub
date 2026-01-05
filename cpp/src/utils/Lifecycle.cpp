@@ -7,55 +7,35 @@
  * **Implementation Details**
  *
  * This file contains the private implementation of the `LifecycleManager` and
- * `ModuleDef` classes. The design is centered around the Pimpl idiom to
- * provide a stable ABI.
+ * `ModuleDef` classes, following the Pimpl idiom for ABI stability.
  *
- * 1.  **Pimpl Classes (`ModuleDefImpl`, `LifecycleManagerImpl`)**:
- *     - These classes contain all the implementation details, including STL
- *       containers (`std::string`, `std::vector`, `std::map`), which are not
- *       ABI-stable. By hiding them from the header, we ensure binary
- *       compatibility for the library's users.
- *     - `InternalModuleDef` is the C++-native representation of a module,
- *       using `std::function` for callbacks and `std::chrono` for timeouts.
- *       The public `ModuleDef` class is a wrapper that forwards calls to it.
+ * 1.  **Static Initialization**: `initialize()` builds a graph from
+ *     pre-registered static modules and starts them in topological order. This
+ *     is done once.
  *
- * 2.  **Two-Phase Initialization**:
- *     - **Phase 1: Registration**: Before `initialize()` is called, modules
- *       are registered and stored in a temporary `m_registered_modules` vector.
- *       Registration is thread-safe via `m_registry_mutex`. Attempting to
- *       register a module after initialization has started is a fatal error.
- *     - **Phase 2: Graph Building & Sorting**: When `initialize()` is first
- *       called, the manager builds a dependency graph from the registered
- *       modules and then performs a topological sort to determine the startup
- *       order. This ensures dependencies are met.
+ * 2.  **Dynamic Registration**: `register_dynamic_module()` can be called after
+ *     initialization. It locks the graph and adds a new dynamic module node,
+ *     validating its dependencies against existing nodes. This is a runtime
+ *     graph modification.
  *
- * 3.  **Topological Sort (Kahn's Algorithm)**:
- *     - The `topologicalSort` method implements Kahn's algorithm. It first
- *       identifies all nodes with an in-degree of zero (no dependencies) and
- *       adds them to a queue.
- *     - It then processes the queue, and for each processed node, it decrements
- *       the in-degree of its dependents. If a dependent's in-degree becomes
- *       zero, it is added to the queue.
- *     - If, after processing, the number of sorted nodes does not match the
- *       total number of nodes, a cycle has been detected, and the application
- *       aborts with an error.
+ * 3.  **Unified Graph Model**: A single graph (`m_module_graph`) stores all
+ *     modules. A flag on each node (`is_dynamic`) differentiates static from
+ *     dynamic modules.
  *
- * 4.  **Timed Shutdown**:
- *     - During `finalize()`, each module's shutdown callback is invoked via
- *       `std::async`.
- *     - `future.wait_for()` is used to honor the user-specified timeout. If a
- *       module's shutdown function hangs, the manager will print a warning and
- *       continue, preventing a single faulty module from deadlocking the entire
- *       application's termination.
- *     - Any exception thrown by a shutdown function is caught and logged, but
- *       does not halt the finalization of other modules.
+ * 4.  **Dynamic Loading**: `load_module()` finds a dynamic module in the graph
+ *     and recursively loads it and its dependencies, using reference counting.
+ *     Failures are handled gracefully and do not panic the application.
+ *
+ * 5.  **Timed Shutdown**: `finalize()` first shuts down all active dynamic
+ *     modules, then the static modules, using timeouts to prevent hangs.
  ******************************************************************************/
 #include "utils/Lifecycle.hpp"
 #include "debug_info.hpp"
 #include "platform.hpp"
+#include "recursion_guard.hpp"
 #include "utils/Logger.hpp" // For LOGGER_ERROR, etc.
 
-#include <algorithm> // For std::reverse
+#include <algorithm> // For std::reverse, std::sort
 #include <future>    // For std::async, std::future
 #include <map>       // For std::map
 #include <mutex>     // For std::mutex, std::lock_guard
@@ -66,24 +46,14 @@
 #include <fmt/core.h>   // For fmt::print
 #include <fmt/ranges.h> // For fmt::join on vectors
 
-// ============================================================================
-// Internal C++ Definitions (Hidden from Public API)
-// ============================================================================
-
 namespace pylabhub::utils::lifecycle_internal
 {
-// These are the internal C++ representations of the module definitions.
-// They use STL types and are hidden from the ABI by the Pimpl idiom.
-
-// Internal representation of a module's shutdown behavior.
 struct InternalModuleShutdownDef
 {
     std::function<void()> func;
     std::chrono::milliseconds timeout;
 };
 
-// Internal, C++-native representation of a module definition.
-// This uses std::function and std::string and is hidden from the ABI.
 struct InternalModuleDef
 {
     std::string name;
@@ -91,149 +61,67 @@ struct InternalModuleDef
     std::function<void()> startup;
     InternalModuleShutdownDef shutdown;
 };
-
 } // namespace pylabhub::utils::lifecycle_internal
 
 namespace pylabhub::utils
 {
-
-// ============================================================================
-// ModuleDef Class Implementation (Pimpl Forwarding)
-// ============================================================================
-
-// The concrete definition of the ModuleDefImpl struct. This is the private
-// implementation that holds all non-ABI-stable data.
 class ModuleDefImpl
 {
   public:
     lifecycle_internal::InternalModuleDef def;
 };
 
-/**
- * @brief Constructs a ModuleDef with the given name.
- * @param name The unique name for the module.
- */
-ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>())
+ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>()) 
 {
     if (name)
     {
         pImpl->def.name = name;
     }
 }
-
-// The destructor and move operations MUST be defined in the .cpp file,
-// where ModuleDefImpl is a complete type. Defining them in the header
-// would expose the implementation details and break the Pimpl idiom.
 ModuleDef::~ModuleDef() = default;
 ModuleDef::ModuleDef(ModuleDef &&other) noexcept = default;
 ModuleDef &ModuleDef::operator=(ModuleDef &&other) noexcept = default;
-
-/**
- * @brief Adds a dependency to this module.
- * @param dependency_name The name of the module this module depends on.
- */
 void ModuleDef::add_dependency(const char *dependency_name)
 {
     if (pImpl && dependency_name)
-    {
         pImpl->def.dependencies.emplace_back(dependency_name);
-    }
 }
-
-/**
- * @brief Sets the startup callback for this module (no argument version).
- *
- * The internal lambda will call `startup_func(nullptr)`.
- * @param startup_func The callback to be called on startup.
- */
 void ModuleDef::set_startup(LifecycleCallback startup_func)
 {
     if (pImpl && startup_func)
-    {
-        // Store a lambda that calls the C-style function pointer with a null argument.
         pImpl->def.startup = [startup_func]() { startup_func(nullptr); };
-    }
 }
-
-/**
- * @brief Sets the startup callback for this module (with string argument version).
- *
- * The `data` and `len` are used to safely construct an internal `std::string`,
- * which is then passed as a null-terminated C-string to `startup_func`.
- * @param startup_func The callback to be called on startup.
- * @param data A pointer to the string data.
- * @param len The length of the string data.
- * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
- */
 void ModuleDef::set_startup(LifecycleCallback startup_func, const char *data, size_t len)
 {
     if (pImpl && startup_func)
     {
         if (len > MAX_CALLBACK_PARAM_STRLEN)
-        {
-            throw std::length_error("Lifecycle: Startup argument length exceeds "
-                                    "MAX_CALLBACK_PARAM_STRLEN.");
-        }
-        // Safely construct an std::string from data and length.
+            throw std::length_error("Lifecycle: Startup argument length exceeds MAX_LEN.");
         std::string arg_str(data, len);
-        // Store a lambda that captures the std::string and passes its c_str() to the callback.
         pImpl->def.startup = [startup_func, arg = std::move(arg_str)]()
         { startup_func(arg.c_str()); };
     }
 }
-
-/**
- * @brief Sets the shutdown callback for this module (no argument version).
- *
- * The internal lambda will call `shutdown_func(nullptr)`.
- * @param shutdown_func The callback to be called on shutdown.
- * @param timeout_ms The timeout in milliseconds for the shutdown function.
- */
 void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms)
 {
     if (pImpl && shutdown_func)
     {
-        // Store a lambda that calls the C-style function pointer with a null argument.
         pImpl->def.shutdown.func = [shutdown_func]() { shutdown_func(nullptr); };
         pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
     }
 }
-
-/**
- * @brief Sets the shutdown callback for this module (with string argument version).
- *
- * The `data` and `len` are used to safely construct an internal `std::string`,
- * which is then passed as a null-terminated C-string to `shutdown_func`.
- * @param shutdown_func The callback to be called on shutdown.
- * @param timeout_ms The timeout in milliseconds for the shutdown function.
- * @param data A pointer to the string data.
- * @param len The length of the string data.
- * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
- */
-void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms,
-                             const char *data, size_t len)
+void ModuleDef::set_shutdown(LifecycleCallback s, unsigned int t, const char *d, size_t l)
 {
-    if (pImpl && shutdown_func)
+    if (pImpl && s)
     {
-        if (len > MAX_CALLBACK_PARAM_STRLEN)
-        {
-            throw std::length_error("Lifecycle: Shutdown argument length exceeds "
-                                    "MAX_CALLBACK_PARAM_STRLEN.");
-        }
-        // Safely construct an std::string from data and length.
-        std::string arg_str(data, len);
-        // Store a lambda that captures the std::string and passes its c_str() to the callback.
-        pImpl->def.shutdown.func = [shutdown_func, arg = std::move(arg_str)]()
-        { shutdown_func(arg.c_str()); };
-        pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
+        if (l > MAX_CALLBACK_PARAM_STRLEN)
+            throw std::length_error("Lifecycle: Shutdown argument length exceeds MAX_LEN.");
+        std::string arg(d, l);
+        pImpl->def.shutdown.func = [s, a = std::move(arg)]() { s(a.c_str()); };
+        pImpl->def.shutdown.timeout = std::chrono::milliseconds(t);
     }
 }
 
-// ============================================================================
-// LifecycleManager Class Implementation
-// ============================================================================
-
-// The concrete definition of the LifecycleManagerImpl struct. This holds all state.
 class LifecycleManagerImpl
 {
   public:
@@ -243,525 +131,441 @@ class LifecycleManagerImpl
     {
     }
 
-    /**
-     * @brief Represents the current status of a module during its lifecycle.
-     */
-    enum class ModuleStatus
-    {
-        Registered,   /// Module has been registered but not yet processed.
-        Initializing, /// Module's startup function is currently being executed.
-        Started,      /// Module has successfully started.
-        Failed,       /// Module's startup failed or a dependency error occurred.
-        Shutdown      /// Module has successfully shut down.
-    };
+    enum class ModuleStatus { Registered, Initializing, Started, Failed, Shutdown };
+    enum class DynamicModuleStatus { UNLOADED, LOADING, LOADED, FAILED };
 
-    /**
-     * @brief Internal graph node for topological sort and enhanced error reporting.
-     *
-     * Stores module details, its status, dependencies, and a list of modules
-     * that depend on it (dependents).
-     */
     struct InternalGraphNode
     {
         std::string name;
         std::function<void()> startup;
         lifecycle_internal::InternalModuleShutdownDef shutdown;
-        std::vector<std::string> dependencies; // Original dependencies for printing
-
-        size_t in_degree = 0;                           // Number of unresolved dependencies
-        std::vector<InternalGraphNode *> dependents;    // Modules that depend on this one
-        ModuleStatus status = ModuleStatus::Registered; // Current status of the module
+        std::vector<std::string> dependencies;
+        size_t in_degree = 0;
+        std::vector<InternalGraphNode *> dependents;
+        ModuleStatus status = ModuleStatus::Registered;
+        bool is_dynamic = false;
+        DynamicModuleStatus dynamic_status = DynamicModuleStatus::UNLOADED;
+        int ref_count = 0;
     };
 
-    // Phase 1: Collect module definitions. This is thread-safe.
-    void registerModule(lifecycle_internal::InternalModuleDef module_def)
-    {
-        // Fail fast if registration is attempted after initialization has begun.
-        if (m_is_initialized.load(std::memory_order_acquire))
-        {
-            PLH_PANIC("[pylabhub-lifecycle] [{}:{}] FATAL: Attempted to register module '{}' after "
-                      "initialization has started. Aborting.",
-                      m_app_name, m_pid, module_def.name);
-        }
-        std::lock_guard<std::mutex> lock(m_registry_mutex);
-        m_registered_modules.push_back(std::move(module_def));
-    }
-
-    // Phase 2: Initialize the application by building graph and executing startups.
+    // --- Public API Methods ---
+    void registerStaticModule(lifecycle_internal::InternalModuleDef def);
+    bool registerDynamicModule(lifecycle_internal::InternalModuleDef def);
     void initialize();
-
-    // Phase 3: Finalize the application by executing shutdowns.
     void finalize();
-
-  private: // Reverting to private
-    /**
-     * @brief Builds the internal dependency graph from registered modules.
-     * @throws std::runtime_error on duplicate module names or undefined dependencies.
-     */
-    void buildGraph();
-
-    /**
-     * @brief Performs a topological sort to determine module startup order.
-     * @return A vector of InternalGraphNode pointers in sorted order.
-     * @throws std::runtime_error if a circular dependency is detected.
-     */
-    std::vector<InternalGraphNode *> topologicalSort();
-
-    /**
-     * @brief Prints detailed status of all modules and aborts the application.
-     *
-     * This function is called on fatal errors during initialization or dependency
-     * resolution to provide comprehensive debugging information, including a
-     * module graph and stack trace.
-     *
-     * @param error_msg The primary error message to display.
-     * @param failed_module The name of the module that directly caused the failure (if any).
-     */
-    void printStatusAndAbort(const std::string &error_msg, const std::string &failed_module = "");
-
-    // Diagnostic info (process ID and application name for logging context)
-    const long m_pid;
-    const std::string m_app_name;
-
-    // State flags to control lifecycle flow (atomic for thread-safety)
-    std::atomic<bool> m_is_initialized = {false};
-    std::atomic<bool> m_is_finalized = {false};
-
-    // Mutex to protect access to m_registered_modules during concurrent registration
-    std::mutex m_registry_mutex;
-
-    // Data structures for building and managing the dependency graph
-    std::vector<lifecycle_internal::InternalModuleDef>
-        m_registered_modules; // Temporary store for initial definitions
-    std::map<std::string, InternalGraphNode> m_module_graph; // The actual dependency graph
-    std::vector<InternalGraphNode *> m_startup_order; // Modules in topological order for startup
-    std::vector<InternalGraphNode *>
-        m_shutdown_order; // Modules in reverse topological order for shutdown
-
-  public: // Only this function should be public for LifecycleManager to access
+    bool loadModule(const char *name);
+    bool unloadModule(const char *name);
     bool is_initialized() const { return m_is_initialized.load(std::memory_order_acquire); }
     bool is_finalized() const { return m_is_finalized.load(std::memory_order_acquire); }
+
+  private:
+    // --- Private Helper Methods ---
+    void buildStaticGraph();
+    std::vector<InternalGraphNode *> 
+    topologicalSort(const std::vector<InternalGraphNode *> &nodes);
+    bool loadModuleInternal(InternalGraphNode &node);
+    void unloadModuleInternal(InternalGraphNode &node);
+    void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
+
+    // --- Member Variables ---
+    const long m_pid;
+    const std::string m_app_name;
+    std::atomic<bool> m_is_initialized = {false};
+    std::atomic<bool> m_is_finalized = {false};
+    std::mutex m_registry_mutex;
+    std::mutex m_graph_mutation_mutex;
+    std::vector<lifecycle_internal::InternalModuleDef> m_registered_modules;
+    std::map<std::string, InternalGraphNode> m_module_graph;
+    std::vector<InternalGraphNode *> m_startup_order;
+    std::vector<InternalGraphNode *> m_shutdown_order;
 };
 
-/**
- * @brief Prints detailed status of all modules and aborts the application.
- *
- * This function is called on fatal errors during initialization or dependency
- * resolution to provide comprehensive debugging information, including a
- * module graph and stack trace.
- *
- * @param error_msg The primary error message to display.
- * @param failed_module The name of the module that directly caused the failure (if any).
- */
-void LifecycleManagerImpl::printStatusAndAbort(const std::string &error_msg,
-                                               const std::string &failed_module)
+void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModuleDef def)
 {
-    fmt::print(stderr, "\n[pylabhub-lifecycle] [{}:{}] FATAL: {}. Aborting.\n", m_app_name, m_pid,
-               error_msg);
-    if (!failed_module.empty())
-    {
-        fmt::print(stderr, "[pylabhub-lifecycle] [{}:{}] Module '{}' was the point of failure.\n",
-                   m_app_name, m_pid, failed_module);
-    }
-
-    fmt::print(stderr, "\n--- Module Dependency Graph and Status ---\n");
-    // Sort modules by name for consistent output
-    std::vector<InternalGraphNode *> sorted_nodes_for_print;
-    for (auto const &[key, val] : m_module_graph)
-    {
-        sorted_nodes_for_print.push_back(const_cast<InternalGraphNode *>(&val));
-    }
-    std::sort(sorted_nodes_for_print.begin(), sorted_nodes_for_print.end(),
-              [](const InternalGraphNode *a, const InternalGraphNode *b)
-              { return a->name < b->name; });
-
-    for (const auto *node_ptr : sorted_nodes_for_print)
-    {
-        const auto &node = *node_ptr;
-        const char *status_str = "Unknown";
-        switch (node.status)
-        {
-        case ModuleStatus::Registered:
-            status_str = "Registered";
-            break;
-        case ModuleStatus::Initializing:
-            status_str = "Initializing...";
-            break;
-        case ModuleStatus::Started:
-            status_str = "Started (OK)";
-            break;
-        case ModuleStatus::Failed:
-            status_str = "FAILED!!!";
-            break;
-        case ModuleStatus::Shutdown:
-            status_str = "Shutdown (OK)";
-            break; // Should not happen during init failures
-        }
-
-        fmt::print(stderr, "  - Module: '{}'\n", node.name);
-        fmt::print(stderr, "    - Status: {}\n", status_str);
-        if (!node.dependencies.empty())
-        {
-            fmt::print(stderr, "    - Depends on: [{}]\n", fmt::join(node.dependencies, ", "));
-        }
-        if (!node.dependents.empty())
-        {
-            std::vector<std::string> dependent_names;
-            for (const auto *dep : node.dependents)
-            {
-                dependent_names.push_back(dep->name);
-            }
-            fmt::print(stderr, "    - Depended on by: [{}]\n", fmt::join(dependent_names, ", "));
-        }
-    }
-    fmt::print(stderr, "----------------------------------------\n\n");
-
-    pylabhub::debug::print_stack_trace();
-    std::abort();
+    if (m_is_initialized.load(std::memory_order_acquire))
+        PLH_PANIC("FATAL: register_module called after initialization.");
+    std::lock_guard<std::mutex> lock(m_registry_mutex);
+    m_registered_modules.push_back(std::move(def));
 }
 
-/**
- * @brief Initializes the application by building the dependency graph and
- *        executing module startup functions in topological order.
- *
- * Ensures idempotency, detects dependency issues, and provides detailed error
- * reporting and stack traces on fatal failures.
- */
-void LifecycleManagerImpl::initialize()
+bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalModuleDef def)
 {
-    // Idempotency check: only run initialization once.
-    if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
+    if (!m_is_initialized.load(std::memory_order_acquire))
     {
-        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Initialization already performed."
-                  "Extra initialization should not be attempted. Nothing will be done and stack "
-                  "trace printed for debugging.",
-                  m_app_name, m_pid);
-        print_stack_trace();
-        return;
+        PLH_DEBUG("ERROR: register_dynamic_module called before initialization.");
+        return false;
+    }
+    if (m_is_finalized.load(std::memory_order_acquire))
+    {
+        PLH_DEBUG("ERROR: register_dynamic_module called after finalization.");
+        return false;
     }
 
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Initializing application...", m_app_name, m_pid);
+    std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
 
+    if (m_module_graph.count(def.name))
+    {
+        PLH_DEBUG("ERROR: Module '{}' is already registered.", def.name);
+        return false;
+    }
+
+    for (const auto &dep_name : def.dependencies)
+    {
+        if (m_module_graph.find(dep_name) == m_module_graph.end())
+        {
+            PLH_DEBUG("ERROR: Dependency '{}' for module '{}' not found.", dep_name, def.name);
+            return false;
+        }
+    }
+
+    auto &node = m_module_graph[def.name];
+    node.name = def.name;
+    node.startup = def.startup;
+    node.shutdown = def.shutdown;
+    node.dependencies = def.dependencies;
+    node.is_dynamic = true;
+
+    for (const auto &dep_name : def.dependencies)
+    {
+        auto it = m_module_graph.find(dep_name);
+        if (it != m_module_graph.end())
+        {
+            it->second.dependents.push_back(&node);
+        }
+    }
+    PLH_DEBUG("[pylabhub-lifecycle] Registered dynamic module '{}'.", def.name);
+    return true;
+}
+
+void LifecycleManagerImpl::initialize()
+{
+    if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
+        return;
+    PLH_DEBUG("[pylabhub-lifecycle] Initializing application...");
     try
     {
-        buildGraph();
-        m_startup_order = topologicalSort();
+        buildStaticGraph();
+        std::vector<InternalGraphNode *> static_nodes;
+        for (auto &p : m_module_graph)
+            if (!p.second.is_dynamic)
+                static_nodes.push_back(&p.second);
+        m_startup_order = topologicalSort(static_nodes);
     }
     catch (const std::runtime_error &e)
     {
-        // Catch graph-building or topological sort errors and abort with full status.
         printStatusAndAbort(e.what());
     }
 
-    // The shutdown order is the exact reverse of the startup order.
     m_shutdown_order = m_startup_order;
     std::reverse(m_shutdown_order.begin(), m_shutdown_order.end());
 
-    // Log the determined startup sequence for diagnostics.
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Startup sequence determined for {} modules:",
-              m_app_name, m_pid, m_startup_order.size());
-    for (size_t i = 0; i < m_startup_order.size(); ++i)
-    {
-        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}]   ({}/{}) -> {}", m_app_name, m_pid, i + 1,
-                  m_startup_order.size(), m_startup_order[i]->name);
-    }
-
-    // Phase 2, Part 2: Execute startup callbacks in the sorted order.
-    for (auto *module : m_startup_order)
+    for (auto *mod : m_startup_order)
     {
         try
         {
-            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] -> Starting module: '{}'", m_app_name, m_pid,
-                      module->name);
-            module->status = ModuleStatus::Initializing; // Mark module as currently initializing
-            if (module->startup)
-            {
-                module->startup();
-            }
-            module->status = ModuleStatus::Started; // Mark module as successfully started
+            PLH_DEBUG("[pylabhub-lifecycle] -> Starting static module: '{}'", mod->name);
+            mod->status = ModuleStatus::Initializing;
+            if (mod->startup)
+                mod->startup();
+            mod->status = ModuleStatus::Started;
         }
         catch (const std::exception &e)
         {
-            // Catch specific exceptions during startup, mark module as failed, and abort.
-            module->status = ModuleStatus::Failed;
-            printStatusAndAbort(
-                fmt::format("Module threw an exception during startup: {}", e.what()),
-                module->name);
+            mod->status = ModuleStatus::Failed;
+            printStatusAndAbort("Exception during startup: " + std::string(e.what()), mod->name);
         }
         catch (...)
         {
-            // Catch unknown exceptions during startup, mark module as failed, and abort.
-            module->status = ModuleStatus::Failed;
-            printStatusAndAbort("Module threw an unknown exception during startup.", module->name);
+            mod->status = ModuleStatus::Failed;
+            printStatusAndAbort("Unknown exception during startup.", mod->name);
         }
     }
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Application initialization complete.", m_app_name,
-              m_pid);
+    PLH_DEBUG("[pylabhub-lifecycle] Application initialization complete.");
 }
 
-/**
- * @brief Shuts down the application by executing module shutdown functions
- *        in reverse topological order.
- *
- * Ensures idempotency and logs exceptions during shutdown. Shutdown failures
- * are logged with stack traces but are not fatal, allowing other modules to
- * finalize.
- */
 void LifecycleManagerImpl::finalize()
 {
-    // Idempotency check: only run finalization once, and only if initialized.
-    if (!m_is_initialized.load(std::memory_order_acquire) ||
-        m_is_finalized.exchange(true, std::memory_order_acq_rel))
-    {
-        PLH_DEBUG(
-            "[pylabhub-lifecycle] [{}:{}] Finalization already performed or "
-            "initialization not done. Nothing will be done and stack trace printed for debugging.",
-            m_app_name, m_pid);
-        print_stack_trace();
+    if (!m_is_initialized.load() || m_is_finalized.exchange(true))
         return;
-    }
-
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Finalizing application...", m_app_name, m_pid);
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Shutdown sequence determined for {} modules:",
-              m_app_name, m_pid, m_shutdown_order.size());
-    for (size_t i = 0; i < m_shutdown_order.size(); ++i)
+    PLH_DEBUG("[pylabhub-lifecycle] Finalizing application...");
+    std::vector<InternalGraphNode *> loaded_dyn_nodes;
     {
-        PLH_DEBUG("[pylabhub-lifecycle] [{}:{}]   ({}/{}) <- {}", m_app_name, m_pid, i + 1,
-                  m_shutdown_order.size(), m_shutdown_order[i]->name);
+        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+        for (auto &p : m_module_graph)
+            if (p.second.is_dynamic && p.second.dynamic_status == DynamicModuleStatus::LOADED)
+                loaded_dyn_nodes.push_back(&p.second);
     }
-
-    // Execute shutdown callbacks in reverse startup order.
-    for (auto *module : m_shutdown_order)
+    if (!loaded_dyn_nodes.empty())
+    {
+        auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
+        std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
+        for (auto *mod : dyn_shutdown_order)
+        {
+            try
+            {
+                if (mod->shutdown.func)
+                {
+                    auto fut = std::async(std::launch::async, mod->shutdown.func);
+                    if (fut.wait_for(mod->shutdown.timeout) == std::future_status::timeout)
+                        PLH_DEBUG("WARNING: Shutdown timed out for dynamic module '{}'", mod->name);
+                    else
+                        fut.get();
+                }
+            }
+            catch (const std::exception &e)
+            {
+                PLH_DEBUG("ERROR: Dynamic module '{}' threw on forced shutdown: {}", mod->name,
+                          e.what());
+            }
+        }
+    }
+    for (auto *mod : m_shutdown_order)
     {
         try
         {
-            // Only attempt to shut down modules that successfully started.
-            // (Modules that failed during startup are already marked as such).
-            if (module->status == ModuleStatus::Started && module->shutdown.func)
+            if (mod->status == ModuleStatus::Started && mod->shutdown.func)
             {
-                PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] <- Shutting down module: '{}'", m_app_name,
-                          m_pid, module->name);
-
-                // Run the shutdown function asynchronously to handle timeouts.
-                std::future<void> future = std::async(std::launch::async, module->shutdown.func);
-                auto status = future.wait_for(module->shutdown.timeout);
-
-                if (status == std::future_status::timeout)
-                {
-                    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] WARNING: Shutdown for module '{}' "
-                              "timed out after {}ms. Continuing with other modules.",
-                              m_app_name, m_pid, module->name, module->shutdown.timeout.count());
-                    // Module status is left as Started or whatever it was if it timed out,
-                    // as it's not a fatal error for others.
-                }
+                auto fut = std::async(std::launch::async, mod->shutdown.func);
+                if (fut.wait_for(mod->shutdown.timeout) == std::future_status::timeout)
+                    PLH_DEBUG("WARNING: Shutdown timed out for static module '{}'", mod->name);
                 else
-                {
-                    future.get(); // Re-throws any exception from the shutdown function.
-                    module->status = ModuleStatus::Shutdown; // Mark as successfully shut down
-                }
+                    fut.get();
+                mod->status = ModuleStatus::Shutdown;
             }
-            else if (module->status == ModuleStatus::Registered ||
-                     module->status == ModuleStatus::Initializing)
-            {
-                // Modules that were not started or were initializing should not attempt shutdown
-                PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Module '{}' was not fully started (status: "
-                          "{}) -> Skipping shutdown.",
-                          m_app_name, m_pid, module->name,
-                          static_cast<int>(module->status)); // Cast to int for printing enum value
-            }
-            // Modules with status Failed are ignored during shutdown.
         }
         catch (const std::exception &e)
         {
-            // Exceptions during shutdown are logged with a stack trace but are not fatal.
-            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an exception during "
-                      "shutdown: {}.",
-                      m_app_name, m_pid, module->name, e.what());
-            pylabhub::debug::print_stack_trace();
-        }
-        catch (...)
-        {
-            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] ERROR: Module '{}' threw an unknown exception "
-                      "during shutdown.",
-                      m_app_name, m_pid, module->name);
-            pylabhub::debug::print_stack_trace();
+            PLH_DEBUG("ERROR: Static module '{}' threw on shutdown: {}", mod->name, e.what());
         }
     }
-
-    PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] Application finalization complete.", m_app_name, m_pid);
+    PLH_DEBUG("[pylabhub-lifecycle] Application finalization complete.");
 }
 
-/**
- * @brief Converts the flat list of registered modules into a graph structure.
- *
- * This involves creating graph nodes for each module and establishing
- * dependency relationships.
- * @throws std::runtime_error on duplicate module names or undefined dependencies.
- */
-void LifecycleManagerImpl::buildGraph()
+bool LifecycleManagerImpl::loadModule(const char *name)
+{
+    if (!is_initialized())
+        PLH_PANIC("FATAL: load_module called before initialization.");
+    if (!name) return false;
+    if (pylabhub::basics::RecursionGuard::is_recursing(this))
+    {
+        PLH_DEBUG("ERROR: Re-entrant call to load_module('{}') detected.", name);
+        return false;
+    }
+    pylabhub::basics::RecursionGuard guard(this);
+    std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+    auto it = m_module_graph.find(name);
+    if (it == m_module_graph.end() || !it->second.is_dynamic)
+    {
+        PLH_DEBUG("ERROR: Attempted to load '{}', not a dynamic module.", name);
+        return false;
+    }
+    return loadModuleInternal(it->second);
+}
+
+bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
+{
+    if (node.dynamic_status == DynamicModuleStatus::LOADED)
+    {
+        node.ref_count++;
+        return true;
+    }
+    if (node.dynamic_status == DynamicModuleStatus::LOADING)
+    {
+        PLH_DEBUG("ERROR: Circular dependency on module '{}'", node.name);
+        return false;
+    }
+    if (node.dynamic_status == DynamicModuleStatus::FAILED)
+    {
+        PLH_DEBUG("ERROR: Module '{}' is in a failed state.", node.name);
+        return false;
+    }
+    node.dynamic_status = DynamicModuleStatus::LOADING;
+    std::vector<InternalGraphNode *> dyn_deps;
+    for (const auto &dep_name : node.dependencies)
+    {
+        auto it = m_module_graph.find(dep_name);
+        if (it == m_module_graph.end())
+        {
+            node.dynamic_status = DynamicModuleStatus::FAILED;
+            PLH_DEBUG("ERROR: Undefined dependency '{}' for module '{}'", dep_name, node.name);
+            return false;
+        }
+        auto &dep_node = it->second;
+        if (dep_node.is_dynamic)
+        {
+            if (!loadModuleInternal(dep_node))
+            {
+                node.dynamic_status = DynamicModuleStatus::FAILED;
+                return false;
+            }
+            dyn_deps.push_back(&dep_node);
+        }
+        else if (dep_node.status != ModuleStatus::Started)
+        {
+            node.dynamic_status = DynamicModuleStatus::FAILED;
+            PLH_DEBUG("ERROR: Static dependency '{}' not started for module '{}'", dep_name,
+                      node.name);
+            return false;
+        }
+    }
+    try
+    {
+        if (node.startup)
+            node.startup();
+        node.dynamic_status = DynamicModuleStatus::LOADED;
+        node.ref_count = 1;
+        for (auto *dep : dyn_deps)
+            dep->ref_count++;
+        PLH_DEBUG("-> Loaded dynamic module '{}'", node.name);
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        node.dynamic_status = DynamicModuleStatus::FAILED;
+        PLH_DEBUG("ERROR: Module '{}' threw on startup: {}", node.name, e.what());
+        return false;
+    }
+}
+
+bool LifecycleManagerImpl::unloadModule(const char *name)
+{
+    if (!name) return false;
+    if (pylabhub::basics::RecursionGuard::is_recursing(this))
+    {
+        PLH_DEBUG("ERROR: Re-entrant call to unload_module('{}').", name);
+        return false;
+    }
+    pylabhub::basics::RecursionGuard guard(this);
+    std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+    auto it = m_module_graph.find(name);
+    if (it == m_module_graph.end() || !it->second.is_dynamic)
+        return false;
+    unloadModuleInternal(it->second);
+    return true;
+}
+
+void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
+{
+    if (node.dynamic_status != DynamicModuleStatus::LOADED)
+        return;
+    if (--node.ref_count > 0)
+        return;
+    PLH_DEBUG("<- Unloading dynamic module '{}'", node.name);
+    try
+    {
+        if (node.shutdown.func)
+            node.shutdown.func();
+    }
+    catch (const std::exception &e)
+    {
+        PLH_DEBUG("ERROR: Module '{}' threw on shutdown: {}", node.name, e.what());
+    }
+    node.dynamic_status = DynamicModuleStatus::UNLOADED;
+    for (const auto &dep_name : node.dependencies)
+    {
+        auto it = m_module_graph.find(dep_name);
+        if (it != m_module_graph.end() && it->second.is_dynamic)
+            unloadModuleInternal(it->second);
+    }
+}
+
+void LifecycleManagerImpl::buildStaticGraph()
 {
     std::lock_guard<std::mutex> lock(m_registry_mutex);
-
-    // First pass: create all nodes in the graph map.
-    // Store original dependencies and set initial status.
-    for (const auto &mod_def : m_registered_modules)
+    for (const auto &def : m_registered_modules)
     {
-        if (m_module_graph.count(mod_def.name))
-        {
-            throw std::runtime_error("Duplicate module name detected: '" + mod_def.name + "'");
-        }
-        m_module_graph[mod_def.name] = {mod_def.name,
-                                        mod_def.startup,
-                                        mod_def.shutdown,
-                                        mod_def.dependencies, // Store original dependencies
-                                        0,
-                                        {},
-                                        ModuleStatus::Registered};
+        if (m_module_graph.count(def.name))
+            throw std::runtime_error("Duplicate module name: " + def.name);
+        m_module_graph[def.name] = {def.name, def.startup, def.shutdown, def.dependencies};
     }
-
-    // Helper function to convert a string to lowercase.
-    auto to_lower = [](const std::string &str)
+    for (auto &p : m_module_graph)
     {
-        std::string lower_str = str;
-        std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        return lower_str;
-    };
-
-    // Create a map for case-insensitive lookup.
-    std::map<std::string, InternalGraphNode *> name_to_node_map;
-    for (auto &pair : m_module_graph)
-    {
-        name_to_node_map[to_lower(pair.first)] = &pair.second;
-    }
-
-    // Second pass: connect dependencies and calculate in-degrees using case-insensitive matching.
-    for (const auto &mod_def : m_registered_modules)
-    {
-        InternalGraphNode &module_node = m_module_graph.at(mod_def.name);
-        module_node.in_degree = mod_def.dependencies.size(); // Initial in-degree from explicit deps
-
-        for (const auto &dep_name : mod_def.dependencies)
+        for (const auto &dep_name : p.second.dependencies)
         {
-            std::string lower_dep_name = to_lower(dep_name);
-            auto it = name_to_node_map.find(lower_dep_name);
-
-            if (it == name_to_node_map.end())
-            {
-                // Dependency not found, prepare a detailed error message.
-                std::vector<std::string> available_modules;
-                for (const auto &node_pair : m_module_graph)
-                {
-                    available_modules.push_back(node_pair.first);
-                }
-                std::string error_msg =
-                    fmt::format("Module '{}' has an undefined dependency: "
-                                "'{}'. Available modules are: [{}]",
-                                mod_def.name, dep_name, fmt::join(available_modules, ", "));
-                throw std::runtime_error(error_msg);
-            }
-            // `it->second` is the dependency node. `module_node` is the dependent.
-            it->second->dependents.push_back(&module_node);
+            auto it = m_module_graph.find(dep_name);
+            if (it == m_module_graph.end())
+                throw std::runtime_error("Undefined dependency: " + dep_name);
+            it->second.dependents.push_back(&p.second);
         }
     }
-    // The temporary registration list is no longer needed after graph construction.
     m_registered_modules.clear();
 }
 
-/**
- * @brief Sorts the graph nodes using Kahn's algorithm for topological sorting.
- * @return A vector of InternalGraphNode pointers in sorted order,
- *         representing the correct startup sequence.
- * @throws std::runtime_error if a circular dependency is detected.
- */
-std::vector<LifecycleManagerImpl::InternalGraphNode *> LifecycleManagerImpl::topologicalSort()
+std::vector<LifecycleManagerImpl::InternalGraphNode *> 
+LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &nodes)
 {
     std::vector<InternalGraphNode *> sorted_order;
-    sorted_order.reserve(m_module_graph.size());
-    std::vector<InternalGraphNode *> queue; // The queue of nodes with in-degree 0.
-
-    // Initialize the queue with all nodes that have no dependencies (in-degree 0).
-    for (auto &pair : m_module_graph)
-    {
-        if (pair.second.in_degree == 0)
-        {
-            queue.push_back(&pair.second);
-        }
-    }
-
+    sorted_order.reserve(nodes.size());
+    std::vector<InternalGraphNode *> q;
+    std::map<InternalGraphNode *, size_t> in_degrees;
+    for (auto *n : nodes)
+        in_degrees[n] = 0;
+    for (auto *n : nodes)
+        for (auto *dep : n->dependents)
+            if (in_degrees.count(dep))
+                in_degrees[dep]++;
+    for (auto *n : nodes)
+        if (in_degrees[n] == 0)
+            q.push_back(n);
     size_t head = 0;
-    while (head < queue.size())
+    while (head < q.size())
     {
-        InternalGraphNode *u = queue[head++]; // Dequeue node 'u'
+        InternalGraphNode *u = q[head++];
         sorted_order.push_back(u);
-
-        // For each dependent 'v' of the current node 'u', decrement its in-degree.
         for (InternalGraphNode *v : u->dependents)
-        {
-            if (--(v->in_degree) == 0)
-            {
-                // If a dependent's in-degree drops to 0, it's now ready to be processed.
-                queue.push_back(v);
-            }
-        }
+            if (in_degrees.count(v) && --in_degrees[v] == 0)
+                q.push_back(v);
     }
-
-    // If the sorted order contains fewer nodes than the graph, there's a cycle.
-    if (sorted_order.size() != m_module_graph.size())
+    if (sorted_order.size() != nodes.size())
     {
-        // Collect all nodes that still have an in-degree > 0, indicating they are part of a cycle.
         std::vector<std::string> cycle_nodes;
-        for (const auto &pair : m_module_graph)
-        {
-            if (pair.second.in_degree > 0)
-            {
-                cycle_nodes.push_back(pair.first);
-            }
-        }
-        throw std::runtime_error("Circular dependency detected. Modules involved in cycle: " +
-                                 fmt::format("{}", fmt::join(cycle_nodes, ", ")));
+        for (auto const &[n, d] : in_degrees)
+            if (d > 0)
+                cycle_nodes.push_back(n->name);
+        throw std::runtime_error("Circular dependency detected involving: " +
+                                 fmt::format("{}", fmt::join(cycle_nodes, ", "))); 
     }
     return sorted_order;
 }
 
-// Private constructor/destructor for the LifecycleManager (singleton pattern)
+void LifecycleManagerImpl::printStatusAndAbort(const std::string &msg, const std::string &mod)
+{
+    fmt::print(stderr, "\n[pylabhub-lifecycle] FATAL: {}. Aborting.\n", msg);
+    if (!mod.empty())
+        fmt::print(stderr, "[pylabhub-lifecycle] Module '{}' was point of failure.\n", mod);
+    fmt::print(stderr, "\n--- Module Status ---\n");
+    for (auto const &[name, node] : m_module_graph)
+    {
+        fmt::print(stderr, "  - '{}' [{}]\n", name, node.is_dynamic ? "Dynamic" : "Static");
+    }
+    fmt::print(stderr, "---------------------\n\n");
+    pylabhub::debug::print_stack_trace();
+    std::abort();
+}
+
 LifecycleManager::LifecycleManager() : pImpl(std::make_unique<LifecycleManagerImpl>()) {}
 LifecycleManager::~LifecycleManager() = default;
-
-// Public singleton accessor
 LifecycleManager &LifecycleManager::instance()
 {
-    // Function-local static ensures thread-safe initialization on first call.
     static LifecycleManager instance;
     return instance;
 }
-
-// Public API methods forward to the implementation
-void LifecycleManager::register_module(ModuleDef &&module_def)
+void LifecycleManager::register_module(ModuleDef &&def)
 {
-    if (!module_def.pImpl)
-        return; // Handle case where ModuleDef was moved from or not properly constructed.
-    pImpl->registerModule(std::move(module_def.pImpl->def));
+    if (def.pImpl)
+        pImpl->registerStaticModule(std::move(def.pImpl->def));
 }
-
-void LifecycleManager::initialize()
+bool LifecycleManager::register_dynamic_module(ModuleDef &&def)
 {
-    pImpl->initialize();
+    if (def.pImpl)
+        return pImpl->registerDynamicModule(std::move(def.pImpl->def));
+    return false;
 }
-
-void LifecycleManager::finalize()
-{
-    pImpl->finalize();
-}
-
-bool LifecycleManager::is_initialized()
-{
-    return pImpl->is_initialized();
-}
-
-bool LifecycleManager::is_finalized()
-{
-    return pImpl->is_finalized();
-}
+void LifecycleManager::initialize() { pImpl->initialize(); }
+void LifecycleManager::finalize() { pImpl->finalize(); }
+bool LifecycleManager::is_initialized() { return pImpl->is_initialized(); }
+bool LifecycleManager::is_finalized() { return pImpl->is_finalized(); }
+bool LifecycleManager::load_module(const char *name) { return pImpl->loadModule(name); }
+bool LifecycleManager::unload_module(const char *name) { return pImpl->unloadModule(name); }
 
 } // namespace pylabhub::utils

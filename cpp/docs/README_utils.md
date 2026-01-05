@@ -47,7 +47,98 @@ int main(int argc, char* argv[]) {
 
 ---
 
-## 3. Core Utilities (C++ Namespace: `pylabhub::utils`)
+## 3. Dynamic Module Management
+
+In addition to the static lifecycle, the `LifecycleManager` also supports **dynamic modules**. These are components that can be loaded on-demand at any point during the application's runtime and unloaded to free up resources. This is ideal for optional features, plugins, or resource-intensive tools that are not needed for the entire application session.
+
+### How to Use Dynamic Modules
+
+Dynamic modules provide flexibility, but they operate within the context of the initialized static core.
+
+1.  **Initialize Static Core**: Create the `LifecycleGuard` with all necessary *static* modules (like `Logger`). This initiates the application's core services. **Dynamic module registration or loading cannot occur before this step is complete.**
+2.  **Define and Register Dynamic Modules**: At any point *after* static initialization, you can define a dynamic module and register it using `RegisterDynamicModule()`. Registration will fail gracefully (returning `false`) if called prematurely (before `initialize()`) or if a dependency is not found.
+3. **Load and Unload**: Use `LoadModule("MyModule")` and `UnloadModule("MyModule")` to control the module's lifecycle. `LoadModule` will panic if called before `initialize()` is complete.
+
+The system uses reference counting. `LoadModule` increments a counter, and `UnloadModule` decrements it. The module's shutdown callback is only run when the counter reaches zero.
+
+**Graceful Failure Handling**: A key feature of the dynamic module system is its robust error handling. Unlike the static initialization which is fatal on failure, any error during a dynamic module's loading process (e.g., an unmet dependency, or an exception in its startup callback) is handled gracefully. `LoadModule` will simply return `false`, and the error will be logged. This ensures that the failure of an optional component will not crash the main application, allowing the calling code to manage the failure as needed.
+
+### Dynamic Module Example
+
+```cpp
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
+#include <atomic>
+
+// --- Define an optional, dynamic module ---
+namespace analytics
+{
+std::atomic<bool> g_analytics_started = false;
+
+void startup(const char*) {
+    LOGGER_INFO("Analytics module started!");
+    g_analytics_started = true;
+}
+void shutdown(const char*) {
+    LOGGER_INFO("Analytics module shut down.");
+    g_analytics_started = false;
+}
+
+ModuleDef GetLifecycleModule() {
+    ModuleDef module("AnalyticsModule");
+    // This dynamic module depends on the static Logger module
+    module.add_dependency("pylabhub::utils::Logger");
+    module.set_startup(startup);
+    module.set_shutdown(shutdown, 1000);
+    return module;
+}
+} // namespace analytics
+
+
+int main(int argc, char* argv[]) {
+    // 1. Create the LifecycleGuard to initialize static modules.
+    //    No dynamic module operations are allowed before this.
+    pylabhub::utils::LifecycleGuard app_lifecycle(
+        pylabhub::utils::Logger::GetLifecycleModule()
+    );
+
+    LOGGER_INFO("Application started. Static modules are running.");
+    
+    // 2. Register a new dynamic module at runtime. This can only happen AFTER init.
+    if (!RegisterDynamicModule(analytics::GetLifecycleModule())) {
+        LOGGER_ERROR("Failed to register analytics module!");
+        return 1;
+    }
+    LOGGER_INFO("Analytics module is registered but not loaded.");
+    // assert(g_analytics_started == false);
+
+    // 3. Load the dynamic module when needed. This can only happen AFTER init.
+    LOGGER_INFO("Loading analytics module...");
+    if (LoadModule("AnalyticsModule")) {
+        LOGGER_INFO("Analytics module loaded successfully.");
+        // assert(g_analytics_started == true);
+    }
+
+    // A second call to LoadModule just increments the reference count.
+    LoadModule("AnalyticsModule");
+
+    // 4. Unload the module. It won't shut down yet (ref count > 0).
+    LOGGER_INFO("Unloading analytics module (first unload)...");
+    UnloadModule("AnalyticsModule");
+    // assert(g_analytics_started == true); // Still running
+
+    // The second unload will cause it to shut down.
+    LOGGER_INFO("Unloading analytics module (second unload)...");
+    UnloadModule("AnalyticsModule");
+    // assert(g_analytics_started == false); // Now it's shut down.
+
+    return 0;
+}
+
+
+---
+
+## 4. Core Utilities (C++ Namespace: `pylabhub::utils`)
 
 ### `Logger`
 
