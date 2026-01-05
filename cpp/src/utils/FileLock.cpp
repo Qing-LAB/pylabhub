@@ -716,7 +716,7 @@ void do_filelock_cleanup(const char *arg)
 
 ModuleDef FileLock::GetLifecycleModule(bool cleanup_on_shutdown)
 {
-    ModuleDef module("pylabhub::utils::FileLockCleanup");
+    ModuleDef module("pylabhub::utils::FileLock");
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_filelock_startup);
 

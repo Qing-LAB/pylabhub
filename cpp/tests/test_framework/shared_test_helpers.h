@@ -166,6 +166,8 @@ int scaled_value(int original, int small_value);
  * This function handles the initialization and finalization of lifecycle-managed
  * modules and catches GTest assertions and standard exceptions, printing
  * informative error messages if the test logic fails.
+ * This function should be called within a separate process dedicated to running
+ * the test logic.
  *
  * @tparam Fn The type of the test logic callable.
  * @tparam Mods The types of the lifecycle modules to manage.
@@ -178,7 +180,7 @@ int scaled_value(int original, int small_value);
 template <typename Fn, typename... Mods>
 int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
 {
-    pylabhub::lifecycle::LifecycleGuard guard(std::forward<Mods>(mods)...);
+    pylabhub::utils::LifecycleGuard guard(std::forward<Mods>(mods)...);
 
     try
     {

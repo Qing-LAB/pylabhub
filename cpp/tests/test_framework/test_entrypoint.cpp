@@ -29,7 +29,12 @@
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 
+#include "platform.hpp"
 #include "test_entrypoint.h"
+#include "utils/FileLock.hpp"
+#include "utils/JsonConfig.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 
 // Define the global for the executable path, used by worker-spawning tests
 std::string g_self_exe_path;
@@ -70,8 +75,14 @@ int main(int argc, char **argv)
     if (argc >= 1)
         g_self_exe_path = argv[0];
 
+    pylabhub::utils::LifecycleGuard guard(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::JsonConfig::GetLifecycleModule()); // Manage lifecycle for the test runner
+
     // Initialize GoogleTest and run all registered tests.
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
+
     return result;
 }
