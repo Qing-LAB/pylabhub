@@ -8,9 +8,20 @@
 #include <vector>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
+#if defined(MSVC_VER)
+#pragma warning(push)
+#pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
+#endif
+
+#define LEAN_AND_MEAN
 #include <windows.h>
+#include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
+
+#if defined(MSVC_VER)
+#pragma warning(pop)
+#endif
+
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
