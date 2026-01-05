@@ -756,7 +756,7 @@ ModuleDef JsonConfig::GetLifecycleModule()
 {
     ModuleDef module("pylabhub::utils::JsonConfig");
     // JsonConfig depends on FileLock and Logger being available.
-    module.add_dependency("pylabhub::utils::FileLockCleanup");
+    module.add_dependency("pylabhub::utils::FileLock");
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_jsonconfig_startup);
     module.set_shutdown(&do_jsonconfig_shutdown, 1000);

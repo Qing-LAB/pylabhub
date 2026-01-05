@@ -331,7 +331,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     // It does not use run_gtest_worker, as the goal is to call finalize()
     // while other threads are actively using the logger.
     // Register the Logger module with the LifecycleManager.
-    pylabhub::lifecycle::RegisterModule(Logger::GetLifecycleModule());
+    pylabhub::utils::RegisterModule(Logger::GetLifecycleModule());
     LifecycleManager::instance().initialize();
 
     fs::path chaos_log_path(log_path_str);
