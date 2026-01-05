@@ -4,6 +4,8 @@
 # These tests are compiled individually and may depend on different 
 # components within the library to test individual functions of interest.
 
+cmake_minimum_required(VERSION 3.29)
+
 add_executable(test_debug_output
   test_debug_output.cpp
 )
