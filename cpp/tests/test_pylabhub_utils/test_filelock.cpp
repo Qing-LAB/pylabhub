@@ -167,8 +167,6 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
  */
 TEST_F(FileLockTest, MultiProcessNonBlocking)
 {
-    pylabhub::lifecycle::LifecycleGuard guard(pylabhub::utils::FileLock::GetLifecycleModule(),
-                                              pylabhub::utils::Logger::GetLifecycleModule());
     auto resource_path = temp_dir() / "multiprocess.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 
@@ -284,8 +282,6 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
  */
 TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 {
-    pylabhub::lifecycle::LifecycleGuard guard(pylabhub::utils::FileLock::GetLifecycleModule(),
-                                              pylabhub::utils::Logger::GetLifecycleModule());
     auto resource_path = temp_dir() / "parent_child_block.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
 

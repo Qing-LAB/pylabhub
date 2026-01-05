@@ -61,7 +61,7 @@ class JsonConfigTest : public ::testing::Test
   protected:
     // Ensures that the required modules are initialized before each test
     // in this suite runs, and finalized after.
-    pylabhub::lifecycle::LifecycleGuard guard;
+    pylabhub::utils::LifecycleGuard guard;
 
     JsonConfigTest()
         : guard(pylabhub::utils::JsonConfig::GetLifecycleModule(),
