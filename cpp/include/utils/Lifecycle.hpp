@@ -379,10 +379,10 @@ inline void FinalizeApp()
 
 /**
  * @brief A convenience function to register a dynamic module.
- * @details This function is a wrapper around `LifecycleManager::instance().register_dynamic_module()`.
- * Dynamic modules can be registered at runtime after the static core of the
- * application has been initialized.
- * This call is only valid *after* `InitializeApp()` has been called.
+ * @details This function is a wrapper around
+ * `LifecycleManager::instance().register_dynamic_module()`. Dynamic modules can be registered at
+ * runtime after the static core of the application has been initialized. This call is only valid
+ * *after* `InitializeApp()` has been called.
  * @see LifecycleManager::register_dynamic_module
  *
  * @param module_def A ModuleDef object, which will be moved into the manager.

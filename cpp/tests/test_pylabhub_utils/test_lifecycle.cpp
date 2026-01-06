@@ -78,8 +78,8 @@ TEST_F(LifecycleTest, FailsWithCaseSensitiveDependency)
 // Test that initialization fails if a direct, two-module static dependency cycle is introduced.
 TEST_F(LifecycleTest, StaticCircularDependencyAborts)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_static_circular_dependency_aborts", {});
+    ProcessHandle proc = spawn_worker_process(
+        g_self_exe_path, "lifecycle.test_static_circular_dependency_aborts", {});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     // The worker process should abort due to the cycle.
     ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
@@ -88,8 +88,8 @@ TEST_F(LifecycleTest, StaticCircularDependencyAborts)
 // Test that initialization fails with a complex, indirect static dependency cycle.
 TEST_F(LifecycleTest, StaticElaborateIndirectCycleAborts)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_static_elaborate_indirect_cycle_aborts", {});
+    ProcessHandle proc = spawn_worker_process(
+        g_self_exe_path, "lifecycle.test_static_elaborate_indirect_cycle_aborts", {});
     ASSERT_NE(proc, NULL_PROC_HANDLE);
     // The worker process should abort due to the cycle.
     ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);

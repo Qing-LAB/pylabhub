@@ -18,29 +18,65 @@ namespace
 {
 // --- Globals for static module tests ---
 std::atomic<int> g_startup_counter{0};
-void counter_startup_callback(const char *) { g_startup_counter++; }
-void reset_static_counters() { g_startup_counter = 0; }
+void counter_startup_callback(const char *)
+{
+    g_startup_counter++;
+}
+void reset_static_counters()
+{
+    g_startup_counter = 0;
+}
 
 // --- Globals for dynamic module tests ---
 std::atomic<int> dyn_A_start{0}, dyn_B_start{0}, dyn_C_start{0}, dyn_D_start{0};
 std::atomic<int> dyn_A_stop{0}, dyn_B_stop{0}, dyn_C_stop{0}, dyn_D_stop{0};
 
-void reset_dynamic_counters() {
-    dyn_A_start=0; dyn_B_start=0; dyn_C_start=0; dyn_D_start=0;
-    dyn_A_stop=0; dyn_B_stop=0; dyn_C_stop=0; dyn_D_stop=0;
+void reset_dynamic_counters()
+{
+    dyn_A_start = 0;
+    dyn_B_start = 0;
+    dyn_C_start = 0;
+    dyn_D_start = 0;
+    dyn_A_stop = 0;
+    dyn_B_stop = 0;
+    dyn_C_stop = 0;
+    dyn_D_stop = 0;
 }
 
-void startup_A(const char *) { dyn_A_start++; }
-void startup_B(const char *) { dyn_B_start++; }
-void startup_C(const char *) { dyn_C_start++; }
-void startup_D(const char *) { dyn_D_start++; }
-void shutdown_A(const char *) { dyn_A_stop++; }
-void shutdown_B(const char *) { dyn_B_stop++; }
-void shutdown_C(const char *) { dyn_C_stop++; }
-void shutdown_D(const char *) { dyn_D_stop++; }
+void startup_A(const char *)
+{
+    dyn_A_start++;
+}
+void startup_B(const char *)
+{
+    dyn_B_start++;
+}
+void startup_C(const char *)
+{
+    dyn_C_start++;
+}
+void startup_D(const char *)
+{
+    dyn_D_start++;
+}
+void shutdown_A(const char *)
+{
+    dyn_A_stop++;
+}
+void shutdown_B(const char *)
+{
+    dyn_B_stop++;
+}
+void shutdown_C(const char *)
+{
+    dyn_C_stop++;
+}
+void shutdown_D(const char *)
+{
+    dyn_D_stop++;
+}
 
 } // namespace
-
 
 // ============================================================================
 // Static Lifecycle Workers
@@ -72,7 +108,7 @@ int pylabhub::tests::worker::lifecycle::test_register_after_init_aborts()
     LifecycleGuard guard;
     ModuleDef module_a("LateStaticModule");
     RegisterModule(std::move(module_a)); // Should abort
-    return 1; // Should not be reached
+    return 1;                            // Should not be reached
 }
 
 int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
@@ -80,9 +116,8 @@ int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
     ModuleDef module_a("ModuleA");
     module_a.add_dependency("NonExistentModule");
     LifecycleGuard guard(std::move(module_a)); // Should abort
-    return 1; // Should not be reached
+    return 1;                                  // Should not be reached
 }
-
 
 int pylabhub::tests::worker::lifecycle::test_is_initialized_flag()
 {
@@ -133,7 +168,7 @@ int pylabhub::tests::worker::lifecycle::test_static_circular_dependency_aborts()
 
     // The LifecycleGuard's constructor calls initialize(), which should detect
     // the cycle and abort the program.
-    LifecycleGuard guard; 
+    LifecycleGuard guard;
 
     return 1; // Should not be reached.
 }
@@ -142,21 +177,35 @@ int pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_abo
 {
     // Cluster 1
     ModuleDef c1_root("C1_Root");
-    ModuleDef c1_a1("C1_A1"); c1_a1.add_dependency("C1_Root");
-    ModuleDef c1_a2("C1_A2"); c1_a2.add_dependency("C1_Root");
-    ModuleDef c1_b1("C1_B1"); c1_b1.add_dependency("C1_A1");
-    ModuleDef c1_b2("C1_B2"); c1_b2.add_dependency("C1_A1"); c1_b2.add_dependency("C1_A2");
-    ModuleDef c1_c1("C1_C1"); c1_c1.add_dependency("C1_B1");
+    ModuleDef c1_a1("C1_A1");
+    c1_a1.add_dependency("C1_Root");
+    ModuleDef c1_a2("C1_A2");
+    c1_a2.add_dependency("C1_Root");
+    ModuleDef c1_b1("C1_B1");
+    c1_b1.add_dependency("C1_A1");
+    ModuleDef c1_b2("C1_B2");
+    c1_b2.add_dependency("C1_A1");
+    c1_b2.add_dependency("C1_A2");
+    ModuleDef c1_c1("C1_C1");
+    c1_c1.add_dependency("C1_B1");
 
     // Cluster 2
     ModuleDef c2_root("C2_Root");
-    ModuleDef c2_a1("C2_A1"); c2_a1.add_dependency("C2_Root");
-    ModuleDef c2_a2("C2_A2"); c2_a2.add_dependency("C2_Root");
-    ModuleDef c2_b1("C2_B1"); c2_b1.add_dependency("C2_A1");
-    ModuleDef c2_b2("C2_B2"); c2_b2.add_dependency("C2_A1"); c2_b2.add_dependency("C2_A2");
-    ModuleDef c2_c1("C2_C1"); c2_c1.add_dependency("C2_B1"); c2_c1.add_dependency("C2_B2");
-    ModuleDef c2_d1("C2_D1"); c2_d1.add_dependency("C2_C1");
-    
+    ModuleDef c2_a1("C2_A1");
+    c2_a1.add_dependency("C2_Root");
+    ModuleDef c2_a2("C2_A2");
+    c2_a2.add_dependency("C2_Root");
+    ModuleDef c2_b1("C2_B1");
+    c2_b1.add_dependency("C2_A1");
+    ModuleDef c2_b2("C2_B2");
+    c2_b2.add_dependency("C2_A1");
+    c2_b2.add_dependency("C2_A2");
+    ModuleDef c2_c1("C2_C1");
+    c2_c1.add_dependency("C2_B1");
+    c2_c1.add_dependency("C2_B2");
+    ModuleDef c2_d1("C2_D1");
+    c2_d1.add_dependency("C2_C1");
+
     // Connecting Links
     c1_b2.add_dependency("C2_C1"); // Link 1 (C1 -> C2)
     c2_d1.add_dependency("C1_A1"); // Link 2 (C2 -> C1, forms the cycle)
@@ -403,7 +452,8 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
             {
                 throw std::runtime_error("Re-entrant LoadModule('DynB') unexpectedly succeeded!");
             }
-            throw std::runtime_error("LoadModule('DynB') detected re-entrant call and failed as expected.");
+            throw std::runtime_error(
+                "LoadModule('DynB') detected re-entrant call and failed as expected.");
         }
     };
 
