@@ -339,6 +339,7 @@ void LifecycleManagerImpl::finalize()
         {
             try
             {
+                PLH_DEBUG("<- Unloading dynamic module '{}'", mod->name);
                 if (mod->shutdown.func)
                 {
                     auto fut = std::async(std::launch::async, mod->shutdown.func);
@@ -359,6 +360,7 @@ void LifecycleManagerImpl::finalize()
     {
         try
         {
+            PLH_DEBUG("[pylabhub-lifecycle] <- Shutting down static module: '{}'", mod->name);
             if (mod->status == ModuleStatus::Started && mod->shutdown.func)
             {
                 auto fut = std::async(std::launch::async, mod->shutdown.func);

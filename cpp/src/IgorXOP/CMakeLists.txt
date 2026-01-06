@@ -172,6 +172,10 @@ if(TARGET pylabhub::utils)
   message(STATUS "IgorXOP: linked to pylabhub::utils")
 endif()
 
+if(PYLABHUB_SANITIZER_FLAG)
+  target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
+endif()
+
 # -------------------------
 # Linker/export flags
 # -------------------------
