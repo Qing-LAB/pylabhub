@@ -111,7 +111,8 @@ static int dispatch_utils_workers(int argc, char **argv)
         }
         if (scenario == "test_static_elaborate_indirect_cycle_aborts")
         {
-            return pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_aborts();
+            return pylabhub::tests::worker::lifecycle::
+                test_static_elaborate_indirect_cycle_aborts();
         }
         // --- Dynamic Lifecycle Tests ---
         if (scenario == "dynamic.load_unload")
@@ -140,7 +141,8 @@ static int dispatch_utils_workers(int argc, char **argv)
         }
         if (scenario == "registration_fails_with_unresolved_dependency")
         {
-            return pylabhub::tests::worker::lifecycle::registration_fails_with_unresolved_dependency();
+            return pylabhub::tests::worker::lifecycle::
+                registration_fails_with_unresolved_dependency();
         }
         if (scenario == "dynamic.reentrant_load_fail")
         {

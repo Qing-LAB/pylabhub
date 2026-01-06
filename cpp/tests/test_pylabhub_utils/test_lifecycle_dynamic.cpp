@@ -1,7 +1,7 @@
-#include <gtest/gtest.h>
-#include "test_entrypoint.h" // For g_self_exe_path
-#include "platform.hpp" // For PLATFORM_WIN64, which is used by test_process_utils.h
+#include "platform.hpp"         // For PLATFORM_WIN64, which is used by test_process_utils.h
+#include "test_entrypoint.h"    // For g_self_exe_path
 #include "test_process_utils.h" // For NULL_PROC_HANDLE and ProcessHandle
+#include <gtest/gtest.h>
 
 using namespace pylabhub::tests::helper; // Bring test helper namespace into scope
 
@@ -55,7 +55,6 @@ TEST_F(LifecycleDynamicTest, FinalizeUnloadsAll)
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
 }
 
-
 // --- Failure Cases ---
 
 TEST_F(LifecycleDynamicTest, RegisterBeforeInitFails)
@@ -98,5 +97,4 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
     // Worker returns 0 if LoadModule correctly fails.
 
     ASSERT_EQ(pylabhub::tests::helper::wait_for_worker_and_get_exit_code(proc), 0);
-
 }

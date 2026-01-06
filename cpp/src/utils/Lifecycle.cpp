@@ -71,7 +71,7 @@ class ModuleDefImpl
     lifecycle_internal::InternalModuleDef def;
 };
 
-ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>()) 
+ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>())
 {
     if (name)
     {
@@ -131,8 +131,21 @@ class LifecycleManagerImpl
     {
     }
 
-    enum class ModuleStatus { Registered, Initializing, Started, Failed, Shutdown };
-    enum class DynamicModuleStatus { UNLOADED, LOADING, LOADED, FAILED };
+    enum class ModuleStatus
+    {
+        Registered,
+        Initializing,
+        Started,
+        Failed,
+        Shutdown
+    };
+    enum class DynamicModuleStatus
+    {
+        UNLOADED,
+        LOADING,
+        LOADED,
+        FAILED
+    };
 
     struct InternalGraphNode
     {
@@ -161,8 +174,7 @@ class LifecycleManagerImpl
   private:
     // --- Private Helper Methods ---
     void buildStaticGraph();
-    std::vector<InternalGraphNode *> 
-    topologicalSort(const std::vector<InternalGraphNode *> &nodes);
+    std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
     void unloadModuleInternal(InternalGraphNode &node);
     void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
@@ -172,7 +184,7 @@ class LifecycleManagerImpl
     const std::string m_app_name;
     std::atomic<bool> m_is_initialized = {false};
     std::atomic<bool> m_is_finalized = {false};
-    std::mutex m_registry_mutex; // Protects m_registered_modules before initialization
+    std::mutex m_registry_mutex;       // Protects m_registered_modules before initialization
     std::mutex m_graph_mutation_mutex; // Protects m_module_graph after initialization
     std::vector<lifecycle_internal::InternalModuleDef> m_registered_modules;
     std::map<std::string, InternalGraphNode> m_module_graph;
@@ -542,7 +554,16 @@ void LifecycleManagerImpl::buildStaticGraph()
     {
         if (m_module_graph.count(def.name))
             throw std::runtime_error("Duplicate module name: " + def.name);
-        m_module_graph[def.name] = {def.name, def.startup, def.shutdown, def.dependencies, 0, {}, ModuleStatus::Registered, false, DynamicModuleStatus::UNLOADED, 0};
+        m_module_graph[def.name] = {def.name,
+                                    def.startup,
+                                    def.shutdown,
+                                    def.dependencies,
+                                    0,
+                                    {},
+                                    ModuleStatus::Registered,
+                                    false,
+                                    DynamicModuleStatus::UNLOADED,
+                                    0};
     }
     for (auto &p : m_module_graph)
     {
@@ -635,11 +656,29 @@ bool LifecycleManager::register_dynamic_module(ModuleDef &&def)
         return pImpl->registerDynamicModule(std::move(def.pImpl->def));
     return false;
 }
-void LifecycleManager::initialize() { pImpl->initialize(); }
-void LifecycleManager::finalize() { pImpl->finalize(); }
-bool LifecycleManager::is_initialized() { return pImpl->is_initialized(); }
-bool LifecycleManager::is_finalized() { return pImpl->is_finalized(); }
-bool LifecycleManager::load_module(const char *name) { return pImpl->loadModule(name); }
-bool LifecycleManager::unload_module(const char *name) { return pImpl->unloadModule(name); }
+void LifecycleManager::initialize()
+{
+    pImpl->initialize();
+}
+void LifecycleManager::finalize()
+{
+    pImpl->finalize();
+}
+bool LifecycleManager::is_initialized()
+{
+    return pImpl->is_initialized();
+}
+bool LifecycleManager::is_finalized()
+{
+    return pImpl->is_finalized();
+}
+bool LifecycleManager::load_module(const char *name)
+{
+    return pImpl->loadModule(name);
+}
+bool LifecycleManager::unload_module(const char *name)
+{
+    return pImpl->unloadModule(name);
+}
 
 } // namespace pylabhub::utils

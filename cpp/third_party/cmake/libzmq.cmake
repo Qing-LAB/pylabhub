@@ -117,8 +117,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
                       "Libzmq will be built without its internal TSAN. This may still work if your project applies TSAN flags globally for its own targets.")
     endif()
   elseif(_pylabhub_sanitizer_lower STREQUAL "undefinedbehavior" OR _pylabhub_sanitizer_lower STREQUAL "undefined")
-    set(ENABLE_UBSAN ON CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
-    message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_UBSAN.")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      set(ENABLE_UBSAN ON CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+      message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_UBSAN for Clang compiler.")
+    else()
+      # Libzmq's ENABLE_UBSAN options include Clang-specific or newer GCC version flags.
+      # If using GCC, enabling libzmq's internal UBSAN might cause build errors.
+      message(WARNING "[pylabhub-third-party] PYLABHUB_USE_SANITIZER is 'UndefinedBehavior' but libzmq's internal ENABLE_UBSAN options contain potentially Clang-specific or newer GCC version flags ('-fsanitize=implicit-conversion', etc.). "
+                      "Not enabling libzmq's internal UndefinedBehaviorSanitizer for current compiler (${CMAKE_CXX_COMPILER_ID}). "
+                      "Libzmq will be built without its internal UBSAN. This may still work if your project applies UBSAN flags globally for its own targets.")
+    endif()
   else()
     message(STATUS "[pylabhub-third-party] No sanitizer explicitly enabled for libzmq.")
   endif()
