@@ -10,10 +10,10 @@ option(BUILD_TESTS "Build the pyLabHub test suite" ON)
 # Option to build the IgorXOP module.
 option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 
-# Option to enable sanitizers (ASan, TSan, UBSan) on GCC/Clang.
+# Define the sanitizer to use.
+# Possible values: "None", "Address", "Thread", "UndefinedBehavior", "Undefined".
 # This is not compatible with MSVC.
-# Possible values: None, Address, Thread, UndefinedBehavior, Undefined
-option(PYLABHUB_USE_SANITIZER "Enable sanitizers (Address, Thread, UndefinedBehavior, Undefined). Not for MSVC." "None")
+set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). Not for MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
 
 # Option to stage third-party headers and libraries.
