@@ -92,6 +92,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   snapshot_cache_var(ENABLE_TSAN)
   snapshot_cache_var(ENABLE_UBSAN)
 
+
+
   # --- Translate top-level sanitizer choice to libzmq's specific options ---
   set(ENABLE_ASAN OFF CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
   set(ENABLE_TSAN OFF CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
@@ -111,6 +113,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_UBSAN.")
   else()
     message(STATUS "[pylabhub-third-party] No sanitizer explicitly enabled for libzmq.")
+  endif()
+
+  # --- Platform-specific POLLER configuration ---
+  # Explicitly set the POLLER type based on the detected platform for optimal performance.
+  if(PLATFORM_LINUX)
+    set(POLLER "epoll" CACHE STRING "Optimal POLLER for Linux" FORCE)
+    message(STATUS "[pylabhub-third-party] Setting POLLER to 'epoll' for Linux.")
+  elseif(PLATFORM_APPLE)
+    set(POLLER "kqueue" CACHE STRING "Optimal POLLER for macOS" FORCE)
+    message(STATUS "[pylabhub-third-party] Setting POLLER to 'kqueue' for macOS.")
+  else()
+    # For other platforms (e.g., Windows), libzmq's internal CMake typically handles intelligent defaults.
+    # We will let its internal logic determine the best POLLER if not explicitly set by user.
+    message(STATUS "[pylabhub-third-party] Letting libzmq autodetect POLLER for current platform.")
   endif()
 
   # ---------------------------
@@ -138,10 +154,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     message(STATUS "third_party wrapper: not forcing libzmq variant (none)")
   endif()
 
-  # On Windows with non-MSVC compilers, epoll is required for IPC transport.
-  if(WIN32 AND NOT MSVC)
-    set(POLLER "epoll" CACHE STRING "Force epoll poller on non-MSVC Windows" FORCE)
-    message(STATUS "[pylabhub-third-party] Forcing POLLER=epoll for non-MSVC Windows build.")
+  # --- Platform-specific POLLER configuration ---
+  # Explicitly set the POLLER type based on the detected platform for optimal performance.
+  if(NOT DEFINED POLLER OR POLLER STREQUAL "")
+    if(PLATFORM_LINUX)
+      set(POLLER "epoll" CACHE STRING "Optimal POLLER for Linux" FORCE)
+      message(STATUS "[pylabhub-third-party] Setting POLLER to 'epoll' for Linux.")
+    elseif(PLATFORM_APPLE)
+      set(POLLER "kqueue" CACHE STRING "Optimal POLLER for macOS" FORCE)
+      message(STATUS "[pylabhub-third-party] Setting POLLER to 'kqueue' for macOS.")
+    endif()
+    # For Windows, libzmq's internal CMake already handles intelligent defaults (e.g., epoll on modern MSVC).
+    # We will let its internal logic determine the best POLLER for Windows if not explicitly set by user.
   endif()
 
   # ---------------------------
@@ -207,6 +231,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   message(STATUS "  Features:")
   message(STATUS "    - ZMQ_BUILD_TESTS:   ${ZMQ_BUILD_TESTS}")
   message(STATUS "    - WITH_DOCS:         ${WITH_DOCS}")
+  message(STATUS "    - WITH_DOC:          ${WITH_DOC}")
   message(STATUS "    - ZMQ_BUILD_EXAMPLES:${ZMQ_BUILD_EXAMPLES}")
   message(STATUS "  Optional Transports:")
   message(STATUS "    - WITH_OPENPGM:      ${WITH_OPENPGM}")
@@ -214,6 +239,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   message(STATUS "    - WITH_VMCI:         ${WITH_VMCI}")
   message(STATUS "  Precompiled Headers:")
   message(STATUS "    - ENABLE_PRECOMPILED:${ENABLE_PRECOMPILED}")
+  message(STATUS "  Sanitizers (from top-level PYLABHUB_USE_SANITIZER):")
+  message(STATUS "    - ENABLE_ASAN:       ${ENABLE_ASAN}")
+  message(STATUS "    - ENABLE_TSAN:       ${ENABLE_TSAN}")
+  message(STATUS "    - ENABLE_UBSAN:      ${ENABLE_UBSAN}")
+  message(STATUS "  POLLER:              ${POLLER}")
   message(STATUS "=========================================================")
   message("")
 
