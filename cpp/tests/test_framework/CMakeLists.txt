@@ -29,6 +29,10 @@ target_link_libraries(pylabhub-test-framework
     pylabhub::third_party::gmock
 )
 
+if(PYLABHUB_SANITIZER_FLAG)
+  target_link_libraries(pylabhub-test-framework PRIVATE pylabhub::sanitizer_flags)
+endif()
+
 # Publicly expose this directory so consumers can find the helper headers.
 target_include_directories(pylabhub-test-framework PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
