@@ -542,7 +542,7 @@ void LifecycleManagerImpl::buildStaticGraph()
     {
         if (m_module_graph.count(def.name))
             throw std::runtime_error("Duplicate module name: " + def.name);
-        m_module_graph[def.name] = {def.name, def.startup, def.shutdown, def.dependencies};
+        m_module_graph[def.name] = {def.name, def.startup, def.shutdown, def.dependencies, 0, {}, ModuleStatus::Registered, false, DynamicModuleStatus::UNLOADED, 0};
     }
     for (auto &p : m_module_graph)
     {
