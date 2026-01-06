@@ -87,6 +87,32 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   snapshot_cache_var(ZMQ_BUILD_EXAMPLES)
   snapshot_cache_var(ZMQ_BUILD_TOOLS)
 
+  # Snapshot libzmq's sanitizer options
+  snapshot_cache_var(ENABLE_ASAN)
+  snapshot_cache_var(ENABLE_TSAN)
+  snapshot_cache_var(ENABLE_UBSAN)
+
+  # --- Translate top-level sanitizer choice to libzmq's specific options ---
+  set(ENABLE_ASAN OFF CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+  set(ENABLE_TSAN OFF CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+  set(ENABLE_UBSAN OFF CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+
+  # Convert to lowercase for case-insensitive comparison, consistent with FindSanitizerRuntime.cmake
+  string(TOLOWER "${PYLABHUB_USE_SANITIZER}" _pylabhub_sanitizer_lower)
+
+  if(_pylabhub_sanitizer_lower STREQUAL "address")
+    set(ENABLE_ASAN ON CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+    message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_ASAN.")
+  elseif(_pylabhub_sanitizer_lower STREQUAL "thread")
+    set(ENABLE_TSAN ON CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+    message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_TSAN.")
+  elseif(_pylabhub_sanitizer_lower STREQUAL "undefinedbehavior" OR _pylabhub_sanitizer_lower STREQUAL "undefined")
+    set(ENABLE_UBSAN ON CACHE BOOL "Wrapper: controlled by PYLABHUB_USE_SANITIZER" FORCE)
+    message(STATUS "[pylabhub-third-party] Enabling libzmq ENABLE_UBSAN.")
+  else()
+    message(STATUS "[pylabhub-third-party] No sanitizer explicitly enabled for libzmq.")
+  endif()
+
   # ---------------------------
   # Variant selection: static/shared
   # ---------------------------
@@ -279,6 +305,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   restore_cache_var(WITH_VMCI BOOL)
   restore_cache_var(ZMQ_BUILD_EXAMPLES BOOL)
   restore_cache_var(ZMQ_BUILD_TOOLS BOOL)
+
+  restore_cache_var(ENABLE_ASAN BOOL)
+  restore_cache_var(ENABLE_TSAN BOOL)
+  restore_cache_var(ENABLE_UBSAN BOOL)
 
   message(STATUS "[pylabhub-third-party] libzmq configuration complete.")
 else()
