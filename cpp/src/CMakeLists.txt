@@ -40,6 +40,11 @@ else()
   endif()
   set(BASIC_LIB_SCOPE PUBLIC)
 endif()
+
+if(PYLABHUB_SANITIZER_FLAG)
+  target_link_libraries(pylabhub-basic PRIVATE pylabhub::sanitizer_flags)
+endif()
+
 add_library(pylabhub::basic ALIAS pylabhub-basic)
 
 # The core library exposes the main include directory and depends on the utils library
@@ -72,6 +77,10 @@ endif()
 
 # The app links against the core library and the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
+
+if(PYLABHUB_SANITIZER_FLAG)
+  target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
+endif()
 
 # by default, we will include debug information in the final build
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
