@@ -18,6 +18,8 @@ This document provides design and usage notes for the core C++ utilities found i
 
 ## 2. Application Lifecycle Management (C++ Namespace: `pylabhub::utils`)
 
+The `LifecycleManager` is the **foundational component** of the pyLabHub C++ application's utility layer. It is designed to be self-sufficient and independent of other `pylabhub::utils` modules (such as `Logger` or `JsonConfig`) for its internal operations and error reporting. This ensures it can reliably manage the startup and shutdown of all other components, even before they are fully initialized or during their finalization. For internal diagnostics and debugging, `LifecycleManager` utilizes dedicated `PLH_DEBUG` messages and, for fatal errors, `PLH_PANIC`, both of which print directly to `stderr` without relying on any external logging infrastructure.
+
 The application lifecycle is managed by the `pylabhub::utils::LifecycleGuard` RAII object. It ensures that modules are started in the correct order based on their declared dependencies and shut down in the reverse order.
 
 ### How to Use
