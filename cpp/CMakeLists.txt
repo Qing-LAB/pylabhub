@@ -188,38 +188,7 @@ add_custom_target(create_staging_dirs
     COMMENT "Initializing staging directories"
 )
 
-# --- Stage MSVC ASan Runtime DLLs (if applicable) ---
-if(MSVC AND PYLABHUB_USE_SANITIZER STREQUAL "Address")
-    get_filename_component(MSVC_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
-
-    set(ASAN_DLL_DEBUG "clang_rt.asan_dbg_dynamic-x86_64.dll")
-    set(ASAN_DLL_RELEASE "clang_rt.asan_dynamic-x86_64.dll")
-
-    # Verify that the ASan DLLs exist in the compiler's directory before staging.
-    if(EXISTS "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}" AND EXISTS "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}")
-        add_custom_command(TARGET create_staging_dirs POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}"
-                "${PYLABHUB_STAGING_DIR}/bin/"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}"
-                "${PYLABHUB_STAGING_DIR}/bin/"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MSVC_COMPILER_DIR}/${ASAN_DLL_DEBUG}"
-                "${PYLABHUB_STAGING_DIR}/tests/"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MSVC_COMPILER_DIR}/${ASAN_DLL_RELEASE}"
-                "${PYLABHUB_STAGING_DIR}/tests/"
-            COMMENT "Staging MSVC ASan runtime DLLs"
-            VERBATIM
-        )
-        message(STATUS "Found and will stage MSVC ASan runtime DLLs from: ${MSVC_COMPILER_DIR}")
-    else()
-        message(WARNING "Could not find MSVC ASan runtime DLLs in the compiler directory: ${MSVC_COMPILER_DIR}. ASan-enabled tests may fail to run.")
-    endif()
-endif()
-
-# --- Stage Sanitizer Runtimes (non-MSVC) ---
+# --- Stage Sanitizer Runtimes ---
 include(FindSanitizerRuntime)
 
 add_custom_target(stage_all
@@ -249,7 +218,10 @@ add_custom_target(stage_core_artifacts)
 add_dependencies(stage_core_artifacts create_staging_dirs)
 add_dependencies(stage_all create_staging_dirs)
 
+message(STATUS "--------------------------------------------------------------")
 message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
+message(STATUS "--------------------------------------------------------------")
+message(STATUS "")
 
 # --- 3.3. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")

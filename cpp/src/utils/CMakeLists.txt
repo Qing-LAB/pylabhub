@@ -26,6 +26,10 @@ add_library(pylabhub::utils ALIAS pylabhub-utils)
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
 target_link_libraries(pylabhub-utils PUBLIC pylabhub-basic)
 
+if(PYLABHUB_SANITIZER_FLAG)
+  target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
+endif()
+
 # ==============================================================================
 # Symbol Export and Visibility Control
 #
