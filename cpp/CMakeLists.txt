@@ -230,6 +230,16 @@ add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
     COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
 )
+
+if(PYLABHUB_STAGE_ON_BUILD)
+  # wrapper that participates in the default ALL target and depends on stage_all
+  add_custom_target(stage_all_default ALL
+      COMMENT "Wrapper: ensure stage_all runs as part of the default build"
+      VERBATIM
+  )
+  add_dependencies(stage_all_default stage_all)
+endif()
+
 # This custom target serves as a hook for all core project artifacts (libraries,
 # executables) to attach their staging commands. It is a dependency of `stage_all`.
 add_custom_target(stage_core_artifacts)

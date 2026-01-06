@@ -108,8 +108,6 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
 {
     try
     {
-        if (!pImpl)
-            pImpl = std::make_unique<Impl>();
         {
             std::lock_guard<std::mutex> g(pImpl->initMutex);
 

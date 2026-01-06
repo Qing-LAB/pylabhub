@@ -30,6 +30,8 @@ option(FORCE_USE_CLANG_ON_APPLE "Force clang on macOS hosts to avoid conflicts w
 # the message being logged, and the destination of the log message.
 option(PYLABHUB_LOGGER_DEBUG "Enable debug logging in the pyLabHub logger" OFF)
 
+option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default build." ON)
+
 # --- Logger Compile-Time Level ---
 # Set the default compile-time log level. This controls which LOGGER_* macros
 # are compiled into the binary.

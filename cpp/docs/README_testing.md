@@ -16,7 +16,7 @@ To achieve this, we use a **multiple-executable model**, where each major librar
 
 The test suite is composed of several distinct **CMake targets** located in the `tests/` directory:
 
-*   `pylabhub-test-harness`: A **static library target** that contains shared C++ code for all test executables.
+*   `pylabhub-test-framework`: A **static library target** that contains shared C++ code for all test executables.
 *   `test_pylabhub_corelib`: An **executable target** containing all unit tests for the `pylabhub-basic` static library.
 *   `test_pylabhub_utils`: An **executable target** containing all tests for the `pylabhub-utils` shared library.
 
@@ -100,7 +100,7 @@ You can also run the executables directly with Google Test's `--gtest_filter`:
 
 ### Deadlock on Windows When Capturing `stderr`
 
-When writing tests, a common pattern is to capture standard output or standard error to verify what a function writes to the console. The `StringCapture` helper in `pylabhub-test-harness` is designed for this purpose.
+When writing tests, a common pattern is to capture standard output or standard error to verify what a function writes to the console. The `StringCapture` helper in `pylabhub-test-framework` is designed for this purpose.
 
 However, there is a significant gotcha on **Windows** when testing functions that use the `DbgHelp` library, such as `pylabhub::debug::print_stack_trace`.
 
