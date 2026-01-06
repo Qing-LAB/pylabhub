@@ -10,6 +10,7 @@ add_executable(test_pylabhub_utils
   test_jsonconfig.cpp
   test_logger.cpp
   test_lifecycle.cpp
+  test_lifecycle_dynamic.cpp
 
   # Worker implementations
   filelock_workers.cpp
