@@ -63,7 +63,8 @@ if(NOT MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
       set(_sanitizer_lib_path "")
     endif()
   else()
-      message(WARNING "Sanitizer '${PYLABHUB_USE_SANITIZER}' is not a recognized option for library staging.")
+      message(FATAL_ERROR "PYLABHUB_USE_SANITIZER is set to an unrecognized value: '${PYLABHUB_USE_SANITIZER}'. "
+                        "Accepted values are: None, Address, Thread, UndefinedBehavior, Undefined.")
   endif()
 
 
