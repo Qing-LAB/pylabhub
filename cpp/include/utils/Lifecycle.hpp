@@ -271,6 +271,49 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      */
     bool is_finalized();
 
+    /**
+     * @brief Registers a dynamic module with the lifecycle system.
+     * @details Dynamic modules can be registered at runtime after the static core of the
+     * application has been initialized. They can be loaded and unloaded on-demand.
+     * This call is only valid *after* `initialize()` has been called and *before*
+     * `finalize()` is called. It is thread-safe.
+     *
+     * @param module_def The fully configured module object, passed by rvalue-reference
+     *                   to indicate a transfer of ownership.
+     * @return `true` if the module was successfully registered, `false` if registration
+     *         failed (e.g., a module with the same name exists, or a dependency
+     *         is not found).
+     */
+    bool register_dynamic_module(ModuleDef &&module_def);
+
+    /**
+     * @brief Loads a dynamic module and its dependencies.
+     *
+     * This function is thread-safe and idempotent. If the module is already
+     * loaded, it will increment its internal reference count and return true.
+     * It recursively loads all dependencies. This function must not be called
+     * from within a startup or shutdown callback.
+     *
+     * @param name The name of the module to load.
+     * @return `true` if the module was loaded successfully, `false` otherwise.
+     */
+    bool load_module(const char *name);
+
+    /**
+     * @brief Unloads a dynamic module.
+     *
+     * This function is thread-safe and idempotent. It decrements the module's
+     * reference count. The module is only fully shut down if its reference
+     * count reaches zero. Unloading a module will recursively trigger an unload
+     * on its dependencies. This function must not be called from within a
+     * startup or shutdown callback.
+     *
+     * @param name The name of the module to unload.
+     * @return `true` if the module was considered for unloading, `false` if it
+     *         was not found or not loaded.
+     */
+    bool unload_module(const char *name);
+
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
     LifecycleManager &operator=(const LifecycleManager &) = delete;
@@ -332,6 +375,46 @@ inline void InitializeApp()
 inline void FinalizeApp()
 {
     LifecycleManager::instance().finalize();
+}
+
+/**
+ * @brief A convenience function to register a dynamic module.
+ * @details This function is a wrapper around `LifecycleManager::instance().register_dynamic_module()`.
+ * Dynamic modules can be registered at runtime after the static core of the
+ * application has been initialized.
+ * This call is only valid *after* `InitializeApp()` has been called.
+ * @see LifecycleManager::register_dynamic_module
+ *
+ * @param module_def A ModuleDef object, which will be moved into the manager.
+ * @return `true` on successful registration, `false` otherwise.
+ */
+inline bool RegisterDynamicModule(ModuleDef &&module_def)
+{
+    return LifecycleManager::instance().register_dynamic_module(std::move(module_def));
+}
+
+/**
+ * @brief A convenience function to load a dynamic module.
+ * @see LifecycleManager::load_module
+ *
+ * @param name The name of the module to load.
+ * @return `true` if the module was loaded successfully, `false` otherwise.
+ */
+inline bool LoadModule(const char *name)
+{
+    return LifecycleManager::instance().load_module(name);
+}
+
+/**
+ * @brief A convenience function to unload a dynamic module.
+ * @see LifecycleManager::unload_module
+ *
+ * @param name The name of the module to unload.
+ * @return `true` if the module was considered for unloading.
+ */
+inline bool UnloadModule(const char *name)
+{
+    return LifecycleManager::instance().unload_module(name);
 }
 
 class LifecycleGuard
