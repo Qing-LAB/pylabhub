@@ -167,11 +167,11 @@ void RotatingFileSink::rotate()
         open(base_path, m_use_flock);
         m_current_size_bytes = 0; // Reset size for the new file.
         auto formatted_message = format_message(LogMessage{
+            .timestamp = std::chrono::system_clock::now(),
+            .process_id = pylabhub::platform::get_pid(),
+            .thread_id = pylabhub::platform::get_native_thread_id(),
             .level = 5, // L_SYSTEM
             .body = pylabhub::format_tools::make_buffer("--- Log rotated successfully ---"),
-            .timestamp = std::chrono::system_clock::now(),
-            .thread_id = pylabhub::platform::get_native_thread_id(),
-            .process_id = pylabhub::platform::get_pid(),
         });
         BaseFileSink::write(formatted_message);
         BaseFileSink::flush();

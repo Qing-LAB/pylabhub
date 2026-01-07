@@ -26,22 +26,7 @@ using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
 
-// Utility: escape any regex metacharacters in `s`
-static std::string RegexEscape(const std::string &s)
-{
-    static const std::string meta = R"(\.^$|()[]*+?{})"; // set of regex metachars
-    std::string out;
-    out.reserve(s.size() * 2);
-    for (char c : s)
-    {
-        if (meta.find(c) != std::string::npos)
-        {
-            out.push_back('\\'); // escape it
-        }
-        out.push_back(c);
-    }
-    return out;
-}
+
 
 // test_platform.cpp
 #include <gtest/gtest.h>
