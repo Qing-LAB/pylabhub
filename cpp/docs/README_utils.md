@@ -199,6 +199,8 @@ The `pylabhub::utils::JsonConfig` class provides a robust, process-safe interfac
     *   `with_json_write(callback, &ec, timeout)`: Provides safe, write access. `timeout` is a `std::optional<std::chrono::milliseconds>` which defaults to `std::nullopt`, resulting in a blocking write. Provide a duration for a timed write.
 
 *   **Basic Usage**:
+    The `with_json_...` methods are the safest way to interact with the configuration, as they handle locking and unlocking automatically. Overloads are provided for convenience when an error code is not needed.
+
     ```cpp
     #include "utils/JsonConfig.hpp"
     #include <string>
@@ -207,23 +209,29 @@ The `pylabhub::utils::JsonConfig` class provides a robust, process-safe interfac
 
     void access_config(pylabhub::utils::JsonConfig& cfg) {
         using namespace std::chrono_literals;
-        std::error_code ec;
 
-        // Read a value
+        // Read a value using the simple overload (no error code).
         std::string name;
-        cfg.with_json_read([&](const nlohmann::json& j) {
+        if (cfg.with_json_read([&](const nlohmann::json& j) {
             name = j.value("name", "default_name");
-        }, &ec);
+        })) {
+            // Read was successful
+        }
 
-        // Write a value using the default blocking behavior
-        cfg.with_json_write([&](nlohmann::json& j) {
-            j["last_access_time"] = std::time(nullptr);
-        }, &ec);
-
-        // Write a value with a 100ms timeout
+        // Write a value with a 100ms timeout.
         cfg.with_json_write([&](nlohmann::json& j) {
             j["attempt_count"] = j.value("attempt_count", 0) + 1;
-        }, &ec, 100ms);
+        }, 100ms); // Uses the new overload without ec, with timeout
+
+        // For cases where you need both detailed error information AND a timeout,
+        // use the original, most explicit overload.
+        std::error_code ec;
+        cfg.with_json_write([&](nlohmann::json& j) {
+            j["last_access_time"] = std::time(nullptr);
+        }, &ec, 100ms); // Providing both ec and timeout
+        if (ec) {
+            // Handle the error...
+        }
     }
     ```
 
@@ -236,8 +244,9 @@ The `pylabhub::utils::FileLock` class is a cross-platform, RAII-style utility fo
     *   `FileLock(path, type, timeout)`: RAII constructor that acquires a lock, blocking up to a specified `timeout`.
     *   `valid()`: Checks if the lock was successfully acquired.
     *   `get_expected_lock_fullname_for(path, type)`: A static method to predict the lock file's name.
+    *   `try_lock(path, type, ...)`: A static factory method that returns an `std::optional<FileLock>`.
 
-*   **Basic Usage**:
+*   **Basic Usage (Constructor-based)**:
     ```cpp
     #include "utils/FileLock.hpp"
     #include <filesystem>
@@ -258,5 +267,28 @@ The `pylabhub::utils::FileLock` class is a cross-platform, RAII-style utility fo
         // ... perform safe file operations here ...
 
     } // Lock is automatically released here when 'lock' goes out of scope.
+    ```
+
+*   **Modern Usage (`try_lock` Pattern)**:
+    The static `try_lock` methods provide a more expressive, modern C++ interface.
+
+    ```cpp
+    #include "utils/FileLock.hpp"
+    #include <filesystem>
+    #include <chrono>
+
+    void safer_file_write(const std::filesystem::path& resource_path) {
+        using namespace std::chrono_literals;
+
+        // Attempt to acquire the lock with a 100ms timeout.
+        if (auto lock = pylabhub::utils::FileLock::try_lock(resource_path, pylabhub::utils::ResourceType::File, 100ms)) {
+            // Success! The lock is valid and its scope is confined to this block.
+            // ... perform safe file operations here ...
+
+        } else {
+            // Handle lock failure (timed out or another error).
+        }
+
+    } // If acquired, the lock is automatically released here.
     ```
 
