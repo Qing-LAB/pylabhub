@@ -30,7 +30,7 @@ pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
 target_link_libraries(pylabhub-utils PUBLIC pylabhub-basic)
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
 endif()
 
