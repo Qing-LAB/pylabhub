@@ -42,7 +42,7 @@ else()
   set(BASIC_LIB_SCOPE PUBLIC)
 endif()
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-basic PRIVATE pylabhub::sanitizer_flags)
 endif()
 
@@ -81,7 +81,7 @@ endif()
 # The app links against the core library and the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
 endif()
 
@@ -124,7 +124,7 @@ file(GLOB_RECURSE CORE_HEADER_FILES_REL
 # exclude the utils subdirectories (relative paths). Adjust regex anchors as needed.
 # This removes any file whose relative path starts with "utils/" or "IgorXOP/".
 list(FILTER CORE_HEADER_FILES_REL EXCLUDE REGEX "^utils/")
-message(STASUS "  ** header files found for basic library: ${CORE_HEADER_FILES_REL}")
+message(STATUS "  ** header files found for basic library: ${CORE_HEADER_FILES_REL}")
 
 # Convert to absolute paths for install(FILES ...)
 set(CORE_HEADER_FILES "")
