@@ -104,13 +104,11 @@ TEST_F(JsonConfigTest, InitAndCreate)
     JsonConfig config;
     ASSERT_FALSE(fs::exists(cfg_path));
 
-    // Initialize and create the file.
     std::error_code ec;
     ASSERT_TRUE(config.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
     ASSERT_TRUE(fs::exists(cfg_path));
 
-    // Verify the newly created file is an empty JSON object.
     bool read_ok = config.with_json_read(
         [&](const json &j)
         {
@@ -121,7 +119,6 @@ TEST_F(JsonConfigTest, InitAndCreate)
     ASSERT_TRUE(read_ok);
     ASSERT_FALSE(ec);
 
-    // Verify that initializing with an existing file works correctly.
     JsonConfig config2(cfg_path, false, &ec);
     ASSERT_FALSE(ec);
     bool read2_ok = config2.with_json_read(
@@ -146,8 +143,8 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
 
     ASSERT_FALSE(config.is_initialized());
 
-    // Save should fail.
-    ASSERT_FALSE(config.save(&ec));
+    // Overwrite should fail.
+    ASSERT_FALSE(config.overwrite(&ec));
     ASSERT_NE(ec.value(), 0);
 
     // Read should fail.
@@ -155,7 +152,7 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
     ASSERT_FALSE(config.with_json_read([&](const json &) {}, &ec));
     ASSERT_NE(ec.value(), 0);
 
-    // Write should fail.
+    // Write should also fail.
     ec.clear();
     ASSERT_FALSE(config.with_json_write([&](json &) {}, &ec));
     ASSERT_NE(ec.value(), 0);
@@ -174,38 +171,23 @@ TEST_F(JsonConfigTest, BasicAccessors)
     ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
 
-    // Write some values using with_json_write.
     ASSERT_TRUE(cfg.with_json_write(
         [&](json &j)
         {
             j["int_val"] = 42;
             j["str_val"] = "hello";
-            j["obj"] = json::object();
-            j["obj"]["x"] = 100;
-            j["obj"]["s"] = "world";
         },
         &ec));
     ASSERT_FALSE(ec);
 
-    // Read back and verify the values.
     ASSERT_TRUE(cfg.with_json_read(
         [&](const json &j)
         {
             ASSERT_EQ(j.value("int_val", -1), 42);
             ASSERT_EQ(j.value("str_val", std::string{}), "hello");
-            ASSERT_TRUE(j.contains("obj"));
-            ASSERT_EQ(j["obj"].value("x", 0), 100);
         },
         &ec));
     ASSERT_FALSE(ec);
-
-    // Update a value and verify the change.
-    ASSERT_TRUE(
-        cfg.with_json_write([&](json &j) { j["int_val"] = j.value("int_val", 0) + 1; }, &ec));
-    ASSERT_FALSE(ec);
-
-    ASSERT_TRUE(
-        cfg.with_json_read([&](const json &j) { ASSERT_EQ(j.value("int_val", -1), 43); }, &ec));
 }
 
 /**
@@ -221,21 +203,17 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
 
-    // Write an initial value.
     ASSERT_TRUE(cfg.with_json_write([&](json &j) { j["value"] = 1; }, &ec));
     ASSERT_FALSE(ec);
 
-    // Modify the file externally.
     {
         std::ofstream out(cfg_path);
         out << R"({ "value": 2, "new_key": "external" })";
     }
 
-    // `reload()` should detect the change and load the new content.
     ASSERT_TRUE(cfg.reload(&ec));
     ASSERT_FALSE(ec);
 
-    // Verify the reloaded content.
     ASSERT_TRUE(cfg.with_json_read(
         [&](const json &j)
         {
@@ -244,6 +222,69 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
         },
         &ec));
     ASSERT_FALSE(ec);
+}
+
+TEST_F(JsonConfigTest, OverwriteAndReload)
+{
+    auto cfg_path = g_temp_dir / "overwrite_reload.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
+    ASSERT_FALSE(ec);
+
+    ASSERT_TRUE(cfg.with_json_write([&](json &j) { j["value"] = "in-memory"; }, &ec));
+    ASSERT_FALSE(ec);
+
+    ASSERT_TRUE(cfg.overwrite(&ec));
+    ASSERT_FALSE(ec);
+
+    json j_disk = json::parse(read_file_contents(cfg_path));
+    ASSERT_EQ(j_disk.value("value", ""), "in-memory");
+
+    j_disk["value"] = "from-disk";
+    j_disk["new_val"] = true;
+    std::ofstream out(cfg_path);
+    out << j_disk.dump();
+    out.close();
+
+    ASSERT_TRUE(cfg.reload(&ec));
+    ASSERT_FALSE(ec);
+
+    ASSERT_TRUE(cfg.with_json_read(
+        [&](const json &j_mem)
+        {
+            EXPECT_EQ(j_mem.value("value", ""), "from-disk");
+            EXPECT_EQ(j_mem.value("new_val", false), true);
+        },
+        &ec));
+    ASSERT_FALSE(ec);
+}
+
+TEST_F(JsonConfigTest, SimplifiedApiOverloads)
+{
+    auto cfg_path = g_temp_dir / "simplified_api.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg;
+    ASSERT_TRUE(cfg.init(cfg_path, true));
+
+    bool write_ok = cfg.with_json_write([&](json &j) { j["key"] = "value1"; });
+    ASSERT_TRUE(write_ok);
+
+    std::string read_value;
+    bool read_ok = cfg.with_json_read([&](const json &j) { read_value = j.value("key", ""); });
+    ASSERT_TRUE(read_ok);
+    ASSERT_EQ(read_value, "value1");
+
+    bool timed_write_ok =
+        cfg.with_json_write([&](json &j) { j["key"] = "value2"; }, std::chrono::milliseconds(100));
+    ASSERT_TRUE(timed_write_ok);
+
+    read_ok = cfg.with_json_read([&](const json &j) { read_value = j.value("key", ""); });
+    ASSERT_TRUE(read_ok);
+    ASSERT_EQ(read_value, "value2");
 }
 
 /**

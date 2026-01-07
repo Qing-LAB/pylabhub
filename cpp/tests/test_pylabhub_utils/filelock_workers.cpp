@@ -364,5 +364,21 @@ int parent_child_block(const std::string &resource_path_str)
         "filelock::parent_child_block", FileLock::GetLifecycleModule(),
         Logger::GetLifecycleModule());
 }
+
+int try_lock_nonblocking(const std::string &resource_path_str)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            // This worker is spawned by a test that already holds the lock.
+            // The non-blocking try_lock must fail and return nullopt.
+            auto lock_opt =
+                FileLock::try_lock(resource_path_str, ResourceType::File, LockMode::NonBlocking);
+            ASSERT_FALSE(lock_opt.has_value());
+        },
+        "filelock::try_lock_nonblocking", FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule());
+}
+
 } // namespace filelock
 } // namespace pylabhub::tests::worker

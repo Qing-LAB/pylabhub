@@ -29,6 +29,7 @@ if(NOT CORE_SOURCES)
   message(STATUS "No sources found for pylabhub-basic. Creating as an INTERFACE library placeholder.")
 else()
   add_library(pylabhub-basic STATIC ${CORE_SOURCES})
+  pylabhub_enable_clang_tidy_for_target(pylabhub-basic)
   target_compile_features(pylabhub-basic PRIVATE cxx_std_20)
   # Check if we are using MSVC
   if(MSVC)
@@ -63,6 +64,8 @@ target_link_libraries(pylabhub-basic
 # Define the main application executable.
 add_executable(pylabhub-hubshell hubshell.cpp)
 add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
+
+pylabhub_enable_clang_tidy_for_target(pylabhub-hubshell)
 target_compile_features(pylabhub-hubshell PRIVATE cxx_std_20)
 if(MSVC)
   target_compile_options(pylabhub-hubshell PRIVATE /Zc:preprocessor)

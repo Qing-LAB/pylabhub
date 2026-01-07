@@ -205,6 +205,50 @@ class PYLABHUB_UTILS_EXPORT FileLock
     explicit FileLock(const std::filesystem::path &path, ResourceType type,
                       std::chrono::milliseconds timeout) noexcept;
 
+    /**
+     * @brief Attempts to acquire a lock, returning an optional FileLock.
+     *
+     * This static factory method provides a modern C++ interface for lock
+     * acquisition. Instead of constructing an object and checking `valid()`, this
+     * method returns an `std::optional<FileLock>`, which contains a value only on
+     * success.
+     *
+     * @param path The path to the resource to be locked.
+     * @param type The type of resource (`File` or `Directory`).
+     * @param mode The locking mode.
+     *             - `LockMode::Blocking` (Default): Waits indefinitely until the
+     *               lock is acquired. Returns `std::nullopt` only on a
+     *               non-recoverable error (e.g., invalid arguments).
+     *             - `LockMode::NonBlocking`: Returns immediately. Returns a
+     *               `FileLock` if acquired, otherwise `std::nullopt`.
+     * @return An `std::optional<FileLock>` containing a valid lock on success.
+     *
+     * @code
+     * if (auto lock = FileLock::try_lock(path, ResourceType::File, LockMode::NonBlocking)) {
+     *     // Safely use the lock, which is valid and scoped to this block.
+     *     // lock->get_locked_resource_path()...
+     * } else {
+     *     // Handle lock failure (e.g., already locked by another process).
+     * }
+     * @endcode
+     */
+    [[nodiscard]] static std::optional<FileLock>
+    try_lock(const std::filesystem::path &path, ResourceType type,
+             LockMode mode = LockMode::Blocking) noexcept;
+
+    /**
+     * @brief Attempts to acquire a lock within a given time.
+     *
+     * @param path The path to the resource to be locked.
+     * @param type The type of resource (`File` or `Directory`).
+     * @param timeout The maximum duration to wait for the lock.
+     * @return An `std::optional<FileLock>` containing a valid lock on success,
+     *         or `std::nullopt` if the lock was not acquired within the timeout.
+     */
+    [[nodiscard]] static std::optional<FileLock>
+    try_lock(const std::filesystem::path &path, ResourceType type,
+             std::chrono::milliseconds timeout) noexcept;
+
     /// @brief Move constructor. Transfers ownership of an existing lock.
     FileLock(FileLock &&other) noexcept;
 
@@ -266,6 +310,9 @@ class PYLABHUB_UTILS_EXPORT FileLock
     std::optional<std::filesystem::path> get_canonical_lock_file_path() const noexcept;
 
   private:
+    // Private constructor for factory functions
+    FileLock() noexcept;
+
     // The custom deleter for the Pimpl class. This is the key to achieving
     // correct RAII behavior with the Pimpl idiom. Its implementation in the
     // .cpp file contains the lock release logic.
