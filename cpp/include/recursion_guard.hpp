@@ -21,16 +21,12 @@ namespace pylabhub::basics
 // Alias for the underlying stack container so intent is clearer.
 using recursion_stack_t = std::vector<const void *>;
 
-// C++17 inline thread-local variable ensures a single instance across TUs
-// (subject to the usual inlining/ODR semantics). This is preferable to a
-// function-local static in header-only code that may be included into both
-// shared libs and executables.
-inline thread_local recursion_stack_t g_recursion_stack;
-
-// Helper function to get the thread-local stack. Defined as a function-local
-// static to ensure it exists once per thread.
+// Helper function to get the thread-local stack. The stack is defined as a
+// function-local static to ensure it is initialized only once per thread
+// in a thread-safe manner (guaranteed by C++11 and later).
 inline recursion_stack_t &get_recursion_stack() noexcept
 {
+    static thread_local recursion_stack_t g_recursion_stack;
     return g_recursion_stack;
 }
 

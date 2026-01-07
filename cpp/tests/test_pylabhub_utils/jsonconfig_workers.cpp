@@ -1,4 +1,4 @@
-// tests/test_harness/jsonconfig_workers.cpp
+// tests/test_pylabhub_utils/jsonconfig_workers.cpp
 /**
  * @file jsonconfig_workers.cpp
  * @brief Implements the worker function for JsonConfig multi-process tests.

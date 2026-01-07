@@ -169,3 +169,37 @@ if(MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
     message(WARNING "Sanitizer '${PYLABHUB_USE_SANITIZER}' is not supported with MSVC in this build script.")
   endif()
 endif()
+
+# ===========================================================================
+# Clang-Tidy Static Analysis Integration
+#
+# This section handles the detection of clang-tidy and provides a helper
+# function to apply it to our internal targets.
+# ===========================================================================
+if(PYLABHUB_ENABLE_CLANG_TIDY)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    find_program(PYLABHUB_CLANG_TIDY_EXE clang-tidy)
+    if(PYLABHUB_CLANG_TIDY_EXE)
+      message(STATUS "Clang-Tidy found: ${PYLABHUB_CLANG_TIDY_EXE}. Static analysis is active.")
+      # This is required for clang-tidy to work correctly with the build system.
+      set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+    else()
+      message(STATUS "Clang-Tidy not found. Skipping static analysis for this build.")
+      # Disable the option for this run only, without changing the user's preference in the cache.
+      set(PYLABHUB_ENABLE_CLANG_TIDY OFF)
+    endif()
+  else()
+    message(WARNING "PYLABHUB_ENABLE_CLANG_TIDY is ON, but the current compiler is not Clang-based. Skipping static analysis.")
+    set(PYLABHUB_ENABLE_CLANG_TIDY OFF)
+  endif()
+endif()
+
+function(pylabhub_enable_clang_tidy_for_target TARGET_NAME)
+  # The detection logic has already run. If PYLABHUB_ENABLE_CLANG_TIDY is still ON,
+  # it means clang-tidy was found and is ready to use.
+  if(PYLABHUB_ENABLE_CLANG_TIDY)
+    if(TARGET ${TARGET_NAME})
+      set_target_properties(${TARGET_NAME} PROPERTIES CXX_CLANG_TIDY "${PYLABHUB_CLANG_TIDY_EXE}")
+    endif()
+  endif()
+endfunction()

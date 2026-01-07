@@ -391,5 +391,128 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     return 0;
 }
 
+// Worker to test inter-process locking with flock.
+int test_inter_process_flock(const std::string &log_path, const std::string &worker_id,
+                             int msg_count)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            Logger &L = Logger::instance();
+            L.set_log_sink_messages_enabled(false);
+            L.set_logfile(log_path, true); // use_flock = true
+            L.set_level(Logger::Level::L_INFO);
+
+            for (int i = 0; i < msg_count; ++i)
+            {
+                // Create a long, unique, and verifiable payload.
+                std::string payload = fmt::format(
+                    "WORKER_ID={} MSG_NUM={} PAYLOAD=[ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]",
+                    worker_id, i);
+                LOGGER_INFO("{}", payload);
+            }
+            L.flush();
+        },
+        "logger::test_inter_process_flock", Logger::GetLifecycleModule());
+}
+
+// Worker to test the RotatingFileSink functionality.
+int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_file_size_bytes,
+                            size_t max_backup_files)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            fs::path base_log_path(base_log_path_str);
+
+            Logger &L = Logger::instance();
+            // L.set_log_sink_messages_enabled(false); // Disable sink switch messages for this test
+            fmt::print("Setting up rotating file sink: base_path='{}', max_size={} bytes, "
+                       "max_backups={}\n",
+                       base_log_path.string(), max_file_size_bytes, max_backup_files);
+            std::error_code ec;
+            bool success = L.set_rotating_logfile(base_log_path, max_file_size_bytes,
+                                                  max_backup_files, false, ec);
+            fmt::print("Rotating file sink setup success={}, ec={}\n", success, ec.message());
+
+            ASSERT_TRUE(success);
+            ASSERT_FALSE(ec);
+
+            const int total_messages = 20;
+            for (int i = 0; i < total_messages; ++i)
+            {
+                // Each message is ~100 bytes, so rotation should happen every ~2-3 messages.
+                LOGGER_INFO("ROTATION-TEST-MSG-{:03} {}", i, std::string(50, 'X'));
+            }
+            L.flush();
+            fmt::print("Finished logging {} messages for rotation test.\n", total_messages);
+
+            // --- Verification Phase ---
+            auto backup1_path = fs::path(base_log_path.string() + ".1");
+            auto backup2_path = fs::path(base_log_path.string() + ".2");
+            auto backup3_path = fs::path(base_log_path.string() + ".3");
+
+            // Check that the correct files exist
+            EXPECT_TRUE(fs::exists(base_log_path));
+            EXPECT_TRUE(fs::exists(backup1_path));
+            EXPECT_TRUE(fs::exists(backup2_path));
+            EXPECT_FALSE(fs::exists(backup3_path)); // Should have been rotated out
+
+            // Concatenate all log files in the correct order (oldest to newest)
+            std::string full_log_contents;
+            std::string content_buffer;
+
+            // Order: backup 2 (oldest) -> backup 1 -> base_log_path (newest)
+            if (read_file_contents(backup2_path.string(), content_buffer))
+            {
+                full_log_contents += content_buffer;
+                fmt::print("Read backup file: {}\n", backup2_path.string());
+            }
+            if (read_file_contents(backup1_path.string(), content_buffer))
+            {
+                full_log_contents += content_buffer;
+                fmt::print("Read backup file: {}\n", backup1_path.string());
+            }
+            if (read_file_contents(base_log_path.string(), content_buffer))
+            {
+                full_log_contents += content_buffer;
+                fmt::print("Read base log file: {}\n", base_log_path.string());
+            }
+            fmt::print("Total concatenated log size: {} bytes\n", full_log_contents.size());
+            fmt::print("Full log contents:\n{}\n", full_log_contents);
+
+            // Verify that only latest messages are present but should not have any gaps.
+            bool first_found = false;
+            for (int i = 0; i < total_messages; ++i)
+            {
+                std::string expected_payload = fmt::format("ROTATION-TEST-MSG-{:03}", i);
+                fmt::print("Verifying presence of message: {}\n", expected_payload);
+                if (!first_found)
+                {
+                    if (full_log_contents.find(expected_payload) != std::string::npos)
+                    {
+                        first_found = true;
+                        fmt::print("Message {} found.\n", expected_payload);
+                        fmt::print("Continuing to check remaining messages. No more message should "
+                                   "be missing.\n");
+                    }
+                    else
+                    {
+                        fmt::print("Message {} not found yet.\n", expected_payload);
+                        continue;
+                    }
+                }
+                else
+                {
+                    ASSERT_NE(full_log_contents.find(expected_payload), std::string::npos)
+                        << "Missing message " << i << " in final concatenated log.";
+                }
+            }
+            ASSERT_LE(count_lines(full_log_contents), total_messages);
+            SUCCEED() << "Rotating file sink test completed successfully.";
+        },
+        "logger::test_rotating_file_sink", Logger::GetLifecycleModule());
+}
+
 } // namespace logger
 } // namespace pylabhub::tests::worker

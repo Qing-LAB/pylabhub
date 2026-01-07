@@ -290,6 +290,53 @@ std::optional<std::filesystem::path> FileLock::get_canonical_lock_file_path() co
     return std::nullopt;
 }
 
+// Private constructor for factory
+FileLock::FileLock() noexcept : pImpl(nullptr) {}
+
+std::optional<FileLock> FileLock::try_lock(const std::filesystem::path &path, ResourceType type,
+                                           LockMode mode) noexcept
+{
+    if (!lifecycle_initialized())
+    {
+        // Cannot PLH_PANIC here, as this function is designed to be non-fatal.
+        // Returning nullopt is the correct failure mode.
+        return std::nullopt;
+    }
+
+    FileLock lock; // Use private constructor
+    lock.pImpl.reset(new FileLockImpl);
+    lock.pImpl->path = path;
+
+    open_and_lock(lock.pImpl.get(), type, mode, std::nullopt);
+
+    if (lock.valid())
+    {
+        return {std::move(lock)};
+    }
+    return std::nullopt;
+}
+
+std::optional<FileLock> FileLock::try_lock(const std::filesystem::path &path, ResourceType type,
+                                           std::chrono::milliseconds timeout) noexcept
+{
+    if (!lifecycle_initialized())
+    {
+        return std::nullopt;
+    }
+
+    FileLock lock; // Use private constructor
+    lock.pImpl.reset(new FileLockImpl);
+    lock.pImpl->path = path;
+
+    open_and_lock(lock.pImpl.get(), type, LockMode::Blocking, timeout);
+
+    if (lock.valid())
+    {
+        return {std::move(lock)};
+    }
+    return std::nullopt;
+}
+
 // Private Helpers
 static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                           std::optional<std::chrono::milliseconds> timeout)
