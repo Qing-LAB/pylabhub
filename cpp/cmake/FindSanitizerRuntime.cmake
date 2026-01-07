@@ -41,7 +41,7 @@ if(NOT MSVC AND NOT _san_name_lower STREQUAL "none")
     set(SANITIZER_FLAGS "-fsanitize=address")
   elseif(_san_name_lower STREQUAL "thread")
     set(SANITIZER_FLAGS "-fsanitize=thread")
-  elseif(_san_name_lower STREQUAL "undefinedbehavior" OR _lower_sanitizer_name STREQUAL "undefined")
+  elseif(_san_name_lower STREQUAL "undefinedbehavior" OR _san_name_lower STREQUAL "undefined")
     set(SANITIZER_FLAGS "-fsanitize=undefined")
   endif()
 
@@ -181,7 +181,7 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(SANITIZER_FLAGS)  
-  set(PYLABHUG_SANITIZER_FLAGS "${SANITIZER_FLAGS}" CACHE STRING "Sanitizer flags" FORCE)
+  set(PYLABHUB_SANITIZER_FLAGS "${SANITIZER_FLAGS}" CACHE STRING "Sanitizer flags" FORCE)
 
   # Append to C/CXX flags (cache so subdirectories and external modules can read them)
   set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS}"  CACHE STRING "C flags (including sanitizer)" FORCE)
