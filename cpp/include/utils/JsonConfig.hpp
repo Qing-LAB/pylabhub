@@ -67,7 +67,6 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @brief Returns a ModuleDef for JsonConfig to be used with the LifecycleManager.
      */
     static ModuleDef GetLifecycleModule();
-
     /**
      * @brief Checks if the JsonConfig module has been initialized by the LifecycleManager.
      */
@@ -88,15 +87,33 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @return true if init() has been called successfully, false otherwise.
      */
     bool is_initialized() const noexcept;
-
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;
-    bool reload(std::error_code *ec = nullptr) noexcept;
-    bool save(std::error_code *ec = nullptr) noexcept;
+    /**
+     * @brief Reloads the configuration from the file on disk, overwriting
+     *        any in-memory changes that have not been saved.
+     * @param ec Optional: An error_code to capture any errors.
+     * @return true on success, false on failure.
+     */
+    bool reload(std::error_code *ec) noexcept;
+    /**
+     * @brief Overwrites the configuration file on disk with the current in-memory state.
+     *        This operation is atomic: it writes to a temporary file and then renames it.
+     * @param ec Optional: An error_code to capture any errors.
+     * @return true on success, false on failure.
+     */
+    bool overwrite(std::error_code *ec) noexcept;
 
     std::filesystem::path config_path() const noexcept;
 
     // ----------------- Lightweight guard types (Pimpl handles) -----------------
+    /**
+     * @brief RAII guard for read access to the JSON configuration.
+     *
+     * This object represents an active read lock on the configuration data.
+     * The actual JSON data can be accessed via the `json()` method.
+     * It is non-copyable but movable.
+     */
     class PYLABHUB_UTILS_EXPORT ReadLock
     {
       public:
@@ -114,6 +131,14 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         friend class JsonConfig;
     };
 
+    /**
+     * @brief RAII guard for write access to the JSON configuration.
+     *
+     * This object represents an active write lock on the configuration data.
+     * The actual JSON data can be accessed via the `json()` method.
+     * Changes made through this object can be committed to disk via `commit()`.
+     * It is non-copyable but movable.
+     */
     class PYLABHUB_UTILS_EXPORT WriteLock
     {
       public:
@@ -132,8 +157,10 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         friend class JsonConfig;
     };
 
-    // ----------------- Template convenience wrappers -----------------
-    template <typename F> bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
+    // ----------------- Template Method Implementations -----------------
+    template <typename F>
+    bool with_json_read(F &&fn, std::error_code *ec,
+                        std::optional<std::chrono::milliseconds> timeout) const noexcept
     {
         static_assert(
             std::is_invocable_v<F, const nlohmann::json &>,
@@ -148,11 +175,21 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         }
         basics::RecursionGuard guard(this);
 
-        FileLock fLock(config_path(), ResourceType::File, LockMode::Blocking);
-        if (!fLock.valid())
+        std::unique_ptr<FileLock> fLock;
+        if (timeout.has_value())
+        {
+            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
+        }
+        else
+        {
+            fLock =
+                std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
+        }
+
+        if (!fLock || !fLock->valid())
         {
             if (ec)
-                *ec = fLock.error_code();
+                *ec = fLock->error_code();
             return false;
         }
 
@@ -189,8 +226,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     }
 
     template <typename F>
-    bool with_json_write(F &&fn, std::error_code *ec = nullptr,
-                         std::optional<std::chrono::milliseconds> timeout = std::nullopt) noexcept
+    bool with_json_write(F &&fn, std::error_code *ec,
+                         std::optional<std::chrono::milliseconds> timeout) noexcept
     {
         static_assert(std::is_invocable_v<F, nlohmann::json &>,
                       "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
@@ -207,12 +244,10 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         std::unique_ptr<FileLock> fLock;
         if (timeout.has_value())
         {
-            // A timeout was provided, use the timed lock constructor.
             fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
         }
         else
         {
-            // No timeout was provided, use the blocking lock constructor.
             fLock =
                 std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
         }
@@ -255,21 +290,55 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         }
     }
 
+    // --- Convenience Overloads ---
+
+    template <typename F> bool with_json_read(F &&fn) const noexcept
+    {
+        return with_json_read(std::forward<F>(fn), nullptr, std::nullopt);
+    }
+
+    template <typename F> bool with_json_read(F &&fn, std::error_code *ec) const noexcept
+    {
+        return with_json_read(std::forward<F>(fn), ec, std::nullopt);
+    }
+
+    template <typename F>
+    bool with_json_read(F &&fn, std::optional<std::chrono::milliseconds> timeout) const noexcept
+    {
+        return with_json_read(std::forward<F>(fn), nullptr, timeout);
+    }
+
+    template <typename F> bool with_json_write(F &&fn, std::error_code *ec) noexcept
+    {
+        return with_json_write(std::forward<F>(fn), ec, std::nullopt);
+    }
+
+    template <typename F> bool with_json_write(F &&fn) noexcept
+    {
+        return with_json_write(std::forward<F>(fn), nullptr, std::nullopt);
+    }
+
+    template <typename F>
+    bool with_json_write(F &&fn, std::optional<std::chrono::milliseconds> timeout) noexcept
+    {
+        return with_json_write(std::forward<F>(fn), nullptr, timeout);
+    }
+
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 
     // Non-template factory methods implemented in .cpp — they acquire locks and return guard
     // objects.
-    std::optional<ReadLock> lock_for_read(std::error_code *ec = nullptr) const noexcept;
-    std::optional<WriteLock> lock_for_write(std::error_code *ec = nullptr) noexcept;
+    std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
+    std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
 
     bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
     bool private_commit_to_disk_unsafe(std::error_code *ec) noexcept;
 
-    // helper used internally (defined in cpp)
+    // Helper used internally (defined in cpp) for atomic file write operations.
     static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
-                                  std::error_code *ec = nullptr) noexcept;
+                                  std::error_code *ec) noexcept;
 };
 
 #if defined(_MSC_VER)

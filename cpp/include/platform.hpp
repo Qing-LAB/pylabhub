@@ -86,7 +86,7 @@ namespace pylabhub::platform
 
 // keep your other forward declarations...
 uint64_t get_native_thread_id() noexcept;
-long get_pid();
+uint64_t get_pid();
 std::string get_executable_name(bool include_path = false) noexcept;
 
 } // namespace pylabhub::platform
