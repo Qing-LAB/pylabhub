@@ -2,6 +2,7 @@
 
 // Project-specific Worker Headers
 #include "filelock_workers.h"
+#include "fmt/core.h"
 #include "jsonconfig_workers.h"
 #include "lifecycle_workers.h"
 #include "logger_workers.h"
@@ -29,6 +30,7 @@ static int dispatch_utils_workers(int argc, char **argv)
     // The return value of the worker function becomes the exit code of the process.
     if (module == "filelock")
     {
+        fmt::print("Dispatching to filelock worker scenario: '{}'\n", scenario);
         if (scenario == "nonblocking_acquire" && argc > 2)
         {
             return pylabhub::tests::worker::filelock::nonblocking_acquire(argv[2]);
@@ -70,9 +72,14 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::filelock::test_multithreaded_non_blocking(argv[2]);
         }
+        if (scenario == "try_lock_nonblocking" && argc > 2)
+        {
+            return pylabhub::tests::worker::filelock::try_lock_nonblocking(argv[2]);
+        }
     }
     else if (module == "jsonconfig")
     {
+        fmt::print("Dispatching to jsonconfig worker scenario: '{}'\n", scenario);
         if (scenario == "write_id" && argc > 3)
         {
             return pylabhub::tests::worker::jsonconfig::write_id(argv[2], argv[3]);
@@ -80,6 +87,8 @@ static int dispatch_utils_workers(int argc, char **argv)
     }
     else if (module == "lifecycle")
     {
+        fmt::print("Dispatching to lifecycle worker scenario: '{}'\n", scenario);
+        // --- Static Lifecycle Tests ---
         if (scenario == "test_multiple_guards_warning")
         {
             return pylabhub::tests::worker::lifecycle::test_multiple_guards_warning();
@@ -155,6 +164,7 @@ static int dispatch_utils_workers(int argc, char **argv)
     }
     else if (module == "logger")
     {
+        fmt::print("Dispatching to logger worker scenario: '{}'\n", scenario);
         if (scenario == "test_basic_logging" && argc > 2)
         {
             return pylabhub::tests::worker::logger::test_basic_logging(argv[2]);
@@ -203,6 +213,17 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             pylabhub::tests::worker::logger::stress_log(argv[2], std::stoi(argv[3]));
             return 0;
+        }
+        if (scenario == "test_inter_process_flock" && argc > 4)
+        {
+            return pylabhub::tests::worker::logger::test_inter_process_flock(argv[2], argv[3],
+                                                                             std::stoi(argv[4]));
+        }
+        if (scenario == "test_rotating_file_sink" && argc > 4)
+        {
+            return pylabhub::tests::worker::logger::test_rotating_file_sink(
+                argv[2], static_cast<size_t>(std::stoul(argv[3])),
+                static_cast<size_t>(std::stoul(argv[4])));
         }
     }
     return -1; // No matching worker found

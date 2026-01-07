@@ -303,3 +303,70 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     // The child should now be able to acquire the lock and exit successfully.
     ASSERT_EQ(wait_for_worker_and_get_exit_code(child_proc), 0);
 }
+
+/**
+ * @brief Tests the new static `try_lock` methods in a multi-process scenario.
+ */
+TEST_F(FileLockTest, MultiProcessTryLock)
+{
+    auto resource_path = temp_dir() / "multiprocess_try_lock.txt";
+    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+
+    // Acquire a lock in the main test process
+    pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File,
+                                        pylabhub::utils::LockMode::Blocking);
+    ASSERT_TRUE(main_lock.valid());
+
+    // Spawn a worker that will try to acquire the same lock using the non-blocking
+    // try_lock API. The worker will assert that the lock is not acquired.
+    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.try_lock_nonblocking",
+                                              {resource_path.string()});
+    ASSERT_NE(proc, NULL_PROC_HANDLE);
+    // The worker returns 0 on success (i.e., if the try_lock correctly failed).
+    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+}
+
+/**
+ * @brief Tests the new static `try_lock` methods.
+ *
+ * This test validates the modern optional-based API for both success and
+ * failure scenarios within a single process.
+ */
+TEST_F(FileLockTest, TryLockPattern)
+{
+    auto resource_path = temp_dir() / "try_lock_pattern.txt";
+    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+
+    // 1. Success Case: Non-blocking lock on an available resource
+    {
+        auto lock_opt =
+            pylabhub::utils::FileLock::try_lock(resource_path, pylabhub::utils::ResourceType::File,
+                                                pylabhub::utils::LockMode::NonBlocking);
+
+        ASSERT_TRUE(lock_opt.has_value());
+        EXPECT_TRUE(lock_opt->valid());
+    } // Lock is released here
+
+    // 2. Failure Case: Non-blocking attempt on a held resource
+    {
+        pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File);
+        ASSERT_TRUE(main_lock.valid());
+
+        auto lock_opt =
+            pylabhub::utils::FileLock::try_lock(resource_path, pylabhub::utils::ResourceType::File,
+                                                pylabhub::utils::LockMode::NonBlocking);
+
+        EXPECT_FALSE(lock_opt.has_value());
+    } // main_lock is released here
+
+    // 3. Failure Case: Timed attempt on a held resource
+    {
+        pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File);
+        ASSERT_TRUE(main_lock.valid());
+
+        auto lock_opt = pylabhub::utils::FileLock::try_lock(
+            resource_path, pylabhub::utils::ResourceType::File, std::chrono::milliseconds(50));
+
+        EXPECT_FALSE(lock_opt.has_value());
+    } // main_lock is released here
+}

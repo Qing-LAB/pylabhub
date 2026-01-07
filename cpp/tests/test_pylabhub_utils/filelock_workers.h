@@ -71,8 +71,23 @@ int test_directory_creation(const std::string &base_dir_str);
 int test_directory_path_locking(const std::string &base_dir_str);
 
 /**
+
  * @brief Tests non-blocking lock acquisition with multiple threads in a worker process.
+
  */
+
 int test_multithreaded_non_blocking(const std::string &resource_path_str);
+
+/**
+
+ * @brief Worker that attempts a non-blocking try_lock on a resource.
+
+ * Used to test multi-process contention with the try_lock API.
+
+ */
+
+int try_lock_nonblocking(const std::string &resource_path_str);
+
 } // namespace filelock
+
 } // namespace pylabhub::tests::worker

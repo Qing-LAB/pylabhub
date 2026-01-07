@@ -159,6 +159,33 @@ int test_platform_sinks();
 
 int test_concurrent_lifecycle_chaos(const std::string &log_path_str);
 
+/**
+
+ * @brief Worker that logs messages with flock enabled to test for torn writes.
+
+ * @param log_path Path to the shared output log file.
+
+ * @param worker_id A unique ID for the worker.
+
+ * @param msg_count The number of messages to log.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_inter_process_flock(const std::string &log_path, const std::string &worker_id,
+                             int msg_count);
+
+/**
+ * @brief Tests the RotatingFileSink functionality within a worker process.
+ * @param base_log_path The base path for the rotating log files.
+ * @param max_file_size_bytes The maximum size a log file can reach before rotation.
+ * @param max_backup_files The maximum number of backup log files to keep.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_rotating_file_sink(const std::string &base_log_path, size_t max_file_size_bytes,
+                            size_t max_backup_files);
+
 } // namespace logger
 
 } // namespace pylabhub::tests::worker
