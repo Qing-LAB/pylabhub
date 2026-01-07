@@ -15,12 +15,16 @@ set(UTILS_SOURCES
   Logger.cpp
   JsonConfig.cpp
   FileLock.cpp
+  RotatingFileSink.cpp
+  BaseFileSink.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
 # Define the shared library target.
 add_library(pylabhub-utils SHARED ${UTILS_SOURCES})
 add_library(pylabhub::utils ALIAS pylabhub-utils)
+
+pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)

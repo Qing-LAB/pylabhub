@@ -100,7 +100,9 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -190,7 +192,36 @@ class PYLABHUB_UTILS_EXPORT Logger
      *                  systems to protect against concurrent writes from other
      *                  processes. This has no effect on Windows.
      */
-    void set_logfile(const std::string &utf8_path, bool use_flock = false);
+    void set_logfile(const std::string &utf8_path);
+
+    /**
+     * @brief Asynchronously switches the logging output to a file, with explicit locking.
+     * @param utf8_path The UTF-8 encoded path to the log file.
+     * @param use_flock If true, uses an advisory file lock (`flock`) on POSIX
+     *                  systems to serialize writes from multiple processes.
+     */
+    void set_logfile(const std::string &utf8_path, bool use_flock);
+
+    /**
+     * @brief Asynchronously switches the logging output to a rotating file.
+     * @param base_filepath The base path for the log files.
+     * @param max_file_size_bytes The maximum size a log file can reach before it's rotated.
+     * @param max_backup_files The maximum number of backup log files to keep.
+     * @param ec Output parameter for synchronous errors (e.g., invalid path, permissions).
+     * @return `true` on success (command enqueued), `false` on synchronous error.
+     */
+    bool set_rotating_logfile(const std::filesystem::path &base_filepath,
+                              size_t max_file_size_bytes, size_t max_backup_files,
+                              std::error_code &ec) noexcept;
+
+    /**
+     * @brief Overload for set_rotating_logfile with explicit flocking behavior.
+     * @param use_flock If true, uses an advisory file lock on POSIX systems
+     *                  to serialize writes from multiple processes. No effect on Windows.
+     */
+    bool set_rotating_logfile(const std::filesystem::path &base_filepath,
+                              size_t max_file_size_bytes, size_t max_backup_files, bool use_flock,
+                              std::error_code &ec) noexcept;
 
     /**
      * @brief Asynchronously switches logging to syslog (POSIX only). This is a no-op on Windows.
@@ -242,6 +273,25 @@ class PYLABHUB_UTILS_EXPORT Logger
     Level level() const;
 
     /**
+     * @brief Sets the maximum number of messages that can be held in the queue.
+     * If the queue is full, new messages will be dropped.
+     * @param max_size The maximum number of messages.
+     */
+    void set_max_queue_size(size_t max_size);
+
+    /**
+     * @brief Gets the current maximum queue size.
+     * @return The maximum number of messages.
+     */
+    size_t get_max_queue_size() const;
+
+    /**
+     * @brief Gets the total number of messages dropped due to a full queue.
+     * @return The number of dropped messages.
+     */
+    size_t get_dropped_message_count() const;
+
+    /**
      * @brief Sets a callback to be invoked upon a sink write error.
      *
      * The callback is executed on a separate, dedicated thread, making it safe
@@ -265,6 +315,9 @@ class PYLABHUB_UTILS_EXPORT Logger
 
     template <Level lvl, typename... Args>
     void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
+
+    template <Level lvl, typename... Args>
+    void log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     template <typename... Args>
     void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
@@ -296,6 +349,8 @@ class PYLABHUB_UTILS_EXPORT Logger
     {
         log_fmt<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
     }
+    template <typename... Args>
+    void system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     // --- Runtime Formatting API (Header-Only Templates) ---
     // These functions use `fmt::runtime` to parse the format string at runtime.
@@ -340,6 +395,9 @@ class PYLABHUB_UTILS_EXPORT Logger
     // Internal low-level function that enqueues a pre-formatted message.
     void enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept;
     void enqueue_log(Level lvl, std::string &&body_str) noexcept;
+
+    // Internal helper for synchronous logging
+    void write_sync(Level lvl, fmt::memory_buffer &&body) noexcept;
 
     // Internal accessor for runtime log level filtering.
     bool should_log(Level lvl) const noexcept;
@@ -389,6 +447,33 @@ void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexce
     }
 }
 
+template <Logger::Level lvl, typename... Args>
+void Logger::log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+{
+    if constexpr (static_cast<int>(lvl) >= LOGGER_COMPILE_LEVEL)
+    {
+        if (!should_log(lvl))
+            return;
+
+        try
+        {
+            fmt::memory_buffer mb;
+            mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
+            fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
+            write_sync(lvl, std::move(mb)); // Call the synchronous write
+        }
+        catch (const std::exception &ex)
+        {
+            // For synchronous logging, print to stderr directly as fallback.
+            fmt::print(stderr, "CRITICAL LOGGER ERROR: SYNC LOG FORMAT ERROR: {}\n", ex.what());
+        }
+        catch (...)
+        {
+            fmt::print(stderr, "CRITICAL LOGGER ERROR: SYNC LOG UNKNOWN FORMAT ERROR.\n");
+        }
+    }
+}
+
 template <typename... Args>
 void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept
 {
@@ -412,6 +497,13 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
     {
         enqueue_log(Level::L_ERROR, "[UNKNOWN FORMAT ERROR]");
     }
+}
+
+// Helper for synchronous system messages
+template <typename... Args>
+void Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+{
+    log_fmt_sync<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
 }
 
 } // namespace pylabhub::utils
@@ -439,6 +531,34 @@ void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args
     ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #define LOGGER_SYSTEM(fmt, ...)                                                                    \
     ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+
+// =============================================================================
+// Public Synchronous Logging Macros
+// =============================================================================
+// These macros provide a synchronous, blocking log write, useful for critical
+// messages that must be delivered immediately, bypassing the asynchronous queue.
+// Note: These macros will block the calling thread.
+
+#define LOGGER_TRACE_SYNC(fmt, ...)                                                                \
+    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_TRACE>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_DEBUG_SYNC(fmt, ...)                                                                \
+    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_DEBUG>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_INFO_SYNC(fmt, ...)                                                                 \
+    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_INFO>(  \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_WARN_SYNC(fmt, ...)                                                                 \
+    ::pylabhub::utils::Logger::instance()                                                          \
+        .log_fmt_sync<::pylabhub::utils::Logger::Level::L_WARNING>(FMT_STRING(fmt) __VA_OPT__(, )  \
+                                                                       __VA_ARGS__)
+#define LOGGER_ERROR_SYNC(fmt, ...)                                                                \
+    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_ERROR>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define LOGGER_SYSTEM_SYNC(fmt, ...)                                                               \
+    ::pylabhub::utils::Logger::instance()                                                          \
+        .log_fmt_sync<::pylabhub::utils::Logger::Level::L_SYSTEM>(FMT_STRING(fmt) __VA_OPT__(, )   \
+                                                                      __VA_ARGS__)
 
 // Macros for runtime format string checking.
 #define LOGGER_TRACE_RT(fmt, ...)                                                                  \

@@ -43,31 +43,60 @@ static std::string RegexEscape(const std::string &s)
     return out;
 }
 
-static std::string GetLocationRegex(const char *file, int line)
-{
-    // Create a regex that matches the file and line number in the format used by PLH_DEBUG
-    // Example: "at tests/test_pylabhub_corelib/test_platform.cpp:42"
-    std::string file_escaped = RegexEscape(file ? file : "");
-    return ".*in " + file_escaped + ":" + std::to_string(line) + ".*";
-}
+// test_platform.cpp
+#include <gtest/gtest.h>
+#include <string>
+#include <unistd.h> // for STDERR_FILENO
+// #include "string_capture.h" // <-- include your project's StringCapture definition if needed
+// #include "debug.h" // <-- include your PLH_DEBUG / debug_msg macros if needed
+
+// The test checks the three important pieces separately:
+//  - the debug preamble and file path
+//  - the location fragment containing line number and func marker
+//  - the message body (with optional trailing newline)
 
 TEST(PlatformTest, DebugMsg)
 {
+    // Capture stderr output (assumes your test environment has this helper)
     StringCapture stderr_capture(STDERR_FILENO);
 
-    int line = __LINE__ + 2; // The line where PLH_DEBUG is called
     std::string test_message = "This is a test debug message with value 42.";
+
+    // Call the macro that prints the debug message to stderr
+    // compute the line where PLH_DEBUG will be called
+    int debug_call_line = __LINE__ + 1; // update the offset if you move the PLH_DEBUG line
     PLH_DEBUG("This is a test debug message with value {}.", 42);
 
+    // Get the captured output
     std::string output = stderr_capture.GetOutput();
 
-    auto regex_str = GetLocationRegex(__FILE__, line);
-    if (!output.empty() && output.back() == '\n')
-        output.pop_back();
+    // --- Helper that asserts a substring exists with a clear failure message ---
+    auto expect_contains = [&](const std::string &needle)
+    {
+        auto pos = output.find(needle);
+        EXPECT_NE(pos, std::string::npos)
+            << "Expected output to contain: \n  " << needle << "\nActual output:\n"
+            << output;
+    };
 
-    EXPECT_THAT(output, ::testing::HasSubstr("DEBUG MESSAGE:"));
-    EXPECT_THAT(output, ::testing::HasSubstr(test_message));
-    EXPECT_THAT(output, ::testing::MatchesRegex(regex_str));
+    // 1) preamble + file path (exact file path check)
+    expect_contains(std::string("DEBUG MESSAGE:\nfile: ") + __FILE__);
+
+    // 2) location fragment (line number and func prefix). We check the "(line:<n>:func:" fragment
+    //    so we ensure the logger printed the location information. This is robust to long function
+    //    signatures or line breaks in the function name.
+    expect_contains(std::string("(line:") + std::to_string(debug_call_line) + ":func:");
+
+    // 3) message body: allow either the exact message or the message followed by a trailing newline
+    bool found_body = (output.find(test_message) != std::string::npos) ||
+                      (output.find(test_message + "\n") != std::string::npos);
+    EXPECT_TRUE(found_body) << "Expected message body not found. Expected: \"" << test_message
+                            << "\"\nActual output:\n"
+                            << output;
+
+    // Optional: (uncomment if you want to be strict about trailing newline)
+    EXPECT_TRUE(output.size() >= 1 && output.back() == '\n')
+        << "Expected a trailing newline in output.";
 }
 
 TEST(PlatformTest, PrintStackTrace)

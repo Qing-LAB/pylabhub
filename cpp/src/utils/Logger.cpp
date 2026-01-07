@@ -3,6 +3,8 @@
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
 #include "utils/Logger.hpp"
+#include "RotatingFileSink.hpp"
+#include "Sink.hpp"
 #include "format_tools.hpp"
 #include "platform.hpp"
 #include "utils/Lifecycle.hpp"
@@ -63,6 +65,49 @@ static bool logger_is_loggable(const char *function_name)
     }
     return state == LoggerState::Initialized;
 }
+
+namespace
+{
+// Helper to synchronously check if a directory is writable.
+bool check_directory_is_writable(const std::filesystem::path &dir, std::error_code &ec)
+{
+    ec.clear();
+    try
+    {
+        auto temp_file_path =
+            dir / fmt::format("pylabhub_write_check_{}.tmp",
+                              std::chrono::high_resolution_clock::now().time_since_epoch().count());
+
+#ifdef PLATFORM_WIN64
+        std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
+        // Create a temporary file that is deleted immediately on close.
+        HANDLE h = CreateFileW(wpath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+            return false;
+        }
+        CloseHandle(h); // The file is deleted automatically on close.
+#else
+        int fd = ::open(temp_file_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd == -1)
+        {
+            ec = std::error_code(errno, std::generic_category());
+            return false;
+        }
+        ::close(fd);
+        ::unlink(temp_file_path.c_str()); // Clean up the temporary file immediately.
+#endif
+        return true;
+    }
+    catch (...)
+    {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return false;
+    }
+}
+} // anonymous namespace
 
 /**
  * @class CallbackDispatcher
@@ -136,51 +181,9 @@ class CallbackDispatcher
     std::atomic<bool> shutdown_requested_;
 };
 
-// Internal Command and Sink Definitions
-struct LogMessage
-{
-    Logger::Level level;
-    std::chrono::system_clock::time_point timestamp;
-    uint64_t thread_id;
-    fmt::memory_buffer body;
-};
+#include "BaseFileSink.hpp"
 
-class Sink
-{
-  public:
-    virtual ~Sink() = default;
-    virtual void write(const LogMessage &msg) = 0;
-    virtual void flush() = 0;
-    virtual std::string description() const = 0;
-};
-
-static const char *level_to_string(Logger::Level lvl)
-{
-    switch (lvl)
-    {
-    case Logger::Level::L_TRACE:
-        return "TRACE";
-    case Logger::Level::L_DEBUG:
-        return "DEBUG";
-    case Logger::Level::L_INFO:
-        return "INFO";
-    case Logger::Level::L_WARNING:
-        return "WARN";
-    case Logger::Level::L_ERROR:
-        return "ERROR";
-    case Logger::Level::L_SYSTEM:
-        return "SYSTEM";
-    default:
-        return "UNK";
-    }
-}
-
-static std::string format_message(const LogMessage &msg)
-{
-    std::string time_str = formatted_time(msg.timestamp);
-    return fmt::format("[{}] [{:<6}] [{:5}] {}\n", time_str, level_to_string(msg.level),
-                       msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
-}
+// NOTE: LogMessage, Sink, and helper functions are now in Sink.hpp
 
 // Concrete Sink Implementations
 class ConsoleSink : public Sink
@@ -191,86 +194,29 @@ class ConsoleSink : public Sink
     std::string description() const override { return "Console"; }
 };
 
-class FileSink : public Sink
+class FileSink : public Sink, private BaseFileSink
 {
   public:
-    FileSink(const std::string &path, bool use_flock) : path_(path), use_flock_(use_flock)
+    FileSink(const std::string &path, bool use_flock)
     {
-#ifdef PLATFORM_WIN64
-        (void)use_flock;
-        int needed = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        if (needed == 0)
-            throw std::runtime_error("Failed to convert path to wide string");
-        std::wstring wpath(needed, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wpath[0], needed);
-
-        handle_ = CreateFileW(wpath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle_ == INVALID_HANDLE_VALUE)
+        try
         {
-            throw std::runtime_error("Failed to open log file: " + path);
+            open(path, use_flock);
         }
-#else
-        fd_ = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
-        if (fd_ == -1)
+        catch (const std::system_error &e)
         {
-            throw std::runtime_error("Failed to open log file: " + path);
+            throw std::runtime_error(
+                fmt::format("Failed to open log file '{}': {}", path, e.what()));
         }
-#endif
     }
 
-    ~FileSink() override
-    {
-#ifdef PLATFORM_WIN64
-        if (handle_ != INVALID_HANDLE_VALUE)
-            CloseHandle(handle_);
-#else
-        if (fd_ != -1)
-            ::close(fd_);
-#endif
-    }
+    ~FileSink() override = default;
 
-    void write(const LogMessage &msg) override
-    {
-        auto formatted_message = format_message(msg);
-#ifdef PLATFORM_WIN64
-        if (handle_ == INVALID_HANDLE_VALUE)
-            return;
-        DWORD bytes_written;
-        WriteFile(handle_, formatted_message.c_str(),
-                  static_cast<DWORD>(formatted_message.length()), &bytes_written, nullptr);
-#else
-        if (fd_ == -1)
-            return;
-        if (use_flock_)
-            ::flock(fd_, LOCK_EX);
-        ::write(fd_, formatted_message.c_str(), formatted_message.length());
-        if (use_flock_)
-            ::flock(fd_, LOCK_UN);
-#endif
-    }
+    void write(const LogMessage &msg) override { BaseFileSink::write(format_message(msg)); }
 
-    void flush() override
-    {
-#ifdef PLATFORM_WIN64
-        if (handle_ != INVALID_HANDLE_VALUE)
-            FlushFileBuffers(handle_);
-#else
-        if (fd_ != -1)
-            ::fsync(fd_);
-#endif
-    }
+    void flush() override { BaseFileSink::flush(); }
 
-    std::string description() const override { return "File: " + path_; }
-
-  private:
-    std::string path_;
-    bool use_flock_;
-#ifdef PLATFORM_WIN64
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-#else
-    int fd_ = -1;
-#endif
+    std::string description() const override { return "File: " + path().string(); }
 };
 
 #if !defined(PLATFORM_WIN64)
@@ -287,21 +233,21 @@ class SyslogSink : public Sink
     std::string description() const override { return "Syslog"; }
 
   private:
-    static int level_to_syslog_priority(Logger::Level level)
+    static int level_to_syslog_priority(int level)
     {
         switch (level)
         {
-        case Logger::Level::L_TRACE:
+        case 0: // TRACE
             return LOG_DEBUG;
-        case Logger::Level::L_DEBUG:
+        case 1: // DEBUG
             return LOG_DEBUG;
-        case Logger::Level::L_INFO:
+        case 2: // INFO
             return LOG_INFO;
-        case Logger::Level::L_WARNING:
+        case 3: // WARNING
             return LOG_WARNING;
-        case Logger::Level::L_ERROR:
+        case 4: // ERROR
             return LOG_ERR;
-        case Logger::Level::L_SYSTEM:
+        case 5: // SYSTEM
             return LOG_CRIT;
         default:
             return LOG_INFO;
@@ -352,18 +298,18 @@ class EventLogSink : public Sink
 
   private:
     HANDLE handle_ = nullptr;
-    static WORD level_to_eventlog_type(Logger::Level level)
+    static WORD level_to_eventlog_type(int level)
     {
         switch (level)
         {
-        case Logger::Level::L_TRACE:
-        case Logger::Level::L_DEBUG:
-        case Logger::Level::L_INFO:
+        case 0: // TRACE
+        case 1: // DEBUG
+        case 2: // INFO
             return EVENTLOG_INFORMATION_TYPE;
-        case Logger::Level::L_WARNING:
+        case 3: // WARNING
             return EVENTLOG_WARNING_TYPE;
-        case Logger::Level::L_ERROR:
-        case Logger::Level::L_SYSTEM:
+        case 4: // ERROR
+        case 5: // SYSTEM
             return EVENTLOG_ERROR_TYPE;
         default:
             return EVENTLOG_INFORMATION_TYPE;
@@ -414,12 +360,20 @@ struct Logger::Impl
     std::condition_variable cv_;
     std::atomic<bool> shutdown_requested_{false};
 
+    std::mutex m_sink_mutex;
+
     std::atomic<Logger::Level> level_{Logger::Level::L_INFO};
     std::unique_ptr<Sink> sink_;
     std::function<void(const std::string &)> error_callback_;
     CallbackDispatcher callback_dispatcher_;
     std::atomic<bool> shutdown_completed_{false};
-    std::atomic<bool> m_log_sink_messages_enabled_{true}; // New member
+    std::atomic<bool> m_log_sink_messages_enabled_{true};
+
+    // Bounded queue members
+    size_t m_max_queue_size{10000}; // Default to 10,000 messages
+    std::atomic<size_t> m_messages_dropped{0};
+    std::atomic<bool> m_was_dropping{false};
+    std::chrono::system_clock::time_point m_dropping_since;
 };
 
 Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -482,7 +436,10 @@ void Logger::Impl::worker_loop()
         if (do_final_flush_and_break)
         {
             if (sink_)
+            {
+                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                 sink_->flush();
+            }
             break; // Exit the worker loop.
         }
 
@@ -496,8 +453,12 @@ void Logger::Impl::worker_loop()
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
-                            if (sink_ && arg.level >= level_.load(std::memory_order_relaxed))
+                            if (sink_ && arg.level >= static_cast<int>(
+                                                          level_.load(std::memory_order_relaxed)))
+                            {
+                                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                                 sink_->write(arg);
+                            }
                         }
                         else if constexpr (std::is_same_v<T, SetSinkCommand>)
                         {
@@ -509,24 +470,35 @@ void Logger::Impl::worker_loop()
 
                                 if (sink_)
                                 {
-                                    sink_->write(
-                                        {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                         pylabhub::platform::get_native_thread_id(),
-                                         make_buffer("Switching log sink to: {}", new_desc)});
+                                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                                    sink_->write(LogMessage{
+                                        .timestamp = std::chrono::system_clock::now(),
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                        .body =
+                                            make_buffer("Switching log sink to: {}", new_desc)});
                                     sink_->flush();
                                 }
+                                std::lock_guard<std::mutex> sink_lock(
+                                    m_sink_mutex); // Lock around sink assignment for safety
                                 sink_ = std::move(arg.new_sink);
                                 if (sink_)
                                 {
-                                    sink_->write(
-                                        {Logger::Level::L_SYSTEM, std::chrono::system_clock::now(),
-                                         pylabhub::platform::get_native_thread_id(),
-                                         make_buffer("Log sink switched from: {}", old_desc)});
+                                    sink_->write(LogMessage{
+                                        .timestamp = std::chrono::system_clock::now(),
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                        .body =
+                                            make_buffer("Log sink switched from: {}", old_desc)});
                                 }
                             }
                             else
                             {
                                 // If messages are disabled, just switch the sink without logging.
+                                std::lock_guard<std::mutex> sink_lock(
+                                    m_sink_mutex); // Lock around sink assignment
                                 sink_ = std::move(arg.new_sink);
                             }
                         }
@@ -543,7 +515,10 @@ void Logger::Impl::worker_loop()
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
                             if (sink_)
+                            {
+                                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                                 sink_->flush();
+                            }
                             arg.promise->set_value(); // Unblock the waiting thread.
                         }
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
@@ -589,30 +564,16 @@ void Logger::Impl::shutdown()
 }
 
 // Logger Public API Implementation
-namespace
-{
-std::unique_ptr<Logger> g_instance;
-std::mutex g_instance_mutex;
-} // namespace
-
 Logger::Logger() : pImpl(std::make_unique<Impl>()) {}
 Logger::~Logger() = default;
 
 Logger &Logger::instance()
 {
-    if (!g_instance)
-    {
-        std::lock_guard<std::mutex> lock(g_instance_mutex);
-        if (!g_instance)
-        {
-            struct LoggerMaker : public Logger
-            {
-                LoggerMaker() : Logger() {}
-            };
-            g_instance = std::make_unique<LoggerMaker>();
-        }
-    }
-    return *g_instance;
+    // C++11 and later guarantee that the initialization of function-local
+    // static variables is thread-safe. This is the modern, preferred way
+    // to implement a singleton.
+    static Logger instance;
+    return instance;
 }
 
 bool Logger::lifecycle_initialized() noexcept
@@ -635,6 +596,11 @@ void Logger::set_console()
     }
 }
 
+void Logger::set_logfile(const std::string &utf8_path)
+{
+    set_logfile(utf8_path, true);
+}
+
 void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
     if (!logger_is_loggable("Logger::set_logfile"))
@@ -647,6 +613,64 @@ void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
     {
         pImpl->enqueue_command(
             SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
+    }
+}
+
+bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
+                                  size_t max_file_size_bytes, size_t max_backup_files,
+                                  std::error_code &ec) noexcept
+{
+    // Call the full overload with flocking enabled by default.
+    return set_rotating_logfile(base_filepath, max_file_size_bytes, max_backup_files, true, ec);
+}
+
+bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
+                                  size_t max_file_size_bytes, size_t max_backup_files,
+                                  bool use_flock, std::error_code &ec) noexcept
+{
+    if (!logger_is_loggable("Logger::set_rotating_logfile"))
+    {
+        ec = std::make_error_code(std::errc::not_supported);
+        return false;
+    }
+    ec.clear();
+
+    try
+    {
+        // 1. Normalize the path first. This provides a clean, absolute path.
+        auto normalized_path = std::filesystem::absolute(base_filepath).lexically_normal();
+        auto parent_dir = normalized_path.parent_path();
+
+        // 2. Synchronous pre-flight checks on the directory.
+        if (!parent_dir.empty())
+        {
+            if (!std::filesystem::exists(parent_dir))
+            {
+                std::filesystem::create_directories(parent_dir, ec);
+                if (ec)
+                {
+                    return false;
+                }
+            }
+            // 3. Check for writability using the new native helper.
+            if (!check_directory_is_writable(parent_dir, ec))
+            {
+                return false;
+            }
+        }
+
+        // 4. Pre-flight checks passed, enqueue the command with the normalized path.
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<RotatingFileSink>(
+            normalized_path, max_file_size_bytes, max_backup_files, use_flock)});
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        // Also enqueue an error message so it appears in the previous log sink if possible.
+        pImpl->enqueue_command(
+            SinkCreationErrorCommand{fmt::format("Failed to set rotating log file: {}", e.what())});
+        return false;
     }
 }
 
@@ -731,6 +755,28 @@ Logger::Level Logger::level() const
     return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
+void Logger::set_max_queue_size(size_t max_size)
+{
+    if (!logger_is_loggable("Logger::set_max_queue_size"))
+        return;
+    if (pImpl)
+        pImpl->m_max_queue_size = (max_size > 0) ? max_size : 1;
+}
+
+size_t Logger::get_max_queue_size() const
+{
+    if (!logger_is_loggable("Logger::get_max_queue_size"))
+        return 0;
+    return pImpl ? pImpl->m_max_queue_size : 0;
+}
+
+size_t Logger::get_dropped_message_count() const
+{
+    if (!logger_is_loggable("Logger::get_dropped_message_count"))
+        return 0;
+    return pImpl ? pImpl->m_messages_dropped.load(std::memory_order_relaxed) : 0;
+}
+
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
 {
     if (!logger_is_loggable("Logger::set_write_error_callback"))
@@ -763,9 +809,11 @@ void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
         return;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
-                                          pylabhub::platform::get_native_thread_id(),
-                                          std::move(body)});
+        pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                          .process_id = pylabhub::platform::get_pid(),
+                                          .thread_id = pylabhub::platform::get_native_thread_id(),
+                                          .level = static_cast<int>(lvl),
+                                          .body = std::move(body)});
     }
 }
 
@@ -775,9 +823,30 @@ void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
         return;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{lvl, std::chrono::system_clock::now(),
-                                          pylabhub::platform::get_native_thread_id(),
-                                          make_buffer("{}", std::move(body_str))});
+        pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                          .process_id = pylabhub::platform::get_pid(),
+                                          .thread_id = pylabhub::platform::get_native_thread_id(),
+                                          .level = static_cast<int>(lvl),
+                                          .body = make_buffer("{}", std::move(body_str))});
+    }
+}
+
+void Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
+{
+    if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+        return;
+    if (pImpl)
+    {
+        std::lock_guard<std::mutex> sink_lock(pImpl->m_sink_mutex);
+        if (pImpl->sink_ && static_cast<int>(lvl) >=
+                                static_cast<int>(pImpl->level_.load(std::memory_order_relaxed)))
+        {
+            pImpl->sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                           .process_id = pylabhub::platform::get_pid(),
+                                           .thread_id = pylabhub::platform::get_native_thread_id(),
+                                           .level = static_cast<int>(lvl),
+                                           .body = std::move(body)});
+        }
     }
 }
 
