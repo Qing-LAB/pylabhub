@@ -32,6 +32,9 @@ option(PYLABHUB_LOGGER_DEBUG "Enable debug logging in the pyLabHub logger" OFF)
 
 option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default build." ON)
 
+# Option to enable Clang-Tidy static analysis.
+option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
+
 # --- Logger Compile-Time Level ---
 # Set the default compile-time log level. This controls which LOGGER_* macros
 # are compiled into the binary.

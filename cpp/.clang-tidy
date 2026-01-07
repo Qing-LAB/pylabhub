@@ -1,0 +1,65 @@
+---
+# .clang-tidy
+#
+# This is the configuration file for Clang-Tidy, our static analysis tool.
+# It is used to enforce coding standards, find potential bugs, and improve
+# the overall quality and maintainability of the C++ codebase.
+
+# The 'Checks' option specifies which checks to enable or disable.
+# The syntax uses a globbing pattern.
+#  - '*' enables all available checks.
+#  - '-check-name' disables a specific check.
+#
+# We start by disabling all checks ('-*') and then selectively re-enabling
+# specific groups of checks that are most valuable.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*
+
+# --- Disabled Checks ---
+# The following checks are disabled because they are either overly noisy,
+# enforce a style that conflicts with our existing codebase, or are
+# not considered critical for our needs.
+#
+# readability-identifier-naming:
+#   This check is too strict about naming conventions (e.g., camelCase,
+#   snake_case) and would generate thousands of warnings on our existing
+#   code and third-party headers. We manage naming consistency through
+#   code review instead.
+#
+# modernize-use-trailing-return-type:
+#   While trailing return types can be useful for complex template
+#   metaprogramming, enforcing them everywhere reduces readability for
+#   simple functions. We use them where they add clarity, but do not
+#   require them globally.
+#
+-readability-identifier-naming,
+-modernize-use-trailing-return-type
+
+# The 'WarningsAsErrors' option elevates the severity of specific warnings
+# to errors, which will fail the build. This is used for critical issues
+# that should be addressed immediately. We have selected a subset of highly
+# reliable checks from clang-analyzer and bugprone.
+WarningsAsErrors: [
+  'clang-analyzer-*',
+  'bugprone-argument-comment',
+  'bugprone-assert-side-effect',
+  'bugprone-bad-signal-to-kill-thread',
+  'bugprone-copy-constructor-init',
+  'bugprone-dangling-handle',
+  'bugprone-suspicious-string-compare'
+]
+
+# The 'HeaderFilterRegex' determines which files Clang-Tidy should analyze.
+# We explicitly include files within our 'src', 'include', and 'tests'
+# directories, and implicitly exclude 'third_party'.
+HeaderFilterRegex: '(src|include|tests)/.*'
+
+# This option enables the analysis of destructors for temporary objects,
+# which can help catch subtle lifetime issues.
+AnalyzeTemporaryDtors: true
+...

@@ -45,7 +45,7 @@
 #include <map>
 #include <sstream>
 #include <string>
-#include <unistd.h> // readlink
+#include <unistd.h> // readlink, access
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -211,6 +211,7 @@ void print_stack_trace() noexcept
         void *saddr;           // symbol address returned by dladdr
         std::string demangled; // demangled symbol name if available
         std::string dli_fname; // object filename from dladdr
+        uintptr_t dli_fbase;   // module base (if dladdr provided it) - added to support macOS/atos -l
     };
 
     std::vector<FrameMeta> metas;
@@ -225,6 +226,7 @@ void print_stack_trace() noexcept
         m.saddr = nullptr;
         m.demangled.clear();
         m.dli_fname.clear();
+        m.dli_fbase = 0;
 
         Dl_info dlinfo;
         /**
@@ -264,6 +266,7 @@ void print_stack_trace() noexcept
                 m.dli_fname = dlinfo.dli_fname;
                 // compute offset relative to module base if we can
                 uintptr_t base = reinterpret_cast<uintptr_t>(dlinfo.dli_fbase);
+                m.dli_fbase = base;
                 if (base != 0)
                     m.offset = m.addr - base;
                 else
@@ -273,6 +276,7 @@ void print_stack_trace() noexcept
             {
                 // no dli_fname -> leave offset as absolute (fallback)
                 m.offset = m.addr;
+                m.dli_fbase = 0;
             }
         }
         metas.push_back(std::move(m));
@@ -302,7 +306,38 @@ void print_stack_trace() noexcept
         return out;
     };
 
-    // For each binary, call addr2line once with all offsets
+    // Helper: find an executable in PATH (returns true if found and executable).
+    auto find_in_path = [](const std::string &name) -> bool
+    {
+        const char *pathEnv = std::getenv("PATH");
+        if (!pathEnv)
+            return false;
+        std::string pathStr(pathEnv);
+        size_t start = 0;
+        while (start < pathStr.size())
+        {
+            size_t pos = pathStr.find(':', start);
+            std::string dir;
+            if (pos == std::string::npos)
+            {
+                dir = pathStr.substr(start);
+                start = pathStr.size();
+            }
+            else
+            {
+                dir = pathStr.substr(start, pos - start);
+                start = pos + 1;
+            }
+            if (dir.empty())
+                dir = ".";
+            std::string candidate = dir + "/" + name;
+            if (access(candidate.c_str(), X_OK) == 0)
+                return true;
+        }
+        return false;
+    };
+
+    // For each binary, call addr2line (or atos on macOS) once with all offsets
     std::unordered_map<std::string, std::vector<std::string>> binResults;
     binResults.reserve(binToFrameIndices.size());
 
@@ -317,19 +352,182 @@ void print_stack_trace() noexcept
             continue;
         }
 
-        /**
-         * @brief Invoke `addr2line` for each binary to resolve file and line numbers.
-         *
-         * `addr2line -f -C -e <binary> <offset1> <offset2> ...`
-         * - `-f`: Shows function names.
-         * - `-C`: Demangles C++ function names.
-         * - `-e <binary>`: Specifies the executable or shared object file.
-         * - Subsequent arguments are the addresses (or offsets) to resolve.
-         *
-         * The output typically consists of two lines per address:
-         * 1. Function name
-         * 2. File:line_number (or ??:0 if not found)
-         */
+#if defined(__APPLE__)
+        // macOS: prefer atos (works with dSYM). Build command:
+        // atos -o "<binary>" [-l 0x<base>] 0x<addr1> 0x<addr2> ...
+        // We'll include -l when dlinfo provides a non-zero base (ASLR slide).
+        bool has_atos = find_in_path("atos");
+        bool has_llvm_addr2line = find_in_path("llvm-addr2line");
+        bool has_addr2line = find_in_path("addr2line");
+
+        if (!has_atos && !has_llvm_addr2line && !has_addr2line)
+        {
+            // no symbolizer found -- store empty results
+            binResults[binary] = std::vector<std::string>(indices.size(), std::string());
+            continue;
+        }
+
+        if (has_atos)
+        {
+            std::ostringstream cmd;
+            cmd << "atos -o " << shell_quote(binary);
+
+            // If we have a dli_fbase for this module, supply -l (load address / slide)
+            // Find first non-zero base among frames for this binary (if any)
+            uintptr_t base_for_this_bin = 0;
+            for (int idx : indices)
+            {
+                if (metas[idx].dli_fbase != 0)
+                {
+                    base_for_this_bin = metas[idx].dli_fbase;
+                    break;
+                }
+            }
+            if (base_for_this_bin != 0)
+            {
+                cmd << " -l 0x" << std::hex << base_for_this_bin;
+            }
+
+            // Append absolute addresses (atos expects VM addresses)
+            for (int idx : indices)
+            {
+                cmd << " 0x" << std::hex << metas[idx].addr;
+            }
+
+            FILE *fp = popen(cmd.str().c_str(), "r");
+            if (!fp)
+            {
+                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
+                continue;
+            }
+
+            std::vector<std::string> lines;
+            char buf[1024];
+            while (fgets(buf, sizeof(buf), fp))
+            {
+                std::string s(buf);
+                // trim newline
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+                    s.pop_back();
+                lines.push_back(std::move(s));
+            }
+            pclose(fp);
+
+            std::vector<std::string> perFrame;
+            perFrame.reserve(indices.size());
+
+            // atos typically prints one line per address (symbol and file:line if dSYM available)
+            if ((int)lines.size() >= (int)indices.size())
+            {
+                for (size_t j = 0; j < indices.size() && j < lines.size(); ++j)
+                {
+                    perFrame.push_back(lines[j]);
+                }
+                // pad if necessary
+                while (perFrame.size() < indices.size())
+                    perFrame.emplace_back();
+            }
+            else
+            {
+                // fallback heuristic: distribute lines evenly
+                size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
+                size_t cur = 0;
+                for (size_t fi = 0; fi < indices.size(); ++fi)
+                {
+                    std::ostringstream acc;
+                    for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+                    {
+                        if (k)
+                            acc << "\n";
+                        acc << lines[cur];
+                    }
+                    perFrame.push_back(acc.str());
+                }
+                while (perFrame.size() < indices.size())
+                    perFrame.emplace_back();
+            }
+
+            binResults[binary] = std::move(perFrame);
+        }
+        else
+        {
+            // If atos not available, prefer llvm-addr2line over addr2line
+            std::ostringstream cmd;
+            if (has_llvm_addr2line)
+                cmd << "llvm-addr2line";
+            else
+                cmd << "addr2line";
+            cmd << " -f -C -e " << shell_quote(binary);
+
+            for (int idx : indices)
+            {
+                cmd << " 0x" << std::hex << metas[idx].offset;
+            }
+
+            FILE *fp = popen(cmd.str().c_str(), "r");
+            if (!fp)
+            {
+                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
+                continue;
+            }
+
+            std::vector<std::string> lines;
+            char buf[1024];
+            while (fgets(buf, sizeof(buf), fp))
+            {
+                std::string s(buf);
+                // trim newline
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+                    s.pop_back();
+                lines.push_back(std::move(s));
+            }
+            pclose(fp);
+
+            std::vector<std::string> perFrame;
+            perFrame.reserve(indices.size());
+
+            // best case: 2 * N lines
+            if ((int)lines.size() >= (int)indices.size() * 2)
+            {
+                for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < indices.size(); j += 2)
+                {
+                    perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
+                }
+                // pad if necessary
+                while (perFrame.size() < indices.size())
+                    perFrame.emplace_back();
+            }
+            else if ((int)lines.size() == (int)indices.size())
+            {
+                // one line per frame (some versions)
+                for (auto &l : lines)
+                    perFrame.push_back(l);
+            }
+            else
+            {
+                // fallback heuristic: distribute lines evenly
+                size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
+                size_t cur = 0;
+                for (size_t fi = 0; fi < indices.size(); ++fi)
+                {
+                    std::ostringstream acc;
+                    for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+                    {
+                        if (k)
+                            acc << "\n";
+                        acc << lines[cur];
+                    }
+                    perFrame.push_back(acc.str());
+                }
+                while (perFrame.size() < indices.size())
+                    perFrame.emplace_back();
+            }
+
+            binResults[binary] = std::move(perFrame);
+        }
+
+#else // non-Apple POSIX systems (Linux, etc.): existing addr2line logic
+
         std::ostringstream cmd;
         cmd << "addr2line -f -C -e " << shell_quote(binary);
 
@@ -402,7 +600,10 @@ void print_stack_trace() noexcept
         }
 
         binResults[binary] = std::move(perFrame);
-    }
+
+#endif // __APPLE__ / non-Apple POSIX
+
+    } // end for each binary
 
     // Print frames with the best available info
     for (size_t i = 0; i < metas.size(); ++i)
@@ -435,7 +636,7 @@ void print_stack_trace() noexcept
             printed = true;
         }
 
-        // Look up addr2line result for this frame
+        // Look up addr2line/atos result for this frame
         const std::string &binaryKey =
             m.dli_fname.empty() ? (exe_path.empty() ? std::string("[unknown]") : exe_path)
                                 : m.dli_fname;
