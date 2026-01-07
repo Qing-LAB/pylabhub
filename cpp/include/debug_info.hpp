@@ -62,20 +62,22 @@ template <typename... Args>
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "FATAL ERROR: {} in {}:{} (func: {})\n", body, loc.file_name(),
-                   loc.line(), loc.function_name());
+        fmt::print(stderr, "PANIC:\nfile: {}(line:{}:func:{})\nFATAL ERROR: {}\n", loc.file_name(),
+                   loc.line(), loc.function_name(), body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "FATAL FORMAT ERROR WHEN PANIC: fmt_str['{}'] ({}) in {}:{} (func: {})\n",
-                   fmt_str.get(), e.what(), loc.file_name(), loc.line(), loc.function_name());
+                   "PANIC:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR WHEN PANIC: "
+                   "fmt_str['{}']\nException: '{}'\n",
+                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get(), e.what());
     }
     catch (...)
     {
-        fmt::print(stderr,
-                   "FATAL EXCEPTION DURING PANIC: fmt_str['{}'] (unknown) in {}:{} (func: {})\n",
-                   fmt_str.get(), loc.file_name(), loc.line(), loc.function_name());
+        fmt::print(
+            stderr,
+            "PANIC:\nfile: {}(line:{}:func:{})\nFATAL EXCEPTION DURING PANIC: fmt_str['{}']\n",
+            loc.file_name(), loc.line(), loc.function_name(), fmt_str.get());
     }
     print_stack_trace();
     std::abort();
@@ -104,22 +106,22 @@ inline void debug_msg(std::source_location loc, fmt::format_string<Args...> fmt_
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "DEBUG MESSAGE: {} in {}:{} (func: {})\n", body, loc.file_name(),
-                   loc.line(), loc.function_name());
+        fmt::print(stderr, "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\n{}\n", loc.file_name(),
+                   loc.line(), loc.function_name(), body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "DEBUG MESSAGE: FORMAT ERROR DURING DEBUG_MSG: fmt_str['{}'] ({}) in {}:{} "
-                   "(func: {})\n",
-                   fmt_str.get(), e.what(), loc.file_name(), loc.line(), loc.function_name());
+                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR DURING "
+                   "DEBUG_MSG: fmt_str['{}']\nException: '{}'\n",
+                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get(), e.what());
     }
     catch (...)
     {
         fmt::print(stderr,
-                   "DEBUG MESSAGE: UNKNOWN EXCEPTION DURING DEBUG_MSG: fmt_str['{}'] (unknown) in "
-                   "{}:{} (func: {})\n",
-                   fmt_str.get(), loc.file_name(), loc.line(), loc.function_name());
+                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL EXCEPTION DURING DEBUG_MSG: "
+                   "fmt_str['{}']\n",
+                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get());
     }
 }
 
@@ -146,24 +148,24 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
 {
     try
     {
-        fmt::print(stderr, "DEBUG MESSAGE: ");
+        fmt::print(stderr, "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\n", loc.file_name(),
+                   loc.line(), loc.function_name());
         fmt::vprint(stderr, fmt_str, fmt::make_format_args(args...));
-        fmt::print(stderr, " in {}:{} (func: {})\n", loc.file_name(), loc.line(),
-                   loc.function_name());
+        fmt::print(stderr, "\n");
     }
     catch (const fmt::format_error &e)
     {
-        fmt::print(
-            stderr,
-            "DEBUG MESSAGE: FORMAT ERROR DURING DEBUG_MSG_RT: '{}' ({}) in {}:{} (func: {})\n",
-            fmt_str, e.what(), loc.file_name(), loc.line(), loc.function_name());
+        fmt::print(stderr,
+                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR DURING "
+                   "DEBUG_MSG_RT: fmt_str['{}']\nException: '{}'\n",
+                   loc.file_name(), loc.line(), loc.function_name(), fmt_str, e.what());
     }
     catch (...)
     {
         fmt::print(stderr,
-                   "DEBUG MESSAGE: UNKNOWN EXCEPTION DURING DEBUG_MSG_RT: '{}' (unknown) in {}:{} "
-                   "(func: {})\n",
-                   fmt_str, loc.file_name(), loc.line(), loc.function_name());
+                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL UNKNOWN EXCEPTION DURING "
+                   "DEBUG_MSG_RT: fmt_str['{}']\n",
+                   loc.file_name(), loc.line(), loc.function_name(), fmt_str);
     }
 }
 

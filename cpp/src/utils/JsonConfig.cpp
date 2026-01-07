@@ -111,21 +111,16 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         {
             std::lock_guard<std::mutex> g(pImpl->initMutex);
 
-#if PYLABHUB_IS_POSIX
-            struct stat lstat_buf;
-            if (lstat(configFile.c_str(), &lstat_buf) == 0)
+            // Security: refuse to operate on a path that is a symbolic link.
+            if (fs::is_symlink(configFile))
             {
-                if (S_ISLNK(lstat_buf.st_mode))
-                {
-                    if (ec)
-                        *ec = std::make_error_code(std::errc::operation_not_permitted);
-                    LOGGER_ERROR(
-                        "JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
-                        configFile.string());
-                    return false;
-                }
+                if (ec)
+                    *ec = std::make_error_code(std::errc::operation_not_permitted);
+                LOGGER_ERROR(
+                    "JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
+                    configFile.string());
+                return false;
             }
-#endif
 
             pImpl->configPath = configFile;
 
@@ -200,44 +195,10 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
 
 bool JsonConfig::reload(std::error_code *ec) noexcept
 {
-    try
-    {
-        if (!pImpl)
-        {
-            if (ec)
-                *ec = std::make_error_code(std::errc::not_connected);
-            return false;
-        }
-
-        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
-        if (!fl.valid())
-        {
-            if (ec)
-                *ec = fl.error_code();
-            return false;
-        }
-
-        if (!private_load_from_disk_unsafe(ec))
-        {
-            LOGGER_ERROR("JsonConfig::reload: failed to load {} from disk",
-                         pImpl->configPath.string());
-            return false;
-        }
-        return true;
-    }
-    catch (const std::exception &ex)
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::reload: exception during reload: {}", ex.what());
-        return false;
-    }
-    catch (...)
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::io_error);
-        return false;
-    }
+    // By delegating to with_json_read, we reuse its file locking, disk reading,
+    // and error handling logic. The RecursionGuard within with_json_read will
+    // also now protect against re-entrant calls to reload().
+    return with_json_read([](const nlohmann::json &) { /* no-op */ }, ec, std::nullopt);
 }
 
 bool JsonConfig::private_commit_to_disk_unsafe(std::error_code *ec) noexcept
@@ -259,7 +220,7 @@ bool JsonConfig::private_commit_to_disk_unsafe(std::error_code *ec) noexcept
     }
 }
 
-bool JsonConfig::save(std::error_code *ec) noexcept
+bool JsonConfig::overwrite(std::error_code *ec) noexcept
 {
     try
     {
@@ -280,7 +241,8 @@ bool JsonConfig::save(std::error_code *ec) noexcept
 
         if (!private_commit_to_disk_unsafe(ec))
         {
-            LOGGER_ERROR("JsonConfig::save: failed to save {} to disk", pImpl->configPath.string());
+            LOGGER_ERROR("JsonConfig::overwrite: failed to save {} to disk",
+                         pImpl->configPath.string());
             return false;
         }
         return true;
@@ -289,7 +251,7 @@ bool JsonConfig::save(std::error_code *ec) noexcept
     {
         if (ec)
             *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::save: exception during save: {}", ex.what());
+        LOGGER_ERROR("JsonConfig::overwrite: exception during save: {}", ex.what());
         return false;
     }
     catch (...)
