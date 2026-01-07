@@ -16,22 +16,15 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#if !defined(_WIN32)
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
 
-
-
 // test_platform.cpp
 #include <gtest/gtest.h>
 #include <string>
-#include <unistd.h> // for STDERR_FILENO
+
 // #include "string_capture.h" // <-- include your project's StringCapture definition if needed
 // #include "debug.h" // <-- include your PLH_DEBUG / debug_msg macros if needed
 
