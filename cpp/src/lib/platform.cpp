@@ -50,12 +50,12 @@ namespace pylabhub::platform
 // Anonymous namespace for helpers local to this translation unit.
 
 // Helper to get the current process ID in a cross-platform way.
-long get_pid()
+uint64_t get_pid()
 {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-    return static_cast<long>(GetCurrentProcessId());
+    return static_cast<uint64_t>(GetCurrentProcessId());
 #else
-    return static_cast<long>(getpid());
+    return static_cast<uint64_t>(getpid());
 #endif
 }
 

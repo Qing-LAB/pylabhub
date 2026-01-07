@@ -18,6 +18,7 @@
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
+#include "utils/Logger.hpp"
 
 namespace fs = std::filesystem;
 using namespace pylabhub::tests::helper;
@@ -208,4 +209,78 @@ TEST_F(LoggerTest, StressLog)
     std::string log_contents;
     ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
     ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
+}
+
+/**
+ * @brief Verifies inter-process locking via `use_flock=true`.
+ *
+ * Spawns multiple processes to write to the same log file concurrently with
+ * flocking enabled. This test verifies that no messages are lost or corrupted
+ * (torn writes), which would indicate a failure of the locking mechanism.
+ */
+TEST_F(LoggerTest, InterProcessFlock)
+{
+    auto log_path = GetUniqueLogPath("inter_process_flock");
+    const int PROCS = 4;
+    const int MSGS_PER_PROC = 250;
+
+    // Spawn worker processes.
+    std::vector<ProcessHandle> procs;
+    for (int i = 0; i < PROCS; ++i)
+    {
+        std::string worker_id = "WORKER-" + std::to_string(i);
+        ProcessHandle h =
+            spawn_worker_process(g_self_exe_path, "logger.test_inter_process_flock",
+                                 {log_path.string(), worker_id, std::to_string(MSGS_PER_PROC)});
+        ASSERT_NE(h, NULL_PROC_HANDLE);
+        procs.push_back(h);
+    }
+
+    // Wait for all workers to complete.
+    for (auto h : procs)
+    {
+        ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
+    }
+
+    // Verify the final log file.
+    std::string log_contents;
+    ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
+
+    // 1. Check total line count.
+    ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
+
+    // 2. Check for the integrity of each message from each worker.
+    for (int i = 0; i < PROCS; ++i)
+    {
+        for (int j = 0; j < MSGS_PER_PROC; ++j)
+        {
+            std::string worker_id = "WORKER-" + std::to_string(i);
+            std::string expected_payload = fmt::format(
+                "WORKER_ID={} MSG_NUM={} PAYLOAD=[ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]", worker_id,
+                j);
+            EXPECT_NE(log_contents.find(expected_payload), std::string::npos)
+                << "Missing or corrupt message for " << worker_id << " message " << j;
+        }
+    }
+}
+
+/**
+ * @brief Tests the RotatingFileSink functionality.
+ *
+ * Spawns a worker process to configure the logger with a rotating file sink,
+ * write messages to trigger rotations, and then verifies the existence and
+ * content of the rotated log files.
+ */
+TEST_F(LoggerTest, RotatingFileSink)
+{
+    auto base_log_path = GetUniqueLogPath("rotating_sink_base");
+    const size_t max_file_size_bytes = 256; // Small size to force rotations quickly
+    const size_t max_backup_files = 2;
+
+    ProcessHandle proc =
+        spawn_worker_process(g_self_exe_path, "logger.test_rotating_file_sink",
+                             {base_log_path.string(), std::to_string(max_file_size_bytes),
+                              std::to_string(max_backup_files)});
+    ASSERT_NE(proc, NULL_PROC_HANDLE);
+    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
 }
