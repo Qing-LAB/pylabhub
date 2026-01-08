@@ -33,7 +33,7 @@ int main() {
         bool ok_with_f = false;
         try {
             std::string s = fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
-            std::regex frac_re("\\.[0-9]{{1,9}}");
+            std::regex frac_re("\\.[0-9]{1,9}");
             if (std::regex_search(s, frac_re)) {
                 std::cout << "WITH_F:OK\n" << s << std::endl;
                 ok_with_f = true;
@@ -46,7 +46,7 @@ int main() {
         bool ok_without_f = false;
         try {
             std::string s2 = fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
-            std::regex frac_re("\\.[0-9]{{1,9}}");
+            std::regex frac_re("\\.[0-9]{1,9}");
             if (std::regex_search(s2, frac_re)) {
                 std::cout << "WITHOUT_F:OK\n" << s2 << std::endl;
                 ok_without_f = true;
@@ -81,10 +81,6 @@ int main() {
     COMPILE_DEFINITIONS -DFMT_HEADER_ONLY
     COMPILE_OUTPUT_VARIABLE FMT_PROBE_COMPILE_OUTPUT
     RUN_OUTPUT_VARIABLE FMT_PROBE_RUN_OUTPUT)
-  
-  message(STATUS "    Compile output:\n\n${FMT_PROBE_COMPILE_OUTPUT}\n")
-  message(STATUS "    Probe compile result: ${FMT_PROBE_COMPILE_RESULT}")
-  message(STATUS "    Probe run result: ${FMT_PROBE_RUN_RESULT}")
 
   if(FMT_PROBE_COMPILE_RESULT)
     if(FMT_PROBE_RUN_RESULT EQUAL 0)
