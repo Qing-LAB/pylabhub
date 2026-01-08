@@ -250,7 +250,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   # such that we are forcing libzmq to use our specific libsodium build.
   set(SODIUM_FOUND TRUE)
   set(SODIUM_INCLUDE_DIRS ${PYLABHUB_LIBSODIUM_ROOT_DIR}/include)
-  set(SODIUM_LIBRARIES ${PYLABHUB_LIBSODIUM_ROOT_DIR}/lib/libsodium.a)
+  if(MSVC)
+    set(SODIUM_LIBRARIES ${PYLABHUB_LIBSODIUM_ROOT_DIR}/lib/libsodium.lib)
+  else()
+    set(SODIUM_LIBRARIES ${PYLABHUB_LIBSODIUM_ROOT_DIR}/lib/libsodium.a)
+  endif()
 
   message(STATUS "[pylabhub-third-party]   - Manually forcing libsodium location for libzmq:")
   message(STATUS "[pylabhub-third-party]     - Include Dirs: ${SODIUM_INCLUDE_DIRS}")
