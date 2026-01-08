@@ -24,6 +24,9 @@ target_link_libraries(test_debug_output
 
 target_compile_features(test_debug_output PRIVATE cxx_std_20)
 
+# Set the logger compile level to TRACE for tests.
+target_compile_definitions(test_debug_output PRIVATE LOGGER_COMPILE_LEVEL=0)
+
 if(MSVC)
   target_compile_options(test_debug_output PRIVATE /EHsc /wd5105 /Zc:preprocessor)
 endif()
