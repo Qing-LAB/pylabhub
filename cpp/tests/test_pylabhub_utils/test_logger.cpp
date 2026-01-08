@@ -208,6 +208,8 @@ TEST_F(LoggerTest, StressLog)
     // Verify the final log file.
     std::string log_contents;
     ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
+    fmt::print(stderr, "Final log file size: {} bytes\n", log_contents.size());
+    fmt::print(stderr, "Final log file content:\n{}\n", log_contents);
     ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
 }
 
