@@ -407,7 +407,26 @@ void Logger::Impl::enqueue_command(Command &&cmd)
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (shutdown_requested_.load(std::memory_order_acquire))
+        {
             return;
+        }
+
+        // Bounded queue implementation: Drop new messages if the queue is full.
+        // This check is applied only to LogMessage types to ensure control commands
+        // (like flush, shutdown) are not dropped.
+        if (std::holds_alternative<LogMessage>(cmd))
+        {
+            if (queue_.size() >= m_max_queue_size)
+            {
+                m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
+                // If this is the first message being dropped, record the time.
+                if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
+                {
+                    m_dropping_since = std::chrono::system_clock::now();
+                }
+                return; // Message is dropped here.
+            }
+        }
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
@@ -416,6 +435,7 @@ void Logger::Impl::enqueue_command(Command &&cmd)
 void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue; // Batch processing queue.
+    std::optional<LogMessage> recovery_message;
 
     while (true)
     {
@@ -428,6 +448,7 @@ void Logger::Impl::worker_loop()
             {
                 do_final_flush_and_break = true;
             }
+
             // Swap the main queue with our empty local one. This is a fast operation
             // that minimizes the time the mutex is held.
             local_queue.swap(queue_);
@@ -448,15 +469,40 @@ void Logger::Impl::worker_loop()
             try
             {
                 std::visit(
-                    [this](auto &&arg)
-                    {
+                    // NOTE: recovery_message is captured by reference here.
+                    [&, this](auto &&arg) {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
-                            if (sink_ && arg.level >= static_cast<int>(
-                                                          level_.load(std::memory_order_relaxed)))
+                            // Detect recovery and prepare message, but don't log it yet.
+                            if (m_was_dropping.exchange(false, std::memory_order_relaxed))
                             {
-                                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                                const size_t dropped_count =
+                                    m_messages_dropped.exchange(0, std::memory_order_relaxed);
+                                if (dropped_count > 0)
+                                {
+                                    const auto now = std::chrono::system_clock::now();
+                                    const auto duration = std::chrono::duration_cast<
+                                                              std::chrono::duration<double>>(
+                                                              now - m_dropping_since)
+                                                              .count();
+
+                                    recovery_message.emplace(LogMessage{
+                                        .timestamp = now,
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_WARNING),
+                                        .body = make_buffer("Logger dropped {} messages over "
+                                                            "{:.2f}s due to full queue",
+                                                            dropped_count, duration)});
+                                }
+                            }
+
+                            // Process the actual message as normal
+                            std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                            if (sink_ && arg.level >= static_cast<int>(level_.load(
+                                                          std::memory_order_relaxed)))
+                            {
                                 sink_->write(arg);
                             }
                         }
@@ -508,8 +554,18 @@ void Logger::Impl::worker_loop()
                             {
                                 // Post the user callback to the dispatcher to avoid deadlock.
                                 auto cb = error_callback_;
-                                callback_dispatcher_.post([cb, msg = arg.error_message]()
-                                                          { cb(msg); });
+                                callback_dispatcher_.post([cb, msg = arg.error_message]() {
+                                    cb(msg);
+                                });
+                            }
+                            else
+                            {
+                                PLH_DEBUG(" ** Logger sink creation error but no error_callback "
+                                          "function can be reached : {}\n"
+                                          " ** Current sink description: {}\n"
+                                          " ** Current local_queue size: {}",
+                                          arg.error_message, sink_ ? sink_->description() : "null",
+                                          local_queue.size());
                             }
                         }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
@@ -544,6 +600,19 @@ void Logger::Impl::worker_loop()
                 }
             }
         }
+
+        // After the batch, log the recovery message if it was generated.
+        if (recovery_message)
+        {
+            std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+            if (sink_ && recovery_message->level >=
+                                static_cast<int>(level_.load(std::memory_order_relaxed)))
+            {
+                sink_->write(*recovery_message);
+            }
+            recovery_message.reset();
+        }
+
         local_queue.clear();
     }
 }
