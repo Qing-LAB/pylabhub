@@ -319,12 +319,25 @@ function(pylabhub_register_test_for_staging)
   endif()
 
   # Set the output directory for the executable to be inside the staged 'tests' folder.
-  # For modern CMake versions, setting RUNTIME_OUTPUT_DIRECTORY is sufficient for both
-  # single-config and multi-config generators. CMake will correctly place the
-  # executables in subdirectories like 'Debug' or 'Release' as needed.
-  set_target_properties(${ARG_TARGET} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
-  )
+  # For single-config generators (e.g., Makefiles, Ninja), setting the base
+  # RUNTIME_OUTPUT_DIRECTORY is sufficient. For multi-config generators (e.g.,
+  # Visual Studio, Xcode), CMake appends a per-configuration subdirectory by
+  # default. To override this and ensure a consistent path, we explicitly set the
+  # output directory for each configuration.
+  if(CMAKE_CONFIGURATION_TYPES)
+    # This is a multi-config generator.
+    set(output_dir_props "")
+    foreach(config ${CMAKE_CONFIGURATION_TYPES})
+      string(TOUPPER ${config} config_upper)
+      list(APPEND output_dir_props RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${PYLABHUB_STAGING_DIR}/tests")
+    endforeach()
+    set_target_properties(${ARG_TARGET} PROPERTIES ${output_dir_props})
+  else()
+    # This is a single-config generator.
+    set_target_properties(${ARG_TARGET} PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+    )
+  endif()
 
   # Register this target to a global property so the parent scope can collect it
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})

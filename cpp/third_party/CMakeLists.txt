@@ -63,6 +63,9 @@ include(nlohmann_json)
 # setup fmt target
 include(fmt)
 
+# setup libsodium, which is a dependency for libzmq with curve support
+include(libsodium)
+
 # setup libzmq target
 include(libzmq)
 
