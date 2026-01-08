@@ -9,15 +9,15 @@ cmake_minimum_required(VERSION 3.29)
 add_subdirectory(utils)
 
 # Gather sources for the core static library.
-# Exclude main.cpp (for the app) and sub-project directories.
-# TODO: For improved build robustness, consider replacing file(GLOB_RECURSE)
-# with an explicit list of source files. This ensures that new files are
-# intentionally added to the build, preventing silent build issues.
-file(GLOB_RECURSE CORE_SOURCES
-  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
-  "*.cpp"
+# This is more robust than using file(GLOB), as it ensures that adding or
+# removing source files requires a direct, version-controlled change to the
+# build script. This prevents "silent" build failures where new files are not
+# automatically compiled.
+set(CORE_SOURCES
+  "lib/debug_info.cpp"
+  "lib/format_tools.cpp"
+  "lib/platform.cpp"
 )
-list(FILTER CORE_SOURCES EXCLUDE REGEX "(hubshell\\.cpp|utils/.*|IgorXOP/.*)$")
 
 # Define the core library. If there are no sources, it will be an INTERFACE
 # library that serves as a placeholder to group dependencies. Otherwise, it
@@ -85,20 +85,7 @@ if(PYLABHUB_SANITIZER_FLAG)
   target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
 endif()
 
-# by default, we will include debug information in the final build
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(pylabhub-basic PRIVATE -g)
-  target_compile_options(pylabhub-utils PRIVATE -g)
-  target_compile_options(pylabhub-hubshell PRIVATE -g)
-elseif(MSVC)
-  target_compile_options(pylabhub-basic PRIVATE /Zi)
-  target_compile_options(pylabhub-utils PRIVATE /Zi)
-  target_compile_options(pylabhub-hubshell PRIVATE /Zi)
 
-  target_link_options(pylabhub-hubshell PRIVATE /DEBUG)
-  target_link_options(pylabhub-basic PRIVATE /DEBUG)
-  target_link_options(pylabhub-utils PRIVATE /DEBUG)
-endif()
 
 # ==============================================================================
 # Installation
@@ -115,28 +102,17 @@ get_filename_component(_this_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)   # e.g. 
 get_filename_component(_cpp_dir "${_this_dir}/.." ABSOLUTE)            # .../project/cpp
 set(PYLABHUB_CORE_INCLUDE_DIR "${_cpp_dir}/include")
 
-# then reuse the same logic as above:
-file(GLOB_RECURSE CORE_HEADER_FILES_REL
-  RELATIVE "${PYLABHUB_CORE_INCLUDE_DIR}"
-  "${PYLABHUB_CORE_INCLUDE_DIR}/*.h" "${PYLABHUB_CORE_INCLUDE_DIR}/*.hpp"
+set(CORE_HEADER_FILES
+    "${PYLABHUB_CORE_INCLUDE_DIR}/atomic_guard.hpp"
+    "${PYLABHUB_CORE_INCLUDE_DIR}/debug_info.hpp"
+    "${PYLABHUB_CORE_INCLUDE_DIR}/format_tools.hpp"
+    "${PYLABHUB_CORE_INCLUDE_DIR}/platform.hpp"
+    "${PYLABHUB_CORE_INCLUDE_DIR}/recursion_guard.hpp"
+    "${PYLABHUB_CORE_INCLUDE_DIR}/scope_guard.hpp"
 )
-
-# exclude the utils subdirectories (relative paths). Adjust regex anchors as needed.
-# This removes any file whose relative path starts with "utils/" or "IgorXOP/".
-list(FILTER CORE_HEADER_FILES_REL EXCLUDE REGEX "^utils/")
-message(STASUS "  ** header files found for basic library: ${CORE_HEADER_FILES_REL}")
-
-# Convert to absolute paths for install(FILES ...)
-set(CORE_HEADER_FILES "")
-foreach(_rel IN LISTS CORE_HEADER_FILES_REL)
-  list(APPEND CORE_HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
-endforeach()
 
 # Install the public headers associated with the core library.
-install(FILES
-  ${CORE_HEADER_FILES}
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+install(FILES ${CORE_HEADER_FILES} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 
 # --- Staging ---
@@ -158,26 +134,18 @@ pylabhub_stage_executable(
   ATTACH_TO stage_main_artifacts
 )
 
-# Stage the public headers for the core library to match the installation.
-# Stage each header preserving relative subpath
-foreach(_rel IN LISTS CORE_HEADER_FILES_REL)
-  set(_src "${PYLABHUB_CORE_INCLUDE_DIR}/${_rel}")
-  set(_dst_dir "${PYLABHUB_STAGING_DIR}/include/${_rel}")
-  get_filename_component(_dst_dir_path "${_dst_dir}" DIRECTORY)
-  message(STATUS "  ** adding header file ${_src} to be staged")
-  # For each header create two POST_BUILD steps on the staging target:
-  # 1) ensure destination directory exists
-  # 2) copy the file (only if different)
-  add_custom_command(TARGET stage_main_artifacts POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_dst_dir_path}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_src}" "${PYLABHUB_STAGING_DIR}/include/${_rel}"
-    COMMENT "Staging header: ${_rel}"
+# Stage the public headers for the core library.
+add_custom_command(TARGET stage_main_artifacts POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CORE_HEADER_FILES}
+    "${PYLABHUB_STAGING_DIR}/include/"
+    COMMENT "Staging core headers"
     VERBATIM
-  )
-endforeach()
+)
 
 # Ensure the local staging target depends on both build targets before executing.
 add_dependencies(stage_main_artifacts pylabhub-basic pylabhub-hubshell create_staging_dirs)
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_main_artifacts)
+
 
 message(STATUS "Configured static library 'pylabhub::basic' and executable 'pylabhub::hubshell'.")
