@@ -211,7 +211,7 @@ void print_stack_trace() noexcept
         void *saddr;           // symbol address returned by dladdr
         std::string demangled; // demangled symbol name if available
         std::string dli_fname; // object filename from dladdr
-        uintptr_t dli_fbase;   // module base (if dladdr provided it) - added to support macOS/atos -l
+        uintptr_t dli_fbase; // module base (if dladdr provided it) - added to support macOS/atos -l
     };
 
     std::vector<FrameMeta> metas;
@@ -430,7 +430,8 @@ void print_stack_trace() noexcept
             else
             {
                 // fallback heuristic: distribute lines evenly
-                size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
+                size_t per =
+                    (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
                 size_t cur = 0;
                 for (size_t fi = 0; fi < indices.size(); ++fi)
                 {
@@ -506,7 +507,8 @@ void print_stack_trace() noexcept
             else
             {
                 // fallback heuristic: distribute lines evenly
-                size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
+                size_t per =
+                    (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
                 size_t cur = 0;
                 for (size_t fi = 0; fi < indices.size(); ++fi)
                 {
