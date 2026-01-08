@@ -16,7 +16,6 @@
 # --- Exposed User Options ---
 #   -DBUILD_TESTS=ON/OFF              (Default: ON)   Build the test suite.
 #   -DBUILD_XOP=ON/OFF                (Default: ON)   Build the IgorXOP module.
-#   -DPYLABHUB_BUILD_SHARED=ON/OFF    (Default: OFF)  Build corelib as shared/static.
 #   -DTHIRD_PARTY_INSTALL=ON/OFF      (Default: ON)   Stage third-party libraries.
 #   -DPYLABHUB_CREATE_INSTALL_TARGET=ON/OFF (Default: ON)   Enable the `install` target.
 #   -DFORCE_USE_CLANG_ON_APPLE=ON/OFF (Default: ON)   Ensure Apple toolchain is used on macOS.
@@ -140,6 +139,11 @@ include(GNUInstallDirs)
 # include helper modules that need the compiler ID, and define targets.
 # ===========================================================================
 
+# --- 3.1. Global Compile Definitions ---
+if(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+  add_compile_definitions(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+endif()
+
 # --- 3.1. Global Setup and Helper Modules ---
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
@@ -171,23 +175,21 @@ message(STATUS "")
 # --- 3.2. Staging Infrastructure ---
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
-if(CMAKE_CONFIGURATION_TYPES)
-  # For multi-config generators (e.g., VS, Xcode), use a single 'stage' directory.
-  # CMake will create per-configuration subdirectories for build artifacts.
-  set(_staging_dir_name "stage")
-else()
-  # For single-config generators (e.g., Makefiles, Ninja), create a
-  # configuration-specific staging directory name (e.g., 'stage-debug').
-  if(NOT CMAKE_BUILD_TYPE)
-    # If no build type is specified, default to 'debug'.
-    set(_build_type_suffix "debug")
-  else()
-    string(TOLOWER "${CMAKE_BUILD_TYPE}" _build_type_suffix)
-  endif()
-  set(_staging_dir_name "stage-${_build_type_suffix}")
-endif()
 
-set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/${_staging_dir_name}" CACHE PATH "Root directory for staging all project artifacts.")
+# Determine staging directory name based on CMAKE_BUILD_TYPE.
+# For multi-config generators (like VS, Xcode), CMAKE_BUILD_TYPE is typically
+# empty at configure time, but available at build time via generator expressions.
+# However, if it's set (e.g., from environment or presets), we use it.
+# Otherwise, we default to 'debug' for the staging directory name during configure.
+if(NOT CMAKE_BUILD_TYPE)
+  set(_build_type_suffix "debug") # Default for multi-config generator configure step
+else()
+  string(TOLOWER "${CMAKE_BUILD_TYPE}" _build_type_suffix)
+endif()
+set(_staging_dir_name "stage-${_build_type_suffix}")
+
+set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/${_staging_dir_name}")
+message(STATUS "Unified staging directory: ${PYLABHUB_STAGING_DIR}")
 
 # Create a dedicated target to initialize all staging directories. This
 # prevents race conditions and file/directory name conflicts by ensuring
@@ -234,10 +236,7 @@ add_custom_target(stage_core_artifacts)
 add_dependencies(stage_core_artifacts create_staging_dirs)
 add_dependencies(stage_all create_staging_dirs)
 
-message(STATUS "--------------------------------------------------------------")
-message(STATUS "Unified staging directory set to: ${PYLABHUB_STAGING_DIR}")
-message(STATUS "--------------------------------------------------------------")
-message(STATUS "")
+
 
 # --- 3.3. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")
