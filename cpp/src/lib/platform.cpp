@@ -14,8 +14,8 @@
 #endif
 
 #define LEAN_AND_MEAN
-#include <windows.h>
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
+#include <windows.h>
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 
 #if defined(MSVC_VER)

@@ -171,7 +171,23 @@ message(STATUS "")
 # --- 3.2. Staging Infrastructure ---
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
-set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Root directory for staging all project artifacts.")
+if(CMAKE_CONFIGURATION_TYPES)
+  # For multi-config generators (e.g., VS, Xcode), use a single 'stage' directory.
+  # CMake will create per-configuration subdirectories for build artifacts.
+  set(_staging_dir_name "stage")
+else()
+  # For single-config generators (e.g., Makefiles, Ninja), create a
+  # configuration-specific staging directory name (e.g., 'stage-debug').
+  if(NOT CMAKE_BUILD_TYPE)
+    # If no build type is specified, default to 'debug'.
+    set(_build_type_suffix "debug")
+  else()
+    string(TOLOWER "${CMAKE_BUILD_TYPE}" _build_type_suffix)
+  endif()
+  set(_staging_dir_name "stage-${_build_type_suffix}")
+endif()
+
+set(PYLABHUB_STAGING_DIR "${CMAKE_BINARY_DIR}/${_staging_dir_name}" CACHE PATH "Root directory for staging all project artifacts.")
 
 # Create a dedicated target to initialize all staging directories. This
 # prevents race conditions and file/directory name conflicts by ensuring
