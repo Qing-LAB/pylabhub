@@ -35,6 +35,13 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
+# Option to enable the PLH_DEBUG and PLH_DEBUG_RT macros.
+if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+  option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" ON)
+else()
+  option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" OFF)
+endif()
+
 # --- Logger Compile-Time Level ---
 # Set the default compile-time log level. This controls which LOGGER_* macros
 # are compiled into the binary.
