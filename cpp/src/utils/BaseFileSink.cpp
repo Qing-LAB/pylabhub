@@ -34,8 +34,8 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
     (void)m_use_flock; // Prevent unused parameter warning on Windows
     std::wstring wpath = pylabhub::format_tools::win32_to_long_path(m_path);
     m_file_handle = CreateFileW(wpath.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (m_file_handle == INVALID_HANDLE_VALUE)
     {
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
