@@ -567,6 +567,15 @@ void Logger::Impl::worker_loop()
                                           arg.error_message, sink_ ? sink_->description() : "null",
                                           local_queue.size());
                             }
+                            else
+                            {
+                                PLH_DEBUG(" ** Logger sink creation error but no error_callback "
+                                          "function can be reached : {}\n"
+                                          " ** Current sink description: {}\n"
+                                          " ** Current local_queue size: {}",
+                                          arg.error_message, sink_ ? sink_->description() : "null",
+                                          local_queue.size());
+                            }
                         }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
