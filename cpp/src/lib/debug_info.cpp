@@ -291,23 +291,8 @@ void print_stack_trace() noexcept
         binToFrameIndices[key].push_back(static_cast<int>(i));
     }
 
-    // Quote a path for shell (basic)
-    auto shell_quote = [](const std::string &s) -> std::string
-    {
-        std::string out = "\"";
-        for (char c : s)
-        {
-            if (c == '"')
-                out += "\\\"";
-            else
-                out += c;
-        }
-        out += "\"";
-        return out;
-    };
-
     // Helper: find an executable in PATH (returns true if found and executable).
-    auto find_in_path = [](const std::string &name) -> bool
+    static bool find_in_path(const std::string &name)
     {
         const char *pathEnv = std::getenv("PATH");
         if (!pathEnv)
@@ -335,7 +320,106 @@ void print_stack_trace() noexcept
                 return true;
         }
         return false;
-    };
+    }
+
+    // Quote a path for shell (basic)
+    static std::string shell_quote(const std::string &s)
+    {
+        std::string out = "\"";
+        for (char c : s)
+        {
+            if (c == '"')
+                out += "\\\"";
+            else
+                out += c;
+        }
+        out += "\"";
+        return out;
+    }
+
+    // New helper function to encapsulate addr2line logic
+    static std::vector<std::string> resolve_symbols_with_addr2line(
+        const std::string &binary,
+        const std::vector<uintptr_t> &offsets,
+        bool prefer_llvm_addr2line)
+    {
+        std::ostringstream cmd;
+        if (prefer_llvm_addr2line && find_in_path("llvm-addr2line"))
+            cmd << "llvm-addr2line";
+        else if (find_in_path("addr2line"))
+            cmd << "addr2line";
+        else
+            return std::vector<std::string>(); // No addr2line tool found
+
+        cmd << " -f -C -e " << shell_quote(binary);
+
+        for (uintptr_t offset : offsets)
+        {
+            cmd << " 0x" << std::hex << offset;
+        }
+
+        FILE *fp = popen(cmd.str().c_str(), "r");
+        if (!fp)
+        {
+            return std::vector<std::string>();
+        }
+
+        std::vector<std::string> lines;
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), fp))
+        {
+            std::string s(buf);
+            // trim newline
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+                s.pop_back();
+            lines.push_back(std::move(s));
+        }
+        pclose(fp);
+
+        std::vector<std::string> perFrame;
+        perFrame.reserve(offsets.size());
+
+        // Heuristic for addr2line output: 2 lines per address (function, file:line) or 1 line.
+        if (!lines.empty() && lines.size() >= offsets.size() * 2)
+        {
+            for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
+            {
+                perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
+            }
+        }
+        else if (!lines.empty() && lines.size() >= offsets.size())
+        {
+            // Fallback for one line per frame
+            for (size_t j = 0; j < offsets.size(); ++j)
+            {
+                perFrame.push_back(lines[j]);
+            }
+        }
+        else
+        {
+            // General fallback heuristic: distribute lines evenly
+            size_t per = (lines.empty() ? 1 : (lines.size() + offsets.size() - 1) / offsets.size());
+            size_t cur = 0;
+            for (size_t fi = 0; fi < offsets.size(); ++fi)
+            {
+                std::ostringstream acc;
+                for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+                {
+                    if (k)
+                        acc << "\n";
+                    acc << lines[cur];
+                }
+                perFrame.push_back(acc.str());
+            }
+        }
+
+        // Pad if necessary
+        while (perFrame.size() < offsets.size())
+            perFrame.emplace_back();
+
+        return perFrame;
+    }
+
 
     // For each binary, call addr2line (or atos on macOS) once with all offsets
     std::unordered_map<std::string, std::vector<std::string>> binResults;
@@ -452,156 +536,24 @@ void print_stack_trace() noexcept
         }
         else
         {
-            // If atos not available, prefer llvm-addr2line over addr2line
-            std::ostringstream cmd;
-            if (has_llvm_addr2line)
-                cmd << "llvm-addr2line";
-            else
-                cmd << "addr2line";
-            cmd << " -f -C -e " << shell_quote(binary);
-
+            std::vector<uintptr_t> offsets;
+            offsets.reserve(indices.size());
             for (int idx : indices)
             {
-                cmd << " 0x" << std::hex << metas[idx].offset;
+                offsets.push_back(metas[idx].offset);
             }
-
-            FILE *fp = popen(cmd.str().c_str(), "r");
-            if (!fp)
-            {
-                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-                continue;
-            }
-
-            std::vector<std::string> lines;
-            char buf[1024];
-            while (fgets(buf, sizeof(buf), fp))
-            {
-                std::string s(buf);
-                // trim newline
-                while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                    s.pop_back();
-                lines.push_back(std::move(s));
-            }
-            pclose(fp);
-
-            std::vector<std::string> perFrame;
-            perFrame.reserve(indices.size());
-
-            // best case: 2 * N lines
-            if ((int)lines.size() >= (int)indices.size() * 2)
-            {
-                for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < indices.size(); j += 2)
-                {
-                    perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-                }
-                // pad if necessary
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-            else if ((int)lines.size() == (int)indices.size())
-            {
-                // one line per frame (some versions)
-                for (auto &l : lines)
-                    perFrame.push_back(l);
-            }
-            else
-            {
-                // fallback heuristic: distribute lines evenly
-                size_t per =
-                    (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
-                size_t cur = 0;
-                for (size_t fi = 0; fi < indices.size(); ++fi)
-                {
-                    std::ostringstream acc;
-                    for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                    {
-                        if (k)
-                            acc << "\n";
-                        acc << lines[cur];
-                    }
-                    perFrame.push_back(acc.str());
-                }
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-
-            binResults[binary] = std::move(perFrame);
+            binResults[binary] = resolve_symbols_with_addr2line(binary, offsets, true);
         }
 
 #else // non-Apple POSIX systems (Linux, etc.): existing addr2line logic
 
-        std::ostringstream cmd;
-        cmd << "addr2line -f -C -e " << shell_quote(binary);
-
-        // Append offsets in the order of indices
+        std::vector<uintptr_t> offsets;
+        offsets.reserve(indices.size());
         for (int idx : indices)
         {
-            cmd << " 0x" << std::hex << metas[idx].offset;
+            offsets.push_back(metas[idx].offset);
         }
-
-        FILE *fp = popen(cmd.str().c_str(), "r");
-        if (!fp)
-        {
-            // failure to run addr2line -> store empty results
-            binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-            continue;
-        }
-
-        // addr2line normally prints two lines per address: function and file:line
-        // We'll read all lines and then coalesce them into per-address strings.
-        std::vector<std::string> lines;
-        char buf[1024];
-        while (fgets(buf, sizeof(buf), fp))
-        {
-            std::string s(buf);
-            // trim newline
-            while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                s.pop_back();
-            lines.push_back(std::move(s));
-        }
-        pclose(fp);
-
-        std::vector<std::string> perFrame;
-        perFrame.reserve(indices.size());
-
-        // best case: 2 * N lines
-        if ((int)lines.size() >= (int)indices.size() * 2)
-        {
-            for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < indices.size(); j += 2)
-            {
-                perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-            }
-            // pad if necessary
-            while (perFrame.size() < indices.size())
-                perFrame.emplace_back();
-        }
-        else if ((int)lines.size() == (int)indices.size())
-        {
-            // one line per frame (some versions)
-            for (auto &l : lines)
-                perFrame.push_back(l);
-        }
-        else
-        {
-            // fallback heuristic: distribute lines evenly
-            size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
-            size_t cur = 0;
-            for (size_t fi = 0; fi < indices.size(); ++fi)
-            {
-                std::ostringstream acc;
-                for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                {
-                    if (k)
-                        acc << "\n";
-                    acc << lines[cur];
-                }
-                perFrame.push_back(acc.str());
-            }
-            while (perFrame.size() < indices.size())
-                perFrame.emplace_back();
-        }
-
-        binResults[binary] = std::move(perFrame);
+        binResults[binary] = resolve_symbols_with_addr2line(binary, offsets, false);
 
 #endif // __APPLE__ / non-Apple POSIX
 

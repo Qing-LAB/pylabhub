@@ -73,11 +73,11 @@ class AtomicGuard
     // Move constructor: take source token/owner/is_active; source left detached + new token.
     AtomicGuard(AtomicGuard &&o) noexcept
         : owner_(o.owner_), token_(o.token_),
-          is_active_(o.is_active_.load(std::memory_order_acquire))
+          is_active_(o.is_active_)
     {
         // detach source and give it a fresh token
         o.owner_ = nullptr;
-        o.is_active_.store(false, std::memory_order_release);
+        o.is_active_ = false;
         o.token_ = generate_token();
     }
 
@@ -88,22 +88,22 @@ class AtomicGuard
             return *this;
 
         // Release our own active lock (best-effort) if held.
-        if (is_active_.load(std::memory_order_acquire) && owner_ != nullptr)
+        if (is_active_ && owner_ != nullptr)
         {
             uint64_t expected = token_;
             owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
                                                          std::memory_order_acquire);
-            is_active_.store(false, std::memory_order_release);
+            is_active_ = false;
         }
 
         // Take ownership from source
         owner_ = o.owner_;
         token_ = o.token_;
-        is_active_.store(o.is_active_.load(std::memory_order_acquire), std::memory_order_release);
+        is_active_ = o.is_active_;
 
         // Leave source detached/inactive and give it a fresh token
         o.owner_ = nullptr;
-        o.is_active_.store(false, std::memory_order_release);
+        o.is_active_ = false;
         o.token_ = generate_token();
 
         return *this;
@@ -112,7 +112,7 @@ class AtomicGuard
     ~AtomicGuard() noexcept
     {
         // Best-effort release ONLY IF we believe we hold the lock.
-        if (!is_active_.load(std::memory_order_acquire) || !owner_)
+        if (!is_active_ || !owner_)
         {
             return;
         }
@@ -122,7 +122,7 @@ class AtomicGuard
         if (owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
                                                          std::memory_order_acquire))
         {
-            is_active_.store(false, std::memory_order_release);
+            is_active_ = false;
             return;
         }
 
@@ -142,7 +142,7 @@ class AtomicGuard
     void detach_no_release() noexcept
     {
         owner_ = nullptr;
-        is_active_.store(false, std::memory_order_release);
+        is_active_ = false;
     }
 
     // Acquire / release
@@ -154,7 +154,7 @@ class AtomicGuard
         if (owner_->atomic_ref().compare_exchange_strong(
                 expected, token_, std::memory_order_acq_rel, std::memory_order_acquire))
         {
-            is_active_.store(true, std::memory_order_release);
+            is_active_ = true;
             return true;
         }
         return false;
@@ -168,7 +168,7 @@ class AtomicGuard
         if (owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
                                                          std::memory_order_acquire))
         {
-            is_active_.store(false, std::memory_order_release);
+            is_active_ = false;
             return true;
         }
         return false;
@@ -205,7 +205,13 @@ class AtomicGuard
     // Members
     AtomicOwner *owner_;
     uint64_t token_;
-    std::atomic<bool> is_active_;
+    // `is_active_` is a plain `bool` because the AtomicGuard object itself is not designed
+    // for concurrent access by multiple threads. The class contract states: "It is UB to
+    // concurrently access the *same* AtomicGuard object from multiple threads without
+    // external synchronization." Therefore, accesses to `is_active_` do not need to be
+    // atomic, as they occur within an execution path that has exclusive access to
+    // this specific AtomicGuard instance.
+    bool is_active_;
 };
 
 } // namespace pylabhub::basics
