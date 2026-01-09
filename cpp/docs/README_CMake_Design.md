@@ -13,7 +13,7 @@ Our architecture is built on modern CMake practices, emphasizing **clarity, robu
 
 *   **CMake Alias Targets**: We extensively use `ALIAS` targets (e.g., `pylabhub::basic`, `pylabhub::utils`) as a stable interface for consumers. Code should always link against these alias targets, never the concrete target names. This provides an abstraction layer that allows the underlying targets to change without breaking dependent builds.
 
-*   **Unified Staging**: The cornerstone of the design is the unified staging directory (`build/stage/`). All build artifacts are copied here, creating a self-contained, runnable package that mirrors the final installation.
+*   **Unified Staging**: The cornerstone of the design is the unified staging directory, which now always includes the build configuration in its name (e.g., `${CMAKE_BINARY_DIR}/stage-debug`). All build artifacts are copied here, creating a self-contained, runnable package that mirrors the final installation. This makes local development and testing simple and reliable, and allows for side-by-side comparison of artifacts from different configurations.
 
 *   **Separation of Build and Stage**: The system clearly distinguishes between *building* artifacts (compiling) and *staging* them (copying). `cmake --build .` compiles everything, while `cmake --build . --target stage_all` populates the staging area.
 
@@ -21,7 +21,35 @@ Our architecture is built on modern CMake practices, emphasizing **clarity, robu
 
 ---
 
-## 2. Visualizing the Build System
+## 1.1. How the Staging Directory is Named
+
+The exact name of the staging directory now consistently includes the active build configuration, regardless of the CMake generator used. This ensures that you can always find configuration-specific artifacts in a predictable location (e.g., `build/stage-debug`, `build/stage-release`).
+
+The root of this directory is defined by the `PYLABHUB_STAGING_DIR` variable in CMake.
+
+### Naming Convention: `stage-<config>`
+
+*   **For all generators (Single-Config like Ninja/Makefiles, or Multi-Config like Visual Studio/Xcode):**
+    The staging directory name will always be `stage-<config>`, where `<config>` is the lowercase build type (e.g., `debug`, `release`, `minsizerel`, `relwithdebinfo`).
+
+*   **When no configuration is explicitly set:**
+    If `CMAKE_BUILD_TYPE` is not explicitly set (e.g., when running `cmake -S . -B build` without `-DCMAKE_BUILD_TYPE`), the build system will default to `debug`. In this case, the staging root will be `build/stage-debug/`.
+
+This ensures consistent behavior across all development environments and build pipelines, allowing artifacts from different build configurations to coexist without overwriting each other.
+
+### Summary Table: Staging Directory Naming
+
+| Generator Type             | `CMAKE_BUILD_TYPE` set to... | Staging Directory (`PYLABHUB_STAGING_DIR`)                                          |
+| :------------------------- | :--------------------------- | :---------------------------------------------------------------------------------- |
+| All Generators             | `Release`                    | `build/stage-release/`                                                              |
+| All Generators             | `Debug`                      | `build/stage-debug/`                                                                |
+| All Generators             | `MinSizeRel`                 | `build/stage-minsizerel/`                                                           |
+| All Generators             | `RelWithDebInfo`             | `build/stage-relwithdebinfo/`                                                       |
+| All Generators             | (not set)                    | `build/stage-debug/` (defaults to Debug, as used by the build system during configure) |
+
+---
+
+## 3. Developer's Cookbook: Common Tasks
 
 ### Internal Project Dependencies
 
