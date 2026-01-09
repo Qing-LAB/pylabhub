@@ -39,22 +39,6 @@ using namespace pylabhub::platform;
 // Module-level flag to indicate if the FileLock has been initialized.
 static std::atomic<bool> g_filelock_initialized{false};
 
-#if defined(PLATFORM_WIN64)
-static std::string wstring_to_utf8(const std::wstring &wstr)
-{
-    if (wstr.empty())
-    {
-        return std::string();
-    }
-    int size_needed =
-        WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &strTo[0], size_needed, NULL,
-                        NULL);
-    return strTo;
-}
-#endif
-
 static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
     try
@@ -63,7 +47,7 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
         std::wstring longw = pylabhub::format_tools::win32_to_long_path(lockpath);
         for (auto &ch : longw)
             ch = towlower(ch);
-        return wstring_to_utf8(longw);
+        return pylabhub::format_tools::ws2s(longw);
 #else
         // Use the lexically-normal absolute representation for a deterministic key
         try
@@ -552,7 +536,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, wstring_to_utf8(wpath));
+            g_lockfile_registry.emplace(reg_key, pylabhub::format_tools::ws2s(wpath));
 
             pImpl->handle = reinterpret_cast<void *>(h);
             pImpl->valid = true;
