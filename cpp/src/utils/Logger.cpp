@@ -470,8 +470,7 @@ void Logger::Impl::worker_loop()
             {
                 std::visit(
                     // NOTE: recovery_message is captured by reference here.
-                    [&, this](auto &&arg)
-                    {
+                    [&, this](auto &&arg) {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
@@ -483,10 +482,10 @@ void Logger::Impl::worker_loop()
                                 if (dropped_count > 0)
                                 {
                                     const auto now = std::chrono::system_clock::now();
-                                    const auto duration =
-                                        std::chrono::duration_cast<std::chrono::duration<double>>(
-                                            now - m_dropping_since)
-                                            .count();
+                                    const auto duration = std::chrono::duration_cast<
+                                                              std::chrono::duration<double>>(
+                                                              now - m_dropping_since)
+                                                              .count();
 
                                     recovery_message.emplace(LogMessage{
                                         .timestamp = now,
@@ -501,8 +500,8 @@ void Logger::Impl::worker_loop()
 
                             // Process the actual message as normal
                             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                            if (sink_ && arg.level >= static_cast<int>(
-                                                          level_.load(std::memory_order_relaxed)))
+                            if (sink_ && arg.level >= static_cast<int>(level_.load(
+                                                          std::memory_order_relaxed)))
                             {
                                 sink_->write(arg);
                             }
@@ -555,8 +554,18 @@ void Logger::Impl::worker_loop()
                             {
                                 // Post the user callback to the dispatcher to avoid deadlock.
                                 auto cb = error_callback_;
-                                callback_dispatcher_.post([cb, msg = arg.error_message]()
-                                                          { cb(msg); });
+                                callback_dispatcher_.post([cb, msg = arg.error_message]() {
+                                    cb(msg);
+                                });
+                            }
+                            else
+                            {
+                                PLH_DEBUG(" ** Logger sink creation error but no error_callback "
+                                          "function can be reached : {}\n"
+                                          " ** Current sink description: {}\n"
+                                          " ** Current local_queue size: {}",
+                                          arg.error_message, sink_ ? sink_->description() : "null",
+                                          local_queue.size());
                             }
                             else
                             {
@@ -605,8 +614,8 @@ void Logger::Impl::worker_loop()
         if (recovery_message)
         {
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-            if (sink_ &&
-                recovery_message->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
+            if (sink_ && recovery_message->level >=
+                                static_cast<int>(level_.load(std::memory_order_relaxed)))
             {
                 sink_->write(*recovery_message);
             }
