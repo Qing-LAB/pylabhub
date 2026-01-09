@@ -29,3 +29,12 @@
 * **Attention to Detail:** Pay close attention to string formats, especially when a string parameter needs to be used as input to another function that might be strict in its format.
 * **Iterative Fixing:** After obtaining debug information, use thorough reasoning to find possible locations for the fix. Apply the patch, build the code, and re-test. Use the debug information after patching to determine if the fix is effective. Repeat this process, always with debug output available.
 * **Clean Up:** Only remove the debug code when the failures or errors are fully addressed.
+## 6. Code Modification Rules
+* **Principle:** Extreme care must be taken when modifying code to prevent unintended side effects and to ensure precision.
+* **Replace Tool Precision:** When using the `replace` tool, the `new_string` MUST preserve any and all context from the `old_string` that is not part of the intended change.
+    * **Action:**
+        1. Before executing a `replace` command, mentally verify or re-read the file to ensure the `old_string` is unique or that `expected_replacements` is set correctly.
+        2. Critically inspect the `new_string` to confirm it contains the exact same surrounding code and indentation as the `old_string`.
+        3. For a sequence of dependent changes, re-read the file between steps to verify the previous step was successful and did not introduce errors.
+* **Comment Preservation:** Preserve existing comments in the code unless they are explicitly obsolete, misleading, or contradictory due to the changes being implemented. When adding new code, add high-value comments sparingly, focusing on *why* something is done rather than *what* is done.
+* **Goal:** To guarantee that edits are minimal, correct, and do not corrupt surrounding code.

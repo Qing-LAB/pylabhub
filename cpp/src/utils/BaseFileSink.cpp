@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <system_error>
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
 #define NOMINMAX
 #include <windows.h>
 #else
@@ -30,12 +30,12 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
     m_path = path;
     m_use_flock = use_flock;
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     (void)m_use_flock; // Prevent unused parameter warning on Windows
     std::wstring wpath = pylabhub::format_tools::win32_to_long_path(m_path);
     m_file_handle = CreateFileW(wpath.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (m_file_handle == INVALID_HANDLE_VALUE)
     {
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
@@ -52,7 +52,7 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
 
 void BaseFileSink::close()
 {
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     if (m_file_handle != nullptr && m_file_handle != INVALID_HANDLE_VALUE)
     {
         CloseHandle(m_file_handle);
@@ -73,7 +73,7 @@ void BaseFileSink::write(const std::string &content)
     if (!is_open())
         return;
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     DWORD bytes_written = 0;
     if (!WriteFile(m_file_handle, content.c_str(), static_cast<DWORD>(content.length()),
                    &bytes_written, nullptr) ||
@@ -109,7 +109,7 @@ void BaseFileSink::flush()
     if (!is_open())
         return;
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     FlushFileBuffers(m_file_handle);
 #else
     ::fsync(m_fd);
@@ -134,7 +134,7 @@ size_t BaseFileSink::size() const
 
 bool BaseFileSink::is_open() const
 {
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     return m_file_handle != nullptr && m_file_handle != INVALID_HANDLE_VALUE;
 #else
     return m_fd != -1;

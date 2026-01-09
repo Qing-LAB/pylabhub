@@ -10,6 +10,7 @@ add_executable(test_pylabhub_corelib
   test_recursionguard.cpp
   test_formattable.cpp
   test_platform.cpp
+  test_scopeguard.cpp
 )
 
 # Link against the test framework. This provides:
