@@ -237,7 +237,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @note It is recommended to use the `pylabhub::utils::InitializeApp()`
      *       helper function instead of calling this directly.
      */
-    void initialize();
+    void initialize(std::source_location loc=PLH_HERE);
 
     /**
      * @brief Shuts down the application by executing module shutdown functions.
@@ -249,7 +249,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @note It is recommended to use the `pylabhub::utils::FinalizeApp()`
      *       helper function instead of calling this directly.
      */
-    void finalize();
+    void finalize(std::source_location loc=PLH_HERE);
 
     /**
      * @brief Checks if the lifecycle manager has been initialized.
@@ -297,7 +297,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @param name The name of the module to load.
      * @return `true` if the module was loaded successfully, `false` otherwise.
      */
-    bool load_module(const char *name);
+    bool load_module(const char *name, std::source_location loc = PLH_HERE);
 
     /**
      * @brief Unloads a dynamic module.
@@ -312,7 +312,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @return `true` if the module was considered for unloading, `false` if it
      *         was not found or not loaded.
      */
-    bool unload_module(const char *name);
+    bool unload_module(const char *name, std::source_location loc = PLH_HERE);
 
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
@@ -362,9 +362,9 @@ inline bool IsAppFinalized()
  *
  * This is the recommended entry point for starting the application lifecycle.
  */
-inline void InitializeApp()
+inline void InitializeApp(std::source_location loc=PLH_HERE)
 {
-    LifecycleManager::instance().initialize();
+    LifecycleManager::instance().initialize(loc);
 }
 
 /**
@@ -372,9 +372,9 @@ inline void InitializeApp()
  *
  * This is the recommended entry point for shutting down the application lifecycle.
  */
-inline void FinalizeApp()
+inline void FinalizeApp(std::source_location loc=PLH_HERE)
 {
-    LifecycleManager::instance().finalize();
+    LifecycleManager::instance().finalize(loc);
 }
 
 /**
@@ -400,9 +400,9 @@ inline bool RegisterDynamicModule(ModuleDef &&module_def)
  * @param name The name of the module to load.
  * @return `true` if the module was loaded successfully, `false` otherwise.
  */
-inline bool LoadModule(const char *name)
+inline bool LoadModule(const char *name, std::source_location loc=PLH_HERE)
 {
-    return LifecycleManager::instance().load_module(name);
+    return LifecycleManager::instance().load_module(name, loc);
 }
 
 /**
@@ -412,9 +412,9 @@ inline bool LoadModule(const char *name)
  * @param name The name of the module to unload.
  * @return `true` if the module was considered for unloading.
  */
-inline bool UnloadModule(const char *name)
+inline bool UnloadModule(const char *name, std::source_location loc=PLH_HERE)
 {
-    return LifecycleManager::instance().unload_module(name);
+    return LifecycleManager::instance().unload_module(name, loc);
 }
 
 class LifecycleGuard
@@ -501,7 +501,7 @@ class LifecycleGuard
             m_is_owner = false;
             const auto app_name = pylabhub::platform::get_executable_name();
             const auto pid = pylabhub::platform::get_pid();
-            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] WARNING: LifecycleGuard constructed but an "
+            PLH_DEBUG("[PLH_LifeCycle] [{}:{}] WARNING: LifecycleGuard constructed but an "
                       "owner already exists. This guard is a no-op; provided modules (if any) "
                       "were ignored.",
                       app_name, pid);

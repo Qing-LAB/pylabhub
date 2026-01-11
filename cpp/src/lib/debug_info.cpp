@@ -90,6 +90,134 @@ static DbgHelpInitializer g_dbghelp_initializer;
 } // namespace
 #endif
 
+// Helper: find an executable in PATH (returns true if found and executable).
+static bool find_in_path(const std::string &name)
+{
+    const char *pathEnv = std::getenv("PATH");
+    if (!pathEnv)
+        return false;
+    std::string pathStr(pathEnv);
+    size_t start = 0;
+    while (start < pathStr.size())
+    {
+        size_t pos = pathStr.find(':', start);
+        std::string dir;
+        if (pos == std::string::npos)
+        {
+            dir = pathStr.substr(start);
+            start = pathStr.size();
+        }
+        else
+        {
+            dir = pathStr.substr(start, pos - start);
+            start = pos + 1;
+        }
+        if (dir.empty())
+            dir = ".";
+        std::string candidate = dir + "/" + name;
+        if (access(candidate.c_str(), X_OK) == 0)
+            return true;
+    }
+    return false;
+}
+
+// Quote a path for shell (basic)
+static std::string shell_quote(const std::string &s)
+{
+    std::string out = "\"";
+    for (char c : s)
+    {
+        if (c == '"')
+            out += "\\\"";
+        else
+            out += c;
+    }
+    out += "\"";
+    return out;
+}
+
+// New helper function to encapsulate addr2line logic
+static std::vector<std::string>
+resolve_symbols_with_addr2line(const std::string &binary, const std::vector<uintptr_t> &offsets,
+                               bool prefer_llvm_addr2line)
+{
+    std::ostringstream cmd;
+    if (prefer_llvm_addr2line && find_in_path("llvm-addr2line"))
+        cmd << "llvm-addr2line";
+    else if (find_in_path("addr2line"))
+        cmd << "addr2line";
+    else
+        return std::vector<std::string>(); // No addr2line tool found
+
+    cmd << " -f -C -e " << shell_quote(binary);
+
+    for (uintptr_t offset : offsets)
+    {
+        cmd << " 0x" << std::hex << offset;
+    }
+
+    FILE *fp = popen(cmd.str().c_str(), "r");
+    if (!fp)
+    {
+        return std::vector<std::string>();
+    }
+
+    std::vector<std::string> lines;
+    char buf[1024];
+    while (fgets(buf, sizeof(buf), fp))
+    {
+        std::string s(buf);
+        // trim newline
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+            s.pop_back();
+        lines.push_back(std::move(s));
+    }
+    pclose(fp);
+
+    std::vector<std::string> perFrame;
+    perFrame.reserve(offsets.size());
+
+    // Heuristic for addr2line output: 2 lines per address (function, file:line) or 1 line.
+    if (!lines.empty() && lines.size() >= offsets.size() * 2)
+    {
+        for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
+        {
+            perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
+        }
+    }
+    else if (!lines.empty() && lines.size() >= offsets.size())
+    {
+        // Fallback for one line per frame
+        for (size_t j = 0; j < offsets.size(); ++j)
+        {
+            perFrame.push_back(lines[j]);
+        }
+    }
+    else
+    {
+        // General fallback heuristic: distribute lines evenly
+        size_t per = (lines.empty() ? 1 : (lines.size() + offsets.size() - 1) / offsets.size());
+        size_t cur = 0;
+        for (size_t fi = 0; fi < offsets.size(); ++fi)
+        {
+            std::ostringstream acc;
+            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+            {
+                if (k)
+                    acc << "\n";
+                acc << lines[cur];
+            }
+            perFrame.push_back(acc.str());
+        }
+    }
+
+    // Pad if necessary
+    while (perFrame.size() < offsets.size())
+        perFrame.emplace_back();
+
+    return perFrame;
+}
+
 void print_stack_trace() noexcept
 {
     fmt::print(stderr, "Stack Trace (most recent call first):\n");
@@ -289,134 +417,6 @@ void print_stack_trace() noexcept
         const std::string &fname = metas[i].dli_fname.empty() ? exe_path : metas[i].dli_fname;
         std::string key = fname.empty() ? std::string("[unknown]") : fname;
         binToFrameIndices[key].push_back(static_cast<int>(i));
-    }
-
-    // Helper: find an executable in PATH (returns true if found and executable).
-    static bool find_in_path(const std::string &name)
-    {
-        const char *pathEnv = std::getenv("PATH");
-        if (!pathEnv)
-            return false;
-        std::string pathStr(pathEnv);
-        size_t start = 0;
-        while (start < pathStr.size())
-        {
-            size_t pos = pathStr.find(':', start);
-            std::string dir;
-            if (pos == std::string::npos)
-            {
-                dir = pathStr.substr(start);
-                start = pathStr.size();
-            }
-            else
-            {
-                dir = pathStr.substr(start, pos - start);
-                start = pos + 1;
-            }
-            if (dir.empty())
-                dir = ".";
-            std::string candidate = dir + "/" + name;
-            if (access(candidate.c_str(), X_OK) == 0)
-                return true;
-        }
-        return false;
-    }
-
-    // Quote a path for shell (basic)
-    static std::string shell_quote(const std::string &s)
-    {
-        std::string out = "\"";
-        for (char c : s)
-        {
-            if (c == '"')
-                out += "\\\"";
-            else
-                out += c;
-        }
-        out += "\"";
-        return out;
-    }
-
-    // New helper function to encapsulate addr2line logic
-    static std::vector<std::string> resolve_symbols_with_addr2line(
-        const std::string &binary, const std::vector<uintptr_t> &offsets,
-        bool prefer_llvm_addr2line)
-    {
-        std::ostringstream cmd;
-        if (prefer_llvm_addr2line && find_in_path("llvm-addr2line"))
-            cmd << "llvm-addr2line";
-        else if (find_in_path("addr2line"))
-            cmd << "addr2line";
-        else
-            return std::vector<std::string>(); // No addr2line tool found
-
-        cmd << " -f -C -e " << shell_quote(binary);
-
-        for (uintptr_t offset : offsets)
-        {
-            cmd << " 0x" << std::hex << offset;
-        }
-
-        FILE *fp = popen(cmd.str().c_str(), "r");
-        if (!fp)
-        {
-            return std::vector<std::string>();
-        }
-
-        std::vector<std::string> lines;
-        char buf[1024];
-        while (fgets(buf, sizeof(buf), fp))
-        {
-            std::string s(buf);
-            // trim newline
-            while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                s.pop_back();
-            lines.push_back(std::move(s));
-        }
-        pclose(fp);
-
-        std::vector<std::string> perFrame;
-        perFrame.reserve(offsets.size());
-
-        // Heuristic for addr2line output: 2 lines per address (function, file:line) or 1 line.
-        if (!lines.empty() && lines.size() >= offsets.size() * 2)
-        {
-            for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
-            {
-                perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-            }
-        }
-        else if (!lines.empty() && lines.size() >= offsets.size())
-        {
-            // Fallback for one line per frame
-            for (size_t j = 0; j < offsets.size(); ++j)
-            {
-                perFrame.push_back(lines[j]);
-            }
-        }
-        else
-        {
-            // General fallback heuristic: distribute lines evenly
-            size_t per = (lines.empty() ? 1 : (lines.size() + offsets.size() - 1) / offsets.size());
-            size_t cur = 0;
-            for (size_t fi = 0; fi < offsets.size(); ++fi)
-            {
-                std::ostringstream acc;
-                for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                {
-                    if (k)
-                        acc << "\n";
-                    acc << lines[cur];
-                }
-                perFrame.push_back(acc.str());
-            }
-        }
-
-        // Pad if necessary
-        while (perFrame.size() < offsets.size())
-            perFrame.emplace_back();
-
-        return perFrame;
     }
 
     // For each binary, call addr2line (or atos on macOS) once with all offsets

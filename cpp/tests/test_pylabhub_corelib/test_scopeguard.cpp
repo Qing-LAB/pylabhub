@@ -8,6 +8,7 @@
  */
 #include <gtest/gtest.h>
 #include <utility>
+#include <atomic>
 
 #include "scope_guard.hpp"
 
@@ -70,15 +71,16 @@ TEST(ScopeGuardTest, MoveConstruction)
 // Test that a moved-from ScopeGuard does not execute.
 TEST(ScopeGuardTest, MovedFromGuardIsInactive)
 {
-    bool executed = false;
+    std::atomic<int> execution_count = 0;
     {
-        auto guard1 = make_scope_guard([&]() { executed = true; });
+        auto guard1 = make_scope_guard([&]() { execution_count++; });
         ScopeGuard guard2(std::move(guard1));
         // guard1 is now moved-from and should be inactive.
         // Its destructor should do nothing.
     }
-    // If guard1 executed, this would be true. We expect it to be false.
-    ASSERT_FALSE(executed);
+    // Only guard2 should have executed the callable.
+    // So the count should be 1 (from guard2's destruction).
+    ASSERT_EQ(execution_count.load(), 1);
 }
 
 // Test that exceptions from the guarded function are swallowed in the destructor.
