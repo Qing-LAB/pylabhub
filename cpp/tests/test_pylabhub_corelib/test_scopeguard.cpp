@@ -11,8 +11,8 @@
 
 #include "scope_guard.hpp"
 
-using pylabhub::basics::ScopeGuard;
 using pylabhub::basics::make_scope_guard;
+using pylabhub::basics::ScopeGuard;
 
 // Test that the ScopeGuard executes its function on scope exit.
 TEST(ScopeGuardTest, ExecutesOnScopeExit)
@@ -85,9 +85,7 @@ TEST(ScopeGuardTest, MovedFromGuardIsInactive)
 TEST(ScopeGuardTest, ExceptionInDestructorIsSwallowed)
 {
     auto make_and_destroy_guard = []()
-    {
-        auto guard = make_scope_guard([]() { throw std::runtime_error("Test"); });
-    };
+    { auto guard = make_scope_guard([]() { throw std::runtime_error("Test"); }); };
 
     // The destructor should not propagate the exception.
     EXPECT_NO_THROW(make_and_destroy_guard());
