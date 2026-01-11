@@ -41,8 +41,6 @@
 #define PYLABHUB_IS_POSIX 0
 #endif
 
-
-
 // --- Require C++20 or later --------------------------------------------------
 // This header (and the codebase) uses C++17 features: inline variables,
 // std::scoped_lock, and others. Fail early with a clear message when an
