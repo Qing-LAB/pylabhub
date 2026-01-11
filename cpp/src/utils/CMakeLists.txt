@@ -86,7 +86,7 @@ endif()
 # This makes `include/` available via `target_include_directories`.
 target_include_directories(pylabhub-utils
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -126,7 +126,7 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/utils/
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/utils/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/utils
 )
 
@@ -158,7 +158,7 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
 # Stage the public headers for this library to match the installation.
 add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/include/utils"
+          "${CMAKE_SOURCE_DIR}/src/include/utils"
           "${PYLABHUB_STAGING_DIR}/include/utils"
   COMMENT "Staging public headers for pylabhub-utils"
 )
