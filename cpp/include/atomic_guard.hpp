@@ -72,8 +72,7 @@ class AtomicGuard
 
     // Move constructor: take source token/owner/is_active; source left detached + new token.
     AtomicGuard(AtomicGuard &&o) noexcept
-        : owner_(o.owner_), token_(o.token_),
-          is_active_(o.is_active_)
+        : owner_(o.owner_), token_(o.token_), is_active_(o.is_active_)
     {
         // detach source and give it a fresh token
         o.owner_ = nullptr;

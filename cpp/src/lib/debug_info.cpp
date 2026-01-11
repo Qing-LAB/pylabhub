@@ -339,8 +339,7 @@ void print_stack_trace() noexcept
 
     // New helper function to encapsulate addr2line logic
     static std::vector<std::string> resolve_symbols_with_addr2line(
-        const std::string &binary,
-        const std::vector<uintptr_t> &offsets,
+        const std::string &binary, const std::vector<uintptr_t> &offsets,
         bool prefer_llvm_addr2line)
     {
         std::ostringstream cmd;
@@ -419,7 +418,6 @@ void print_stack_trace() noexcept
 
         return perFrame;
     }
-
 
     // For each binary, call addr2line (or atos on macOS) once with all offsets
     std::unordered_map<std::string, std::vector<std::string>> binResults;
