@@ -457,8 +457,7 @@ void Logger::Impl::worker_loop()
             g_logger_state.store(LoggerState::ShuttingDown, std::memory_order_release);
         }
 
-        Command new_set_sink_command = Command{nullptr};
-        bool has_set_sink_command = false;
+        std::optional<Command> new_set_sink_command;
 
         for (auto &cmd : local_queue)
         {
@@ -508,7 +507,6 @@ void Logger::Impl::worker_loop()
                             // Defer sink replacement until after the batch to avoid
                             // interleaving messages.
                             new_set_sink_command = std::move(cmd);
-                            has_set_sink_command = true;
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
                         {
@@ -581,42 +579,48 @@ void Logger::Impl::worker_loop()
         // Only the last SetSinkCommand in the batch is applied.
         // This is to avoid rapid switching of sinks causing confusion and to avoid file descriptor
         // being exhausted if many commands are queued.
-        if (has_set_sink_command)
+        if (new_set_sink_command)
         {
-            if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
+            if (auto *sink_cmd = std::get_if<SetSinkCommand>(&*new_set_sink_command))
             {
-                std::string old_desc = sink_ ? sink_->description() : "null";
-                std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
-
-                if (sink_)
+                if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
                 {
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                    sink_->write(
-                        LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                   .process_id = pylabhub::platform::get_pid(),
-                                   .thread_id = pylabhub::platform::get_native_thread_id(),
-                                   .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                   .body = make_buffer("Switching log sink to: {}", new_desc)});
-                    sink_->flush();
+                    std::string old_desc = sink_ ? sink_->description() : "null";
+                    std::string new_desc =
+                        sink_cmd->new_sink ? sink_cmd->new_sink->description() : "null";
+                    // For old sink, log the switch before changing.
+                    if (sink_)
+                    {
+
+                        sink_->write(
+                            LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                       .process_id = pylabhub::platform::get_pid(),
+                                       .thread_id = pylabhub::platform::get_native_thread_id(),
+                                       .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                       .body = make_buffer("Switching log sink to: {}", new_desc)});
+                        sink_->flush();
+                    }
+                    // Now actually switch the sink.
+                    sink_ = std::move(sink_cmd->new_sink);
+                    // Log the completion of the switch.
+                    if (sink_)
+                    {
+                        sink_->write(LogMessage{
+                            .timestamp = std::chrono::system_clock::now(),
+                            .process_id = pylabhub::platform::get_pid(),
+                            .thread_id = pylabhub::platform::get_native_thread_id(),
+                            .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                            .body = make_buffer("Log sink switched from: {}", old_desc)});
+                    }
                 }
-                std::lock_guard<std::mutex> sink_lock(
-                    m_sink_mutex); // Lock around sink assignment for safety
-                sink_ = std::move(arg.new_sink);
-                if (sink_)
+                else
                 {
-                    sink_->write(
-                        LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                   .process_id = pylabhub::platform::get_pid(),
-                                   .thread_id = pylabhub::platform::get_native_thread_id(),
-                                   .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                   .body = make_buffer("Log sink switched from: {}", old_desc)});
+                    // If messages are disabled, just switch the sink without logging.
+                    std::lock_guard<std::mutex> sink_lock(
+                        m_sink_mutex); // Lock around sink assignment
+                    sink_ = std::move(sink_cmd->new_sink);
                 }
-            }
-            else
-            {
-                // If messages are disabled, just switch the sink without logging.
-                std::lock_guard<std::mutex> sink_lock(m_sink_mutex); // Lock around sink assignment
-                sink_ = std::move(arg.new_sink);
             }
         }
         if (local_stop_flag)
