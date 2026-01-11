@@ -386,6 +386,8 @@ Logger::Impl::~Impl()
     if (worker_thread_.joinable() && !shutdown_requested_.load())
     {
         // This situation should be avoided by using the LifecycleManager.
+        PLH_DEBUG("**HIGH ALERT: Logger Impl destructor called without prior shutdown. This should "
+                  "NOT happen. Check LifeCycle management.**");
     }
 }
 
@@ -439,30 +441,24 @@ void Logger::Impl::worker_loop()
 
     while (true)
     {
-        bool do_final_flush_and_break = false;
+        bool local_stop_flag = false;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
 
-            if (shutdown_requested_.load() && queue_.empty())
-            {
-                do_final_flush_and_break = true;
-            }
-
             // Swap the main queue with our empty local one. This is a fast operation
             // that minimizes the time the mutex is held.
             local_queue.swap(queue_);
+            local_stop_flag = shutdown_requested_.load();
         }
 
-        if (do_final_flush_and_break)
+        if (local_stop_flag)
         {
-            if (sink_)
-            {
-                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                sink_->flush();
-            }
-            break; // Exit the worker loop.
+            g_logger_state.store(LoggerState::ShuttingDown, std::memory_order_release);
         }
+
+        Command new_set_sink_command = Command{nullptr};
+        bool has_set_sink_command = false;
 
         for (auto &cmd : local_queue)
         {
@@ -470,7 +466,8 @@ void Logger::Impl::worker_loop()
             {
                 std::visit(
                     // NOTE: recovery_message is captured by reference here.
-                    [&, this](auto &&arg) {
+                    [&, this](auto &&arg)
+                    {
                         using T = std::decay_t<decltype(arg)>;
                         if constexpr (std::is_same_v<T, LogMessage>)
                         {
@@ -482,10 +479,10 @@ void Logger::Impl::worker_loop()
                                 if (dropped_count > 0)
                                 {
                                     const auto now = std::chrono::system_clock::now();
-                                    const auto duration = std::chrono::duration_cast<
-                                                              std::chrono::duration<double>>(
-                                                              now - m_dropping_since)
-                                                              .count();
+                                    const auto duration =
+                                        std::chrono::duration_cast<std::chrono::duration<double>>(
+                                            now - m_dropping_since)
+                                            .count();
 
                                     recovery_message.emplace(LogMessage{
                                         .timestamp = now,
@@ -500,53 +497,18 @@ void Logger::Impl::worker_loop()
 
                             // Process the actual message as normal
                             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                            if (sink_ && arg.level >= static_cast<int>(level_.load(
-                                                          std::memory_order_relaxed)))
+                            if (sink_ && arg.level >= static_cast<int>(
+                                                          level_.load(std::memory_order_relaxed)))
                             {
                                 sink_->write(arg);
                             }
                         }
                         else if constexpr (std::is_same_v<T, SetSinkCommand>)
                         {
-                            if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
-                            {
-                                std::string old_desc = sink_ ? sink_->description() : "null";
-                                std::string new_desc =
-                                    arg.new_sink ? arg.new_sink->description() : "null";
-
-                                if (sink_)
-                                {
-                                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                                    sink_->write(LogMessage{
-                                        .timestamp = std::chrono::system_clock::now(),
-                                        .process_id = pylabhub::platform::get_pid(),
-                                        .thread_id = pylabhub::platform::get_native_thread_id(),
-                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                        .body =
-                                            make_buffer("Switching log sink to: {}", new_desc)});
-                                    sink_->flush();
-                                }
-                                std::lock_guard<std::mutex> sink_lock(
-                                    m_sink_mutex); // Lock around sink assignment for safety
-                                sink_ = std::move(arg.new_sink);
-                                if (sink_)
-                                {
-                                    sink_->write(LogMessage{
-                                        .timestamp = std::chrono::system_clock::now(),
-                                        .process_id = pylabhub::platform::get_pid(),
-                                        .thread_id = pylabhub::platform::get_native_thread_id(),
-                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                        .body =
-                                            make_buffer("Log sink switched from: {}", old_desc)});
-                                }
-                            }
-                            else
-                            {
-                                // If messages are disabled, just switch the sink without logging.
-                                std::lock_guard<std::mutex> sink_lock(
-                                    m_sink_mutex); // Lock around sink assignment
-                                sink_ = std::move(arg.new_sink);
-                            }
+                            // Defer sink replacement until after the batch to avoid
+                            // interleaving messages.
+                            new_set_sink_command = std::move(cmd);
+                            has_set_sink_command = true;
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
                         {
@@ -554,18 +516,8 @@ void Logger::Impl::worker_loop()
                             {
                                 // Post the user callback to the dispatcher to avoid deadlock.
                                 auto cb = error_callback_;
-                                callback_dispatcher_.post([cb, msg = arg.error_message]() {
-                                    cb(msg);
-                                });
-                            }
-                            else
-                            {
-                                PLH_DEBUG(" ** Logger sink creation error but no error_callback "
-                                          "function can be reached : {}\n"
-                                          " ** Current sink description: {}\n"
-                                          " ** Current local_queue size: {}",
-                                          arg.error_message, sink_ ? sink_->description() : "null",
-                                          local_queue.size());
+                                callback_dispatcher_.post([cb, msg = arg.error_message]()
+                                                          { cb(msg); });
                             }
                             else
                             {
@@ -614,15 +566,75 @@ void Logger::Impl::worker_loop()
         if (recovery_message)
         {
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-            if (sink_ && recovery_message->level >=
-                                static_cast<int>(level_.load(std::memory_order_relaxed)))
+            if (sink_ &&
+                recovery_message->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
             {
                 sink_->write(*recovery_message);
             }
             recovery_message.reset();
         }
 
+        // Clear the local queue for the next batch.
         local_queue.clear();
+
+        // Now handle any deferred SetSinkCommand to avoid interleaving messages.
+        // Only the last SetSinkCommand in the batch is applied.
+        // This is to avoid rapid switching of sinks causing confusion and to avoid file descriptor
+        // being exhausted if many commands are queued.
+        if (has_set_sink_command)
+        {
+            if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
+            {
+                std::string old_desc = sink_ ? sink_->description() : "null";
+                std::string new_desc = arg.new_sink ? arg.new_sink->description() : "null";
+
+                if (sink_)
+                {
+                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                    sink_->write(
+                        LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                   .process_id = pylabhub::platform::get_pid(),
+                                   .thread_id = pylabhub::platform::get_native_thread_id(),
+                                   .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                   .body = make_buffer("Switching log sink to: {}", new_desc)});
+                    sink_->flush();
+                }
+                std::lock_guard<std::mutex> sink_lock(
+                    m_sink_mutex); // Lock around sink assignment for safety
+                sink_ = std::move(arg.new_sink);
+                if (sink_)
+                {
+                    sink_->write(
+                        LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                   .process_id = pylabhub::platform::get_pid(),
+                                   .thread_id = pylabhub::platform::get_native_thread_id(),
+                                   .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                   .body = make_buffer("Log sink switched from: {}", old_desc)});
+                }
+            }
+            else
+            {
+                // If messages are disabled, just switch the sink without logging.
+                std::lock_guard<std::mutex> sink_lock(m_sink_mutex); // Lock around sink assignment
+                sink_ = std::move(arg.new_sink);
+            }
+        }
+        if (local_stop_flag)
+        {
+            PLH_DEBUG("Logger worker thread shutting down.");
+            if (sink_)
+            {
+                std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                        .body = make_buffer("Logger is shutting down.")});
+                sink_->flush();
+            }
+            g_logger_state.store(LoggerState::Shutdown, std::memory_order_release);
+            break;
+        }
     }
 }
 
@@ -936,6 +948,7 @@ void do_logger_startup(const char *arg)
     Logger::instance().pImpl->start_worker();
     g_logger_state.store(LoggerState::Initialized, std::memory_order_release);
 }
+
 void do_logger_shutdown(const char *arg)
 {
     (void)arg; // Argument not used by logger shutdown.
@@ -946,6 +959,20 @@ void do_logger_shutdown(const char *arg)
                                                std::memory_order_acq_rel))
     {
         Logger::instance().shutdown();
+        // Logger should set g_logger_state to Shutdown when the worker thread exits.
+
+        int count = 0;
+        // Wait up to 5 seconds for shutdown to complete.
+        while (count < 50 &&
+               g_logger_state.load(std::memory_order_acquire) != LoggerState::Shutdown)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            count++;
+        }
+        if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Shutdown)
+        {
+            PLH_DEBUG("Logger shutdown timed out. Forcing shutdown state.");
+        }
         g_logger_state.store(LoggerState::Shutdown, std::memory_order_release);
     }
 }
