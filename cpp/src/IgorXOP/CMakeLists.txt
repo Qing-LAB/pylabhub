@@ -12,7 +12,7 @@
 #   - Define platform macros before including this subdir: PLATFORM_APPLE or PLATFORM_WIN64
 #   - Preferably define&create `pylabhub::basic` and `XOP::XOPSupport` targets before adding this subdir,
 #     so this subproject can link to them at configure time and acquire include dirs.
-#   - Optionally pass DXOP_INSTALL_ROOT to override post-build staging root.
+
 #
 # Exports to parent:
 #   - Cache var: XOP_TARGET_NAME  (name of the cmake target created here)
@@ -172,7 +172,7 @@ if(TARGET pylabhub::utils)
   message(STATUS "IgorXOP: linked to pylabhub::utils")
 endif()
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
 endif()
 

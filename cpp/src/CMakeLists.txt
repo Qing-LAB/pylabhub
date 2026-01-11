@@ -42,7 +42,7 @@ else()
   set(BASIC_LIB_SCOPE PUBLIC)
 endif()
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-basic PRIVATE pylabhub::sanitizer_flags)
 endif()
 
@@ -52,7 +52,7 @@ add_library(pylabhub::basic ALIAS pylabhub-basic)
 # and other third-party dependencies.
 target_include_directories(pylabhub-basic
   ${BASIC_LIB_SCOPE}
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(pylabhub-basic
@@ -81,7 +81,7 @@ endif()
 # The app links against the core library and the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
 endif()
 
@@ -97,10 +97,9 @@ install(TARGETS pylabhub-basic
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-# This assumes the current CMakeLists is in cpp/src and headers are in cpp/include
+# This assumes the current CMakeLists is in cpp/src and headers are in cpp/src/include
 get_filename_component(_this_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)   # e.g. .../project/cpp/src
-get_filename_component(_cpp_dir "${_this_dir}/.." ABSOLUTE)            # .../project/cpp
-set(PYLABHUB_CORE_INCLUDE_DIR "${_cpp_dir}/include")
+set(PYLABHUB_CORE_INCLUDE_DIR "${_this_dir}/include")
 
 set(CORE_HEADER_FILES
     "${PYLABHUB_CORE_INCLUDE_DIR}/atomic_guard.hpp"

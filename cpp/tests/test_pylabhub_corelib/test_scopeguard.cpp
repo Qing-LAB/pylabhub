@@ -8,11 +8,12 @@
  */
 #include <gtest/gtest.h>
 #include <utility>
+#include <atomic>
 
 #include "scope_guard.hpp"
 
-using pylabhub::basics::ScopeGuard;
 using pylabhub::basics::make_scope_guard;
+using pylabhub::basics::ScopeGuard;
 
 // Test that the ScopeGuard executes its function on scope exit.
 TEST(ScopeGuardTest, ExecutesOnScopeExit)
@@ -70,24 +71,23 @@ TEST(ScopeGuardTest, MoveConstruction)
 // Test that a moved-from ScopeGuard does not execute.
 TEST(ScopeGuardTest, MovedFromGuardIsInactive)
 {
-    bool executed = false;
+    std::atomic<int> execution_count = 0;
     {
-        auto guard1 = make_scope_guard([&]() { executed = true; });
+        auto guard1 = make_scope_guard([&]() { execution_count++; });
         ScopeGuard guard2(std::move(guard1));
         // guard1 is now moved-from and should be inactive.
         // Its destructor should do nothing.
     }
-    // If guard1 executed, this would be true. We expect it to be false.
-    ASSERT_FALSE(executed);
+    // Only guard2 should have executed the callable.
+    // So the count should be 1 (from guard2's destruction).
+    ASSERT_EQ(execution_count.load(), 1);
 }
 
 // Test that exceptions from the guarded function are swallowed in the destructor.
 TEST(ScopeGuardTest, ExceptionInDestructorIsSwallowed)
 {
     auto make_and_destroy_guard = []()
-    {
-        auto guard = make_scope_guard([]() { throw std::runtime_error("Test"); });
-    };
+    { auto guard = make_scope_guard([]() { throw std::runtime_error("Test"); }); };
 
     // The destructor should not propagate the exception.
     EXPECT_NO_THROW(make_and_destroy_guard());

@@ -203,11 +203,16 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  * @see pylabhub::debug::debug_msg
  */
 #ifndef PLH_DEBUG
-    #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-        #define PLH_DEBUG(fmt, ...) ::pylabhub::debug::debug_msg(std::source_location::current(), FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
-    #else
-        #define PLH_DEBUG(fmt, ...) do {} while (0)
-    #endif
+#if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+#define PLH_DEBUG(fmt, ...)                                                                        \
+    ::pylabhub::debug::debug_msg(std::source_location::current(),                                  \
+                                 FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#else
+#define PLH_DEBUG(fmt, ...)                                                                        \
+    do                                                                                             \
+    {                                                                                              \
+    } while (0)
+#endif
 #endif
 
 /**
@@ -219,9 +224,13 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  * @see pylabhub::debug::debug_msg_rt
  */
 #ifndef PLH_DEBUG_RT
-    #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-        #define PLH_DEBUG_RT(fmt, ...) ::pylabhub::debug::debug_msg_rt(std::source_location::current(), fmt __VA_OPT__(, ) __VA_ARGS__)
-    #else
-        #define PLH_DEBUG_RT(fmt, ...) do {} while (0)
-    #endif
+#if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+#define PLH_DEBUG_RT(fmt, ...)                                                                     \
+    ::pylabhub::debug::debug_msg_rt(std::source_location::current(), fmt __VA_OPT__(, ) __VA_ARGS__)
+#else
+#define PLH_DEBUG_RT(fmt, ...)                                                                     \
+    do                                                                                             \
+    {                                                                                              \
+    } while (0)
+#endif
 #endif
