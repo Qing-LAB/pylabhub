@@ -65,10 +65,10 @@
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
  *     // In main() or test setup, ensure the lifecycle is started:
- *     // pylabhub::utils::LifecycleGuard guard(
+ *     // pylabhub::utils::LifecycleGuard guard({
  *     //     pylabhub::utils::FileLock::GetLifecycleModule(),
  *     //     pylabhub::utils::Logger::GetLifecycleModule()
- *     // );
+ *     // });
  *
  *     // Attempt to acquire a lock with a 5-second timeout.
  *     pylabhub::utils::FileLock lock(resource,

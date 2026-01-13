@@ -33,12 +33,33 @@ bool read_file_contents(const std::string &path, std::string &out)
     return true;
 }
 
-size_t count_lines(const std::string &s)
+#include <span>
+
+#include <optional>
+#include <string_view>
+
+size_t count_lines(std::string_view text, std::optional<std::string_view> must_include,
+                   std::optional<std::string_view> must_exclude)
 {
     size_t count = 0;
-    for (char c : s)
-        if (c == '\n')
+    size_t pos = 0;
+
+    while (pos < text.size())
+    {
+        auto end = text.find('\n', pos);
+        auto line = text.substr(pos, end - pos);
+
+        if ((!must_include || line.find(*must_include) != std::string_view::npos) &&
+            (!must_exclude || line.find(*must_exclude) == std::string_view::npos))
+        {
             ++count;
+        }
+
+        if (end == std::string_view::npos)
+            break;
+        pos = end + 1;
+    }
+
     return count;
 }
 

@@ -74,11 +74,11 @@
  *     // The user must now explicitly manage the application lifecycle.
  *     // This is typically done by creating a LifecycleGuard in main().
  *     // All required modules must be passed to its constructor.
- *     pylabhub::utils::LifecycleGuard app_lifecycle(
+ *     pylabhub::utils::LifecycleGuard app_lifecycle({
  *         pylabhub::utils::Logger::GetLifecycleModule(),
  *         pylabhub::utils::FileLock::GetLifecycleModule()
  *         // ... other modules ...
- *     );
+ *     });
  *
  *     // It is now safe to use the logger and other utilities.
  *
@@ -183,7 +183,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @brief Asynchronously switches the logging output to the console (stderr).
      * This is the default sink on startup.
      */
-    void set_console();
+    [[nodiscard]] bool set_console();
 
     /**
      * @brief Asynchronously switches the logging output to a file.
@@ -192,7 +192,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      *                  systems to protect against concurrent writes from other
      *                  processes. This has no effect on Windows.
      */
-    void set_logfile(const std::string &utf8_path);
+    [[nodiscard]] bool set_logfile(const std::string &utf8_path);
 
     /**
      * @brief Asynchronously switches the logging output to a file, with explicit locking.
@@ -200,7 +200,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @param use_flock If true, uses an advisory file lock (`flock`) on POSIX
      *                  systems to serialize writes from multiple processes.
      */
-    void set_logfile(const std::string &utf8_path, bool use_flock);
+    [[nodiscard]] bool set_logfile(const std::string &utf8_path, bool use_flock);
 
     /**
      * @brief Asynchronously switches the logging output to a rotating file.
@@ -210,18 +210,18 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @param ec Output parameter for synchronous errors (e.g., invalid path, permissions).
      * @return `true` on success (command enqueued), `false` on synchronous error.
      */
-    bool set_rotating_logfile(const std::filesystem::path &base_filepath,
-                              size_t max_file_size_bytes, size_t max_backup_files,
-                              std::error_code &ec) noexcept;
+    [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
+                                            size_t max_file_size_bytes, size_t max_backup_files,
+                                            std::error_code &ec) noexcept;
 
     /**
      * @brief Overload for set_rotating_logfile with explicit flocking behavior.
      * @param use_flock If true, uses an advisory file lock on POSIX systems
      *                  to serialize writes from multiple processes. No effect on Windows.
      */
-    bool set_rotating_logfile(const std::filesystem::path &base_filepath,
-                              size_t max_file_size_bytes, size_t max_backup_files, bool use_flock,
-                              std::error_code &ec) noexcept;
+    [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
+                                            size_t max_file_size_bytes, size_t max_backup_files,
+                                            bool use_flock, std::error_code &ec) noexcept;
 
     /**
      * @brief Asynchronously switches logging to syslog (POSIX only). This is a no-op on Windows.
@@ -229,7 +229,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @param option The option bitfield for `openlog` (e.g., `LOG_PID`).
      * @param facility The facility code for `openlog` (e.g., `LOG_USER`).
      */
-    void set_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
+    [[nodiscard]] bool set_syslog(const char *ident = nullptr, int option = 0, int facility = 0);
 
     /**
      * @brief Asynchronously switches logging to the Windows Event Log (Windows only).
@@ -237,7 +237,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @param source_name The event source name. This source must be registered
      *                    with the operating system for messages to appear correctly.
      */
-    void set_eventlog(const wchar_t *source_name);
+    [[nodiscard]] bool set_eventlog(const wchar_t *source_name);
 
     /**
      * @brief Gracefully shuts down the logger.
