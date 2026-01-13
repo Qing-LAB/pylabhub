@@ -55,4 +55,34 @@ fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
     fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
     return mb;
 }
+
+// Helper function to extract the basename at compile time
+constexpr std::string_view filename_only(std::string_view file_path)
+{
+    const auto last_slash = file_path.find_last_of('/');
+    const auto last_backslash = file_path.find_last_of('\\');
+
+    // Find the position of the last separator
+    // Use an if/else if structure for C++17 compatibility, or std::max in C++20
+    const std::string_view::size_type last_separator_pos = [&]()
+    {
+        if (last_slash == std::string_view::npos)
+        {
+            return last_backslash;
+        }
+        if (last_backslash == std::string_view::npos)
+        {
+            return last_slash;
+        }
+        return std::max(last_slash, last_backslash);
+    }();
+
+    // If a separator was found, return the part after it; otherwise return the original string
+    if (last_separator_pos == std::string_view::npos)
+    {
+        return file_path;
+    }
+    return file_path.substr(last_separator_pos + 1);
+}
+
 } // namespace pylabhub::format_tools

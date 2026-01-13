@@ -43,7 +43,7 @@ TEST(PlatformTest, DebugMsg)
     // Call the macro that prints the debug message to stderr
     // compute the line where PLH_DEBUG will be called
     int debug_call_line = __LINE__ + 1; // update the offset if you move the PLH_DEBUG line
-    PLH_DEBUG("This is a test debug message with value {}.", 42);
+    PLH_DEBUG("This is a test debug message with value {}. Called at {}", 42, PLH_LOC_HERE_STR);
 
     // Get the captured output
     std::string output = stderr_capture.GetOutput();
@@ -57,13 +57,10 @@ TEST(PlatformTest, DebugMsg)
             << output;
     };
 
-    // 1) preamble + file path (exact file path check)
-    expect_contains(std::string("DEBUG MESSAGE:\nfile: ") + __FILE__);
-
-    // 2) location fragment (line number and func prefix). We check the "(line:<n>:func:" fragment
-    //    so we ensure the logger printed the location information. This is robust to long function
-    //    signatures or line breaks in the function name.
-    expect_contains(std::string("(line:") + std::to_string(debug_call_line) + ":func:");
+    expect_contains(std::string("[DBG]  This is a test debug message with value 42."));
+    expect_contains(std::string(__FILE_NAME__));
+    expect_contains(std::string(__func__));
+    expect_contains(std::to_string(debug_call_line));
 
     // 3) message body: allow either the exact message or the message followed by a trailing newline
     bool found_body = (output.find(test_message) != std::string::npos) ||
@@ -147,6 +144,7 @@ TEST(PlatformTest, Panic)
     // EXPECT_DEATH runs the statement in a new process and checks its exit status and stderr.
     // We check that the stderr contains our fatal error message and the name of this file.
     // We cannot reliably check the line number from here, but checking the file is a good start.
-    EXPECT_DEATH(function_that_panics(), AllOf(HasSubstr("FATAL ERROR: This is a panic test."),
-                                               HasSubstr("test_platform.cpp")));
+    EXPECT_DEATH(function_that_panics(),
+                 AllOf(HasSubstr("This is a panic test."), HasSubstr("PANIC"),
+                       HasSubstr("Stack Trace (most recent call first):")));
 }
