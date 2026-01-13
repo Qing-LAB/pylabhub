@@ -64,9 +64,9 @@ class JsonConfigTest : public ::testing::Test
     pylabhub::utils::LifecycleGuard guard;
 
     JsonConfigTest()
-        : guard(pylabhub::utils::JsonConfig::GetLifecycleModule(),
-                pylabhub::utils::FileLock::GetLifecycleModule(),
-                pylabhub::utils::Logger::GetLifecycleModule())
+        : guard({pylabhub::utils::JsonConfig::GetLifecycleModule(),
+                 pylabhub::utils::FileLock::GetLifecycleModule(),
+                 pylabhub::utils::Logger::GetLifecycleModule()})
     {
     }
 

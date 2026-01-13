@@ -599,12 +599,12 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     // If purely blocking with no timeout, just perform flock blocking call directly
     if (mode == LockMode::Blocking && !timeout)
     {
-        LOGGER_INFO("PID {} - Attempting blocking flock(fd={}, LOCK_EX) for {}", getpid(), fd,
-                    os_path.string());
+        PLH_DEBUG("PID {} - Attempting blocking flock(fd={}, LOCK_EX) for {}", getpid(), fd,
+                  os_path.string());
         if (flock(fd, LOCK_EX) == 0)
         {
-            LOGGER_INFO("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(), fd,
-                        os_path.string());
+            PLH_DEBUG("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(), fd,
+                      os_path.string());
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
             g_lockfile_registry.emplace(reg_key, os_path.string());
@@ -616,8 +616,8 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         else
         {
             int err = errno;
-            LOGGER_ERROR("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
-                         os_path.string(), std::strerror(err));
+            PLH_DEBUG("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
+                      os_path.string(), std::strerror(err));
             pImpl->ec = std::error_code(err, std::generic_category());
             return false;
         }
@@ -633,12 +633,12 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 
     while (true)
     {
-        LOGGER_INFO("PID {} - Attempting non-blocking flock(fd={}, LOCK_EX | LOCK_NB) for {}",
-                    getpid(), fd, os_path.string());
+        PLH_DEBUG("PID {} - Attempting non-blocking flock(fd={}, LOCK_EX | LOCK_NB) for {}",
+                  getpid(), fd, os_path.string());
         if (flock(fd, flock_op) == 0)
         {
-            LOGGER_INFO("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(),
-                        fd, os_path.string());
+            PLH_DEBUG("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(),
+                      fd, os_path.string());
             auto reg_key = make_lock_key(lockpath);
             std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
             g_lockfile_registry.emplace(reg_key, os_path.string());
@@ -649,8 +649,8 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         }
 
         int err = errno;
-        LOGGER_INFO("PID {} - Non-blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
-                    os_path.string(), std::strerror(err));
+        PLH_DEBUG("PID {} - Non-blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
+                  os_path.string(), std::strerror(err));
         // Busy/resource unavailable errors: EWOULDBLOCK or EAGAIN indicate lock is held by someone
         // else.
         if (err != EWOULDBLOCK && err != EAGAIN)
@@ -748,7 +748,8 @@ void do_filelock_cleanup(const char *arg)
 ModuleDef FileLock::GetLifecycleModule(bool cleanup_on_shutdown)
 {
     ModuleDef module("pylabhub::utils::FileLock");
-    module.add_dependency("pylabhub::utils::Logger");
+    // we now do not log error/debug message to remove dependency on logger, which uses filelock
+    // module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_filelock_startup);
 
     if (cleanup_on_shutdown)
