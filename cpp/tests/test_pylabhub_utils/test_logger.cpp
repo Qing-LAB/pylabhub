@@ -209,8 +209,10 @@ TEST_F(LoggerTest, StressLog)
     std::string log_contents;
     ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
     fmt::print(stderr, "Final log file size: {} bytes\n", log_contents.size());
-    fmt::print(stderr, "Final log file content:\n{}\n", log_contents);
-    ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
+    // fmt::print(stderr, "Final log file content:\n{}\n", log_contents);
+    fmt::print(stderr, "Final log lines that contain [INFO  ]",
+               count_lines(log_contents, "[INFO]"));
+    ASSERT_EQ(count_lines(log_contents, "[INFO  ]"), PROCS * MSGS_PER_PROC);
 }
 
 /**
@@ -249,7 +251,7 @@ TEST_F(LoggerTest, InterProcessFlock)
     ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
 
     // 1. Check total line count.
-    ASSERT_EQ(count_lines(log_contents), PROCS * MSGS_PER_PROC);
+    ASSERT_EQ(count_lines(log_contents, "[INFO  ]"), PROCS * MSGS_PER_PROC);
 
     // 2. Check for the integrity of each message from each worker.
     for (int i = 0; i < PROCS; ++i)

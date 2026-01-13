@@ -127,7 +127,9 @@ bool read_file_contents(const std::string &path, std::string &out);
  * @param s The string to process.
  * @return The number of lines.
  */
-size_t count_lines(const std::string &s);
+size_t count_lines(std::string_view text,
+                   std::optional<std::string_view> must_include = std::nullopt,
+                   std::optional<std::string_view> must_exclude = std::nullopt);
 
 /**
  * @brief Waits for a specific string to appear in a file.
@@ -180,7 +182,7 @@ int scaled_value(int original, int small_value);
 template <typename Fn, typename... Mods>
 int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
 {
-    pylabhub::utils::LifecycleGuard guard(std::forward<Mods>(mods)...);
+    pylabhub::utils::LifecycleGuard guard({std::forward<Mods>(mods)...});
 
     try
     {
