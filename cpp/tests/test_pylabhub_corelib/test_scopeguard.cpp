@@ -6,9 +6,9 @@
  * This file contains a suite of tests for the `pylabhub::basics::ScopeGuard`,
  * a utility designed to execute a function upon scope exit.
  */
+#include <atomic>
 #include <gtest/gtest.h>
 #include <utility>
-#include <atomic>
 
 #include "scope_guard.hpp"
 

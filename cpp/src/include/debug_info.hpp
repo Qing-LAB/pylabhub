@@ -12,6 +12,7 @@
 // -- Debugging utilities: stack trace printing, panic and debug messages
 
 #pragma once
+#include "format_tools.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -56,28 +57,24 @@ void print_stack_trace() noexcept;
  * @noreturn This function never returns.
  */
 template <typename... Args>
-[[noreturn]] inline void panic(std::source_location loc, fmt::format_string<Args...> fmt_str,
-                               Args &&...args) noexcept
+[[noreturn]] inline void panic(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "PANIC:\nfile: {}(line:{}:func:{})\nFATAL ERROR: {}\n", loc.file_name(),
-                   loc.line(), loc.function_name(), body);
+        fmt::print(stderr, "[PANIC] {}\n", body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "PANIC:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR WHEN PANIC: "
-                   "fmt_str['{}']\nException: '{}'\n",
-                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get(), e.what());
+                   "[PANIC]  FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
+                   "[PANIC]  Exception: '{}'\n",
+                   fmt_str.get(), e.what());
     }
     catch (...)
     {
-        fmt::print(
-            stderr,
-            "PANIC:\nfile: {}(line:{}:func:{})\nFATAL EXCEPTION DURING PANIC: fmt_str['{}']\n",
-            loc.file_name(), loc.line(), loc.function_name(), fmt_str.get());
+        fmt::print(stderr, "[PANIC]  FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
+                   fmt_str.get());
     }
     print_stack_trace();
     std::abort();
@@ -100,28 +97,24 @@ template <typename... Args>
  * @param args The arguments to be formatted into `fmt_str`.
  */
 template <typename... Args>
-inline void debug_msg(std::source_location loc, fmt::format_string<Args...> fmt_str,
-                      Args &&...args) noexcept
+inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\n{}\n", loc.file_name(),
-                   loc.line(), loc.function_name(), body);
+        fmt::print(stderr, "[DBG]  {}\n", body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR DURING "
-                   "DEBUG_MSG: fmt_str['{}']\nException: '{}'\n",
-                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get(), e.what());
+                   "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG: fmt_str['{}']\n"
+                   "[DBG]  Exception: '{}'\n",
+                   fmt_str.get(), e.what());
     }
     catch (...)
     {
-        fmt::print(stderr,
-                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL EXCEPTION DURING DEBUG_MSG: "
-                   "fmt_str['{}']\n",
-                   loc.file_name(), loc.line(), loc.function_name(), fmt_str.get());
+        fmt::print(stderr, "[DBG]  FATAL EXCEPTION DURING DEBUG_MSG: fmt_str['{}']\n",
+                   fmt_str.get());
     }
 }
 
@@ -143,29 +136,25 @@ inline void debug_msg(std::source_location loc, fmt::format_string<Args...> fmt_
  * @param args The arguments to be formatted into `fmt_str`.
  */
 template <typename... Args>
-inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
-                         const Args &...args) noexcept
+inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
 {
     try
     {
-        fmt::print(stderr, "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\n", loc.file_name(),
-                   loc.line(), loc.function_name());
+        fmt::print(stderr, "[DBG]  ");
         fmt::vprint(stderr, fmt_str, fmt::make_format_args(args...));
         fmt::print(stderr, "\n");
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL FORMAT ERROR DURING "
-                   "DEBUG_MSG_RT: fmt_str['{}']\nException: '{}'\n",
-                   loc.file_name(), loc.line(), loc.function_name(), fmt_str, e.what());
+                   "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG_RT: fmt_str['{}']\n"
+                   "[DBG]  Exception: '{}'\n",
+                   fmt_str, e.what());
     }
     catch (...)
     {
-        fmt::print(stderr,
-                   "DEBUG MESSAGE:\nfile: {}(line:{}:func:{})\nFATAL UNKNOWN EXCEPTION DURING "
-                   "DEBUG_MSG_RT: fmt_str['{}']\n",
-                   loc.file_name(), loc.line(), loc.function_name(), fmt_str);
+        fmt::print(stderr, "[DBG]  FATAL UNKNOWN EXCEPTION DURING DEBUG_MSG_RT: fmt_str['{}']\n",
+                   fmt_str);
     }
 }
 
@@ -176,8 +165,12 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  * @brief Macro to capture the current source location.
  * @details Expands to `std::source_location::current()`.
  */
-#ifndef PLH_HERE
-#define PLH_HERE ::std::source_location::current()
+#ifndef PLH_LOC_HERE_STR
+#define PLH_LOC_HERE_STR                                                                           \
+    (fmt::format(                                                                                  \
+        "{}:{}:{}",                                                                                \
+        pylabhub::format_tools::filename_only(std::source_location::current().file_name()),        \
+        std::source_location::current().line(), std::source_location::current().function_name()))
 #endif
 
 /**
@@ -189,9 +182,7 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  * @see pylabhub::debug::panic
  */
 #ifndef PLH_PANIC
-#define PLH_PANIC(fmt, ...)                                                                        \
-    ::pylabhub::debug::panic(std::source_location::current(),                                      \
-                             FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_PANIC(fmt, ...) ::pylabhub::debug::panic(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #endif
 
 /**
@@ -204,9 +195,7 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  */
 #ifndef PLH_DEBUG
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-#define PLH_DEBUG(fmt, ...)                                                                        \
-    ::pylabhub::debug::debug_msg(std::source_location::current(),                                  \
-                                 FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_DEBUG(fmt, ...) ::pylabhub::debug::debug_msg(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #else
 #define PLH_DEBUG(fmt, ...)                                                                        \
     do                                                                                             \
@@ -225,8 +214,7 @@ inline void debug_msg_rt(std::source_location loc, std::string_view fmt_str,
  */
 #ifndef PLH_DEBUG_RT
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-#define PLH_DEBUG_RT(fmt, ...)                                                                     \
-    ::pylabhub::debug::debug_msg_rt(std::source_location::current(), fmt __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_DEBUG_RT(fmt, ...) ::pylabhub::debug::debug_msg_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
 #else
 #define PLH_DEBUG_RT(fmt, ...)                                                                     \
     do                                                                                             \
