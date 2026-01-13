@@ -148,7 +148,7 @@ int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
     module_b.add_dependency("modulea"); // Dependency with wrong case
 
     // This should cause a panic/abort because "modulea" is not found.
-    LifecycleGuard guard(std::move(module_a), std::move(module_b));
+    LifecycleGuard guard({std::move(module_a), std::move(module_b)});
 
     return 1; // Should not be reached.
 }

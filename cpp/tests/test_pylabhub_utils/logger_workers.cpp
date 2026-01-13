@@ -221,7 +221,9 @@ int test_shutdown_idempotency(const std::string &log_path_str)
             std::vector<std::thread> threads;
             for (int i = 0; i < THREADS; ++i)
             {
-                threads.emplace_back([]() { LifecycleManager::instance().finalize(); });
+                threads.emplace_back(
+                    []()
+                    { LifecycleManager::instance().finalize(std::source_location::current()); });
             }
             for (auto &t : threads)
                 t.join();
@@ -332,7 +334,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     // while other threads are actively using the logger.
     // Register the Logger module with the LifecycleManager.
     pylabhub::utils::RegisterModule(Logger::GetLifecycleModule());
-    LifecycleManager::instance().initialize();
+    LifecycleManager::instance().initialize(std::source_location::current());
 
     fs::path chaos_log_path(log_path_str);
     std::atomic<bool> stop_flag(false);
@@ -381,7 +383,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
 
     // Finalize while threads are running
-    LifecycleManager::instance().finalize();
+    LifecycleManager::instance().finalize(std::source_location::current());
     stop_flag.store(true); // Signal threads to stop
 
     for (auto &t : threads)

@@ -322,10 +322,12 @@ class EventLogSink : public Sink
 struct SetSinkCommand
 {
     std::unique_ptr<Sink> new_sink;
+    std::shared_ptr<std::promise<void>> promise;
 };
 struct SinkCreationErrorCommand
 {
     std::string error_message;
+    std::shared_ptr<std::promise<void>> promise;
 };
 struct FlushCommand
 {
@@ -334,11 +336,13 @@ struct FlushCommand
 struct SetErrorCallbackCommand
 {
     std::function<void(const std::string &)> callback;
+    std::shared_ptr<std::promise<void>> promise;
 };
 
 struct SetLogSinkMessagesCommand
 {
     bool enabled;
+    std::shared_ptr<std::promise<void>> promise;
 };
 
 using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand, FlushCommand,
@@ -526,6 +530,7 @@ void Logger::Impl::worker_loop()
                                           arg.error_message, sink_ ? sink_->description() : "null",
                                           local_queue.size());
                             }
+                            arg.promise->set_value();
                         }
                         else if constexpr (std::is_same_v<T, FlushCommand>)
                         {
@@ -539,11 +544,13 @@ void Logger::Impl::worker_loop()
                         else if constexpr (std::is_same_v<T, SetErrorCallbackCommand>)
                         {
                             error_callback_ = std::move(arg.callback);
+                            arg.promise->set_value();
                         }
                         else if constexpr (std::is_same_v<T, SetLogSinkMessagesCommand>)
                         {
                             m_log_sink_messages_enabled_.store(arg.enabled,
                                                                std::memory_order_relaxed);
+                            arg.promise->set_value();
                         }
                     },
                     std::move(cmd));
@@ -621,6 +628,12 @@ void Logger::Impl::worker_loop()
                         m_sink_mutex); // Lock around sink assignment
                     sink_ = std::move(sink_cmd->new_sink);
                 }
+                sink_cmd->promise->set_value(); // Unblock the waiting thread.
+            }
+            else
+            {
+                PLH_DEBUG(
+                    "This should not happen: set sink command mismatch with SetSinkCommand type");
             }
         }
         if (local_stop_flag)
@@ -675,39 +688,56 @@ bool Logger::lifecycle_initialized() noexcept
     return g_logger_state.load(std::memory_order_acquire) != LoggerState::Uninitialized;
 }
 
-void Logger::set_console()
+bool Logger::set_console()
 {
     if (!logger_is_loggable("Logger::set_console"))
-        return;
+        return false;
     try
     {
-        pImpl->enqueue_command(SetSinkCommand{std::make_unique<ConsoleSink>()});
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(SetSinkCommand{std::make_unique<ConsoleSink>(), promise});
+        future.wait();
+        return true;
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create ConsoleSink: {}", e.what())});
+        auto promise_err = std::make_shared<std::promise<void>>();
+        auto future_err = promise_err->get_future();
+        pImpl->enqueue_command(SinkCreationErrorCommand{
+            fmt::format("Failed to create ConsoleSink: {}", e.what()), promise_err});
+        future_err.wait();
     }
+    return false;
 }
 
-void Logger::set_logfile(const std::string &utf8_path)
+bool Logger::set_logfile(const std::string &utf8_path)
 {
-    set_logfile(utf8_path, true);
+    return set_logfile(utf8_path, true);
 }
 
-void Logger::set_logfile(const std::string &utf8_path, bool use_flock)
+bool Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
     if (!logger_is_loggable("Logger::set_logfile"))
-        return;
+        return false;
     try
     {
-        pImpl->enqueue_command(SetSinkCommand{std::make_unique<FileSink>(utf8_path, use_flock)});
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(
+            SetSinkCommand{std::make_unique<FileSink>(utf8_path, use_flock), promise});
+        future.wait();
+        return true;
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create FileSink: {}", e.what())});
+        auto promise_err = std::make_shared<std::promise<void>>();
+        auto future_err = promise_err->get_future();
+        pImpl->enqueue_command(SinkCreationErrorCommand{
+            fmt::format("Failed to create FileSink: {}", e.what()), promise_err});
+        future_err.wait();
     }
+    return false;
 }
 
 bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
@@ -752,61 +782,85 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
                 return false;
             }
         }
-
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
         // 4. Pre-flight checks passed, enqueue the command with the normalized path.
-        pImpl->enqueue_command(SetSinkCommand{std::make_unique<RotatingFileSink>(
-            normalized_path, max_file_size_bytes, max_backup_files, use_flock)});
+        pImpl->enqueue_command(
+            SetSinkCommand{std::make_unique<RotatingFileSink>(normalized_path, max_file_size_bytes,
+                                                              max_backup_files, use_flock),
+                           promise});
+        future.wait();
         return true;
     }
     catch (const std::exception &e)
     {
+        auto promise_err = std::make_shared<std::promise<void>>();
+        auto future_err = promise_err->get_future();
         ec = std::make_error_code(std::errc::invalid_argument);
         // Also enqueue an error message so it appears in the previous log sink if possible.
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to set rotating log file: {}", e.what())});
+        pImpl->enqueue_command(SinkCreationErrorCommand{
+            fmt::format("Failed to set rotating log file: {}", e.what()), promise_err});
+        future_err.wait();
         return false;
     }
 }
 
-void Logger::set_syslog(const char *ident, int option, int facility)
+bool Logger::set_syslog(const char *ident, int option, int facility)
 {
     if (!logger_is_loggable("Logger::set_syslog"))
-        return;
+        return false;
 #if !defined(PLATFORM_WIN64)
     try
     {
-        pImpl->enqueue_command(
-            SetSinkCommand{std::make_unique<SyslogSink>(ident ? ident : "", option, facility)});
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(SetSinkCommand{
+            std::make_unique<SyslogSink>(ident ? ident : "", option, facility), promise});
+        future.wait();
+        return true;
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create SyslogSink: {}", e.what())});
+        auto promise_err = std::make_shared<std::promise<void>>();
+        auto future_err = promise_err->get_future();
+        pImpl->enqueue_command(SinkCreationErrorCommand{
+            fmt::format("Failed to create SyslogSink: {}", e.what()), promise_err});
+        future_err.wait();
     }
 #else
     (void)ident;
     (void)option;
     (void)facility;
 #endif
+    return false;
 }
 
-void Logger::set_eventlog(const wchar_t *source_name)
+bool Logger::set_eventlog(const wchar_t *source_name)
 {
     if (!logger_is_loggable("Logger::set_eventlog"))
-        return;
+        return false;
 #ifdef PLATFORM_WIN64
     try
     {
-        pImpl->enqueue_command(SetSinkCommand{std::make_unique<EventLogSink>(source_name)});
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(
+            SetSinkCommand{std::make_unique<EventLogSink>(source_name), promise});
+        future.wait();
+        return true;
     }
     catch (const std::exception &e)
     {
-        pImpl->enqueue_command(
-            SinkCreationErrorCommand{fmt::format("Failed to create EventLogSink: {}", e.what())});
+        auto promise_err = std::make_shared<std::promise<void>>();
+        auto future_err = promise_err->get_future();
+        pImpl->enqueue_command(SinkCreationErrorCommand{
+            fmt::format("Failed to create EventLogSink: {}", e.what()), promise_err});
+        future_err.wait();
     }
 #else
     (void)source_name;
 #endif
+    return false;
 }
 
 void Logger::shutdown()
@@ -876,7 +930,12 @@ void Logger::set_write_error_callback(std::function<void(const std::string &)> c
     if (!logger_is_loggable("Logger::set_write_error_callback"))
         return;
     if (pImpl)
-        pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb)});
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb), promise});
+        future.wait();
+    }
 }
 
 void Logger::set_log_sink_messages_enabled(bool enabled)
@@ -884,7 +943,12 @@ void Logger::set_log_sink_messages_enabled(bool enabled)
     if (!logger_is_loggable("Logger::set_log_sink_messages_enabled"))
         return;
     if (pImpl)
-        pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled});
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        pImpl->enqueue_command(SetLogSinkMessagesCommand{enabled, promise});
+        future.wait();
+    }
 }
 
 bool Logger::should_log(Level lvl) const noexcept
