@@ -402,6 +402,12 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                     fmt::format("\n  **** ERROR: Dynamic module '{}' threw on unload: {}\n",
                                 mod->name, e.what());
             }
+            catch (...)
+            {
+                debug_info += fmt::format(
+                    "\n  **** ERROR: Dynamic module '{}' threw an unknown exception on unload.\n",
+                    mod->name);
+            }
         }
         debug_info += "  --- Dynamic module unload complete ---\n";
     }
@@ -440,6 +446,12 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         {
             debug_info += fmt::format("\n  **** ERROR: Static module '{}' threw on shutdown: {}\n",
                                       mod->name, e.what());
+        }
+        catch (...)
+        {
+            debug_info += fmt::format(
+                "\n  **** ERROR: Static module '{}' threw an unknown exception on shutdown.\n",
+                mod->name);
         }
     }
     debug_info += "\n  --- Static module shutdown complete ---\n"
