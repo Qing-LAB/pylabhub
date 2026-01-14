@@ -15,8 +15,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <gmock/gmock.h> // Explicitly include gmock
 #include <gtest/gtest.h>
 #include <iostream>
+#include <memory>        // Explicitly include memory for std::make_unique
 #include <sstream>
 #include <string>
 #include <thread>
@@ -86,10 +88,10 @@ TEST_F(FileLockTest, BasicNonBlocking)
 {
     auto resource_path = temp_dir() / "basic_resource.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_basic_non_blocking",
-                                              {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_basic_non_blocking",
+                       {resource_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests blocking lock behavior between threads in a worker process.
@@ -97,10 +99,9 @@ TEST_F(FileLockTest, BlockingLock)
 {
     auto resource_path = temp_dir() / "blocking_resource.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_blocking_lock",
-                                              {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_blocking_lock", {resource_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests timed lock acquisition behavior in a worker process.
@@ -108,10 +109,9 @@ TEST_F(FileLockTest, TimedLock)
 {
     auto resource_path = temp_dir() / "timed.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "filelock.test_timed_lock", {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_timed_lock", {resource_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests the move semantics (constructor and assignment) of FileLock in a worker process.
@@ -121,30 +121,29 @@ TEST_F(FileLockTest, MoveSemantics)
     auto resource2 = temp_dir() / "move2.txt";
     clear_lock_file(resource1, pylabhub::utils::ResourceType::File);
     clear_lock_file(resource2, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_move_semantics",
-                                              {resource1.string(), resource2.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_move_semantics",
+                       {resource1.string(), resource2.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests that parent directories for the lock file are created automatically.
 TEST_F(FileLockTest, DirectoryCreation)
 {
     auto new_dir = temp_dir() / "new_dir_for_lock";
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.test_directory_creation",
-                                              {new_dir.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_directory_creation", {new_dir.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests that a lock can be acquired on a directory path itself.
 TEST_F(FileLockTest, DirectoryPathLocking)
 {
     auto dir_to_lock = temp_dir() / "dir_to_lock_parent";
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "filelock.test_directory_path_locking", {dir_to_lock.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_directory_path_locking",
+                       {dir_to_lock.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Tests non-blocking lock contention between multiple threads in a single worker process.
@@ -152,10 +151,10 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
 {
     auto resource_path = temp_dir() / "multithread.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "filelock.test_multithreaded_non_blocking", {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.test_multithreaded_non_blocking",
+                       {resource_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /**
@@ -176,10 +175,9 @@ TEST_F(FileLockTest, MultiProcessNonBlocking)
     ASSERT_TRUE(main_lock.valid());
 
     // Spawn a worker that will try to acquire the same lock non-blockingly and should fail.
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.nonblocking_acquire",
-                                              {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "filelock.nonblocking_acquire", {resource_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /**
@@ -204,20 +202,20 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     const int ITERS_PER_WORKER = 100;
 
     // Spawn worker processes
-    std::vector<ProcessHandle> procs;
+    std::vector<std::unique_ptr<WorkerProcess>> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        ProcessHandle h = spawn_worker_process(
+        procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "filelock.contention_log_access",
-            {resource_path.string(), log_path.string(), std::to_string(ITERS_PER_WORKER)});
-        ASSERT_NE(h, NULL_PROC_HANDLE);
-        procs.push_back(h);
+            std::vector<std::string>{resource_path.string(), log_path.string(),
+                                     std::to_string(ITERS_PER_WORKER)}));
     }
 
     // Wait for all workers to finish
-    for (auto h : procs)
+    for (auto &proc : procs)
     {
-        ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
+        proc->wait_for_exit();
+        expect_worker_ok(*proc);
     }
 
     // --- Verification Phase ---
@@ -291,9 +289,8 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     ASSERT_TRUE(parent_lock->valid());
 
     // Spawn child process, which should block trying to acquire the same lock.
-    ProcessHandle child_proc = spawn_worker_process(g_self_exe_path, "filelock.parent_child_block",
-                                                    {resource_path.string()});
-    ASSERT_NE(child_proc, NULL_PROC_HANDLE);
+    WorkerProcess child_proc(g_self_exe_path, "filelock.parent_child_block",
+                             {resource_path.string()});
 
     // Give the child time to block.
     std::this_thread::sleep_for(200ms);
@@ -301,7 +298,8 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     parent_lock.reset();
 
     // The child should now be able to acquire the lock and exit successfully.
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(child_proc), 0);
+    child_proc.wait_for_exit();
+    expect_worker_ok(child_proc);
 }
 
 /**
@@ -319,11 +317,10 @@ TEST_F(FileLockTest, MultiProcessTryLock)
 
     // Spawn a worker that will try to acquire the same lock using the non-blocking
     // try_lock API. The worker will assert that the lock is not acquired.
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "filelock.try_lock_nonblocking",
-                                              {resource_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
+    WorkerProcess proc(g_self_exe_path, "filelock.try_lock_nonblocking", {resource_path.string()});
     // The worker returns 0 on success (i.e., if the try_lock correctly failed).
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /**
@@ -369,4 +366,22 @@ TEST_F(FileLockTest, TryLockPattern)
 
         EXPECT_FALSE(lock_opt.has_value());
     } // main_lock is released here
+}
+
+TEST_F(FileLockTest, InvalidResourcePath)
+{
+    // A path containing a null character is invalid on most filesystems.
+    fs::path invalid_path("invalid\0path.txt", fs::path::native_format);
+
+    // The constructor should not throw but the lock should be invalid.
+    pylabhub::utils::FileLock lock(invalid_path, pylabhub::utils::ResourceType::File,
+                                   pylabhub::utils::LockMode::NonBlocking);
+    ASSERT_FALSE(lock.valid());
+    // The error should be invalid_argument because get_expected_lock_fullname_for fails.
+    ASSERT_EQ(lock.error_code(), std::errc::invalid_argument);
+
+    // The try_lock static method should return nullopt for the same reason.
+    auto lock_opt = pylabhub::utils::FileLock::try_lock(
+        invalid_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::NonBlocking);
+    ASSERT_FALSE(lock_opt.has_value());
 }

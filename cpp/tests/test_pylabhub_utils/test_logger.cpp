@@ -12,6 +12,7 @@
 #include "platform.hpp"
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -73,107 +74,100 @@ class LoggerTest : public ::testing::Test
 TEST_F(LoggerTest, BasicLogging)
 {
     auto log_path = GetUniqueLogPath("basic_logging");
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "logger.test_basic_logging", {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_basic_logging", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the LogLevelFiltering test logic to a worker process.
 TEST_F(LoggerTest, LogLevelFiltering)
 {
     auto log_path = GetUniqueLogPath("log_level_filtering");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_log_level_filtering",
-                                              {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_log_level_filtering", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the BadFormatString test logic to a worker process.
 TEST_F(LoggerTest, BadFormatString)
 {
     auto log_path = GetUniqueLogPath("bad_format_string");
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the DefaultSinkAndSwitching test logic to a worker process.
 TEST_F(LoggerTest, DefaultSinkAndSwitching)
 {
     auto log_path = GetUniqueLogPath("default_sink_and_switching");
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "logger.test_default_sink_and_switching", {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_default_sink_and_switching",
+                       {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the MultithreadStress test logic to a worker process.
 TEST_F(LoggerTest, MultithreadStress)
 {
     auto log_path = GetUniqueLogPath("multithread_stress");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_multithread_stress",
-                                              {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_multithread_stress", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the FlushWaitsForQueue test logic to a worker process.
 TEST_F(LoggerTest, FlushWaitsForQueue)
 {
     auto log_path = GetUniqueLogPath("flush_waits_for_queue");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_flush_waits_for_queue",
-                                              {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_flush_waits_for_queue", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the ShutdownIdempotency test logic to a worker process.
 TEST_F(LoggerTest, ShutdownIdempotency)
 {
     auto log_path = GetUniqueLogPath("shutdown_idempotency");
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_shutdown_idempotency",
-                                              {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_shutdown_idempotency", {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the ReentrantErrorCallback test logic to a worker process.
 TEST_F(LoggerTest, ReentrantErrorCallback)
 {
     auto log_path = GetUniqueLogPath("reentrant_error_callback");
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "logger.test_reentrant_error_callback", {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_reentrant_error_callback",
+                       {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the WriteErrorCallbackAsync test logic to a worker process.
 TEST_F(LoggerTest, WriteErrorCallbackAsync)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "logger.test_write_error_callback_async", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_write_error_callback_async", {});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the PlatformSinks smoke test to a worker process.
 TEST_F(LoggerTest, PlatformSinks)
 {
-    ProcessHandle proc = spawn_worker_process(g_self_exe_path, "logger.test_platform_sinks", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_platform_sinks", {});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /// Delegates the ConcurrentLifecycleChaos test logic to a worker process.
 TEST_F(LoggerTest, ConcurrentLifecycleChaos)
 {
     auto log_path = GetUniqueLogPath("concurrent_lifecycle_chaos");
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "logger.test_concurrent_lifecycle_chaos", {log_path.string()});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_concurrent_lifecycle_chaos",
+                       {log_path.string()});
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+    // This test can be noisy on stderr due to the chaotic nature, so we don't assert empty.
 }
 
 /**
@@ -190,19 +184,19 @@ TEST_F(LoggerTest, StressLog)
     const int MSGS_PER_PROC = 200;
 
     // Spawn worker processes.
-    std::vector<ProcessHandle> procs;
+    std::vector<std::unique_ptr<WorkerProcess>> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        ProcessHandle h = spawn_worker_process(g_self_exe_path, "logger.stress_log",
-                                               {log_path.string(), std::to_string(MSGS_PER_PROC)});
-        ASSERT_NE(h, NULL_PROC_HANDLE);
-        procs.push_back(h);
+        procs.push_back(std::make_unique<WorkerProcess>(
+            g_self_exe_path, "logger.stress_log",
+            std::vector<std::string>{log_path.string(), std::to_string(MSGS_PER_PROC)}));
     }
 
     // Wait for all workers to complete.
-    for (auto h : procs)
+    for (auto &proc : procs)
     {
-        ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
+        proc->wait_for_exit();
+        expect_worker_ok(*proc);
     }
 
     // Verify the final log file.
@@ -229,21 +223,20 @@ TEST_F(LoggerTest, InterProcessFlock)
     const int MSGS_PER_PROC = 250;
 
     // Spawn worker processes.
-    std::vector<ProcessHandle> procs;
+    std::vector<std::unique_ptr<WorkerProcess>> procs;
     for (int i = 0; i < PROCS; ++i)
     {
         std::string worker_id = "WORKER-" + std::to_string(i);
-        ProcessHandle h =
-            spawn_worker_process(g_self_exe_path, "logger.test_inter_process_flock",
-                                 {log_path.string(), worker_id, std::to_string(MSGS_PER_PROC)});
-        ASSERT_NE(h, NULL_PROC_HANDLE);
-        procs.push_back(h);
+        procs.push_back(std::make_unique<WorkerProcess>(
+            g_self_exe_path, "logger.test_inter_process_flock",
+            std::vector<std::string>{log_path.string(), worker_id, std::to_string(MSGS_PER_PROC)}));
     }
 
     // Wait for all workers to complete.
-    for (auto h : procs)
+    for (auto &proc : procs)
     {
-        ASSERT_EQ(wait_for_worker_and_get_exit_code(h), 0);
+        proc->wait_for_exit();
+        expect_worker_ok(*proc);
     }
 
     // Verify the final log file.
@@ -268,23 +261,61 @@ TEST_F(LoggerTest, InterProcessFlock)
     }
 }
 
-/**
- * @brief Tests the RotatingFileSink functionality.
- *
- * Spawns a worker process to configure the logger with a rotating file sink,
- * write messages to trigger rotations, and then verifies the existence and
- * content of the rotated log files.
- */
+/// Tests the RotatingFileSink functionality.
 TEST_F(LoggerTest, RotatingFileSink)
 {
     auto base_log_path = GetUniqueLogPath("rotating_sink_base");
     const size_t max_file_size_bytes = 256; // Small size to force rotations quickly
     const size_t max_backup_files = 2;
 
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "logger.test_rotating_file_sink",
-                             {base_log_path.string(), std::to_string(max_file_size_bytes),
-                              std::to_string(max_backup_files)});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "logger.test_rotating_file_sink",
+                       {base_log_path.string(), std::to_string(max_file_size_bytes),
+                        std::to_string(max_backup_files)});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
+
+/// Tests the failure case for setting a rotating log file in a non-writable directory.
+TEST_F(LoggerTest, SetRotatingLogfileFailure)
+{
+    pylabhub::utils::LifecycleGuard guard({pylabhub::utils::Logger::GetLifecycleModule()});
+#if PYLABHUB_IS_POSIX
+    auto unwritable_dir = GetUniqueLogPath("unwritable_dir_for_rotating").parent_path() /
+                          "unwritable_dir_for_rotating";
+    fs::create_directories(unwritable_dir); // Ensure directory exists to set permissions
+    paths_to_clean_.push_back(unwritable_dir);
+    // Make directory unwritable
+    fs::permissions(unwritable_dir, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+    auto log_path = unwritable_dir / "test.log";
+
+    std::error_code ec;
+    // This should fail because of the pre-flight check in set_rotating_logfile
+    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, 1024, 5, true,
+                                                                          ec));
+
+    // The error code should indicate permission denied.
+    ASSERT_EQ(ec, std::errc::permission_denied);
+
+    // Restore permissions for cleanup
+    fs::permissions(unwritable_dir, fs::perms::owner_all, fs::perm_options::replace);
+#else
+    // On Windows, we can use an invalid path name to simulate failure.
+    // The pre-flight check for create_directories should fail.
+    auto invalid_log_path = "C:\\*\\invalid:path.log"; // Invalid characters in path
+    std::error_code ec;
+    ASSERT_FALSE(
+        pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, 1024, 5, true, ec));
+    ASSERT_TRUE(ec); // Should have an error. The specific error code might vary depending on OS version and exact invalid path.
+#endif
+}
+
+/// Delegates the QueueFullAndMessageDropping test logic to a worker process.
+TEST_F(LoggerTest, QueueFullAndMessageDropping)
+{
+    auto log_path = GetUniqueLogPath("queue_full_and_dropping");
+    WorkerProcess proc(g_self_exe_path, "logger.test_queue_full_and_message_dropping",
+                       {log_path.string()});
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+

@@ -11,6 +11,7 @@
 
 using namespace pylabhub::utils;
 using namespace pylabhub::tests::helper;
+using namespace ::testing;
 
 class LifecycleTest : public ::testing::Test
 {
@@ -20,77 +21,69 @@ class LifecycleTest : public ::testing::Test
 // and that a warning is printed for subsequent guards.
 TEST_F(LifecycleTest, MultipleGuardsWarning)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_multiple_guards_warning", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_multiple_guards_warning", {});
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+    // The warning is a PLH_DEBUG message, which goes to stderr.
+    ASSERT_THAT(proc.get_stderr(),
+                HasSubstr("WARNING: LifecycleGuard constructed but an owner already exists."));
 }
 
 // Test that modules are correctly registered and initialized.
 TEST_F(LifecycleTest, ModuleRegistrationAndInitialization)
 {
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "lifecycle.test_module_registration_and_initialization", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_module_registration_and_initialization",
+                       {});
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+    ASSERT_TRUE(proc.get_stderr().empty()) << "stderr: " << proc.get_stderr();
 }
 
 // Test that the is_initialized flag works as expected.
 TEST_F(LifecycleTest, IsInitializedFlag)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_is_initialized_flag", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    ASSERT_EQ(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_is_initialized_flag", {});
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+    ASSERT_TRUE(proc.get_stderr().empty()) << "stderr: " << proc.get_stderr();
 }
 
 // Test that attempting to register a module after initialization aborts.
 // This requires running in a separate process.
 TEST_F(LifecycleTest, RegisterAfterInitAborts)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_register_after_init_aborts", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should abort, resulting in a non-zero exit code.
-    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
-} // Closing brace for RegisterAfterInitAborts
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_register_after_init_aborts", {});
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    ASSERT_THAT(proc.get_stderr(),
+                HasSubstr("[PLH_LifeCycle] FATAL: register_module called after initialization."));
+}
 
 // Test that initialization fails if a module has an undefined dependency.
 TEST_F(LifecycleTest, FailsWithUnresolvedDependency)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_unresolved_dependency", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should abort, resulting in a non-zero exit code.
-    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_unresolved_dependency", {});
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("[PLH_LifeCycle] FATAL: Undefined dependency:"));
 }
 
 // Test that initialization fails if a dependency name differs by case.
 TEST_F(LifecycleTest, FailsWithCaseSensitiveDependency)
 {
-    ProcessHandle proc =
-        spawn_worker_process(g_self_exe_path, "lifecycle.test_case_insensitive_dependency", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should abort because dependency resolution is case-sensitive.
-    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_case_insensitive_dependency", {});
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("[PLH_LifeCycle] FATAL: Undefined dependency:"));
 }
 
 // Test that initialization fails if a direct, two-module static dependency cycle is introduced.
 TEST_F(LifecycleTest, StaticCircularDependencyAborts)
 {
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "lifecycle.test_static_circular_dependency_aborts", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should abort due to the cycle.
-    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_static_circular_dependency_aborts", {});
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("[PLH_LifeCycle] FATAL: Circular dependency detected"));
 }
 
 // Test that initialization fails with a complex, indirect static dependency cycle.
 TEST_F(LifecycleTest, StaticElaborateIndirectCycleAborts)
 {
-    ProcessHandle proc = spawn_worker_process(
-        g_self_exe_path, "lifecycle.test_static_elaborate_indirect_cycle_aborts", {});
-    ASSERT_NE(proc, NULL_PROC_HANDLE);
-    // The worker process should abort due to the cycle.
-    ASSERT_NE(wait_for_worker_and_get_exit_code(proc), 0);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_static_elaborate_indirect_cycle_aborts",
+                       {});
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("[PLH_LifeCycle] FATAL: Circular dependency detected"));
 }
