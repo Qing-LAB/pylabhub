@@ -1,4 +1,7 @@
-#if defined(PLATFORM_WIN64)
+#include "format_tools.hpp"
+#include "platform.hpp"
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #include <chrono>
 #include <random>
@@ -8,9 +11,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-
-#include "format_tools.hpp"
-#include "platform.hpp"
 
 namespace pylabhub::format_tools
 {
@@ -49,7 +49,7 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp)
 #endif
 }
 
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
 static inline std::wstring normalize_backslashes(std::wstring s)
 {
     for (auto &c : s)

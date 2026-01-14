@@ -150,6 +150,28 @@ The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, a
     *   `Logger::instance()`: Accessor for the singleton logger instance.
     *   `set_level(Logger::Level lvl)`: Sets the minimum log level to record.
     *   `set_logfile(path, append)`: Switches the log output to a file.
+    *   `set_rotating_logfile(base_filepath, max_file_size_bytes, max_backup_files, use_flock)`: Configures a rotating file log. The log file will automatically rotate when it exceeds `max_file_size_bytes`, keeping up to `max_backup_files`. `use_flock` enables inter-process locking on POSIX systems.
+
+*   **Basic Usage**:
+    ```cpp
+    #include "utils/Logger.hpp"
+
+    void my_function() {
+        // Log messages using the fmt::format style
+        LOGGER_INFO("Processing user {} with ID {}", "Alice", 123);
+        LOGGER_WARN("A recoverable issue occurred.");
+
+        // Set up a rotating log file: "app.log", max 10MB, keep 5 backups, use flock
+        std::error_code ec;
+        if (!pylabhub::utils::Logger::instance().set_rotating_logfile(
+                "app.log", 10 * 1024 * 1024, 5, true, ec)) {
+            LOGGER_ERROR("Failed to set rotating logfile: {}", ec.message());
+        }
+
+        // Ensure critical messages are written before continuing
+        Logger::instance().flush();
+    }
+    ```
     *   `set_console()`: Switches the log output to the console (stderr).
     *   `flush()`: Blocks until all pending log messages have been written.
     *   `LOGGER_INFO(format, ...)`: Macro for logging an informational message (also `TRACE`, `DEBUG`, `WARN`, `ERROR`, `SYSTEM`).

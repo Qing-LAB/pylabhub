@@ -30,7 +30,7 @@ pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
 target_link_libraries(pylabhub-utils PUBLIC pylabhub-basic)
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
 endif()
 
@@ -86,7 +86,7 @@ endif()
 # This makes `include/` available via `target_include_directories`.
 target_include_directories(pylabhub-utils
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -98,122 +98,13 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
 )
 
-
-
-# ---------- Probe: Detect fmt::chrono subsecond formatting style ----------
-if (TARGET pylabhub-utils)
-  message(STATUS "Performing test: probing fmt chrono subseconds support...")
-  if (CMAKE_CROSSCOMPILING)
-    message(STATUS "Cross-compiling: skipping fmt chrono subseconds runtime probe; defaulting to fallback (no subseconds).")
-    set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
-    set(FMT_CHRONO_FMT_STYLE 0 CACHE INTERNAL "fmt chrono format style")
-  else()
-    # Get fmt include directories from the fmt::fmt target
-    if (TARGET fmt::fmt)
-      get_target_property(_fmt_includes fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
-    else()
-      set(_fmt_includes "${CMAKE_SOURCE_DIR}/third_party/fmt/include")
-    endif()
-
-    # Compose the C++ source for the probe.
-    set(_probe_src_content [==[
-#include <chrono>
-#include <iostream>
-#include <regex>
-#include <string>
-#include <fmt/format.h>
-#include <fmt/chrono.h>
-int main() {
-    using namespace std::chrono;
-    try {
-        auto now = system_clock::now();
-        auto tp_us = time_point_cast<microseconds>(now);
-
-        bool ok_with_f = false;
-        try {
-            std::string s = fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
-            std::regex frac_re("\\.[0-9]{1,9}");
-            if (std::regex_search(s, frac_re)) {
-                std::cout << "WITH_F:OK\n" << s << std::endl;
-                ok_with_f = true;
-            } else {
-                std::cerr << "WITH_F:NO_FRAC -- got: " << s << std::endl;
-            }
-        } catch (const std::exception &e) { std::cerr << "WITH_F:EXCEPTION: " << e.what() << std::endl; }
-        catch (...) { std::cerr << "WITH_F:UNKNOWN_EXCEPTION\n"; }
-
-        bool ok_without_f = false;
-        try {
-            std::string s2 = fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
-            std::regex frac_re("\\.[0-9]{1,9}");
-            if (std::regex_search(s2, frac_re)) {
-                std::cout << "WITHOUT_F:OK\n" << s2 << std::endl;
-                ok_without_f = true;
-            } else {
-                std::cerr << "WITHOUT_F:NO_FRAC -- got: " << s2 << std::endl;
-            }
-        } catch (const std::exception &e) { std::cerr << "WITHOUT_F:EXCEPTION: " << e.what() << std::endl; }
-        catch (...) { std::cerr << "WITHOUT_F:UNKNOWN_EXCEPTION\n"; }
-
-        if (ok_with_f) { std::cout << "DECISION: STYLE=WITH_F\n"; return 0; }
-        if (ok_without_f) { std::cout << "DECISION: STYLE=WITHOUT_F\n"; return 2; }
-        std::cerr << "DECISION: STYLE=NONE\n"; return 1;
-    } catch (const std::exception &e) {
-        std::cerr << "PROBE_TOP_EXCEPTION: " << e.what() << std::endl;
-        return 1;
-    } catch (...) {
-        std::cerr << "PROBE_TOP_UNKNOWN_EXCEPTION\n";
-        return 1;
-    }
-}
-]==])
-
-    # try_run is the standard CMake way to compile and run a test executable at configure time.
-    # We pass the include directories for fmt via CMAKE_FLAGS, which the inner CMake run will use.
-    set(_probe_file "${CMAKE_CURRENT_BINARY_DIR}/fmt_chrono_subsec_probe.cpp")
-    file(WRITE "${_probe_file}" "${_probe_src_content}")
-    try_run(
-      FMT_PROBE_RUN_RESULT
-      FMT_PROBE_COMPILE_RESULT
-      SOURCES "${_probe_file}"
-      CMAKE_FLAGS "-DINCLUDE_DIRECTORIES:STRING=${_fmt_includes}"
-      COMPILE_DEFINITIONS -DFMT_HEADER_ONLY
-      COMPILE_OUTPUT_VARIABLE FMT_PROBE_COMPILE_OUTPUT
-      RUN_OUTPUT_VARIABLE FMT_PROBE_RUN_OUTPUT)
-
-    if(FMT_PROBE_COMPILE_RESULT)
-      if(FMT_PROBE_RUN_RESULT EQUAL 0)
-        message(STATUS "    ** fmt chrono: sub-second support detected, format microsecond with '%f'.")
-        message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
-        set(HAVE_FMT_CHRONO_SUBSECONDS 1 CACHE INTERNAL "fmt chrono subseconds support")
-        set(FMT_CHRONO_FMT_STYLE 1 CACHE INTERNAL "fmt chrono format style is %f")
-      elseif(FMT_PROBE_RUN_RESULT EQUAL 2)
-        message(STATUS "    ** fmt chrono: sub-second support detected, format microsecond without '%f'.")
-        message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
-        set(HAVE_FMT_CHRONO_SUBSECONDS 1 CACHE INTERNAL "fmt chrono subseconds support")
-        set(FMT_CHRONO_FMT_STYLE 2 CACHE INTERNAL "fmt chrono format style is implicit")
-      else()
-        message(STATUS "    ** fmt chrono: sub-second support not available.")
-        message(VERBOSE "        Probe returned: ${FMT_PROBE_RUN_RESULT}")
-        message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
-        set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
-        set(FMT_CHRONO_FMT_STYLE 0 CACHE INTERNAL "fmt chrono format style")
-      endif()
-    else()
-      message(WARNING "     ** fmt chrono: probe failed to compile. Assuming no sub-second support.")
-      message(VERBOSE "        Compiler output:\n\n${FMT_PROBE_COMPILE_OUTPUT}")
-      set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
-      set(FMT_CHRONO_FMT_STYLE 0 CACHE INTERNAL "fmt chrono format style")
-    endif()
-  endif()
-
-  target_compile_definitions(pylabhub-utils
-    PRIVATE
+# Probe for fmt::chrono subsecond support
+include(FmtChronoProbe)
+target_compile_definitions(pylabhub-utils
+  PRIVATE
     HAVE_FMT_CHRONO_SUBSECONDS=${HAVE_FMT_CHRONO_SUBSECONDS}
-    FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE})
-endif()
-# ---------- End probe ----------
-
+    FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE}
+)
 
 # ==============================================================================
 # Installation
@@ -235,7 +126,7 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/utils/
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/utils/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/utils
 )
 
@@ -244,32 +135,17 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/utils/
 message(STATUS "Configuring staging for pylabhub-utils library.")
 
 if(WIN32)
-  # On Windows, stage the DLL next to the executables since RPATH is not used.
-  pylabhub_get_library_staging_commands(
-    TARGET pylabhub-utils
-    DESTINATION bin
-    OUT_COMMANDS stage_commands
-  )
-  pylabhub_get_library_staging_commands(
-    TARGET pylabhub-utils
-    DESTINATION tests
-    OUT_COMMANDS stage_commands_for_tests
-  )
+  # On Windows, stage the DLL next to the executables and tests
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION bin OUT_COMMANDS stage_commands)
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION tests OUT_COMMANDS stage_commands_for_tests)
   list(APPEND stage_commands ${stage_commands_for_tests})
 else()
-  # On POSIX platforms (Linux, macOS), stage the shared library to the 'lib' directory.
-  # The executables are configured with an RPATH to find it there.
-  pylabhub_get_library_staging_commands(
-    TARGET pylabhub-utils
-    DESTINATION lib
-    OUT_COMMANDS stage_commands
-  )
+  # On POSIX platforms, stage the shared library to the 'lib' directory.
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION lib OUT_COMMANDS stage_commands)
 endif()
 
-# The original logic for WIN32 tests is now inside the platform-specific block.
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")
 add_dependencies(stage_pylabhub_utils pylabhub-utils create_staging_dirs)
-# add_dependencies(stage_pylabhub_utils_for_tests pylabhub-utils)
 
 # Also stage the generated export header alongside the library.
 add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
@@ -282,7 +158,7 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
 # Stage the public headers for this library to match the installation.
 add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/include/utils"
+          "${CMAKE_SOURCE_DIR}/src/include/utils"
           "${PYLABHUB_STAGING_DIR}/include/utils"
   COMMENT "Staging public headers for pylabhub-utils"
 )

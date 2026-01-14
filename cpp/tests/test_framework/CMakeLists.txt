@@ -36,7 +36,7 @@ endif()
 # Publicly expose this directory so consumers can find the helper headers.
 target_include_directories(pylabhub-test-framework PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>"
   "$<INSTALL_INTERFACE:include>"
 )
 

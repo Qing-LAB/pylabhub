@@ -1,14 +1,13 @@
 /**
  * @file debug_info.cpp
- * @brief Implements cross-platform debugging utilities for stack trace printing.
+ * @brief Cross-platform stack trace printing for pylabhub::debug::print_stack_trace()
  *
- * This file provides the concrete implementation of `pylabhub::debug::print_stack_trace()`.
- * It includes platform-specific code for Windows (using DbgHelp API) and POSIX
- * systems (using `execinfo.h` and `dlfcn.h` for backtrace and symbol resolution,
- * and `addr2line` for source location lookup).
+ * Macro assumptions:
+ * - PYLABHUB_PLATFORM_WIN64 : defined when building for Windows x64
+ * - PYLABHUB_IS_POSIX       : defined as 1 (true) or 0 (false) for POSIX-like platforms
+ * - PYLABHUB_PLATFORM_APPLE : defined when building for macOS (in addition to PYLABHUB_IS_POSIX==1)
  *
- * This module is part of the `pylabhub-basic` static library and offers fundamental
- * debugging capabilities crucial for error diagnosis.
+ * The implementation aims to maximize code reuse between macOS and other POSIX systems.
  */
 
 #include "platform.hpp"
@@ -33,8 +32,12 @@
 #include <string>
 #include <vector>
 #pragma comment(lib, "dbghelp.lib")
-#elif defined(PYLABHUB_IS_POSIX)
+
+#elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
+
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -43,13 +46,22 @@
 #include <execinfo.h> // backtrace, backtrace_symbols
 #include <limits.h>   // PATH_MAX
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
-#include <unistd.h> // readlink, access
+#include <string_view>
+#include <unistd.h> // access
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#endif
+
+#else
+
+// Fallback platform: still include minimal headers that library/core code expects.
+#include <string>
+#include <vector>
+
+#endif // platform selection
 
 #include "debug_info.hpp"
 
@@ -58,59 +70,215 @@ namespace pylabhub::debug
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 namespace
-{ // Anonymous namespace for internal linkage
-
+{
 class DbgHelpInitializer
 {
   public:
     DbgHelpInitializer()
     {
-        // Initialize DbgHelp for this process.
-        // This is done once when the library is loaded.
         HANDLE process = GetCurrentProcess();
         SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
-        if (!SymInitialize(process, nullptr, TRUE))
-        {
-            // If initialization fails, we can't get stack traces, but we shouldn't
-            // prevent the program from running. A message will be printed inside
-            // print_stack_trace when symbol functions fail.
-        }
+        // Best-effort initialize; failures tolerated.
+        (void)SymInitialize(process, nullptr, TRUE);
     }
 
-    ~DbgHelpInitializer()
-    {
-        // Cleanup DbgHelp for this process.
-        SymCleanup(GetCurrentProcess());
-    }
+    ~DbgHelpInitializer() { SymCleanup(GetCurrentProcess()); }
 };
 
-// A static instance to ensure DbgHelp is initialized once per process lifetime.
 static DbgHelpInitializer g_dbghelp_initializer;
 
 } // namespace
 #endif
 
+// -------------------------------
+// POSIX helpers (when PYLABHUB_IS_POSIX == 1)
+// -------------------------------
+#if defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
+
+namespace internal
+{
+
+[[nodiscard]] static bool find_in_path(std::string_view name) noexcept
+{
+    const char *pathEnv = std::getenv("PATH");
+    if (!pathEnv)
+        return false;
+    std::string_view path(pathEnv);
+    size_t start = 0;
+    while (start < path.size())
+    {
+        size_t pos = path.find(':', start);
+        std::string_view dir =
+            (pos == std::string_view::npos) ? path.substr(start) : path.substr(start, pos - start);
+        start = (pos == std::string_view::npos) ? path.size() : pos + 1;
+        if (dir.empty())
+            dir = ".";
+        std::string candidate;
+        candidate.reserve(dir.size() + 1 + name.size());
+        candidate.append(dir);
+        candidate.push_back('/');
+        candidate.append(name);
+        if (access(candidate.c_str(), X_OK) == 0)
+            return true;
+    }
+    return false;
+}
+
+[[nodiscard]] static std::string shell_quote(std::string_view s)
+{
+    std::string out;
+    out.reserve(s.size() + 2);
+    out.push_back('"');
+    for (char c : s)
+    {
+        if (c == '"')
+            out += "\\\"";
+        else
+            out.push_back(c);
+    }
+    out.push_back('"');
+    return out;
+}
+
+[[nodiscard]] static std::vector<std::string> read_popen_lines(const std::string &cmd)
+{
+    std::vector<std::string> lines;
+    FILE *fp = popen(cmd.c_str(), "r");
+    if (!fp)
+        return lines;
+    char buf[1024];
+    while (fgets(buf, sizeof(buf), fp))
+    {
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+            s.pop_back();
+        lines.push_back(std::move(s));
+    }
+    pclose(fp);
+    return lines;
+}
+
+// Generic addr2line resolver (handles addr2line and llvm-addr2line)
+[[nodiscard]] static std::vector<std::string>
+resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offsets,
+                       bool prefer_llvm) noexcept
+{
+    // pick tool
+    std::string cmd;
+    if (prefer_llvm && find_in_path("llvm-addr2line"))
+        cmd = "llvm-addr2line";
+    else if (find_in_path("addr2line"))
+        cmd = "addr2line";
+    else
+        return {};
+
+    cmd += " -f -C -e ";
+    cmd += shell_quote(binary);
+
+    std::ostringstream oss;
+    oss << cmd;
+    for (uintptr_t off : offsets)
+        oss << " 0x" << std::hex << off;
+
+    auto lines = read_popen_lines(oss.str());
+    std::vector<std::string> perFrame;
+    perFrame.reserve(offsets.size());
+
+    // addr2line usually emits 2 lines per address (function, file:line) when -f used.
+    if (!lines.empty() && lines.size() >= offsets.size() * 2)
+    {
+        for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
+            perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
+    }
+    else if (!lines.empty() && lines.size() >= offsets.size())
+    {
+        for (size_t j = 0; j < offsets.size() && j < lines.size(); ++j)
+            perFrame.push_back(lines[j]);
+    }
+    else
+    {
+        // distribute lines as fallback
+        size_t per = (lines.empty() ? 1 : (lines.size() + offsets.size() - 1) / offsets.size());
+        size_t cur = 0;
+        for (size_t fi = 0; fi < offsets.size(); ++fi)
+        {
+            std::ostringstream acc;
+            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+            {
+                if (k)
+                    acc << "\n";
+                acc << lines[cur];
+            }
+            perFrame.push_back(acc.str());
+        }
+    }
+    while (perFrame.size() < offsets.size())
+        perFrame.emplace_back();
+    return perFrame;
+}
+
+#if defined(PYLABHUB_PLATFORM_APPLE)
+// macOS atos resolver: expects VM addresses and optional -l slide
+[[nodiscard]] static std::vector<std::string> resolve_with_atos(std::string_view binary,
+                                                                std::span<const uintptr_t> addrs,
+                                                                uintptr_t base_for_bin) noexcept
+{
+    std::ostringstream oss;
+    oss << "atos -o " << shell_quote(binary);
+    if (base_for_bin != 0)
+        oss << " -l 0x" << std::hex << base_for_bin;
+    for (uintptr_t a : addrs)
+        oss << " 0x" << std::hex << a;
+
+    auto lines = read_popen_lines(oss.str());
+    std::vector<std::string> perFrame;
+    perFrame.reserve(addrs.size());
+    if (!lines.empty() && lines.size() >= addrs.size())
+    {
+        for (size_t j = 0; j < addrs.size() && j < lines.size(); ++j)
+            perFrame.push_back(lines[j]);
+    }
+    else
+    {
+        size_t per = (lines.empty() ? 1 : (lines.size() + addrs.size() - 1) / addrs.size());
+        size_t cur = 0;
+        for (size_t fi = 0; fi < addrs.size(); ++fi)
+        {
+            std::ostringstream acc;
+            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+            {
+                if (k)
+                    acc << "\n";
+                acc << lines[cur];
+            }
+            perFrame.push_back(acc.str());
+        }
+    }
+    while (perFrame.size() < addrs.size())
+        perFrame.emplace_back();
+    return perFrame;
+}
+#endif // PYLABHUB_PLATFORM_APPLE
+
+} // namespace internal
+
+#endif // PYLABHUB_IS_POSIX
+
+// -------------------------------
+// Public API: print_stack_trace
+// -------------------------------
 void print_stack_trace() noexcept
 {
     fmt::print(stderr, "Stack Trace (most recent call first):\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-    /**
-     * @brief Windows-specific implementation of `print_stack_trace`.
-     *
-     * This section uses the Windows DbgHelp API to capture and resolve stack frames.
-     * It relies on `CaptureStackBackTrace` for frame capture, `SymInitialize` to
-     * initialize symbol handling, `SymFromAddr` to get symbol names, and
-     * `SymGetLineFromAddr64` to retrieve source file and line numbers.
-     * PDB files are required for detailed source information.
-     */
+
+    // Windows implementation: unchanged behavior, kept concise
     constexpr int kMaxFrames = 62;
     void *frames[kMaxFrames] = {nullptr};
     USHORT framesCaptured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
-
     HANDLE process = GetCurrentProcess();
 
-    // Allocate SYMBOL_INFO buffer with room for long name
     constexpr size_t kNameBuf = 1024;
     const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + kNameBuf;
     std::unique_ptr<uint8_t[]> symbolArea(new (std::nothrow) uint8_t[symbolBufferSize]);
@@ -131,20 +299,16 @@ void print_stack_trace() noexcept
     {
         uintptr_t addr = reinterpret_cast<uintptr_t>(frames[i]);
         fmt::print(stderr, "  #{:02}  {:#018x}  ", i, static_cast<unsigned long long>(addr));
-
         bool printed = false;
 
-        // Try symbol name
         DWORD64 displacement = 0;
         if (symbol && SymFromAddr(process, static_cast<DWORD64>(addr), &displacement, symbol))
         {
-            // Name is undecorated if SYMOPT_UNDNAME set
             fmt::print(stderr, "{} + {:#x}", symbol->Name,
                        static_cast<unsigned long long>(displacement));
             printed = true;
         }
 
-        // Try source file + line (requires pdbs and SYMOPT_LOAD_LINES)
         DWORD displacementLine = 0;
         if (SymGetLineFromAddr64(process, static_cast<DWORD64>(addr), &displacementLine, &lineInfo))
         {
@@ -153,7 +317,6 @@ void print_stack_trace() noexcept
             printed = true;
         }
 
-        // If nothing printed, try to show module + offset as fallback
         if (!printed)
         {
             IMAGEHLP_MODULE64 modInfo;
@@ -173,82 +336,52 @@ void print_stack_trace() noexcept
                 fmt::print(stderr, "[symbol unknown]");
             }
         }
-
         fmt::print(stderr, "\n");
     }
 
-#elif defined(PYLABHUB_IS_POSIX)
+#elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
 
-    /**
-     * @brief POSIX-specific implementation of `print_stack_trace`.
-     *
-     * This section uses `backtrace` to capture stack addresses and attempts to resolve
-     * symbol names and source file/line information using `dladdr` and `addr2line`.
-     * `dladdr` provides information about the shared object and function symbol,
-     * while `addr2line` (a separate utility executed via `popen`) is used to get
-     * file and line numbers, which are often more accurate for compiled binaries.
-     */
+    // POSIX implementation (shared for macOS and other POSIX)
     constexpr int kMaxFrames = 200;
     void *callstack[kMaxFrames];
-    int frames = backtrace(callstack, kMaxFrames);
-    if (frames <= 0)
+    int nframes = backtrace(callstack, kMaxFrames);
+    if (nframes <= 0)
     {
         fmt::print(stderr, "  [No stack frames available]\n");
         return;
     }
 
-    // fallback textual names
-    char **symbols = backtrace_symbols(callstack, frames);
-
+    char **symbols = backtrace_symbols(callstack, nframes);
     const std::string exe_path = pylabhub::platform::get_executable_name(true);
 
-    // Collect frame meta (dladdr info, computed offsets)
     struct FrameMeta
     {
-        int idx;
-        uintptr_t addr;
-        uintptr_t offset;      // offset within module or absolute
-        void *saddr;           // symbol address returned by dladdr
+        int idx{};
+        uintptr_t addr{};
+        uintptr_t offset{};    // offset within module or absolute
+        void *saddr{};         // symbol address returned by dladdr
         std::string demangled; // demangled symbol name if available
-        std::string dli_fname; // object filename from dladdr
-        uintptr_t dli_fbase; // module base (if dladdr provided it) - added to support macOS/atos -l
+        std::string dli_fname; // dli fname
+        uintptr_t dli_fbase{}; // module base
     };
 
     std::vector<FrameMeta> metas;
-    metas.reserve(frames);
-
-    for (int i = 0; i < frames; ++i)
+    metas.reserve(static_cast<size_t>(nframes));
+    for (int i = 0; i < nframes; ++i)
     {
         FrameMeta m;
         m.idx = i;
         m.addr = reinterpret_cast<uintptr_t>(callstack[i]);
-        m.offset = m.addr; // default; may be changed
+        m.offset = m.addr;
         m.saddr = nullptr;
-        m.demangled.clear();
-        m.dli_fname.clear();
         m.dli_fbase = 0;
 
         Dl_info dlinfo;
-        /**
-         * @brief Use `dladdr` to get information about the address.
-         *
-         * `dladdr` attempts to resolve the given address to the nearest symbol
-         * and the shared object it belongs to. This provides the symbol name (`dli_sname`),
-         * its address (`dli_saddr`), and the containing shared object's filename (`dli_fname`)
-         * and base address (`dli_fbase`).
-         */
         if (dladdr(callstack[i], &dlinfo))
         {
             if (dlinfo.dli_sname)
             {
                 int status = 0;
-                /**
-                 * @brief Demangle C++ symbol names.
-                 *
-                 * C++ compilers often "mangle" function names to encode type information.
-                 * `abi::__cxa_demangle` attempts to convert these mangled names back to
-                 * human-readable form.
-                 */
                 char *dem = abi::__cxa_demangle(dlinfo.dli_sname, nullptr, nullptr, &status);
                 if (status == 0 && dem)
                 {
@@ -264,7 +397,6 @@ void print_stack_trace() noexcept
             if (dlinfo.dli_fname)
             {
                 m.dli_fname = dlinfo.dli_fname;
-                // compute offset relative to module base if we can
                 uintptr_t base = reinterpret_cast<uintptr_t>(dlinfo.dli_fbase);
                 m.dli_fbase = base;
                 if (base != 0)
@@ -272,76 +404,24 @@ void print_stack_trace() noexcept
                 else
                     m.offset = m.addr;
             }
-            else
-            {
-                // no dli_fname -> leave offset as absolute (fallback)
-                m.offset = m.addr;
-                m.dli_fbase = 0;
-            }
         }
         metas.push_back(std::move(m));
     }
 
-    // Group frames by binary (prefer dli_fname, fallback to exe_path, else "[unknown]")
-    std::map<std::string, std::vector<int>> binToFrameIndices;
+    // Group frames by binary (prefer dli_fname, fallback to exe_path)
+    std::map<std::string, std::vector<int>> binToIdx;
     for (size_t i = 0; i < metas.size(); ++i)
     {
         const std::string &fname = metas[i].dli_fname.empty() ? exe_path : metas[i].dli_fname;
         std::string key = fname.empty() ? std::string("[unknown]") : fname;
-        binToFrameIndices[key].push_back(static_cast<int>(i));
+        binToIdx[key].push_back(static_cast<int>(i));
     }
 
-    // Quote a path for shell (basic)
-    auto shell_quote = [](const std::string &s) -> std::string
-    {
-        std::string out = "\"";
-        for (char c : s)
-        {
-            if (c == '"')
-                out += "\\\"";
-            else
-                out += c;
-        }
-        out += "\"";
-        return out;
-    };
-
-    // Helper: find an executable in PATH (returns true if found and executable).
-    auto find_in_path = [](const std::string &name) -> bool
-    {
-        const char *pathEnv = std::getenv("PATH");
-        if (!pathEnv)
-            return false;
-        std::string pathStr(pathEnv);
-        size_t start = 0;
-        while (start < pathStr.size())
-        {
-            size_t pos = pathStr.find(':', start);
-            std::string dir;
-            if (pos == std::string::npos)
-            {
-                dir = pathStr.substr(start);
-                start = pathStr.size();
-            }
-            else
-            {
-                dir = pathStr.substr(start, pos - start);
-                start = pos + 1;
-            }
-            if (dir.empty())
-                dir = ".";
-            std::string candidate = dir + "/" + name;
-            if (access(candidate.c_str(), X_OK) == 0)
-                return true;
-        }
-        return false;
-    };
-
-    // For each binary, call addr2line (or atos on macOS) once with all offsets
+    // For each binary, resolve frames using appropriate symbolizer
     std::unordered_map<std::string, std::vector<std::string>> binResults;
-    binResults.reserve(binToFrameIndices.size());
+    binResults.reserve(binToIdx.size());
 
-    for (auto &kv : binToFrameIndices)
+    for (auto &kv : binToIdx)
     {
         const std::string &binary = kv.first;
         const std::vector<int> &indices = kv.second;
@@ -352,300 +432,84 @@ void print_stack_trace() noexcept
             continue;
         }
 
-#if defined(__APPLE__)
-        // macOS: prefer atos (works with dSYM). Build command:
-        // atos -o "<binary>" [-l 0x<base>] 0x<addr1> 0x<addr2> ...
-        // We'll include -l when dlinfo provides a non-zero base (ASLR slide).
-        bool has_atos = find_in_path("atos");
-        bool has_llvm_addr2line = find_in_path("llvm-addr2line");
-        bool has_addr2line = find_in_path("addr2line");
+#if defined(PYLABHUB_PLATFORM_APPLE)
+        // macOS: prefer atos, else fallback to llvm-addr2line/addr2line
+        const bool has_atos = internal::find_in_path("atos");
+        const bool has_llvm_addr2line = internal::find_in_path("llvm-addr2line");
+        const bool has_addr2line = internal::find_in_path("addr2line");
 
         if (!has_atos && !has_llvm_addr2line && !has_addr2line)
         {
-            // no symbolizer found -- store empty results
             binResults[binary] = std::vector<std::string>(indices.size(), std::string());
             continue;
         }
 
         if (has_atos)
         {
-            std::ostringstream cmd;
-            cmd << "atos -o " << shell_quote(binary);
-
-            // If we have a dli_fbase for this module, supply -l (load address / slide)
-            // Find first non-zero base among frames for this binary (if any)
-            uintptr_t base_for_this_bin = 0;
+            // Build vector of VM addresses and base_for_bin (first non-zero dli_fbase)
+            std::vector<uintptr_t> addrs;
+            addrs.reserve(indices.size());
+            uintptr_t base_for_bin = 0;
             for (int idx : indices)
             {
-                if (metas[idx].dli_fbase != 0)
-                {
-                    base_for_this_bin = metas[idx].dli_fbase;
-                    break;
-                }
+                addrs.push_back(metas[idx].addr);
+                if (base_for_bin == 0 && metas[idx].dli_fbase != 0)
+                    base_for_bin = metas[idx].dli_fbase;
             }
-            if (base_for_this_bin != 0)
-            {
-                cmd << " -l 0x" << std::hex << base_for_this_bin;
-            }
-
-            // Append absolute addresses (atos expects VM addresses)
-            for (int idx : indices)
-            {
-                cmd << " 0x" << std::hex << metas[idx].addr;
-            }
-
-            FILE *fp = popen(cmd.str().c_str(), "r");
-            if (!fp)
-            {
-                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-                continue;
-            }
-
-            std::vector<std::string> lines;
-            char buf[1024];
-            while (fgets(buf, sizeof(buf), fp))
-            {
-                std::string s(buf);
-                // trim newline
-                while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                    s.pop_back();
-                lines.push_back(std::move(s));
-            }
-            pclose(fp);
-
-            std::vector<std::string> perFrame;
-            perFrame.reserve(indices.size());
-
-            // atos typically prints one line per address (symbol and file:line if dSYM available)
-            if ((int)lines.size() >= (int)indices.size())
-            {
-                for (size_t j = 0; j < indices.size() && j < lines.size(); ++j)
-                {
-                    perFrame.push_back(lines[j]);
-                }
-                // pad if necessary
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-            else
-            {
-                // fallback heuristic: distribute lines evenly
-                size_t per =
-                    (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
-                size_t cur = 0;
-                for (size_t fi = 0; fi < indices.size(); ++fi)
-                {
-                    std::ostringstream acc;
-                    for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                    {
-                        if (k)
-                            acc << "\n";
-                        acc << lines[cur];
-                    }
-                    perFrame.push_back(acc.str());
-                }
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-
-            binResults[binary] = std::move(perFrame);
+            binResults[binary] = internal::resolve_with_atos(
+                binary, std::span(addrs.data(), addrs.size()), base_for_bin);
         }
         else
         {
-            // If atos not available, prefer llvm-addr2line over addr2line
-            std::ostringstream cmd;
-            if (has_llvm_addr2line)
-                cmd << "llvm-addr2line";
-            else
-                cmd << "addr2line";
-            cmd << " -f -C -e " << shell_quote(binary);
-
+            std::vector<uintptr_t> offsets;
+            offsets.reserve(indices.size());
             for (int idx : indices)
-            {
-                cmd << " 0x" << std::hex << metas[idx].offset;
-            }
-
-            FILE *fp = popen(cmd.str().c_str(), "r");
-            if (!fp)
-            {
-                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-                continue;
-            }
-
-            std::vector<std::string> lines;
-            char buf[1024];
-            while (fgets(buf, sizeof(buf), fp))
-            {
-                std::string s(buf);
-                // trim newline
-                while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                    s.pop_back();
-                lines.push_back(std::move(s));
-            }
-            pclose(fp);
-
-            std::vector<std::string> perFrame;
-            perFrame.reserve(indices.size());
-
-            // best case: 2 * N lines
-            if ((int)lines.size() >= (int)indices.size() * 2)
-            {
-                for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < indices.size(); j += 2)
-                {
-                    perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-                }
-                // pad if necessary
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-            else if ((int)lines.size() == (int)indices.size())
-            {
-                // one line per frame (some versions)
-                for (auto &l : lines)
-                    perFrame.push_back(l);
-            }
-            else
-            {
-                // fallback heuristic: distribute lines evenly
-                size_t per =
-                    (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
-                size_t cur = 0;
-                for (size_t fi = 0; fi < indices.size(); ++fi)
-                {
-                    std::ostringstream acc;
-                    for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                    {
-                        if (k)
-                            acc << "\n";
-                        acc << lines[cur];
-                    }
-                    perFrame.push_back(acc.str());
-                }
-                while (perFrame.size() < indices.size())
-                    perFrame.emplace_back();
-            }
-
-            binResults[binary] = std::move(perFrame);
+                offsets.push_back(metas[idx].offset);
+            binResults[binary] = internal::resolve_with_addr2line(
+                binary, std::span(offsets.data(), offsets.size()), has_llvm_addr2line);
         }
 
-#else // non-Apple POSIX systems (Linux, etc.): existing addr2line logic
-
-        std::ostringstream cmd;
-        cmd << "addr2line -f -C -e " << shell_quote(binary);
-
-        // Append offsets in the order of indices
+#else
+        // Non-Apple POSIX: use addr2line (prefer llvm-addr2line only if you decide so; keep false
+        // by default)
+        std::vector<uintptr_t> offsets;
+        offsets.reserve(indices.size());
         for (int idx : indices)
-        {
-            cmd << " 0x" << std::hex << metas[idx].offset;
-        }
+            offsets.push_back(metas[idx].offset);
+        binResults[binary] = internal::resolve_with_addr2line(
+            binary, std::span(offsets.data(), offsets.size()), false);
+#endif
+    }
 
-        FILE *fp = popen(cmd.str().c_str(), "r");
-        if (!fp)
-        {
-            // failure to run addr2line -> store empty results
-            binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-            continue;
-        }
-
-        // addr2line normally prints two lines per address: function and file:line
-        // We'll read all lines and then coalesce them into per-address strings.
-        std::vector<std::string> lines;
-        char buf[1024];
-        while (fgets(buf, sizeof(buf), fp))
-        {
-            std::string s(buf);
-            // trim newline
-            while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-                s.pop_back();
-            lines.push_back(std::move(s));
-        }
-        pclose(fp);
-
-        std::vector<std::string> perFrame;
-        perFrame.reserve(indices.size());
-
-        // best case: 2 * N lines
-        if ((int)lines.size() >= (int)indices.size() * 2)
-        {
-            for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < indices.size(); j += 2)
-            {
-                perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-            }
-            // pad if necessary
-            while (perFrame.size() < indices.size())
-                perFrame.emplace_back();
-        }
-        else if ((int)lines.size() == (int)indices.size())
-        {
-            // one line per frame (some versions)
-            for (auto &l : lines)
-                perFrame.push_back(l);
-        }
-        else
-        {
-            // fallback heuristic: distribute lines evenly
-            size_t per = (lines.empty() ? 1 : (lines.size() + indices.size() - 1) / indices.size());
-            size_t cur = 0;
-            for (size_t fi = 0; fi < indices.size(); ++fi)
-            {
-                std::ostringstream acc;
-                for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-                {
-                    if (k)
-                        acc << "\n";
-                    acc << lines[cur];
-                }
-                perFrame.push_back(acc.str());
-            }
-            while (perFrame.size() < indices.size())
-                perFrame.emplace_back();
-        }
-
-        binResults[binary] = std::move(perFrame);
-
-#endif // __APPLE__ / non-Apple POSIX
-
-    } // end for each binary
-
-    // Print frames with the best available info
+    // Print frames
     for (size_t i = 0; i < metas.size(); ++i)
     {
         const FrameMeta &m = metas[i];
         fmt::print(stderr, "  #{:02}  {:#018x}  ", m.idx, static_cast<unsigned long long>(m.addr));
-
         bool printed = false;
 
-        // Try printing demangled C++ symbol name
         if (!m.demangled.empty())
         {
             uintptr_t saddr = reinterpret_cast<uintptr_t>(m.saddr);
-            // If saddr is non-null, print offset from symbol; else just show name
             if (saddr)
-            {
                 fmt::print(stderr, "{} + {:#x}", m.demangled,
                            static_cast<unsigned long long>(m.addr - saddr));
-            }
             else
-            {
                 fmt::print(stderr, "{}", m.demangled);
-            }
             printed = true;
         }
         else if (symbols && symbols[i])
         {
-            // Fallback to original `backtrace_symbols` output if demangling failed
             fmt::print(stderr, "{}", symbols[i]);
             printed = true;
         }
 
-        // Look up addr2line/atos result for this frame
         const std::string &binaryKey =
             m.dli_fname.empty() ? (exe_path.empty() ? std::string("[unknown]") : exe_path)
                                 : m.dli_fname;
-        auto binIt = binToFrameIndices.find(binaryKey);
-        if (binIt != binToFrameIndices.end())
+        auto binIt = binToIdx.find(binaryKey);
+        if (binIt != binToIdx.end())
         {
-            // find position of this frame in the vector of indices for this binary
             const std::vector<int> &vec = binIt->second;
             auto it = std::find(vec.begin(), vec.end(), static_cast<int>(i));
             if (it != vec.end())
@@ -654,30 +518,24 @@ void print_stack_trace() noexcept
                 auto resIt = binResults.find(binaryKey);
                 if (resIt != binResults.end() && pos < resIt->second.size())
                 {
-                    const std::string &addr2lineText = resIt->second[pos];
-                    if (!addr2lineText.empty())
+                    const auto &symText = resIt->second[pos];
+                    if (!symText.empty())
                     {
-                        fmt::print(stderr, "  \n         -> {}", addr2lineText);
+                        fmt::print(stderr, "  \n         -> {}", symText);
                         printed = true;
                     }
                 }
             }
         }
 
-        // Final fallback if no detailed info was printed
         if (!printed)
         {
             if (!m.dli_fname.empty())
-            {
                 fmt::print(stderr, "({}) + {:#x}", m.dli_fname,
                            static_cast<unsigned long long>(m.offset));
-            }
             else
-            {
                 fmt::print(stderr, "[unknown]");
-            }
         }
-
         fmt::print(stderr, "\n");
     }
 
@@ -686,12 +544,7 @@ void print_stack_trace() noexcept
 
 #else
 
-    /**
-     * @brief Fallback for unsupported platforms.
-     *
-     * If the current platform is neither Windows nor a supported POSIX system,
-     * a message indicating that stack trace is unavailable is printed.
-     */
+    // Unsupported platform
     fmt::print(stderr, "  [Stack trace not available on this platform]\n");
 
 #endif

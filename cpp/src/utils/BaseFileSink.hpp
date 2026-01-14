@@ -42,7 +42,7 @@ class BaseFileSink
     std::filesystem::path m_path;
     bool m_use_flock = false;
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     void *m_file_handle = nullptr; // Using void* to avoid including <windows.h>
 #else
     int m_fd = -1;

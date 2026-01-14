@@ -31,6 +31,7 @@
  ******************************************************************************/
 #include "utils/Lifecycle.hpp"
 #include "debug_info.hpp"
+#include "format_tools.hpp"
 #include "platform.hpp"
 #include "recursion_guard.hpp"
 #include "utils/Logger.hpp" // For LOGGER_ERROR, etc.
@@ -164,10 +165,10 @@ class LifecycleManagerImpl
     // --- Public API Methods ---
     void registerStaticModule(lifecycle_internal::InternalModuleDef def);
     bool registerDynamicModule(lifecycle_internal::InternalModuleDef def);
-    void initialize();
-    void finalize();
-    bool loadModule(const char *name);
-    bool unloadModule(const char *name);
+    void initialize(std::source_location loc = std::source_location::current());
+    void finalize(std::source_location loc = std::source_location::current());
+    bool loadModule(const char *name, std::source_location loc = std::source_location::current());
+    bool unloadModule(const char *name, std::source_location loc = std::source_location::current());
     bool is_initialized() const { return m_is_initialized.load(std::memory_order_acquire); }
     bool is_finalized() const { return m_is_finalized.load(std::memory_order_acquire); }
 
@@ -195,7 +196,9 @@ class LifecycleManagerImpl
 void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModuleDef def)
 {
     if (m_is_initialized.load(std::memory_order_acquire))
-        PLH_PANIC("FATAL: register_module called after initialization.");
+        PLH_PANIC("[PLH_LifeCycle]\nEXEC[{}]:PID[{}]\n  "
+                  "  **  FATAL: register_module called after initialization.",
+                  m_app_name, m_pid);
     std::lock_guard<std::mutex> lock(m_registry_mutex);
     m_registered_modules.push_back(std::move(def));
 }
@@ -212,12 +215,16 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 {
     if (!m_is_initialized.load(std::memory_order_acquire))
     {
-        PLH_DEBUG("ERROR: register_dynamic_module called before initialization.");
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
+                  "  **  ERROR: register_dynamic_module called before initialization.",
+                  m_app_name, m_pid);
         return false;
     }
     if (m_is_finalized.load(std::memory_order_acquire))
     {
-        PLH_DEBUG("ERROR: register_dynamic_module called after finalization.");
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
+                  "  **  ERROR: register_dynamic_module called after finalization.",
+                  m_app_name, m_pid);
         return false;
     }
 
@@ -225,7 +232,9 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 
     if (m_module_graph.count(def.name))
     {
-        PLH_DEBUG("ERROR: Module '{}' is already registered.", def.name);
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
+                  "  **  ERROR: Module '{}' is already registered.",
+                  m_app_name, m_pid, def.name);
         return false;
     }
 
@@ -233,7 +242,9 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     {
         if (m_module_graph.find(dep_name) == m_module_graph.end())
         {
-            PLH_DEBUG("ERROR: Dependency '{}' for module '{}' not found.", dep_name, def.name);
+            PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
+                      "  **  ERROR: Dependency '{}' for module '{}' not found.",
+                      m_app_name, m_pid, dep_name, def.name);
             return false;
         }
     }
@@ -253,7 +264,8 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
             it->second.dependents.push_back(&node);
         }
     }
-    PLH_DEBUG("[pylabhub-lifecycle] Registered dynamic module '{}'.", def.name);
+    PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}] --> Registered dynamic module '{}'.", m_app_name,
+              m_pid, def.name);
     return true;
 }
 
@@ -265,11 +277,18 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
  *          callback for each module in sequence. Any failure during this process
  *          is considered fatal and will abort the application.
  */
-void LifecycleManagerImpl::initialize()
+void LifecycleManagerImpl::initialize(std::source_location loc)
 {
     if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
         return;
-    PLH_DEBUG("[pylabhub-lifecycle] Initializing application...");
+    std::string debug_info;
+    debug_info.reserve(4096);
+
+    debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                              "  **** initialize() triggered from {} ({}:{})\n"
+                              "  --> Initializing application...\n",
+                              m_app_name, m_pid, loc.function_name(),
+                              pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     try
     {
         buildStaticGraph();
@@ -291,24 +310,31 @@ void LifecycleManagerImpl::initialize()
     {
         try
         {
-            PLH_DEBUG("[pylabhub-lifecycle] -> Starting static module: '{}'", mod->name);
+            debug_info += fmt::format("   --> Starting static module: '{}'...", mod->name);
             mod->status = ModuleStatus::Initializing;
             if (mod->startup)
                 mod->startup();
             mod->status = ModuleStatus::Started;
+            debug_info += "done.\n";
         }
         catch (const std::exception &e)
         {
             mod->status = ModuleStatus::Failed;
-            printStatusAndAbort("Exception during startup: " + std::string(e.what()), mod->name);
+            PLH_DEBUG("{}", debug_info);
+            printStatusAndAbort("\n  **** Exception during startup: " + std::string(e.what()),
+                                mod->name);
+            debug_info = "";
         }
         catch (...)
         {
             mod->status = ModuleStatus::Failed;
-            printStatusAndAbort("Unknown exception during startup.", mod->name);
+            PLH_DEBUG("{}", debug_info);
+            printStatusAndAbort("\n  **** Unknown exception during startup.", mod->name);
+            debug_info = "";
         }
     }
-    PLH_DEBUG("[pylabhub-lifecycle] Application initialization complete.");
+    debug_info += "  --> Application_initialization complete.\n";
+    PLH_DEBUG("{}", debug_info);
 }
 
 /**
@@ -319,11 +345,20 @@ void LifecycleManagerImpl::initialize()
  *          their startup order. Shutdown for each module is performed with a
  *          timeout to prevent hangs.
  */
-void LifecycleManagerImpl::finalize()
+void LifecycleManagerImpl::finalize(std::source_location loc)
 {
     if (!m_is_initialized.load() || m_is_finalized.exchange(true))
         return;
-    PLH_DEBUG("[pylabhub-lifecycle] Finalizing application...");
+
+    std::string debug_info;
+    debug_info.reserve(4096);
+
+    debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                              "  **** finalize() triggered from {} ({}:{}):\n"
+                              "  <-- Finalizing application...\n",
+                              m_app_name, m_pid, loc.function_name(),
+                              pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
+
     std::vector<InternalGraphNode *> loaded_dyn_nodes;
     {
         std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
@@ -335,48 +370,93 @@ void LifecycleManagerImpl::finalize()
     {
         auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
         std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
+        debug_info += "  --> Unloading dynamic modules...\n";
         for (auto *mod : dyn_shutdown_order)
         {
             try
             {
-                PLH_DEBUG("<- Unloading dynamic module '{}'", mod->name);
+                debug_info += fmt::format("    <-- Unloading dynamic module '{}'...", mod->name);
                 if (mod->shutdown.func)
                 {
                     auto fut = std::async(std::launch::async, mod->shutdown.func);
                     if (fut.wait_for(mod->shutdown.timeout) == std::future_status::timeout)
-                        PLH_DEBUG("WARNING: Shutdown timed out for dynamic module '{}'", mod->name);
+                    {
+                        debug_info += "TIMOUT!\n";
+                    }
                     else
+                    {
                         fut.get();
+                        debug_info += "done.\n";
+                    }
+                    mod->status = ModuleStatus::Shutdown;
+                }
+                else
+                {
+                    mod->status = ModuleStatus::Shutdown;
+                    debug_info += "(no-op) done.\n";
                 }
             }
             catch (const std::exception &e)
             {
-                PLH_DEBUG("ERROR: Dynamic module '{}' threw on forced shutdown: {}", mod->name,
-                          e.what());
+                debug_info +=
+                    fmt::format("\n  **** ERROR: Dynamic module '{}' threw on unload: {}\n",
+                                mod->name, e.what());
+            }
+            catch (...)
+            {
+                debug_info += fmt::format(
+                    "\n  **** ERROR: Dynamic module '{}' threw an unknown exception on unload.\n",
+                    mod->name);
             }
         }
+        debug_info += "  --- Dynamic module unload complete ---\n";
     }
+    else
+    {
+        debug_info += "  --- No dynamic modules to unload ---\n";
+    }
+
+    debug_info += "\n  <-- Shutting down static modules...\n";
     for (auto *mod : m_shutdown_order)
     {
         try
         {
-            PLH_DEBUG("[pylabhub-lifecycle] <- Shutting down static module: '{}'", mod->name);
+            debug_info += fmt::format("    <-- Shutting down static module: '{}'...", mod->name);
             if (mod->status == ModuleStatus::Started && mod->shutdown.func)
             {
                 auto fut = std::async(std::launch::async, mod->shutdown.func);
                 if (fut.wait_for(mod->shutdown.timeout) == std::future_status::timeout)
-                    PLH_DEBUG("WARNING: Shutdown timed out for static module '{}'", mod->name);
+                {
+                    debug_info += "TIMEOUT!\n";
+                }
                 else
+                {
                     fut.get();
+                    debug_info += "done.\n";
+                }
                 mod->status = ModuleStatus::Shutdown;
+            }
+            else
+            {
+                mod->status = ModuleStatus::Shutdown;
+                debug_info += "(no-op) done.\n";
             }
         }
         catch (const std::exception &e)
         {
-            PLH_DEBUG("ERROR: Static module '{}' threw on shutdown: {}", mod->name, e.what());
+            debug_info += fmt::format("\n  **** ERROR: Static module '{}' threw on shutdown: {}\n",
+                                      mod->name, e.what());
+        }
+        catch (...)
+        {
+            debug_info += fmt::format(
+                "\n  **** ERROR: Static module '{}' threw an unknown exception on shutdown.\n",
+                mod->name);
         }
     }
-    PLH_DEBUG("[pylabhub-lifecycle] Application finalization complete.");
+    debug_info += "\n  --- Static module shutdown complete ---\n"
+                  "  --> Application finalization complete.\n";
+    PLH_DEBUG("{}", debug_info);
 }
 
 /**
@@ -387,15 +467,24 @@ void LifecycleManagerImpl::finalize()
  * @param name The name of the module to load.
  * @return True if the module was loaded successfully, false otherwise.
  */
-bool LifecycleManagerImpl::loadModule(const char *name)
+bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc)
 {
     if (!is_initialized())
-        PLH_PANIC("FATAL: load_module called before initialization.");
+        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                  "  **** loadModule() called from {} ({}:{})\n"
+                  "  **** FATAL: load_module called before initialization.",
+                  m_app_name, m_pid, loc.function_name(),
+                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     if (!name)
         return false;
+
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
-        PLH_DEBUG("ERROR: Re-entrant call to load_module('{}') detected.", name);
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                  "  **** loadModule() called from {} ({}:{})\n"
+                  "  ****  ERROR: Re-entrant call to load_module('{}') detected.",
+                  m_app_name, m_pid, loc.function_name(),
+                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
         return false;
     }
     pylabhub::basics::RecursionGuard guard(this);
@@ -403,7 +492,11 @@ bool LifecycleManagerImpl::loadModule(const char *name)
     auto it = m_module_graph.find(name);
     if (it == m_module_graph.end() || !it->second.is_dynamic)
     {
-        PLH_DEBUG("ERROR: Attempted to load '{}', not a dynamic module.", name);
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                  "  **** loadModule() called from {} ({}:{})\n"
+                  "  ****  ERROR: Dynamic module '{}' not found.",
+                  m_app_name, m_pid, loc.function_name(),
+                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
         return false;
     }
     return loadModuleInternal(it->second);
@@ -427,12 +520,12 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
     }
     if (node.dynamic_status == DynamicModuleStatus::LOADING)
     {
-        PLH_DEBUG("ERROR: Circular dependency on module '{}'", node.name);
+        PLH_DEBUG("**** ERROR: Circular dependency on module '{}'", node.name);
         return false;
     }
     if (node.dynamic_status == DynamicModuleStatus::FAILED)
     {
-        PLH_DEBUG("ERROR: Module '{}' is in a failed state.", node.name);
+        PLH_DEBUG("**** ERROR: Module '{}' is in a failed state.", node.name);
         return false;
     }
     node.dynamic_status = DynamicModuleStatus::LOADING;
@@ -443,7 +536,7 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
         if (it == m_module_graph.end())
         {
             node.dynamic_status = DynamicModuleStatus::FAILED;
-            PLH_DEBUG("ERROR: Undefined dependency '{}' for module '{}'", dep_name, node.name);
+            PLH_DEBUG("**** ERROR: Undefined dependency '{}' for module '{}'", dep_name, node.name);
             return false;
         }
         auto &dep_node = it->second;
@@ -459,7 +552,7 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
         else if (dep_node.status != ModuleStatus::Started)
         {
             node.dynamic_status = DynamicModuleStatus::FAILED;
-            PLH_DEBUG("ERROR: Static dependency '{}' not started for module '{}'", dep_name,
+            PLH_DEBUG("**** ERROR: Static dependency '{}' not started for module '{}'", dep_name,
                       node.name);
             return false;
         }
@@ -472,13 +565,14 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
         node.ref_count = 1;
         for (auto *dep : dyn_deps)
             dep->ref_count++;
-        PLH_DEBUG("-> Loaded dynamic module '{}'", node.name);
+        PLH_DEBUG("[PLH_LifeCycle] {}:PID[{}]\n  --> Loaded dynamic module '{}'", m_app_name, m_pid,
+                  node.name);
         return true;
     }
     catch (const std::exception &e)
     {
         node.dynamic_status = DynamicModuleStatus::FAILED;
-        PLH_DEBUG("ERROR: Module '{}' threw on startup: {}", node.name, e.what());
+        PLH_DEBUG("**** ERROR: Module '{}' threw on startup: {}", node.name, e.what());
         return false;
     }
 }
@@ -491,13 +585,23 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
  * @param name The name of the module to unload.
  * @return True if the module was found and considered for unloading.
  */
-bool LifecycleManagerImpl::unloadModule(const char *name)
+bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location loc)
 {
+    if (!is_initialized())
+        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                  "  **** unloadModule called from {} ({}:{})\n"
+                  "  **** FATAL: unload_module called without initialization.",
+                  m_app_name, m_pid, loc.function_name(),
+                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     if (!name)
         return false;
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
-        PLH_DEBUG("ERROR: Re-entrant call to unload_module('{}').", name);
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                  "  **** unloadModule called from {} ({}:{})\n"
+                  "  ****  ERROR: Re-entrant call to unload_module('{}') detected.",
+                  m_app_name, m_pid, loc.function_name(),
+                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
         return false;
     }
     pylabhub::basics::RecursionGuard guard(this);
@@ -627,9 +731,9 @@ LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &no
 
 void LifecycleManagerImpl::printStatusAndAbort(const std::string &msg, const std::string &mod)
 {
-    fmt::print(stderr, "\n[pylabhub-lifecycle] FATAL: {}. Aborting.\n", msg);
+    fmt::print(stderr, "\n[PLH_LifeCycle] FATAL: {}. Aborting.\n", msg);
     if (!mod.empty())
-        fmt::print(stderr, "[pylabhub-lifecycle] Module '{}' was point of failure.\n", mod);
+        fmt::print(stderr, "[PLH_LifeCycle] Module '{}' was point of failure.\n", mod);
     fmt::print(stderr, "\n--- Module Status ---\n");
     for (auto const &[name, node] : m_module_graph)
     {
@@ -637,6 +741,7 @@ void LifecycleManagerImpl::printStatusAndAbort(const std::string &msg, const std
     }
     fmt::print(stderr, "---------------------\n\n");
     pylabhub::debug::print_stack_trace();
+    std::fflush(stderr);
     std::abort();
 }
 
@@ -658,13 +763,13 @@ bool LifecycleManager::register_dynamic_module(ModuleDef &&def)
         return pImpl->registerDynamicModule(std::move(def.pImpl->def));
     return false;
 }
-void LifecycleManager::initialize()
+void LifecycleManager::initialize(std::source_location loc)
 {
-    pImpl->initialize();
+    pImpl->initialize(loc);
 }
-void LifecycleManager::finalize()
+void LifecycleManager::finalize(std::source_location loc)
 {
-    pImpl->finalize();
+    pImpl->finalize(loc);
 }
 bool LifecycleManager::is_initialized()
 {
@@ -674,13 +779,13 @@ bool LifecycleManager::is_finalized()
 {
     return pImpl->is_finalized();
 }
-bool LifecycleManager::load_module(const char *name)
+bool LifecycleManager::load_module(const char *name, std::source_location loc)
 {
-    return pImpl->loadModule(name);
+    return pImpl->loadModule(name, loc);
 }
-bool LifecycleManager::unload_module(const char *name)
+bool LifecycleManager::unload_module(const char *name, std::source_location loc)
 {
-    return pImpl->unloadModule(name);
+    return pImpl->unloadModule(name, loc);
 }
 
 } // namespace pylabhub::utils

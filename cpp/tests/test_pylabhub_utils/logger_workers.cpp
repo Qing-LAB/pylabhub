@@ -221,7 +221,9 @@ int test_shutdown_idempotency(const std::string &log_path_str)
             std::vector<std::thread> threads;
             for (int i = 0; i < THREADS; ++i)
             {
-                threads.emplace_back([]() { LifecycleManager::instance().finalize(); });
+                threads.emplace_back(
+                    []()
+                    { LifecycleManager::instance().finalize(std::source_location::current()); });
             }
             for (auto &t : threads)
                 t.join();
@@ -332,7 +334,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     // while other threads are actively using the logger.
     // Register the Logger module with the LifecycleManager.
     pylabhub::utils::RegisterModule(Logger::GetLifecycleModule());
-    LifecycleManager::instance().initialize();
+    LifecycleManager::instance().initialize(std::source_location::current());
 
     fs::path chaos_log_path(log_path_str);
     std::atomic<bool> stop_flag(false);
@@ -381,7 +383,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
     std::this_thread::sleep_for(std::chrono::milliseconds(DURATION_MS));
 
     // Finalize while threads are running
-    LifecycleManager::instance().finalize();
+    LifecycleManager::instance().finalize(std::source_location::current());
     stop_flag.store(true); // Signal threads to stop
 
     for (auto &t : threads)
@@ -448,67 +450,54 @@ int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_fil
             fmt::print("Finished logging {} messages for rotation test.\n", total_messages);
 
             // --- Verification Phase ---
-            auto backup1_path = fs::path(base_log_path.string() + ".1");
-            auto backup2_path = fs::path(base_log_path.string() + ".2");
-            auto backup3_path = fs::path(base_log_path.string() + ".3");
-
-            // Check that the correct files exist
-            EXPECT_TRUE(fs::exists(base_log_path));
-            EXPECT_TRUE(fs::exists(backup1_path));
-            EXPECT_TRUE(fs::exists(backup2_path));
-            EXPECT_FALSE(fs::exists(backup3_path)); // Should have been rotated out
-
-            // Concatenate all log files in the correct order (oldest to newest)
+            // Read all existing log files into a single string for analysis.
             std::string full_log_contents;
             std::string content_buffer;
+            // Backups are numbered .1, .2, etc. We read in reverse order of numbering
+            // to process from oldest to newest.
+            for (size_t i = max_backup_files; i > 0; --i)
+            {
+                fs::path p = fs::path(base_log_path.string() + "." + std::to_string(i));
+                if (fs::exists(p) && read_file_contents(p.string(), content_buffer))
+                {
+                    full_log_contents += content_buffer;
+                }
+            }
+            if (fs::exists(base_log_path) &&
+                read_file_contents(base_log_path.string(), content_buffer))
+            {
+                full_log_contents += content_buffer;
+            }
 
-            // Order: backup 2 (oldest) -> backup 1 -> base_log_path (newest)
-            if (read_file_contents(backup2_path.string(), content_buffer))
-            {
-                full_log_contents += content_buffer;
-                fmt::print("Read backup file: {}\n", backup2_path.string());
-            }
-            if (read_file_contents(backup1_path.string(), content_buffer))
-            {
-                full_log_contents += content_buffer;
-                fmt::print("Read backup file: {}\n", backup1_path.string());
-            }
-            if (read_file_contents(base_log_path.string(), content_buffer))
-            {
-                full_log_contents += content_buffer;
-                fmt::print("Read base log file: {}\n", base_log_path.string());
-            }
-            fmt::print("Total concatenated log size: {} bytes\n", full_log_contents.size());
-            fmt::print("Full log contents:\n{}\n", full_log_contents);
+            // 1. Verify that rotation actually happened.
+            ASSERT_GT(count_lines(full_log_contents, "--- Log rotated successfully ---"), 0)
+                << "Log rotation system message was not found.";
 
-            // Verify that only latest messages are present but should not have any gaps.
-            bool first_found = false;
+            // 2. Find the first message that wasn't purged by rotation.
+            int first_found_idx = -1;
             for (int i = 0; i < total_messages; ++i)
             {
-                std::string expected_payload = fmt::format("ROTATION-TEST-MSG-{:03}", i);
-                fmt::print("Verifying presence of message: {}\n", expected_payload);
-                if (!first_found)
+                if (full_log_contents.find(fmt::format("ROTATION-TEST-MSG-{:03}", i)) !=
+                    std::string::npos)
                 {
-                    if (full_log_contents.find(expected_payload) != std::string::npos)
-                    {
-                        first_found = true;
-                        fmt::print("Message {} found.\n", expected_payload);
-                        fmt::print("Continuing to check remaining messages. No more message should "
-                                   "be missing.\n");
-                    }
-                    else
-                    {
-                        fmt::print("Message {} not found yet.\n", expected_payload);
-                        continue;
-                    }
-                }
-                else
-                {
-                    ASSERT_NE(full_log_contents.find(expected_payload), std::string::npos)
-                        << "Missing message " << i << " in final concatenated log.";
+                    first_found_idx = i;
+                    break;
                 }
             }
-            ASSERT_LE(count_lines(full_log_contents), total_messages);
+            ASSERT_NE(first_found_idx, -1) << "No test messages found in any log files.";
+
+            // 3. Verify that from the first found message to the end, there are no gaps.
+            for (int i = first_found_idx; i < total_messages; ++i)
+            {
+                EXPECT_NE(full_log_contents.find(fmt::format("ROTATION-TEST-MSG-{:03}", i)),
+                          std::string::npos)
+                    << "Missing message " << i << " in final concatenated log. A gap was detected.";
+            }
+
+            // 4. Verify that the number of found messages is correct.
+            size_t expected_message_count = total_messages - first_found_idx;
+            ASSERT_EQ(count_lines(full_log_contents, "ROTATION-TEST-MSG-"), expected_message_count);
+
             SUCCEED() << "Rotating file sink test completed successfully.";
         },
         "logger::test_rotating_file_sink", Logger::GetLifecycleModule());

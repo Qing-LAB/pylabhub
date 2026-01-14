@@ -75,11 +75,13 @@
 #include "fmt/core.h"
 #include <atomic>
 #include <memory> // For std::unique_ptr
+#include <source_location>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "debug_info.hpp"
+#include "format_tools.hpp"
 #include "platform.hpp"
 #include "pylabhub_utils_export.h"
 
@@ -237,7 +239,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @note It is recommended to use the `pylabhub::utils::InitializeApp()`
      *       helper function instead of calling this directly.
      */
-    void initialize();
+    void initialize(std::source_location loc);
 
     /**
      * @brief Shuts down the application by executing module shutdown functions.
@@ -249,7 +251,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @note It is recommended to use the `pylabhub::utils::FinalizeApp()`
      *       helper function instead of calling this directly.
      */
-    void finalize();
+    void finalize(std::source_location loc);
 
     /**
      * @brief Checks if the lifecycle manager has been initialized.
@@ -297,7 +299,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @param name The name of the module to load.
      * @return `true` if the module was loaded successfully, `false` otherwise.
      */
-    bool load_module(const char *name);
+    bool load_module(const char *name, std::source_location loc);
 
     /**
      * @brief Unloads a dynamic module.
@@ -312,7 +314,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @return `true` if the module was considered for unloading, `false` if it
      *         was not found or not loaded.
      */
-    bool unload_module(const char *name);
+    bool unload_module(const char *name, std::source_location loc);
 
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
@@ -328,6 +330,9 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
 
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
+/**
+ * The following functions and classes are the actual interface for the users.
+ */
 
 /**
  * @brief A convenience function to register a module with the LifecycleManager.
@@ -362,9 +367,9 @@ inline bool IsAppFinalized()
  *
  * This is the recommended entry point for starting the application lifecycle.
  */
-inline void InitializeApp()
+inline void InitializeApp(std::source_location loc = std::source_location::current())
 {
-    LifecycleManager::instance().initialize();
+    LifecycleManager::instance().initialize(loc);
 }
 
 /**
@@ -372,9 +377,9 @@ inline void InitializeApp()
  *
  * This is the recommended entry point for shutting down the application lifecycle.
  */
-inline void FinalizeApp()
+inline void FinalizeApp(std::source_location loc = std::source_location::current())
 {
-    LifecycleManager::instance().finalize();
+    LifecycleManager::instance().finalize(loc);
 }
 
 /**
@@ -400,9 +405,9 @@ inline bool RegisterDynamicModule(ModuleDef &&module_def)
  * @param name The name of the module to load.
  * @return `true` if the module was loaded successfully, `false` otherwise.
  */
-inline bool LoadModule(const char *name)
+inline bool LoadModule(const char *name, std::source_location loc = std::source_location::current())
 {
-    return LifecycleManager::instance().load_module(name);
+    return LifecycleManager::instance().load_module(name, loc);
 }
 
 /**
@@ -412,31 +417,57 @@ inline bool LoadModule(const char *name)
  * @param name The name of the module to unload.
  * @return `true` if the module was considered for unloading.
  */
-inline bool UnloadModule(const char *name)
+inline bool UnloadModule(const char *name,
+                         std::source_location loc = std::source_location::current())
 {
-    return LifecycleManager::instance().unload_module(name);
+    return LifecycleManager::instance().unload_module(name, loc);
 }
 
 class LifecycleGuard
 {
+  private:
+    std::source_location m_loc;
+
   public:
     // Default: no modules provided. If this is the first guard, InitializeApp() is called.
-    LifecycleGuard() { init_owner_if_first({}); }
-
-    // Move-only vector constructor: accept a vector that will be moved-from.
-    explicit LifecycleGuard(std::vector<ModuleDef> &&modules)
+    LifecycleGuard(std::source_location loc = std::source_location::current()) : m_loc(loc)
     {
+        PLH_DEBUG(
+            "[PLH_LifeCycle] LifecycleGuard constructed in function {} with no modules. ({}:{})",
+            m_loc.function_name(), pylabhub::format_tools::filename_only(m_loc.file_name()),
+            m_loc.line());
+        init_owner_if_first({});
+    }
+
+    // Single module constructor
+    // Usage: LifecycleGuard guard(ModuleDef("MyModule"));
+    explicit LifecycleGuard(ModuleDef &&module,
+                            std::source_location loc = std::source_location::current())
+        : m_loc(loc)
+    {
+        PLH_DEBUG("[PLH_LifeCycle] LifecycleGuard constructed in function {}. ({}:{})",
+                  m_loc.function_name(), pylabhub::format_tools::filename_only(m_loc.file_name()),
+                  m_loc.line());
+        std::vector<ModuleDef> modules;
+        modules.emplace_back(std::move(module));
         init_owner_if_first(std::move(modules));
     }
 
-    // Variadic rvalue convenience: LifecycleGuard(ModuleDef("A"), ModuleDef("B"))
-    template <typename... Mods, typename = std::enable_if_t<std::conjunction_v<
-                                    std::is_same<std::decay_t<Mods>, ModuleDef>...>>>
-    explicit LifecycleGuard(Mods &&...mods)
+    // Multiple modules constructor
+    // Usage: LifecycleGuard guard({ModuleDef("Mod1"), ModuleDef("Mod2")});
+    explicit LifecycleGuard(std::initializer_list<ModuleDef> modules,
+                            std::source_location loc = std::source_location::current())
+        : m_loc(loc)
     {
+        PLH_DEBUG("[PLH_LifeCycle] LifecycleGuard constructed in function {}. ({}:{})",
+                  m_loc.function_name(), pylabhub::format_tools::filename_only(m_loc.file_name()),
+                  m_loc.line());
         std::vector<ModuleDef> vec;
-        vec.reserve(sizeof...(Mods));
-        (vec.emplace_back(std::forward<Mods>(mods)), ...);
+        vec.reserve(modules.size());
+        for (auto &&m : modules)
+        {
+            vec.emplace_back(std::move(const_cast<ModuleDef &>(m)));
+        }
         init_owner_if_first(std::move(vec));
     }
 
@@ -464,7 +495,11 @@ class LifecycleGuard
     {
         if (m_is_owner)
         {
-            pylabhub::utils::FinalizeApp();
+            PLH_DEBUG("[PLH_LifeCycle] LifecycleGuard is being destructed as owner. "
+                      "Constructor was located in function {}. ({}:{}) ",
+                      m_loc.function_name(),
+                      pylabhub::format_tools::filename_only(m_loc.file_name()), m_loc.line());
+            pylabhub::utils::FinalizeApp(m_loc);
         }
     }
 
@@ -493,7 +528,7 @@ class LifecycleGuard
 
             // IMPORTANT: always initialize now, even if no modules were supplied.
             // This guarantees the lifecycle starts as soon as the first guard is established.
-            pylabhub::utils::InitializeApp();
+            pylabhub::utils::InitializeApp(m_loc);
         }
         else
         {
@@ -501,10 +536,12 @@ class LifecycleGuard
             m_is_owner = false;
             const auto app_name = pylabhub::platform::get_executable_name();
             const auto pid = pylabhub::platform::get_pid();
-            PLH_DEBUG("[pylabhub-lifecycle] [{}:{}] WARNING: LifecycleGuard constructed but an "
-                      "owner already exists. This guard is a no-op; provided modules (if any) "
-                      "were ignored.",
-                      app_name, pid);
+            PLH_DEBUG(
+                "[PLH_LifeCycle] [{}:{}] WARNING: LifecycleGuard constructed but an "
+                "owner already exists. This guard is a no-op; provided modules (if any) "
+                "were ignored.\n[PLH_Lifecycle] Constructor was located in function {}. ({}:{}).",
+                app_name, pid, m_loc.function_name(),
+                pylabhub::format_tools::filename_only(m_loc.file_name()), m_loc.line());
             print_stack_trace();
         }
     }
