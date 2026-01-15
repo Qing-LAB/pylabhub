@@ -354,7 +354,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     debug_info.reserve(4096);
 
     debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                              "  **** finalize() triggered from {} ({}:{}):\n"
+                              "  **** finalize() called, associated with a constructor from {} ({}:{}):\n"
                               "  <-- Finalizing application...\n",
                               m_app_name, m_pid, loc.function_name(),
                               pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
