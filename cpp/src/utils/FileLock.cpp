@@ -176,6 +176,15 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
 {
     try
     {
+        // A path containing a null character or other control characters is invalid.
+        for (const auto &c : target.native())
+        {
+            if (c >= 0 && c < 32)
+            {
+                return {};
+            }
+        }
+
         std::filesystem::path canonical_target;
         std::error_code ec;
         canonical_target = std::filesystem::canonical(target, ec);
@@ -572,7 +581,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     open_flags |= O_NOFOLLOW;
 #endif
 
-    int fd = ::open(os_path.c_str(), open_flags, S_IRUSR | S_IWUSR);
+    int fd = ::open(os_path.c_str(), open_flags, 0644);
     if (fd == -1)
     {
         // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback,
@@ -748,8 +757,6 @@ void do_filelock_cleanup(const char *arg)
 ModuleDef FileLock::GetLifecycleModule(bool cleanup_on_shutdown)
 {
     ModuleDef module("pylabhub::utils::FileLock");
-    // we now do not log error/debug message to remove dependency on logger, which uses filelock
-    // module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_filelock_startup);
 
     if (cleanup_on_shutdown)

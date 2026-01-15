@@ -189,6 +189,16 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms, const char *data,
                       size_t len);
 
+    /**
+     * @brief Marks this module as permanent.
+     * @details A permanent dynamic module, once loaded, will not be unloaded until
+     * the application is finalized, regardless of its reference count. This is
+     * useful for modules that are costly to initialize. This flag has no effect
+     * on static modules.
+     * @param permanent If `true` (default), marks the module as permanent.
+     */
+    void set_as_permanent(bool permanent = true);
+
   private:
     // This friend declaration allows LifecycleManager to access the private pImpl
     // member to extract the module definition. This is a controlled way to
@@ -277,7 +287,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @brief Registers a dynamic module with the lifecycle system.
      * @details Dynamic modules can be registered at runtime after the static core of the
      * application has been initialized. They can be loaded and unloaded on-demand.
-     * This call is only valid *after* `initialize()` has been called and *before*
+     * This call is only valid *after* `initialize()` has been called and *before* 
      * `finalize()` is called. It is thread-safe.
      *
      * @param module_def The fully configured module object, passed by rvalue-reference
