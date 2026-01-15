@@ -153,6 +153,9 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
         argv.push_back(nullptr);
 
         execv(exe_path.c_str(), argv.data());
+
+        // If execv returns, it must have failed
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno), errno);
         _exit(127);
     }
     return pid;
@@ -215,19 +218,25 @@ const std::string &WorkerProcess::get_stderr() const
     return stderr_content_;
 }
 
-void expect_worker_ok(const WorkerProcess &proc)
+void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings)
 {
     using ::testing::HasSubstr;
     using ::testing::Not;
 
-    ASSERT_NE(proc.handle(), NULL_PROC_HANDLE) << "WorkerProcess was not successfully spawned.";
-    ASSERT_EQ(proc.exit_code(), 0);
+    ASSERT_EQ(proc.exit_code(), 0) << "Worker process failed with non-zero exit code. Stderr:\n"
+                                   << proc.get_stderr();
 
     const auto &stderr_out = proc.get_stderr();
-    EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
-    EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
-    EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
-    EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
+    if (expected_stderr_substrings.empty()) {
+        EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
+    } else {
+        for (const auto& substr : expected_stderr_substrings) {
+            EXPECT_THAT(stderr_out, HasSubstr(substr));
+        }
+    }
 }
 
 } // namespace pylabhub::tests::helper

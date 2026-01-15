@@ -485,6 +485,7 @@ TEST_F(JsonConfigTest, MultiProcessContention)
             g_self_exe_path, "jsonconfig.write_id",
             std::vector<std::string>{cfg_path.string(),
                                      fmt::to_string(pylabhub::format_tools::make_buffer(prefix_info_fmt, i))}));
+        ASSERT_TRUE(procs.back()->valid());
     }
 
     int success_count = 0;

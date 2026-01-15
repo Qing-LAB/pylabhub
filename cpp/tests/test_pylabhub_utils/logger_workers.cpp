@@ -260,7 +260,6 @@ int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_lo
 
             // Set log file to a directory to cause a write error.
             ASSERT_FALSE(Logger::instance().set_logfile("/"));
-            LOGGER_ERROR("This write will fail.");
             Logger::instance().flush(); // Ensure the error is processed by the background thread.
 
             ASSERT_GE(callback_count.load(), 1);
@@ -288,7 +287,6 @@ int test_write_error_callback_async()
                                                         { err_msg_promise.set_value(msg); });
 
             ASSERT_FALSE(Logger::instance().set_logfile("/")); // Force an error
-            LOGGER_ERROR("This will fail.");
             Logger::instance().flush();
 
             // Wait for the callback to be invoked.

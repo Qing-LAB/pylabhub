@@ -19,6 +19,7 @@ class LifecycleDynamicTest : public ::testing::Test
 TEST_F(LifecycleDynamicTest, LoadAndUnload)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.load_unload", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -26,6 +27,7 @@ TEST_F(LifecycleDynamicTest, LoadAndUnload)
 TEST_F(LifecycleDynamicTest, RefCounting)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.ref_counting", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -33,6 +35,7 @@ TEST_F(LifecycleDynamicTest, RefCounting)
 TEST_F(LifecycleDynamicTest, DependencyChain)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.dependency_chain", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -40,6 +43,7 @@ TEST_F(LifecycleDynamicTest, DependencyChain)
 TEST_F(LifecycleDynamicTest, DiamondDependency)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.diamond_dependency", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -47,6 +51,7 @@ TEST_F(LifecycleDynamicTest, DiamondDependency)
 TEST_F(LifecycleDynamicTest, FinalizeUnloadsAll)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.finalize_unloads_all", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -56,26 +61,27 @@ TEST_F(LifecycleDynamicTest, FinalizeUnloadsAll)
 TEST_F(LifecycleDynamicTest, RegisterBeforeInitFails)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.register_before_init_fail", {});
+    ASSERT_TRUE(proc.valid());
     // Worker returns 0 if the registration correctly fails as expected.
     proc.wait_for_exit();
-    expect_worker_ok(proc);
+    expect_worker_ok(proc, {"ERROR: register_dynamic_module called before initialization."});
 }
 
 TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.static_dependency_fail", {});
-    // Worker returns 0 if registration correctly fails.
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc);
+    expect_worker_ok(proc, {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."});
 }
 
 TEST_F(LifecycleDynamicTest, RegistrationFailsWithUnresolvedDependency)
 {
     WorkerProcess proc(g_self_exe_path, "lifecycle.registration_fails_with_unresolved_dependency",
                        {});
-    // Worker returns 0 if registration correctly fails as expected.
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc);
+    expect_worker_ok(proc, {"ERROR: Dependency 'DynB' for module 'DynA' not found."});
 }
 
 TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
@@ -83,9 +89,27 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
 {
 
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.reentrant_load_fail", {});
+    ASSERT_TRUE(proc.valid());
 
-    // Worker returns 0 if LoadModule correctly fails.
+    proc.wait_for_exit();
+    expect_worker_ok(proc, {
+        "ERROR: Re-entrant call to load_module('DynB') detected.",
+        "ERROR: Module 'DynA' threw on startup: LoadModule('DynB') detected re-entrant call and failed as expected."
+    });
+}
 
+TEST_F(LifecycleDynamicTest, PermanentModuleIsNotUnloaded)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module", {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
+TEST_F(LifecycleDynamicTest, PermanentModuleIsUnloadedOnFinalize)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module_finalize", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }

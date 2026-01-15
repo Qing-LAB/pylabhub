@@ -75,6 +75,7 @@ TEST_F(LoggerTest, BasicLogging)
 {
     auto log_path = GetUniqueLogPath("basic_logging");
     WorkerProcess proc(g_self_exe_path, "logger.test_basic_logging", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -84,6 +85,7 @@ TEST_F(LoggerTest, LogLevelFiltering)
 {
     auto log_path = GetUniqueLogPath("log_level_filtering");
     WorkerProcess proc(g_self_exe_path, "logger.test_log_level_filtering", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -93,6 +95,7 @@ TEST_F(LoggerTest, BadFormatString)
 {
     auto log_path = GetUniqueLogPath("bad_format_string");
     WorkerProcess proc(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -103,6 +106,7 @@ TEST_F(LoggerTest, DefaultSinkAndSwitching)
     auto log_path = GetUniqueLogPath("default_sink_and_switching");
     WorkerProcess proc(g_self_exe_path, "logger.test_default_sink_and_switching",
                        {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -112,6 +116,7 @@ TEST_F(LoggerTest, MultithreadStress)
 {
     auto log_path = GetUniqueLogPath("multithread_stress");
     WorkerProcess proc(g_self_exe_path, "logger.test_multithread_stress", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -121,6 +126,7 @@ TEST_F(LoggerTest, FlushWaitsForQueue)
 {
     auto log_path = GetUniqueLogPath("flush_waits_for_queue");
     WorkerProcess proc(g_self_exe_path, "logger.test_flush_waits_for_queue", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -130,6 +136,7 @@ TEST_F(LoggerTest, ShutdownIdempotency)
 {
     auto log_path = GetUniqueLogPath("shutdown_idempotency");
     WorkerProcess proc(g_self_exe_path, "logger.test_shutdown_idempotency", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -140,6 +147,7 @@ TEST_F(LoggerTest, ReentrantErrorCallback)
     auto log_path = GetUniqueLogPath("reentrant_error_callback");
     WorkerProcess proc(g_self_exe_path, "logger.test_reentrant_error_callback",
                        {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -148,6 +156,7 @@ TEST_F(LoggerTest, ReentrantErrorCallback)
 TEST_F(LoggerTest, WriteErrorCallbackAsync)
 {
     WorkerProcess proc(g_self_exe_path, "logger.test_write_error_callback_async", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -156,6 +165,7 @@ TEST_F(LoggerTest, WriteErrorCallbackAsync)
 TEST_F(LoggerTest, PlatformSinks)
 {
     WorkerProcess proc(g_self_exe_path, "logger.test_platform_sinks", {});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -166,6 +176,7 @@ TEST_F(LoggerTest, ConcurrentLifecycleChaos)
     auto log_path = GetUniqueLogPath("concurrent_lifecycle_chaos");
     WorkerProcess proc(g_self_exe_path, "logger.test_concurrent_lifecycle_chaos",
                        {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     ASSERT_EQ(proc.wait_for_exit(), 0);
     // This test can be noisy on stderr due to the chaotic nature, so we don't assert empty.
 }
@@ -190,6 +201,7 @@ TEST_F(LoggerTest, StressLog)
         procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "logger.stress_log",
             std::vector<std::string>{log_path.string(), std::to_string(MSGS_PER_PROC)}));
+        ASSERT_TRUE(procs.back()->valid());
     }
 
     // Wait for all workers to complete.
@@ -230,6 +242,7 @@ TEST_F(LoggerTest, InterProcessFlock)
         procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "logger.test_inter_process_flock",
             std::vector<std::string>{log_path.string(), worker_id, std::to_string(MSGS_PER_PROC)}));
+        ASSERT_TRUE(procs.back()->valid());
     }
 
     // Wait for all workers to complete.
@@ -271,6 +284,7 @@ TEST_F(LoggerTest, RotatingFileSink)
     WorkerProcess proc(g_self_exe_path, "logger.test_rotating_file_sink",
                        {base_log_path.string(), std::to_string(max_file_size_bytes),
                         std::to_string(max_backup_files)});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
@@ -315,6 +329,7 @@ TEST_F(LoggerTest, QueueFullAndMessageDropping)
     auto log_path = GetUniqueLogPath("queue_full_and_dropping");
     WorkerProcess proc(g_self_exe_path, "logger.test_queue_full_and_message_dropping",
                        {log_path.string()});
+    ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }

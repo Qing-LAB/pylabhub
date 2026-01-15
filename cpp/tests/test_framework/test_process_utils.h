@@ -87,10 +87,10 @@ class WorkerProcess
     int exit_code() const { return exit_code_; }
 
     /**
-     * @brief Returns the native handle of the running process.
-     * @return The process handle.
+     * @brief Checks if the worker process was successfully spawned.
+     * @return True if the process handle is valid, false otherwise.
      */
-    ProcessHandle handle() const { return handle_; }
+    bool valid() const { return handle_ != NULL_PROC_HANDLE; }
 
   private:
     ProcessHandle handle_ = NULL_PROC_HANDLE;
@@ -111,6 +111,6 @@ class WorkerProcess
  *
  * @param proc The WorkerProcess instance to check.
  */
-void expect_worker_ok(const WorkerProcess &proc);
+void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings = {});
 
 } // namespace pylabhub::tests::helper
