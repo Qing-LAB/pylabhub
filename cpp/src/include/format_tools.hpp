@@ -114,7 +114,7 @@ constexpr std::string_view filename_only(std::string_view file_path)
         {
             return last_slash;
         }
-        return std::max(last_slash, last_backslash);
+        return last_slash > last_backslash ? last_slash : last_backslash;
     }();
 
     // If a separator was found, return the part after it; otherwise return the original string
