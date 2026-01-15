@@ -61,6 +61,7 @@ struct InternalModuleDef
     std::vector<std::string> dependencies;
     std::function<void()> startup;
     InternalModuleShutdownDef shutdown;
+    bool is_permanent = false;
 };
 } // namespace pylabhub::utils::lifecycle_internal
 
@@ -72,7 +73,7 @@ class ModuleDefImpl
     lifecycle_internal::InternalModuleDef def;
 };
 
-ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>())
+ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>()) 
 {
     if (name)
     {
@@ -123,6 +124,14 @@ void ModuleDef::set_shutdown(LifecycleCallback s, unsigned int t, const char *d,
     }
 }
 
+void ModuleDef::set_as_permanent(bool permanent)
+{
+    if (pImpl)
+    {
+        pImpl->def.is_permanent = permanent;
+    }
+}
+
 class LifecycleManagerImpl
 {
   public:
@@ -158,6 +167,7 @@ class LifecycleManagerImpl
         std::vector<InternalGraphNode *> dependents;
         ModuleStatus status = ModuleStatus::Registered;
         bool is_dynamic = false;
+        bool is_permanent = false;
         DynamicModuleStatus dynamic_status = DynamicModuleStatus::UNLOADED;
         int ref_count = 0;
     };
@@ -174,6 +184,7 @@ class LifecycleManagerImpl
 
   private:
     // --- Private Helper Methods ---
+    void recalculateReferenceCounts();
     void buildStaticGraph();
     std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
@@ -196,8 +207,8 @@ class LifecycleManagerImpl
 void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModuleDef def)
 {
     if (m_is_initialized.load(std::memory_order_acquire))
-        PLH_PANIC("[PLH_LifeCycle]\nEXEC[{}]:PID[{}]\n  "
-                  "  **  FATAL: register_module called after initialization.",
+        PLH_PANIC("[PLH_LifeCycle]\nEXEC[{}]:PID[{}]\n  " 
+                  "    **  FATAL: register_module called after initialization.",
                   m_app_name, m_pid);
     std::lock_guard<std::mutex> lock(m_registry_mutex);
     m_registered_modules.push_back(std::move(def));
@@ -215,15 +226,15 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 {
     if (!m_is_initialized.load(std::memory_order_acquire))
     {
-        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                  "  **  ERROR: register_dynamic_module called before initialization.",
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  " 
+                  "    **  ERROR: register_dynamic_module called before initialization.",
                   m_app_name, m_pid);
         return false;
     }
     if (m_is_finalized.load(std::memory_order_acquire))
     {
-        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                  "  **  ERROR: register_dynamic_module called after finalization.",
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  " 
+                  "    **  ERROR: register_dynamic_module called after finalization.",
                   m_app_name, m_pid);
         return false;
     }
@@ -232,8 +243,8 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 
     if (m_module_graph.count(def.name))
     {
-        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                  "  **  ERROR: Module '{}' is already registered.",
+        PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  " 
+                  "    **  ERROR: Module '{}' is already registered.",
                   m_app_name, m_pid, def.name);
         return false;
     }
@@ -242,8 +253,8 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     {
         if (m_module_graph.find(dep_name) == m_module_graph.end())
         {
-            PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
-                      "  **  ERROR: Dependency '{}' for module '{}' not found.",
+            PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  " 
+                      "    **  ERROR: Dependency '{}' for module '{}' not found.",
                       m_app_name, m_pid, dep_name, def.name);
             return false;
         }
@@ -255,6 +266,7 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.shutdown = def.shutdown;
     node.dependencies = def.dependencies;
     node.is_dynamic = true;
+    node.is_permanent = def.is_permanent;
 
     for (const auto &dep_name : def.dependencies)
     {
@@ -284,8 +296,8 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
     std::string debug_info;
     debug_info.reserve(4096);
 
-    debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                              "  **** initialize() triggered from {} ({}:{})\n"
+    debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                              "  **** initialize() triggered from {} ({}:{})\n" 
                               "  --> Initializing application...\n",
                               m_app_name, m_pid, loc.function_name(),
                               pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
@@ -398,8 +410,8 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
             }
             catch (const std::exception &e)
             {
-                debug_info +=
-                    fmt::format("\n  **** ERROR: Dynamic module '{}' threw on unload: {}\n",
+                debug_info += 
+                    fmt::format("\n  **** ERROR: Dynamic module '{}' threw on unload: {}\n", 
                                 mod->name, e.what());
             }
             catch (...)
@@ -454,8 +466,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                 mod->name);
         }
     }
-    debug_info += "\n  --- Static module shutdown complete ---\n"
-                  "  --> Application finalization complete.\n";
+    debug_info += "\n  --- Static module shutdown complete ---\n  --> Application finalization complete.\n";
     PLH_DEBUG("{}", debug_info);
 }
 
@@ -470,8 +481,8 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
 bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc)
 {
     if (!is_initialized())
-        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "  **** loadModule() called from {} ({}:{})\n"
+        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                  "  **** loadModule() called from {} ({}:{})\n" 
                   "  **** FATAL: load_module called before initialization.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
@@ -480,8 +491,8 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
 
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "  **** loadModule() called from {} ({}:{})\n"
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                  "  **** loadModule() called from {} ({}:{})\n" 
                   "  ****  ERROR: Re-entrant call to load_module('{}') detected.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
@@ -492,21 +503,24 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
     auto it = m_module_graph.find(name);
     if (it == m_module_graph.end() || !it->second.is_dynamic)
     {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "  **** loadModule() called from {} ({}:{})\n"
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                  "  **** loadModule() called from {} ({}:{})\n" 
                   "  ****  ERROR: Dynamic module '{}' not found.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
         return false;
     }
-    return loadModuleInternal(it->second);
+
+    bool result = loadModuleInternal(it->second);
+    recalculateReferenceCounts();
+    return result;
 }
 
 /**
  * @brief Internal recursive implementation for loading a dynamic module.
  * @details This function performs the core logic of loading a module. It handles
- *          different module statuses, detects circular dependencies, recursively
- *          loads dependencies, and increments reference counts.
+ *          different module statuses, detects circular dependencies, and recursively
+ *          loads dependencies. It no longer manages reference counts.
  * @param node The graph node of the module to be loaded.
  * @return True on success, false on failure (e.g., circular dependency,
  *         unmet dependency, or exception during startup).
@@ -515,7 +529,6 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
 {
     if (node.dynamic_status == DynamicModuleStatus::LOADED)
     {
-        node.ref_count++;
         return true;
     }
     if (node.dynamic_status == DynamicModuleStatus::LOADING)
@@ -529,7 +542,7 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
         return false;
     }
     node.dynamic_status = DynamicModuleStatus::LOADING;
-    std::vector<InternalGraphNode *> dyn_deps;
+
     for (const auto &dep_name : node.dependencies)
     {
         auto it = m_module_graph.find(dep_name);
@@ -547,7 +560,6 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
                 node.dynamic_status = DynamicModuleStatus::FAILED;
                 return false;
             }
-            dyn_deps.push_back(&dep_node);
         }
         else if (dep_node.status != ModuleStatus::Started)
         {
@@ -557,14 +569,12 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
             return false;
         }
     }
+
     try
     {
         if (node.startup)
             node.startup();
         node.dynamic_status = DynamicModuleStatus::LOADED;
-        node.ref_count = 1;
-        for (auto *dep : dyn_deps)
-            dep->ref_count++;
         PLH_DEBUG("[PLH_LifeCycle] {}:PID[{}]\n  --> Loaded dynamic module '{}'", m_app_name, m_pid,
                   node.name);
         return true;
@@ -588,8 +598,8 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
 bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location loc)
 {
     if (!is_initialized())
-        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "  **** unloadModule called from {} ({}:{})\n"
+        PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                  "  **** unloadModule called from {} ({}:{})\n" 
                   "  **** FATAL: unload_module called without initialization.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
@@ -597,8 +607,8 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
         return false;
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "  **** unloadModule called from {} ({}:{})\n"
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n" 
+                  "  **** unloadModule called from {} ({}:{})\n" 
                   "  ****  ERROR: Re-entrant call to unload_module('{}') detected.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
@@ -609,23 +619,37 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
     auto it = m_module_graph.find(name);
     if (it == m_module_graph.end() || !it->second.is_dynamic)
         return false;
+
+    // A direct user request to unload a permanent module is a no-op.
+    if (it->second.is_permanent)
+    {
+        PLH_DEBUG("[PLH_LifeCycle] Ignoring unload request for permanent module '{}'", name);
+        return true;
+    }
+
     unloadModuleInternal(it->second);
+    recalculateReferenceCounts(); // Final recalculation to ensure correct state.
     return true;
 }
 
 /**
  * @brief Internal recursive implementation for unloading a dynamic module.
- * @details This function decrements the module's reference count. If the count
- *          reaches zero, it executes the shutdown callback and then recursively
- *          calls itself for the module's dependencies.
+ * @details This function implements the new "unload, recalculate, check" logic.
+ *          It shuts down the given node, then triggers a global recalculation of
+ *          reference counts, and recursively calls itself on any dependencies
+ *          whose reference count has dropped to zero.
  * @param node The graph node of the module to be unloaded.
  */
 void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
 {
     if (node.dynamic_status != DynamicModuleStatus::LOADED)
         return;
-    if (--node.ref_count > 0)
+
+    // A permanent module can only be unloaded by finalize(), never by this function.
+    if (node.is_permanent)
         return;
+
+    // 1. Immediately shut down M and mark its status as UNLOADED.
     PLH_DEBUG("<- Unloading dynamic module '{}'", node.name);
     try
     {
@@ -637,11 +661,61 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
         PLH_DEBUG("ERROR: Module '{}' threw on shutdown: {}", node.name, e.what());
     }
     node.dynamic_status = DynamicModuleStatus::UNLOADED;
-    for (const auto &dep_name : node.dependencies)
+
+    // 2. Iterate through a copy of the direct dependencies of M.
+    auto deps_copy = node.dependencies;
+    for (const auto &dep_name : deps_copy)
     {
         auto it = m_module_graph.find(dep_name);
         if (it != m_module_graph.end() && it->second.is_dynamic)
-            unloadModuleInternal(it->second);
+        {
+            InternalGraphNode &dep_node = it->second;
+
+            // 3a. Trigger recalculation
+            recalculateReferenceCounts();
+
+            // 3b. Check ref_count
+            if (dep_node.ref_count == 0)
+            {
+                // 3c. Recursively unload if count is 0
+                unloadModuleInternal(dep_node);
+            }
+        }
+    }
+}
+
+void LifecycleManagerImpl::recalculateReferenceCounts()
+{
+    // 1. Reset all dynamic module ref_counts to 0.
+    for (auto &pair : m_module_graph)
+    {
+        if (pair.second.is_dynamic)
+        {
+            pair.second.ref_count = 0;
+        }
+    }
+
+    // 2. Iterate through each LOADED dynamic module.
+    for (auto &pair : m_module_graph)
+    {
+        InternalGraphNode &source_node = pair.second;
+        if (source_node.is_dynamic && source_node.dynamic_status == DynamicModuleStatus::LOADED)
+        {
+            // 3. For each direct dependency...
+            for (const auto &dep_name : source_node.dependencies)
+            {
+                auto it = m_module_graph.find(dep_name);
+                if (it != m_module_graph.end())
+                {
+                    InternalGraphNode &dep_node = it->second;
+                    // 4. If the dependency is a non-permanent dynamic module, increment its ref_count.
+                    if (dep_node.is_dynamic && !dep_node.is_permanent)
+                    {
+                        dep_node.ref_count++;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -668,6 +742,7 @@ void LifecycleManagerImpl::buildStaticGraph()
                                     {},
                                     ModuleStatus::Registered,
                                     false,
+                                    false, // is_permanent
                                     DynamicModuleStatus::UNLOADED,
                                     0};
     }
@@ -692,7 +767,7 @@ void LifecycleManagerImpl::buildStaticGraph()
  * @return A vector of node pointers in a valid topological order.
  * @throws std::runtime_error If a circular dependency is detected in the graph.
  */
-std::vector<LifecycleManagerImpl::InternalGraphNode *>
+std::vector<LifecycleManagerImpl::InternalGraphNode *> 
 LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &nodes)
 {
     std::vector<InternalGraphNode *> sorted_order;

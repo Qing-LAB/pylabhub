@@ -186,6 +186,13 @@ int test_inter_process_flock(const std::string &log_path, const std::string &wor
 int test_rotating_file_sink(const std::string &base_log_path, size_t max_file_size_bytes,
                             size_t max_backup_files);
 
+/**
+ * @brief Tests the logger's message dropping behavior when the queue is full.
+ * @param log_path Path to the output log file.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_queue_full_and_message_dropping(const std::string &log_path);
+
 } // namespace logger
 
 } // namespace pylabhub::tests::worker
