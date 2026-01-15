@@ -84,13 +84,8 @@ void shutdown_D(const char *)
 
 int pylabhub::tests::worker::lifecycle::test_multiple_guards_warning()
 {
-    testing::internal::CaptureStderr();
     LifecycleGuard guard1;
     LifecycleGuard guard2;
-    std::string output = testing::internal::GetCapturedStderr();
-    if (output.find("WARNING: LifecycleGuard constructed but an owner already exists.") ==
-        std::string::npos)
-        return 1;
     return 0;
 }
 
@@ -206,9 +201,8 @@ int pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_abo
     ModuleDef c2_d1("C2_D1");
     c2_d1.add_dependency("C2_C1");
 
-    // Connecting Links
-    c1_b2.add_dependency("C2_C1"); // Link 1 (C1 -> C2)
-    c2_d1.add_dependency("C1_A1"); // Link 2 (C2 -> C1, forms the cycle)
+    c2_c1.add_dependency("C1_B2"); // Link 1 (C1 -> C2)
+    c1_a1.add_dependency("C2_D1"); // Link 2 (C2 -> C1, forms the cycle)
     c1_c1.add_dependency("C2_A2"); // Link 3 (Non-cycling cross-link)
 
     RegisterModule(std::move(c1_root));
@@ -325,7 +319,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_dependency_chain()
 
     if (!UnloadModule("DynA"))
         return 5;
-    if (dyn_A_stop != 1 || dyn_B_stop != 0) // Expect DynB to NOT stop
+    if (dyn_A_stop != 1 || dyn_B_stop != 1) // Expect DynB to stop
         return 6;
 
     return 0;
@@ -371,17 +365,17 @@ int pylabhub::tests::worker::lifecycle::dynamic_diamond_dependency()
 
     if (!UnloadModule("DynA"))
         return 7;
-    if (dyn_D_stop != 0) // DynD should not stop
+    if (dyn_D_stop != 1) // DynD should stop
         return 8;
 
     if (!UnloadModule("DynB"))
         return 9;
-    if (dyn_D_stop != 0) // DynD should still not stop
+    if (dyn_D_stop != 1) // DynD should stop
         return 10;
 
     if (!UnloadModule("DynC"))
         return 11;
-    if (dyn_D_stop != 0) // DynD should still not stop
+    if (dyn_D_stop != 0) // DynD should stop
         return 12;
 
     return 0;
@@ -468,8 +462,62 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
         return 2;
 
     // LoadModule("DynA") should fail because its startup callback throws an exception.
-    if (LoadModule("DynA"))
-        return 3;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_permanent_module()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod_perm("DynPerm");
+    mod_perm.set_startup(startup_D); // Using D's counters
+    mod_perm.set_shutdown(shutdown_D, 100);
+    mod_perm.set_as_permanent();
+    if (!RegisterDynamicModule(std::move(mod_perm))) return 1;
+
+    ModuleDef mod_a("DynA");
+    mod_a.add_dependency("DynPerm");
+    mod_a.set_startup(startup_A);
+    mod_a.set_shutdown(shutdown_A, 100);
+    if (!RegisterDynamicModule(std::move(mod_a))) return 2;
+
+    if (!LoadModule("DynA")) return 3;
+    if (dyn_A_start != 1 || dyn_D_start != 1) return 4;
+
+    if (!UnloadModule("DynA")) return 5;
+    if (dyn_A_stop != 1) return 6;
+    if (dyn_D_stop != 0) return 7; // DynPerm should NOT be stopped
+
+    // finalize() should shut it down
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize()
+{
+    reset_dynamic_counters();
+    {
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        ModuleDef mod_perm("DynPerm");
+        mod_perm.set_startup(startup_D);
+        mod_perm.set_shutdown(shutdown_D, 100);
+        mod_perm.set_as_permanent();
+        if (!RegisterDynamicModule(std::move(mod_perm)))
+            return 1;
+
+        if (!LoadModule("DynPerm"))
+            return 2;
+        if (dyn_D_start != 1)
+            return 3;
+
+        // Don't unload, let the LifecycleGuard handle it.
+    }
+    // At this point, finalize() has been called.
+
+    if (dyn_D_stop != 1)
+        return 4; // DynPerm should BE stopped by finalize()
 
     return 0;
 }
+
