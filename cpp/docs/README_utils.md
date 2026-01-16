@@ -210,52 +210,91 @@ The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, a
 
 ### `JsonConfig`
 
-The `pylabhub::utils::JsonConfig` class provides a robust, process-safe interface for managing JSON configuration files.
+The `pylabhub::utils::JsonConfig` class provides a robust, thread-safe, and process-safe interface for managing JSON configuration files.
 
-*   **Key Public Interfaces**:
-    *   `JsonConfig(path, create, &ec)`: Constructor to initialize with a file path.
-    *   `init(path, create, &ec)`: Initializes or re-initializes the object.
-    *   `reload(&ec)`: Reloads the configuration from disk.
-    *   `save(&ec)`: Saves the current in-memory configuration to disk.
-    *   `with_json_read(callback, &ec)`: Provides safe, read-only access to the internal JSON object.
-    *   `with_json_write(callback, &ec, timeout)`: Provides safe, write access. `timeout` is a `std::optional<std::chrono::milliseconds>` which defaults to `std::nullopt`, resulting in a blocking write. Provide a duration for a timed write.
+#### Design: Two-Layer Locking
 
-*   **Basic Usage**:
-    The `with_json_...` methods are the safest way to interact with the configuration, as they handle locking and unlocking automatically. Overloads are provided for convenience when an error code is not needed.
+`JsonConfig` is designed to prevent data corruption from concurrent access by implementing a two-layer locking strategy:
 
-    ```cpp
-    #include "utils/JsonConfig.hpp"
-    #include <string>
-    #include <nlohmann/json.hpp>
-    #include <chrono>
+1.  **Layer 1: Inter-Thread Safety (In-Memory Protection)**
+    *   **Problem**: Prevents data races when multiple threads within a single process try to access the in-memory `nlohmann::json` object simultaneously.
+    *   **Mechanism**: An internal `std::shared_mutex` that guards the in-memory data.
+    *   **API**:
+        *   `with_json_read(callback)`: Acquires a *shared* lock, allowing multiple concurrent readers. This is fast and for **in-memory reads only**.
+        *   `with_json_write(callback)`: Acquires a *unique* (exclusive) lock, blocking all other readers and writers. This is for **in-memory writes only**.
 
-    void access_config(pylabhub::utils::JsonConfig& cfg) {
-        using namespace std::chrono_literals;
+2.  **Layer 2: Inter-Process Safety (Disk File Protection)**
+    *   **Problem**: Prevents `Process A` from reading a configuration file while `Process B` is halfway through writing it.
+    *   **Mechanism**: `pylabhub::utils::FileLock`, which uses OS-level advisory locks.
+    *   **API**:
+        *   `reload()`: Updates the in-memory object from the disk. It acquires a `FileLock` to ensure it reads a complete, non-corrupt file.
+        *   `overwrite()`: Saves the in-memory object to disk. It acquires a `FileLock` and uses an atomic write-and-rename pattern to guarantee a safe write.
 
-        // Read a value using the simple overload (no error code).
-        std::string name;
-        if (cfg.with_json_read([&](const nlohmann::json& j) {
-            name = j.value("name", "default_name");
-        })) {
-            // Read was successful
-        }
+#### Basic Usage
 
-        // Write a value with a 100ms timeout.
-        cfg.with_json_write([&](nlohmann::json& j) {
-            j["attempt_count"] = j.value("attempt_count", 0) + 1;
-        }, 100ms); // Uses the new overload without ec, with timeout
+This separation of concerns provides both safety and performance. Use the lightweight `with_json_*` methods for frequent access to the configuration, and call `reload()` or `overwrite()` only when you explicitly need to synchronize with the file on disk.
 
-        // For cases where you need both detailed error information AND a timeout,
-        // use the original, most explicit overload.
-        std::error_code ec;
-        cfg.with_json_write([&](nlohmann::json& j) {
-            j["last_access_time"] = std::time(nullptr);
-        }, &ec, 100ms); // Providing both ec and timeout
-        if (ec) {
-            // Handle the error...
-        }
+```cpp
+#include "utils/JsonConfig.hpp"
+#include <string>
+#include <nlohmann/json.hpp>
+#include <thread>
+
+void access_config(pylabhub::utils::JsonConfig& cfg) {
+    // --- In-Memory Operations ---
+
+    // Preferred: Thread-safe write to the in-memory object using lambda.
+    // Does NOT write to disk.
+    cfg.with_json_write([&](nlohmann::json& j) {
+        j["hostname"] = "localhost";
+        j["port"] = 8080;
+    });
+
+    // Preferred: Thread-safe read from the in-memory object using lambda.
+    // Does NOT read from disk.
+    int port = 0;
+    cfg.with_json_read([&](const nlohmann::json& j) {
+        port = j.value("port", 0);
+    });
+    // port is now 8080.
+
+    // --- Manual Locking API (Alternative to lambdas) ---
+    // The `ReadLock` and `WriteLock` objects provide RAII-style guards
+    // for direct access to the in-memory JSON data. They hold the internal
+    // thread-safety locks for their lifetime.
+    // While functional, the lambda-based `with_json_*` methods are generally
+    // preferred for their simplicity and reduced boilerplate.
+
+    std::error_code ec;
+    if (auto write_lock = cfg.lock_for_write(&ec)) {
+        write_lock->json()["manual_key"] = "manual_value";
+        // Changes are now in memory, but not yet on disk.
+        // No explicit 'commit' on the lock object is needed as overwrite() handles disk sync.
+    } else {
+        // Handle error, e.g., recursion detected.
     }
-    ```
+
+    if (auto read_lock = cfg.lock_for_read(&ec)) {
+        std::string value = read_lock->json().value("manual_key", "");
+        // value is now "manual_value".
+    } else {
+        // Handle error.
+    }
+
+    // --- Disk I/O Operations ---
+
+    // Now, save all the in-memory changes (from either lambda or manual access)
+    // to the disk file. This is both thread-safe and process-safe.
+    if (!cfg.overwrite(&ec)) {
+        // Handle error...
+    }
+
+    // To load any changes made by another process, explicitly reload.
+    if (!cfg.reload(&ec)) {
+        // Handle error...
+    }
+}
+```
 
 ### `FileLock`
 

@@ -8,39 +8,46 @@
  *
  * **Design Philosophy**
  *
- * `JsonConfig` provides safe, managed access to a JSON configuration file on disk.
- * It is designed to prevent data corruption when multiple threads or processes
- * access the same configuration file concurrently.
+ * `JsonConfig` provides safe, managed access to a JSON configuration file. It is
+ * designed to prevent data corruption from concurrent access by implementing a
+ * two-layer locking strategy:
  *
- * 1.  **Unified Locking**: The class relies exclusively on `pylabhub::utils::FileLock`
- *     for both inter-process and intra-process (thread) synchronization. This
- *     utility provides a robust, two-layer locking model that serves as a single
- *     source of truth for concurrency control.
+ * 1.  **Layer 1: Inter-Thread Safety (In-Memory Protection)**
+ *     - **Problem**: Prevents data races when multiple threads within a single
+ *       process try to read and write the in-memory `nlohmann::json` object
+ *       at the same time.
+ *     - **Mechanism**: An internal `std::shared_mutex`.
+ *     - **API**: The `with_json_read()` and `with_json_write()` methods, which
+ *       provide safe, scoped access via lambdas. They internally use the
+ *       `lock_for_read()` and `lock_for_write()` factories.
+ *       - `with_json_read()` acquires a *shared* lock, allowing multiple
+ *         concurrent readers.
+ *       - `with_json_write()` acquires a *unique* lock, ensuring exclusive
+ *         write access.
+ *     - **Note**: These methods operate **only on the in-memory data** for maximum
+ *       performance. They do not perform disk I/O.
  *
- * 2.  **RAII-Based Safety**: The `with_json_read` and `with_json_write` methods
- *     acquire a `FileLock` for the duration of the operation, ensuring that the
- *     lock is always released automatically, even in the presence of exceptions.
+ * 2.  **Layer 2: Inter-Process Safety (Disk File Protection)**
+ *     - **Problem**: Prevents `Process A` from reading the configuration file
+ *       while `Process B` is in the middle of writing to it.
+ *     - **Mechanism**: `pylabhub::utils::FileLock`.
+ *     - **API**: The `reload()` and `overwrite()` methods.
+ *       - `reload()`: Updates the in-memory object from the disk. It acquires
+ *         a `FileLock` to ensure it reads a complete, non-corrupt file.
+ *       - `overwrite()`: Saves the in-memory object to disk. It acquires a
+ *         `FileLock` and uses an atomic write-and-rename pattern to prevent
+ *         other processes from seeing a partially written file.
  *
- * 3.  **Atomic Writes**: When saving changes, it writes to a temporary file first
- *     and then performs an atomic `rename` operation. This guarantees that a
- *     reader will never see a partially written or corrupt JSON file.
- *
- * 4.  **Pimpl Compatibility**: The public API uses `ReadLock` and `WriteLock`
- *     guard objects as Pimpl-compatible handles. This allows templated methods
- *     in the header to access the JSON data object, whose full definition is
- *     hidden in the `.cpp` file, thus preserving ABI stability.
- *
- * 5.  **Explicit Lifecycle Management**: `JsonConfig` depends on both the `Logger`
- *     and `FileLock` utilities. Therefore, it is a lifecycle-managed component.
- *     Its module must be registered and initialized before a `JsonConfig`
- *     object can be constructed, otherwise the program will abort.
- *
+ * **Lifecycle Management**: `JsonConfig` is a lifecycle-managed component. Its
+ * module must be registered with `LifecycleManager` and initialized before a
+ * `JsonConfig` object can be constructed, otherwise the program will abort.
  */
 
 #include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -90,29 +97,29 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;
     /**
-     * @brief Reloads the configuration from the file on disk, overwriting
-     *        any in-memory changes that have not been saved.
+     * @brief Thread-safely and process-safely reloads the configuration from disk,
+     *        overwriting the current in-memory state.
      * @param ec Optional: An error_code to capture any errors.
      * @return true on success, false on failure.
      */
-    bool reload(std::error_code *ec) noexcept;
+    bool reload(std::error_code *ec = nullptr) noexcept;
     /**
-     * @brief Overwrites the configuration file on disk with the current in-memory state.
+     * @brief Thread-safely and process-safely saves the current in-memory state to disk.
      *        This operation is atomic: it writes to a temporary file and then renames it.
      * @param ec Optional: An error_code to capture any errors.
      * @return true on success, false on failure.
      */
-    bool overwrite(std::error_code *ec) noexcept;
+    bool overwrite(std::error_code *ec = nullptr) noexcept;
 
     std::filesystem::path config_path() const noexcept;
 
-    // ----------------- Lightweight guard types (Pimpl handles) -----------------
+    // ----------------- Manual Locking API -----------------
     /**
-     * @brief RAII guard for read access to the JSON configuration.
+     * @brief RAII guard for thread-safe read access to the in-memory JSON data.
      *
-     * This object represents an active read lock on the configuration data.
-     * The actual JSON data can be accessed via the `json()` method.
-     * It is non-copyable but movable.
+     * The constructor of this object acquires a shared lock on the data; the
+     * destructor releases it. Prefer using the lambda-based `with_json_read()`
+     * for simpler, safer scoped access.
      */
     class PYLABHUB_UTILS_EXPORT ReadLock
     {
@@ -132,12 +139,11 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     };
 
     /**
-     * @brief RAII guard for write access to the JSON configuration.
+     * @brief RAII guard for thread-safe write access to the in-memory JSON data.
      *
-     * This object represents an active write lock on the configuration data.
-     * The actual JSON data can be accessed via the `json()` method.
-     * Changes made through this object can be committed to disk via `commit()`.
-     * It is non-copyable but movable.
+     * The constructor of this object acquires an exclusive lock on the data; the
+     * destructor releases it. Prefer using the lambda-based `with_json_write()`
+     * for simpler, safer scoped access.
      */
     class PYLABHUB_UTILS_EXPORT WriteLock
     {
@@ -157,186 +163,130 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         friend class JsonConfig;
     };
 
-    // ----------------- Template Method Implementations -----------------
+    // ----------------- Preferred API: Scoped, Thread-Safe Accessors -----------------
+
+    /**
+     * @brief Provides thread-safe, read-only access to the in-memory JSON data.
+     *
+     * This method acquires a shared lock, executes the provided function, and
+     * then releases the lock. It allows multiple concurrent readers.
+     *
+     * @note This method operates ONLY on the in-memory data and does NOT read from disk.
+     *       Call `reload()` first if you need to synchronize with the file on disk.
+     *
+     * @param fn A function or lambda with the signature `void(const nlohmann::json&)`
+     * @param ec Optional: An error_code to capture any exceptions from the callback.
+     * @return true if the callback executed successfully, false otherwise.
+     */
     template <typename F>
-    bool with_json_read(F &&fn, std::error_code *ec,
-                        std::optional<std::chrono::milliseconds> timeout) const noexcept
+    bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
     {
         static_assert(
             std::is_invocable_v<F, const nlohmann::json &>,
             "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
 
-        if (basics::RecursionGuard::is_recursing(this))
+        if (auto r = lock_for_read(ec))
         {
-            if (ec)
-                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-            LOGGER_WARN("JsonConfig::with_json_read - nested call detected; refusing to re-enter.");
-            return false;
+            try
+            {
+                std::forward<F>(fn)(r->json());
+                if (ec)
+                    *ec = std::error_code{};
+                return true;
+            }
+            catch (const std::exception &ex)
+            {
+                LOGGER_ERROR("JsonConfig::with_json_read: exception in user callback: {}",
+                             ex.what());
+                if (ec)
+                    *ec = std::make_error_code(std::errc::io_error);
+                return false;
+            }
+            catch (...)
+            {
+                LOGGER_ERROR("JsonConfig::with_json_read: unknown exception in user callback");
+                if (ec)
+                    *ec = std::make_error_code(std::errc::io_error);
+                return false;
+            }
         }
-        basics::RecursionGuard guard(this);
-
-        std::unique_ptr<FileLock> fLock;
-        if (timeout.has_value())
-        {
-            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
-        }
-        else
-        {
-            fLock =
-                std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
-        }
-
-        if (!fLock || !fLock->valid())
-        {
-            if (ec)
-                *ec = fLock->error_code();
-            return false;
-        }
-
-        if (!const_cast<JsonConfig *>(this)->private_load_from_disk_unsafe(ec))
-        {
-            return false;
-        }
-
-        auto r = lock_for_read(ec);
-        if (!r)
-            return false;
-
-        try
-        {
-            std::forward<F>(fn)(r->json());
-            if (ec)
-                *ec = std::error_code{};
-            return true;
-        }
-        catch (const std::exception &ex)
-        {
-            LOGGER_ERROR("JsonConfig::with_json_read: exception in user callback: {}", ex.what());
-            if (ec)
-                *ec = std::make_error_code(std::errc::io_error);
-            return false;
-        }
-        catch (...)
-        {
-            LOGGER_ERROR("JsonConfig::with_json_read: unknown exception in user callback");
-            if (ec)
-                *ec = std::make_error_code(std::errc::io_error);
-            return false;
-        }
+        // lock_for_read failed (e.g. recursion), ec is already set.
+        return false;
     }
 
+    /**
+     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data.
+     *
+     * This method acquires a unique lock, executes the provided function, and
+     * then releases the lock. It ensures no other threads can read or write
+     * during the modification.
+     *
+     * @note This method operates ONLY on the in-memory data and does NOT save to disk.
+     *       Call `overwrite()` afterwards to persist changes to the file.
+     *
+     * @param fn A function or lambda with the signature `void(nlohmann::json&)`
+     * @param ec Optional: An error_code to capture any exceptions from the callback.
+     * @return true if the callback executed successfully, false otherwise.
+     */
     template <typename F>
-    bool with_json_write(F &&fn, std::error_code *ec,
-                         std::optional<std::chrono::milliseconds> timeout) noexcept
+    bool with_json_write(F &&fn, std::error_code *ec = nullptr) noexcept
     {
         static_assert(std::is_invocable_v<F, nlohmann::json &>,
                       "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
-        if (basics::RecursionGuard::is_recursing(this))
-        {
-            if (ec)
-                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-            LOGGER_WARN(
-                "JsonConfig::with_json_write - nested call detected; refusing to re-enter.");
-            return false;
-        }
-        basics::RecursionGuard guard(this);
 
-        std::unique_ptr<FileLock> fLock;
-        if (timeout.has_value())
+        if (auto w = lock_for_write(ec))
         {
-            fLock = std::make_unique<FileLock>(config_path(), ResourceType::File, *timeout);
+            try
+            {
+                std::forward<F>(fn)(w->json());
+                if (ec)
+                    *ec = std::error_code{};
+                return true;
+            }
+            catch (const std::exception &ex)
+            {
+                LOGGER_ERROR("JsonConfig::with_json_write: exception in user callback: {}",
+                             ex.what());
+                if (ec)
+                    *ec = std::make_error_code(std::errc::io_error);
+                return false;
+            }
+            catch (...)
+            {
+                LOGGER_ERROR("JsonConfig::with_json_write: unknown exception in user callback");
+                if (ec)
+                    *ec = std::make_error_code(std::errc::io_error);
+                return false;
+            }
         }
-        else
-        {
-            fLock =
-                std::make_unique<FileLock>(config_path(), ResourceType::File, LockMode::Blocking);
-        }
-
-        if (!fLock || !fLock->valid())
-        {
-            if (ec)
-                *ec = fLock->error_code();
-            return false;
-        }
-
-        if (!private_load_from_disk_unsafe(ec))
-        {
-            return false;
-        }
-
-        auto w = lock_for_write(ec);
-        if (!w)
-            return false;
-
-        try
-        {
-            std::forward<F>(fn)(w->json());
-            bool ok = w->commit(ec);
-            return ok;
-        }
-        catch (const std::exception &ex)
-        {
-            LOGGER_ERROR("JsonConfig::with_json_write: exception in user callback: {}", ex.what());
-            if (ec)
-                *ec = std::make_error_code(std::errc::io_error);
-            return false;
-        }
-        catch (...)
-        {
-            LOGGER_ERROR("JsonConfig::with_json_write: unknown exception in user callback");
-            if (ec)
-                *ec = std::make_error_code(std::errc::io_error);
-            return false;
-        }
+        // lock_for_write failed (e.g. recursion), ec is already set.
+        return false;
     }
 
-    // --- Convenience Overloads ---
+    // --- Convenience Overloads for lambda-based API ---
 
     template <typename F> bool with_json_read(F &&fn) const noexcept
     {
-        return with_json_read(std::forward<F>(fn), nullptr, std::nullopt);
-    }
-
-    template <typename F> bool with_json_read(F &&fn, std::error_code *ec) const noexcept
-    {
-        return with_json_read(std::forward<F>(fn), ec, std::nullopt);
-    }
-
-    template <typename F>
-    bool with_json_read(F &&fn, std::optional<std::chrono::milliseconds> timeout) const noexcept
-    {
-        return with_json_read(std::forward<F>(fn), nullptr, timeout);
-    }
-
-    template <typename F> bool with_json_write(F &&fn, std::error_code *ec) noexcept
-    {
-        return with_json_write(std::forward<F>(fn), ec, std::nullopt);
+        return with_json_read(std::forward<F>(fn), nullptr);
     }
 
     template <typename F> bool with_json_write(F &&fn) noexcept
     {
-        return with_json_write(std::forward<F>(fn), nullptr, std::nullopt);
-    }
-
-    template <typename F>
-    bool with_json_write(F &&fn, std::optional<std::chrono::milliseconds> timeout) noexcept
-    {
-        return with_json_write(std::forward<F>(fn), nullptr, timeout);
+        return with_json_write(std::forward<F>(fn), nullptr);
     }
 
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 
-    // Non-template factory methods implemented in .cpp — they acquire locks and return guard
-    // objects.
+    // Factory methods for manual RAII locking.
     std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
     std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
 
+    // Internal I/O helpers
     bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
     bool private_commit_to_disk_unsafe(std::error_code *ec) noexcept;
 
-    // Helper used internally (defined in cpp) for atomic file write operations.
     static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
                                   std::error_code *ec) noexcept;
 };
