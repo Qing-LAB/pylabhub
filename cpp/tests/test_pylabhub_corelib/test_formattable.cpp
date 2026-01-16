@@ -1,5 +1,6 @@
 #include "format_tools.hpp"
 #include <gtest/gtest.h>
+#include <regex>
 
 using namespace pylabhub::format_tools;
 
@@ -52,4 +53,16 @@ TEST_F(FormatToolsTest, ExtractValueFromString)
     // Test with default arguments
     std::string input10 = "default_key=default_value;another_key=another_value";
     EXPECT_EQ(extract_value_from_string("default_key", input10), "default_value");
+}
+
+TEST_F(FormatToolsTest, FormattedTime)
+{
+    auto now = std::chrono::system_clock::now();
+    std::string formatted = formatted_time(now);
+
+    // Regex to match YYYY-MM-DD HH:MM:SS.ffffff
+    std::regex time_regex(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})");
+
+    EXPECT_TRUE(std::regex_match(formatted, time_regex))
+        << "Formatted time '" << formatted << "' does not match expected format.";
 }

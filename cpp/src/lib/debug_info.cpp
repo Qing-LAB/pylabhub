@@ -47,6 +47,7 @@
 #include <limits.h>   // PATH_MAX
 #include <map>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>

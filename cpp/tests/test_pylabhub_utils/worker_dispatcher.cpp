@@ -225,6 +225,10 @@ static int dispatch_utils_workers(int argc, char **argv)
                 argv[2], static_cast<size_t>(std::stoul(argv[3])),
                 static_cast<size_t>(std::stoul(argv[4])));
         }
+        if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
+        {
+            return pylabhub::tests::worker::logger::test_queue_full_and_message_dropping(argv[2]);
+        }
     }
     return -1; // No matching worker found
 }

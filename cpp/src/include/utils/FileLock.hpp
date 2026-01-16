@@ -163,6 +163,7 @@ class PYLABHUB_UTILS_EXPORT FileLock
 
     /**
      * @brief Checks if the FileLock module has been initialized by the LifecycleManager.
+     * @return `true` if the module is initialized, `false` otherwise.
      */
     static bool lifecycle_initialized() noexcept;
 
@@ -249,10 +250,17 @@ class PYLABHUB_UTILS_EXPORT FileLock
     try_lock(const std::filesystem::path &path, ResourceType type,
              std::chrono::milliseconds timeout) noexcept;
 
-    /// @brief Move constructor. Transfers ownership of an existing lock.
+    /**
+     * @brief Move constructor. Transfers ownership of an existing lock.
+     * @param other The source `FileLock` to move from. The source lock becomes invalid.
+     */
     FileLock(FileLock &&other) noexcept;
 
-    /// @brief Move assignment operator. Transfers ownership of an existing lock.
+    /**
+     * @brief Move assignment operator. Transfers ownership of an existing lock.
+     * @param other The source `FileLock` to move from. The source lock becomes invalid.
+     * @return A reference to this `FileLock`.
+     */
     FileLock &operator=(FileLock &&other) noexcept;
 
     /**

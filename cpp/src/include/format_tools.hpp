@@ -11,7 +11,11 @@
 namespace pylabhub::format_tools
 {
 
-// --- Helper: formatted local time with sub-second resolution (robust) ---
+/**
+ * @brief Formats a system_clock time_point into a string with microsecond precision.
+ * @param timestamp The time_point to format.
+ * @return A string in the format "YYYY-MM-DD HH:MM:SS.us".
+ */
 std::string formatted_time(std::chrono::system_clock::time_point timestamp);
 
 /**
@@ -32,12 +36,37 @@ std::optional<std::string> extract_value_from_string(std::string_view keyword,
                                                      std::string_view input, char separator = ';',
                                                      char assignment_symbol = '=');
 
+/**
+ * @brief Converts a path to its Windows long path representation (e.g., `\\?\C:\...`).
+ * @param path The path to convert.
+ * @return The long path as a wstring. Returns an empty string on non-Windows platforms.
+ */
 std::wstring win32_to_long_path(const std::filesystem::path &);
+/**
+ * @brief Generates a unique suffix for temporary filenames on Windows.
+ * @return A unique wstring suffix. Returns an empty string on non-Windows platforms.
+ */
 std::wstring win32_make_unique_suffix();
+/**
+ * @brief Converts a UTF-8 encoded std::string to a std::wstring on Windows.
+ * @param s The source string.
+ * @return The converted wstring. Returns an empty string on non-Windows platforms.
+ */
 std::wstring s2ws(const std::string &s);
+/**
+ * @brief Converts a std::wstring to a UTF-8 encoded std::string on Windows.
+ * @param w The source wstring.
+ * @return The converted string. Returns an empty string on non-Windows platforms.
+ */
 std::string ws2s(const std::wstring &w);
 
-// --- Helper: turn a string into a fmt::memory_buffer (compile-time format)
+/**
+ * @brief Creates a `fmt::memory_buffer` from a compile-time format string and arguments.
+ * @tparam Args Argument types for the format string.
+ * @param fmt_str The `fmt`-style format string.
+ * @param args The arguments to format.
+ * @return A `fmt::memory_buffer` containing the formatted result.
+ */
 template <typename... Args>
 fmt::memory_buffer make_buffer(fmt::format_string<Args...> fmt_str, Args &&...args)
 {
@@ -46,7 +75,14 @@ fmt::memory_buffer make_buffer(fmt::format_string<Args...> fmt_str, Args &&...ar
     fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
     return mb;
 }
-// --Helper: turn a string_view into a fmt::memory_buffer (runtime format)
+
+/**
+ * @brief Creates a `fmt::memory_buffer` from a runtime format string and arguments.
+ * @tparam Args Argument types for the format string.
+ * @param fmt_str The runtime `fmt`-style format string.
+ * @param args The arguments to format.
+ * @return A `fmt::memory_buffer` containing the formatted result.
+ */
 template <typename... Args>
 fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
 {
@@ -56,7 +92,11 @@ fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
     return mb;
 }
 
-// Helper function to extract the basename at compile time
+/**
+ * @brief Extracts the filename from a full path at compile time.
+ * @param file_path A string_view of the full path.
+ * @return A string_view of just the filename portion of the path.
+ */
 constexpr std::string_view filename_only(std::string_view file_path)
 {
     const auto last_slash = file_path.find_last_of('/');
@@ -74,7 +114,7 @@ constexpr std::string_view filename_only(std::string_view file_path)
         {
             return last_slash;
         }
-        return std::max(last_slash, last_backslash);
+        return last_slash > last_backslash ? last_slash : last_backslash;
     }();
 
     // If a separator was found, return the part after it; otherwise return the original string

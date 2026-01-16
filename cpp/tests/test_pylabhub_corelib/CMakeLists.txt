@@ -46,4 +46,6 @@ set_property(TARGET test_pylabhub_corelib PROPERTY
 
 gtest_discover_tests(test_pylabhub_corelib
   WORKING_DIRECTORY "${STAGED_TEST_DIR}"
+  DISCOVERY_TIMEOUT 60
 )
+
