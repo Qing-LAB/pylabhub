@@ -365,9 +365,9 @@ TEST_F(JsonConfigTest, LoadMalformedFile)
 }
 
 /**
- * @brief Stress-tests read and write operations from multiple threads on the same object.
+ * @brief Stress-tests file contention from multiple threads using separate objects.
  */
-TEST_F(JsonConfigTest, MultiThreadContention)
+TEST_F(JsonConfigTest, MultiThreadFileContention)
 {
     auto cfg_path = g_temp_dir / "multithread_contention.json";
     fs::remove(cfg_path);
@@ -594,3 +594,96 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     ASSERT_EQ(j.find("malicious"), j.end());
 }
 #endif
+
+/**
+ * @brief Verifies the in-memory thread-safety of a SINGLE shared JsonConfig object.
+ *
+ * This test creates one JsonConfig object and shares it by reference with
+ * multiple threads that perform concurrent in-memory reads and writes. It is
+ * designed to fail if the internal `std::shared_mutex` is not working correctly
+ * to prevent data races on the in-memory `nlohmann::json` object.
+ */
+TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
+{
+    auto cfg_path = g_temp_dir / "multithread_shared_object.json";
+    fs::remove(cfg_path);
+
+    // 1. Create a SINGLE JsonConfig object to be shared by all threads.
+    JsonConfig shared_cfg(cfg_path, true);
+    ASSERT_TRUE(shared_cfg.is_initialized());
+
+    // 2. Pre-populate with initial data.
+    shared_cfg.with_json_write([&](json &data) { data["counter"] = 0; });
+    shared_cfg.overwrite(); // Save initial state to disk
+
+    const int WRITER_THREADS = 4;
+    const int READER_THREADS = 8;
+    const int ITERS_PER_WRITER = 50;
+    std::vector<std::thread> threads;
+    std::atomic<int> read_failures = 0;
+
+    // 3. Spawn writer threads that increment a counter.
+    for (int i = 0; i < WRITER_THREADS; ++i)
+    {
+        threads.emplace_back(
+            [&]()
+            {
+                for (int j = 0; j < ITERS_PER_WRITER; ++j)
+                {
+                    // Always operate on the same shared_cfg object.
+                    shared_cfg.with_json_write(
+                        [&](json &data)
+                        {
+                            int v = data.value("counter", 0);
+                            data["counter"] = v + 1;
+                        });
+                    // Sleep to yield and increase chance of contention
+                    std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
+                }
+            });
+    }
+
+    // 4. Spawn reader threads that verify the counter is always increasing.
+    for (int i = 0; i < READER_THREADS; ++i)
+    {
+        threads.emplace_back(
+            [&]()
+            {
+                int last_read_value = -1;
+                // Readers run for a fixed duration
+                auto start_time = std::chrono::steady_clock::now();
+                while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(1))
+                {
+                    // Always operate on the same shared_cfg object.
+                    shared_cfg.with_json_read(
+                        [&](const json &data)
+                        {
+                            int cur = data.value("counter", -1);
+                            // This assertion is key: if the lock is broken, a reader might
+                            // see a partially-written state or a non-integer value.
+                            // A monotonically increasing counter is a good test for race conditions.
+                            if (cur < last_read_value)
+                            {
+                                read_failures++;
+                            }
+                            last_read_value = cur;
+                        });
+                    std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
+                }
+            });
+    }
+
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+
+    // 5. Final verification.
+    ASSERT_EQ(read_failures.load(), 0) << "Reader threads detected non-monotonic counter changes.";
+
+    int final_counter = 0;
+    shared_cfg.with_json_read([&](const json &data) { final_counter = data.value("counter", -1); });
+
+    EXPECT_EQ(final_counter, WRITER_THREADS * ITERS_PER_WRITER);
+}
+
