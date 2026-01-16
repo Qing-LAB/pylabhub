@@ -22,6 +22,11 @@
 #include <variant>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
@@ -671,7 +676,6 @@ void Logger::Impl::worker_loop()
         {
             // Lock the queue to check for any messages that might have arrived
             // after the last local_queue.swap(queue_).
-            g_logger_state.store(LoggerState::ShuttingDown, std::memory_order_release);
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (!queue_.empty())
             {

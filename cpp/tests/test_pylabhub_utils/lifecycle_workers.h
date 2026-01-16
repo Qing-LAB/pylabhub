@@ -22,5 +22,7 @@ int dynamic_finalize_unloads_all();
 int dynamic_static_dependency_fail();
 int registration_fails_with_unresolved_dependency();
 int dynamic_reentrant_load_fail();
+int dynamic_permanent_module();
+int dynamic_permanent_module_finalize();
 
 } // namespace pylabhub::tests::worker::lifecycle

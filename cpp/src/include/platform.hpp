@@ -64,9 +64,22 @@
 namespace pylabhub::platform
 {
 
-// keep your other forward declarations...
+/**
+ * @brief Gets the native thread ID for the calling thread.
+ * @return A 64-bit unsigned integer representing the thread ID.
+ */
 uint64_t get_native_thread_id() noexcept;
+/**
+ * @brief Gets the process ID (PID) for the current process.
+ * @return A 64-bit unsigned integer representing the process ID.
+ */
 uint64_t get_pid();
+/**
+ * @brief Gets the name of the current executable.
+ * @param include_path If `true`, returns the full absolute path to the executable.
+ *                     If `false` (default), returns only the filename.
+ * @return A string containing the name of the executable. Returns "unknown" on failure.
+ */
 std::string get_executable_name(bool include_path = false) noexcept;
 
 } // namespace pylabhub::platform

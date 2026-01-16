@@ -13,7 +13,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <gmock/gmock.h> // Added for expect_worker_ok and matchers
 #include <gtest/gtest.h>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -319,6 +321,50 @@ TEST_F(JsonConfigTest, RecursionGuardForReads)
 }
 
 /**
+ * @brief Tests error handling when loading a malformed JSON file.
+ */
+TEST_F(JsonConfigTest, LoadMalformedFile)
+{
+    auto cfg_path = g_temp_dir / "malformed.json";
+    fs::remove(cfg_path);
+
+    // Create a malformed JSON file
+    {
+        std::ofstream out(cfg_path);
+        out << "{ \"key\": \"value\""; // Missing closing brace
+    }
+
+    JsonConfig cfg;
+    std::error_code ec;
+
+    // init should fail because reload fails on a malformed file.
+    // The implementation catches the parse error and returns `io_error`.
+    ASSERT_FALSE(cfg.init(cfg_path, false, &ec));
+    ASSERT_EQ(ec, std::errc::io_error);
+
+    // Test reload() directly as well.
+    // First, init with a valid file.
+    fs::remove(cfg_path);
+    {
+        std::ofstream out(cfg_path);
+        out << "{}";
+    }
+    JsonConfig cfg2(cfg_path, false, &ec);
+    ASSERT_TRUE(cfg2.is_initialized());
+    ASSERT_FALSE(ec);
+
+    // Now, corrupt the file on disk.
+    {
+        std::ofstream out(cfg_path);
+        out << "this is not json";
+    }
+
+    // reload() should now fail with an io_error.
+    ASSERT_FALSE(cfg2.reload(&ec));
+    ASSERT_EQ(ec, std::errc::io_error);
+}
+
+/**
  * @brief Stress-tests read and write operations from multiple threads on the same object.
  */
 TEST_F(JsonConfigTest, MultiThreadContention)
@@ -413,10 +459,8 @@ TEST_F(JsonConfigTest, MultiThreadContention)
 
 #if defined(PLATFORM_WIN64)
 constexpr std::string prefix_info_fmt = "win-{}";
-#define INVALID_PID_TYPE NULL_PROC_HANDLE
 #else
 constexpr std::string prefix_info_fmt = "posix-{}";
-#define INVALID_PID_TYPE 0
 #endif
 /**
  * @brief Stress-tests write contention between multiple processes.
@@ -432,25 +476,27 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     ASSERT_TRUE(creator.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
     const int PROCS = 8;
-    int success_count = 0;
 
     // Spawn multiple worker processes that all try to write to the same file.
-
-    std::vector<ProcessHandle> procs;
+    std::vector<std::unique_ptr<WorkerProcess>> procs;
     for (int i = 0; i < PROCS; ++i)
     {
-        auto pid = spawn_worker_process(
+        procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "jsonconfig.write_id",
-            {cfg_path.string(),
-             fmt::to_string(pylabhub::format_tools::make_buffer(prefix_info_fmt, i))});
-        EXPECT_NE(pid, INVALID_PID_TYPE);
-        if (pid != INVALID_PID_TYPE)
-            procs.push_back(pid);
+            std::vector<std::string>{cfg_path.string(),
+                                     fmt::to_string(pylabhub::format_tools::make_buffer(prefix_info_fmt, i))}));
+        ASSERT_TRUE(procs.back()->valid());
     }
-    for (auto p : procs)
+
+    int success_count = 0;
+    for (auto &p : procs)
     {
-        if (wait_for_worker_and_get_exit_code(p) == 0)
+        p->wait_for_exit();
+        if (p->exit_code() == 0)
+        {
             success_count++;
+            expect_worker_ok(*p);
+        }
     }
 
     // All workers should have succeeded.
