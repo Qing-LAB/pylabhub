@@ -3,32 +3,68 @@
  * @file test_process_utils.cpp
  * @brief Implements platform-abstracted utilities for spawning and managing child processes.
  */
+#include "test_process_utils.h"
+#include "shared_test_helpers.h" // For read_file_contents
+
+#include <chrono>
 #include <cstdio>  // For stderr
 #include <fcntl.h> // For open, O_WRONLY
 #include <string>
 #include <vector>
 
-#include "platform.hpp"
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
 #include "debug_info.hpp"
-#include <fmt/core.h>
-
 #include "format_tools.hpp" // For s2ws, ws2s
-#include "test_process_utils.h"
+#include "platform.hpp"
+#include <fmt/core.h>
 
 namespace pylabhub::tests::helper
 {
-#if defined(PLATFORM_WIN64)
-ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
-                                   const std::vector<std::string> &args)
+
+// Internal helper to wait for a process and get its exit code
+static int wait_for_worker_and_get_exit_code(ProcessHandle handle)
 {
-    // On Windows, we use the CreateProcessW API.
-    // The command line must be a single, mutable, wide-character string.
+    if (handle == NULL_PROC_HANDLE)
+        return -1;
+
+#if defined(PLATFORM_WIN64)
+    DWORD waitResult = WaitForSingleObject(handle, INFINITE);
+    if (waitResult == WAIT_FAILED)
+    {
+        CloseHandle(handle);
+        return -1;
+    }
+    DWORD exit_code = 0;
+    GetExitCodeProcess(handle, &exit_code);
+    CloseHandle(handle);
+    return static_cast<int>(exit_code);
+#else
+    int status = 0;
+    if (waitpid(handle, &status, 0) == -1)
+    {
+        return -1;
+    }
+    if (WIFEXITED(status))
+    {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+#endif
+}
+
+// Internal helper to spawn a process with output redirection
+static ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
+                                          const std::vector<std::string> &args,
+                                          const fs::path &stdout_path,
+                                          const fs::path &stderr_path)
+{
+#if defined(PLATFORM_WIN64)
     std::string cmdline = fmt::format("\"{}\" {}", exe_path, mode);
     for (const auto &a : args)
         cmdline += fmt::format(" \"{}\"", a);
 
-    // Convert to wide string and create a mutable buffer.
     std::wstring wcmd = pylabhub::format_tools::s2ws(cmdline);
     std::vector<wchar_t> wcmd_buf(wcmd.begin(), wcmd.end());
     wcmd_buf.push_back(L'\0');
@@ -36,23 +72,45 @@ ProcessHandle spawn_worker_process(const std::string &exe_path, const std::strin
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
+    si.dwFlags |= STARTF_USESTDHANDLES;
 
-    // Create the process. We don't need to inherit handles or create a new console.
-    BOOL ok = CreateProcessW(
-        /*lpApplicationName*/ nullptr,
-        /*lpCommandLine*/ wcmd_buf.data(),
-        /*lpProcessAttributes*/ nullptr,
-        /*lpThreadAttributes*/ nullptr,
-        /*bInheritHandles*/ FALSE,
-        /*dwCreationFlags*/ 0,
-        /*lpEnvironment*/ nullptr,      // Inherit parent's environment
-        /*lpCurrentDirectory*/ nullptr, // Inherit parent's working directory
-        /*lpStartupInfo*/ &si,
-        /*lpProcessInformation*/ &pi);
+    // Create file handles for stdout and stderr redirection.
+    // These handles must be inheritable.
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
+
+    HANDLE hStdout = CreateFileW(stdout_path.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hStderr = CreateFileW(stderr_path.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hStdout == INVALID_HANDLE_VALUE || hStderr == INVALID_HANDLE_VALUE)
+    {
+        // Handle error
+        if (hStdout != INVALID_HANDLE_VALUE)
+            CloseHandle(hStdout);
+        if (hStderr != INVALID_HANDLE_VALUE)
+            CloseHandle(hStderr);
+        return nullptr;
+    }
+
+    si.hStdOutput = hStdout;
+    si.hStdError = hStderr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    BOOL ok = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr,
+                             /*bInheritHandles*/ TRUE, 0, nullptr, nullptr, &si, &pi);
+
+    // Close the parent's handles to the redirected files. The child process now owns them.
+    CloseHandle(hStdout);
+    CloseHandle(hStderr);
 
     if (!ok)
     {
-        // If process creation fails, format and print the error message.
         DWORD err = GetLastError();
         LPWSTR msgBuf = nullptr;
         FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -63,54 +121,28 @@ ProcessHandle spawn_worker_process(const std::string &exe_path, const std::strin
         if (msgBuf)
             LocalFree(msgBuf);
         PLH_DEBUG("ERROR: CreateProcessW failed. Code: {} - Message: {}", err, msg);
-        pylabhub::debug::print_stack_trace();
         return nullptr;
     }
 
-    // We don't need the thread handle, so close it. The caller is responsible
-    // for the process handle.
     CloseHandle(pi.hThread);
     return pi.hProcess;
-}
-
-int wait_for_worker_and_get_exit_code(ProcessHandle handle)
-{
-    if (handle == NULL_PROC_HANDLE)
-        return -1;
-
-    // Wait indefinitely for the process to terminate.
-    DWORD waitResult = WaitForSingleObject(handle, INFINITE);
-    if (waitResult == WAIT_FAILED)
-    {
-        CloseHandle(handle);
-        return -1;
-    }
-
-    // Retrieve the exit code.
-    DWORD exit_code = 0;
-    GetExitCodeProcess(handle, &exit_code);
-    CloseHandle(handle); // Clean up the process handle.
-    return static_cast<int>(exit_code);
-}
 #else
-// POSIX implementation using fork() and execv()
-ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
-                                   const std::vector<std::string> &args)
-{
     pid_t pid = fork();
     if (pid == 0)
     {
-        // In the child process.
-        // Redirect stdout and stderr to a log file for debugging purposes.
-        int fd = open("worker_output.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd != -1)
+        int stdout_fd = open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (stdout_fd != -1)
         {
-            dup2(fd, 1); // stdout
-            dup2(fd, 2); // stderr
-            close(fd);
+            dup2(stdout_fd, 1);
+            close(stdout_fd);
+        }
+        int stderr_fd = open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (stderr_fd != -1)
+        {
+            dup2(stderr_fd, 2);
+            close(stderr_fd);
         }
 
-        // Build the argument vector for execv.
         std::vector<char *> argv;
         argv.push_back(const_cast<char *>(exe_path.c_str()));
         argv.push_back(const_cast<char *>(mode.c_str()));
@@ -120,31 +152,91 @@ ProcessHandle spawn_worker_process(const std::string &exe_path, const std::strin
         }
         argv.push_back(nullptr);
 
-        // Replace the child process image with the test executable.
         execv(exe_path.c_str(), argv.data());
-        _exit(127); // execv only returns on error, so exit immediately.
-    }
-    return pid; // In the parent process, return the child's PID.
-}
 
-int wait_for_worker_and_get_exit_code(ProcessHandle handle)
-{
-    if (handle == NULL_PROC_HANDLE)
-        return -1;
-    int status = 0;
-
-    // Wait for the child process to change state.
-    if (waitpid(handle, &status, 0) == -1)
-    {
-        return -1; // waitpid failed.
+        // If execv returns, it must have failed
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno), errno);
+        _exit(127);
     }
-
-    // Check if the process terminated normally and return its exit status.
-    if (WIFEXITED(status))
-    {
-        return WEXITSTATUS(status);
-    }
-    return -1; // Process did not terminate normally.
-}
+    return pid;
 #endif
+}
+
+WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mode,
+                             const std::vector<std::string> &args)
+{
+    auto base_name = fs::path(exe_path).filename().string() + "_" + mode;
+    std::replace(base_name.begin(), base_name.end(), '.', '_');
+    auto ts = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+
+    stdout_path_ =
+        fs::temp_directory_path() / fmt::format("{}_{}_stdout.log", base_name, ts);
+    stderr_path_ =
+        fs::temp_directory_path() / fmt::format("{}_{}_stderr.log", base_name, ts);
+
+    handle_ = spawn_worker_process(exe_path, mode, args, stdout_path_, stderr_path_);
+}
+
+WorkerProcess::~WorkerProcess()
+{
+    if (handle_ != NULL_PROC_HANDLE && !waited_)
+    {
+        wait_for_exit();
+    }
+    std::error_code ec;
+    fs::remove(stdout_path_, ec);
+    fs::remove(stderr_path_, ec);
+}
+
+int WorkerProcess::wait_for_exit()
+{
+    if (waited_)
+        return exit_code_;
+    
+    // The assertion for handle_ != NULL_PROC_HANDLE is now in expect_worker_ok.
+
+    exit_code_ = wait_for_worker_and_get_exit_code(handle_);
+    waited_ = true;
+    handle_ = NULL_PROC_HANDLE;
+
+    read_file_contents(stdout_path_.string(), stdout_content_);
+    read_file_contents(stderr_path_.string(), stderr_content_);
+    return exit_code_;
+}
+
+const std::string &WorkerProcess::get_stdout() const
+{
+    if (!waited_)
+        read_file_contents(stdout_path_.string(), stdout_content_);
+    return stdout_content_;
+}
+
+const std::string &WorkerProcess::get_stderr() const
+{
+    if (!waited_)
+        read_file_contents(stderr_path_.string(), stderr_content_);
+    return stderr_content_;
+}
+
+void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings)
+{
+    using ::testing::HasSubstr;
+    using ::testing::Not;
+
+    ASSERT_EQ(proc.exit_code(), 0) << "Worker process failed with non-zero exit code. Stderr:\n"
+                                   << proc.get_stderr();
+
+    const auto &stderr_out = proc.get_stderr();
+    if (expected_stderr_substrings.empty()) {
+        EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
+        EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
+    } else {
+        for (const auto& substr : expected_stderr_substrings) {
+            EXPECT_THAT(stderr_out, HasSubstr(substr));
+        }
+    }
+}
+
 } // namespace pylabhub::tests::helper

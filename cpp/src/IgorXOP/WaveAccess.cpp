@@ -54,7 +54,6 @@
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 #include <fmt/format.h>
-#include <stdio.h>
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.
@@ -220,6 +219,37 @@ struct WAFill3DWaveDirectMethodParams
 typedef struct WAFill3DWaveDirectMethodParams WAFill3DWaveDirectMethodParams;
 #pragma pack() // Reset structure alignment to default.
 
+template <typename T>
+static int Fill3DWave(T *dataStartPtr, CountInt numLayers, CountInt numColumns, CountInt numRows)
+{
+    CountInt pointsPerColumn = numRows;
+    CountInt pointsPerLayer = pointsPerColumn * numColumns;
+    int result = 0;
+
+    T *layerPtr, *colPtr, *pointPtr;
+    for (IndexInt layer = 0; layer < numLayers; layer++)
+    {
+        layerPtr = dataStartPtr + layer * pointsPerLayer;
+        for (IndexInt column = 0; column < numColumns; column++)
+        {
+            if (gCallSpinProcess && SpinProcess())
+            {
+                result = -1; // User aborted.
+                break;
+            }
+            colPtr = layerPtr + column * pointsPerColumn;
+            for (IndexInt row = 0; row < numRows; row++)
+            {
+                pointPtr = colPtr + row;
+                *pointPtr = (T)(row + 1000 * column + 1000000 * layer);
+            }
+        }
+        if (result != 0)
+            break; // User abort.
+    }
+    return result;
+}
+
 extern "C" int WAFill3DWaveDirectMethod(WAFill3DWaveDirectMethodParams *p)
 {
     waveHndl waveH = NULL;
@@ -227,24 +257,8 @@ extern "C" int WAFill3DWaveDirectMethod(WAFill3DWaveDirectMethodParams *p)
     int numDimensions;
     CountInt dimensionSizes[MAX_DIMENSIONS + 1];
     char *dataStartPtr;
-    /*	Pointer terminology
-            dp0 points to start of double data.
-            dlp points to start of double data for a layer.
-            dcp points to start of double data for a column.
-            dp points to a particular point of double data.
-    */
-    double *dp0, *dlp, *dcp, *dp;             // Pointers used for double data.
-    float *fp0, *flp, *fcp, *fp;              // Pointers used for float data.
-    SInt32 *lp0, *llp, *lcp, *lp;             // Pointers used for long data.
-    short *sp0, *slp, *scp, *sp;              // Pointers used for short data.
-    char *cp0, *clp, *ccp, *cp;               // Pointers used for char data.
-    UInt32 *ulp0, *ullp, *ulcp, *ulp;         // Pointers used for unsigned long data.
-    unsigned short *usp0, *uslp, *uscp, *usp; // Pointers used for unsigned short data.
-    unsigned char *ucp0, *uclp, *uccp, *ucp;  // Pointers used for unsigned char data.
     IndexInt dataOffset;
     CountInt numRows, numColumns, numLayers;
-    IndexInt row, column, layer;
-    CountInt pointsPerColumn, pointsPerLayer;
     int result;
 
     p->result = 0; // The Igor function result is always zero.
@@ -268,215 +282,45 @@ extern "C" int WAFill3DWaveDirectMethod(WAFill3DWaveDirectMethodParams *p)
     numRows = dimensionSizes[0];
     numColumns = dimensionSizes[1];
     numLayers = dimensionSizes[2];
-    pointsPerColumn = numRows;
-    pointsPerLayer = pointsPerColumn * numColumns;
 
     if ((result = MDAccessNumericWaveData(waveH, kMDWaveAccessMode0, &dataOffset)))
         return result;
 
     dataStartPtr = (char *)(*waveH) + dataOffset;
 
-    result = 0;
     switch (waveType)
     {
     case NT_FP64:
-        dp0 = (double *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            dlp = dp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                dcp = dlp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    dp = dcp + row;
-                    *dp = (double)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<double>((double *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_FP32:
-        fp0 = (float *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            flp = fp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                fcp = flp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    fp = fcp + row;
-                    *fp = (float)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<float>((float *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I32:
-        lp0 = (SInt32 *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            llp = lp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                lcp = llp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    lp = lcp + row;
-                    *lp = (SInt32)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<SInt32>((SInt32 *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I16:
-        sp0 = (short *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            slp = sp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                scp = slp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    sp = scp + row;
-                    *sp = (short)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<short>((short *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I8:
-        cp0 = (char *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            clp = cp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                ccp = clp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    cp = ccp + row;
-                    *cp = (char)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<char>((char *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I32 | NT_UNSIGNED:
-        ulp0 = (UInt32 *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            ullp = ulp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                ulcp = ullp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    ulp = ulcp + row;
-                    *ulp = (UInt32)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<UInt32>((UInt32 *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I16 | NT_UNSIGNED:
-        usp0 = (unsigned short *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            uslp = usp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                uscp = uslp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    usp = uscp + row;
-                    *usp = (unsigned short)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result =
+            Fill3DWave<unsigned short>((unsigned short *)dataStartPtr, numLayers, numColumns, numRows);
         break;
-
     case NT_I8 | NT_UNSIGNED:
-        ucp0 = (unsigned char *)dataStartPtr; // Pointer to the start of all wave data.
-        for (layer = 0; layer < numLayers; layer++)
-        {
-            uclp = ucp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-            for (column = 0; column < numColumns; column++)
-            {
-                if (gCallSpinProcess && SpinProcess())
-                {                // Spins cursor and allows background processing.
-                    result = -1; // User aborted.
-                    break;
-                }
-                uccp = uclp + column * pointsPerColumn; // Pointer to start of data for this column.
-                for (row = 0; row < numRows; row++)
-                {
-                    ucp = uccp + row;
-                    *ucp = (unsigned char)(row + 1000 * column + 1000000 * layer);
-                }
-            }
-            if (result != 0)
-                break; // User abort.
-        }
+        result = Fill3DWave<unsigned char>((unsigned char *)dataStartPtr, numLayers, numColumns,
+                                           numRows);
         break;
-
-    default: // Unknown data type - possible in a future version of Igor.
+    default:
         return NT_FNOT_AVAIL;
-        break;
     }
 
-    WaveHandleModified(waveH); // Inform Igor that we have changed the wave.
+    WaveHandleModified(waveH);
 
     return result;
 }
@@ -596,16 +440,7 @@ extern "C" int WAFill3DWaveStorageMethod(WAFill3DWaveStorageMethodParams *p)
     int waveType;
     int numDimensions;
     CountInt dimensionSizes[MAX_DIMENSIONS + 1];
-    /*	Pointer terminology
-            dp0 points to start of char data.
-            dlp points to start of char data for a layer.
-            dcp points to start of char data for a column.
-            dp points to a particular point of char data.
-    */
-    double *dp0, *dlp, *dcp, *dp; // Pointers used for double data.
     CountInt numRows, numColumns, numLayers;
-    IndexInt row, column, layer;
-    CountInt pointsPerColumn, pointsPerLayer;
     BCInt numBytes;
     double *dPtr;
     int result, result2;
@@ -631,13 +466,8 @@ extern "C" int WAFill3DWaveStorageMethod(WAFill3DWaveStorageMethodParams *p)
     numRows = dimensionSizes[0];
     numColumns = dimensionSizes[1];
     numLayers = dimensionSizes[2];
-    pointsPerColumn = numRows;
-    pointsPerLayer = pointsPerColumn * numColumns;
 
     numBytes = WavePoints(waveH) * sizeof(double); // Bytes needed for copy
-    //	This example doesn't support complex waves.
-    //	if (isComplex)
-    //		numBytes *= 2;
     dPtr = (double *)WMNewPtr(numBytes);
     if (dPtr == NULL)
         return NOMEM;
@@ -648,33 +478,15 @@ extern "C" int WAFill3DWaveStorageMethod(WAFill3DWaveStorageMethodParams *p)
         return result;
     }
 
-    result = 0;
-    dp0 = dPtr; // Pointer to the start of all wave data.
-    for (layer = 0; layer < numLayers; layer++)
-    {
-        dlp = dp0 + layer * pointsPerLayer; // Pointer to start of data for this layer.
-        for (column = 0; column < numColumns; column++)
-        {
-            if (gCallSpinProcess && SpinProcess())
-            {                // Spins cursor and allows background processing.
-                result = -1; // User aborted.
-                break;
-            }
-            dcp = dlp + column * pointsPerColumn; // Pointer to start of data for this column.
-            for (row = 0; row < numRows; row++)
-            {
-                dp = dcp + row;
-                *dp = (double)(row + 1000 * column + 1000000 * layer);
-            }
-        }
-        if (result != 0)
-            break;
-    }
+    result = Fill3DWave<double>(dPtr, numLayers, numColumns, numRows);
 
-    if ((result2 = MDStoreDPDataInNumericWave(waveH, dPtr)))
-    { // Store copy in the wave.
-        WMDisposePtr((Ptr)dPtr);
-        return result2;
+    if (result == 0)
+    {
+        if ((result2 = MDStoreDPDataInNumericWave(waveH, dPtr)))
+        { // Store copy in the wave.
+            WMDisposePtr((Ptr)dPtr);
+            return result2;
+        }
     }
 
     WMDisposePtr((Ptr)dPtr);

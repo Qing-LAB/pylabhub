@@ -15,11 +15,13 @@
 #include "shared_test_helpers.h" // For StringCapture & read_file_contents
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "format_tools.hpp"
 
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
+
 
 // test_platform.cpp
 #include <gtest/gtest.h>
@@ -58,7 +60,7 @@ TEST(PlatformTest, DebugMsg)
     };
 
     expect_contains(std::string("[DBG]  This is a test debug message with value 42."));
-    expect_contains(std::string(__FILE_NAME__));
+    expect_contains(std::string(pylabhub::format_tools::filename_only(__FILE__)));
     expect_contains(std::string(__func__));
     expect_contains(std::to_string(debug_call_line));
 
