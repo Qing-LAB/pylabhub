@@ -139,7 +139,6 @@ set(PYLABHUB_LIBSODIUM_ROOT_DIR ${install_dir}
 add_library(pylabhub::third_party::sodium STATIC IMPORTED GLOBAL)
 set_target_properties(pylabhub::third_party::sodium PROPERTIES
   IMPORTED_LOCATION "${LIBSODIUM_LIBRARY_PATH}"
-  INTERFACE_INCLUDE_DIRECTORIES "${install_dir}/include"
 )
 
 if(MSVC)

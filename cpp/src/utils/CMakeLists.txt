@@ -17,6 +17,7 @@ set(UTILS_SOURCES
   FileLock.cpp
   RotatingFileSink.cpp
   BaseFileSink.cpp
+  SharedMemoryHub.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
@@ -90,13 +91,23 @@ target_include_directories(pylabhub-utils
     $<INSTALL_INTERFACE:include>
 )
 
+target_include_directories(pylabhub-utils
+  PRIVATE
+    ${PYLABHUB_LIBSODIUM_ROOT_DIR}/include
+)
+
 # Link against necessary third-party libraries and system libraries.
 target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
     pylabhub::third_party::nlohmann_json
+    pylabhub::third_party::zmq
+    pylabhub::third_party::sodium
     Threads::Threads
 )
+
+# Ensure libsodium is built before pylabhub-utils (following libzmq pattern)
+add_dependencies(pylabhub-utils libsodium_external)
 
 # Probe for fmt::chrono subsecond support
 include(FmtChronoProbe)
