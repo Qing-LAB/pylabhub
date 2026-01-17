@@ -26,5 +26,16 @@ namespace jsonconfig
  * @return 0 on success, non-zero on failure.
  */
 int write_id(const std::string &cfgpath, const std::string &worker_id);
+
+/**
+ * @brief Worker function to test the behavior of an uninitialized JsonConfig object.
+ *
+ * This worker verifies that all operations on a default-constructed, uninitialized
+ * `JsonConfig` object fail gracefully as expected.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+int uninitialized_behavior();
+
 } // namespace jsonconfig
 } // namespace pylabhub::tests::worker

@@ -133,6 +133,72 @@ TEST(RecursionGuardTest, OutOfOrderDestruction)
 }
 
 /**
+ * @brief Tests the move constructor and move assignment operator of RecursionGuard.
+ *
+ * Verifies that:
+ * 1. Move construction correctly transfers ownership, making the source inert.
+ * 2. Move assignment correctly transfers ownership, handling both inert and active targets.
+ * 3. The recursion stack state is correctly maintained during these operations.
+ */
+TEST(RecursionGuardTest, MoveSemantics)
+{
+    // A key for the guard.
+    int obj_key = 1;
+    int another_key = 2;
+
+    // 1. Test move constructor
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+    {
+        RecursionGuard g1(&obj_key);
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+
+        RecursionGuard g2 = std::move(g1); // Move construction
+        // g1 is now inert, g2 owns the key
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+        // Ensure g1 doesn't pop the key when it goes out of scope.
+    }
+    // g2 is out of scope, so it should have popped the key.
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+
+    // 2. Test move assignment (to an inert guard)
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+    {
+        RecursionGuard g3(&obj_key);
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+
+        RecursionGuard g4(nullptr); // Inert guard
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key)); // Still true, as g3 holds it
+
+        g4 = std::move(g3); // Move assignment
+        // g3 is now inert, g4 owns the key. g3's destructor will be a no-op.
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+    }
+    // g4 is out of scope, so it should have popped the key.
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+
+    // 3. Test move assignment (to an active guard)
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+    ASSERT_FALSE(RecursionGuard::is_recursing(&another_key));
+    {
+        RecursionGuard g5(&obj_key);
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+
+        RecursionGuard g6(&another_key);
+        ASSERT_TRUE(RecursionGuard::is_recursing(&another_key));
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
+
+        g6 = std::move(g5); // g6 now manages &obj_key, g5 is inert.
+                            // g6's old key (&another_key) is popped by swap from move assignment.
+        ASSERT_FALSE(RecursionGuard::is_recursing(&another_key)); // Original key of g6 is popped
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key)); // New key of g6 is active
+    }
+    // Both g6 and g5 are out of scope.
+    ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
+    ASSERT_FALSE(RecursionGuard::is_recursing(&another_key));
+}
+
+
+/**
  * @brief Verifies that the RecursionGuard is thread-safe and its state
  * is correctly maintained on a per-thread basis (using thread_local storage).
  *

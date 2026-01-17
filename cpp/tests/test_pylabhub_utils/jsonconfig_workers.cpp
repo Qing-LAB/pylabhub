@@ -56,7 +56,7 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                         data[worker_id] = true;
                         data["last_worker_id"] = worker_id;
                     },
-                    &ec, std::chrono::milliseconds(0));
+                    &ec);
 
                 if (ok && ec.value() == 0)
                 {
@@ -74,6 +74,21 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
         "jsonconfig::write_id", JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         Logger::GetLifecycleModule());
 }
+
+int uninitialized_behavior()
+{
+    // This worker function is designed to test the fatal error that occurs when
+    // a JsonConfig object is constructed before its lifecycle module is initialized.
+    // There is no LifecycleGuard here, so the JsonConfig module is not started.
+    // The following line is expected to call PLH_PANIC and abort the process.
+    JsonConfig config;
+
+    // The lines below should be unreachable. If the process exits with 0,
+    // the test will fail.
+    return 0;
+}
+
+
 
 } // namespace jsonconfig
 } // namespace pylabhub::tests::worker

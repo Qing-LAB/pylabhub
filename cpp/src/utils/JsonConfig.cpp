@@ -26,6 +26,8 @@
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
 
+#include "recursion_guard.hpp"
+
 namespace pylabhub::utils
 {
 namespace fs = std::filesystem;
@@ -48,12 +50,14 @@ struct JsonConfig::ReadLock::Impl
 {
     JsonConfig *owner = nullptr;
     std::shared_lock<std::shared_mutex> lock;
+    std::optional<basics::RecursionGuard> guard;
 };
 
 struct JsonConfig::WriteLock::Impl
 {
     JsonConfig *owner = nullptr;
     std::unique_lock<std::shared_mutex> lock;
+    std::optional<basics::RecursionGuard> guard;
 };
 
 // ----------------- JsonConfig public methods -----------------
@@ -229,16 +233,17 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
     }
 }
 
-bool JsonConfig::private_commit_to_disk_unsafe(std::error_code *ec) noexcept
+bool JsonConfig::private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
+                                                   std::error_code *ec) noexcept
 {
     try
     {
-        nlohmann::json snapshot;
+        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
+        if (!fl.valid())
         {
-            // Acquire a shared lock only long enough to make a copy of the data.
-            // This prevents blocking readers for the duration of a slow disk write.
-            std::shared_lock<std::shared_mutex> data_lock(pImpl->dataMutex);
-            snapshot = pImpl->data;
+            if (ec)
+                *ec = fl.error_code();
+            return false;
         }
 
         atomic_write_json(pImpl->configPath, snapshot, ec);
@@ -258,37 +263,39 @@ bool JsonConfig::private_commit_to_disk_unsafe(std::error_code *ec) noexcept
 
 bool JsonConfig::overwrite(std::error_code *ec) noexcept
 {
+    if (!pImpl)
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::not_connected);
+        return false;
+    }
+
+    // This public method provides a complete overwrite from memory to disk.
+    // It needs to get a snapshot of the current data before writing.
     try
     {
-        if (!pImpl)
+        nlohmann::json snapshot;
         {
-            if (ec)
-                *ec = std::make_error_code(std::errc::not_connected);
-            return false;
-        }
+            // Acquire a shared lock only long enough to make a copy of the data.
+            // This prevents blocking other readers for the duration of a slow disk write.
+            if (auto r = lock_for_read(ec))
+            {
+                snapshot = r->json();
+            }
+            else
+            {
+                // lock_for_read failed, it has set the error code.
+                return false;
+            }
+        } // Read lock is released here.
 
-        // Acquire process-level lock for the duration of the disk write.
-        FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
-        if (!fl.valid())
-        {
-            if (ec)
-                *ec = fl.error_code();
-            return false;
-        }
-
-        if (!private_commit_to_disk_unsafe(ec))
-        {
-            LOGGER_ERROR("JsonConfig::overwrite: failed to save {} to disk",
-                         pImpl->configPath.string());
-            return false;
-        }
-        return true;
+        return private_commit_to_disk_unsafe(snapshot, ec);
     }
     catch (const std::exception &ex)
     {
         if (ec)
             *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::overwrite: exception during save: {}", ex.what());
+        LOGGER_ERROR("JsonConfig::overwrite: exception: {}", ex.what());
         return false;
     }
     catch (...)
@@ -347,7 +354,9 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
 {
     if (d_ && d_->owner)
     {
-        return d_->owner->overwrite(ec);
+        // We already hold the unique_lock on the in-memory data, so it is
+        // safe to access the data directly and call the commit helper.
+        return d_->owner->private_commit_to_disk_unsafe(d_->owner->pImpl->data, ec);
     }
     if (ec)
         *ec = std::make_error_code(std::errc::not_connected);
@@ -371,11 +380,11 @@ std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *e
             *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
         return std::nullopt;
     }
-    basics::RecursionGuard guard(this);
 
     ReadLock r;
     r.d_ = std::make_unique<JsonConfig::ReadLock::Impl>();
     r.d_->owner = const_cast<JsonConfig *>(this);
+    r.d_->guard.emplace(this); // Create the guard in the lock object
     r.d_->lock = std::shared_lock(pImpl->dataMutex); // Acquire the real lock here
 
     if (ec)
@@ -399,11 +408,11 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code 
             *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
         return std::nullopt;
     }
-    basics::RecursionGuard guard(this);
 
     WriteLock w;
     w.d_ = std::make_unique<JsonConfig::WriteLock::Impl>();
     w.d_->owner = this;
+    w.d_->guard.emplace(this); // Create the guard in the lock object
     w.d_->lock = std::unique_lock(pImpl->dataMutex); // Acquire the real lock here
 
     if (ec)

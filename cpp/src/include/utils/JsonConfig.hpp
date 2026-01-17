@@ -166,24 +166,41 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     // ----------------- Preferred API: Scoped, Thread-Safe Accessors -----------------
 
     /**
-     * @brief Provides thread-safe, read-only access to the in-memory JSON data.
+     * @brief Provides thread-safe, read-only access to the JSON data, with an
+     *        option to automatically reload from disk first.
      *
-     * This method acquires a shared lock, executes the provided function, and
-     * then releases the lock. It allows multiple concurrent readers.
+     * By default, this method first reloads the configuration from disk to ensure
+     * the data is fresh (`reload_before_read = true`). To read from the
+     * in-memory cache without disk I/O, set this flag to `false`.
      *
-     * @note This method operates ONLY on the in-memory data and does NOT read from disk.
-     *       Call `reload()` first if you need to synchronize with the file on disk.
+     * It acquires a shared lock, allowing multiple concurrent readers, executes
+     * the provided function, and then releases the lock.
      *
      * @param fn A function or lambda with the signature `void(const nlohmann::json&)`
-     * @param ec Optional: An error_code to capture any exceptions from the callback.
+     * @param ec Optional: An error_code to capture any exceptions or I/O errors.
+     * @param reload_before_read If true (the default), the configuration will be
+     *                           reloaded from disk before the read operation.
      * @return true if the callback executed successfully, false otherwise.
      */
     template <typename F>
-    bool with_json_read(F &&fn, std::error_code *ec = nullptr) const noexcept
+    bool with_json_read(F &&fn, std::error_code *ec, bool reload_before_read = true) const noexcept
     {
         static_assert(
             std::is_invocable_v<F, const nlohmann::json &>,
             "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
+
+        if (reload_before_read)
+        {
+            // reload() is thread-safe and process-safe.
+            // const_cast is needed because this is a const method, but reload()
+            // modifies the internal state (the in-memory data object). From the
+            // user's perspective, a read operation should be const, even if it
+            // updates a cache internally.
+            if (!const_cast<JsonConfig *>(this)->reload(ec))
+            {
+                return false;
+            }
+        }
 
         if (auto r = lock_for_read(ec))
         {
@@ -210,35 +227,63 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                 return false;
             }
         }
-        // lock_for_read failed (e.g. recursion), ec is already set.
+        // lock_for_read failed, it has set the error code.
         return false;
     }
 
     /**
-     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data.
-     *
-     * This method acquires a unique lock, executes the provided function, and
-     * then releases the lock. It ensures no other threads can read or write
-     * during the modification.
-     *
-     * @note This method operates ONLY on the in-memory data and does NOT save to disk.
-     *       Call `overwrite()` afterwards to persist changes to the file.
-     *
-     * @param fn A function or lambda with the signature `void(nlohmann::json&)`
-     * @param ec Optional: An error_code to capture any exceptions from the callback.
-     * @return true if the callback executed successfully, false otherwise.
+     * @brief Provides thread-safe, read-only access to the latest JSON data from disk.
      */
     template <typename F>
-    bool with_json_write(F &&fn, std::error_code *ec = nullptr) noexcept
+    bool with_json_read(F &&fn) const noexcept
+    {
+        return with_json_read(std::forward<F>(fn), nullptr, true);
+    }
+
+    /**
+     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data,
+     *        with an option to automatically commit to disk.
+     *
+     * This method acquires a unique lock, executes the provided function, and
+     * then, by default, commits the changes to the disk file in a process-safe
+     * manner (`commit_after_write = true`). To modify only the in-memory data
+     * without persisting, set this flag to `false`.
+     *
+     * @param fn A function or lambda with the signature `void(nlohmann::json&)`
+     * @param ec Optional: An error_code to capture any exceptions or I/O errors.
+     * @param commit_after_write If true (the default), changes will be saved to
+     *                           disk after the lambda executes.
+     * @return true if the callback executed and any requested commit was successful.
+     */
+    template <typename F>
+    bool with_json_write(F &&fn, std::error_code *ec, bool commit_after_write = true) noexcept
     {
         static_assert(std::is_invocable_v<F, nlohmann::json &>,
                       "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
+
+        if (basics::RecursionGuard::is_recursing(this))
+        {
+            if (ec)
+                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+            return false;
+        }
+        basics::RecursionGuard guard(this);
 
         if (auto w = lock_for_write(ec))
         {
             try
             {
                 std::forward<F>(fn)(w->json());
+
+                if (commit_after_write)
+                {
+                    if (!w->commit(ec))
+                    {
+                        // commit failed, it has set the error code.
+                        return false;
+                    }
+                }
+
                 if (ec)
                     *ec = std::error_code{};
                 return true;
@@ -263,16 +308,14 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         return false;
     }
 
-    // --- Convenience Overloads for lambda-based API ---
-
-    template <typename F> bool with_json_read(F &&fn) const noexcept
+    /**
+     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data,
+     *        automatically committing to disk.
+     */
+    template <typename F>
+    bool with_json_write(F &&fn) noexcept
     {
-        return with_json_read(std::forward<F>(fn), nullptr);
-    }
-
-    template <typename F> bool with_json_write(F &&fn) noexcept
-    {
-        return with_json_write(std::forward<F>(fn), nullptr);
+        return with_json_write(std::forward<F>(fn), nullptr, true);
     }
 
   private:
@@ -285,7 +328,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
 
     // Internal I/O helpers
     bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
-    bool private_commit_to_disk_unsafe(std::error_code *ec) noexcept;
+    bool private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
+                                       std::error_code *ec) noexcept;
 
     static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
                                   std::error_code *ec) noexcept;
