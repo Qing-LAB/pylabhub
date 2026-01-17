@@ -166,157 +166,66 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     // ----------------- Preferred API: Scoped, Thread-Safe Accessors -----------------
 
     /**
-     * @brief Provides thread-safe, read-only access to the JSON data, with an
-     *        option to automatically reload from disk first.
-     *
-     * By default, this method first reloads the configuration from disk to ensure
-     * the data is fresh (`reload_before_read = true`). To read from the
-     * in-memory cache without disk I/O, set this flag to `false`.
-     *
-     * It acquires a shared lock, allowing multiple concurrent readers, executes
-     * the provided function, and then releases the lock.
-     *
-     * @param fn A function or lambda with the signature `void(const nlohmann::json&)`
-     * @param ec Optional: An error_code to capture any exceptions or I/O errors.
-     * @param reload_before_read If true (the default), the configuration will be
-     *                           reloaded from disk before the read operation.
-     * @return true if the callback executed successfully, false otherwise.
+     * @brief Flags to control the behavior of a transaction.
      */
-    template <typename F>
-    bool with_json_read(F &&fn, std::error_code *ec, bool reload_before_read = true) const noexcept
+    enum class AccessFlags
     {
-        static_assert(
-            std::is_invocable_v<F, const nlohmann::json &>,
-            "with_json_read(Func) requires callable invocable as f(const nlohmann::json&)");
+        Default = 0,
+        /**< Default behavior: read from memory, no automatic commit. */
+        UnSynced = Default,
+        /**< Alias for Default. Operation is on in-memory data only. */
+        ReloadFirst = 1 << 0,
+        /**< Reload data from disk before the operation. */
+        CommitAfter = 1 << 1,
+        /**< Commit data to disk after the operation (write access only). */
+        FullSync = ReloadFirst | CommitAfter,
+        /**< Reload before and commit after the operation. */
+    };
 
-        if (reload_before_read)
-        {
-            // reload() is thread-safe and process-safe.
-            // const_cast is needed because this is a const method, but reload()
-            // modifies the internal state (the in-memory data object). From the
-            // user's perspective, a read operation should be const, even if it
-            // updates a cache internally.
-            if (!const_cast<JsonConfig *>(this)->reload(ec))
+            friend AccessFlags operator|(AccessFlags a, AccessFlags b)
             {
-                return false;
+                return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
             }
-        }
-
-        if (auto r = lock_for_read(ec))
-        {
-            try
+    
+            /**
+             * @brief A move-only token representing a pending transaction.
+             *
+             * This object is created by `JsonConfig::transaction()` and consumed by
+             * `with_json_read()` or `with_json_write()` to grant them one-time
+             * access to the parent JsonConfig's private state.
+             */
+            class Transaction
             {
-                std::forward<F>(fn)(r->json());
-                if (ec)
-                    *ec = std::error_code{};
-                return true;
-            }
-            catch (const std::exception &ex)
-            {
-                LOGGER_ERROR("JsonConfig::with_json_read: exception in user callback: {}",
-                             ex.what());
-                if (ec)
-                    *ec = std::make_error_code(std::errc::io_error);
-                return false;
-            }
-            catch (...)
-            {
-                LOGGER_ERROR("JsonConfig::with_json_read: unknown exception in user callback");
-                if (ec)
-                    *ec = std::make_error_code(std::errc::io_error);
-                return false;
-            }
-        }
-        // lock_for_read failed, it has set the error code.
-        return false;
-    }
-
+              public:
+                Transaction(Transaction &&) noexcept = default;
+                Transaction &operator=(Transaction &&) noexcept = default;
+                Transaction(const Transaction &) = delete;
+                Transaction &operator=(const Transaction &) = delete;
+    
+              private:
+                friend class JsonConfig;
+                template <typename F>
+                friend void with_json_read(Transaction &&tx, F &&fn, std::error_code *ec);
+                template <typename F>
+                friend void with_json_write(Transaction &&tx, F &&fn, std::error_code *ec);
+    
+                explicit Transaction(JsonConfig *owner, AccessFlags flags) : owner(owner), flags(flags) {}
+    
+                JsonConfig *owner;
+                AccessFlags flags;
+            };
+    
+            // Forward declare the transactional functions.
+            template <typename F>
+            friend void with_json_read(Transaction &&tx, F &&fn, std::error_code *ec);
+            template <typename F>
+            friend void with_json_write(Transaction &&tx, F &&fn, std::error_code *ec);
     /**
-     * @brief Provides thread-safe, read-only access to the latest JSON data from disk.
+     * @brief Creates a transaction token for use with `with_json_read`/`with_json_write`.
+     * @param flags Flags to control the transaction's behavior (e.g., reload, commit).
+     * @return A single-use transaction token.
      */
-    template <typename F>
-    bool with_json_read(F &&fn) const noexcept
-    {
-        return with_json_read(std::forward<F>(fn), nullptr, true);
-    }
-
-    /**
-     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data,
-     *        with an option to automatically commit to disk.
-     *
-     * This method acquires a unique lock, executes the provided function, and
-     * then, by default, commits the changes to the disk file in a process-safe
-     * manner (`commit_after_write = true`). To modify only the in-memory data
-     * without persisting, set this flag to `false`.
-     *
-     * @param fn A function or lambda with the signature `void(nlohmann::json&)`
-     * @param ec Optional: An error_code to capture any exceptions or I/O errors.
-     * @param commit_after_write If true (the default), changes will be saved to
-     *                           disk after the lambda executes.
-     * @return true if the callback executed and any requested commit was successful.
-     */
-    template <typename F>
-    bool with_json_write(F &&fn, std::error_code *ec, bool commit_after_write = true) noexcept
-    {
-        static_assert(std::is_invocable_v<F, nlohmann::json &>,
-                      "with_json_write(Func) requires callable invocable as f(nlohmann::json&)");
-
-        if (basics::RecursionGuard::is_recursing(this))
-        {
-            if (ec)
-                *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-            return false;
-        }
-        basics::RecursionGuard guard(this);
-
-        if (auto w = lock_for_write(ec))
-        {
-            try
-            {
-                std::forward<F>(fn)(w->json());
-
-                if (commit_after_write)
-                {
-                    if (!w->commit(ec))
-                    {
-                        // commit failed, it has set the error code.
-                        return false;
-                    }
-                }
-
-                if (ec)
-                    *ec = std::error_code{};
-                return true;
-            }
-            catch (const std::exception &ex)
-            {
-                LOGGER_ERROR("JsonConfig::with_json_write: exception in user callback: {}",
-                             ex.what());
-                if (ec)
-                    *ec = std::make_error_code(std::errc::io_error);
-                return false;
-            }
-            catch (...)
-            {
-                LOGGER_ERROR("JsonConfig::with_json_write: unknown exception in user callback");
-                if (ec)
-                    *ec = std::make_error_code(std::errc::io_error);
-                return false;
-            }
-        }
-        // lock_for_write failed (e.g. recursion), ec is already set.
-        return false;
-    }
-
-    /**
-     * @brief Provides thread-safe, exclusive write access to the in-memory JSON data,
-     *        automatically committing to disk.
-     */
-    template <typename F>
-    bool with_json_write(F &&fn) noexcept
-    {
-        return with_json_write(std::forward<F>(fn), nullptr, true);
-    }
+    [[nodiscard]] Transaction transaction(AccessFlags flags = AccessFlags::Default) noexcept;
 
   private:
     struct Impl;
@@ -335,8 +244,18 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                                   std::error_code *ec) noexcept;
 };
 
+// ----------------- Transactional API Free Functions -----------------
+
+template <typename F>
+void with_json_read(JsonConfig::Transaction &&tx, F &&fn, std::error_code *ec);
+
+template <typename F>
+void with_json_write(JsonConfig::Transaction &&tx, F &&fn, std::error_code *ec);
+
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+
+#include "utils/JsonConfig.inl"
 
 } // namespace pylabhub::utils

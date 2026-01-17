@@ -306,6 +306,11 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
     }
 }
 
+JsonConfig::Transaction JsonConfig::transaction(AccessFlags flags) noexcept
+{
+    return Transaction(this, flags);
+}
+
 // Guard constructors / destructors / accessors
 JsonConfig::ReadLock::ReadLock() noexcept {}
 JsonConfig::ReadLock::ReadLock(ReadLock &&other) noexcept : d_(std::move(other.d_)) {}

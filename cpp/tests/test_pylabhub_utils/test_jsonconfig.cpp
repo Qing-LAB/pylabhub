@@ -101,26 +101,27 @@ TEST_F(JsonConfigTest, InitAndCreate)
     ASSERT_FALSE(ec);
     ASSERT_TRUE(fs::exists(cfg_path));
 
-    bool read_ok = config.with_json_read(
+    with_json_read(
+        config.transaction(),
         [&](const json &j)
         {
             ASSERT_TRUE(j.is_object());
             ASSERT_TRUE(j.empty());
         },
-        &ec, true);
-    ASSERT_TRUE(read_ok);
+        &ec);
     ASSERT_FALSE(ec);
 
     JsonConfig config2(cfg_path, false, &ec);
     ASSERT_FALSE(ec);
-    bool read2_ok = config2.with_json_read(
+    with_json_read(
+        config2.transaction(),
         [&](const json &j)
         {
             ASSERT_TRUE(j.is_object());
             ASSERT_TRUE(j.empty());
         },
-        &ec, true);
-    ASSERT_TRUE(read2_ok);
+        &ec);
+    ASSERT_FALSE(ec);
 }
 
 /**
@@ -168,22 +169,24 @@ TEST_F(JsonConfigTest, BasicAccessors)
     ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
 
-    ASSERT_TRUE(cfg.with_json_write(
+    with_json_write(
+        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
         [&](json &j)
         {
             j["int_val"] = 42;
             j["str_val"] = "hello";
         },
-        &ec, /*commit_after_write=*/false));
+        &ec);
     ASSERT_FALSE(ec);
 
-    ASSERT_TRUE(cfg.with_json_read(
+    with_json_read(
+        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
         [&](const json &j)
         {
             ASSERT_EQ(j.value("int_val", -1), 42);
             ASSERT_EQ(j.value("str_val", std::string{}), "hello");
         },
-        &ec, /*reload_before_read=*/false)); // Read from memory, don't reload
+        &ec); // Read from memory, don't reload
     ASSERT_FALSE(ec);
 }
 
@@ -200,8 +203,8 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
 
-    ASSERT_TRUE(cfg.with_json_write([&](json &j) { j["value"] = 1; }, &ec,
-                                    /*commit_after_write=*/true));
+    with_json_write(cfg.transaction(JsonConfig::AccessFlags::CommitAfter),
+                    [&](json &j) { j["value"] = 1; }, &ec);
     ASSERT_FALSE(ec);
 
     {
@@ -213,14 +216,14 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     ASSERT_TRUE(cfg.reload(&ec));
     ASSERT_FALSE(ec);
 
-    ASSERT_TRUE(cfg.with_json_read(
+    with_json_read(
+        cfg.transaction(),
         [&](const json &j)
         {
             ASSERT_EQ(j.value("value", -1), 2);
             ASSERT_EQ(j.value("new_key", std::string{}), "external");
         },
-        &ec,
-        /*reload_before_read=*/false)); // Already reloaded, so read from memory
+        &ec); // Already reloaded, so read from memory
     ASSERT_FALSE(ec);
 }
 
@@ -235,8 +238,7 @@ TEST_F(JsonConfigTest, OverwriteAndReload)
     ASSERT_FALSE(ec);
 
     // Make a change in memory, but don't commit it yet.
-    ASSERT_TRUE(cfg.with_json_write([&](json &j) { j["value"] = "in-memory"; }, &ec,
-                                    /*commit_after_write=*/false));
+    with_json_write(cfg.transaction(), [&](json &j) { j["value"] = "in-memory"; }, &ec);
     ASSERT_FALSE(ec);
 
     // Now, overwrite the file on disk with the in-memory state.
@@ -258,13 +260,14 @@ TEST_F(JsonConfigTest, OverwriteAndReload)
     ASSERT_FALSE(ec);
 
     // Verify the reloaded state.
-    ASSERT_TRUE(cfg.with_json_read(
+    with_json_read(
+        cfg.transaction(),
         [&](const json &j_mem)
         {
             EXPECT_EQ(j_mem.value("value", ""), "from-disk");
             EXPECT_EQ(j_mem.value("new_val", false), true);
         },
-        &ec, /*reload_before_read=*/false)); // Already reloaded
+        &ec); // Already reloaded
     ASSERT_FALSE(ec);
 }
 
@@ -277,19 +280,19 @@ TEST_F(JsonConfigTest, SimplifiedApiOverloads)
     ASSERT_TRUE(cfg.init(cfg_path, true));
 
     // Write and commit to disk (default behavior)
-    bool write_ok = cfg.with_json_write([&](json &j) { j["key"] = "value1"; });
-    ASSERT_TRUE(write_ok);
+    std::error_code ec;
+    with_json_write(cfg.transaction(JsonConfig::AccessFlags::CommitAfter),
+                    [&](json &j) { j["key"] = "value1"; }, &ec);
+    ASSERT_FALSE(ec);
 
     std::string read_value;
     // Reload from disk and read (default behavior)
-    bool read_ok = cfg.with_json_read([&](const json &j) { read_value = j.value("key", ""); });
-    ASSERT_TRUE(read_ok);
+    with_json_read(cfg.transaction(JsonConfig::AccessFlags::ReloadFirst),
+                   [&](const json &j) { read_value = j.value("key", ""); }, &ec);
+    ASSERT_FALSE(ec);
     ASSERT_EQ(read_value, "value1");
 }
 
-/**
- * @brief Verifies that the internal recursion guard prevents nested read callbacks.
- */
 TEST_F(JsonConfigTest, RecursionGuardForReads)
 {
     auto cfg_path = g_temp_dir / "recursion_reads.json";
@@ -301,21 +304,24 @@ TEST_F(JsonConfigTest, RecursionGuardForReads)
     ASSERT_FALSE(ec);
 
     // An attempt to call with_json_read from within another with_json_read should fail.
-    bool outer_ok = cfg.with_json_read(
+    with_json_read(
+        cfg.transaction(),
         [&]([[maybe_unused]] const json &j)
         {
             std::error_code inner_ec;
-            bool nested_ok = cfg.with_json_read(
+            with_json_read(
+                cfg.transaction(),
                 [&](const json &)
                 {
                     // This lambda should not be executed.
+                    FAIL() << "Inner lambda should not execute on recursive read.";
                 },
-                &inner_ec, /*reload_before_read=*/false);
-            ASSERT_FALSE(nested_ok);
+                &inner_ec);
             ASSERT_NE(inner_ec.value(), 0);
+            ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
         },
-        &ec, false);
-    ASSERT_TRUE(outer_ok);
+        &ec);
+    ASSERT_FALSE(ec);
 }
 
 /**
@@ -376,13 +382,14 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
         std::error_code ec;
         ASSERT_TRUE(setup_cfg.init(cfg_path, true, &ec));
         ASSERT_FALSE(ec);
-        ASSERT_TRUE(setup_cfg.with_json_write(
+        with_json_write(
+            setup_cfg.transaction(JsonConfig::AccessFlags::CommitAfter),
             [&](json &data)
             {
                 data["counter"] = 0;
                 data["write_log"] = json::array();
             },
-            &ec, /*commit_after_write=*/true));
+            &ec);
         ASSERT_FALSE(ec);
     }
 
@@ -406,16 +413,17 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
                     {
                         std::error_code ec;
                         // Atomically reload, modify, and commit.
-                        bool ok = cfg.with_json_write(
+                        with_json_write(
+                            cfg.transaction(JsonConfig::AccessFlags::FullSync),
                             [&](json &data)
                             {
                                 int v = data.value("counter", 0);
                                 data["counter"] = v + 1;
-                                data["write_log"].push_back(fmt::format("T{}-வைக்", i, j));
+                                data["write_log"].push_back(fmt::format("T{}-w{}", i, j));
                             },
-                            &ec, /*commit_after_write=*/true);
+                            &ec);
 
-                        if (ok && !ec)
+                        if (!ec)
                         {
                             successful_writes++;
                         }
@@ -424,7 +432,8 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
                     {
                         std::error_code ec;
                         // Reload from disk to get the latest version.
-                        bool ok = cfg.with_json_read(
+                        with_json_read(
+                            cfg.transaction(JsonConfig::AccessFlags::ReloadFirst),
                             [&](const json &data)
                             {
                                 int cur = data.value("counter", -1);
@@ -434,8 +443,8 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
                                 }
                                 last_read_value = cur;
                             },
-                            &ec, /*reload_before_read=*/true);
-                        if (!ok || ec)
+                            &ec);
+                        if (ec)
                             read_failures++;
                     }
                     std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
@@ -450,7 +459,9 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
 
     // Verify the final state of the file.
     JsonConfig verifier(cfg_path);
-    ASSERT_TRUE(verifier.with_json_read(
+    std::error_code ec;
+    with_json_read(
+        verifier.transaction(JsonConfig::AccessFlags::ReloadFirst),
         [&](const json &data)
         {
             int final_counter = data.value("counter", -1);
@@ -458,7 +469,8 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
             EXPECT_EQ(final_counter, static_cast<int>(final_log.size()));
             EXPECT_GT(final_counter, 0);
         },
-        nullptr, /*reload_before_read=*/true));
+        &ec);
+    ASSERT_FALSE(ec);
 }
 
 #if defined(PLATFORM_WIN64)
@@ -508,7 +520,8 @@ TEST_F(JsonConfigTest, MultiProcessContention)
 
     // Verify that the file contains entries from all workers.
     JsonConfig verifier(cfg_path);
-    ASSERT_TRUE(verifier.with_json_read(
+    with_json_read(
+        verifier.transaction(JsonConfig::AccessFlags::ReloadFirst),
         [&](const json &data)
         {
             for (int i = 0; i < PROCS; ++i)
@@ -518,7 +531,8 @@ TEST_F(JsonConfigTest, MultiProcessContention)
                 ASSERT_TRUE(data.contains(key)) << "Worker " << key << " failed to write.";
             }
         },
-        nullptr, true));
+        &ec);
+    ASSERT_FALSE(ec);
 }
 
 /**
@@ -552,8 +566,8 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 
     // Attempting to write should also fail, as a double check.
     // The object is not initialized, so we expect a 'not_connected' error.
-    bool ok = cfg.with_json_write([&](json &j) { j["malicious"] = "data"; }, &ec);
-    ASSERT_FALSE(ok);
+    with_json_write(cfg.transaction(JsonConfig::AccessFlags::CommitAfter),
+                    [&](json &j) { j["malicious"] = "data"; }, &ec);
     ASSERT_EQ(ec, std::errc::not_connected);
 
     // Confirm the original file was not modified.
@@ -591,8 +605,8 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     ASSERT_FALSE(ec);
 
     // Write should fail because atomic_write_json refuses to operate on a symlink.
-    bool ok = cfg.with_json_write([&](json &j) { j["malicious"] = "data"; }, &ec, true);
-    ASSERT_FALSE(ok);
+    with_json_write(cfg.transaction(JsonConfig::AccessFlags::CommitAfter),
+                    [&](json &j) { j["malicious"] = "data"; }, &ec);
     ASSERT_TRUE(ec); // Expect an error from the failed write
 
     // Verify the original file is untouched.
@@ -622,7 +636,7 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
     ASSERT_TRUE(shared_cfg.is_initialized());
 
     // 2. Pre-populate with initial data (in-memory only).
-    shared_cfg.with_json_write([&](json &data) { data["counter"] = 0; }, nullptr, false);
+    with_json_write(shared_cfg.transaction(), [&](json &data) { data["counter"] = 0; }, nullptr);
 
     const int WRITER_THREADS = 4;
     const int READER_THREADS = 8;
@@ -638,20 +652,21 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
             {
                 for (int j = 0; j < ITERS_PER_WRITER; ++j)
                 {
-                    shared_cfg.with_json_write(
+                    with_json_write(
+                        shared_cfg.transaction(),
                         [&](json &data)
                         {
                             int v = data.value("counter", 0);
                             data["counter"] = v + 1;
                         },
-                        nullptr, false); // In-memory only
+                        nullptr); // In-memory only
                     std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
                 }
             });
     }
 
     // 4. Spawn reader threads that verify the counter is always increasing (in-memory only).
-    for (int i = 0; i < READER_THREADS; ++i)
+    for (int i = 0; i <READER_THREADS; ++i)
     {
         threads.emplace_back(
             [&]()
@@ -660,7 +675,8 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
                 auto start_time = std::chrono::steady_clock::now();
                 while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(1))
                 {
-                    shared_cfg.with_json_read(
+                    with_json_read(
+                        shared_cfg.transaction(),
                         [&](const json &data)
                         {
                             int cur = data.value("counter", -1);
@@ -670,7 +686,7 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
                             }
                             last_read_value = cur;
                         },
-                        nullptr, false); // In-memory only
+                        nullptr); // In-memory only
                     std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
                 }
             });
@@ -685,8 +701,60 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
     ASSERT_EQ(read_failures.load(), 0) << "Reader threads detected non-monotonic counter changes.";
 
     int final_counter = 0;
-    shared_cfg.with_json_read([&](const json &data) { final_counter = data.value("counter", -1); },
-                                nullptr, false);
+    with_json_read(shared_cfg.transaction(),
+                   [&](const json &data) { final_counter = data.value("counter", -1); }, nullptr);
 
     EXPECT_EQ(final_counter, WRITER_THREADS * ITERS_PER_WRITER);
+}
+
+/**
+ * @brief Tests the manual locking API (`lock_for_read`/`lock_for_write`).
+ * Verifies that users can manually acquire and release locks for fine-grained
+ * control over read and write operations, including explicit commits.
+ */
+TEST_F(JsonConfigTest, ManualLockingApi)
+{
+    auto cfg_path = g_temp_dir / "manual_locking.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
+    ASSERT_FALSE(ec);
+
+    // 1. Get a write lock
+    auto w_lock_opt = cfg.lock_for_write(&ec);
+    ASSERT_TRUE(w_lock_opt.has_value());
+    ASSERT_FALSE(ec);
+    auto w_lock = std::move(*w_lock_opt);
+
+    // 2. Modify data through the lock
+    w_lock.json()["manual"] = true;
+    w_lock.json()["value"] = "test";
+
+    // 3. Commit changes to disk
+    ASSERT_TRUE(w_lock.commit(&ec));
+    ASSERT_FALSE(ec);
+
+    // w_lock goes out of scope here, releasing the lock.
+
+    // 4. Verify with a separate config object and a read lock
+    JsonConfig verifier_cfg(cfg_path, false, &ec);
+    ASSERT_TRUE(verifier_cfg.is_initialized());
+    ASSERT_FALSE(ec);
+
+    // Manually reload to ensure we get the committed data
+    ASSERT_TRUE(verifier_cfg.reload(&ec));
+    ASSERT_FALSE(ec);
+
+    // 5. Get a read lock
+    auto r_lock_opt = verifier_cfg.lock_for_read(&ec);
+    ASSERT_TRUE(r_lock_opt.has_value());
+    ASSERT_FALSE(ec);
+    auto r_lock = std::move(*r_lock_opt);
+
+    // 6. Verify the data
+    const auto& j = r_lock.json();
+    ASSERT_TRUE(j.value("manual", false));
+    ASSERT_EQ(j.value("value", ""), "test");
 }

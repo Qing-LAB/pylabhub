@@ -48,7 +48,7 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                 std::error_code ec;
                 // Attempt a non-blocking write. The lambda is only executed if the
                 // file lock is acquired successfully.
-                bool ok = cfg.with_json_write(
+                pylabhub::utils::with_json_write(cfg.transaction(),
                     [&](json &data)
                     {
                         int attempts = data.value("total_attempts", 0);
@@ -58,7 +58,7 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                     },
                     &ec);
 
-                if (ok && ec.value() == 0)
+                if (ec.value() == 0)
                 {
                     success = true;
                     break;

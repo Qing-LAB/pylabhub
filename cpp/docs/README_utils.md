@@ -210,91 +210,106 @@ The `pylabhub::utils::Logger` class provides a high-performance, asynchronous, a
 
 ### `JsonConfig`
 
-The `pylabhub::utils::JsonConfig` class provides a robust, thread-safe, and process-safe interface for managing JSON configuration files.
+The `pylabhub::utils::JsonConfig` class provides a robust, thread-safe, and process-safe interface for managing JSON configuration files. It offers two APIs: a high-level **Transactional API** for safety and convenience, and a low-level **Manual Locking API** for advanced control.
 
-#### Design: Two-Layer Locking
+#### Recommended: The Transactional API
 
-`JsonConfig` is designed to prevent data corruption from concurrent access by implementing a two-layer locking strategy:
+This is the preferred way to interact with `JsonConfig`. It uses a "transaction token" to provide safe, scoped access to the JSON data within a lambda. This pattern handles all locking and resource management automatically, preventing common errors.
 
-1.  **Layer 1: Inter-Thread Safety (In-Memory Protection)**
-    *   **Problem**: Prevents data races when multiple threads within a single process try to access the in-memory `nlohmann::json` object simultaneously.
-    *   **Mechanism**: An internal `std::shared_mutex` that guards the in-memory data.
-    *   **API**:
-        *   `with_json_read(callback)`: Acquires a *shared* lock, allowing multiple concurrent readers. This is fast and for **in-memory reads only**.
-        *   `with_json_write(callback)`: Acquires a *unique* (exclusive) lock, blocking all other readers and writers. This is for **in-memory writes only**.
+**How It Works**
+1.  You create a `Transaction` token by calling `config.transaction()`.
+2.  You pass this token to `with_json_read()` or `with_json_write()`. The token is *consumed* by the function, ensuring it is only used once.
+3.  You provide a lambda function where you can safely access the `nlohmann::json` object.
 
-2.  **Layer 2: Inter-Process Safety (Disk File Protection)**
-    *   **Problem**: Prevents `Process A` from reading a configuration file while `Process B` is halfway through writing it.
-    *   **Mechanism**: `pylabhub::utils::FileLock`, which uses OS-level advisory locks.
-    *   **API**:
-        *   `reload()`: Updates the in-memory object from the disk. It acquires a `FileLock` to ensure it reads a complete, non-corrupt file.
-        *   `overwrite()`: Saves the in-memory object to disk. It acquires a `FileLock` and uses an atomic write-and-rename pattern to guarantee a safe write.
+**Access Flags**
+You can control the behavior of the transaction by passing flags when creating the token:
+*   `JsonConfig::AccessFlags::UnSynced` (Default): The operation is on in-memory data only. Fast, but does not read from or write to disk.
+*   `JsonConfig::AccessFlags::ReloadFirst`: Reloads the data from the disk file before executing your lambda.
+*   `JsonConfig::AccessFlags::CommitAfter`: Commits the data to the disk file after your lambda executes.
+*   `JsonConfig::AccessFlags::FullSync`: A convenience flag for `ReloadFirst | CommitAfter`.
 
-#### Basic Usage
-
-This separation of concerns provides both safety and performance. Use the lightweight `with_json_*` methods for frequent access to the configuration, and call `reload()` or `overwrite()` only when you explicitly need to synchronize with the file on disk.
-
+**Basic Usage**
 ```cpp
 #include "utils/JsonConfig.hpp"
 #include <string>
 #include <nlohmann/json.hpp>
 #include <thread>
 
-void access_config(pylabhub::utils::JsonConfig& cfg) {
-    // --- In-Memory Operations ---
+void transactional_access(pylabhub::utils::JsonConfig& cfg) {
+    std::error_code ec;
 
-    // Preferred: Thread-safe write to the in-memory object using lambda.
-    // Does NOT write to disk.
-    cfg.with_json_write([&](nlohmann::json& j) {
-        j["hostname"] = "localhost";
-        j["port"] = 8080;
-    });
-
-    // Preferred: Thread-safe read from the in-memory object using lambda.
-    // Does NOT read from disk.
+    // --- In-Memory Write ---
+    // The operation is fast and only affects the in-memory copy.
+    with_json_write(
+        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
+        [&](nlohmann::json& j) {
+            j["hostname"] = "localhost";
+            j["port"] = 8080;
+        },
+        &ec);
+    
+    // --- In-Memory Read ---
     int port = 0;
-    cfg.with_json_read([&](const nlohmann::json& j) {
-        port = j.value("port", 0);
-    });
+    with_json_read(
+        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
+        [&](const nlohmann::json& j) {
+            port = j.value("port", 0);
+        },
+        &ec);
     // port is now 8080.
 
-    // --- Manual Locking API (Alternative to lambdas) ---
-    // The `ReadLock` and `WriteLock` objects provide RAII-style guards
-    // for direct access to the in-memory JSON data. They hold the internal
-    // thread-safety locks for their lifetime.
-    // While functional, the lambda-based `with_json_*` methods are generally
-    // preferred for their simplicity and reduced boilerplate.
 
+    // --- Fully Synchronized Write ---
+    // For process-safe interaction, use FullSync. This reloads the latest
+    // data from disk, lets you modify it, and writes it back atomically.
+    with_json_write(
+        cfg.transaction(JsonConfig::AccessFlags::FullSync),
+        [&](nlohmann::json& j) {
+            int current_requests = j.value("requests", 0);
+            j["requests"] = current_requests + 1;
+        },
+        &ec);
+}
+```
+
+#### Advanced: Manual Locking API
+
+For use cases requiring fine-grained control over lock lifetimes, you can use the `ReadLock` and `WriteLock` RAII guards directly. **This API is for advanced users**, as it requires careful manual management.
+
+```cpp
+#include "utils/JsonConfig.hpp"
+
+void manual_access(pylabhub::utils::JsonConfig& cfg) {
     std::error_code ec;
+    
+    // 1. Manually acquire a write lock.
     if (auto write_lock = cfg.lock_for_write(&ec)) {
+        // 2. Modify the in-memory data.
         write_lock->json()["manual_key"] = "manual_value";
-        // Changes are now in memory, but not yet on disk.
-        // No explicit 'commit' on the lock object is needed as overwrite() handles disk sync.
+        
+        // 3. Manually commit the changes to disk.
+        if (!write_lock->commit(&ec)) {
+            // Handle commit error...
+        }
+        // The unique_lock on memory is released when write_lock goes out of scope.
     } else {
-        // Handle error, e.g., recursion detected.
+        // Handle lock acquisition error (e.g., recursion).
     }
 
+    // Manually acquire a read lock.
     if (auto read_lock = cfg.lock_for_read(&ec)) {
         std::string value = read_lock->json().value("manual_key", "");
-        // value is now "manual_value".
-    } else {
-        // Handle error.
-    }
-
-    // --- Disk I/O Operations ---
-
-    // Now, save all the in-memory changes (from either lambda or manual access)
-    // to the disk file. This is both thread-safe and process-safe.
-    if (!cfg.overwrite(&ec)) {
-        // Handle error...
-    }
-
-    // To load any changes made by another process, explicitly reload.
-    if (!cfg.reload(&ec)) {
-        // Handle error...
+        // The shared_lock is released when read_lock goes out of scope.
     }
 }
 ```
+
+#### Explicit Disk I/O
+
+The `reload()` and `overwrite()` methods are still available for explicit, process-safe disk synchronization. The transactional API uses these methods internally when flags like `ReloadFirst` or `CommitAfter` are used.
+
+*   `reload()`: Updates the in-memory object from the disk. It acquires a `FileLock` to ensure it reads a complete, non-corrupt file.
+*   `overwrite()`: Saves the in-memory object to disk. It acquires a `FileLock` and uses an atomic write-and-rename pattern to guarantee a safe write.
 
 ### `FileLock`
 
@@ -352,4 +367,3 @@ The `pylabhub::utils::FileLock` class is a cross-platform, RAII-style utility fo
 
     } // If acquired, the lock is automatically released here.
     ```
-
