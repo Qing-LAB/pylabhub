@@ -110,7 +110,26 @@ class RecursionGuard
      */
     RecursionGuard &operator=(RecursionGuard &&other) noexcept
     {
-        std::swap(key_, other.key_);
+        if (this != &other) // Protect against self-assignment
+        {
+            // If *this is currently managing a key, remove it from the stack.
+            if (key_ != nullptr)
+            {
+                auto &stack = get_recursion_stack();
+                // Find and erase only the first occurrence of key_ to handle non-LIFO.
+                auto it = std::find(stack.begin(), stack.end(), key_);
+                if (it != stack.end())
+                {
+                    stack.erase(it);
+                }
+            }
+
+            // Transfer ownership from 'other' to '*this'.
+            // The key previously managed by 'other' remains on the stack,
+            // but is now associated with '*this' guard object.
+            key_ = other.key_;
+            other.key_ = nullptr; // Make 'other' inert to prevent it from popping the key on destruction.
+        }
         return *this;
     }
 
