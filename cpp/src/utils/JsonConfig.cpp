@@ -60,7 +60,7 @@ struct JsonConfig::WriteLock::ImplInner
 };
 
 // ----------------- JsonConfig public methods -----------------
-JsonConfig::JsonConfig() noexcept : pImpl(std::make_shared<Impl>())
+JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {
@@ -70,7 +70,7 @@ JsonConfig::JsonConfig() noexcept : pImpl(std::make_shared<Impl>())
 }
 JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMissing,
                        std::error_code *ec) noexcept
-    : pImpl(std::make_shared<Impl>())
+    : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {

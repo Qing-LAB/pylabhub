@@ -19,6 +19,8 @@
 #include <list>
 #include <mutex>
 #include <source_location>
+#include <system_error>
+#include <string>
 
 #include "debug_info.hpp"
 #include "nlohmann/json.hpp"
@@ -122,6 +124,11 @@ class JsonConfig
         Transaction &operator=(const Transaction &) = delete;
         Transaction(Transaction &&) = delete;
         Transaction &operator=(Transaction &&) = delete;
+        
+        Transaction(JsonConfig *owner, TxId id, AccessFlags flags) noexcept
+            : d_owner(owner), d_id(id), d_flags(flags), d_used(false)
+        {
+        }
 
         ~Transaction() = default;
 
@@ -133,11 +140,7 @@ class JsonConfig
         void write(F &&fn, std::error_code *ec = nullptr, std::source_location loc = std::source_location::current());
 
       private:
-        friend class JsonConfig;
-        Transaction(JsonConfig *owner, TxId id, AccessFlags flags) noexcept
-            : d_owner(owner), d_id(id), d_flags(flags), d_used(false)
-        {
-        }
+        friend class JsonConfig;        
 
         JsonConfig *d_owner;
         TxId d_id;
@@ -197,17 +200,11 @@ class JsonConfig
         std::unique_ptr<ImplInner> d_;
         friend class JsonConfig;
     };
+}; // JsonConfig class
 
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
-};
-
-#include <system_error>
-#include <string>
-
-namespace pylabhub::utils
-{
 
 // Inline template definitions for Transaction::read / write
 
