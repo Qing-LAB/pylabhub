@@ -154,6 +154,17 @@ bool JsonConfig::is_initialized() const noexcept
     return !pImpl->configPath.empty();
 }
 
+bool JsonConfig::has_path() const noexcept
+{
+    return is_initialized();
+}
+
+bool JsonConfig::is_dirty() const noexcept
+{
+    if (!is_initialized()) return false;
+    return pImpl->dirty.load(std::memory_order_acquire);
+}
+
 // New private helper requested by header-only txn logic to avoid touching Impl in headers.
 void JsonConfig::private_set_dirty_unsafe_(bool v) noexcept
 {

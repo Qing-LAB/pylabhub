@@ -75,6 +75,13 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
     }
 
+    enum class CommitDecision
+    {
+        Commit,    // proceed with disk commit if CommitAfter flag is set
+        SkipCommit // veto disk commit if CommitAfter flag is set
+    };
+
+
     // ----------------- Rvalue-only transaction proxy -----------------
     class TransactionProxy
     {
@@ -160,6 +167,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     static bool lifecycle_initialized() noexcept;
 
     bool is_initialized() const noexcept;
+    bool has_path() const noexcept;
+    bool is_dirty() const noexcept;
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;
 
@@ -327,6 +336,14 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     void consume_write_(TxId id, AccessFlags flags, F &&fn, std::error_code *ec,
                         std::source_location loc) noexcept
     {
+        static_assert(std::is_invocable_v<F, nlohmann::json &>,
+                      "JsonConfig::write() lambda must be callable with signature (nlohmann::json&).");
+
+        using R = std::invoke_result_t<F, nlohmann::json &>;
+
+        static_assert(std::is_void_v<R> || std::is_same_v<R, CommitDecision>,
+                      "JsonConfig::write() lambda must return either void or JsonConfig::CommitDecision");
+
         if (!is_initialized())
         {
             destroy_transaction_internal(id);
@@ -429,9 +446,17 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         }
 
         // 7) Run user lambda
+        CommitDecision commit_decision = CommitDecision::Commit;
         try
         {
-            fn(wlock.json());
+            if constexpr (std::is_void_v<R>)
+            {
+                fn(wlock.json());
+            }
+            else
+            {
+                commit_decision = fn(wlock.json());
+            }
         }
         catch (const std::exception &ex)
         {
@@ -495,41 +520,44 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         // 9) CommitAfter: snapshot and commit to disk (we already have the process lock)
         if ((static_cast<int>(flags) & static_cast<int>(AccessFlags::CommitAfter)) != 0)
         {
-            nlohmann::json snapshot;
-            try
+            if (commit_decision == CommitDecision::Commit)
             {
-                snapshot = wlock.json();
-            }
-            catch (...)
-            {
+                nlohmann::json snapshot;
                 try
                 {
-                    wlock.json() = std::move(before);
-                    private_set_dirty_unsafe_(false);
+                    snapshot = wlock.json();
                 }
                 catch (...)
                 {
+                    try
+                    {
+                        wlock.json() = std::move(before);
+                        private_set_dirty_unsafe_(false);
+                    }
+                    catch (...)
+                    {
+                    }
+                    destroy_transaction_internal(id);
+                    if (ec)
+                        *ec = std::make_error_code(std::errc::io_error);
+                    return;
                 }
-                destroy_transaction_internal(id);
-                if (ec)
-                    *ec = std::make_error_code(std::errc::io_error);
-                return;
-            }
 
-            // Release in-memory lock before slow disk I/O. The process lock (fLock) is still held.
-            wlock = JsonConfig::WriteLock();
+                // Release in-memory lock before slow disk I/O. The process lock (fLock) is still held.
+                wlock = JsonConfig::WriteLock();
 
-            // Directly call atomic_write_json since we hold the lock.
-            // This avoids calling private_commit_to_disk_unsafe which tries to take its own lock.
-            // We use fLock->path() because it is guaranteed to be valid and holds the actual path.
-            atomic_write_json(fLock->get_locked_resource_path().value(), snapshot, ec);
-            if (ec && *ec)
-            {
-                // keep in-memory change, report error
-                destroy_transaction_internal(id);
-                return;
+                // Directly call atomic_write_json since we hold the lock.
+                // This avoids calling private_commit_to_disk_unsafe which tries to take its own lock.
+                // We use fLock->path() because it is guaranteed to be valid and holds the actual path.
+                atomic_write_json(fLock->get_locked_resource_path().value(), snapshot, ec);
+                if (ec && *ec)
+                {
+                    // keep in-memory change, report error
+                    destroy_transaction_internal(id);
+                    return;
+                }
+                private_set_dirty_unsafe_(false); // only set dirty to false on success
             }
-            private_set_dirty_unsafe_(false); // only set dirty to false on success
         }
 
         destroy_transaction_internal(id);
