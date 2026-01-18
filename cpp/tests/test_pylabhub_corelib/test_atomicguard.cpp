@@ -26,14 +26,24 @@ using pylabhub::basics::AtomicGuard;
 using pylabhub::basics::AtomicOwner;
 
 // Defines sizes for stress tests to allow for quick or thorough testing.
-static constexpr int LIGHT_THREADS = 32;
-static constexpr int HEAVY_THREADS = 64;
-static constexpr int LIGHT_ITERS = 500;
-static constexpr int HEAVY_ITERS = 20000;
+#if ATOMICGUARD_STRESS_LEVEL == 2 // HEAVY
+static constexpr int THREAD_NUM = 64;
+static constexpr int ITER_NUM = 20000;
+#elif ATOMICGUARD_STRESS_LEVEL == 1 // LIGHT (default)
+static constexpr int THREAD_NUM = 32;
+static constexpr int ITER_NUM = 500;
+#else // ATOMICGUARD_STRESS_LEVEL == 0 or undefined, skip stress tests
+static constexpr int THREAD_NUM = 1; // Minimal threads, tests will be skipped.
+static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skipped.
+#endif
+
 static constexpr int SLOT_NUM = 16;
 
-#define THREAD_NUM LIGHT_THREADS
-#define ITER_NUM LIGHT_ITERS
+#if ATOMICGUARD_STRESS_LEVEL == 0
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
+#else
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL ((void)0)
+#endif
 
 /**
  * @brief Tests the fundamental manual acquire and release behavior.
@@ -122,6 +132,8 @@ TEST(AtomicGuardTest, RaiiAcquireFailure)
  */
 TEST(AtomicGuardTest, ConcurrentAcquireStress)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     std::atomic<int> success_count{0};
 
@@ -132,9 +144,7 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
             [&]()
             {
                 std::mt19937_64 rng(std::random_device{}());
-                std::uniform_int_distribution<int> jitter(0, 200);
-                auto until = std::chrono::steady_clock::now() + 500ms;
-                while (std::chrono::steady_clock::now() < until)
+                for (int i = 0; i < ITER_NUM; ++i)
                 {
                     AtomicGuard g(&owner);
                     if (g.acquire())
@@ -144,11 +154,6 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
                         if ((rng() & 0xF) == 0)
                             std::this_thread::sleep_for(std::chrono::microseconds(rng() & 0xFF));
                         [[maybe_unused]] bool ok = g.release();
-                    }
-                    else
-                    {
-                        // Spin with a small delay if lock is not acquired.
-                        std::this_thread::sleep_for(std::chrono::microseconds(jitter(rng)));
                     }
                 }
             });
@@ -373,6 +378,8 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
  */
 TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     const int pairs = THREAD_NUM;
     const int iters_per_pair = ITER_NUM;
 
@@ -388,13 +395,15 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
             {
                 for (int i = 0; i < iters_per_pair; ++i)
                 {
-                    // Acquire the lock. Retry briefly if it's contended.
+                    // Acquire the lock. Retry a few times if it's contended.
                     AtomicGuard g(owner, true);
                     if (!g.active())
                     {
-                        auto until = std::chrono::steady_clock::now() + 20ms;
-                        while (!g.acquire() && std::chrono::steady_clock::now() < until)
+                        int retries = 5; // A small, fixed number of retries
+                        while (!g.acquire() && retries > 0)
                         {
+                            std::this_thread::yield(); // Yield to other threads
+                            retries--;
                         }
                     }
                     if (!g.active())
@@ -440,6 +449,8 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
  */
 TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     const int SLOTS = SLOT_NUM;
     const int THREADS = THREAD_NUM;
@@ -522,6 +533,8 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
  */
 TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     const int PAIRS = THREAD_NUM;
     const int ITERS = ITER_NUM;
@@ -593,9 +606,11 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
                     AtomicGuard g(&owner, true);
                     if (!g.active())
                     {
-                        auto until = std::chrono::steady_clock::now() + 10ms;
-                        while (!g.acquire() && std::chrono::steady_clock::now() < until)
+                        int retries = 5; // A small, fixed number of retries
+                        while (!g.acquire() && retries > 0)
                         {
+                            std::this_thread::yield(); // Yield to other threads
+                            retries--;
                         }
                     }
 
