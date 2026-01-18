@@ -362,16 +362,17 @@ void JsonConfig::destroy_transaction_internal(TxId id) noexcept
 bool JsonConfig::release_transaction(TxId id, std::error_code *ec) noexcept
 {
     std::lock_guard<std::mutex> lg(d_tx_mutex);
-    auto it = d_transactions.find(id);
-    if (it == d_transactions.end())
-    {
+    auto it_idx = d_tx_index.find(id);
+    if (it_idx == d_tx_index.end()) {
         if (ec) *ec = std::make_error_code(std::errc::invalid_argument);
         return false;
     }
-    d_transactions.erase(it);
+    d_tx_list.erase(it_idx->second);
+    d_tx_index.erase(it_idx);
     if (ec) *ec = std::error_code{};
     return true;
 }
+
 
 JsonConfig::Transaction *JsonConfig::find_transaction_locked(TxId id) noexcept
 {

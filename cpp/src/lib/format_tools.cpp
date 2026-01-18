@@ -166,8 +166,6 @@ std::string ws2s([[maybe_unused]] const std::wstring &w)
 
 #endif
 
-namespace
-{
 // Helper to trim whitespace from both ends of a string_view.
 // It's defined in an anonymous namespace to limit its scope to this file.
 constexpr std::string_view trim_whitespace(std::string_view s)
@@ -184,7 +182,6 @@ constexpr std::string_view trim_whitespace(std::string_view s)
     // substr takes (pos, count). last >= first so count = last-first+1
     return s.substr(first, last - first + 1);
 }
-} // namespace
 
 std::optional<std::string> extract_value_from_string(std::string_view keyword,
                                                      std::string_view input, char separator,

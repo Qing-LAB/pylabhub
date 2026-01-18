@@ -15,15 +15,17 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
-#include <unordered_map>
+#include <map>
+#include <list>
 #include <mutex>
+#include <source_location>
 
 #include "debug_info.hpp"
 #include "nlohmann/json.hpp"
 #include "recursion_guard.hpp"
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
-#include "ModuleDef.hpp"
+#include "utils/Lifecycle.hpp"
 
 #include "pylabhub_utils_export.h"
 
@@ -37,6 +39,13 @@ namespace pylabhub::utils
 
 class JsonConfig
 {
+  private:
+    class Transaction;
+  
+  public:
+    class ReadLock;
+    class WriteLock;
+
   public:
     JsonConfig() noexcept;
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
@@ -59,10 +68,6 @@ class JsonConfig
     bool overwrite(std::error_code *ec = nullptr) noexcept;
 
     std::filesystem::path config_path() const noexcept;
-
-    // Manual RAII locks (unchanged)
-    class ReadLock;
-    class WriteLock;
 
     // Transaction flags
     enum class AccessFlags
@@ -142,7 +147,11 @@ class JsonConfig
 
     // storage for outstanding transactions
     mutable std::mutex d_tx_mutex;
-    std::unordered_map<TxId, std::unique_ptr<Transaction>> d_transactions;
+    // stable storage: list keeps iterators/pointers valid across inserts/erases (except erasing that element)
+    std::list<std::unique_ptr<Transaction>> d_tx_list;
+    // index: TxId -> iterator into d_tx_list
+    std::unordered_map<TxId, std::list<std::unique_ptr<Transaction>>::iterator> d_tx_index;
+
     TxId d_next_txid = 1;
 
     // helpers
@@ -443,4 +452,3 @@ void JsonConfig::Transaction::write(F &&fn, std::error_code *ec, std::source_loc
 
 } // namespace pylabhub::utils
 
-#endif // JsonConfig.hpp
