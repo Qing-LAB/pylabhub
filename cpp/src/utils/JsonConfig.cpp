@@ -39,12 +39,12 @@ struct JsonConfig::Impl
     nlohmann::json data = nlohmann::json::object();
     mutable std::shared_mutex dataMutex; // Mutex for thread-safe access to the 'data' member
     std::mutex initMutex;
-    std::atomic<bool> dirty{false};
+    std::atomic<bool> dirty{false};      // "in-memory diverged since last successful load/commit"
     Impl() = default;
     ~Impl() = default;
 };
 
-// ReadLock/WriteLock impls (unchanged from your earlier working code)
+// ReadLock/WriteLock impls (unchanged)
 struct JsonConfig::ReadLock::ImplInner
 {
     JsonConfig *owner = nullptr;
@@ -60,40 +60,81 @@ struct JsonConfig::WriteLock::ImplInner
 };
 
 // ----------------- JsonConfig public methods -----------------
+
 JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {
-        PLH_PANIC(
-            "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
+        PLH_PANIC("JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
 }
+
 JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMissing,
                        std::error_code *ec) noexcept
     : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {
-        PLH_PANIC(
-            "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
+        PLH_PANIC("JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
     if (!init(configFile, createIfMissing, ec))
     {
         // init populates ec; ctor remains noexcept
     }
 }
-JsonConfig::~JsonConfig() {}
 
-JsonConfig::JsonConfig(JsonConfig &&other) noexcept : pImpl(std::move(other.pImpl))
+JsonConfig::~JsonConfig()
 {
-    // Move transaction map? For simplicity disallow move with outstanding transactions.
-    // Prefer to only allow move when no outstanding transactions exist.
+    // IMPORTANT: we must not leak internal tx records.
+    // This does NOT make holding a proxy across JsonConfig lifetime safe;
+    // it only cleans bookkeeping.
+    std::lock_guard<std::mutex> lg(d_tx_mutex);
+    d_tx_index.clear();
+    d_tx_list.clear();
+}
+
+JsonConfig::JsonConfig(JsonConfig &&other) noexcept
+    : pImpl(std::move(other.pImpl))
+{
+    // Design note:
+    // If you keep move enabled, moving a JsonConfig with outstanding transactions is dangerous.
+    // Minimal safe policy: require "no outstanding tx" on move, otherwise PANIC in debug.
+    {
+        std::lock_guard<std::mutex> lg(other.d_tx_mutex);
+        if (!other.d_tx_list.empty())
+        {
+            LOGGER_ERROR("JsonConfig move-ctor with outstanding transactions. This is unsafe by contract.");
+            // You can PLH_PANIC here if you want it strict.
+        }
+        // We intentionally do NOT transfer tx records; moved-from object becomes empty.
+        other.d_tx_index.clear();
+        other.d_tx_list.clear();
+    }
 }
 
 JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
 {
+    if (this == &other) return *this;
+
+    {
+        std::lock_guard<std::mutex> lg(d_tx_mutex);
+        d_tx_index.clear();
+        d_tx_list.clear();
+    }
+
     pImpl = std::move(other.pImpl);
-    // transfer transactions? not supported.
+
+    {
+        std::lock_guard<std::mutex> lg(other.d_tx_mutex);
+        if (!other.d_tx_list.empty())
+        {
+            LOGGER_ERROR("JsonConfig move-assign with outstanding transactions. This is unsafe by contract.");
+            // Optionally PLH_PANIC.
+        }
+        other.d_tx_index.clear();
+        other.d_tx_list.clear();
+    }
+
     return *this;
 }
 
@@ -113,6 +154,13 @@ bool JsonConfig::is_initialized() const noexcept
     return !pImpl->configPath.empty();
 }
 
+// New private helper requested by header-only txn logic to avoid touching Impl in headers.
+void JsonConfig::private_set_dirty_unsafe_(bool v) noexcept
+{
+    if (!pImpl) return;
+    pImpl->dirty.store(v, std::memory_order_release);
+}
+
 bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMissing,
                       std::error_code *ec) noexcept
 {
@@ -126,9 +174,8 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
             {
                 if (ec)
                     *ec = std::make_error_code(std::errc::operation_not_permitted);
-                LOGGER_ERROR(
-                    "JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
-                    configFile.string());
+                LOGGER_ERROR("JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
+                             configFile.string());
                 return false;
             }
 
@@ -170,6 +217,8 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
         std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
+            // Decide policy: missing file => empty object (current behavior).
+            // This is reasonable for "config optional" workflows, but document it.
             pImpl->data = nlohmann::json::object();
             pImpl->dirty.store(false, std::memory_order_release);
             if (ec)
@@ -191,8 +240,7 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
     {
         if (ec)
             *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: exception during load: {}",
-                     ex.what());
+        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: exception during load: {}", ex.what());
         return false;
     }
     catch (...)
@@ -214,10 +262,10 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
             return false;
         }
 
-        // 1. Exclusive lock for in-memory data modification
+        // 1) Exclusive lock for in-memory data modification
         std::unique_lock<std::shared_mutex> data_lock(pImpl->dataMutex);
 
-        // 2. Process-level lock for disk access
+        // 2) Process-level lock for disk access
         FileLock fLock(pImpl->configPath, ResourceType::File, LockMode::Blocking);
         if (!fLock.valid())
         {
@@ -304,27 +352,34 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
     }
 }
 
-// ---------------- Transaction storage & lifecycle ----------------
+// ---------------- Transaction creation / storage ----------------
+//
+// Integrated change:
+//  - transaction() now returns TransactionProxy by value (rvalue-only consumption).
+//  - Internal storage remains list + index (no pointer ownership changes).
+//  - If you want "no rehash ever", use std::map in the header for d_tx_index.
+//    (Your current runtime safety is OK with unordered_map too, but you asked to move away.)
 
-JsonConfig::Transaction &JsonConfig::transaction(AccessFlags flags, std::error_code *ec)
+JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::error_code *ec) noexcept
 {
     Transaction *t = create_transaction_internal(flags, ec);
     if (!t)
     {
         // create_transaction_internal sets ec
-        // To avoid returning a reference to null, throw or return a static dummy? We'll throw logic error here.
-        // However user pattern expects immediate call: cfg.transaction().read(...),
-        // so returning a reference must succeed or abort. We choose to panic to surface programmer error.
-        PLH_PANIC("JsonConfig::transaction failed to create transaction object");
+        return TransactionProxy(nullptr, 0, flags);
     }
-    return *t;
+
+    // Return a proxy; user can only consume it immediately due to && read/write.
+    return TransactionProxy(this, t->d_id, flags);
 }
 
 JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags flags,
                                                                  std::error_code *ec) noexcept
 {
-    if (!pImpl) {
-        if (ec) *ec = std::make_error_code(std::errc::not_connected);
+    if (!pImpl)
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::not_connected);
         return nullptr;
     }
 
@@ -332,55 +387,59 @@ JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags fla
 
     TxId id = d_next_txid++;
 
-    // create the node on heap
     auto node = std::make_unique<Transaction>(this, id, flags);
 
-    // push into list; get iterator
     d_tx_list.push_back(std::move(node));
-    auto it = std::prev(d_tx_list.end()); // iterator to newly inserted element
+    auto it = std::prev(d_tx_list.end());
 
-    // insert index
+    // d_tx_index should be std::map<TxId, list::iterator> to avoid any rehash concerns
     d_tx_index.emplace(id, it);
 
-    if (ec) *ec = std::error_code{};
+    if (ec)
+        *ec = std::error_code{};
     return it->get();
 }
 
 void JsonConfig::destroy_transaction_internal(TxId id) noexcept
 {
     std::lock_guard<std::mutex> lg(d_tx_mutex);
+
     auto it_idx = d_tx_index.find(id);
-    if (it_idx == d_tx_index.end()) return;
+    if (it_idx == d_tx_index.end())
+        return;
 
     auto it_list = it_idx->second;
-    // erase from list and index
     d_tx_list.erase(it_list);
     d_tx_index.erase(it_idx);
 }
 
-
 bool JsonConfig::release_transaction(TxId id, std::error_code *ec) noexcept
 {
     std::lock_guard<std::mutex> lg(d_tx_mutex);
+
     auto it_idx = d_tx_index.find(id);
-    if (it_idx == d_tx_index.end()) {
-        if (ec) *ec = std::make_error_code(std::errc::invalid_argument);
+    if (it_idx == d_tx_index.end())
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::invalid_argument);
         return false;
     }
+
     d_tx_list.erase(it_idx->second);
     d_tx_index.erase(it_idx);
-    if (ec) *ec = std::error_code{};
+
+    if (ec)
+        *ec = std::error_code{};
     return true;
 }
-
 
 JsonConfig::Transaction *JsonConfig::find_transaction_locked(TxId id) noexcept
 {
     auto it_idx = d_tx_index.find(id);
-    if (it_idx == d_tx_index.end()) return nullptr;
+    if (it_idx == d_tx_index.end())
+        return nullptr;
     return it_idx->second->get();
 }
-
 
 // ----------------- ReadLock / WriteLock factory and implementations ----------------
 
@@ -406,7 +465,8 @@ std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *e
     r.d_->guard.emplace(this->pImpl.get());
     r.d_->lock = std::shared_lock(pImpl->dataMutex);
 
-    if (ec) *ec = std::error_code{};
+    if (ec)
+        *ec = std::error_code{};
     return r;
 }
 
@@ -432,7 +492,8 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code 
     w.d_->guard.emplace(this->pImpl.get());
     w.d_->lock = std::unique_lock(pImpl->dataMutex);
 
-    if (ec) *ec = std::error_code{};
+    if (ec)
+        *ec = std::error_code{};
     return w;
 }
 
@@ -472,6 +533,10 @@ nlohmann::json &JsonConfig::WriteLock::json() noexcept
         static nlohmann::json dummy = nlohmann::json::object();
         return dummy;
     }
+
+    // NOTE on dirty semantics:
+    // - We cannot reliably detect whether the caller *actually* mutated the json.
+    // - Marking dirty on non-const access is a reasonable conservative rule.
     d_->owner->pImpl->dirty.store(true, std::memory_order_release);
     return d_->owner->pImpl->data;
 }
@@ -482,19 +547,23 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
     {
         try
         {
-            nlohmann::json snapshot = d_->owner->pImpl->data;
-            d_.reset();
-            return d_->owner->private_commit_to_disk_unsafe(snapshot, ec);
+            auto *owner = d_->owner;
+            nlohmann::json snapshot = owner->pImpl->data;
+            d_.reset(); // release mutex before slow I/O
+            return owner->private_commit_to_disk_unsafe(snapshot, ec);
         }
         catch (...)
         {
-            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            if (ec)
+                *ec = std::make_error_code(std::errc::io_error);
             return false;
         }
     }
-    if (ec) *ec = std::make_error_code(std::errc::not_connected);
+    if (ec)
+        *ec = std::make_error_code(std::errc::not_connected);
     return false;
 }
+
 
 // ----------------- atomic write implementation (POSIX and Windows) ----------------
 void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,

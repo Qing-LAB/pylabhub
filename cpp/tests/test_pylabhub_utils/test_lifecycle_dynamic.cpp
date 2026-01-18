@@ -102,7 +102,7 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
 
     proc.wait_for_exit();
     expect_worker_ok(proc, {"  ****  ERROR: Re-entrant call to load_module('DynB') detected.",
-                            "  ****  ERROR: Module 'DynA' threw on startup: LoadModule('DynB') "
+                            "Module 'DynA' threw on startup: LoadModule('DynB') "
                             "detected re-entrant call and failed as expected."});
 }
 

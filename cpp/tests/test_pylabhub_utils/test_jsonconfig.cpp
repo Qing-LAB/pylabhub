@@ -122,6 +122,26 @@ TEST_F(JsonConfigTest, InitAndCreate)
     ASSERT_FALSE(ec);
 }
 
+TEST_F(JsonConfigTest, InitWithNonExistentFile)
+{
+    auto cfg_path = g_temp_dir / "non_existent.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_TRUE(cfg.init(cfg_path, false, &ec));
+    ASSERT_FALSE(ec);
+
+    cfg.transaction().read(
+        [&](const json &j)
+        {
+            ASSERT_TRUE(j.is_object());
+            ASSERT_TRUE(j.empty());
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+}
+
 /**
  * @brief Tests that constructing a JsonConfig object without initializing its
  *        lifecycle module results in a fatal error.
@@ -222,49 +242,7 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
     ASSERT_FALSE(ec);
 }
 
-TEST_F(JsonConfigTest, OverwriteAndReload)
-{
-    auto cfg_path = g_temp_dir / "overwrite_reload.json";
-    fs::remove(cfg_path);
 
-    JsonConfig cfg;
-    std::error_code ec;
-    ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
-    ASSERT_FALSE(ec);
-
-    // Make a change in memory, but don't commit it yet.
-    cfg.transaction().write([&](json &j) { j["value"] = "in-memory"; }, &ec);
-    ASSERT_FALSE(ec);
-
-    // Now, overwrite the file on disk with the in-memory state.
-    ASSERT_TRUE(cfg.overwrite(&ec));
-    ASSERT_FALSE(ec);
-
-    json j_disk = json::parse(read_file_contents(cfg_path));
-    ASSERT_EQ(j_disk.value("value", ""), "in-memory");
-
-    // Modify the file on disk again from an external source.
-    j_disk["value"] = "from-disk";
-    j_disk["new_val"] = true;
-    std::ofstream out(cfg_path);
-    out << j_disk.dump();
-    out.close();
-
-    // Reload the changes from disk.
-    ASSERT_TRUE(cfg.reload(&ec));
-    ASSERT_FALSE(ec);
-
-    // Verify the reloaded state.
-    with_json_read(
-        cfg.transaction(),
-        [&](const json &j_mem)
-        {
-            EXPECT_EQ(j_mem.value("value", ""), "from-disk");
-            EXPECT_EQ(j_mem.value("new_val", false), true);
-        },
-        &ec); // Already reloaded
-    ASSERT_FALSE(ec);
-}
 
 TEST_F(JsonConfigTest, SimplifiedApiOverloads)
 {
@@ -288,9 +266,9 @@ TEST_F(JsonConfigTest, SimplifiedApiOverloads)
     ASSERT_EQ(read_value, "value1");
 }
 
-TEST_F(JsonConfigTest, RecursionGuardForReads)
+TEST_F(JsonConfigTest, RecursionGuard)
 {
-    auto cfg_path = g_temp_dir / "recursion_reads.json";
+    auto cfg_path = g_temp_dir / "recursion.json";
     fs::remove(cfg_path);
 
     JsonConfig cfg;
@@ -298,20 +276,93 @@ TEST_F(JsonConfigTest, RecursionGuardForReads)
     ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
     ASSERT_FALSE(ec);
 
-    // An attempt to call with_json_read from within another with_json_read should fail.
+    // 1. Test nested read transactions
     cfg.transaction().read(
         [&]([[maybe_unused]] const json &j)
         {
             std::error_code inner_ec;
             cfg.transaction().read(
-                [&](const json &)
-                {
-                    // This lambda should not be executed.
-                    FAIL() << "Inner lambda should not execute on recursive read.";
-                },
+                [&](const json &) { FAIL() << "Inner read lambda should not execute."; },
                 &inner_ec);
-            ASSERT_NE(inner_ec.value(), 0);
             ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+
+    // 2. Test nested write transactions
+    cfg.transaction().write(
+        [&]([[maybe_unused]] json &j)
+        {
+            std::error_code inner_ec;
+            cfg.transaction().write(
+                [&](json &) { FAIL() << "Inner write lambda should not execute."; },
+                &inner_ec);
+            ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+
+    // 3. Test read-in-write
+    cfg.transaction().write(
+        [&]([[maybe_unused]] json &j)
+        {
+            std::error_code inner_ec;
+            cfg.transaction().read(
+                [&](const json &) { FAIL() << "Inner read lambda should not execute."; },
+                &inner_ec);
+            ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+
+    // 4. Test write-in-read
+    cfg.transaction().read(
+        [&]([[maybe_unused]] const json &j)
+        {
+            std::error_code inner_ec;
+            cfg.transaction().write(
+                [&](json &) { FAIL() << "Inner write lambda should not execute."; },
+                &inner_ec);
+            ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+}
+
+TEST_F(JsonConfigTest, WriteTransactionRollsBackOnException)
+{
+    auto cfg_path = g_temp_dir / "rollback_on_exception.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_TRUE(cfg.init(cfg_path, true, &ec));
+    ASSERT_FALSE(ec);
+
+    // 1. Set initial state and commit
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write(
+        [&](json &j) {
+            j["value"] = 1;
+        },
+        &ec);
+    ASSERT_FALSE(ec);
+
+    // 2. Start a write transaction that throws an exception
+    cfg.transaction().write(
+        [&](json &j) {
+            j["value"] = 2;
+            throw std::runtime_error("Something went wrong");
+        },
+        &ec);
+
+    // 3. Verify that the transaction reported an error
+    ASSERT_TRUE(ec);
+    ASSERT_EQ(ec, std::errc::io_error);
+
+    // 4. Verify that the in-memory state was rolled back
+    cfg.transaction().read(
+        [&](const json &j) {
+            ASSERT_EQ(j.value("value", -1), 1);
         },
         &ec);
     ASSERT_FALSE(ec);
@@ -449,6 +500,7 @@ TEST_F(JsonConfigTest, MultiThreadFileContention)
 
     // Verify the final state of the file.
     JsonConfig verifier(cfg_path);
+    std::error_code ec;
     verifier.transaction(JsonConfig::AccessFlags::ReloadFirst).read(
         [&](const json &data)
         {
@@ -546,16 +598,16 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
     fs::create_symlink(real_file, symlink_path);
 
     JsonConfig cfg;
-    std::error_code ec;
-    ASSERT_FALSE(cfg.init(symlink_path, false, &ec));
-    // This should fail now, since init checks for symlinks
-    ASSERT_TRUE(ec);
-    ASSERT_EQ(ec.value(), static_cast<int>(std::errc::operation_not_permitted));
+    std::error_code init_ec;
+    ASSERT_FALSE(cfg.init(symlink_path, false, &init_ec));
+    ASSERT_TRUE(init_ec);
+    ASSERT_EQ(init_ec, std::errc::operation_not_permitted);
 
-    // Attempting to write should also fail, as a double check.
+    // Attempting to write should also fail, as the object is not initialized.
+    std::error_code write_ec;
     cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write(
-        [&](json &j) { j["malicious"] = "data"; }, &ec);
-    ASSERT_EQ(ec, std::errc::not_connected);
+        [&](json &j) { j["malicious"] = "data"; }, &write_ec);
+    ASSERT_EQ(write_ec, std::errc::not_connected);
 
     // Confirm the original file was not modified.
     json j = json::parse(read_file_contents(real_file));

@@ -48,7 +48,7 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                 std::error_code ec;
                 // Attempt a non-blocking write. The lambda is only executed if the
                 // file lock is acquired successfully.
-                cfg.transaction().write(
+                cfg.transaction(JsonConfig::AccessFlags::FullSync).write(
                     [&](json &data)
                     {
                         int attempts = data.value("total_attempts", 0);
