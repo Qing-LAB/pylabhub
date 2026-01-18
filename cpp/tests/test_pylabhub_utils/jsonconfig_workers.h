@@ -37,5 +37,16 @@ int write_id(const std::string &cfgpath, const std::string &worker_id);
  */
 int uninitialized_behavior();
 
+/**
+ * @brief Worker to test the unconsumed transaction proxy warning.
+ *
+ * This worker constructs a JsonConfig object, creates a transaction proxy,
+ * and immediately destroys it without calling .read() or .write(). This is
+ * expected to trigger a warning in debug builds.
+ *
+ * @return Returns 0, but is expected to write a warning to stderr in debug builds.
+ */
+int not_consuming_proxy();
+
 } // namespace jsonconfig
 } // namespace pylabhub::tests::worker

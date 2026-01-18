@@ -4,19 +4,39 @@
  * @file JsonConfig.hpp
  * @brief Thread-safe and process-safe JSON configuration manager.
  *
+ * Provides a robust class for managing JSON configuration files with guarantees
+ * for thread-safety (for in-memory access) and process-safety (for file I/O).
+ *
+ * Key features include:
+ * - **Atomic File Writes**: Uses a temporary file and atomic rename/replace to
+ *   prevent file corruption, even if the application crashes during a write.
+ * - **Process-Level Locking**: Employs `pylabhub::utils::FileLock` to ensure
+ *   that only one process can write to the configuration file at a time.
+ * - **Thread-Safe In-Memory Cache**: Uses a `std::shared_mutex` to allow
+ *   concurrent reads and exclusive writes to the in-memory JSON object.
+ * - **Transactional API**: A modern, fluent API using an rvalue-proxy pattern
+ *   (`TransactionProxy`) ensures that read/write operations are clear, concise,
+ *   and safe from common lifecycle errors.
+ * - **Recursion Protection**: Prevents deadlocks by disallowing nested
+ *   transactions within the same `JsonConfig` object.
+ *
  * This variant implements JsonConfig-owned Transaction objects, but exposes
  * a rvalue-only TransactionProxy to enforce immediate-use at compile time:
  *
+ * @code
  *   cfg.transaction(flags).read(...);
  *   cfg.transaction(flags).write(...);
+ * @endcode
  *
- * The proxy's read/write are &&-qualified, so:
- *   auto t = cfg.transaction(); t.read(...);   // will NOT compile
+ * The proxy's read/write are &&-qualified, so the following will not compile:
+ * @code
+ *   auto t = cfg.transaction(); // ERROR: proxy is an rvalue
+ *   t.read(...);
+ * @endcode
  *
- * ABI note:
- *  - pImpl is an incomplete type here.
- *  - This header must NOT access Impl fields directly.
- *  - All operations that require Impl internals must call JsonConfig methods.
+ * @note This header uses the PImpl idiom, so implementation details are not
+ * exposed. All methods that require access to internal state are defined in
+ * the corresponding `.cpp` file.
  */
 
 #include <chrono>
@@ -51,6 +71,14 @@ namespace pylabhub::utils
 #pragma warning(disable : 4251)
 #endif
 
+/**
+ * @class JsonConfig
+ * @brief Manages thread-safe and process-safe access to a JSON configuration file.
+ *
+ * This class provides a high-level interface for reading and writing structured
+ * data to a JSON file on disk. It handles the complexities of concurrent access
+ * from multiple threads or processes, ensuring data integrity.
+ */
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
   private:
@@ -60,13 +88,40 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     class ReadLock;
     class WriteLock;
 
-    // Transaction flags
+    /**
+     * @enum AccessFlags
+     * @brief Flags to control the behavior of a transaction.
+     *
+     * These flags can be combined using the `|` operator to specify how a
+     * transaction should interact with the in-memory cache and the on-disk file.
+     */
     enum class AccessFlags
     {
+        /**
+         * @brief Default behavior. Operates on the current in-memory cache without
+         * synchronizing with the disk.
+         */
         Default = 0,
+        /**
+         * @brief Alias for `Default`. The transaction is not synchronized with the disk.
+         */
         UnSynced = Default,
+        /**
+         * @brief Reload the configuration from disk *before* executing the transaction.
+         * This ensures the operation uses the most up-to-date file content.
+         * A process-level file lock is held during this operation.
+         */
         ReloadFirst = 1 << 0,
+        /**
+         * @brief Commit the changes to disk *after* the write transaction successfully completes.
+         * This operation is atomic. A process-level file lock is held.
+         * This flag is ignored by read transactions.
+         */
         CommitAfter = 1 << 1,
+        /**
+         * @brief Combination of `ReloadFirst` and `CommitAfter`.
+         * Guarantees a full, atomic read-modify-write cycle.
+         */
         FullSync = ReloadFirst | CommitAfter,
     };
 
@@ -75,14 +130,40 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
     }
 
+    /**
+     * @enum CommitDecision
+     * @brief Return type for a write lambda to control whether a commit occurs.
+     *
+     * If a write transaction is initiated with the `CommitAfter` flag, the
+     * lambda can return this enum to either proceed with or veto the commit.
+     */
     enum class CommitDecision
     {
-        Commit,    // proceed with disk commit if CommitAfter flag is set
-        SkipCommit // veto disk commit if CommitAfter flag is set
+        /**
+         * @brief Proceed with the disk commit if the `CommitAfter` flag is set.
+         */
+        Commit,
+        /**
+         * @brief Veto the disk commit, even if the `CommitAfter` flag is set.
+         * The changes will remain in-memory and the object will be marked as dirty.
+         */
+        SkipCommit
     };
 
 
-    // ----------------- Rvalue-only transaction proxy -----------------
+    /**
+     * @class TransactionProxy
+     * @brief A short-lived, rvalue-only proxy to execute a read or write transaction.
+     *
+     * This class is the heart of the fluent transaction API. It is returned by
+     * `JsonConfig::transaction()` and is designed to be used immediately. Its
+     * methods (`read`/`write`) are `&&-qualified`, meaning they can only be called
+     * on a temporary (rvalue) object. This prevents the proxy from being stored
+     * in a variable, which could lead to resource leaks or confusing lifetime issues.
+     *
+     * @warning In debug builds, if a `TransactionProxy` is created and destroyed
+     * without `read()` or `write()` being called, a warning is logged to stderr.
+     */
     class TransactionProxy
     {
       public:
@@ -90,6 +171,10 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         TransactionProxy(const TransactionProxy &) = delete;
         TransactionProxy &operator=(const TransactionProxy &) = delete;
 
+        /**
+         * @brief Move constructor.
+         * @param other The proxy to move from. The moved-from proxy becomes invalid.
+         */
         TransactionProxy(TransactionProxy &&other) noexcept
             : owner_(other.owner_), id_(other.id_), flags_(other.flags_), consumed_(other.consumed_)
         {
@@ -100,6 +185,9 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
 
         TransactionProxy &operator=(TransactionProxy &&) = delete;
 
+        /**
+         * @brief Destructor. In debug builds, warns if the proxy was not consumed.
+         */
         ~TransactionProxy()
         {
 #ifndef NDEBUG
@@ -111,6 +199,17 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
 #endif
         }
 
+        /**
+         * @brief Executes a read-only transaction.
+         *
+         * Acquires a shared (read) lock, executes the provided lambda, and releases
+         * the lock. The lambda receives a `const nlohmann::json&`.
+         *
+         * @tparam F A callable type with the signature `void(const nlohmann::json& j)`.
+         * @param fn The lambda or function to execute.
+         * @param ec Optional. A `std::error_code` to receive any errors.
+         * @param loc Source location for improved debugging. Do not specify manually.
+         */
         template <typename F>
         void read(F &&fn, std::error_code *ec = nullptr,
                   std::source_location loc = std::source_location::current()) && noexcept
@@ -125,6 +224,19 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             owner_->consume_read_(id_, flags_, std::forward<F>(fn), ec, loc);
         }
 
+        /**
+         * @brief Executes a read-write transaction.
+         *
+         * Acquires an exclusive (write) lock, executes the provided lambda, and
+         * releases the lock. The lambda receives a `nlohmann::json&` which can be modified.
+         * If the lambda throws an exception, all changes are rolled back.
+         *
+         * @tparam F A callable type with the signature `void(nlohmann::json& j)` or
+         *           `CommitDecision(nlohmann::json& j)`.
+         * @param fn The lambda or function to execute.
+         * @param ec Optional. A `std::error_code` to receive any errors.
+         * @param loc Source location for improved debugging. Do not specify manually.
+         */
         template <typename F>
         void write(F &&fn, std::error_code *ec = nullptr,
                    std::source_location loc = std::source_location::current()) && noexcept
@@ -153,41 +265,182 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     };
 
   public:
+    /**
+     * @brief Default constructor. Creates an uninitialized `JsonConfig` object.
+     * @note `init()` must be called before the object can be used.
+     * @warning Throws a fatal error if the `JsonConfig` lifecycle module has not
+     *          been initialized.
+     */
     JsonConfig() noexcept;
+
+    /**
+     * @brief Constructs and initializes a `JsonConfig` object.
+     * @param configFile The path to the JSON configuration file.
+     * @param createIfMissing If `true`, the file will be created with an empty
+     *        JSON object (`{}`) if it does not exist.
+     * @param ec Optional. A `std::error_code` to receive any errors during
+     *        initialization or the initial file load.
+     * @warning Throws a fatal error if the `JsonConfig` lifecycle module has not
+     *          been initialized.
+     */
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
                         std::error_code *ec = nullptr) noexcept;
+
+    /**
+     * @brief Destructor.
+     */
     ~JsonConfig();
 
     JsonConfig(const JsonConfig &) = delete;
     JsonConfig &operator=(const JsonConfig &) = delete;
+
+    /**
+     * @brief Move constructor.
+     * Transfers ownership of the configuration file and its in-memory state.
+     * The moved-from object becomes uninitialized.
+     * @param other The `JsonConfig` object to move from.
+     */
     JsonConfig(JsonConfig &&) noexcept;
+
+    /**
+     * @brief Move assignment operator.
+     * Transfers ownership of the configuration file and its in-memory state.
+     * The moved-from object becomes uninitialized.
+     * @param other The `JsonConfig` object to move from.
+     * @return A reference to this object.
+     */
     JsonConfig &operator=(JsonConfig &&) noexcept;
 
+    /**
+     * @brief Gets the lifecycle module definition for `JsonConfig`.
+     * @return A `ModuleDef` object that can be registered with the `LifecycleManager`.
+     */
     static ModuleDef GetLifecycleModule();
+
+    /**
+     * @brief Checks if the `JsonConfig` lifecycle module has been initialized globally.
+     * @return `true` if the module is active, `false` otherwise.
+     */
     static bool lifecycle_initialized() noexcept;
 
+    /**
+     * @brief Checks if the `JsonConfig` object is associated with a file path.
+     * @return `true` if `init()` has been successfully called, `false` otherwise.
+     */
     bool is_initialized() const noexcept;
+
+    /**
+     * @brief Alias for `is_initialized()`.
+     * @return `true` if `init()` has been successfully called, `false` otherwise.
+     */
     bool has_path() const noexcept;
+
+    /**
+     * @brief Checks if the in-memory data has changed since the last load or save.
+     * @return `true` if there are uncommitted changes in memory, `false` otherwise.
+     */
     bool is_dirty() const noexcept;
+
+    /**
+     * @brief Initializes the `JsonConfig` object with a file path.
+     *
+     * This function must be called on a default-constructed object before it can be used.
+     * It is safe to call multiple times, but it is not thread-safe.
+     *
+     * @param configFile The path to the JSON configuration file.
+     * @param createIfMissing If `true`, the file will be created with an empty
+     *        JSON object (`{}`) if it does not exist.
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return `true` on success, `false` on failure.
+     */
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;
 
+    /**
+     * @brief Discards in-memory changes and reloads the configuration from disk.
+     *
+     * This operation is thread-safe and process-safe. It acquires an exclusive
+     * lock on the in-memory data and a process lock on the file.
+     *
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return `true` on success, `false` on failure.
+     */
     bool reload(std::error_code *ec = nullptr) noexcept;
+
+    /**
+     * @brief Forcibly writes the current in-memory state to the disk.
+     *
+     * This is useful if you want to save the current state regardless of whether
+     * it is considered "dirty". The operation is atomic and process-safe.
+     * After a successful overwrite, the object is no longer considered dirty.
+     *
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return `true` on success, `false` on failure.
+     */
     bool overwrite(std::error_code *ec = nullptr) noexcept;
 
+    /**
+     * @brief Gets the path to the configuration file.
+     * @return The `std::filesystem::path` if initialized, or an empty path otherwise.
+     */
     std::filesystem::path config_path() const noexcept;
 
+    /// @brief Type alias for a transaction ID.
     using TxId = uint64_t;
 
-    // NEW: return a proxy by value (enforces immediate-use via &&-qualified methods)
+    /**
+     * @brief Begins a transaction, returning a temporary proxy object.
+     *
+     * This is the main entry point for all read and write operations.
+     *
+     * @code
+     *   // Simple read
+     *   cfg.transaction().read([](const json& j){ ... });
+     *
+     *   // Atomic read-modify-write
+     *   cfg.transaction(JsonConfig::AccessFlags::FullSync).write([](json& j){ ... });
+     * @endcode
+     *
+     * @param flags Optional flags to control the transaction's behavior (e.g., reloading, committing).
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return A `TransactionProxy` object. This is an rvalue and must be consumed immediately.
+     */
     [[nodiscard]] TransactionProxy transaction(AccessFlags flags = AccessFlags::Default,
                                                std::error_code *ec = nullptr) noexcept;
 
-    // Optional manual release (still supported, but usually unnecessary now)
+    /**
+     * @brief Manually releases a transaction record.
+     * @deprecated This is a remnant of a previous design and is generally not
+     * needed with the new `TransactionProxy` API. It is maintained for
+     * binary compatibility but has no practical use.
+     * @param id The ID of the transaction to release.
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return `true` on success, `false` if the ID is not found.
+     */
     bool release_transaction(TxId id, std::error_code *ec = nullptr) noexcept;
 
-    // Manual locking API (unchanged)
+    /**
+     * @brief Acquires a manual shared (read) lock.
+     *
+     * This is an alternative to the transaction API for cases where the lock
+     * needs to be held across a wider scope. The returned `ReadLock` object
+     * holds the lock for its lifetime.
+     *
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return An `std::optional<ReadLock>` containing the lock if successful.
+     */
     std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
+
+    /**
+     * @brief Acquires a manual exclusive (write) lock.
+     *
+     * This is an alternative to the transaction API. The returned `WriteLock`
+     * object holds the lock for its lifetime. Any access through the lock's
+     * `json()` method will mark the `JsonConfig` object as dirty.
+     *
+     * @param ec Optional. A `std::error_code` to receive any errors.
+     * @return An `std::optional<WriteLock>` containing the lock if successful.
+     */
     std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
 
   private:
@@ -566,7 +819,13 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     }
 
   public:
-    // Forward declare ReadLock/WriteLock to keep public API similar
+    /**
+     * @class ReadLock
+     * @brief A RAII object that holds a shared (read) lock on the in-memory data.
+     *
+     * Obtained via `JsonConfig::lock_for_read()`. The lock is released when
+     * the `ReadLock` object is destroyed.
+     */
     class PYLABHUB_UTILS_EXPORT ReadLock
     {
       public:
@@ -574,6 +833,11 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         ReadLock(ReadLock &&) noexcept;
         ReadLock &operator=(ReadLock &&) noexcept;
         ~ReadLock();
+
+        /**
+         * @brief Provides const access to the underlying JSON data.
+         * @return A const reference to the `nlohmann::json` object.
+         */
         const nlohmann::json &json() const noexcept;
         ReadLock(const ReadLock &) = delete;
         ReadLock &operator=(const ReadLock &) = delete;
@@ -584,6 +848,13 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         friend class JsonConfig;
     };
 
+    /**
+     * @class WriteLock
+     * @brief A RAII object that holds an exclusive (write) lock on the in-memory data.
+     *
+     * Obtained via `JsonConfig::lock_for_write()`. The lock is released when
+     * the `WriteLock` object is destroyed.
+     */
     class PYLABHUB_UTILS_EXPORT WriteLock
     {
       public:
@@ -591,7 +862,24 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         WriteLock(WriteLock &&) noexcept;
         WriteLock &operator=(WriteLock &&) noexcept;
         ~WriteLock();
+
+        /**
+         * @brief Provides mutable access to the underlying JSON data.
+         * @note Accessing the JSON object via this method will mark the parent
+         *       `JsonConfig` object as dirty.
+         * @return A reference to the `nlohmann::json` object.
+         */
         nlohmann::json &json() noexcept;
+
+        /**
+         * @brief Manually commits the current in-memory state to disk.
+         *
+         * This performs an atomic, process-safe write. The write lock is
+         * released *before* the slow I/O operation begins to improve concurrency.
+         *
+         * @param ec Optional. A `std::error_code` to receive any errors.
+         * @return `true` on success, `false` on failure.
+         */
         bool commit(std::error_code *ec = nullptr) noexcept;
         WriteLock(const WriteLock &) = delete;
         WriteLock &operator=(const WriteLock &) = delete;

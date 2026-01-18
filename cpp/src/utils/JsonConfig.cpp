@@ -1,3 +1,7 @@
+/**
+ * @file JsonConfig.cpp
+ * @brief Implements the thread-safe and process-safe JSON configuration manager.
+ */
 #include "platform.hpp"
 
 #include <atomic>
@@ -33,13 +37,29 @@ namespace fs = std::filesystem;
 // Module-level flag to indicate if the JsonConfig has been initialized.
 static std::atomic<bool> g_jsonconfig_initialized{false};
 
+/**
+ * @struct JsonConfig::Impl
+ * @brief The private implementation (PImpl) of the JsonConfig class.
+ *
+ * This struct holds all the internal state for a `JsonConfig` object,
+ * including the file path, the in-memory JSON data, and synchronization
+ * primitives. This keeps the public header file clean and ABI-stable.
+ */
 struct JsonConfig::Impl
 {
+    /// @brief The full path to the configuration file.
     std::filesystem::path configPath;
+    /// @brief The in-memory cache of the JSON data.
     nlohmann::json data = nlohmann::json::object();
-    mutable std::shared_mutex dataMutex; // Mutex for thread-safe access to the 'data' member
+    /// @brief A mutex for thread-safe access to the in-memory `data`.
+    mutable std::shared_mutex dataMutex;
+    /// @brief A mutex to protect the initialization process (`configPath`).
     std::mutex initMutex;
-    std::atomic<bool> dirty{false};      // "in-memory diverged since last successful load/commit"
+    /**
+     * @brief A flag indicating if the in-memory `data` has been modified
+     * since the last successful load from or commit to disk.
+     */
+    std::atomic<bool> dirty{false};
     Impl() = default;
     ~Impl() = default;
 };
@@ -181,6 +201,8 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
             std::lock_guard<std::mutex> g(pImpl->initMutex);
 
             // Security: refuse to operate on a path that is a symbolic link.
+            // This prevents attacks where the config file is replaced with a symlink
+            // to overwrite a sensitive system file.
             if (fs::is_symlink(configFile))
             {
                 if (ec)
@@ -197,6 +219,8 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
                 std::error_code lfs;
                 if (!fs::exists(configFile, lfs))
                 {
+                    // If the file doesn't exist, create it with an empty JSON object.
+                    // This is done atomically.
                     nlohmann::json empty = nlohmann::json::object();
                     atomic_write_json(configFile, empty, ec);
                     if (ec && *ec)
@@ -204,6 +228,7 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
                 }
             }
         }
+        // After setting the path, reload the contents from disk.
         return reload(ec);
     }
     catch (const std::exception &ex)
@@ -221,6 +246,11 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
     }
 }
 
+/**
+ * @brief Internal helper to load data from disk.
+ * @note This function is not thread-safe or process-safe by itself. The caller
+ *       *must* hold the appropriate locks (`dataMutex` and `FileLock`) before calling.
+ */
 bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
 {
     try
@@ -228,8 +258,8 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
         std::ifstream in(pImpl->configPath);
         if (!in.is_open())
         {
-            // Decide policy: missing file => empty object (current behavior).
-            // This is reasonable for "config optional" workflows, but document it.
+            // If the file doesn't exist or can't be opened, treat it as an empty
+            // JSON object. This is a design choice to allow for optional config files.
             pImpl->data = nlohmann::json::object();
             pImpl->dirty.store(false, std::memory_order_release);
             if (ec)
@@ -251,7 +281,7 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
     {
         if (ec)
             *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: exception during load: {}", ex.what());
+        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: JSON parse error or I/O failure: {}", ex.what());
         return false;
     }
     catch (...)
@@ -273,10 +303,10 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
             return false;
         }
 
-        // 1) Exclusive lock for in-memory data modification
+        // 1) Acquire an exclusive lock on the in-memory data, as we are about to replace it.
         std::unique_lock<std::shared_mutex> data_lock(pImpl->dataMutex);
 
-        // 2) Process-level lock for disk access
+        // 2) Acquire a process-level lock for safe disk access.
         FileLock fLock(pImpl->configPath, ResourceType::File, LockMode::Blocking);
         if (!fLock.valid())
         {
@@ -285,6 +315,7 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
             return false;
         }
 
+        // 3) With both locks held, it's safe to load from disk.
         return private_load_from_disk_unsafe(ec);
     }
     catch (...)
@@ -295,11 +326,19 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
     }
 }
 
+/**
+ * @brief Internal helper to commit a snapshot of JSON data to disk.
+ * @note This function is not thread-safe by itself. The caller *must* ensure
+ *       that no other threads are modifying the in-memory data while the snapshot
+ *       is being taken.
+ */
 bool JsonConfig::private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
                                                std::error_code *ec) noexcept
 {
     try
     {
+        // The file lock ensures that no other process can write to the file
+        // at the same time.
         FileLock fl(pImpl->configPath, ResourceType::File, LockMode::Blocking);
         if (!fl.valid())
         {
@@ -312,6 +351,7 @@ bool JsonConfig::private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
         if (ec && *ec)
             return false;
 
+        // Only mark as clean after a successful write.
         pImpl->dirty.store(false, std::memory_order_release);
         return true;
     }
@@ -336,6 +376,8 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
     {
         nlohmann::json snapshot;
         {
+            // Acquire a read lock to safely create a snapshot of the current
+            // in-memory state.
             if (auto r = lock_for_read(ec))
             {
                 snapshot = r->json();
@@ -346,6 +388,7 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
             }
         }
 
+        // Commit the snapshot to disk.
         return private_commit_to_disk_unsafe(snapshot, ec);
     }
     catch (const std::exception &ex)
@@ -364,12 +407,6 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
 }
 
 // ---------------- Transaction creation / storage ----------------
-//
-// Integrated change:
-//  - transaction() now returns TransactionProxy by value (rvalue-only consumption).
-//  - Internal storage remains list + index (no pointer ownership changes).
-//  - If you want "no rehash ever", use std::map in the header for d_tx_index.
-//    (Your current runtime safety is OK with unordered_map too, but you asked to move away.)
 
 JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::error_code *ec) noexcept
 {
@@ -380,7 +417,7 @@ JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::err
         return TransactionProxy(nullptr, 0, flags);
     }
 
-    // Return a proxy; user can only consume it immediately due to && read/write.
+    // Return a proxy; user can only consume it immediately due to &&-qualified read/write methods.
     return TransactionProxy(this, t->d_id, flags);
 }
 
@@ -403,7 +440,6 @@ JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags fla
     d_tx_list.push_back(std::move(node));
     auto it = std::prev(d_tx_list.end());
 
-    // d_tx_index should be std::map<TxId, list::iterator> to avoid any rehash concerns
     d_tx_index.emplace(id, it);
 
     if (ec)
@@ -545,9 +581,8 @@ nlohmann::json &JsonConfig::WriteLock::json() noexcept
         return dummy;
     }
 
-    // NOTE on dirty semantics:
-    // - We cannot reliably detect whether the caller *actually* mutated the json.
-    // - Marking dirty on non-const access is a reasonable conservative rule.
+    // A non-const access to the JSON data implies a potential modification.
+    // We conservatively mark the object as dirty.
     d_->owner->pImpl->dirty.store(true, std::memory_order_release);
     return d_->owner->pImpl->data;
 }
@@ -559,8 +594,12 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
         try
         {
             auto *owner = d_->owner;
+            // Snapshot the data while the lock is still held.
             nlohmann::json snapshot = owner->pImpl->data;
-            d_.reset(); // release mutex before slow I/O
+            // Release the in-memory lock *before* performing slow disk I/O to
+            // allow other threads to proceed. The process-level lock inside
+            // private_commit_to_disk_unsafe will still protect the file.
+            d_.reset();
             return owner->private_commit_to_disk_unsafe(snapshot, ec);
         }
         catch (...)
@@ -576,14 +615,30 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
 }
 
 
-// ----------------- atomic write implementation (POSIX and Windows) ----------------
+/**
+ * @brief Atomically writes a JSON object to a file.
+ *
+ * This function ensures that the file is never left in a corrupted state, even
+ * if the process is terminated during the write. It does this by first writing
+* to a temporary file and then atomically replacing or renaming it to the target path.
+ *
+ * @param target The final destination path for the file.
+ * @param j The `nlohmann::json` object to write.
+ * @param ec A `std::error_code` to receive any errors.
+ */
 void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
                                    std::error_code *ec) noexcept
 {
     if (ec)
         *ec = std::error_code{};
 #if defined(PLATFORM_WIN64)
-    // Windows implementation
+    // Windows implementation:
+    // 1. Create a unique temporary file in the same directory as the target.
+    // 2. Write the JSON data to the temporary file.
+    // 3. Flush buffers to ensure data is on disk.
+    // 4. Use `ReplaceFileW` to atomically replace the target file with the new one.
+    //    This is the key atomic operation. It includes retries for sharing violations.
+    // 5. If `ReplaceFileW` fails because the target doesn't exist, fall back to `MoveFileExW`.
     try
     {
         std::filesystem::path parent = target.parent_path();
@@ -660,7 +715,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
             if (replaced)
                 break;
             last_error = GetLastError();
-            // If sharing violation, wait and retry
+            // If another process (e.g., antivirus) has the file open, wait and retry.
             if (last_error != ERROR_SHARING_VIOLATION)
                 break;
             Sleep(REPLACE_DELAY_MS);
@@ -670,7 +725,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
         {
             if (last_error == ERROR_FILE_NOT_FOUND)
             {
-                // If the target file does not exist, try MoveFileEx as a fallback
+                // If the target file does not exist, ReplaceFileW fails.
+                // Fall back to MoveFileExW, which works for this case.
                 if (!MoveFileExW(tmp_full_w.c_str(), target_w.c_str(),
                                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
                 {
@@ -715,7 +771,13 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
         return;
     }
 #else
-    // POSIX implementation
+    // POSIX implementation:
+    // 1. Refuse to write to a symbolic link to prevent attacks.
+    // 2. Use `mkstemp` to create a unique temporary file with secure permissions.
+    // 3. Write data to the temporary file descriptor.
+    // 4. `fsync` the file to ensure data is written to the physical device.
+    // 5. `rename` the temporary file to the target path. This is an atomic operation on POSIX filesystems.
+    // 6. `fsync` the parent directory to ensure the directory entry update is on disk.
     try
     {
         std::filesystem::path parent = target.parent_path();

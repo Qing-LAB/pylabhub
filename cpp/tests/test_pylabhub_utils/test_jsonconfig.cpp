@@ -1,11 +1,12 @@
 // tests/test_pylabhub_utils/test_jsonconfig.cpp
 /**
  * @file test_jsonconfig.cpp
- * @brief Unit tests for the JsonConfig class.
+ * @brief Unit and integration tests for the `pylabhub::utils::JsonConfig` class.
  *
- * This file contains tests for the `pylabhub::utils::JsonConfig` class, covering
- * initialization, read/write access, thread and process safety, and security
- * features like symlink protection.
+ * This file contains a comprehensive suite of tests for the JsonConfig class,
+ * covering its public API, thread and process safety, error handling, and
+ * security features. The tests are organized into a `JsonConfigTest` fixture
+ * that manages a temporary directory for test artifacts.
  */
 #include "platform.hpp"
 
@@ -53,11 +54,13 @@ static std::string read_file_contents(const fs::path &p)
 
 /**
  * @class JsonConfigTest
- * @brief Test fixture for JsonConfig tests.
+ * @brief Test fixture for `JsonConfig` tests.
  *
- * Sets up a temporary directory for test artifacts. The application lifecycle,
- * including the `JsonConfig` module, is managed by a global `LifecycleGuard`
- * in the main test entry point.
+ * This fixture sets up a temporary directory (`g_temp_dir`) before the test
+ * suite runs and cleans it up afterward. It provides a clean environment for
+ * tests that interact with the filesystem. The application lifecycle, including
+ * the `JsonConfig` module, is managed by a global `LifecycleGuard` in the main
+ * test entry point, ensuring that all necessary modules are initialized.
  */
 class JsonConfigTest : public ::testing::Test
 {
@@ -83,10 +86,11 @@ class JsonConfigTest : public ::testing::Test
 } // anonymous namespace
 
 /**
- * @brief Tests initialization and file creation.
- * Verifies that a `JsonConfig` object can be initialized, and that it creates
- * the configuration file on disk if requested. Also tests re-initialization
- * via the constructor.
+ * @brief Tests basic initialization and file creation.
+ *
+ * Verifies that a `JsonConfig` object can be initialized via `init()` and that
+ * it correctly creates the configuration file on disk if `createIfMissing` is true.
+ * It also tests re-initialization by passing a path to the constructor.
  */
 TEST_F(JsonConfigTest, InitAndCreate)
 {
@@ -122,6 +126,11 @@ TEST_F(JsonConfigTest, InitAndCreate)
     ASSERT_FALSE(ec);
 }
 
+/**
+ * @brief Tests initialization with a non-existent file when `createIfMissing` is false.
+ * Verifies that `init()` succeeds and the in-memory representation is an empty
+ * object, even if the file does not exist on disk.
+ */
 TEST_F(JsonConfigTest, InitWithNonExistentFile)
 {
     auto cfg_path = g_temp_dir / "non_existent.json";
@@ -143,7 +152,7 @@ TEST_F(JsonConfigTest, InitWithNonExistentFile)
 }
 
 /**
- * @brief Tests that constructing a JsonConfig object without initializing its
+ * @brief Tests that constructing a `JsonConfig` object without initializing its
  *        lifecycle module results in a fatal error.
  *
  * This test runs the "uninitialized_behavior" worker in a separate process.
@@ -175,7 +184,8 @@ TEST_F(JsonConfigTest, UninitializedBehavior)
 }
 
 /**
- * @brief Tests basic read and write operations using the callback-based API.
+ * @brief Tests basic in-memory read and write operations using the transaction API.
+ * Verifies that data written in one transaction can be read back in a subsequent one.
  */
 TEST_F(JsonConfigTest, BasicAccessors)
 {
@@ -208,6 +218,8 @@ TEST_F(JsonConfigTest, BasicAccessors)
 
 /**
  * @brief Tests that `reload()` correctly picks up external file modifications.
+ * Verifies that changes made directly to the file on disk are loaded into
+ * memory after an explicit call to `reload()`.
  */
 TEST_F(JsonConfigTest, ReloadOnDiskChange)
 {
@@ -243,7 +255,10 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
 }
 
 
-
+/**
+ * @brief Tests the simplified transaction API flags `ReloadFirst` and `CommitAfter`.
+ * Verifies that `CommitAfter` writes to disk and `ReloadFirst` reads the changes back.
+ */
 TEST_F(JsonConfigTest, SimplifiedApiOverloads)
 {
     auto cfg_path = g_temp_dir / "simplified_api.json";
@@ -252,20 +267,26 @@ TEST_F(JsonConfigTest, SimplifiedApiOverloads)
     JsonConfig cfg;
     ASSERT_TRUE(cfg.init(cfg_path, true));
 
-    // Write and commit to disk (default behavior)
+    // Write and commit to disk
     std::error_code ec;
     cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write(
         [&](json &j) { j["key"] = "value1"; }, &ec);
     ASSERT_FALSE(ec);
 
     std::string read_value;
-    // Reload from disk and read (default behavior)
+    // Reload from disk and read
     cfg.transaction(JsonConfig::AccessFlags::ReloadFirst).read(
         [&](const json &j) { read_value = j.value("key", ""); }, &ec);
     ASSERT_FALSE(ec);
     ASSERT_EQ(read_value, "value1");
 }
 
+/**
+ * @brief Tests the recursion guard mechanism.
+ * Verifies that attempting to start a new transaction from within an existing
+ * transaction (read-in-read, write-in-write, read-in-write, etc.) fails with
+ * `resource_deadlock_would_occur`, preventing deadlocks.
+ */
 TEST_F(JsonConfigTest, RecursionGuard)
 {
     auto cfg_path = g_temp_dir / "recursion.json";
@@ -329,6 +350,12 @@ TEST_F(JsonConfigTest, RecursionGuard)
     ASSERT_FALSE(ec);
 }
 
+/**
+ * @brief Tests that a write transaction correctly rolls back changes on exception.
+ * Verifies that if a lambda passed to `write()` throws an exception, the
+ * in-memory state of the JSON object is reverted to its state before the
+ * transaction began.
+ */
 TEST_F(JsonConfigTest, WriteTransactionRollsBackOnException)
 {
     auto cfg_path = g_temp_dir / "rollback_on_exception.json";
@@ -370,6 +397,9 @@ TEST_F(JsonConfigTest, WriteTransactionRollsBackOnException)
 
 /**
  * @brief Tests error handling when loading a malformed JSON file.
+ * Verifies that both `init()` and `reload()` fail with an `io_error` when
+ * the on-disk file contains invalid JSON, and that the in-memory state is
+ * not corrupted.
  */
 TEST_F(JsonConfigTest, LoadMalformedFile)
 {
@@ -414,6 +444,11 @@ TEST_F(JsonConfigTest, LoadMalformedFile)
 
 /**
  * @brief Stress-tests file contention from multiple threads using separate objects.
+ *
+ * Each thread creates its own `JsonConfig` instance pointing to the same file.
+ * This test primarily validates the process-level `FileLock` mechanism by
+ * simulating a multi-process scenario within a single process. It ensures that
+ * atomic read-modify-write transactions (`FullSync`) are safe under contention.
  */
 TEST_F(JsonConfigTest, MultiThreadFileContention)
 {
@@ -520,6 +555,11 @@ constexpr std::string prefix_info_fmt = "posix-{}";
 #endif
 /**
  * @brief Stress-tests write contention between multiple processes.
+ *
+ * Spawns multiple child processes, each running the `jsonconfig.write_id` worker.
+ * This worker attempts to acquire a file lock and write a unique ID to the shared
+ * config file. The test verifies that the process-level `FileLock` correctly
+ * serializes access and that all processes succeed in writing their data.
  */
 TEST_F(JsonConfigTest, MultiProcessContention)
 {
@@ -576,9 +616,9 @@ TEST_F(JsonConfigTest, MultiProcessContention)
 }
 
 /**
- * @brief Tests that JsonConfig refuses to write to a path that is a symbolic link.
+ * @brief Tests that `JsonConfig` refuses to operate on a path that is a symbolic link.
  * This is a security measure to prevent a malicious actor from replacing the config
- * file with a symlink to overwrite a sensitive system file.
+ * file with a symlink to overwrite a sensitive system file (e.g., `/etc/passwd`).
  */
 #if PYLABHUB_IS_POSIX
 TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
@@ -599,6 +639,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 
     JsonConfig cfg;
     std::error_code init_ec;
+    // `init` should fail immediately upon detecting the symlink.
     ASSERT_FALSE(cfg.init(symlink_path, false, &init_ec));
     ASSERT_TRUE(init_ec);
     ASSERT_EQ(init_ec, std::errc::operation_not_permitted);
@@ -617,6 +658,11 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 #endif
 
 #if defined(PLATFORM_WIN64)
+/**
+ * @brief Tests symlink attack prevention on Windows.
+ * @note Creating symlinks on Windows may require administrative privileges or
+ *       Developer Mode to be enabled, so the test may be skipped.
+ */
 TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
 {
     auto real_file = g_temp_dir / "real_file_win.txt";
@@ -632,38 +678,29 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
     // Creating symlinks on Windows may require administrative privileges.
     if (!CreateSymbolicLinkW(symlink_path.wstring().c_str(), real_file.wstring().c_str(), 0))
     {
-        GTEST_SKIP() << "Skipping Windows symlink test: insufficient privileges.";
+        GTEST_SKIP() << "Skipping Windows symlink test: could not create symlink. Try running as Admin or enabling Developer Mode.";
     }
 
     ASSERT_TRUE(fs::is_symlink(symlink_path));
 
     JsonConfig cfg;
     std::error_code ec;
-    // On Windows, init may not fail on a symlink, the check happens at write time.
-    ASSERT_TRUE(cfg.init(symlink_path, false, &ec));
-    ASSERT_FALSE(ec);
-
-    // Write should fail because atomic_write_json refuses to operate on a symlink.
-    cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write(
-        [&](json &j) { j["malicious"] = "data"; }, &ec);
-    ASSERT_TRUE(ec); // Expect an error from the failed write
-
-    // Verify the original file is untouched.
-    json j = json::parse(read_file_contents(real_file));
-    ASSERT_EQ(j["original"], "data");
-    ASSERT_EQ(j.find("malicious"), j.end());
+    // On Windows, the check is deferred to write time. `init` itself may succeed.
+    ASSERT_FALSE(cfg.init(symlink_path, true, &ec));
+    ASSERT_TRUE(ec);
+    ASSERT_EQ(ec, std::errc::operation_not_permitted);
 }
 #endif
 
 /**
- * @brief Verifies the in-memory thread-safety of a SINGLE shared JsonConfig object.
+ * @brief Verifies the in-memory thread-safety of a SINGLE shared `JsonConfig` object.
  *
- * This test creates one JsonConfig object and shares it by reference with
+ * This test creates one `JsonConfig` object and shares it by reference with
  * multiple threads that perform concurrent in-memory reads and writes. It is
- * designed to fail if the internal `std::shared_mutex` is not working correctly
- * to prevent data races on the in-memory `nlohmann::json` object.
+ * designed to fail with a data race if the internal `std::shared_mutex` is not
+ * working correctly to serialize writers and allow concurrent readers.
  *
- * All operations are in-memory only to isolate thread-safety from file I/O.
+ * All operations are in-memory only (`UnSynced`) to isolate thread-safety from file I/O.
  */
 TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
 {
@@ -703,7 +740,7 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
             });
     }
 
-    // 4. Spawn reader threads that verify the counter is always increasing (in-memory only).
+    // 4. Spawn reader threads that verify the counter is always increasing (monotonic).
     for (int i = 0; i < READER_THREADS; ++i)
     {
         threads.emplace_back(
@@ -711,6 +748,7 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
             {
                 int last_read_value = -1;
                 auto start_time = std::chrono::steady_clock::now();
+                // Run readers for a fixed duration while writers are active.
                 while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(1))
                 {
                     shared_cfg.transaction().read(
@@ -735,7 +773,7 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
     }
 
     // 5. Final verification.
-    ASSERT_EQ(read_failures.load(), 0) << "Reader threads detected non-monotonic counter changes.";
+    ASSERT_EQ(read_failures.load(), 0) << "Reader threads detected non-monotonic counter changes, indicating a race condition.";
 
     int final_counter = 0;
     shared_cfg.transaction().read(
@@ -747,7 +785,8 @@ TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
 /**
  * @brief Tests the manual locking API (`lock_for_read`/`lock_for_write`).
  * Verifies that users can manually acquire and release locks for fine-grained
- * control over read and write operations, including explicit commits.
+ * control over read and write operations, including an explicit commit via the
+ * `WriteLock` object.
  */
 TEST_F(JsonConfigTest, ManualLockingApi)
 {
@@ -769,11 +808,11 @@ TEST_F(JsonConfigTest, ManualLockingApi)
     w_lock.json()["manual"] = true;
     w_lock.json()["value"] = "test";
 
-    // 3. Commit changes to disk
+    // 3. Commit changes to disk using the lock's method
     ASSERT_TRUE(w_lock.commit(&ec));
     ASSERT_FALSE(ec);
 
-    // w_lock goes out of scope here, releasing the lock.
+    // w_lock is now invalid as commit() consumes the lock.
 
     // 4. Verify with a separate config object and a read lock
     JsonConfig verifier_cfg(cfg_path, false, &ec);
@@ -795,3 +834,254 @@ TEST_F(JsonConfigTest, ManualLockingApi)
     ASSERT_TRUE(j.value("manual", false));
     ASSERT_EQ(j.value("value", ""), "test");
 }
+
+/**
+ * @brief Tests the move constructor and move assignment operator.
+ * Verifies that a JsonConfig object can be moved, that the moved-to object
+ * is valid and functional, and that the moved-from object is left in a safe,
+ * uninitialized state.
+ */
+TEST_F(JsonConfigTest, MoveSemantics)
+{
+    auto cfg_path1 = g_temp_dir / "move_semantics1.json";
+    auto cfg_path2 = g_temp_dir / "move_semantics2.json";
+    fs::remove(cfg_path1);
+    fs::remove(cfg_path2);
+
+    // 1. Test move constructor
+    std::error_code ec;
+    JsonConfig cfg1(cfg_path1, true, &ec);
+    ASSERT_FALSE(ec);
+    cfg1.transaction(JsonConfig::AccessFlags::CommitAfter).write([&](json &j) { j["val"] = 1; }, &ec);
+    ASSERT_FALSE(ec);
+
+    JsonConfig cfg_moved_to = std::move(cfg1);
+    ASSERT_FALSE(cfg1.is_initialized()); // Original is invalid
+    ASSERT_TRUE(cfg_moved_to.is_initialized());
+    ASSERT_EQ(cfg_moved_to.config_path(), cfg_path1);
+
+    cfg_moved_to.transaction().read(
+        [&](const json &j) { ASSERT_EQ(j.value("val", 0), 1); }, &ec);
+    ASSERT_FALSE(ec);
+
+
+    // 2. Test move assignment
+    JsonConfig cfg2(cfg_path2, true, &ec);
+    ASSERT_FALSE(ec);
+    cfg2.transaction(JsonConfig::AccessFlags::CommitAfter).write([&](json &j) { j["val"] = 2; }, &ec);
+    ASSERT_FALSE(ec);
+
+    cfg_moved_to = std::move(cfg2);
+    ASSERT_FALSE(cfg2.is_initialized());
+    ASSERT_TRUE(cfg_moved_to.is_initialized());
+    ASSERT_EQ(cfg_moved_to.config_path(), cfg_path2);
+    cfg_moved_to.transaction().read(
+        [&](const json &j) { ASSERT_EQ(j.value("val", 0), 2); }, &ec);
+    ASSERT_FALSE(ec);
+}
+
+/**
+ * @brief Tests the `overwrite()` method.
+ * Verifies that `overwrite()` correctly writes the current in-memory state to
+ * disk, overwriting any external modifications, and resets the dirty flag.
+ */
+TEST_F(JsonConfigTest, OverwriteMethod)
+{
+    auto cfg_path = g_temp_dir / "overwrite.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg(cfg_path, true);
+    std::error_code ec;
+
+    // 1. Write initial state to disk.
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
+        .write([&](json &j) { j["val"] = "initial"; }, &ec);
+    ASSERT_FALSE(ec);
+
+    // 2. Modify in-memory only.
+    cfg.transaction().write([&](json &j) { j["val"] = "in-memory"; }, &ec);
+    ASSERT_FALSE(ec);
+    ASSERT_TRUE(cfg.is_dirty());
+
+    // 3. Modify file on disk externally.
+    {
+        std::ofstream out(cfg_path);
+        out << R"({ "val": "external" })";
+    }
+
+    // 4. Call overwrite() to force in-memory state to disk.
+    ASSERT_TRUE(cfg.overwrite(&ec));
+    ASSERT_FALSE(ec);
+    ASSERT_FALSE(cfg.is_dirty());
+
+    // 5. Verify file on disk.
+    JsonConfig verifier(cfg_path);
+    verifier.transaction(JsonConfig::AccessFlags::ReloadFirst)
+        .read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "in-memory"); }, &ec);
+    ASSERT_FALSE(ec);
+}
+
+/**
+ * @brief Verifies the behavior of the `is_dirty()` flag.
+ * Checks that the dirty flag is correctly set and cleared by various
+ * operations like writing, committing, reloading, and overwriting.
+ */
+TEST_F(JsonConfigTest, DirtyFlagLogic)
+{
+    auto cfg_path = g_temp_dir / "dirty_flag.json";
+    fs::remove(cfg_path);
+    std::error_code ec;
+
+    // 1. Initial state
+    JsonConfig cfg(cfg_path, true, &ec);
+    ASSERT_FALSE(ec);
+    ASSERT_FALSE(cfg.is_dirty());
+
+    // 2. Write with commit
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write([&](json &j) { j["a"] = 1; }, &ec);
+    ASSERT_FALSE(ec);
+    ASSERT_FALSE(cfg.is_dirty());
+
+    // 3. Write without commit (should become dirty)
+    cfg.transaction().write([&](json &j) { j["b"] = 2; }, &ec);
+    ASSERT_FALSE(ec);
+    ASSERT_TRUE(cfg.is_dirty());
+
+    // 4. Reload (should become clean and discard changes)
+    cfg.reload(&ec);
+    ASSERT_FALSE(ec);
+    ASSERT_FALSE(cfg.is_dirty());
+    cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.count("b"), 0); });
+
+    // 5. Manual write lock access (should become dirty)
+    {
+        auto wlock = cfg.lock_for_write(&ec);
+        ASSERT_TRUE(wlock.has_value());
+        wlock->json()["c"] = 3;
+    } // lock is released
+    ASSERT_TRUE(cfg.is_dirty());
+
+    // 6. Manual commit (should become clean)
+    {
+        auto wlock = cfg.lock_for_write(&ec);
+        ASSERT_TRUE(wlock.has_value());
+        wlock->json()["c"] = 4; // Modify data before commit
+        ASSERT_TRUE(wlock->commit(&ec));
+        ASSERT_FALSE(ec);
+    } // lock is released
+    ASSERT_FALSE(cfg.is_dirty());
+
+    // 7. Overwrite (should become clean)
+    cfg.transaction().write([&](json &j) { j["e"] = 5; }, &ec);
+    ASSERT_TRUE(cfg.is_dirty());
+    cfg.overwrite(&ec);
+    ASSERT_FALSE(ec);
+    ASSERT_FALSE(cfg.is_dirty());
+}
+
+/**
+ * @brief Tests the ability to veto a commit from within a write transaction.
+ * Verifies that returning `CommitDecision::SkipCommit` from a write lambda
+ * prevents the changes from being written to disk, even when `CommitAfter`
+ * is specified.
+ */
+TEST_F(JsonConfigTest, WriteVetoCommit)
+{
+    auto cfg_path = g_temp_dir / "veto_commit.json";
+    fs::remove(cfg_path);
+    std::error_code ec;
+
+    JsonConfig cfg(cfg_path, true, &ec);
+    ASSERT_FALSE(ec);
+
+    // 1. Initial commit
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write([&](json &j) { j["val"] = 1; }, &ec);
+    ASSERT_FALSE(ec);
+
+    // 2. Transaction that vetoes its own commit
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
+        .write(
+            [&](json &j) -> JsonConfig::CommitDecision
+            {
+                j["val"] = 2; // Change in-memory
+                return JsonConfig::CommitDecision::SkipCommit;
+            },
+            &ec);
+    ASSERT_FALSE(ec);
+    ASSERT_TRUE(cfg.is_dirty()); // Should be dirty because commit was skipped
+
+    // 3. Verify in-memory value is updated
+    cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", 0), 2); }, &ec);
+    ASSERT_FALSE(ec);
+
+    // 4. Verify file on disk was NOT updated
+    JsonConfig verifier(cfg_path);
+    verifier.transaction(JsonConfig::AccessFlags::ReloadFirst)
+        .read([&](const json &j) { ASSERT_EQ(j.value("val", 0), 1); }, &ec);
+    ASSERT_FALSE(ec);
+}
+
+/**
+ * @brief Tests that a transaction is rolled back if the user lambda produces invalid JSON.
+ * Verifies that if a write lambda creates a state that cannot be serialized,
+ * the transaction fails and the in-memory and on-disk state are rolled back.
+ */
+TEST_F(JsonConfigTest, WriteProducesInvalidJson)
+{
+    auto cfg_path = g_temp_dir / "invalid_json_write.json";
+    fs::remove(cfg_path);
+
+    JsonConfig cfg(cfg_path, true);
+    std::error_code ec;
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter).write([&](json &j) { j["val"] = "good"; }, &ec);
+    ASSERT_FALSE(ec);
+
+    // Attempt to write a string with an invalid UTF-8 sequence.
+    // nlohmann::json's dump() will throw a type_error for this, which our wrapper catches.
+    cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
+        .write(
+            [&](json &j)
+            {
+                j["val"] = "bad\xDE\xAD\xBE\xEF";
+            },
+            &ec);
+
+    // The transaction should fail and report an error.
+    ASSERT_TRUE(ec);
+    ASSERT_EQ(ec, std::errc::invalid_argument);
+
+    // Verify that the config (both in-memory and on-disk) was rolled back.
+    cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "good"); }, &ec);
+    ASSERT_FALSE(ec);
+
+    JsonConfig verifier(cfg_path);
+    verifier.reload(&ec);
+    ASSERT_FALSE(ec);
+    verifier.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "good"); }, &ec);
+    ASSERT_FALSE(ec);
+}
+
+// This test is only active in debug builds where the check is enabled.
+#ifndef NDEBUG
+/**
+ * @brief Tests the warning for an unconsumed transaction proxy (Debug only).
+ * Runs a worker process that creates a `TransactionProxy` and lets it be
+ * destroyed without calling `.read()` or `.write()`. Verifies that the
+ * expected warning message is printed to stderr.
+ */
+TEST_F(JsonConfigTest, TransactionProxyNotConsumedWarning)
+{
+    WorkerProcess worker(g_self_exe_path, "jsonconfig.not_consuming_proxy", {});
+    ASSERT_TRUE(worker.valid());
+    const int exit_code = worker.wait_for_exit();
+
+    // The worker should exit cleanly, but print a warning to stderr.
+    ASSERT_EQ(exit_code, 0);
+    // expect_worker_ok checks for an empty stderr, which we don't want here.
+    // We just check the exit code is 0.
+
+    const std::string &stderr_output = worker.get_stderr();
+    EXPECT_THAT(stderr_output,
+                ::testing::HasSubstr("JsonConfig::transaction() proxy was not consumed"));
+}
+#endif

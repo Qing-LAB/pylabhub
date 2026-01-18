@@ -88,5 +88,24 @@ int uninitialized_behavior()
     return 0;
 }
 
+int not_consuming_proxy()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            // The test fixture will create a temporary directory, but the file doesn't need to exist
+            // for this test. We just need a valid, initialized JsonConfig object.
+            auto temp_dir = std::filesystem::temp_directory_path() / "pylabub_jsonconfig_workers";
+            std::filesystem::create_directories(temp_dir);
+            JsonConfig cfg(temp_dir / "dummy.json", true);
+
+            // Create a transaction proxy and let it go out of scope without being consumed.
+            // This should trigger the destructor's warning message in a debug build.
+            cfg.transaction();
+        },
+        "jsonconfig::not_consuming_proxy", JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule());
+}
+
 } // namespace jsonconfig
 } // namespace pylabhub::tests::worker
