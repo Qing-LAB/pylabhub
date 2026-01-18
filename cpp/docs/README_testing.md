@@ -18,35 +18,53 @@ The test suite is composed of several distinct **CMake targets** located in the 
 
 *   `pylabhub-test-framework`: A **static library target** that contains shared C++ code for all test executables.
 *   `test_pylabhub_corelib`: An **executable target** containing all unit tests for the `pylabhub-basic` static library.
-*   `test_pylabhub_utils`: An **executable target** containing all tests for the `pylabhub-utils` shared library.
+*   `test_pylabhub_utils`: An **executable target** containing all tests for the `pylabhub-utils` shared library. This executable also serves as the worker process for multi-process testing.
+*   `test_misc`: A collection of **miscellaneous executable targets** that are not part of the standard GoogleTest suite. These are typically small programs used for targeted debugging or to validate specific, isolated functionalities (e.g., `test_debug_output`).
 
 This structure allows a developer working on the `pylabhub-basic` library to compile and run only the `test_pylabhub_corelib` target, resulting in a much faster development cycle.
 
 ## 3. A Deep Dive: How Multi-Process Testing Works
 
-The multi-process testing logic is a powerful pattern used for testing components like `pylabhub::utils::FileLock`. The key idea is that a single test executable (e.g., the `test_pylabhub_utils` target) can act as a **"Parent"** (the test runner) or as a **"Worker"** (a child process).
+The multi-process testing logic is a powerful pattern used for testing components like `pylabhub::utils::FileLock` and `JsonConfig`. The key idea is that a single test executable (e.g., `test_pylabhub_utils`) can act as both a **"Parent"** (the test runner) and a **"Worker"** (a child process spawned to perform a specific task).
+
+This is managed by three key components in the `pylabhub-test-framework`:
+1.  **`test_entrypoint.cpp`**: Provides the `main()` function for test executables. It checks command-line arguments. If a "worker mode" argument is present, it calls a registered dispatcher. Otherwise, it runs GoogleTest (`RUN_ALL_TESTS()`).
+2.  **`test_process_utils.h`**: Provides the `WorkerProcess` RAII class, which is the primary tool for spawning and managing child processes. It handles argument passing, redirects the worker's stdout/stderr to files for inspection, and ensures the worker is terminated.
+3.  **`worker_dispatcher.cpp`** (inside `test_pylabhub_utils`): This file maps worker mode strings (e.g., `"filelock.nonblocking_acquire"`) to specific C++ worker functions. This is the router that tells the child process what code to execute.
 
 ### Step-by-Step Execution Flow
 
-This sequence diagram illustrates the flow for a multi-process `FileLock` test using the `test_pylabhub_utils` executable.
+This sequence diagram illustrates the flow for a multi-process `FileLock` test.
 
 ```mermaid
 sequenceDiagram
     participant CTest
     participant Parent as test_pylabhub_utils (Parent)
-    participant Child as test_pylabhub_utils (Child)
+    participant Child as test_pylabhub_utils (Worker)
 
     Note over CTest, Parent: Step 1: CTest runs the test executable.
-    CTest->>Parent: Runs the `test_pylabhub_utils` executable
+    CTest->>Parent: ./test_pylabhub_utils
 
-    Note over Parent: Step 2: The Parent process starts.
-    Parent->>Parent: main() in `test_entrypoint.cpp` is called.<br/>Sees no worker arguments, calls `RUN_ALL_TESTS()`.
+    Note over Parent: Step 2: Parent process starts.
+    Parent->>Parent: main() in 'test_entrypoint.cpp' is called.<br/>No worker args found, so it calls RUN_ALL_TESTS().
 
-    Note over Parent: Step 3: GoogleTest runs the specific test case.
-    Parent->>Parent: Executes `TEST_F(FileLockTest, ...)` C++ code.
+    Note over Parent: Step 3: GoogleTest runs a specific test case.
+    Parent->>Parent: Executes TEST_F(FileLockTest, MultiProcessNonBlocking).
 
-    Note over Parent, Child: Step 4: The Parent spawns a Child of itself.
-    Parent->>Child: Calls `spawn_worker_process()` C++ function with args:<br/>- Path to the `test_pylabhub_utils` executable<br/>- Mode string: "filelock.nonblocking_acquire"
+    Note over Parent, Child: Step 4: The Parent spawns a Worker of itself.
+    Parent->>Child: Creates WorkerProcess("filelock.nonblocking_acquire").<br/>This calls fork/CreateProcess with the argument "filelock.nonblocking_acquire".
+
+    Note over Child: Step 5: Worker process starts.
+    Child->>Child: main() in 'test_entrypoint.cpp' is called.<br/>Sees worker arg "filelock.nonblocking_acquire".
+
+    Note over Child: Step 6: Worker dispatches to the correct function.
+    Child->>Child: main() calls dispatcher in 'worker_dispatcher.cpp'.<br/>Dispatcher calls worker::filelock::nonblocking_acquire().
+
+    Note over Child: Step 7: Worker executes test logic & exits.
+    Child->>Child: The worker function runs its assertions and returns an exit code.
+
+    Note over Parent: Step 8: Parent waits and verifies results.
+    Parent->>Parent: proc.wait_for_exit() is called.<br/>Parent checks worker's exit code, stdout, and stderr.
 ```
 
 ## 4. How to Add a New Test
