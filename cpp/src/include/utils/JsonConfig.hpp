@@ -364,7 +364,33 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             return;
         }
 
-        // 3) acquire unique in-memory write lock
+        // 3) Hold a single process-level lock for the entire transaction if any disk I/O is needed.
+        std::optional<FileLock> fLock;
+        const bool needs_disk_io =
+            (static_cast<int>(flags) & (static_cast<int>(AccessFlags::ReloadFirst) |
+                                        static_cast<int>(AccessFlags::CommitAfter))) != 0;
+
+        if (needs_disk_io)
+        {
+            const auto path = config_path();
+            if (path.empty())
+            {
+                destroy_transaction_internal(id);
+                if (ec)
+                    *ec = std::make_error_code(std::errc::not_connected);
+                return;
+            }
+            fLock.emplace(path, ResourceType::File, LockMode::Blocking);
+            if (!fLock->valid())
+            {
+                destroy_transaction_internal(id);
+                if (ec)
+                    *ec = fLock->error_code();
+                return;
+            }
+        }
+
+        // 4) acquire unique in-memory write lock
         std::error_code lock_ec;
         auto wlock_opt = lock_for_write(&lock_ec);
         if (!wlock_opt)
@@ -376,37 +402,19 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         }
         auto wlock = std::move(*wlock_opt);
 
-        // 4) If ReloadFirst: we need process lock (FileLock) + load-from-disk.
-        // ABI-safe: do NOT access Impl fields here; use config_path() to get a copy.
+        // 5) If ReloadFirst: load from disk (we already have the process lock)
         if ((static_cast<int>(flags) & static_cast<int>(AccessFlags::ReloadFirst)) != 0)
         {
-            const auto path = config_path();
-            if (path.empty())
-            {
-                destroy_transaction_internal(id);
-                if (ec)
-                    *ec = std::make_error_code(std::errc::not_connected);
-                return;
-            }
-
-            FileLock fLock(path, ResourceType::File, LockMode::Blocking);
-            if (!fLock.valid())
-            {
-                destroy_transaction_internal(id);
-                if (ec)
-                    *ec = fLock.error_code();
-                return;
-            }
-
-            // We hold the unique data mutex via wlock, so it's safe to load into memory.
+            // We hold the unique data mutex via wlock and the process lock via fLock,
+            // so it's safe to load into memory.
             if (!private_load_from_disk_unsafe(ec))
             {
                 destroy_transaction_internal(id);
-                return;
+                return; // private_load_from_disk_unsafe sets ec
             }
         }
 
-        // 5) Snapshot before change (ABI-safe: use wlock.json())
+        // 6) Snapshot before change (ABI-safe: use wlock.json())
         nlohmann::json before;
         try
         {
@@ -420,7 +428,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             return;
         }
 
-        // 6) Run user lambda
+        // 7) Run user lambda
         try
         {
             fn(wlock.json());
@@ -461,8 +469,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             return;
         }
 
-        // 7) Validate JSON by dump (parse step is unnecessary; dump already traverses the structure).
-        // If you *want* strict validation, keep parse; it can throw on invalid UTF-8 etc.
+        // 8) Validate JSON by dump
         try
         {
             (void)wlock.json().dump();
@@ -485,7 +492,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             return;
         }
 
-        // 8) CommitAfter: snapshot and commit to disk (ABI-safe: snapshot via wlock.json())
+        // 9) CommitAfter: snapshot and commit to disk (we already have the process lock)
         if ((static_cast<int>(flags) & static_cast<int>(AccessFlags::CommitAfter)) != 0)
         {
             nlohmann::json snapshot;
@@ -509,15 +516,20 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                 return;
             }
 
-            // Release in-memory lock before slow disk I/O
+            // Release in-memory lock before slow disk I/O. The process lock (fLock) is still held.
             wlock = JsonConfig::WriteLock();
 
-            if (!private_commit_to_disk_unsafe(snapshot, ec))
+            // Directly call atomic_write_json since we hold the lock.
+            // This avoids calling private_commit_to_disk_unsafe which tries to take its own lock.
+            // We use fLock->path() because it is guaranteed to be valid and holds the actual path.
+            atomic_write_json(fLock->get_locked_resource_path().value(), snapshot, ec);
+            if (ec && *ec)
             {
                 // keep in-memory change, report error
                 destroy_transaction_internal(id);
                 return;
             }
+            private_set_dirty_unsafe_(false); // only set dirty to false on success
         }
 
         destroy_transaction_internal(id);
