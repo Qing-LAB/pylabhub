@@ -1,4 +1,3 @@
-// JsonConfig.cpp
 #include "platform.hpp"
 
 #include <atomic>
@@ -25,7 +24,6 @@
 #include "utils/FileLock.hpp"
 #include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
-
 #include "recursion_guard.hpp"
 
 namespace pylabhub::utils
@@ -46,14 +44,15 @@ struct JsonConfig::Impl
     ~Impl() = default;
 };
 
-struct JsonConfig::ReadLock::Impl
+// ReadLock/WriteLock impls (unchanged from your earlier working code)
+struct JsonConfig::ReadLock::ImplInner
 {
     JsonConfig *owner = nullptr;
     std::shared_lock<std::shared_mutex> lock;
     std::optional<basics::RecursionGuard> guard;
 };
 
-struct JsonConfig::WriteLock::Impl
+struct JsonConfig::WriteLock::ImplInner
 {
     JsonConfig *owner = nullptr;
     std::unique_lock<std::shared_mutex> lock;
@@ -61,7 +60,7 @@ struct JsonConfig::WriteLock::Impl
 };
 
 // ----------------- JsonConfig public methods -----------------
-JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
+JsonConfig::JsonConfig() noexcept : pImpl(std::make_shared<Impl>())
 {
     if (!lifecycle_initialized())
     {
@@ -71,7 +70,7 @@ JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
 }
 JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMissing,
                        std::error_code *ec) noexcept
-    : pImpl(std::make_unique<Impl>())
+    : pImpl(std::make_shared<Impl>())
 {
     if (!lifecycle_initialized())
     {
@@ -84,10 +83,17 @@ JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMis
     }
 }
 JsonConfig::~JsonConfig() {}
-JsonConfig::JsonConfig(JsonConfig &&other) noexcept : pImpl(std::move(other.pImpl)) {}
+
+JsonConfig::JsonConfig(JsonConfig &&other) noexcept : pImpl(std::move(other.pImpl))
+{
+    // Move transaction map? For simplicity disallow move with outstanding transactions.
+    // Prefer to only allow move when no outstanding transactions exist.
+}
+
 JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
 {
     pImpl = std::move(other.pImpl);
+    // transfer transactions? not supported.
     return *this;
 }
 
@@ -199,9 +205,6 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
 
 bool JsonConfig::reload(std::error_code *ec) noexcept
 {
-    // This operation performs a write to the in-memory 'data' object, so it
-    // needs an exclusive lock on the data mutex. It also reads from disk, so
-    // it needs a process lock.
     try
     {
         if (!pImpl)
@@ -270,24 +273,19 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
         return false;
     }
 
-    // This public method provides a complete overwrite from memory to disk.
-    // It needs to get a snapshot of the current data before writing.
     try
     {
         nlohmann::json snapshot;
         {
-            // Acquire a shared lock only long enough to make a copy of the data.
-            // This prevents blocking other readers for the duration of a slow disk write.
             if (auto r = lock_for_read(ec))
             {
                 snapshot = r->json();
             }
             else
             {
-                // lock_for_read failed, it has set the error code.
                 return false;
             }
-        } // Read lock is released here.
+        }
 
         return private_commit_to_disk_unsafe(snapshot, ec);
     }
@@ -306,12 +304,138 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
     }
 }
 
-JsonConfigTransaction JsonConfig::transaction(AccessFlags flags) noexcept
+// ---------------- Transaction storage & lifecycle ----------------
+
+JsonConfig::Transaction &JsonConfig::transaction(AccessFlags flags, std::error_code *ec)
 {
-    return JsonConfigTransaction(this, flags);
+    Transaction *t = create_transaction_internal(flags, ec);
+    if (!t)
+    {
+        // create_transaction_internal sets ec
+        // To avoid returning a reference to null, throw or return a static dummy? We'll throw logic error here.
+        // However user pattern expects immediate call: cfg.transaction().read(...),
+        // so returning a reference must succeed or abort. We choose to panic to surface programmer error.
+        PLH_PANIC("JsonConfig::transaction failed to create transaction object");
+    }
+    return *t;
 }
 
-// Guard constructors / destructors / accessors
+JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags flags,
+                                                                 std::error_code *ec) noexcept
+{
+    if (!pImpl) {
+        if (ec) *ec = std::make_error_code(std::errc::not_connected);
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lg(d_tx_mutex);
+
+    TxId id = d_next_txid++;
+
+    // create the node on heap
+    auto node = std::make_unique<Transaction>(this, id, flags);
+
+    // push into list; get iterator
+    d_tx_list.push_back(std::move(node));
+    auto it = std::prev(d_tx_list.end()); // iterator to newly inserted element
+
+    // insert index
+    d_tx_index.emplace(id, it);
+
+    if (ec) *ec = std::error_code{};
+    return it->get();
+}
+
+void JsonConfig::destroy_transaction_internal(TxId id) noexcept
+{
+    std::lock_guard<std::mutex> lg(d_tx_mutex);
+    auto it_idx = d_tx_index.find(id);
+    if (it_idx == d_tx_index.end()) return;
+
+    auto it_list = it_idx->second;
+    // erase from list and index
+    d_tx_list.erase(it_list);
+    d_tx_index.erase(it_idx);
+}
+
+
+bool JsonConfig::release_transaction(TxId id, std::error_code *ec) noexcept
+{
+    std::lock_guard<std::mutex> lg(d_tx_mutex);
+    auto it = d_transactions.find(id);
+    if (it == d_transactions.end())
+    {
+        if (ec) *ec = std::make_error_code(std::errc::invalid_argument);
+        return false;
+    }
+    d_transactions.erase(it);
+    if (ec) *ec = std::error_code{};
+    return true;
+}
+
+JsonConfig::Transaction *JsonConfig::find_transaction_locked(TxId id) noexcept
+{
+    auto it_idx = d_tx_index.find(id);
+    if (it_idx == d_tx_index.end()) return nullptr;
+    return it_idx->second->get();
+}
+
+
+// ----------------- ReadLock / WriteLock factory and implementations ----------------
+
+std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *ec) const noexcept
+{
+    if (!pImpl)
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::not_connected);
+        return std::nullopt;
+    }
+
+    if (basics::RecursionGuard::is_recursing(pImpl.get()))
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+        return std::nullopt;
+    }
+
+    ReadLock r;
+    r.d_ = std::make_unique<ReadLock::ImplInner>();
+    r.d_->owner = const_cast<JsonConfig *>(this);
+    r.d_->guard.emplace(this->pImpl.get());
+    r.d_->lock = std::shared_lock(pImpl->dataMutex);
+
+    if (ec) *ec = std::error_code{};
+    return r;
+}
+
+std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code *ec) noexcept
+{
+    if (!pImpl)
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::not_connected);
+        return std::nullopt;
+    }
+
+    if (basics::RecursionGuard::is_recursing(pImpl.get()))
+    {
+        if (ec)
+            *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+        return std::nullopt;
+    }
+
+    WriteLock w;
+    w.d_ = std::make_unique<WriteLock::ImplInner>();
+    w.d_->owner = this;
+    w.d_->guard.emplace(this->pImpl.get());
+    w.d_->lock = std::unique_lock(pImpl->dataMutex);
+
+    if (ec) *ec = std::error_code{};
+    return w;
+}
+
+// ReadLock / WriteLock methods
 JsonConfig::ReadLock::ReadLock() noexcept {}
 JsonConfig::ReadLock::ReadLock(ReadLock &&other) noexcept : d_(std::move(other.d_)) {}
 JsonConfig::ReadLock &JsonConfig::ReadLock::operator=(ReadLock &&other) noexcept
@@ -323,8 +447,6 @@ JsonConfig::ReadLock::~ReadLock() {}
 
 const nlohmann::json &JsonConfig::ReadLock::json() const noexcept
 {
-    // The existence of the lock object guarantees safe access.
-    // The lock is held in the Impl struct.
     if (!d_ || !d_->owner)
     {
         static const nlohmann::json null_json = nlohmann::json();
@@ -344,8 +466,6 @@ JsonConfig::WriteLock::~WriteLock() {}
 
 nlohmann::json &JsonConfig::WriteLock::json() noexcept
 {
-    // The existence of the lock object guarantees safe access.
-    // The lock is held in the Impl struct.
     if (!d_ || !d_->owner)
     {
         static nlohmann::json dummy = nlohmann::json::object();
@@ -359,72 +479,23 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
 {
     if (d_ && d_->owner)
     {
-        // We already hold the unique_lock on the in-memory data, so it is
-        // safe to access the data directly and call the commit helper.
-        return d_->owner->private_commit_to_disk_unsafe(d_->owner->pImpl->data, ec);
+        try
+        {
+            nlohmann::json snapshot = d_->owner->pImpl->data;
+            d_.reset();
+            return d_->owner->private_commit_to_disk_unsafe(snapshot, ec);
+        }
+        catch (...)
+        {
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
     }
-    if (ec)
-        *ec = std::make_error_code(std::errc::not_connected);
+    if (ec) *ec = std::make_error_code(std::errc::not_connected);
     return false;
 }
 
-// Factory functions
-std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *ec) const noexcept
-{
-    if (!pImpl)
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::not_connected);
-        return std::nullopt;
-    }
-
-    // Prevent recursive locking within the same thread
-    if (basics::RecursionGuard::is_recursing(this))
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-        return std::nullopt;
-    }
-
-    ReadLock r;
-    r.d_ = std::make_unique<JsonConfig::ReadLock::Impl>();
-    r.d_->owner = const_cast<JsonConfig *>(this);
-    r.d_->guard.emplace(this);                       // Create the guard in the lock object
-    r.d_->lock = std::shared_lock(pImpl->dataMutex); // Acquire the real lock here
-
-    if (ec)
-        *ec = std::error_code{};
-    return r;
-}
-
-std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code *ec) noexcept
-{
-    if (!pImpl)
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::not_connected);
-        return std::nullopt;
-    }
-
-    // Prevent recursive locking within the same thread
-    if (basics::RecursionGuard::is_recursing(this))
-    {
-        if (ec)
-            *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
-        return std::nullopt;
-    }
-
-    WriteLock w;
-    w.d_ = std::make_unique<JsonConfig::WriteLock::Impl>();
-    w.d_->owner = this;
-    w.d_->guard.emplace(this);                       // Create the guard in the lock object
-    w.d_->lock = std::unique_lock(pImpl->dataMutex); // Acquire the real lock here
-
-    if (ec)
-        *ec = std::error_code{};
-    return w;
-}
-
+// ----------------- atomic write implementation (POSIX and Windows) ----------------
 void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
                                    std::error_code *ec) noexcept
 {

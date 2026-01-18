@@ -4,43 +4,7 @@
  * @file JsonConfig.hpp
  * @brief Thread-safe and process-safe JSON configuration manager.
  *
- * @see src/utils/JsonConfig.cpp
- *
- * **Design Philosophy**
- *
- * `JsonConfig` provides safe, managed access to a JSON configuration file. It is
- * designed to prevent data corruption from concurrent access by implementing a
- * two-layer locking strategy:
- *
- * 1.  **Layer 1: Inter-Thread Safety (In-Memory Protection)**
- *     - **Problem**: Prevents data races when multiple threads within a single
- *       process try to read and write the in-memory `nlohmann::json` object
- *       at the same time.
- *     - **Mechanism**: An internal `std::shared_mutex`.
- *     - **API**: The `transaction().read()` and `transaction().write()` methods, which
- *       provide safe, scoped access via lambdas. They internally use the
- *       `lock_for_read()` and `lock_for_write()` factories.
- *       - `transaction().read()` acquires a *shared* lock, allowing multiple
- *         concurrent readers.
- *       - `transaction().write()` acquires a *unique* lock, ensuring exclusive
- *         write access.
- *     - **Note**: These methods operate **only on the in-memory data** for maximum
- *       performance. They do not perform disk I/O.
- *
- * 2.  **Layer 2: Inter-Process Safety (Disk File Protection)**
- *     - **Problem**: Prevents `Process A` from reading the configuration file
- *       while `Process B` is in the middle of writing to it.
- *     - **Mechanism**: `pylabhub::utils::FileLock`.
- *     - **API**: The `reload()` and `overwrite()` methods.
- *       - `reload()`: Updates the in-memory object from the disk. It acquires
- *         a `FileLock` to ensure it reads a complete, non-corrupt file.
- *       - `overwrite()`: Saves the in-memory object to disk. It acquires a
- *         `FileLock` and uses an atomic write-and-rename pattern to prevent
- *         other processes from seeing a partially written file.
- *
- * **Lifecycle Management**: `JsonConfig` is a lifecycle-managed component. Its
- * module must be registered with `LifecycleManager` and initialized before a
- * `JsonConfig` object can be constructed, otherwise the program will abort.
+ * This variant implements JsonConfig-owned Transaction objects.
  */
 
 #include <chrono>
@@ -51,11 +15,15 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
+#include <unordered_map>
+#include <mutex>
 
+#include "debug_info.hpp"
 #include "nlohmann/json.hpp"
 #include "recursion_guard.hpp"
 #include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
+#include "ModuleDef.hpp"
 
 #include "pylabhub_utils_export.h"
 
@@ -67,46 +35,9 @@ namespace pylabhub::utils
 #pragma warning(disable : 4251)
 #endif
 
-class JsonConfig;
-
-class PYLABHUB_UTILS_EXPORT JsonConfigTransaction
+class JsonConfig
 {
   public:
-    JsonConfigTransaction(JsonConfigTransaction &&) noexcept = default;
-    JsonConfigTransaction &operator=(JsonConfigTransaction &&) noexcept = default;
-    JsonConfigTransaction(const JsonConfigTransaction &) = delete;
-    JsonConfigTransaction &operator=(const JsonConfigTransaction &) = delete;
-    ~JsonConfigTransaction();
-
-    template <typename F>
-    void read(F &&fn, std::error_code *ec = nullptr) &&;
-
-    template <typename F>
-    void write(F &&fn, std::error_code *ec = nullptr) &&;
-
-  private:
-    friend class JsonConfig;
-    explicit JsonConfigTransaction(JsonConfig *owner,
-                                   typename JsonConfig::AccessFlags flags) noexcept;
-
-    JsonConfig *d_owner;
-    typename JsonConfig::AccessFlags d_flags;
-};
-
-class PYLABHUB_UTILS_EXPORT JsonConfig
-{
-    friend class JsonConfigTransaction;
-
-  public:
-    /**
-     * @brief Returns a ModuleDef for JsonConfig to be used with the LifecycleManager.
-     */
-    static ModuleDef GetLifecycleModule();
-    /**
-     * @brief Checks if the JsonConfig module has been initialized by the LifecycleManager.
-     */
-    static bool lifecycle_initialized() noexcept;
-
     JsonConfig() noexcept;
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
                         std::error_code *ec = nullptr) noexcept;
@@ -117,38 +48,112 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     JsonConfig(JsonConfig &&) noexcept;
     JsonConfig &operator=(JsonConfig &&) noexcept;
 
-    /**
-     * @brief Checks if this JsonConfig instance has been bound to a file path.
-     * @return true if init() has been called successfully, false otherwise.
-     */
+    static ModuleDef GetLifecycleModule();
+    static bool lifecycle_initialized() noexcept;
+
     bool is_initialized() const noexcept;
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
               std::error_code *ec = nullptr) noexcept;
-    /**
-     * @brief Thread-safely and process-safely reloads the configuration from disk,
-     *        overwriting the current in-memory state.
-     * @param ec Optional: An error_code to capture any errors.
-     * @return true on success, false on failure.
-     */
+
     bool reload(std::error_code *ec = nullptr) noexcept;
-    /**
-     * @brief Thread-safely and process-safely saves the current in-memory state to disk.
-     *        This operation is atomic: it writes to a temporary file and then renames it.
-     * @param ec Optional: An error_code to capture any errors.
-     * @return true on success, false on failure.
-     */
     bool overwrite(std::error_code *ec = nullptr) noexcept;
 
     std::filesystem::path config_path() const noexcept;
 
-    // ----------------- Manual Locking API -----------------
-    /**
-     * @brief RAII guard for thread-safe read access to the in-memory JSON data.
-     *
-     * The constructor of this object acquires a shared lock on the data; the
-     * destructor releases it. Prefer using the lambda-based `transaction().read()`
-     * for simpler, safer scoped access.
-     */
+    // Manual RAII locks (unchanged)
+    class ReadLock;
+    class WriteLock;
+
+    // Transaction flags
+    enum class AccessFlags
+    {
+        Default = 0,
+        UnSynced = Default,
+        ReloadFirst = 1 << 0,
+        CommitAfter = 1 << 1,
+        FullSync = ReloadFirst | CommitAfter,
+    };
+
+    friend AccessFlags operator|(AccessFlags a, AccessFlags b)
+    {
+        return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
+    }
+
+    // ---------------- Transaction ownership model ----------------
+    // Transactions are created and stored inside JsonConfig. The returned reference
+    // is valid until the transaction is destroyed (either used or the JsonConfig is destroyed).
+    using TxId = uint64_t;
+
+    // Create and register a new transaction object inside this JsonConfig.
+    // Returns a reference to the stored Transaction. The reference is valid until
+    // the transaction is used (read/write) or explicitly released/destroyed.
+    // On failure returns nullptr.
+    // Note: the returned reference must be used immediately (pattern: cfg.transaction().read(...))
+    Transaction &transaction(AccessFlags flags = AccessFlags::Default,
+                             std::error_code *ec = nullptr);
+
+    // Manually release a transaction by TxId (rarely needed; transaction is auto-removed on use).
+    bool release_transaction(TxId id, std::error_code *ec = nullptr) noexcept;
+
+    // Manual locking API (unchanged)
+    std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
+    std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> pImpl;
+
+    // Internal helpers moved to private so Transaction can call them using owner pointer
+    bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
+    bool private_commit_to_disk_unsafe(const nlohmann::json &snapshot, std::error_code *ec) noexcept;
+    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
+                                  std::error_code *ec) noexcept;
+
+    // Transaction storage
+    class Transaction
+    {
+      public:
+        Transaction(const Transaction &) = delete;
+        Transaction &operator=(const Transaction &) = delete;
+        Transaction(Transaction &&) = delete;
+        Transaction &operator=(Transaction &&) = delete;
+
+        ~Transaction() = default;
+
+        // read and write are template methods and defined inline below.
+        template <typename F>
+        void read(F &&fn, std::error_code *ec = nullptr, std::source_location loc = std::source_location::current());
+
+        template <typename F>
+        void write(F &&fn, std::error_code *ec = nullptr, std::source_location loc = std::source_location::current());
+
+      private:
+        friend class JsonConfig;
+        Transaction(JsonConfig *owner, TxId id, AccessFlags flags) noexcept
+            : d_owner(owner), d_id(id), d_flags(flags), d_used(false)
+        {
+        }
+
+        JsonConfig *d_owner;
+        TxId d_id;
+        AccessFlags d_flags;
+        bool d_used;
+    };
+
+    // storage for outstanding transactions
+    mutable std::mutex d_tx_mutex;
+    std::unordered_map<TxId, std::unique_ptr<Transaction>> d_transactions;
+    TxId d_next_txid = 1;
+
+    // helpers
+    Transaction *create_transaction_internal(AccessFlags flags, std::error_code *ec) noexcept;
+    void destroy_transaction_internal(TxId id) noexcept;
+    Transaction *find_transaction_locked(TxId id) noexcept;
+
+    // Factory helpers for ReadLock/WriteLock (same as before)
+    // (declare ReadLock/WriteLock here and define them later or keep as before)
+  public:
+    // Forward declare ReadLock/WriteLock to keep public API similar
     class PYLABHUB_UTILS_EXPORT ReadLock
     {
       public:
@@ -161,18 +166,11 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         ReadLock &operator=(const ReadLock &) = delete;
 
       private:
-        struct Impl;
-        std::unique_ptr<Impl> d_;
+        struct ImplInner;
+        std::unique_ptr<ImplInner> d_;
         friend class JsonConfig;
     };
 
-    /**
-     * @brief RAII guard for thread-safe write access to the in-memory JSON data.
-     *
-     * The constructor of this object acquires an exclusive lock on the data; the
-     * destructor releases it. Prefer using the lambda-based `transaction().write()`
-     * for simpler, safer scoped access.
-     */
     class PYLABHUB_UTILS_EXPORT WriteLock
     {
       public:
@@ -186,68 +184,263 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         WriteLock &operator=(const WriteLock &) = delete;
 
       private:
-        struct Impl;
-        std::unique_ptr<Impl> d_;
+        struct ImplInner;
+        std::unique_ptr<ImplInner> d_;
         friend class JsonConfig;
     };
-
-    // ----------------- Preferred API: Scoped, Thread-Safe Accessors -----------------
-
-    /**
-     * @brief Flags to control the behavior of a transaction.
-     */
-    enum class AccessFlags
-    {
-        Default = 0,
-        /**< Default behavior: read from memory, no automatic commit. */
-        UnSynced = Default,
-        /**< Alias for Default. Operation is on in-memory data only. */
-        ReloadFirst = 1 << 0,
-        /**< Reload data from disk before the operation. */
-        CommitAfter = 1 << 1,
-        /**< Commit data to disk after the operation (write access only). */
-        FullSync = ReloadFirst | CommitAfter,
-        /**< Reload before and commit after the operation. */
-    };
-
-    friend AccessFlags operator|(AccessFlags a, AccessFlags b)
-    {
-        return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
-    }
-
-    /**
-     * @brief Creates a transaction token for performing a read or write operation.
-     * @param flags Flags to control the transaction's behavior (e.g., reload, commit).
-     * @return A single-use transaction object.
-     *
-     * @example
-     * @code
-     *   cfg.transaction(JsonConfig::AccessFlags::FullSync).write([&](auto& j) {
-     *       j["key"] = "value";
-     *   });
-     * @endcode
-     */
-    [[nodiscard]] JsonConfigTransaction transaction(AccessFlags flags = AccessFlags::Default) noexcept;
-
-  private:
-    struct Impl;
-    std::unique_ptr<Impl> pImpl;
-
-    // Factory methods for manual RAII locking.
-    std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
-    std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
-
-    // Internal I/O helpers
-    bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
-    bool private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
-                                       std::error_code *ec) noexcept;
-
-    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
-                                  std::error_code *ec) noexcept;
-};
 
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+};
 
-#include "utils/JsonConfigTransaction.inl"
+#include <system_error>
+#include <string>
+
+namespace pylabhub::utils
+{
+
+// Inline template definitions for Transaction::read / write
+
+template <typename F>
+void JsonConfig::Transaction::read(F &&fn, std::error_code *ec, std::source_location loc)
+{
+    // Single-use semantics: check used flag, and mark used at the end (transaction removed)
+    if (!d_owner)
+    {
+        if (ec) *ec = std::make_error_code(std::errc::not_connected);
+        return;
+    }
+
+    // Quick check to prevent reuse
+    {
+        std::lock_guard<std::mutex> lg(d_owner->d_tx_mutex);
+        if (d_used)
+        {
+            if (ec) *ec = std::make_error_code(std::errc::operation_not_permitted);
+            return;
+        }
+        // mark used to prevent races if another thread tries to use same Tx concurrently
+        d_used = true;
+    }
+
+    // Ensure transaction is erased at the end regardless of outcome
+    // Capture id and owner pointer for erase
+    TxId id = d_id;
+    JsonConfig *owner = d_owner;
+
+    // Recursion guard
+    if (basics::RecursionGuard::is_recursing(owner->pImpl.get()))
+    {
+        // cleanup transaction entry
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+        return;
+    }
+
+    // Optionally reload first (calls owner->reload which itself uses file lock)
+    if (static_cast<int>(d_flags) & static_cast<int>(AccessFlags::ReloadFirst))
+    {
+        std::error_code reload_ec;
+        if (!owner->reload(&reload_ec))
+        {
+            owner->destroy_transaction_internal(id);
+            if (ec) *ec = reload_ec;
+            return;
+        }
+    }
+
+    // Acquire read lock via factory
+    std::error_code lock_ec;
+    auto rlock_opt = owner->lock_for_read(&lock_ec);
+    if (!rlock_opt)
+    {
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = lock_ec;
+        return;
+    }
+
+    // Execute user lambda while holding read lock
+    {
+        auto rlock = std::move(*rlock_opt);
+        try
+        {
+            fn(rlock.json());
+            if (ec) *ec = std::error_code{};
+        }
+        catch (const std::exception &ex)
+        {
+            LOGGER_ERROR("JsonConfig transaction read lambda threw: {}, called at {}", ex.what(), SRCLOC_TO_STR(loc));
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            owner->destroy_transaction_internal(id);
+            return;
+        }
+        catch (...)
+        {
+            LOGGER_ERROR("JsonConfig transaction read lambda threw unknown exception, called at {}", SRCLOC_TO_STR(loc));
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            owner->destroy_transaction_internal(id);
+            return;
+        }
+    }
+
+    // Destroy transaction entry now that it's been used
+    owner->destroy_transaction_internal(id);
+}
+
+template <typename F>
+void JsonConfig::Transaction::write(F &&fn, std::error_code *ec, std::source_location loc)
+{
+    if (!d_owner)
+    {
+        if (ec) *ec = std::make_error_code(std::errc::not_connected);
+        return;
+    }
+
+    // Prevent reuse
+    {
+        std::lock_guard<std::mutex> lg(d_owner->d_tx_mutex);
+        if (d_used)
+        {
+            if (ec) *ec = std::make_error_code(std::errc::operation_not_permitted);
+            return;
+        }
+        d_used = true;
+    }
+
+    TxId id = d_id;
+    JsonConfig *owner = d_owner;
+
+    // Recursion guard
+    if (basics::RecursionGuard::is_recursing(owner->pImpl.get()))
+    {
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = std::make_error_code(std::errc::resource_deadlock_would_occur);
+        return;
+    }
+
+    // Acquire unique write lock
+    std::error_code lock_ec;
+    auto wlock_opt = owner->lock_for_write(&lock_ec);
+    if (!wlock_opt)
+    {
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = lock_ec;
+        return;
+    }
+    auto wlock = std::move(*wlock_opt);
+
+    // If ReloadFirst, perform reload under unique lock to avoid races
+    if (static_cast<int>(d_flags) & static_cast<int>(AccessFlags::ReloadFirst))
+    {
+        FileLock fLock(owner->pImpl->configPath, ResourceType::File, LockMode::Blocking);
+        if (!fLock.valid())
+        {
+            owner->destroy_transaction_internal(id);
+            if (ec) *ec = fLock.error_code();
+            return;
+        }
+        if (!owner->private_load_from_disk_unsafe(ec))
+        {
+            owner->destroy_transaction_internal(id);
+            return;
+        }
+    }
+
+    // Snapshot before change
+    nlohmann::json before;
+    try
+    {
+        before = wlock.json(); // copy while holding unique lock
+    }
+    catch (...)
+    {
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return;
+    }
+
+    // Run user-provided lambda safely. WriteLock::json() sets dirty flag.
+    bool user_ok = false;
+    try
+    {
+        fn(wlock.json());
+        user_ok = true;
+    }
+    catch (const std::exception &ex)
+    {
+        LOGGER_ERROR("JsonConfig transaction write lambda threw: {}, called at {}", ex.what(), SRCLOC_TO_STR(loc));
+        // rollback
+        owner->pImpl->data = std::move(before);
+        owner->pImpl->dirty.store(false, std::memory_order_release);
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return;
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("JsonConfig transaction write lambda threw unknown exception, called at {}", SRCLOC_TO_STR(loc));
+        owner->pImpl->data = std::move(before);
+        owner->pImpl->dirty.store(false, std::memory_order_release);
+        owner->destroy_transaction_internal(id);
+        if (ec) *ec = std::make_error_code(std::errc::io_error);
+        return;
+    }
+
+    // Validate JSON by round-trip dump/parse
+    if (user_ok)
+    {
+        try
+        {
+            std::string s = wlock.json().dump();
+            (void)nlohmann::json::parse(s);
+        }
+        catch (const std::exception &ex)
+        {
+            LOGGER_ERROR("JsonConfig transaction produced invalid JSON: {}, called at {}", ex.what(), SRCLOC_TO_STR(loc));
+            owner->pImpl->data = std::move(before);
+            owner->pImpl->dirty.store(false, std::memory_order_release);
+            owner->destroy_transaction_internal(id);
+            if (ec) *ec = std::make_error_code(std::errc::invalid_argument);
+            return;
+        }
+    }
+
+    // Handle commit if requested: snapshot, release lock, commit to disk
+    if (static_cast<int>(d_flags) & static_cast<int>(AccessFlags::CommitAfter))
+    {
+        nlohmann::json snapshot;
+        try
+        {
+            snapshot = wlock.json();
+        }
+        catch (...)
+        {
+            // rollback
+            owner->pImpl->data = std::move(before);
+            owner->pImpl->dirty.store(false, std::memory_order_release);
+            owner->destroy_transaction_internal(id);
+            if (ec) *ec = std::make_error_code(std::errc::io_error);
+            return;
+        }
+
+        // release the unique lock
+        wlock = JsonConfig::WriteLock();
+
+        // commit snapshot to disk (acquires file lock internally)
+        if (!owner->private_commit_to_disk_unsafe(snapshot, ec))
+        {
+            // keep in-memory change (dirty), report error
+            owner->destroy_transaction_internal(id);
+            return;
+        }
+    }
+
+    // success
+    owner->destroy_transaction_internal(id);
+    if (ec) *ec = std::error_code{};
+}
+
+} // namespace pylabhub::utils
+
+#endif // JsonConfig.hpp

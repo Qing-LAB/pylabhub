@@ -165,12 +165,14 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
  * @brief Macro to capture the current source location.
  * @details Expands to `std::source_location::current()`.
  */
+inline std::string SRCLOC_TO_STR(std::source_location loc)
+{
+    return fmt::format("{}:{}:{}", pylabhub::format_tools::filename_only(loc.file_name()),
+                       loc.line(), loc.function_name());
+}
+
 #ifndef PLH_LOC_HERE_STR
-#define PLH_LOC_HERE_STR                                                                           \
-    (fmt::format(                                                                                  \
-        "{}:{}:{}",                                                                                \
-        pylabhub::format_tools::filename_only(std::source_location::current().file_name()),        \
-        std::source_location::current().line(), std::source_location::current().function_name()))
+#define PLH_LOC_HERE_STR (SRCLOC_TO_STR(std::source_location::current()))
 #endif
 
 /**
