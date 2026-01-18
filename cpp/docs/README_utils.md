@@ -240,8 +240,7 @@ void transactional_access(pylabhub::utils::JsonConfig& cfg) {
 
     // --- In-Memory Write ---
     // The operation is fast and only affects the in-memory copy.
-    with_json_write(
-        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
+    cfg.transaction(JsonConfig::AccessFlags::UnSynced).write(
         [&](nlohmann::json& j) {
             j["hostname"] = "localhost";
             j["port"] = 8080;
@@ -250,8 +249,7 @@ void transactional_access(pylabhub::utils::JsonConfig& cfg) {
     
     // --- In-Memory Read ---
     int port = 0;
-    with_json_read(
-        cfg.transaction(JsonConfig::AccessFlags::UnSynced),
+    cfg.transaction(JsonConfig::AccessFlags::UnSynced).read(
         [&](const nlohmann::json& j) {
             port = j.value("port", 0);
         },
@@ -262,8 +260,7 @@ void transactional_access(pylabhub::utils::JsonConfig& cfg) {
     // --- Fully Synchronized Write ---
     // For process-safe interaction, use FullSync. This reloads the latest
     // data from disk, lets you modify it, and writes it back atomically.
-    with_json_write(
-        cfg.transaction(JsonConfig::AccessFlags::FullSync),
+    cfg.transaction(JsonConfig::AccessFlags::FullSync).write(
         [&](nlohmann::json& j) {
             int current_requests = j.value("requests", 0);
             j["requests"] = current_requests + 1;

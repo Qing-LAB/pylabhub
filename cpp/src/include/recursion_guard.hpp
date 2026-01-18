@@ -128,7 +128,8 @@ class RecursionGuard
             // The key previously managed by 'other' remains on the stack,
             // but is now associated with '*this' guard object.
             key_ = other.key_;
-            other.key_ = nullptr; // Make 'other' inert to prevent it from popping the key on destruction.
+            other.key_ =
+                nullptr; // Make 'other' inert to prevent it from popping the key on destruction.
         }
         return *this;
     }

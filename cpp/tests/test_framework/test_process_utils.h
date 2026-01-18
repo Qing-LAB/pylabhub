@@ -112,6 +112,7 @@ class WorkerProcess
  *
  * @param proc The WorkerProcess instance to check.
  */
-void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings = {});
+void expect_worker_ok(const WorkerProcess &proc,
+                      const std::vector<std::string> &expected_stderr_substrings = {});
 
 } // namespace pylabhub::tests::helper

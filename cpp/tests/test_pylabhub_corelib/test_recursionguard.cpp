@@ -166,7 +166,7 @@ TEST(RecursionGuardTest, MoveSemantics)
         RecursionGuard g3(&obj_key);
         ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));
 
-        RecursionGuard g4(nullptr); // Inert guard
+        RecursionGuard g4(nullptr);                          // Inert guard
         ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key)); // Still true, as g3 holds it
 
         g4 = std::move(g3); // Move assignment
@@ -190,13 +190,12 @@ TEST(RecursionGuardTest, MoveSemantics)
         g6 = std::move(g5); // g6 now manages &obj_key, g5 is inert.
                             // g6's old key (&another_key) is popped by swap from move assignment.
         ASSERT_FALSE(RecursionGuard::is_recursing(&another_key)); // Original key of g6 is popped
-        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key)); // New key of g6 is active
+        ASSERT_TRUE(RecursionGuard::is_recursing(&obj_key));      // New key of g6 is active
     }
     // Both g6 and g5 are out of scope.
     ASSERT_FALSE(RecursionGuard::is_recursing(&obj_key));
     ASSERT_FALSE(RecursionGuard::is_recursing(&another_key));
 }
-
 
 /**
  * @brief Verifies that the RecursionGuard is thread-safe and its state

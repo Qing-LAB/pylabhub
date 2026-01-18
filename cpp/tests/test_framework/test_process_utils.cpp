@@ -9,9 +9,9 @@
 #include <chrono>
 #include <cstdio>  // For stderr
 #include <fcntl.h> // For open, O_WRONLY
+#include <iostream>
 #include <string>
 #include <vector>
-#include <iostream>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -27,8 +27,7 @@ namespace pylabhub::tests::helper
 // Internal helper to spawn a process with output redirection
 static ProcessHandle spawn_worker_process(const std::string &exe_path, const std::string &mode,
                                           const std::vector<std::string> &args,
-                                          const fs::path &stdout_path,
-                                          const fs::path &stderr_path,
+                                          const fs::path &stdout_path, const fs::path &stderr_path,
                                           bool redirect_stderr_to_console)
 {
 #if defined(PLATFORM_WIN64)
@@ -50,21 +49,26 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
     sa.bInheritHandle = TRUE;
     sa.lpSecurityDescriptor = NULL;
 
-    HANDLE hStdout = CreateFileW(stdout_path.c_str(), GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
-                                 FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hStdout == INVALID_HANDLE_VALUE) {
+    HANDLE hStdout =
+        CreateFileW(stdout_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hStdout == INVALID_HANDLE_VALUE)
+    {
         return NULL_PROC_HANDLE;
     }
 
     HANDLE hStderr;
-    if (redirect_stderr_to_console) {
+    if (redirect_stderr_to_console)
+    {
         hStderr = GetStdHandle(STD_ERROR_HANDLE);
-    } else {
-        hStderr = CreateFileW(stderr_path.c_str(), GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hStderr == INVALID_HANDLE_VALUE) {
+    }
+    else
+    {
+        hStderr =
+            CreateFileW(stderr_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hStderr == INVALID_HANDLE_VALUE)
+        {
             CloseHandle(hStdout);
             return NULL_PROC_HANDLE;
         }
@@ -78,7 +82,8 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
                              /*bInheritHandles*/ TRUE, 0, nullptr, nullptr, &si, &pi);
 
     CloseHandle(hStdout);
-    if (!redirect_stderr_to_console) {
+    if (!redirect_stderr_to_console)
+    {
         CloseHandle(hStderr);
     }
 
@@ -110,7 +115,8 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
             close(stdout_fd);
         }
 
-        if (!redirect_stderr_to_console) {
+        if (!redirect_stderr_to_console)
+        {
             int stderr_fd = open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (stderr_fd != -1)
             {
@@ -133,7 +139,8 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
         execv(exe_path.c_str(), argv.data());
 
         // If execv returns, it must have failed
-        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno), errno);
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(),
+                strerror(errno), errno);
         _exit(127);
     }
     return pid;
@@ -171,7 +178,6 @@ static int wait_for_worker_and_get_exit_code(ProcessHandle handle)
 #endif
 }
 
-
 WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mode,
                              const std::vector<std::string> &args, bool redirect_stderr_to_console)
     : redirect_stderr_to_console_(redirect_stderr_to_console)
@@ -180,15 +186,15 @@ WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mod
     std::replace(base_name.begin(), base_name.end(), '.', '_');
     auto ts = std::chrono::high_resolution_clock::now().time_since_epoch().count();
 
-    stdout_path_ =
-        fs::temp_directory_path() / fmt::format("{}_{}_stdout.log", base_name, ts);
-    
-    if (!redirect_stderr_to_console_) {
-        stderr_path_ =
-            fs::temp_directory_path() / fmt::format("{}_{}_stderr.log", base_name, ts);
+    stdout_path_ = fs::temp_directory_path() / fmt::format("{}_{}_stdout.log", base_name, ts);
+
+    if (!redirect_stderr_to_console_)
+    {
+        stderr_path_ = fs::temp_directory_path() / fmt::format("{}_{}_stderr.log", base_name, ts);
     }
 
-    handle_ = spawn_worker_process(exe_path, mode, args, stdout_path_, stderr_path_, redirect_stderr_to_console_);
+    handle_ = spawn_worker_process(exe_path, mode, args, stdout_path_, stderr_path_,
+                                   redirect_stderr_to_console_);
 }
 
 WorkerProcess::~WorkerProcess()
@@ -199,7 +205,8 @@ WorkerProcess::~WorkerProcess()
     }
     std::error_code ec;
     fs::remove(stdout_path_, ec);
-    if (!redirect_stderr_to_console_) {
+    if (!redirect_stderr_to_console_)
+    {
         fs::remove(stderr_path_, ec);
     }
 }
@@ -214,7 +221,8 @@ int WorkerProcess::wait_for_exit()
     handle_ = NULL_PROC_HANDLE;
 
     read_file_contents(stdout_path_.string(), stdout_content_);
-    if (!redirect_stderr_to_console_) {
+    if (!redirect_stderr_to_console_)
+    {
         read_file_contents(stderr_path_.string(), stderr_content_);
     }
     return exit_code_;
@@ -234,7 +242,8 @@ const std::string &WorkerProcess::get_stderr() const
     return stderr_content_;
 }
 
-void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings)
+void expect_worker_ok(const WorkerProcess &proc,
+                      const std::vector<std::string> &expected_stderr_substrings)
 {
     using ::testing::HasSubstr;
     using ::testing::Not;
@@ -242,26 +251,32 @@ void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>&
     // This check is fundamental and should always be performed.
     ASSERT_EQ(proc.exit_code(), 0) << "Worker process failed with non-zero exit code. Stderr:\n"
                                    << proc.get_stderr();
-    
+
     // If stderr was redirected to console, we cannot and should not check its content.
     // The assertions are based on the captured stderr file.
-    if (proc.get_stderr().empty() && proc.exit_code() == 0) {
+    if (proc.get_stderr().empty() && proc.exit_code() == 0)
+    {
         // This can happen if stderr was redirected to console.
         // We can't make assertions on stderr content, so we just check exit code.
         // A warning could be logged here if needed.
-        std::cout << "[WARN] Stderr was not captured (likely redirected to console). Skipping stderr content checks." << std::endl;
+        std::cout << "[WARN] Stderr was not captured (likely redirected to console). Skipping "
+                     "stderr content checks."
+                  << std::endl;
         return;
     }
 
-
     const auto &stderr_out = proc.get_stderr();
-    if (expected_stderr_substrings.empty()) {
+    if (expected_stderr_substrings.empty())
+    {
         EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
         EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
         EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
         EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
-    } else {
-        for (const auto& substr : expected_stderr_substrings) {
+    }
+    else
+    {
+        for (const auto &substr : expected_stderr_substrings)
+        {
             EXPECT_THAT(stderr_out, HasSubstr(substr));
         }
     }

@@ -5,34 +5,34 @@
  * This implements the Data Exchange Hub framework as specified in HEP core-0002.
  ******************************************************************************/
 
-#include "platform.hpp"
 #include "utils/SharedMemoryHub.hpp"
-#include "utils/Logger.hpp"
+#include "platform.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 
-#include <zmq.h>
-#include <sodium.h>
 #include <nlohmann/json.hpp>
+#include <sodium.h>
+#include <zmq.h>
 
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <sstream>
 #include <thread>
 #include <vector>
-#include <sstream>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#include <windows.h>
 #include <synchapi.h>
+#include <windows.h>
 #else
+#include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <errno.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 namespace pylabhub::hub
@@ -54,8 +54,8 @@ class HubImpl
 {
   public:
     BrokerConfig m_config;
-    void *m_context{nullptr};        // ZeroMQ context
-    void *m_broker_socket{nullptr};  // ZeroMQ socket for broker communication
+    void *m_context{nullptr};       // ZeroMQ context
+    void *m_broker_socket{nullptr}; // ZeroMQ socket for broker communication
     std::string m_client_secret_key;
     std::string m_client_public_key;
     std::atomic<bool> m_running{false};
@@ -65,12 +65,12 @@ class HubImpl
     void start_heartbeat_thread();
     void stop_heartbeat_thread();
     bool send_heartbeat();
-    
+
     // Broker protocol methods
     bool register_channel(const std::string &channel_type, const std::string &channel_name,
                           const nlohmann::json &metadata);
     bool discover_channel(const std::string &channel_type, const std::string &channel_name,
-                         nlohmann::json &metadata);
+                          nlohmann::json &metadata);
     bool send_broker_message(const nlohmann::json &request, nlohmann::json &response,
                              uint32_t timeout_ms = 5000);
 };
@@ -162,9 +162,7 @@ class ZmqRequestClientImpl
 // Hub Implementation
 // ============================================================================
 
-Hub::Hub() : pImpl(std::make_unique<HubImpl>())
-{
-}
+Hub::Hub() : pImpl(std::make_unique<HubImpl>()) {}
 
 std::unique_ptr<Hub> Hub::connect(const BrokerConfig &config)
 {
@@ -186,9 +184,7 @@ Hub::~Hub()
     }
 }
 
-Hub::Hub(Hub &&other) noexcept : pImpl(std::move(other.pImpl))
-{
-}
+Hub::Hub(Hub &&other) noexcept : pImpl(std::move(other.pImpl)) {}
 
 Hub &Hub::operator=(Hub &&other) noexcept
 {
@@ -207,19 +203,19 @@ bool HubImpl::initialize(const BrokerConfig &config)
         LOGGER_ERROR("Hub: Broker endpoint cannot be empty");
         return false;
     }
-    
+
     if (!validate_broker_public_key(config.broker_public_key))
     {
         LOGGER_ERROR("Hub: Invalid broker public key format");
         return false;
     }
-    
+
     if (config.heartbeat_interval_ms == 0)
     {
         LOGGER_ERROR("Hub: Heartbeat interval must be greater than 0");
         return false;
     }
-    
+
     m_config = config;
 
     // Create ZeroMQ context
@@ -314,17 +310,19 @@ bool HubImpl::initialize(const BrokerConfig &config)
 void HubImpl::start_heartbeat_thread()
 {
     m_running.store(true);
-    m_heartbeat_thread = std::thread([this]() {
-        while (m_running.load(std::memory_order_acquire))
+    m_heartbeat_thread = std::thread(
+        [this]()
         {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(m_config.heartbeat_interval_ms));
-            if (m_running.load(std::memory_order_acquire))
+            while (m_running.load(std::memory_order_acquire))
             {
-                send_heartbeat();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(m_config.heartbeat_interval_ms));
+                if (m_running.load(std::memory_order_acquire))
+                {
+                    send_heartbeat();
+                }
             }
-        }
-    });
+        });
 }
 
 void HubImpl::stop_heartbeat_thread()
@@ -352,11 +350,9 @@ bool HubImpl::send_heartbeat()
         return false;
 
     // Send heartbeat message as JSON
-    nlohmann::json heartbeat_msg = {
-        {"type", "heartbeat"},
-        {"client_public_key", m_client_public_key}
-    };
-    
+    nlohmann::json heartbeat_msg = {{"type", "heartbeat"},
+                                    {"client_public_key", m_client_public_key}};
+
     std::string msg_str = heartbeat_msg.dump();
     int rc = zmq_send(m_broker_socket, msg_str.c_str(), msg_str.size(), ZMQ_DONTWAIT);
     if (rc < 0)
@@ -371,7 +367,7 @@ bool HubImpl::send_heartbeat()
 }
 
 bool HubImpl::send_broker_message(const nlohmann::json &request, nlohmann::json &response,
-                                   uint32_t timeout_ms)
+                                  uint32_t timeout_ms)
 {
     if (!m_broker_socket)
     {
@@ -381,7 +377,7 @@ bool HubImpl::send_broker_message(const nlohmann::json &request, nlohmann::json 
 
     // Serialize request to JSON string
     std::string request_str = request.dump();
-    
+
     // Send request
     int rc = zmq_send(m_broker_socket, request_str.c_str(), request_str.size(), 0);
     if (rc < 0)
@@ -416,7 +412,7 @@ bool HubImpl::send_broker_message(const nlohmann::json &request, nlohmann::json 
     try
     {
         std::string response_str(static_cast<const char *>(zmq_msg_data(&response_msg)),
-                                zmq_msg_size(&response_msg));
+                                 zmq_msg_size(&response_msg));
         response = nlohmann::json::parse(response_str);
     }
     catch (const nlohmann::json::exception &e)
@@ -433,18 +429,17 @@ bool HubImpl::send_broker_message(const nlohmann::json &request, nlohmann::json 
 bool HubImpl::register_channel(const std::string &channel_type, const std::string &channel_name,
                                const nlohmann::json &metadata)
 {
-    nlohmann::json request = {
-        {"type", "register"},
-        {"channel_type", channel_type},
-        {"channel_name", channel_name},
-        {"client_public_key", m_client_public_key},
-        {"metadata", metadata}
-    };
+    nlohmann::json request = {{"type", "register"},
+                              {"channel_type", channel_type},
+                              {"channel_name", channel_name},
+                              {"client_public_key", m_client_public_key},
+                              {"metadata", metadata}};
 
     nlohmann::json response;
     if (!send_broker_message(request, response, 5000))
     {
-        LOGGER_ERROR("Hub: Failed to register channel '{}' of type '{}'", channel_name, channel_type);
+        LOGGER_ERROR("Hub: Failed to register channel '{}' of type '{}'", channel_name,
+                     channel_type);
         return false;
     }
 
@@ -454,13 +449,13 @@ bool HubImpl::register_channel(const std::string &channel_type, const std::strin
         LOGGER_ERROR("Hub: Broker response is not a JSON object");
         return false;
     }
-    
+
     if (!response.contains("status"))
     {
         LOGGER_ERROR("Hub: Broker response missing 'status' field");
         return false;
     }
-    
+
     if (response["status"] != "ok")
     {
         std::string error_msg = response.value("error", "Unknown error");
@@ -468,24 +463,24 @@ bool HubImpl::register_channel(const std::string &channel_type, const std::strin
         return false;
     }
 
-    LOGGER_INFO("Hub: Successfully registered channel '{}' of type '{}'", channel_name, channel_type);
+    LOGGER_INFO("Hub: Successfully registered channel '{}' of type '{}'", channel_name,
+                channel_type);
     return true;
 }
 
 bool HubImpl::discover_channel(const std::string &channel_type, const std::string &channel_name,
                                nlohmann::json &metadata)
 {
-    nlohmann::json request = {
-        {"type", "discover"},
-        {"channel_type", channel_type},
-        {"channel_name", channel_name},
-        {"client_public_key", m_client_public_key}
-    };
+    nlohmann::json request = {{"type", "discover"},
+                              {"channel_type", channel_type},
+                              {"channel_name", channel_name},
+                              {"client_public_key", m_client_public_key}};
 
     nlohmann::json response;
     if (!send_broker_message(request, response, 5000))
     {
-        LOGGER_ERROR("Hub: Failed to discover channel '{}' of type '{}'", channel_name, channel_type);
+        LOGGER_ERROR("Hub: Failed to discover channel '{}' of type '{}'", channel_name,
+                     channel_type);
         return false;
     }
 
@@ -495,13 +490,13 @@ bool HubImpl::discover_channel(const std::string &channel_type, const std::strin
         LOGGER_ERROR("Hub: Broker response is not a JSON object");
         return false;
     }
-    
+
     if (!response.contains("status"))
     {
         LOGGER_ERROR("Hub: Broker response missing 'status' field");
         return false;
     }
-    
+
     if (response["status"] != "ok")
     {
         std::string error_msg = response.value("error", "Channel not found");
@@ -519,7 +514,8 @@ bool HubImpl::discover_channel(const std::string &channel_type, const std::strin
         metadata = nlohmann::json::object();
     }
 
-    LOGGER_INFO("Hub: Successfully discovered channel '{}' of type '{}'", channel_name, channel_type);
+    LOGGER_INFO("Hub: Successfully discovered channel '{}' of type '{}'", channel_name,
+                channel_type);
     return true;
 }
 
@@ -533,23 +529,25 @@ bool validate_channel_name(const std::string &name)
         LOGGER_ERROR("Hub: Channel name cannot be empty");
         return false;
     }
-    
+
     if (name.length() > 255)
     {
         LOGGER_ERROR("Hub: Channel name too long (max 255 characters): {}", name.length());
         return false;
     }
-    
+
     // Allow alphanumeric, underscores, and hyphens
     for (char c : name)
     {
         if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
         {
-            LOGGER_ERROR("Hub: Invalid character in channel name '{}': '{}' (only alphanumeric, underscore, and hyphen allowed)", name, c);
+            LOGGER_ERROR("Hub: Invalid character in channel name '{}': '{}' (only alphanumeric, "
+                         "underscore, and hyphen allowed)",
+                         name, c);
             return false;
         }
     }
-    
+
     return true;
 }
 } // namespace
@@ -559,11 +557,13 @@ bool validate_broker_public_key(const std::string &key)
     // CurveZMQ public keys are Z85-encoded, 40 characters + null terminator = 41
     if (key.length() != 40)
     {
-        LOGGER_ERROR("Hub: Invalid broker public key length: {} (expected 40 for Z85 encoding)", key.length());
+        LOGGER_ERROR("Hub: Invalid broker public key length: {} (expected 40 for Z85 encoding)",
+                     key.length());
         return false;
     }
-    
-    // Validate Z85 encoding (base85: 0-9, A-Z, a-z, ., -, :, +, =, ^, !, /, *, ?, &, <, >, (, ), [, ], {, }, @, %, $, #)
+
+    // Validate Z85 encoding (base85: 0-9, A-Z, a-z, ., -, :, +, =, ^, !, /, *, ?, &, <, >, (, ), [,
+    // ], {, }, @, %, $, #)
     for (char c : key)
     {
         if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -576,7 +576,7 @@ bool validate_broker_public_key(const std::string &key)
             return false;
         }
     }
-    
+
     return true;
 }
 
@@ -593,16 +593,18 @@ std::unique_ptr<SharedMemoryProducer> Hub::create_shm_producer(const std::string
     {
         return nullptr;
     }
-    
+
     if (size < MIN_SHARED_MEMORY_SIZE)
     {
-        LOGGER_ERROR("Hub: Shared memory size must be at least {} bytes, got {}", MIN_SHARED_MEMORY_SIZE, size);
+        LOGGER_ERROR("Hub: Shared memory size must be at least {} bytes, got {}",
+                     MIN_SHARED_MEMORY_SIZE, size);
         return nullptr;
     }
-    
+
     if (size > MAX_SHARED_MEMORY_SIZE)
     {
-        LOGGER_ERROR("Hub: Shared memory size too large: {} (max {} bytes)", size, MAX_SHARED_MEMORY_SIZE);
+        LOGGER_ERROR("Hub: Shared memory size too large: {} (max {} bytes)", size,
+                     MAX_SHARED_MEMORY_SIZE);
         return nullptr;
     }
 
@@ -614,11 +616,8 @@ std::unique_ptr<SharedMemoryProducer> Hub::create_shm_producer(const std::string
 
     // Register with broker
     nlohmann::json metadata = {
-        {"channel_type", "shared_memory"},
-        {"size", size},
-        {"shm_name", "/pylabhub_shm_" + name}
-    };
-    
+        {"channel_type", "shared_memory"}, {"size", size}, {"shm_name", "/pylabhub_shm_" + name}};
+
     if (!pImpl->register_channel("shared_memory", name, metadata))
     {
         // Registration failed, but producer is already created
@@ -644,7 +643,7 @@ std::unique_ptr<SharedMemoryConsumer> Hub::find_shm_consumer(const std::string &
     // Extract shared memory segment name from metadata
     std::string shm_name = metadata.value("shm_name", "/pylabhub_shm_" + name);
     size_t size = metadata.value("size", 0ULL);
-    
+
     if (size == 0)
     {
         LOGGER_ERROR("Hub: Invalid size in channel metadata for '{}'", name);
@@ -668,7 +667,7 @@ std::unique_ptr<ZmqPublisher> Hub::create_publisher(const std::string &service_n
     {
         return nullptr;
     }
-    
+
     auto publisher = std::unique_ptr<ZmqPublisher>(new ZmqPublisher());
     if (!publisher->pImpl->initialize(service_name, this))
     {
@@ -679,19 +678,16 @@ std::unique_ptr<ZmqPublisher> Hub::create_publisher(const std::string &service_n
     char actual_endpoint[256];
     size_t endpoint_len = sizeof(actual_endpoint);
     std::string endpoint_str;
-    if (publisher->pImpl->m_socket &&
-        zmq_getsockopt(publisher->pImpl->m_socket, ZMQ_LAST_ENDPOINT, actual_endpoint, &endpoint_len) == 0)
+    if (publisher->pImpl->m_socket && zmq_getsockopt(publisher->pImpl->m_socket, ZMQ_LAST_ENDPOINT,
+                                                     actual_endpoint, &endpoint_len) == 0)
     {
         endpoint_str = std::string(actual_endpoint);
     }
 
     // Register with broker
     nlohmann::json metadata = {
-        {"channel_type", "zmq_pub_sub"},
-        {"pattern", "publish"},
-        {"endpoint", endpoint_str}
-    };
-    
+        {"channel_type", "zmq_pub_sub"}, {"pattern", "publish"}, {"endpoint", endpoint_str}};
+
     if (!pImpl->register_channel("zmq_pub_sub", service_name, metadata))
     {
         publisher.reset();
@@ -726,7 +722,8 @@ std::unique_ptr<ZmqSubscriber> Hub::find_subscriber(const std::string &service_n
     }
 
     // Connect to discovered endpoint
-    if (subscriber->pImpl->m_socket && zmq_connect(subscriber->pImpl->m_socket, endpoint.c_str()) != 0)
+    if (subscriber->pImpl->m_socket &&
+        zmq_connect(subscriber->pImpl->m_socket, endpoint.c_str()) != 0)
     {
         LOGGER_ERROR("ZmqSubscriber: Failed to connect to endpoint {}: {}", endpoint,
                      zmq_strerror(zmq_errno()));
@@ -745,7 +742,7 @@ std::unique_ptr<ZmqRequestServer> Hub::create_req_server(const std::string &serv
     {
         return nullptr;
     }
-    
+
     auto server = std::unique_ptr<ZmqRequestServer>(new ZmqRequestServer());
     if (!server->pImpl->initialize(service_name, this))
     {
@@ -756,19 +753,16 @@ std::unique_ptr<ZmqRequestServer> Hub::create_req_server(const std::string &serv
     char actual_endpoint[256];
     size_t endpoint_len = sizeof(actual_endpoint);
     std::string endpoint_str;
-    if (server->pImpl->m_socket &&
-        zmq_getsockopt(server->pImpl->m_socket, ZMQ_LAST_ENDPOINT, actual_endpoint, &endpoint_len) == 0)
+    if (server->pImpl->m_socket && zmq_getsockopt(server->pImpl->m_socket, ZMQ_LAST_ENDPOINT,
+                                                  actual_endpoint, &endpoint_len) == 0)
     {
         endpoint_str = std::string(actual_endpoint);
     }
 
     // Register with broker
     nlohmann::json metadata = {
-        {"channel_type", "zmq_req_rep"},
-        {"pattern", "server"},
-        {"endpoint", endpoint_str}
-    };
-    
+        {"channel_type", "zmq_req_rep"}, {"pattern", "server"}, {"endpoint", endpoint_str}};
+
     if (!pImpl->register_channel("zmq_req_rep", service_name, metadata))
     {
         server.reset();
@@ -786,7 +780,7 @@ std::unique_ptr<ZmqRequestClient> Hub::find_req_client(const std::string &servic
     {
         return nullptr;
     }
-    
+
     // Query broker for server endpoint
     nlohmann::json metadata;
     if (!pImpl->discover_channel("zmq_req_rep", service_name, metadata))
@@ -883,7 +877,7 @@ void *SharedMemoryProducer::begin_publish()
 }
 
 void SharedMemoryProducer::end_publish(uint64_t data_size, double timestamp,
-                                        uint32_t data_type_hash, const uint64_t dimensions[4])
+                                       uint32_t data_type_hash, const uint64_t dimensions[4])
 {
     if (!pImpl || !pImpl->m_header)
         return;
@@ -949,7 +943,7 @@ void SharedMemoryProducerImpl::cleanup()
         // For now, we unlink on cleanup. In a full implementation, we would use
         // reference counting or a separate cleanup mechanism that doesn't break
         // active consumers. The broker could track references and handle cleanup.
-        // 
+        //
         // TODO: Implement reference counting or broker-managed cleanup
         shm_unlink(("/pylabhub_shm_" + m_name).c_str());
         LOGGER_INFO("SharedMemoryProducer: Unlinked shared memory segment '{}'", m_name);
@@ -990,7 +984,7 @@ bool SharedMemoryProducerImpl::initialize(const std::string &name, size_t size, 
     std::memset(m_mapped_memory, 0, sizeof(SharedMemoryHeader));
     std::string mutex_name = "Global\\pylabhub_shm_mutex_" + m_name;
     std::string event_name = "Global\\pylabhub_shm_event_" + m_name;
-    
+
     m_mutex = CreateMutexA(nullptr, FALSE, mutex_name.c_str());
     if (!m_mutex)
     {
@@ -1085,7 +1079,6 @@ bool SharedMemoryProducerImpl::initialize(const std::string &name, size_t size, 
     return true;
 }
 
-
 // ============================================================================
 // SharedMemoryConsumer Implementation
 // ============================================================================
@@ -1139,16 +1132,17 @@ const void *SharedMemoryConsumer::consume(uint32_t timeout_ms)
     }
 
     // Acquire mutex first
-    DWORD wait_result = WaitForSingleObject(pImpl->m_mutex, timeout_ms == 0 ? INFINITE : timeout_ms);
+    DWORD wait_result =
+        WaitForSingleObject(pImpl->m_mutex, timeout_ms == 0 ? INFINITE : timeout_ms);
     if (wait_result != WAIT_OBJECT_0)
     {
         return nullptr; // Timeout or error acquiring mutex
     }
 
     // Calculate timeout deadline if timeout is specified
-    auto deadline = timeout_ms > 0 ? 
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms) :
-        std::chrono::steady_clock::time_point::max();
+    auto deadline = timeout_ms > 0
+                        ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms)
+                        : std::chrono::steady_clock::time_point::max();
 
     // Wait for data to be ready and not being written
     while (pImpl->m_header->data_ready.load(std::memory_order_acquire) == 0 ||
@@ -1195,8 +1189,8 @@ const void *SharedMemoryConsumer::consume(uint32_t timeout_ms)
         else if (timeout_ms > 0)
         {
             // No event handle - sleep for a short time then re-check
-            std::this_thread::sleep_for(std::chrono::milliseconds(
-                remaining_ms < 100 ? remaining_ms : 100));
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(remaining_ms < 100 ? remaining_ms : 100));
         }
 
         // Re-acquire mutex to check condition again
@@ -1291,7 +1285,7 @@ bool SharedMemoryConsumerImpl::initialize(const std::string &name, Hub *hub, siz
     (void)hub; // Hub is used for broker queries
 
     std::string shm_name = "/pylabhub_shm_" + m_name;
-    
+
     // If size was provided from broker metadata, use it; otherwise use default
     if (size > 0)
     {
@@ -1325,7 +1319,7 @@ bool SharedMemoryConsumerImpl::initialize(const std::string &name, Hub *hub, siz
     // Open synchronization primitives
     std::string mutex_name = "Global\\pylabhub_shm_mutex_" + m_name;
     std::string event_name = "Global\\pylabhub_shm_event_" + m_name;
-    
+
     m_mutex = OpenMutexA(SYNCHRONIZE, FALSE, mutex_name.c_str());
     if (!m_mutex)
     {
@@ -1386,9 +1380,7 @@ bool SharedMemoryConsumerImpl::initialize(const std::string &name, Hub *hub, siz
 // ZeroMQ Channel Implementations
 // ============================================================================
 
-ZmqPublisher::ZmqPublisher() : pImpl(std::make_unique<ZmqPublisherImpl>())
-{
-}
+ZmqPublisher::ZmqPublisher() : pImpl(std::make_unique<ZmqPublisherImpl>()) {}
 
 ZmqPublisher::~ZmqPublisher()
 {
@@ -1399,9 +1391,7 @@ ZmqPublisher::~ZmqPublisher()
     }
 }
 
-ZmqPublisher::ZmqPublisher(ZmqPublisher &&other) noexcept : pImpl(std::move(other.pImpl))
-{
-}
+ZmqPublisher::ZmqPublisher(ZmqPublisher &&other) noexcept : pImpl(std::move(other.pImpl)) {}
 
 ZmqPublisher &ZmqPublisher::operator=(ZmqPublisher &&other) noexcept
 {
@@ -1480,9 +1470,7 @@ bool ZmqPublisherImpl::initialize(const std::string &service_name, Hub *hub)
     return true;
 }
 
-ZmqSubscriber::ZmqSubscriber() : pImpl(std::make_unique<ZmqSubscriberImpl>())
-{
-}
+ZmqSubscriber::ZmqSubscriber() : pImpl(std::make_unique<ZmqSubscriberImpl>()) {}
 
 ZmqSubscriber::~ZmqSubscriber()
 {
@@ -1493,9 +1481,7 @@ ZmqSubscriber::~ZmqSubscriber()
     }
 }
 
-ZmqSubscriber::ZmqSubscriber(ZmqSubscriber &&other) noexcept : pImpl(std::move(other.pImpl))
-{
-}
+ZmqSubscriber::ZmqSubscriber(ZmqSubscriber &&other) noexcept : pImpl(std::move(other.pImpl)) {}
 
 ZmqSubscriber &ZmqSubscriber::operator=(ZmqSubscriber &&other) noexcept
 {
@@ -1514,7 +1500,8 @@ void ZmqSubscriber::subscribe(const char *topic_filter)
     const char *filter = topic_filter ? topic_filter : "";
     if (zmq_setsockopt(pImpl->m_socket, ZMQ_SUBSCRIBE, filter, strlen(filter)) != 0)
     {
-        LOGGER_ERROR("ZmqSubscriber: Failed to set subscription filter: {}", zmq_strerror(zmq_errno()));
+        LOGGER_ERROR("ZmqSubscriber: Failed to set subscription filter: {}",
+                     zmq_strerror(zmq_errno()));
     }
 }
 
@@ -1571,7 +1558,8 @@ bool ZmqSubscriber::receive(std::string &topic, std::vector<uint8_t> &data, uint
         }
 
         data.assign(static_cast<const uint8_t *>(zmq_msg_data(&data_msg)),
-                    static_cast<const uint8_t *>(zmq_msg_data(&data_msg)) + zmq_msg_size(&data_msg));
+                    static_cast<const uint8_t *>(zmq_msg_data(&data_msg)) +
+                        zmq_msg_size(&data_msg));
         zmq_msg_close(&data_msg);
     }
     else
@@ -1608,9 +1596,7 @@ bool ZmqSubscriberImpl::initialize(const std::string &service_name, Hub *hub)
     return true;
 }
 
-ZmqRequestServer::ZmqRequestServer() : pImpl(std::make_unique<ZmqRequestServerImpl>())
-{
-}
+ZmqRequestServer::ZmqRequestServer() : pImpl(std::make_unique<ZmqRequestServerImpl>()) {}
 
 ZmqRequestServer::~ZmqRequestServer()
 {
@@ -1621,7 +1607,8 @@ ZmqRequestServer::~ZmqRequestServer()
     }
 }
 
-ZmqRequestServer::ZmqRequestServer(ZmqRequestServer &&other) noexcept : pImpl(std::move(other.pImpl))
+ZmqRequestServer::ZmqRequestServer(ZmqRequestServer &&other) noexcept
+    : pImpl(std::move(other.pImpl))
 {
 }
 
@@ -1635,7 +1622,7 @@ ZmqRequestServer &ZmqRequestServer::operator=(ZmqRequestServer &&other) noexcept
 }
 
 bool ZmqRequestServer::handle_request(std::vector<uint8_t> &request_data, const void *reply_data,
-                                       size_t reply_size, uint32_t timeout_ms)
+                                      size_t reply_size, uint32_t timeout_ms)
 {
     if (!pImpl || !pImpl->m_socket)
         return false;
@@ -1655,7 +1642,8 @@ bool ZmqRequestServer::handle_request(std::vector<uint8_t> &request_data, const 
     {
         if (zmq_errno() != EAGAIN)
         {
-            LOGGER_ERROR("ZmqRequestServer: Failed to receive request: {}", zmq_strerror(zmq_errno()));
+            LOGGER_ERROR("ZmqRequestServer: Failed to receive request: {}",
+                         zmq_strerror(zmq_errno()));
         }
         zmq_msg_close(&request_msg);
         return false;
@@ -1693,7 +1681,8 @@ bool ZmqRequestServerImpl::initialize(const std::string &service_name, Hub *hub)
     m_socket = zmq_socket(context, ZMQ_REP);
     if (!m_socket)
     {
-        LOGGER_ERROR("ZmqRequestServer: Failed to create REP socket: {}", zmq_strerror(zmq_errno()));
+        LOGGER_ERROR("ZmqRequestServer: Failed to create REP socket: {}",
+                     zmq_strerror(zmq_errno()));
         return false;
     }
 
@@ -1711,9 +1700,7 @@ bool ZmqRequestServerImpl::initialize(const std::string &service_name, Hub *hub)
     return true;
 }
 
-ZmqRequestClient::ZmqRequestClient() : pImpl(std::make_unique<ZmqRequestClientImpl>())
-{
-}
+ZmqRequestClient::ZmqRequestClient() : pImpl(std::make_unique<ZmqRequestClientImpl>()) {}
 
 ZmqRequestClient::~ZmqRequestClient()
 {
@@ -1724,7 +1711,8 @@ ZmqRequestClient::~ZmqRequestClient()
     }
 }
 
-ZmqRequestClient::ZmqRequestClient(ZmqRequestClient &&other) noexcept : pImpl(std::move(other.pImpl))
+ZmqRequestClient::ZmqRequestClient(ZmqRequestClient &&other) noexcept
+    : pImpl(std::move(other.pImpl))
 {
 }
 
@@ -1738,7 +1726,7 @@ ZmqRequestClient &ZmqRequestClient::operator=(ZmqRequestClient &&other) noexcept
 }
 
 bool ZmqRequestClient::send_request(const void *request_data, size_t request_size,
-                                     std::vector<uint8_t> &reply_data, uint32_t timeout_ms)
+                                    std::vector<uint8_t> &reply_data, uint32_t timeout_ms)
 {
     if (!pImpl || !pImpl->m_socket)
         return false;
@@ -1766,7 +1754,8 @@ bool ZmqRequestClient::send_request(const void *request_data, size_t request_siz
     {
         if (zmq_errno() != EAGAIN)
         {
-            LOGGER_ERROR("ZmqRequestClient: Failed to receive reply: {}", zmq_strerror(zmq_errno()));
+            LOGGER_ERROR("ZmqRequestClient: Failed to receive reply: {}",
+                         zmq_strerror(zmq_errno()));
         }
         zmq_msg_close(&reply_msg);
         return false;
@@ -1796,7 +1785,8 @@ bool ZmqRequestClientImpl::initialize(const std::string &service_name, Hub *hub)
     m_socket = zmq_socket(context, ZMQ_REQ);
     if (!m_socket)
     {
-        LOGGER_ERROR("ZmqRequestClient: Failed to create REQ socket: {}", zmq_strerror(zmq_errno()));
+        LOGGER_ERROR("ZmqRequestClient: Failed to create REQ socket: {}",
+                     zmq_strerror(zmq_errno()));
         return false;
     }
 

@@ -234,7 +234,7 @@ bool JsonConfig::reload(std::error_code *ec) noexcept
 }
 
 bool JsonConfig::private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
-                                                   std::error_code *ec) noexcept
+                                               std::error_code *ec) noexcept
 {
     try
     {
@@ -306,9 +306,9 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
     }
 }
 
-JsonConfig::Transaction JsonConfig::transaction(AccessFlags flags) noexcept
+JsonConfigTransaction JsonConfig::transaction(AccessFlags flags) noexcept
 {
-    return Transaction(this, flags);
+    return JsonConfigTransaction(this, flags);
 }
 
 // Guard constructors / destructors / accessors
@@ -389,7 +389,7 @@ std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *e
     ReadLock r;
     r.d_ = std::make_unique<JsonConfig::ReadLock::Impl>();
     r.d_->owner = const_cast<JsonConfig *>(this);
-    r.d_->guard.emplace(this); // Create the guard in the lock object
+    r.d_->guard.emplace(this);                       // Create the guard in the lock object
     r.d_->lock = std::shared_lock(pImpl->dataMutex); // Acquire the real lock here
 
     if (ec)
@@ -417,7 +417,7 @@ std::optional<JsonConfig::WriteLock> JsonConfig::lock_for_write(std::error_code 
     WriteLock w;
     w.d_ = std::make_unique<JsonConfig::WriteLock::Impl>();
     w.d_->owner = this;
-    w.d_->guard.emplace(this); // Create the guard in the lock object
+    w.d_->guard.emplace(this);                       // Create the guard in the lock object
     w.d_->lock = std::unique_lock(pImpl->dataMutex); // Acquire the real lock here
 
     if (ec)

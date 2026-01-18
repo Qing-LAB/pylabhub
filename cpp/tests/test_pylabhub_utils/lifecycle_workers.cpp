@@ -385,36 +385,61 @@ int pylabhub::tests::worker::lifecycle::dynamic_diamond_dependency()
     // --- SCENARIO 2: Unload side branches ---
     reset_dynamic_counters();
     // Re-register modules since they were removed from the graph.
-    ModuleDef modD2("DynD"); modD2.set_startup(startup_D); modD2.set_shutdown(shutdown_D, 100);
-    if (!RegisterDynamicModule(std::move(modD2))) return 101;
-    ModuleDef modB2("DynB"); modB2.add_dependency("DynD"); modB2.set_startup(startup_B); modB2.set_shutdown(shutdown_B, 100);
-    if (!RegisterDynamicModule(std::move(modB2))) return 102;
-    ModuleDef modC2("DynC"); modC2.add_dependency("DynD"); modC2.set_startup(startup_C); modC2.set_shutdown(shutdown_C, 100);
-    if (!RegisterDynamicModule(std::move(modC2))) return 103;
+    ModuleDef modD2("DynD");
+    modD2.set_startup(startup_D);
+    modD2.set_shutdown(shutdown_D, 100);
+    if (!RegisterDynamicModule(std::move(modD2)))
+        return 101;
+    ModuleDef modB2("DynB");
+    modB2.add_dependency("DynD");
+    modB2.set_startup(startup_B);
+    modB2.set_shutdown(shutdown_B, 100);
+    if (!RegisterDynamicModule(std::move(modB2)))
+        return 102;
+    ModuleDef modC2("DynC");
+    modC2.add_dependency("DynD");
+    modC2.set_startup(startup_C);
+    modC2.set_shutdown(shutdown_C, 100);
+    if (!RegisterDynamicModule(std::move(modC2)))
+        return 103;
 
     // Load B and C independently
-    if (!LoadModule("DynB")) return 9;
-    if (!LoadModule("DynC")) return 10;
-    if (dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1) return 11;
-    if (dyn_A_start != 0) return 12;
+    if (!LoadModule("DynB"))
+        return 9;
+    if (!LoadModule("DynC"))
+        return 10;
+    if (dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1)
+        return 11;
+    if (dyn_A_start != 0)
+        return 12;
 
     // Try to unload D. Should fail (ref_count is 2). `UnloadModule` returns false.
-    if (UnloadModule("DynD")) return 13;
-    if (dyn_D_stop != 0) return 14;
+    if (UnloadModule("DynD"))
+        return 13;
+    if (dyn_D_stop != 0)
+        return 14;
 
     // Unload B. D should NOT be unloaded (ref_count will drop to 1).
-    if (!UnloadModule("DynB")) return 15;
-    if (dyn_B_stop != 1) return 16;
-    if (dyn_D_stop != 0) return 17;
+    if (!UnloadModule("DynB"))
+        return 15;
+    if (dyn_B_stop != 1)
+        return 16;
+    if (dyn_D_stop != 0)
+        return 17;
 
     // Try to unload D again. Should still fail (ref_count is 1).
-    if (UnloadModule("DynD")) return 18;
-    if (dyn_D_stop != 0) return 19;
+    if (UnloadModule("DynD"))
+        return 18;
+    if (dyn_D_stop != 0)
+        return 19;
 
     // Unload C. This should now trigger D to be unloaded.
-    if (!UnloadModule("DynC")) return 20;
-    if (dyn_C_stop != 1) return 21;
-    if (dyn_D_stop != 1) return 22;
+    if (!UnloadModule("DynC"))
+        return 20;
+    if (dyn_C_stop != 1)
+        return 21;
+    if (dyn_D_stop != 1)
+        return 22;
 
     return 0;
 }
@@ -486,7 +511,6 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
         return 5;
     PLH_DEBUG("WORKER: Module registration complete.");
 
-
     // Load the whole graph from the top
     PLH_DEBUG("WORKER: Calling LoadModule('DynA')...");
     if (!LoadModule("DynA"))
@@ -511,7 +535,6 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
         return 12;
     }
     PLH_DEBUG("WORKER: UnloadModule('DynA') finished. Checking shutdown counters...");
-
 
     // A, B, C, E should be stopped. D (permanent) should NOT be stopped.
     if (dyn_A_stop != 1)
@@ -607,20 +630,27 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_module()
     mod_perm.set_startup(startup_D); // Using D's counters
     mod_perm.set_shutdown(shutdown_D, 100);
     mod_perm.set_as_permanent();
-    if (!RegisterDynamicModule(std::move(mod_perm))) return 1;
+    if (!RegisterDynamicModule(std::move(mod_perm)))
+        return 1;
 
     ModuleDef mod_a("DynA");
     mod_a.add_dependency("DynPerm");
     mod_a.set_startup(startup_A);
     mod_a.set_shutdown(shutdown_A, 100);
-    if (!RegisterDynamicModule(std::move(mod_a))) return 2;
+    if (!RegisterDynamicModule(std::move(mod_a)))
+        return 2;
 
-    if (!LoadModule("DynA")) return 3;
-    if (dyn_A_start != 1 || dyn_D_start != 1) return 4;
+    if (!LoadModule("DynA"))
+        return 3;
+    if (dyn_A_start != 1 || dyn_D_start != 1)
+        return 4;
 
-    if (!UnloadModule("DynA")) return 5;
-    if (dyn_A_stop != 1) return 6;
-    if (dyn_D_stop != 0) return 7; // DynPerm should NOT be stopped
+    if (!UnloadModule("DynA"))
+        return 5;
+    if (dyn_A_stop != 1)
+        return 6;
+    if (dyn_D_stop != 0)
+        return 7; // DynPerm should NOT be stopped
 
     // finalize() should shut it down
     return 0;
@@ -653,4 +683,3 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize()
 
     return 0;
 }
-

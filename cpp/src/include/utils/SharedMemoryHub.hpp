@@ -11,9 +11,9 @@
 
 #pragma once
 
+#include "platform.hpp"
 #include "pylabhub_utils_export.h"
 #include "utils/Lifecycle.hpp"
-#include "platform.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -47,8 +47,8 @@ class ZmqRequestClient;
  */
 struct PYLABHUB_UTILS_EXPORT BrokerConfig
 {
-    std::string endpoint;        // e.g., "tcp://localhost:5555"
-    std::string broker_public_key; // CurveZMQ public key
+    std::string endpoint;                 // e.g., "tcp://localhost:5555"
+    std::string broker_public_key;        // CurveZMQ public key
     uint32_t heartbeat_interval_ms{5000}; // Heartbeat interval in milliseconds
 };
 
@@ -61,9 +61,9 @@ struct PYLABHUB_UTILS_EXPORT BrokerConfig
 struct PYLABHUB_UTILS_EXPORT SharedMemoryHeader
 {
     // Control Block: Synchronization primitives (platform-specific, opaque)
-    alignas(64) char mutex_storage[64];        // Process-shared mutex
-    alignas(64) char condition_storage[64];     // Process-shared condition variable
-    alignas(64) char semaphore_storage[64];    // Process-shared semaphore
+    alignas(64) char mutex_storage[64];     // Process-shared mutex
+    alignas(64) char condition_storage[64]; // Process-shared condition variable
+    alignas(64) char semaphore_storage[64]; // Process-shared semaphore
 
     // Atomic Flags: Lock-free state signaling
     std::atomic<uint64_t> frame_id{0};
@@ -86,10 +86,10 @@ struct PYLABHUB_UTILS_EXPORT SharedMemoryHeader
  *
  * This class manages the connection to the Service Broker, handles authentication
  * and heartbeats, and acts as a factory for creating communication channels.
- * 
+ *
  * As specified in HEP core-0002, the Hub completely abstracts away broker
  * interactions, key management, and synchronization primitives.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT Hub
@@ -97,10 +97,10 @@ class PYLABHUB_UTILS_EXPORT Hub
   public:
     /**
      * @brief Connects to the Service Broker and creates a Hub instance.
-     * 
+     *
      * This method handles authentication using CurveZMQ and starts a background
      * thread for sending periodic heartbeat messages to the broker.
-     * 
+     *
      * @param config Broker configuration including endpoint and public key.
      * @return A unique_ptr to the Hub instance, or nullptr on failure.
      */
@@ -123,10 +123,10 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Creates a shared memory producer channel.
-     * 
+     *
      * This method creates a new shared memory segment, registers it with the
      * Service Broker, and returns a producer object for publishing data.
-     * 
+     *
      * @param name Unique name for the channel.
      * @param size Total size of the shared memory segment (must be >= sizeof(SharedMemoryHeader)).
      * @return A unique_ptr to the producer, or nullptr on failure.
@@ -135,10 +135,10 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Discovers and connects to an existing shared memory consumer channel.
-     * 
+     *
      * This method queries the Service Broker to find the channel, then opens
      * the shared memory segment for reading.
-     * 
+     *
      * @param name Name of the channel to discover.
      * @return A unique_ptr to the consumer, or nullptr if not found.
      */
@@ -150,9 +150,9 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Creates a ZeroMQ publisher for one-to-many message distribution.
-     * 
+     *
      * The publisher is automatically registered with the Service Broker.
-     * 
+     *
      * @param service_name Name of the service/channel.
      * @return A unique_ptr to the publisher, or nullptr on failure.
      */
@@ -160,7 +160,7 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Discovers and connects to a ZeroMQ subscriber.
-     * 
+     *
      * @param service_name Name of the service/channel to subscribe to.
      * @return A unique_ptr to the subscriber, or nullptr if not found.
      */
@@ -168,9 +168,9 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Creates a ZeroMQ request server for command and control.
-     * 
+     *
      * The server is automatically registered with the Service Broker.
-     * 
+     *
      * @param service_name Name of the service.
      * @return A unique_ptr to the request server, or nullptr on failure.
      */
@@ -178,7 +178,7 @@ class PYLABHUB_UTILS_EXPORT Hub
 
     /**
      * @brief Discovers and connects to a ZeroMQ request client.
-     * 
+     *
      * @param service_name Name of the service to connect to.
      * @return A unique_ptr to the request client, or nullptr if not found.
      */
@@ -187,7 +187,7 @@ class PYLABHUB_UTILS_EXPORT Hub
   private:
     Hub();
     std::unique_ptr<HubImpl> pImpl;
-    
+
     // Friend declarations for channel classes to access context
     friend class SharedMemoryProducer;
     friend class SharedMemoryConsumer;
@@ -195,7 +195,7 @@ class PYLABHUB_UTILS_EXPORT Hub
     friend class ZmqSubscriber;
     friend class ZmqRequestServer;
     friend class ZmqRequestClient;
-    
+
     // Friend declarations for Impl classes (implementation details)
     friend class HubImpl;
     friend class SharedMemoryProducerImpl;
@@ -204,17 +204,17 @@ class PYLABHUB_UTILS_EXPORT Hub
     friend class ZmqSubscriberImpl;
     friend class ZmqRequestServerImpl;
     friend class ZmqRequestClientImpl;
-    
+
     // Helper method for channel classes to access ZeroMQ context
     void *get_context() const;
 };
 
 /**
  * @brief Producer for high-performance shared memory channels.
- * 
+ *
  * Provides RAII-style management of shared memory publishing with transparent
  * synchronization handling.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT SharedMemoryProducer
@@ -233,19 +233,19 @@ class PYLABHUB_UTILS_EXPORT SharedMemoryProducer
 
     /**
      * @brief Begins a publishing operation.
-     * 
+     *
      * Locks the shared memory mutex and marks the segment as being written.
      * Returns a pointer to the data buffer for writing.
-     * 
+     *
      * @return Pointer to the data buffer, or nullptr on failure.
      */
     void *begin_publish();
 
     /**
      * @brief Ends a publishing operation.
-     * 
+     *
      * Updates metadata, increments frame_id, and signals consumers that data is ready.
-     * 
+     *
      * @param data_size Size of valid data written.
      * @param timestamp High-resolution timestamp.
      * @param data_type_hash Hash identifying the data type.
@@ -267,10 +267,10 @@ class PYLABHUB_UTILS_EXPORT SharedMemoryProducer
 
 /**
  * @brief Consumer for high-performance shared memory channels.
- * 
+ *
  * Provides RAII-style management of shared memory consumption with transparent
  * synchronization handling.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT SharedMemoryConsumer
@@ -289,10 +289,10 @@ class PYLABHUB_UTILS_EXPORT SharedMemoryConsumer
 
     /**
      * @brief Consumes the latest data from the shared memory segment.
-     * 
+     *
      * Waits for data to be ready (if needed), then returns a pointer to the
      * data buffer. The caller should check the header for metadata.
-     * 
+     *
      * @param timeout_ms Timeout in milliseconds (0 = wait indefinitely).
      * @return Pointer to the data buffer, or nullptr on timeout/failure.
      */
@@ -316,7 +316,7 @@ class PYLABHUB_UTILS_EXPORT SharedMemoryConsumer
 
 /**
  * @brief ZeroMQ publisher for one-to-many message distribution.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT ZmqPublisher
@@ -335,7 +335,7 @@ class PYLABHUB_UTILS_EXPORT ZmqPublisher
 
     /**
      * @brief Publishes a message.
-     * 
+     *
      * @param topic Optional topic string for filtering.
      * @param data Message data.
      * @param size Size of message data.
@@ -351,7 +351,7 @@ class PYLABHUB_UTILS_EXPORT ZmqPublisher
 
 /**
  * @brief ZeroMQ subscriber for receiving published messages.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT ZmqSubscriber
@@ -370,14 +370,14 @@ class PYLABHUB_UTILS_EXPORT ZmqSubscriber
 
     /**
      * @brief Subscribes to a topic filter.
-     * 
+     *
      * @param topic_filter Topic filter string (empty = all messages).
      */
     void subscribe(const char *topic_filter = "");
 
     /**
      * @brief Receives a message (blocking).
-     * 
+     *
      * @param topic Output parameter for the topic string.
      * @param data Output parameter for the message data.
      * @param timeout_ms Timeout in milliseconds (0 = wait indefinitely).
@@ -393,7 +393,7 @@ class PYLABHUB_UTILS_EXPORT ZmqSubscriber
 
 /**
  * @brief ZeroMQ request server for handling command requests.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT ZmqRequestServer
@@ -412,7 +412,7 @@ class PYLABHUB_UTILS_EXPORT ZmqRequestServer
 
     /**
      * @brief Receives a request and sends a reply.
-     * 
+     *
      * @param request_data Received request data.
      * @param reply_data Reply data to send.
      * @param reply_size Size of reply data.
@@ -430,7 +430,7 @@ class PYLABHUB_UTILS_EXPORT ZmqRequestServer
 
 /**
  * @brief ZeroMQ request client for sending command requests.
- * 
+ *
  * This class uses the pImpl pattern for ABI stability.
  */
 class PYLABHUB_UTILS_EXPORT ZmqRequestClient
@@ -449,7 +449,7 @@ class PYLABHUB_UTILS_EXPORT ZmqRequestClient
 
     /**
      * @brief Sends a request and receives a reply.
-     * 
+     *
      * @param request_data Request data to send.
      * @param request_size Size of request data.
      * @param reply_data Received reply data.

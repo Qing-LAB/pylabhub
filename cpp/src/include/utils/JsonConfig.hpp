@@ -17,12 +17,12 @@
  *       process try to read and write the in-memory `nlohmann::json` object
  *       at the same time.
  *     - **Mechanism**: An internal `std::shared_mutex`.
- *     - **API**: The `with_json_read()` and `with_json_write()` methods, which
+ *     - **API**: The `transaction().read()` and `transaction().write()` methods, which
  *       provide safe, scoped access via lambdas. They internally use the
  *       `lock_for_read()` and `lock_for_write()` factories.
- *       - `with_json_read()` acquires a *shared* lock, allowing multiple
+ *       - `transaction().read()` acquires a *shared* lock, allowing multiple
  *         concurrent readers.
- *       - `with_json_write()` acquires a *unique* lock, ensuring exclusive
+ *       - `transaction().write()` acquires a *unique* lock, ensuring exclusive
  *         write access.
  *     - **Note**: These methods operate **only on the in-memory data** for maximum
  *       performance. They do not perform disk I/O.
@@ -67,8 +67,36 @@ namespace pylabhub::utils
 #pragma warning(disable : 4251)
 #endif
 
+class JsonConfig;
+
+class PYLABHUB_UTILS_EXPORT JsonConfigTransaction
+{
+  public:
+    JsonConfigTransaction(JsonConfigTransaction &&) noexcept = default;
+    JsonConfigTransaction &operator=(JsonConfigTransaction &&) noexcept = default;
+    JsonConfigTransaction(const JsonConfigTransaction &) = delete;
+    JsonConfigTransaction &operator=(const JsonConfigTransaction &) = delete;
+    ~JsonConfigTransaction();
+
+    template <typename F>
+    void read(F &&fn, std::error_code *ec = nullptr) &&;
+
+    template <typename F>
+    void write(F &&fn, std::error_code *ec = nullptr) &&;
+
+  private:
+    friend class JsonConfig;
+    explicit JsonConfigTransaction(JsonConfig *owner,
+                                   typename JsonConfig::AccessFlags flags) noexcept;
+
+    JsonConfig *d_owner;
+    typename JsonConfig::AccessFlags d_flags;
+};
+
 class PYLABHUB_UTILS_EXPORT JsonConfig
 {
+    friend class JsonConfigTransaction;
+
   public:
     /**
      * @brief Returns a ModuleDef for JsonConfig to be used with the LifecycleManager.
@@ -118,7 +146,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @brief RAII guard for thread-safe read access to the in-memory JSON data.
      *
      * The constructor of this object acquires a shared lock on the data; the
-     * destructor releases it. Prefer using the lambda-based `with_json_read()`
+     * destructor releases it. Prefer using the lambda-based `transaction().read()`
      * for simpler, safer scoped access.
      */
     class PYLABHUB_UTILS_EXPORT ReadLock
@@ -142,7 +170,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @brief RAII guard for thread-safe write access to the in-memory JSON data.
      *
      * The constructor of this object acquires an exclusive lock on the data; the
-     * destructor releases it. Prefer using the lambda-based `with_json_write()`
+     * destructor releases it. Prefer using the lambda-based `transaction().write()`
      * for simpler, safer scoped access.
      */
     class PYLABHUB_UTILS_EXPORT WriteLock
@@ -182,50 +210,24 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         /**< Reload before and commit after the operation. */
     };
 
-            friend AccessFlags operator|(AccessFlags a, AccessFlags b)
-            {
-                return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
-            }
-    
-            /**
-             * @brief A move-only token representing a pending transaction.
-             *
-             * This object is created by `JsonConfig::transaction()` and consumed by
-             * `with_json_read()` or `with_json_write()` to grant them one-time
-             * access to the parent JsonConfig's private state.
-             */
-            class Transaction
-            {
-              public:
-                Transaction(Transaction &&) noexcept = default;
-                Transaction &operator=(Transaction &&) noexcept = default;
-                Transaction(const Transaction &) = delete;
-                Transaction &operator=(const Transaction &) = delete;
-    
-              private:
-                friend class JsonConfig;
-                template <typename F>
-                friend void with_json_read(Transaction &&tx, F &&fn, std::error_code *ec);
-                template <typename F>
-                friend void with_json_write(Transaction &&tx, F &&fn, std::error_code *ec);
-    
-                explicit Transaction(JsonConfig *owner, AccessFlags flags) : owner(owner), flags(flags) {}
-    
-                JsonConfig *owner;
-                AccessFlags flags;
-            };
-    
-            // Forward declare the transactional functions.
-            template <typename F>
-            friend void with_json_read(Transaction &&tx, F &&fn, std::error_code *ec);
-            template <typename F>
-            friend void with_json_write(Transaction &&tx, F &&fn, std::error_code *ec);
+    friend AccessFlags operator|(AccessFlags a, AccessFlags b)
+    {
+        return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
+    }
+
     /**
-     * @brief Creates a transaction token for use with `with_json_read`/`with_json_write`.
+     * @brief Creates a transaction token for performing a read or write operation.
      * @param flags Flags to control the transaction's behavior (e.g., reload, commit).
-     * @return A single-use transaction token.
+     * @return A single-use transaction object.
+     *
+     * @example
+     * @code
+     *   cfg.transaction(JsonConfig::AccessFlags::FullSync).write([&](auto& j) {
+     *       j["key"] = "value";
+     *   });
+     * @endcode
      */
-    [[nodiscard]] Transaction transaction(AccessFlags flags = AccessFlags::Default) noexcept;
+    [[nodiscard]] JsonConfigTransaction transaction(AccessFlags flags = AccessFlags::Default) noexcept;
 
   private:
     struct Impl;
@@ -244,18 +246,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                                   std::error_code *ec) noexcept;
 };
 
-// ----------------- Transactional API Free Functions -----------------
-
-template <typename F>
-void with_json_read(JsonConfig::Transaction &&tx, F &&fn, std::error_code *ec);
-
-template <typename F>
-void with_json_write(JsonConfig::Transaction &&tx, F &&fn, std::error_code *ec);
-
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
 
-#include "utils/JsonConfig.inl"
-
-} // namespace pylabhub::utils
+#include "utils/JsonConfigTransaction.inl"
