@@ -202,6 +202,7 @@ if(SANITIZER_FLAGS)
   # Create the INTERFACE target only if it does not already exist
   if(NOT TARGET ${_san_iface_target})
     add_library(${_san_iface_target} INTERFACE)
+    install(TARGETS ${_san_iface_target} EXPORT pylabhubTargets)
   endif()
 
   # Add compile options to the INTERFACE target
