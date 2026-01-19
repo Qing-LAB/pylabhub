@@ -244,7 +244,7 @@ TEST(AtomicGuardTest, AttachDetach)
     ASSERT_FALSE(g.acquire()); // Cannot acquire while detached.
 
     // Attach the guard to an owner and acquire the lock.
-    ASSERT_TRUE(g.attach_and_acquire(&owner) ? true : true);
+    ASSERT_TRUE(g.attach_and_acquire(&owner));
     ASSERT_TRUE(g.active());
     ASSERT_EQ(owner.load(), g.token());
     ASSERT_TRUE(g.release());
@@ -312,18 +312,17 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
                 AtomicGuard g(&owner, true);
                 if (!g.active())
                 {
-                    thread_failure.store(true, std::memory_order_relaxed);
+                    // In this test, acquisition should not fail.
+                    throw std::runtime_error("Producer failed to acquire lock.");
                 }
                 p.set_value(std::move(g)); // Move the guard into the promise.
             }
             catch (...)
             {
                 thread_failure.store(true, std::memory_order_relaxed);
-                // We must set a value to unblock the future.
-                // A default-constructed guard is inactive and detached.
                 try
                 {
-                    p.set_value(AtomicGuard{});
+                    p.set_exception(std::current_exception());
                 }
                 catch (const std::future_error &)
                 {
@@ -341,13 +340,9 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
                 AtomicGuard g = f.get(); // Receive the moved guard.
                 if (!g.active())
                 {
-                    // Producer might have failed to acquire, which is a valid test outcome
-                    // if the producer sets an empty guard. Check owner state.
-                    if (owner.load() != 0)
-                    {
-                        thread_failure.store(true, std::memory_order_relaxed);
-                    }
-                    return; // Nothing to release.
+                    // If we receive an inactive guard, the producer must have failed.
+                    thread_failure.store(true, std::memory_order_relaxed);
+                    return;
                 }
 
                 if (owner.load() != g.token())
@@ -416,7 +411,23 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
                     std::promise<AtomicGuard> p2;
                     std::future<AtomicGuard> f2 = p2.get_future();
                     std::thread local_consumer([p2 = std::move(p2), g = std::move(g)]() mutable
-                                               { p2.set_value(std::move(g)); });
+                                               {
+                                                   try
+                                                   {
+                                                       p2.set_value(std::move(g));
+                                                   }
+                                                   catch (...)
+                                                   {
+                                                       try
+                                                       {
+                                                           p2.set_exception(
+                                                               std::current_exception());
+                                                       }
+                                                       catch (...)
+                                                       {
+                                                       }
+                                                   }
+                                               });
 
                     AtomicGuard moved = f2.get();
                     if (!moved.active())
@@ -520,10 +531,44 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
     for (auto &s : slots)
     {
         if (s.active())
-            [[maybe_unused]] bool ok = s.release();
+        {
+            if (!s.release())
+            {
+                thread_failure.store(true, std::memory_order_relaxed);
+            }
+        }
     }
+    ASSERT_FALSE(thread_failure.load(std::memory_order_relaxed));
     ASSERT_TRUE(owner.is_free());
 }
+
+#if !defined(NDEBUG) && GTEST_HAS_DEATH_TEST
+/**
+ * @brief Death tests to ensure invariant violations cause a panic in debug builds.
+ */
+TEST(AtomicGuardDeathTest, InvariantViolationsPanic)
+{
+    // Test that the destructor panics if the guard is active but the owner's token
+    // has been changed by someone else.
+    EXPECT_DEATH(
+        {
+            AtomicOwner owner;
+            AtomicGuard g(&owner, true);
+            owner.store(9999); // Another entity "steals" the lock.
+        },
+        "AtomicGuard destructor: invariant violation");
+
+    // Test that calling attach() on an active guard panics.
+    EXPECT_DEATH(
+        {
+            AtomicOwner owner1;
+            AtomicOwner owner2;
+            AtomicGuard g(&owner1, true);
+            g.attach(&owner2); // Should panic.
+        },
+        "attach.. on active guard is a logic error");
+}
+#endif
 
 /**
  * @brief A large-scale stress test with many producer and consumer threads.
@@ -622,7 +667,21 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
                     ch.cv.notify_one();
 
                     // Fulfill the promise, moving the guard to the shared state for the consumer.
-                    prom.set_value(std::move(g));
+                    try
+                    {
+                        prom.set_value(std::move(g));
+                    }
+                    catch (...)
+                    {
+                        try
+                        {
+                            prom.set_exception(std::current_exception());
+                        }
+                        catch (...)
+                        {
+                            // Ignore if promise is already satisfied
+                        }
+                    }
                 }
             });
     }

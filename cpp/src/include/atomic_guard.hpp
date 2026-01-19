@@ -1,7 +1,7 @@
 // AtomicGuard.hpp
 #pragma once
+#include "debug_info.hpp"
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <utility>
 
@@ -178,17 +178,29 @@ class AtomicGuard
         }
 
 #ifndef NDEBUG
-        // In debug builds assert, to catch logic errors early.
+        // In debug builds panic, to catch logic errors early.
         // If we get here, it means is_active_ was true, but the owner's token
         // did not match ours. This is a true invariant violation.
-        assert(false && "AtomicGuard destructor: invariant violation (is_active_ is true, but "
-                        "owner has different token).");
+        PLH_PANIC("AtomicGuard destructor: invariant violation (is_active_ is true, but "
+                  "owner has different token).");
 #endif
         // In release builds, be robust: do nothing (the lock is effectively leaked).
     }
 
     /** @brief Attaches the guard to a new `AtomicOwner`. Does not acquire the lock. */
-    void attach(AtomicOwner *owner) noexcept { owner_ = owner; }
+    void attach(AtomicOwner *owner) noexcept
+    {
+        if (is_active_)
+        {
+#ifndef NDEBUG
+            PLH_PANIC("attach() on active guard is a logic error. "
+                      "The guard remains attached to the old owner. "
+                      "Use detach_and_release() or detach_no_release() first.");
+#endif
+            return; // In release builds, do nothing to prevent a lock leak.
+        }
+        owner_ = owner;
+    }
 
     /** 
      * @brief Detaches the guard from its owner without releasing the lock. The guard becomes
@@ -213,7 +225,15 @@ class AtomicGuard
      */
     [[nodiscard]] bool detach_and_release() noexcept
     {
+        const bool was_active = is_active_;
         const bool released = release();
+        if (was_active && !released)
+        {
+#ifndef NDEBUG
+            PLH_PANIC("detach_and_release: invariant violation (is_active_ is true, but "
+                      "release failed).");
+#endif
+        }
         owner_ = nullptr;
         is_active_ = false; // Guard is always inactive after detach.
         return released;
