@@ -21,9 +21,10 @@ namespace pylabhub::basics
 // Alias for the underlying stack container so intent is clearer.
 using recursion_stack_t = std::vector<const void *>;
 
-// Helper function to get the thread-local stack. The stack is defined as a
-// function-local static to ensure it is initialized only once per thread
-// in a thread-safe manner (guaranteed by C++11 and later).
+/**
+ * @brief Gets the thread-local stack for tracking recursion.
+ * @return A mutable reference to the thread-local `recursion_stack_t`.
+ */
 inline recursion_stack_t &get_recursion_stack() noexcept
 {
     static thread_local recursion_stack_t g_recursion_stack;
@@ -31,26 +32,46 @@ inline recursion_stack_t &get_recursion_stack() noexcept
 }
 
 /**
- * @brief RAII guard that records a pointer key on a thread-local stack.
+ * @class RecursionGuard
+ * @brief An RAII guard to detect re-entrant function calls on a per-object, per-thread basis.
  *
- * Typical usage:
- *   RecursionGuard g(&some_object);
- *   if (RecursionGuard::is_recursing(&some_object)) { ... }
+ * This guard works by pushing a key (typically a pointer to an object instance) onto a
+ * thread-local stack upon construction. It provides a static method, `is_recursing`, to
+ * check if a given key is already on the stack for the current thread. The key is popped
+ * from the stack upon destruction, ensuring correct state even with exceptions.
  *
- * Notes:
- *  - Construction may throw (std::vector::push_back may allocate).
- *  - Destruction never throws (marked noexcept) and will remove the key from
- *    the stack; if destruction is out-of-order the key is removed by search.
+ * @warning The constructor is not `noexcept` as it may throw `std::bad_alloc`.
  */
 class RecursionGuard
 {
   public:
-    // RAII guard. Pushes key onto thread-local stack on construction, pops on destruction.
-    explicit RecursionGuard(const void *key) : key_(key) { get_recursion_stack().push_back(key_); }
-    // Destructor must not throw. Vector operations on pointers are noexcept on
-    // all mainstream implementations, but wrap defensively to guarantee noexcept.
+    /**
+     * @brief Constructs the guard and pushes the key onto the thread-local recursion stack.
+     * @param key A pointer used as a unique identifier for the scope being guarded. Can be
+     *            nullptr, in which case the guard is inert.
+     */
+    explicit RecursionGuard(const void *key) : key_(key)
+    {
+        if (key_)
+        {
+            get_recursion_stack().push_back(key_);
+        }
+    }
+
+    /**
+     * @brief Destructor. Removes the key from the thread-local recursion stack if this
+     *        guard owns a key.
+     *
+     * This is guaranteed `noexcept`. It efficiently handles both LIFO (last-in, first-out)
+     * and non-LIFO destruction order.
+     */
     ~RecursionGuard() noexcept
     {
+        if (key_ == nullptr)
+        {
+            return; // Guard is inert (e.g., it was moved-from)
+        }
+
         auto &stack = get_recursion_stack();
         if (!stack.empty() && stack.back() == key_)
         {
@@ -73,18 +94,55 @@ class RecursionGuard
         }
     }
 
-    // Non-copyable and non-movable: moving a guard would change ownership semantics.
+    // --- Rule of 5: Movable, but not Copyable ---
     RecursionGuard(const RecursionGuard &) = delete;
     RecursionGuard &operator=(const RecursionGuard &) = delete;
-    RecursionGuard(RecursionGuard &&) = delete;
-    RecursionGuard &operator=(RecursionGuard &&) = delete;
 
-    // Checks if the given key is already present on the current thread's stack.
-    /** @return true if 'key' is present in the current thread's recursion stack. */
+    /**
+     * @brief Move constructor. Transfers ownership of the key from another guard.
+     * @param other The guard to move from. Its key will be set to nullptr, making it inert.
+     */
+    RecursionGuard(RecursionGuard &&other) noexcept : key_(other.key_) { other.key_ = nullptr; }
+
+    /**
+     * @brief Move assignment operator.
+     * Swaps ownership with another guard.
+     */
+    RecursionGuard &operator=(RecursionGuard &&other) noexcept
+    {
+        if (this != &other) // Protect against self-assignment
+        {
+            // If *this is currently managing a key, remove it from the stack.
+            if (key_ != nullptr)
+            {
+                auto &stack = get_recursion_stack();
+                // Find and erase only the first occurrence of key_ to handle non-LIFO.
+                auto it = std::find(stack.begin(), stack.end(), key_);
+                if (it != stack.end())
+                {
+                    stack.erase(it);
+                }
+            }
+
+            // Transfer ownership from 'other' to '*this'.
+            // The key previously managed by 'other' remains on the stack,
+            // but is now associated with '*this' guard object.
+            key_ = other.key_;
+            other.key_ =
+                nullptr; // Make 'other' inert to prevent it from popping the key on destruction.
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Checks if a given key is already present on the current thread's recursion stack.
+     * @param key The pointer key to check for.
+     * @return `true` if the key is already on the stack for this thread, `false` otherwise.
+     */
     [[nodiscard]] static bool is_recursing(const void *key) noexcept
     {
         const auto &stack = get_recursion_stack();
-        if (stack.empty())
+        if (stack.empty() || key == nullptr)
             return false;
 
         // Fast-path: if the most-recent entry matches, return true quickly.

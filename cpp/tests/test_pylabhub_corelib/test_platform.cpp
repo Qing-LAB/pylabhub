@@ -11,6 +11,7 @@
 #include <unistd.h> // for open()
 #endif
 
+#include "format_tools.hpp"
 #include "platform.hpp"
 #include "shared_test_helpers.h" // For StringCapture & read_file_contents
 #include <gmock/gmock.h>

@@ -189,6 +189,16 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms, const char *data,
                       size_t len);
 
+    /**
+     * @brief Marks this module as permanent.
+     * @details A permanent dynamic module, once loaded, will not be unloaded until
+     * the application is finalized, regardless of its reference count. This is
+     * useful for modules that are costly to initialize. This flag has no effect
+     * on static modules.
+     * @param permanent If `true` (default), marks the module as permanent.
+     */
+    void set_as_permanent(bool permanent = true);
+
   private:
     // This friend declaration allows LifecycleManager to access the private pImpl
     // member to extract the module definition. This is a controlled way to

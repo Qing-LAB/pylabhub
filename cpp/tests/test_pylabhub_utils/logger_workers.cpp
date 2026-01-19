@@ -48,7 +48,7 @@ int stress_log(const std::string &log_path, int msg_count)
         {
             Logger &L = Logger::instance();
             L.set_log_sink_messages_enabled(false); // Disable sink switch messages for this test
-            L.set_logfile(log_path, true);          // Append mode
+            ASSERT_TRUE(L.set_logfile(log_path, true)); // Append mode
             L.set_level(Logger::Level::L_TRACE);
             for (int i = 0; i < msg_count; ++i)
             {
@@ -73,7 +73,7 @@ int test_basic_logging(const std::string &log_path_str)
     return run_gtest_worker(
         [&]()
         {
-            Logger::instance().set_logfile(log_path_str);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
             LOGGER_INFO("Hello, world!");
             Logger::instance().flush();
 
@@ -91,7 +91,7 @@ int test_log_level_filtering(const std::string &log_path_str)
     return run_gtest_worker(
         [&]()
         {
-            Logger::instance().set_logfile(log_path_str);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
             Logger::instance().set_level(Logger::Level::L_WARNING);
 
             LOGGER_INFO("This should be filtered.");
@@ -113,7 +113,7 @@ int test_bad_format_string(const std::string &log_path_str)
     return run_gtest_worker(
         [&]()
         {
-            Logger::instance().set_logfile(log_path_str);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
             LOGGER_INFO("Bad format: {}", "one", "two"); // Extra arg should cause format error
             Logger::instance().flush();
 
@@ -134,8 +134,7 @@ int test_default_sink_and_switching(const std::string &log_path_str)
             // This message goes to the default sink (stderr), which is not captured by the test.
             LOGGER_SYSTEM("This goes to default sink.");
 
-            // Switch to a file sink
-            Logger::instance().set_logfile(log_path_str);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
             LOGGER_SYSTEM("This should be in the file.");
             Logger::instance().flush();
 
@@ -155,7 +154,7 @@ int test_multithread_stress(const std::string &log_path_str)
         {
             const int THREADS = scaled_value(16, 4);
             const int MSGS_PER_THREAD = scaled_value(200, 50);
-            Logger::instance().set_logfile(log_path_str, true);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str, true));
             std::vector<std::thread> threads;
 
             for (int i = 0; i < THREADS; ++i)
@@ -187,7 +186,7 @@ int test_flush_waits_for_queue(const std::string &log_path_str)
     return run_gtest_worker(
         [&]()
         {
-            Logger::instance().set_logfile(log_path_str);
+            ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
             for (int i = 0; i < 100; ++i)
                 LOGGER_INFO("message {}", i);
             Logger::instance().flush(); // This should block until all 100 messages are written.
@@ -207,7 +206,7 @@ int test_shutdown_idempotency(const std::string &log_path_str)
         {
             fs::path log_path(log_path_str);
             Logger &L = Logger::instance();
-            L.set_logfile(log_path.string());
+            ASSERT_TRUE(L.set_logfile(log_path.string()));
             L.set_level(Logger::Level::L_INFO);
             LOGGER_INFO("Message before shutdown.");
             L.flush();
@@ -260,8 +259,7 @@ int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_lo
                 });
 
             // Set log file to a directory to cause a write error.
-            Logger::instance().set_logfile("/");
-            LOGGER_ERROR("This write will fail.");
+            ASSERT_FALSE(Logger::instance().set_logfile("/"));
             Logger::instance().flush(); // Ensure the error is processed by the background thread.
 
             ASSERT_GE(callback_count.load(), 1);
@@ -288,8 +286,7 @@ int test_write_error_callback_async()
             Logger::instance().set_write_error_callback([&](const std::string &msg)
                                                         { err_msg_promise.set_value(msg); });
 
-            Logger::instance().set_logfile("/"); // Force an error
-            LOGGER_ERROR("This will fail.");
+            ASSERT_FALSE(Logger::instance().set_logfile("/")); // Force an error
             Logger::instance().flush();
 
             // Wait for the callback to be invoked.
@@ -314,10 +311,10 @@ int test_platform_sinks()
     // This test is mostly to ensure that platform-specific sinks can be initialized
     // and used without crashing. Verification of output is a manual process.
 #if defined(PLATFORM_WIN64)
-            Logger::instance().set_eventlog(L"pylab-test-event-source");
+            ASSERT_TRUE(Logger::instance().set_eventlog(L"pylab-test-event-source"));
             LOGGER_INFO("Test message to Windows Event Log.");
 #else
-            Logger::instance().set_syslog("pylab-test");
+            ASSERT_TRUE(Logger::instance().set_syslog("pylab-test"));
             LOGGER_INFO("Test message to syslog.");
 #endif
             Logger::instance().flush();
@@ -374,9 +371,9 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
                              [&]()
                              {
                                  if (std::rand() % 2 == 0)
-                                     Logger::instance().set_console();
+                                     (void)Logger::instance().set_console();
                                  else
-                                     Logger::instance().set_logfile(chaos_log_path.string());
+                                     (void)Logger::instance().set_logfile(chaos_log_path.string());
                              });
     }
 
@@ -402,7 +399,7 @@ int test_inter_process_flock(const std::string &log_path, const std::string &wor
         {
             Logger &L = Logger::instance();
             L.set_log_sink_messages_enabled(false);
-            L.set_logfile(log_path, true); // use_flock = true
+            ASSERT_TRUE(L.set_logfile(log_path, true)); // use_flock = true
             L.set_level(Logger::Level::L_INFO);
 
             for (int i = 0; i < msg_count; ++i)
@@ -501,6 +498,54 @@ int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_fil
             SUCCEED() << "Rotating file sink test completed successfully.";
         },
         "logger::test_rotating_file_sink", Logger::GetLifecycleModule());
+}
+
+// Worker to test the logger's message dropping behavior when the queue is full.
+int test_queue_full_and_message_dropping(const std::string &log_path_str)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            fs::path log_path(log_path_str);
+            Logger &logger = Logger::instance();
+            // Use a small queue size for this test to easily cause dropping
+            const size_t max_queue = 100;
+            logger.set_max_queue_size(max_queue);
+            ASSERT_TRUE(logger.set_logfile(log_path.string())); // Set logging to a temporary file
+            logger.set_level(Logger::Level::L_INFO);
+            logger.set_log_sink_messages_enabled(false); // Disable sink switch messages for clarity
+
+            // Send a large number of messages to overflow the queue
+            const int messages_to_send = max_queue + 500;
+            for (int i = 0; i < messages_to_send; ++i)
+            {
+                LOGGER_INFO("Message {}", i);
+            }
+
+            // Give a moment for the worker thread to process messages and for dropping to occur
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            // Assert that messages were dropped
+            size_t dropped = logger.get_dropped_message_count();
+            ASSERT_GT(dropped, 0) << "No messages were dropped, queue might not have filled.";
+
+            logger.flush(); // Ensure all buffered messages and recovery messages are written
+            logger.set_log_sink_messages_enabled(true); // Re-enable for subsequent tests
+            logger.set_max_queue_size(10000);           // Reset queue size to default
+
+            // Verify the log file contains the recovery message about dropped messages
+            std::string contents;
+            ASSERT_TRUE(read_file_contents(log_path.string(), contents));
+            EXPECT_NE(contents.find("Logger dropped"), std::string::npos)
+                << "Recovery message about dropped logs not found in file.";
+
+            // Optionally, check that the number of messages written is roughly max_queue + 1 (for
+            // recovery) The exact number might vary due to timing, but it should be close.
+            size_t total_lines_in_file = count_lines(contents);
+            EXPECT_LE(total_lines_in_file,
+                      max_queue + 2); // Max queue + recovery + potential last log msg
+        },
+        "logger::test_queue_full_and_message_dropping", Logger::GetLifecycleModule());
 }
 
 } // namespace logger
