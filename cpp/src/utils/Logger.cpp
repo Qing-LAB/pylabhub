@@ -363,26 +363,25 @@ struct Logger::Impl
     void enqueue_command(Command &&cmd);
     void shutdown();
 
-    std::thread worker_thread_;
-    std::vector<Command> queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable cv_;
-    std::atomic<bool> shutdown_requested_{false};
+    // Ordered for optimal packing as suggested by clang-tidy:
+    // error_callback_, worker_thread_, sink_, m_max_queue_size, m_messages_dropped, m_dropping_since, queue_, cv_, queue_mutex_, m_sink_mutex, callback_dispatcher_, level_, shutdown_requested_, shutdown_completed_, m_log_sink_messages_enabled_, m_was_dropping
 
-    std::mutex m_sink_mutex;
-
-    std::atomic<Logger::Level> level_{Logger::Level::L_INFO};
-    std::unique_ptr<Sink> sink_;
-    std::function<void(const std::string &)> error_callback_;
-    CallbackDispatcher callback_dispatcher_;
-    std::atomic<bool> shutdown_completed_{false};
-    std::atomic<bool> m_log_sink_messages_enabled_{true};
-
-    // Bounded queue members
-    size_t m_max_queue_size{10000}; // Default to 10,000 messages
-    std::atomic<size_t> m_messages_dropped{0};
-    std::atomic<bool> m_was_dropping{false};
-    std::chrono::system_clock::time_point m_dropping_since;
+    std::function<void(const std::string &)> error_callback_; // Size: pointer (8 bytes)
+    std::thread worker_thread_;                               // Size: depends on implementation (e.g., 8 bytes on x64 for pointer to thread data)
+    std::unique_ptr<Sink> sink_;                              // Size: pointer (8 bytes)
+    size_t m_max_queue_size{10000};                           // Size: 8 bytes (on x64)
+    std::chrono::system_clock::time_point m_dropping_since;   // Size: depends on implementation (e.g., 8 bytes for duration)
+    std::vector<Command> queue_;                              // Size: 24 bytes (on x64 for pointer, size, capacity)
+    std::condition_variable cv_;                              // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex queue_mutex_;                                  // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex m_sink_mutex;                                  // Size: depends on implementation (e.g., 40 bytes)
+    CallbackDispatcher callback_dispatcher_;                  // Size: depends on implementation (e.g., 104 bytes in CallbackDispatcher: std::deque (24), std::mutex (40), std::condition_variable (40), std::thread (8), std::atomic<bool> (1))
+    std::atomic<Logger::Level> level_{Logger::Level::L_INFO}; // Size: 4 bytes (for int)
+    std::atomic<bool> shutdown_requested_{false};             // Size: 1 byte
+    std::atomic<bool> shutdown_completed_{false};             // Size: 1 byte
+    std::atomic<bool> m_log_sink_messages_enabled_{true};     // Size: 1 byte
+    std::atomic<bool> m_was_dropping{false};                  // Size: 1 byte
+    std::atomic<size_t> m_messages_dropped{0};                // Size: 8 bytes (on x64)
 };
 
 Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())

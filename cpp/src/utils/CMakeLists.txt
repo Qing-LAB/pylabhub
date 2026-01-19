@@ -91,10 +91,7 @@ target_include_directories(pylabhub-utils
     $<INSTALL_INTERFACE:include>
 )
 
-target_include_directories(pylabhub-utils
-  PRIVATE
-    ${PYLABHUB_LIBSODIUM_ROOT_DIR}/include
-)
+
 
 # Link against necessary third-party libraries and system libraries.
 target_link_libraries(pylabhub-utils

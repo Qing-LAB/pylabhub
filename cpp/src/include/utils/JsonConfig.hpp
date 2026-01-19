@@ -467,8 +467,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         Transaction(Transaction &&) = delete;
         Transaction &operator=(Transaction &&) = delete;
 
-        Transaction(JsonConfig *owner, TxId id, AccessFlags flags) noexcept
-            : d_owner(owner), d_id(id), d_flags(flags), d_used(false)
+        Transaction(TxId id) noexcept : d_id(id), d_used(false)
         {
         }
 
@@ -476,9 +475,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
 
       private:
         friend class JsonConfig;
-        JsonConfig *d_owner;
         TxId d_id;
-        AccessFlags d_flags;
         bool d_used;
     };
 
@@ -489,7 +486,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     TxId d_next_txid = 1;
 
     // helpers
-    Transaction *create_transaction_internal(AccessFlags flags, std::error_code *ec) noexcept;
+    Transaction *create_transaction_internal(std::error_code *ec) noexcept;
     void destroy_transaction_internal(TxId id) noexcept;
     Transaction *find_transaction_locked(TxId id) noexcept;
 
