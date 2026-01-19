@@ -1,7 +1,7 @@
 // AtomicGuard.hpp
 #pragma once
+#include "debug_info.hpp"
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <utility>
 
@@ -66,13 +66,15 @@ class AtomicOwner
     /** @brief Checks if the lock is currently free (state is 0). */
     bool is_free() const noexcept { return load() == 0; }
 
+  private:
+    // Methods to access the underlying atomic are private to enforce usage
+    // of the class's public methods, which define consistent memory ordering.
     /** @brief Returns a mutable reference to the underlying atomic state. */
     std::atomic<uint64_t> &atomic_ref() noexcept { return state_; }
 
     /** @brief Returns a const reference to the underlying atomic state. */
     const std::atomic<uint64_t> &atomic_ref() const noexcept { return state_; }
 
-  private:
     std::atomic<uint64_t> state_;
 };
 
@@ -135,8 +137,7 @@ class AtomicGuard
         if (is_active_ && owner_ != nullptr)
         {
             uint64_t expected = token_;
-            owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
-                                                         std::memory_order_acquire);
+            owner_->compare_exchange_strong(expected, 0);
             is_active_ = false;
         }
 
@@ -170,32 +171,72 @@ class AtomicGuard
 
         // Compare owner state to token; if it matches, attempt CAS -> 0.
         uint64_t expected = token_;
-        if (owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
-                                                         std::memory_order_acquire))
+        if (owner_->compare_exchange_strong(expected, 0))
         {
             is_active_ = false;
             return;
         }
 
 #ifndef NDEBUG
-        // In debug builds assert, to catch logic errors early.
+        // In debug builds panic, to catch logic errors early.
         // If we get here, it means is_active_ was true, but the owner's token
         // did not match ours. This is a true invariant violation.
-        assert(false && "AtomicGuard destructor: invariant violation (is_active_ is true, but "
-                        "owner has different token).");
+        PLH_PANIC("AtomicGuard destructor: invariant violation (is_active_ is true, but "
+                  "owner has different token).");
 #endif
         // In release builds, be robust: do nothing (the lock is effectively leaked).
     }
 
     /** @brief Attaches the guard to a new `AtomicOwner`. Does not acquire the lock. */
-    void attach(AtomicOwner *owner) noexcept { owner_ = owner; }
+    void attach(AtomicOwner *owner) noexcept
+    {
+        if (is_active_)
+        {
+#ifndef NDEBUG
+            PLH_PANIC("attach() on active guard is a logic error. "
+                      "The guard remains attached to the old owner. "
+                      "Use detach_and_release() or detach_no_release() first.");
+#endif
+            return; // In release builds, do nothing to prevent a lock leak.
+        }
+        owner_ = owner;
+    }
 
-    /** @brief Detaches the guard from its owner without releasing the lock. The guard becomes
-     * inactive. */
+    /** 
+     * @brief Detaches the guard from its owner without releasing the lock. The guard becomes
+     * inactive.
+     * @warning If called on an active guard, the lock is not released and will be **leaked**.
+     * This is intended for advanced use-cases. Prefer `detach_and_release()` for safety.
+     */
     void detach_no_release() noexcept
     {
         owner_ = nullptr;
         is_active_ = false;
+    }
+
+    /**
+     * @brief Attempts to release the lock and then detaches the guard from its owner.
+     *
+     * This is a convenience method that provides a safer alternative to `detach_no_release`.
+     * It first attempts to release the lock and then guarantees the guard is detached,
+     * becoming inactive.
+     * @return `true` if the lock was successfully released, `false` otherwise. The guard is
+     *         always detached regardless of the return value.
+     */
+    [[nodiscard]] bool detach_and_release() noexcept
+    {
+        const bool was_active = is_active_;
+        const bool released = release();
+        if (was_active && !released)
+        {
+#ifndef NDEBUG
+            PLH_PANIC("detach_and_release: invariant violation (is_active_ is true, but "
+                      "release failed).");
+#endif
+        }
+        owner_ = nullptr;
+        is_active_ = false; // Guard is always inactive after detach.
+        return released;
     }
 
     /**
@@ -207,8 +248,7 @@ class AtomicGuard
         if (!owner_)
             return false;
         uint64_t expected = 0;
-        if (owner_->atomic_ref().compare_exchange_strong(
-                expected, token_, std::memory_order_acq_rel, std::memory_order_acquire))
+        if (owner_->compare_exchange_strong(expected, token_))
         {
             is_active_ = true;
             return true;
@@ -228,8 +268,7 @@ class AtomicGuard
         if (!owner_)
             return false;
         uint64_t expected = token_;
-        if (owner_->atomic_ref().compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
-                                                         std::memory_order_acquire))
+        if (owner_->compare_exchange_strong(expected, 0))
         {
             is_active_ = false;
             return true;
@@ -266,14 +305,20 @@ class AtomicGuard
     uint64_t token() const noexcept { return token_; }
 
   private:
-    /** @brief Generates a new unique, non-zero token. */
+    /**
+     * @brief Generates a new unique, non-zero token.
+     * @note Tokens are generated from a global atomic counter. After 2^64 increments, tokens
+     *       will repeat. This is astronomically unlikely in practice but is a theoretical
+     *       possibility for systems running for extremely long durations.
+     */
     static uint64_t generate_token() noexcept
     {
         static std::atomic<uint64_t> next{1};
         uint64_t t;
         while ((t = next.fetch_add(1, std::memory_order_relaxed)) == 0)
         {
-            // wrap-around guard (extremely unlikely)
+            // The counter wrapped around to 0. We must not return 0, as it signifies
+            // a "free" state. We fetch_add again to get 1.
         }
         return t;
     }

@@ -47,17 +47,31 @@ class RecursionGuard
   public:
     /**
      * @brief Constructs the guard and pushes the key onto the thread-local recursion stack.
-     * @param key A pointer used as a unique identifier for the scope being guarded.
+     * @param key A pointer used as a unique identifier for the scope being guarded. Can be
+     *            nullptr, in which case the guard is inert.
      */
-    explicit RecursionGuard(const void *key) : key_(key) { get_recursion_stack().push_back(key_); }
+    explicit RecursionGuard(const void *key) : key_(key)
+    {
+        if (key_)
+        {
+            get_recursion_stack().push_back(key_);
+        }
+    }
+
     /**
-     * @brief Destructor. Removes the key from the thread-local recursion stack.
+     * @brief Destructor. Removes the key from the thread-local recursion stack if this
+     *        guard owns a key.
      *
      * This is guaranteed `noexcept`. It efficiently handles both LIFO (last-in, first-out)
      * and non-LIFO destruction order.
      */
     ~RecursionGuard() noexcept
     {
+        if (key_ == nullptr)
+        {
+            return; // Guard is inert (e.g., it was moved-from)
+        }
+
         auto &stack = get_recursion_stack();
         if (!stack.empty() && stack.back() == key_)
         {
@@ -80,11 +94,45 @@ class RecursionGuard
         }
     }
 
-    // Non-copyable and non-movable: moving a guard would change ownership semantics.
+    // --- Rule of 5: Movable, but not Copyable ---
     RecursionGuard(const RecursionGuard &) = delete;
     RecursionGuard &operator=(const RecursionGuard &) = delete;
-    RecursionGuard(RecursionGuard &&) = delete;
-    RecursionGuard &operator=(RecursionGuard &&) = delete;
+
+    /**
+     * @brief Move constructor. Transfers ownership of the key from another guard.
+     * @param other The guard to move from. Its key will be set to nullptr, making it inert.
+     */
+    RecursionGuard(RecursionGuard &&other) noexcept : key_(other.key_) { other.key_ = nullptr; }
+
+    /**
+     * @brief Move assignment operator.
+     * Swaps ownership with another guard.
+     */
+    RecursionGuard &operator=(RecursionGuard &&other) noexcept
+    {
+        if (this != &other) // Protect against self-assignment
+        {
+            // If *this is currently managing a key, remove it from the stack.
+            if (key_ != nullptr)
+            {
+                auto &stack = get_recursion_stack();
+                // Find and erase only the first occurrence of key_ to handle non-LIFO.
+                auto it = std::find(stack.begin(), stack.end(), key_);
+                if (it != stack.end())
+                {
+                    stack.erase(it);
+                }
+            }
+
+            // Transfer ownership from 'other' to '*this'.
+            // The key previously managed by 'other' remains on the stack,
+            // but is now associated with '*this' guard object.
+            key_ = other.key_;
+            other.key_ =
+                nullptr; // Make 'other' inert to prevent it from popping the key on destruction.
+        }
+        return *this;
+    }
 
     /**
      * @brief Checks if a given key is already present on the current thread's recursion stack.
@@ -94,7 +142,7 @@ class RecursionGuard
     [[nodiscard]] static bool is_recursing(const void *key) noexcept
     {
         const auto &stack = get_recursion_stack();
-        if (stack.empty())
+        if (stack.empty() || key == nullptr)
             return false;
 
         // Fast-path: if the most-recent entry matches, return true quickly.

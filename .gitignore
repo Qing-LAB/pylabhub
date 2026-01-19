@@ -33,6 +33,7 @@ htmlcov/
 **/.vs/
 **/.vscode/
 **/.idea/
+**/.cursor
 
 # OS files
 .DS_Store
