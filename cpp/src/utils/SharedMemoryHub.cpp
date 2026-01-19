@@ -4,11 +4,22 @@
  *
  * This implements the Data Exchange Hub framework as specified in HEP core-0002.
  ******************************************************************************/
-
-#include "utils/SharedMemoryHub.hpp"
 #include "platform.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <synchapi.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 #include <sodium.h>
@@ -22,18 +33,9 @@
 #include <thread>
 #include <vector>
 
-#if defined(PYLABHUB_PLATFORM_WIN64)
-#include <synchapi.h>
-#include <windows.h>
-#else
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <time.h>
-#include <unistd.h>
-#endif
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
+#include "utils/SharedMemoryHub.hpp"
 
 namespace pylabhub::hub
 {

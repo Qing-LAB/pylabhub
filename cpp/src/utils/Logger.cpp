@@ -353,6 +353,38 @@ struct SetLogSinkMessagesCommand
 using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorCommand, FlushCommand,
                              SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
 
+// --- Promise Helper Functions ---
+template <typename T>
+void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
+{
+    if (!p)
+        return;
+    try
+    {
+        p->set_value(std::move(value));
+    }
+    catch (...)
+    {
+        // Promise already satisfied or broken - swallow to avoid std::terminate.
+    }
+}
+
+template <typename T>
+void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p,
+                                       std::exception_ptr ep)
+{
+    if (!p)
+        return;
+    try
+    {
+        p->set_exception(ep);
+    }
+    catch (...)
+    {
+        // swallow
+    }
+}
+
 // Logger Pimpl and Implementation
 struct Logger::Impl
 {
@@ -361,6 +393,7 @@ struct Logger::Impl
     void start_worker();
     void worker_loop();
     void enqueue_command(Command &&cmd);
+    void reject_command_due_to_shutdown(Command &cmd);
     void shutdown();
 
     // Ordered for optimal packing as suggested by clang-tidy:
@@ -407,10 +440,32 @@ void Logger::Impl::start_worker()
     }
 }
 
+void Logger::Impl::reject_command_due_to_shutdown(Command &cmd)
+{
+    std::visit(
+        [](auto &&arg)
+        {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, SetSinkCommand> ||
+                          std::is_same_v<T, FlushCommand> ||
+                          std::is_same_v<T, SetErrorCallbackCommand> ||
+                          std::is_same_v<T, SetLogSinkMessagesCommand> ||
+                          std::is_same_v<T, SinkCreationErrorCommand>)
+            {
+                if (arg.promise)
+                {
+                    promise_set_safe(arg.promise, false);
+                }
+            }
+        },
+        cmd);
+}
+
 void Logger::Impl::enqueue_command(Command &&cmd)
 {
     if (shutdown_requested_.load(std::memory_order_relaxed))
     {
+        reject_command_due_to_shutdown(cmd);
         return;
     }
 
@@ -418,6 +473,7 @@ void Logger::Impl::enqueue_command(Command &&cmd)
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (shutdown_requested_.load(std::memory_order_acquire))
         {
+            reject_command_due_to_shutdown(cmd);
             return;
         }
 
@@ -440,38 +496,6 @@ void Logger::Impl::enqueue_command(Command &&cmd)
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
-}
-
-// --- Promise Helper Functions ---
-template <typename T>
-static void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
-{
-    if (!p)
-        return;
-    try
-    {
-        p->set_value(std::move(value));
-    }
-    catch (...)
-    {
-        // Promise already satisfied or broken - swallow to avoid std::terminate.
-    }
-}
-
-template <typename T>
-static void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p,
-                                       std::exception_ptr ep)
-{
-    if (!p)
-        return;
-    try
-    {
-        p->set_exception(ep);
-    }
-    catch (...)
-    {
-        // swallow
-    }
 }
 
 void Logger::Impl::worker_loop()
