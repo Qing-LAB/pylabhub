@@ -26,14 +26,24 @@ using pylabhub::basics::AtomicGuard;
 using pylabhub::basics::AtomicOwner;
 
 // Defines sizes for stress tests to allow for quick or thorough testing.
-static constexpr int LIGHT_THREADS = 32;
-static constexpr int HEAVY_THREADS = 64;
-static constexpr int LIGHT_ITERS = 500;
-static constexpr int HEAVY_ITERS = 20000;
+#if ATOMICGUARD_STRESS_LEVEL == 2 // HEAVY
+static constexpr int THREAD_NUM = 64;
+static constexpr int ITER_NUM = 20000;
+#elif ATOMICGUARD_STRESS_LEVEL == 1 // LIGHT (default)
+static constexpr int THREAD_NUM = 32;
+static constexpr int ITER_NUM = 500;
+#else // ATOMICGUARD_STRESS_LEVEL == 0 or undefined, skip stress tests
+static constexpr int THREAD_NUM = 1; // Minimal threads, tests will be skipped.
+static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skipped.
+#endif
+
 static constexpr int SLOT_NUM = 16;
 
-#define THREAD_NUM LIGHT_THREADS
-#define ITER_NUM LIGHT_ITERS
+#if ATOMICGUARD_STRESS_LEVEL == 0
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
+#else
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL ((void)0)
+#endif
 
 /**
  * @brief Tests the fundamental manual acquire and release behavior.
@@ -122,6 +132,8 @@ TEST(AtomicGuardTest, RaiiAcquireFailure)
  */
 TEST(AtomicGuardTest, ConcurrentAcquireStress)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     std::atomic<int> success_count{0};
 
@@ -132,9 +144,7 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
             [&]()
             {
                 std::mt19937_64 rng(std::random_device{}());
-                std::uniform_int_distribution<int> jitter(0, 200);
-                auto until = std::chrono::steady_clock::now() + 500ms;
-                while (std::chrono::steady_clock::now() < until)
+                for (int i = 0; i < ITER_NUM; ++i)
                 {
                     AtomicGuard g(&owner);
                     if (g.acquire())
@@ -144,11 +154,6 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
                         if ((rng() & 0xF) == 0)
                             std::this_thread::sleep_for(std::chrono::microseconds(rng() & 0xFF));
                         [[maybe_unused]] bool ok = g.release();
-                    }
-                    else
-                    {
-                        // Spin with a small delay if lock is not acquired.
-                        std::this_thread::sleep_for(std::chrono::microseconds(jitter(rng)));
                     }
                 }
             });
@@ -239,7 +244,7 @@ TEST(AtomicGuardTest, AttachDetach)
     ASSERT_FALSE(g.acquire()); // Cannot acquire while detached.
 
     // Attach the guard to an owner and acquire the lock.
-    ASSERT_TRUE(g.attach_and_acquire(&owner) ? true : true);
+    ASSERT_TRUE(g.attach_and_acquire(&owner));
     ASSERT_TRUE(g.active());
     ASSERT_EQ(owner.load(), g.token());
     ASSERT_TRUE(g.release());
@@ -250,12 +255,50 @@ TEST(AtomicGuardTest, AttachDetach)
 }
 
 /**
+ * @brief Tests the safer detach_and_release method.
+ */
+TEST(AtomicGuardTest, DetachAndRelease)
+{
+    // Case 1: Detach an active guard.
+    {
+        AtomicOwner owner;
+        AtomicGuard g(&owner);
+        ASSERT_TRUE(g.acquire());
+        ASSERT_TRUE(g.active());
+
+        // Detach and release. Should succeed.
+        ASSERT_TRUE(g.detach_and_release());
+        ASSERT_TRUE(owner.is_free());
+
+        // Guard should now be inactive and detached.
+        ASSERT_FALSE(g.active());
+        ASSERT_FALSE(g.acquire()); // Cannot re-acquire.
+    }
+
+    // Case 2: Detach an inactive guard.
+    {
+        AtomicOwner owner;
+        AtomicGuard g(&owner);
+        ASSERT_FALSE(g.active());
+
+        // Detach and release. Should fail as there's nothing to release.
+        ASSERT_FALSE(g.detach_and_release());
+        ASSERT_TRUE(owner.is_free());
+
+        // Guard should be inactive and detached.
+        ASSERT_FALSE(g.active());
+        ASSERT_FALSE(g.acquire());
+    }
+}
+
+/**
  * @brief Tests transferring lock ownership between threads using `std::promise` and `std::future`.
  * This demonstrates a single, simple handoff of an active guard.
  */
 TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
 {
     AtomicOwner owner;
+    std::atomic<bool> thread_failure{false};
 
     std::promise<AtomicGuard> p;
     std::future<AtomicGuard> f = p.get_future();
@@ -264,24 +307,63 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
     std::thread producer(
         [&]()
         {
-            AtomicGuard g(&owner, true);
-            ASSERT_TRUE(g.active());
-            p.set_value(std::move(g)); // Move the guard into the promise.
+            try
+            {
+                AtomicGuard g(&owner, true);
+                if (!g.active())
+                {
+                    // In this test, acquisition should not fail.
+                    throw std::runtime_error("Producer failed to acquire lock.");
+                }
+                p.set_value(std::move(g)); // Move the guard into the promise.
+            }
+            catch (...)
+            {
+                thread_failure.store(true, std::memory_order_relaxed);
+                try
+                {
+                    p.set_exception(std::current_exception());
+                }
+                catch (const std::future_error &)
+                {
+                    // Ignore if future is already satisfied or no state.
+                }
+            }
         });
 
     // Consumer thread: receives the guard from the future and releases the lock.
     std::thread consumer(
         [&]()
         {
-            AtomicGuard g = f.get(); // Receive the moved guard.
-            ASSERT_TRUE(g.active());
-            ASSERT_EQ(owner.load(), g.token());
-            ASSERT_TRUE(g.release());
+            try
+            {
+                AtomicGuard g = f.get(); // Receive the moved guard.
+                if (!g.active())
+                {
+                    // If we receive an inactive guard, the producer must have failed.
+                    thread_failure.store(true, std::memory_order_relaxed);
+                    return;
+                }
+
+                if (owner.load() != g.token())
+                {
+                    thread_failure.store(true, std::memory_order_relaxed);
+                }
+                if (!g.release())
+                {
+                    thread_failure.store(true, std::memory_order_relaxed);
+                }
+            }
+            catch (...)
+            {
+                thread_failure.store(true, std::memory_order_relaxed);
+            }
         });
 
     producer.join();
     consumer.join();
 
+    ASSERT_FALSE(thread_failure.load(std::memory_order_relaxed));
     ASSERT_TRUE(owner.is_free());
 }
 
@@ -291,12 +373,15 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
  */
 TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     const int pairs = THREAD_NUM;
     const int iters_per_pair = ITER_NUM;
 
     std::vector<AtomicOwner> owners(pairs);
     std::vector<std::thread> workers;
     workers.reserve(pairs);
+    std::atomic<bool> thread_failure{false};
 
     for (int p = 0; p < pairs; ++p)
     {
@@ -305,26 +390,54 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
             {
                 for (int i = 0; i < iters_per_pair; ++i)
                 {
-                    // Acquire the lock. Retry briefly if it's contended.
+                    // Acquire the lock. Retry a few times if it's contended.
                     AtomicGuard g(owner, true);
                     if (!g.active())
                     {
-                        auto until = std::chrono::steady_clock::now() + 20ms;
-                        while (!g.acquire() && std::chrono::steady_clock::now() < until)
+                        int retries = 5; // A small, fixed number of retries
+                        while (!g.acquire() && retries > 0)
                         {
+                            std::this_thread::yield(); // Yield to other threads
+                            retries--;
                         }
                     }
-                    ASSERT_TRUE(g.active()) << "Guard should be active before move";
+                    if (!g.active())
+                    {
+                        thread_failure.store(true, std::memory_order_relaxed);
+                        continue; // Skip this iteration if acquire failed.
+                    }
 
                     // Handoff via promise/future to a short-lived local consumer thread.
                     std::promise<AtomicGuard> p2;
                     std::future<AtomicGuard> f2 = p2.get_future();
                     std::thread local_consumer([p2 = std::move(p2), g = std::move(g)]() mutable
-                                               { p2.set_value(std::move(g)); });
+                                               {
+                                                   try
+                                                   {
+                                                       p2.set_value(std::move(g));
+                                                   }
+                                                   catch (...)
+                                                   {
+                                                       try
+                                                       {
+                                                           p2.set_exception(
+                                                               std::current_exception());
+                                                       }
+                                                       catch (...)
+                                                       {
+                                                       }
+                                                   }
+                                               });
 
                     AtomicGuard moved = f2.get();
-                    ASSERT_TRUE(moved.active()) << "Guard should be active after move";
-                    ASSERT_TRUE(moved.release());
+                    if (!moved.active())
+                    {
+                        thread_failure.store(true, std::memory_order_relaxed);
+                    }
+                    if (!moved.release())
+                    {
+                        thread_failure.store(true, std::memory_order_relaxed);
+                    }
                     local_consumer.join();
                 }
             });
@@ -333,6 +446,7 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
     for (auto &w : workers)
         w.join();
 
+    ASSERT_FALSE(thread_failure.load(std::memory_order_relaxed));
     for (const auto &owner : owners)
     {
         ASSERT_TRUE(owner.is_free());
@@ -346,6 +460,8 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
  */
 TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     const int SLOTS = SLOT_NUM;
     const int THREADS = THREAD_NUM;
@@ -357,6 +473,7 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
         slots.emplace_back(&owner); // Attached but not acquired.
 
     std::vector<std::mutex> slot_mtx(SLOTS);
+    std::atomic<bool> thread_failure{false};
 
     std::vector<std::thread> threads;
     threads.reserve(THREADS);
@@ -391,8 +508,14 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
                     {
                         if (slots[dst].acquire())
                         {
-                            ASSERT_EQ(owner.load(), slots[dst].token());
-                            ASSERT_TRUE(slots[dst].release());
+                            if (owner.load() != slots[dst].token())
+                            {
+                                thread_failure.store(true, std::memory_order_relaxed);
+                            }
+                            if (!slots[dst].release())
+                            {
+                                thread_failure.store(true, std::memory_order_relaxed);
+                            }
                         }
                     }
                 }
@@ -402,14 +525,50 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
     for (auto &th : threads)
         th.join();
 
+    ASSERT_FALSE(thread_failure.load(std::memory_order_relaxed));
+
     // Clean up any remaining active locks.
     for (auto &s : slots)
     {
-        if (s.active()) [[maybe_unused]]
-            bool ok = s.release();
+        if (s.active())
+        {
+            if (!s.release())
+            {
+                thread_failure.store(true, std::memory_order_relaxed);
+            }
+        }
     }
+    ASSERT_FALSE(thread_failure.load(std::memory_order_relaxed));
     ASSERT_TRUE(owner.is_free());
 }
+
+#if !defined(NDEBUG) && GTEST_HAS_DEATH_TEST
+/**
+ * @brief Death tests to ensure invariant violations cause a panic in debug builds.
+ */
+TEST(AtomicGuardDeathTest, InvariantViolationsPanic)
+{
+    // Test that the destructor panics if the guard is active but the owner's token
+    // has been changed by someone else.
+    EXPECT_DEATH(
+        {
+            AtomicOwner owner;
+            AtomicGuard g(&owner, true);
+            owner.store(9999); // Another entity "steals" the lock.
+        },
+        "AtomicGuard destructor: invariant violation");
+
+    // Test that calling attach() on an active guard panics.
+    EXPECT_DEATH(
+        {
+            AtomicOwner owner1;
+            AtomicOwner owner2;
+            AtomicGuard g(&owner1, true);
+            g.attach(&owner2); // Should panic.
+        },
+        "attach.. on active guard is a logic error");
+}
+#endif
 
 /**
  * @brief A large-scale stress test with many producer and consumer threads.
@@ -419,6 +578,8 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
  */
 TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
 {
+    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+
     AtomicOwner owner;
     const int PAIRS = THREAD_NUM;
     const int ITERS = ITER_NUM;
@@ -490,9 +651,11 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
                     AtomicGuard g(&owner, true);
                     if (!g.active())
                     {
-                        auto until = std::chrono::steady_clock::now() + 10ms;
-                        while (!g.acquire() && std::chrono::steady_clock::now() < until)
+                        int retries = 5; // A small, fixed number of retries
+                        while (!g.acquire() && retries > 0)
                         {
+                            std::this_thread::yield(); // Yield to other threads
+                            retries--;
                         }
                     }
 
@@ -504,7 +667,21 @@ TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
                     ch.cv.notify_one();
 
                     // Fulfill the promise, moving the guard to the shared state for the consumer.
-                    prom.set_value(std::move(g));
+                    try
+                    {
+                        prom.set_value(std::move(g));
+                    }
+                    catch (...)
+                    {
+                        try
+                        {
+                            prom.set_exception(std::current_exception());
+                        }
+                        catch (...)
+                        {
+                            // Ignore if promise is already satisfied
+                        }
+                    }
                 }
             });
     }

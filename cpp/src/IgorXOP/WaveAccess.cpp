@@ -309,8 +309,8 @@ extern "C" int WAFill3DWaveDirectMethod(WAFill3DWaveDirectMethodParams *p)
         result = Fill3DWave<UInt32>((UInt32 *)dataStartPtr, numLayers, numColumns, numRows);
         break;
     case NT_I16 | NT_UNSIGNED:
-        result =
-            Fill3DWave<unsigned short>((unsigned short *)dataStartPtr, numLayers, numColumns, numRows);
+        result = Fill3DWave<unsigned short>((unsigned short *)dataStartPtr, numLayers, numColumns,
+                                            numRows);
         break;
     case NT_I8 | NT_UNSIGNED:
         result = Fill3DWave<unsigned char>((unsigned char *)dataStartPtr, numLayers, numColumns,

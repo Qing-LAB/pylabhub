@@ -76,6 +76,8 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::filelock::try_lock_nonblocking(argv[2]);
         }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
     }
     else if (module == "jsonconfig")
     {
@@ -84,6 +86,16 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::jsonconfig::write_id(argv[2], argv[3]);
         }
+        if (scenario == "uninitialized_behavior")
+        {
+            return pylabhub::tests::worker::jsonconfig::uninitialized_behavior();
+        }
+        if (scenario == "not_consuming_proxy")
+        {
+            return pylabhub::tests::worker::jsonconfig::not_consuming_proxy();
+        }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
     }
     else if (module == "lifecycle")
     {
@@ -144,6 +156,10 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all();
         }
+        if (scenario == "dynamic.permanent_in_middle")
+        {
+            return pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle();
+        }
         if (scenario == "dynamic.static_dependency_fail")
         {
             return pylabhub::tests::worker::lifecycle::dynamic_static_dependency_fail();
@@ -161,6 +177,16 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_register_before_init_fail();
         }
+        if (scenario == "dynamic.permanent_module")
+        {
+            return pylabhub::tests::worker::lifecycle::dynamic_permanent_module();
+        }
+        if (scenario == "dynamic.permanent_module_finalize")
+        {
+            return pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize();
+        }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
     }
     else if (module == "logger")
     {
@@ -229,6 +255,8 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::logger::test_queue_full_and_message_dropping(argv[2]);
         }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
     }
     return -1; // No matching worker found
 }

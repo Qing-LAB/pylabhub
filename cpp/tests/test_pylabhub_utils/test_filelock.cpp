@@ -18,7 +18,7 @@
 #include <gmock/gmock.h> // Explicitly include gmock
 #include <gtest/gtest.h>
 #include <iostream>
-#include <memory>        // Explicitly include memory for std::make_unique
+#include <memory> // Explicitly include memory for std::make_unique
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -89,9 +89,10 @@ TEST_F(FileLockTest, BasicNonBlocking)
 {
     auto resource_path = temp_dir() / "basic_resource.txt";
     clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
-        WorkerProcess proc(g_self_exe_path, "filelock.test_basic_non_blocking",
-                               {resource_path.string()});
-        ASSERT_TRUE(proc.valid());    proc.wait_for_exit();
+    WorkerProcess proc(g_self_exe_path, "filelock.test_basic_non_blocking",
+                       {resource_path.string()});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
     expect_worker_ok(proc);
 }
 

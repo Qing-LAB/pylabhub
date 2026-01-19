@@ -85,7 +85,7 @@ elseif(APPLE)
 
   # Set a default deployment target if not specified by the user or is empty.
   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version to target." FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version to target." FORCE)
   endif()
   message(STATUS "macOS deployment target set to: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
