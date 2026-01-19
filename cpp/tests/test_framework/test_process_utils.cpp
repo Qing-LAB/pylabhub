@@ -31,7 +31,7 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
                                           bool redirect_stderr_to_console)
 {
 #if defined(PLATFORM_WIN64)
-    std::string cmdline = fmt::format("\"{}\" {}\n", exe_path, mode);
+    std::string cmdline = fmt::format("\"{}\" {}", exe_path, mode);
     for (const auto &a : args)
         cmdline += fmt::format(" \"{}\"", a);
 
