@@ -90,6 +90,10 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::jsonconfig::uninitialized_behavior();
         }
+        if (scenario == "not_consuming_proxy")
+        {
+            return pylabhub::tests::worker::jsonconfig::not_consuming_proxy();
+        }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;
     }

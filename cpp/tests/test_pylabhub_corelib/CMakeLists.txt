@@ -25,6 +25,19 @@ target_link_libraries(test_pylabhub_corelib
     pylabhub::test_framework
 )
 
+# Define the stress level for the atomic_guard test based on the CMake option.
+if(PYLABHUB_ATOMICGUARD_STRESS_LEVEL STREQUAL "None")
+    set(ATOMICGUARD_STRESS_DEFINE "ATOMICGUARD_STRESS_LEVEL=0")
+elseif(PYLABHUB_ATOMICGUARD_STRESS_LEVEL STREQUAL "Light")
+    set(ATOMICGUARD_STRESS_DEFINE "ATOMICGUARD_STRESS_LEVEL=1")
+elseif(PYLABHUB_ATOMICGUARD_STRESS_LEVEL STREQUAL "Heavy")
+    set(ATOMICGUARD_STRESS_DEFINE "ATOMICGUARD_STRESS_LEVEL=2")
+endif()
+
+if(ATOMICGUARD_STRESS_DEFINE)
+    target_compile_definitions(test_pylabhub_corelib PRIVATE ${ATOMICGUARD_STRESS_DEFINE})
+endif()
+
 target_compile_features(test_pylabhub_corelib PRIVATE cxx_std_20)
 
 # Set the logger compile level to TRACE for tests.
