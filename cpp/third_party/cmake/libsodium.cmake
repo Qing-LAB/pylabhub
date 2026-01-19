@@ -61,9 +61,11 @@ if(MSVC)
   set(LIBSODIUM_PROJECT_ROOT_DIR "${LIBSODIUM_SOURCE_DIR}/builds/msvc/${_vs_dir}")
   set(LIBSODIUM_PROJECT_FILE "${LIBSODIUM_PROJECT_ROOT_DIR}/libsodium.sln")
 
-  # MSBuild OutDir/IntDir need Windows-style paths and must end with trailing slash.
-  file(TO_NATIVE_PATH "${LIBSODIUM_BUILD_DIR}/lib" _out_dir_native)
-  file(TO_NATIVE_PATH "${LIBSODIUM_BUILD_DIR}/obj" _int_dir_native)
+  # MSBuild OutDir/IntDir need Windows-style paths and must end with a trailing slash.
+  # To avoid issues with backslash parsing at the command line, we use forward
+  # slashes, which MSBuild handles correctly.
+  string(REPLACE "\\" "/" _out_dir_fwd "${LIBSODIUM_BUILD_DIR}/lib/")
+  string(REPLACE "\\" "/" _int_dir_fwd "${LIBSODIUM_BUILD_DIR}/obj/")
 
   set(_msbuild_cmd
     "${MSBUILD_EXECUTABLE}" "${LIBSODIUM_PROJECT_FILE}"
@@ -72,8 +74,8 @@ if(MSVC)
     "/p:Platform=${CMAKE_VS_PLATFORM_NAME}"
     "/p:PlatformToolset=${CMAKE_VS_PLATFORM_TOOLSET}"
     "/p:SolutionDir=${LIBSODIUM_PROJECT_ROOT_DIR}\\"
-    "/p:OutDir=${_out_dir_native}\\"
-    "/p:IntDir=${_int_dir_native}\\"
+    "/p:OutDir=${_out_dir_fwd}"
+    "/p:IntDir=${_int_dir_fwd}"
   )
 
   # After build, copy the produced libs and headers to INSTALL_DIR so consumers have a stable layout.
@@ -91,11 +93,11 @@ if(MSVC)
     INSTALL_DIR  "${LIBSODIUM_INSTALL_DIR}"
 
     CONFIGURE_COMMAND ""   # MSBuild project is pre-generated
-    BUILD_COMMAND    ${_msbuild_cmd}
     INSTALL_COMMAND  ${_copy_cmd}
 
     # The library name produced by libsodium MSVC builds is typically "libsodium.lib"
     BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libsodium.lib"
+    BUILD_COMMAND    ${_msbuild_cmd}    
   )
 
   set(LIBSODIUM_LIBRARY_PATH "${LIBSODIUM_INSTALL_DIR}/lib/libsodium.lib")
@@ -195,6 +197,6 @@ if(THIRD_PARTY_INSTALL)
   # Stage the header files
   pylabhub_stage_headers(
     DIRECTORIES "${install_dir}/include"
-    SUBDIR "sodium"
+    SUBDIR ""
   )
 endif()
