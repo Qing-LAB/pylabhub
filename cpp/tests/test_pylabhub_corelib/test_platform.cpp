@@ -16,13 +16,11 @@
 #include "shared_test_helpers.h" // For StringCapture & read_file_contents
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "format_tools.hpp"
 
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
-
 
 // test_platform.cpp
 #include <gtest/gtest.h>
