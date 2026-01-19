@@ -299,13 +299,14 @@ TEST_F(LoggerTest, SetRotatingLogfileFailure)
     fs::create_directories(unwritable_dir); // Ensure directory exists to set permissions
     paths_to_clean_.push_back(unwritable_dir);
     // Make directory unwritable
-    fs::permissions(unwritable_dir, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+    fs::permissions(unwritable_dir, fs::perms::owner_read | fs::perms::owner_exec,
+                    fs::perm_options::replace);
     auto log_path = unwritable_dir / "test.log";
 
     std::error_code ec;
     // This should fail because of the pre-flight check in set_rotating_logfile
-    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, 1024, 5, true,
-                                                                          ec));
+    ASSERT_FALSE(
+        pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, 1024, 5, true, ec));
 
     // The error code should indicate permission denied.
     ASSERT_EQ(ec, std::errc::permission_denied);
@@ -317,9 +318,10 @@ TEST_F(LoggerTest, SetRotatingLogfileFailure)
     // The pre-flight check for create_directories should fail.
     auto invalid_log_path = "C:\\*\\invalid:path.log"; // Invalid characters in path
     std::error_code ec;
-    ASSERT_FALSE(
-        pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, 1024, 5, true, ec));
-    ASSERT_TRUE(ec); // Should have an error. The specific error code might vary depending on OS version and exact invalid path.
+    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, 1024, 5,
+                                                                          true, ec));
+    ASSERT_TRUE(ec); // Should have an error. The specific error code might vary depending on OS
+                     // version and exact invalid path.
 #endif
 }
 
@@ -333,4 +335,3 @@ TEST_F(LoggerTest, QueueFullAndMessageDropping)
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
-

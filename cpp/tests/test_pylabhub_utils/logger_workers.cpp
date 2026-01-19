@@ -48,7 +48,7 @@ int stress_log(const std::string &log_path, int msg_count)
         {
             Logger &L = Logger::instance();
             L.set_log_sink_messages_enabled(false); // Disable sink switch messages for this test
-            ASSERT_TRUE(L.set_logfile(log_path, true));          // Append mode
+            ASSERT_TRUE(L.set_logfile(log_path, true)); // Append mode
             L.set_level(Logger::Level::L_TRACE);
             for (int i = 0; i < msg_count; ++i)
             {
@@ -517,7 +517,8 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
 
             // Send a large number of messages to overflow the queue
             const int messages_to_send = max_queue + 500;
-            for (int i = 0; i < messages_to_send; ++i) {
+            for (int i = 0; i < messages_to_send; ++i)
+            {
                 LOGGER_INFO("Message {}", i);
             }
 
@@ -530,7 +531,7 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
 
             logger.flush(); // Ensure all buffered messages and recovery messages are written
             logger.set_log_sink_messages_enabled(true); // Re-enable for subsequent tests
-            logger.set_max_queue_size(10000); // Reset queue size to default
+            logger.set_max_queue_size(10000);           // Reset queue size to default
 
             // Verify the log file contains the recovery message about dropped messages
             std::string contents;
@@ -538,11 +539,11 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
             EXPECT_NE(contents.find("Logger dropped"), std::string::npos)
                 << "Recovery message about dropped logs not found in file.";
 
-            // Optionally, check that the number of messages written is roughly max_queue + 1 (for recovery)
-            // The exact number might vary due to timing, but it should be close.
+            // Optionally, check that the number of messages written is roughly max_queue + 1 (for
+            // recovery) The exact number might vary due to timing, but it should be close.
             size_t total_lines_in_file = count_lines(contents);
-            EXPECT_LE(total_lines_in_file, max_queue + 2); // Max queue + recovery + potential last log msg
-
+            EXPECT_LE(total_lines_in_file,
+                      max_queue + 2); // Max queue + recovery + potential last log msg
         },
         "logger::test_queue_full_and_message_dropping", Logger::GetLifecycleModule());
 }

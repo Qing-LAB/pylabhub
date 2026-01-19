@@ -54,7 +54,7 @@ class WorkerProcess
      * @param args A vector of additional string arguments for the worker.
      */
     WorkerProcess(const std::string &exe_path, const std::string &mode,
-                  const std::vector<std::string> &args);
+                  const std::vector<std::string> &args, bool redirect_stderr_to_console = false);
     ~WorkerProcess();
 
     WorkerProcess(const WorkerProcess &) = delete;
@@ -100,6 +100,7 @@ class WorkerProcess
     mutable std::string stdout_content_;
     mutable std::string stderr_content_;
     bool waited_ = false;
+    bool redirect_stderr_to_console_ = false;
 };
 
 /**
@@ -111,6 +112,7 @@ class WorkerProcess
  *
  * @param proc The WorkerProcess instance to check.
  */
-void expect_worker_ok(const WorkerProcess &proc, const std::vector<std::string>& expected_stderr_substrings = {});
+void expect_worker_ok(const WorkerProcess &proc,
+                      const std::vector<std::string> &expected_stderr_substrings = {});
 
 } // namespace pylabhub::tests::helper

@@ -287,7 +287,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @brief Registers a dynamic module with the lifecycle system.
      * @details Dynamic modules can be registered at runtime after the static core of the
      * application has been initialized. They can be loaded and unloaded on-demand.
-     * This call is only valid *after* `initialize()` has been called and *before* 
+     * This call is only valid *after* `initialize()` has been called and *before*
      * `finalize()` is called. It is thread-safe.
      *
      * @param module_def The fully configured module object, passed by rvalue-reference
