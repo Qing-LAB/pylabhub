@@ -12,6 +12,7 @@ add_executable(test_pylabhub_corelib
   test_platform.cpp
   test_scopeguard.cpp
 )
+add_dependencies(test_pylabhub_corelib stage_pylabhub_utils)
 
 # Link against the test framework. This provides:
 # 1. A generic main() entry point (from test_entrypoint.cpp).

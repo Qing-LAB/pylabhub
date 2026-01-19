@@ -410,7 +410,7 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
 
 JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::error_code *ec) noexcept
 {
-    Transaction *t = create_transaction_internal(flags, ec);
+    Transaction *t = create_transaction_internal(ec);
     if (!t)
     {
         // create_transaction_internal sets ec
@@ -421,8 +421,7 @@ JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::err
     return TransactionProxy(this, t->d_id, flags);
 }
 
-JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags flags,
-                                                                 std::error_code *ec) noexcept
+JsonConfig::Transaction *JsonConfig::create_transaction_internal(std::error_code *ec) noexcept
 {
     if (!pImpl)
     {
@@ -435,7 +434,7 @@ JsonConfig::Transaction *JsonConfig::create_transaction_internal(AccessFlags fla
 
     TxId id = d_next_txid++;
 
-    auto node = std::make_unique<Transaction>(this, id, flags);
+    auto node = std::make_unique<Transaction>(id);
 
     d_tx_list.push_back(std::move(node));
     auto it = std::prev(d_tx_list.end());
@@ -816,7 +815,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
         std::vector<char> tmpl_buf(tmpl.begin(), tmpl.end());
         tmpl_buf.push_back('\0');
 
-        int fd = mkstemp(tmpl_buf.data());
+        [[maybe_unused]] int fd = mkstemp(tmpl_buf.data());
         if (fd == -1)
         {
             int errnum = errno;
