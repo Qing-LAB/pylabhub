@@ -10,7 +10,7 @@
 
 ## Abstract
 
-This Hub Enhancement Proposal (HEP) outlines a revised design for the **Data Exchange Hub**, a core framework within the `pylabhub-utils` library. The new design splits the framework into two distinct but cooperative modules: a **Message Hub** for message-based control and discovery, and a **DataBlock Hub** for high-performance shared memory data exchange. This modular approach simplifies the architecture and clarifies the roles of different communication patterns. The Message Hub will be a statically managed `Lifecycle` module serving as the central nervous system, while the DataBlock Hub will provide on-demand, high-throughput data channels coordinated by the Message Hub.
+This Hub Enhancement Proposal (HEP) outlines a revised design for the **Data Exchange Hub**, a core framework within the `pylabhub-utils` library. The new design is centered around a **Message Hub** that provides a unified event model for both system control and high-performance data exchange. It splits the framework into two distinct but cooperative modules: the Message Hub for control, discovery, and notifications, and a **DataBlock Hub** for passive, high-performance shared memory data buffers. This architecture simplifies client logic, enhances scalability, and unifies all inter-process communication under a single, consistent event-driven paradigm.
 
 ## Motivation
 
@@ -26,131 +26,109 @@ The Data Exchange Hub aims to provide this foundational IPC layer, simplifying t
 
 The Data Exchange Hub framework is composed of two primary modules, each providing a distinct communication channel, but unified under a common discovery and management system.
 
-1.  **The Message Hub**: A statically managed `Lifecycle` module that provides the core infrastructure for messaging, service discovery, and control. It is built on ZeroMQ and serves as the central broker.
+1.  **The Message Hub**: A statically managed `Lifecycle` module that provides the core infrastructure for messaging, service discovery, control, and data notifications. It is built on ZeroMQ and serves as the central broker.
 
-2.  **The DataBlock Hub**: A module providing high-performance, shared-memory-based channels for bulk data transfer. These channels are created and discovered via the Message Hub.
+2.  **The DataBlock Hub**: A module providing high-performance, shared-memory-based channels for bulk data transfer. These channels are passive buffers, with all signaling handled by the Message Hub.
 
 ### 1. High-Performance Channel (DataBlock Hub)
 
--   **Purpose**: Designed for high-throughput, low-latency communication of large, structured data blocks (e.g., image frames, ADC waveforms, spectral data).
--   **Technology**: To be implemented using a custom C++ wrapper that abstracts platform-native shared memory (e.g., `CreateFileMapping` on Windows, `shm_open` on POSIX).
+-   **Purpose**: Designed for high-throughput, low-latency communication of large, structured data blocks.
+-   **Technology**: Implemented using platform-native shared memory.
 -   **Characteristics**:
     -   Provides zero-copy data access between processes on the same machine.
     -   Suitable for continuous, high-bandwidth data streams.
-    -   Requires careful synchronization (e.g., via mutexes or semaphores stored in the shared memory segment) to prevent race conditions. Coordinated via the Message Hub.
+    -   All signaling is decoupled and managed by the Message Hub's Notification Channels.
 
 #### 1.1. Shared Memory Layout
 
-To standardize usage and optimize performance, each shared memory segment will be composed of a `SharedMemoryHeader` followed immediately by the raw data buffer. This layout provides fast access to critical metadata and synchronization primitives.
+Each shared memory segment will be composed of a `SharedMemoryHeader` followed immediately by the raw data buffer.
 
 The `SharedMemoryHeader` will contain:
--   **Control Block**: Residing at the beginning of the segment, this block contains the necessary synchronization and state-management primitives, managed transparently by the C++ API wrapper.
-    -   **Process-Shared Mutex**: A mutex lockable by any process sharing the memory segment. It will be implemented using platform-native APIs (e.g., a `pthread_mutex_t` with the `PTHREAD_PROCESS_SHARED` attribute on POSIX, or a named `Mutex` object on Windows).
-    -   **Process-Shared Notification/Signaling**: A condition variable-like mechanism for processes to wait for signals (e.g., `data_ready`). It will be implemented using platform-native primitives (e.g., a `pthread_cond_t` with `PTHREAD_PROCESS_SHARED` on POSIX, or a named `Event`/`Semaphore` on Windows).
-    -   **Atomic Flags**: A set of `std::atomic` integers or flags for lock-free state signaling (e.g., `is_writing`, `frame_id`), providing a lightweight way to check status without locking the mutex.
--   **Static Metadata Block**: A fixed-size `struct` containing performance-critical information needed to interpret the raw data buffer. This enables consumers to access metadata with zero parsing overhead. It will include fields such as:
-    -   `uint64_t frame_id`: A monotonically increasing counter for the data frame.
-    -   `double timestamp`: A high-resolution timestamp of data acquisition.
-    -   `uint64_t data_size`: The exact size of the valid data in the buffer.
-    -   `uint32_t data_type_hash`: A hash identifying the data type (e.g., `fnv1a('uint8_image')`).
-    -   `uint64_t dimensions[4]`: An array for the dimensions of the data (e.g., width, height, depth).
--   **Dynamic Metadata Region**: An optional, fixed-size character array (e.g., 1-2 KB) reserved for storing non-performance-critical metadata in a structured format. **MessagePack** is preferred here for consistency and efficiency, with JSON as an alternative.
-
-The total size of the shared memory segment will be aligned to page-size boundaries to ensure efficient memory management.
+-   **Control Block**: A minimal set of primitives for write-side integrity.
+    -   **Process-Shared Mutex**: A mutex used exclusively by the producer to ensure atomic updates to the shared memory block. Consumers will not use this lock.
+    -   **Atomic Flags**: A set of `std::atomic` integers or flags for lock-free state checking (e.g., `is_writing`, `frame_id`). A consumer can use these to quickly inspect state, but the primary mechanism for knowing when to read is the Message Hub's Notification Channel.
+-   **Static Metadata Block**: A fixed-size `struct` containing performance-critical information needed to interpret the raw data buffer (e.g., `frame_id`, `timestamp`, `data_size`, `dimensions`).
+-   **Dynamic Metadata Region**: An optional, fixed-size region for storing non-performance-critical metadata, preferably using **MessagePack**.
 
 ### 2. General-Purpose Channel (Message Hub)
 
--   **Purpose**: The Message Hub is designed for asynchronous, message-based communication. It is ideal for sending commands, exchanging state information, event notifications, and transferring smaller, structured data payloads. It forms the control plane of the entire Data Exchange Hub.
--   **Technology**: Implemented using the **ZeroMQ** library, providing robust, high-performance messaging patterns.
--   **Serialization**: **MessagePack** will be the primary serialization format for all structured messages. Its binary nature offers significant performance and bandwidth advantages over text-based formats. **JSON** will be retained as a supported alternative, particularly for simple, string-based messages or when human readability is a priority during debugging. The API will provide helpers to transparently handle both formats.
--   **Characteristics**:
-    -   Supports various messaging patterns (Request-Reply, Publish-Subscribe, Push-Pull).
-    -   Enables communication between processes on the same machine or across a network.
-    -   Manages message queuing, delivery, and connection handling automatically.
+-   **Purpose**: The Message Hub forms the control plane of the entire framework, handling commands, state, events, and data notifications.
+-   **Technology**: Implemented using **ZeroMQ**.
+-   **Serialization**: **MessagePack** is the primary serialization format. **JSON** is a supported alternative for human-readable messages.
+
+#### 2.1. Data Notification Channels
+
+To fully unify the event model, the system will not use embedded signaling primitives within shared memory. Instead, all data-ready notifications will be dispatched through the Message Hub.
+
+-   **Pattern**: For each `DataBlock` channel created, the Message Hub establishes a corresponding, private ZeroMQ `PUB/SUB` topic. This is the **Notification Channel**.
+-   **Producer Workflow**: After a producer writes a frame to a `DataBlock` and releases its lock, it publishes a small **notification message** to the associated Notification Channel. This message, serialized with MessagePack, contains metadata like the `frame_id` and `timestamp`.
+-   **Consumer Workflow**: A consumer subscribes to the Notification Channel. It uses a standard `zmq_poll` loop to wait for notifications. When a message arrives, the consumer knows a new frame is ready to be read from the shared memory buffer.
+
+**Benefits of this Approach:**
+-   **Unified Event Loop**: Consumers can monitor control messages and data notifications within a single, simple `zmq_poll` loop, drastically simplifying client architecture.
+-   **Enhanced Decoupling**: The DataBlock Hub becomes a truly passive data store, with all eventing logic consolidated within the Message Hub.
+-   **Network Transparency**: Provides a seamless path for network extension. Remote clients can subscribe to notifications and receive data from a local proxy service.
 
 ### 3. Service Broker, Discovery, and Security (Message Hub Core)
 
-To provide a robust, secure, and centralized mechanism for service registration, discovery, and monitoring, the **Message Hub** will incorporate a dedicated Service Broker model built on ZeroMQ.
-
--   **Broker Architecture**: A central "Service Broker" process will act as the authority for the entire Hub. It will listen on a well-known TCP port using a ZeroMQ `ROUTER` socket.
--   **Request/Approval Flow**:
-    -   A producer process that wishes to offer a channel will connect to the Broker and send a "register" request.
-    -   The Broker will validate the request and, upon approval, add the channel to its internal, in-memory registry.
-    -   Consumer processes will query the Broker to discover available channels and receive the necessary connection details.
--   **Watchdog**: The Broker will also serve as the primary watchdog. Registered services must send periodic "heartbeat" messages to the Broker. If a heartbeat is not received within a configured timeout, the Broker will automatically de-register the service, ensuring the system view is always current.
-
-#### 3.1. Broker Security using CurveZMQ
-
-All communication with the Service Broker must be encrypted and authenticated. This will be implemented using the **CurveZMQ** protocol, a standard feature of the ZeroMQ library.
-
--   **Key Management**: The Broker will maintain a long-term public/private server key pair. All clients (producers and consumers) must know the Broker's public key to connect.
--   **Authentication and Encryption**: CurveZMQ will be used to establish a secure session for all clients. This prevents eavesdropping and ensures that only authorized applications can participate in the Data Exchange Hub.
-
-#### 3.2. Broker Key Management
-
-To ensure security across restarts, the Broker's CurveZMQ key pair must be managed persistently and securely.
-
--   **Storage**: The Broker's private key will be stored in a file on disk, encrypted using the authenticated encryption facilities of `libsodium`. The public key will be stored in plaintext.
--   **Decryption**: The password to decrypt the private key will be provided to the Broker on startup via a command-line argument, a configuration file, or an environment variable (e.g., `PYLABHUB_BROKER_SECRET`). This prevents the secret from being stored in plaintext.
--   **Key Generation**: A helper utility (`pylabhub-broker-keygen`) will be provided to generate a new key pair and encrypt the private key. To simplify initial setup, the Broker will, on first run, detect the absence of a key file, automatically generate a new one, and prompt for a password if running in an interactive terminal.
--   **Public Key Distribution**: The Broker will log its public key to the console on startup, allowing administrators to easily retrieve and distribute it to client applications.
+The **Message Hub** will incorporate a dedicated Service Broker model built on ZeroMQ for robust and secure service management. This broker is responsible for registering and discovering all channels, including DataBlocks and their associated Notification Channels. All broker communication will be secured using **CurveZMQ**.
 
 ### 4. C++ API Design Principles
 
-The C++ API will be redesigned to reflect the split between the Message Hub and the DataBlock Hub. The new design emphasizes a central, statically managed `MessageHub` that acts as both a service provider and a factory for communication channels.
+The C++ API will be designed around the `MessageHub` as the central, static entry point. Consumers of `DataBlock`s will receive data-ready signals via a ZeroMQ socket.
 
--   **`MessageHub` Class**: The primary entry point for all IPC. This class will be implemented as a singleton or exposed via static methods and managed by the `pylabhub::utils::Lifecycle` system as a permanent module. It is responsible for managing the connection to the broker, handling authentication and heartbeats, and providing factory methods for all channel types.
--   **Channel Classes**: The `MessageHub` will provide methods to create or discover channels, returning RAII-style objects that manage the channel's lifecycle.
-    -   `DataBlockProducer`/`DataBlockConsumer`: For the High-Performance DataBlock Hub. These classes will provide simple methods like `begin_publish()`, `end_publish()`, and `consume()` that transparently handle all underlying synchronization and memory management. Their creation and discovery are brokered by the `MessageHub`.
-    -   `ZmqPublisher`/`ZmqSubscriber`: For one-to-many message distribution using MessagePack or JSON.
-    -   `ZmqRequestServer`/`ZmqRequestClient`: For request-reply style command and control.
--   **Transparency**: The API will continue to abstract away broker interactions (registration, discovery), key management, and synchronization primitives. The application developer will interact with a single, central `MessageHub`.
+-   **`MessageHub` Class**: A `Lifecycle`-managed static class that serves as the factory for all channel types.
+-   **Channel Classes**:
+    -   `DataBlockProducer`: Its API remains `begin_publish`/`end_publish`, but `end_publish` now publishes a ZMQ notification.
+    -   `DataBlockConsumer`: The API is redesigned to expose the notification mechanism. It provides access to the notification socket rather than a blocking `consume()` method.
 
 ```cpp
-// A conceptual sketch of the revised API
+// A conceptual sketch of the notification-driven API
 namespace pylabhub::hub {
 
-// The MessageHub is a Lifecycle-managed static module.
-class MessageHub {
+class MessageHub { /* ... as before: initialize, shutdown, and channel factories ... */ };
+
+class DataBlockConsumer {
 public:
-    // Managed by the Lifecycle system.
-    static bool initialize(const BrokerConfig& config);
-    static void shutdown();
+    // Non-blocking access to the data buffer. It is only safe
+    // to call this after receiving a notification.
+    const void* get_data() const;
+    const SharedMemoryHeader* header() const;
 
-    // High-Performance DataBlock Channel
-    static std::unique_ptr<DataBlockProducer> create_datablock_producer(const std::string& name, size_t size);
-    static std::unique_ptr<DataBlockConsumer> find_datablock_consumer(const std::string& name);
+    // Returns the ZMQ SUB socket for the Notification Channel.
+    // The client can add this socket to a zmq::poll loop
+    // to wait for data-ready events.
+    void* notification_socket() const;
 
-    // General-Purpose Messaging Channel (Request-Reply example)
-    static std::unique_ptr<ZmqRequestServer> create_req_server(const std::string& service_name);
-    static std::unique_ptr<ZmqRequestClient> find_req_client(const std::string& service_name);
-
-    // ... other ZMQ patterns
+    // Helper method to parse a notification message received
+    // on the notification_socket().
+    static std::optional<Notification> parse_notification(const zmq::message_t& msg);
 };
+
+// Example Usage:
+// auto consumer = MessageHub::find_datablock_consumer("my_data");
+// zmq::pollitem_t items[] = { { *consumer->notification_socket(), 0, ZMQ_POLLIN, 0 } };
+// while (true) {
+//     zmq::poll(items, 1, -1);
+//     if (items[0].revents & ZMQ_POLLIN) {
+//         // Notification received, now it's safe to read from shared memory.
+//         const SharedMemoryHeader* header = consumer->header();
+//         std::cout << "New frame available: " << header->frame_id << std::endl;
+//     }
+// }
 
 } // namespace pylabhub::hub
 ```
 
 ### 5. Use Case: Real-time Experiment Control
 
-This framework directly addresses the scenario of real-time experiment integration:
--   **Service Registration**: An acquisition process starts and, using the static `MessageHub`, creates a `DataBlockProducer`, which automatically registers the channel with the central Service Broker.
--   **Service Discovery**: A GUI application uses the `MessageHub` to find and create a `DataBlockConsumer`, which queries the Broker to get the connection details for the shared memory segment.
--   **Data Streaming**: The acquisition process uses the `DataBlockProducer` to publish the camera feed. The GUI uses the `DataBlockConsumer` to display it in real-time. The API handles all synchronization.
--   **Command and Control**: The GUI, through a `ZmqRequestClient` created via the `MessageHub`, sends commands (e.g., "change exposure time") to a `ZmqRequestServer` running in the acquisition process.
--   **State Logging**: A logger service subscribes to all registration and command messages on the Broker, recording a timestamped audit trail.
+-   **Data Streaming**: An acquisition process uses a `DataBlockProducer` to publish a camera feed. After each frame, it sends a notification via the Message Hub. A GUI, subscribed to the notification channel, receives the message and then uses a `DataBlockConsumer` to read and display the frame from shared memory. All other control and state exchange happens over separate Message Hub channels.
 
-## 6. Future Work
+### 6. Future Work
 
-With the revised design principles established, future work will focus on refactoring the existing implementation and finalizing the APIs.
-
--   **Refactor `SharedMemoryHub.cpp`**: The existing implementation in `SharedMemoryHub.cpp` will be refactored and split into two primary modules:
-    -   **Message Hub**: A new or refactored module responsible for the broker (ZeroMQ `ROUTER` loop, registry, heartbeats) and ZMQ channel creation. This will become the `Lifecycle`-managed static module. The core broker logic may remain in `hubshell.cpp`.
-    -   **DataBlock Hub**: A separate module for the shared memory implementation (`DataBlockProducer`/`DataBlockConsumer`). This will contain the platform-specific wrappers for shared memory and synchronization.
--   **Serialization**: Implement transparent support for both MessagePack and JSON in the ZMQ channel classes. MessagePack will be the default for performance-critical messages.
--   **C++ API Implementation**: Implement the full C++ API as outlined in the revised design, ensuring it is cross-platform, robust, and well-documented.
--   **Language Bindings**: Once the C++ core is stable, develop bindings for other languages, particularly Python, to maximize the Hub's utility in diverse environments.
-
+-   **Refactor `SharedMemoryHub.cpp`**: Refactor the existing implementation into the two-module design: the `Lifecycle`-managed **Message Hub** and the passive **DataBlock Hub**.
+-   **API Implementation**: Implement the full notification-driven C++ API.
+-   **Serialization**: Implement transparent support for both MessagePack and JSON.
 
 ## Copyright
 
