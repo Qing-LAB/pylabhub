@@ -10,140 +10,106 @@
 
 ## Abstract
 
-This Hub Enhancement Proposal (HEP) outlines a revised design for the **Data Exchange Hub**. The architecture is centered around a **Message Hub** that provides a unified event model for system control and discovery. This hub coordinates access to passive, high-performance **DataBlocks**. Each DataBlock is a shared memory segment featuring a dual-zone layout: a **Structured Data Buffer** for high-throughput, numpy-friendly data arrays, and a **Flexible Data Zone** for variable-sized, MessagePack/JSON formatted information. This design provides a comprehensive solution for both high-performance data streaming and convenient, structured state exchange, all managed under a single, consistent event-driven paradigm.
+This Hub Enhancement Proposal (HEP) outlines a definitive design for the **Data Exchange Hub**. The architecture is centered around a **Message Hub** that provides a unified event model for system control and discovery. This hub coordinates access to high-performance **DataBlocks**. Each DataBlock is a shared memory channel featuring a stateful **Flexible Data Zone** for MessagePack/JSON objects. Crucially, the behavior of its bulk **Structured Data Buffer** is determined by a user-selectable **Policy**, such as a single-buffer, double-buffer, or a lossless ring-buffer queue. This policy-based design provides a highly flexible, backpressure-aware, and extensible framework for a wide range of data-flow applications.
 
 ## Motivation
 
 Modern scientific and laboratory environments often require integrating multiple, independent software tools and hardware instruments into a cohesive system. A centralized and standardized data exchange mechanism is needed to:
--   Decouple data producers (e.g., acquisition instruments) from consumers (e.g., real-time analysis, data loggers, user interfaces).
+-   Decouple data producers from consumers in diverse data-flow pipelines.
 -   Provide a unified interface for system control and state monitoring.
--   Enable real-time data streaming and analysis without compromising performance.
+-   Enable both low-latency "latest value" streaming and reliable, lossless data queuing.
 -   Ensure data integrity and comprehensive logging of experimental parameters and states.
 
 The Data Exchange Hub aims to provide this foundational IPC layer, simplifying the development of complex, multi-process experimental control and data acquisition systems.
 
 ## Specification
 
-The Data Exchange Hub framework is composed of two primary modules, each providing a distinct communication channel, but unified under a common discovery and management system.
+The framework consists of two primary modules unified under a common discovery system:
 
-1.  **The Message Hub**: A statically managed `Lifecycle` module that provides the core infrastructure for messaging, service discovery, control, and data notifications. It is built on ZeroMQ and serves as the central broker.
+1.  **The Message Hub**: A statically managed `Lifecycle` module built on ZeroMQ. It provides the core infrastructure for service discovery, control messaging, and data notifications.
 
-2.  **The DataBlock Hub**: A module providing high-performance, shared-memory channels (`DataBlocks`). These channels are passive buffers, with all signaling handled by the Message Hub.
+2.  **The DataBlock Hub**: A module providing high-performance, shared-memory `DataBlock` channels. The behavior of each channel is determined by a specific buffer management policy.
 
 ### 1. High-Performance Channel (DataBlock Hub)
 
--   **Purpose**: To provide shared memory channels (`DataBlocks`) that accommodate both high-throughput, fixed-format data and variable, self-describing data structures.
--   **Dual-Zone Layout**: Each `DataBlock` is composed of two distinct data areas:
-    1.  **Structured Data Buffer**: A large, contiguous memory block for high-performance streaming of numpy-friendly data types (e.g., image frames, waveforms).
-    2.  **Flexible Data Zone**: A memory area designed to hold a single, variable-size MessagePack or JSON object, ideal for complex configuration, parameters, or state that doesn't fit a rigid `struct`.
--   **Coordination**: All access and updates are coordinated via the **Message Hub**, which provides discovery, write-side integrity (mutex), and data-ready notifications.
+-   **Purpose**: To provide versatile shared memory channels that can be optimized for different data exchange patterns.
+-   **Policy-Based Buffer Management**: The core innovation is that the `StructuredDataBuffer` within a `DataBlock` is managed by a specific, user-chosen policy. This allows the same underlying technology to serve multiple use cases.
+-   **Standard Policies**:
+    1.  **`SingleBufferPolicy`**: The buffer is a single slot. New data overwrites old data. Use case: "latest value" display for low-frequency sensors, where intermediate values are unimportant.
+    2.  **`DoubleBufferPolicy`**: Provides two slots, a "front" and "back" buffer, which are swapped. A producer always writes to the back buffer, while a consumer reads from the front. This prevents tearing and guarantees a stable read. Use case: high-frequency real-time visualization.
+    3.  **`RingBufferPolicy`**: The buffer is treated as a multi-slot queue (`N` slots). This provides backpressure (a producer must wait if the queue is full) and guarantees lossless data transfer. Use case: scientific data processing pipelines.
+-   **Stateful DataBlocks**: Every `DataBlock`, regardless of policy, also contains a **Flexible Data Zone** to hold a MessagePack/JSON object. This allows each block of data to be associated with a rich, variable "state".
 
 #### 1.1. Shared Memory Layout
 
-A `DataBlock` shared memory segment is partitioned into three contiguous regions:
-1.  **`SharedMemoryHeader`**: Contains control primitives and metadata for both data zones.
-2.  **`FlexibleDataZone`**: The buffer for MessagePack/JSON data. Its capacity is defined at creation.
-3.  **`StructuredDataBuffer`**: The buffer for bulk binary data. Its capacity is also defined at creation.
-
-The `SharedMemoryHeader` will contain:
--   **Control Block**:
-    -   **Process-Shared Mutex**: A mutex for ensuring atomic write operations across both zones. Producers must lock this before writing to either zone.
-    -   **Atomic Flags**: `is_writing`, etc., for lock-free state inspection by consumers.
--   **Zone Metadata**:
-    -   `uint64_t flex_zone_capacity`: The total allocated size of the `FlexibleDataZone`.
-    -   `uint64_t flex_zone_size`: The size of the valid data currently in the `FlexibleDataZone`.
-    -   `uint64_t flex_zone_version`: A version counter for the `FlexibleDataZone`, incremented on each update.
-    -   `uint64_t structured_buffer_capacity`: The total allocated size of the `StructuredDataBuffer`.
-    -   `uint64_t structured_buffer_size`: The size of the valid data in the `StructuredDataBuffer`.
-    -   `uint64_t structured_buffer_version`: A version counter for the `StructuredDataBuffer`, incremented on each update.
-    -   `double timestamp`: A high-resolution timestamp of the last update.
+A `DataBlock` segment contains a header followed by the data region.
+1.  **`SharedMemoryHeader`**: Contains control primitives and metadata applicable to all policies (e.g., mutex, atomic flags for state, and policy-specific data like ring-buffer indices).
+2.  **`FlexibleDataZone`**: The buffer for the state object.
+3.  **`StructuredDataBuffer`**: The region for bulk data. This region's internal structure is interpreted by the chosen policy (e.g., as one block, two blocks, or `N` slots).
 
 ### 2. General-Purpose Channel (Message Hub)
 
--   **Purpose**: The Message Hub forms the control plane of the entire framework, handling commands, state, events, and data notifications.
--   **Technology**: Implemented using **ZeroMQ**.
--   **Serialization**: **MessagePack** is the primary serialization format. **JSON** is a supported alternative.
+The Message Hub provides the control and eventing plane for the entire system, built on **ZeroMQ** and using **MessagePack** as the primary serialization format.
 
 #### 2.1. Data Notification Channels
 
-To fully unify the event model, the system will not use embedded signaling primitives within shared memory. Instead, all data-ready notifications will be dispatched through the Message Hub.
+All data availability is signaled via ZeroMQ `PUB/SUB` **Notification Channels**, ensuring a unified event model. The meaning of a notification depends on the `DataBlock` policy:
+-   For `SingleBuffer` and `DoubleBuffer`, it means "a new frame is ready".
+-   For `RingBuffer`, it means "slot `i` is now ready for consumption".
 
--   **Pattern**: For each `DataBlock`, the Message Hub establishes a corresponding ZeroMQ `PUB/SUB` topic, the **Notification Channel**.
--   **Producer Workflow**: After a producer locks the mutex, writes to one or both data zones, and updates the header, it unlocks the mutex and then publishes a **notification message** to the Notification Channel. This message will indicate which zone(s) were updated.
--   **Consumer Workflow**: A consumer subscribes to the Notification Channel. It uses a `zmq_poll` loop to wait for notifications. When a message arrives, the consumer knows new data is ready and can safely read from the corresponding zone(s) in the shared memory buffer.
+### 3. C++ API Design Principles
 
-### 3. Service Broker, Discovery, and Security (Message Hub Core)
-
-The **Message Hub** will incorporate a dedicated Service Broker model built on ZeroMQ for robust and secure service management. This broker is responsible for registering and discovering all channels, including DataBlocks and their associated Notification Channels. All broker communication will be secured using **CurveZMQ**.
-
-### 4. C++ API Design Principles
-
-The C++ API will be designed around the `MessageHub` as the central, static entry point.
-
--   **`MessageHub` Class**: A `Lifecycle`-managed static class that serves as the factory for all channel types.
--   **Channel Classes**:
-    -   `DataBlockProducer`: Its API will provide separate access to the flexible and structured zones. `end_publish` will trigger the ZMQ notification.
-    -   `DataBlockConsumer`: Exposes the notification socket for use in a poll loop, and provides non-blocking access to the data zones.
+The API will be policy-driven. The `MessageHub` factory will create a `DataBlock` with a specific policy, and the returned producer/consumer objects will have an API tailored to that policy.
 
 ```cpp
-// A conceptual sketch of the revised API
+// A conceptual sketch of the policy-based API
 namespace pylabhub::hub {
+
+enum class DataBlockPolicy { Single, DoubleBuffer, RingBuffer };
+
+struct DataBlockConfig {
+    size_t structured_buffer_size;
+    size_t flexible_zone_size;
+    int ring_buffer_capacity; // Only used by RingBufferPolicy
+    // ... other config ...
+};
 
 class MessageHub {
 public:
-    // Managed by the Lifecycle system.
-    static bool initialize(const BrokerConfig& config);
-    static void shutdown();
-
-    // Factory for creating a DataBlock with two distinct data zones.
-    static std::unique_ptr<DataBlockProducer> create_datablock_producer(
+    // Factory method now takes a policy and config.
+    static std::unique_ptr<IDataBlockProducer> create_datablock_producer(
         const std::string& name,
-        size_t structured_buffer_size,
-        size_t flexible_zone_size
+        DataBlockPolicy policy,
+        const DataBlockConfig& config
     );
-    static std::unique_ptr<DataBlockConsumer> find_datablock_consumer(const std::string& name);
-    
-    // ... other ZMQ channel factories ...
+    // Returns a consumer appropriate for the block's policy.
+    static std::unique_ptr<IDataBlockConsumer> find_datablock_consumer(
+        const std::string& name
+    );
+    // ...
 };
 
-class DataBlockProducer {
+// Base interfaces
+class IDataBlockProducer { /* ... */ };
+class IDataBlockConsumer {
 public:
-    // Lock the block for writing
-    void begin_publish();
-
-    // Get pointers to the data zones (valid after begin_publish)
-    void* get_flexible_zone_buffer();
-    void* get_structured_data_buffer();
-
-    // Unlock the block and send notification
-    void end_publish(const ZoneUpdateInfo& update_info);
+    virtual void* notification_socket() const = 0;
 };
 
-class DataBlockConsumer {
+// Example of a policy-specific interface
+class IRingBufferConsumer : public IDataBlockConsumer {
 public:
-    // Non-blocking access to data zones. Safe to call after a notification.
-    const void* get_flexible_zone_data() const;
-    const void* get_structured_data() const;
-    const SharedMemoryHeader* header() const;
-
-    // Returns the ZMQ SUB socket for the Notification Channel.
-    void* notification_socket() const;
+    virtual ReadSlot* begin_consume(uint64_t slot_index) = 0;
+    virtual void end_consume(ReadSlot* slot) = 0;
 };
 
 } // namespace pylabhub::hub
 ```
 
-### 5. Use Case: Real-time Experiment Control
+### 4. Future Work
 
--   **Data Streaming**: An acquisition process uses a `DataBlockProducer` to publish a camera feed into the `StructuredDataBuffer`.
--   **Parameter Update**: Concurrently, it can write a MessagePack object with the latest camera settings (exposure, gain) into the `FlexibleDataZone`.
--   **Notification**: It calls `end_publish` once, which sends a single notification that both zones were updated.
--   **Consumption**: A GUI client receives the notification, reads the settings from the flexible zone to update its display, and reads the image from the structured buffer to render it.
-
-### 6. Future Work
-
--   **Refactor `SharedMemoryHub.cpp`**: Refactor the existing implementation into the two-module design: the `Lifecycle`-managed **Message Hub** and the passive **DataBlock Hub** with its dual-zone layout.
--   **API Implementation**: Implement the full notification-driven C++ API.
+-   **Refactor `SharedMemoryHub.cpp`**: Refactor the implementation to create the base `DataBlock` infrastructure and the initial set of buffer management policies (`SingleBuffer`, `DoubleBuffer`, `RingBuffer`).
+-   **API Implementation**: Implement the policy-based factory and the specific C++ producer/consumer classes for each policy.
 
 ## Copyright
 
