@@ -10,7 +10,7 @@
 
 ## Abstract
 
-This Hub Enhancement Proposal (HEP) outlines a revised design for the **Data Exchange Hub**, a core framework within the `pylabhub-utils` library. The new design is centered around a **Message Hub** that provides a unified event model for both system control and high-performance data exchange. It splits the framework into two distinct but cooperative modules: the Message Hub for control, discovery, and notifications, and a **DataBlock Hub** for passive, high-performance shared memory data buffers. This architecture simplifies client logic, enhances scalability, and unifies all inter-process communication under a single, consistent event-driven paradigm.
+This Hub Enhancement Proposal (HEP) outlines a revised design for the **Data Exchange Hub**. The architecture is centered around a **Message Hub** that provides a unified event model for system control and discovery. This hub coordinates access to passive, high-performance **DataBlocks**. Each DataBlock is a shared memory segment featuring a dual-zone layout: a **Structured Data Buffer** for high-throughput, numpy-friendly data arrays, and a **Flexible Data Zone** for variable-sized, MessagePack/JSON formatted information. This design provides a comprehensive solution for both high-performance data streaming and convenient, structured state exchange, all managed under a single, consistent event-driven paradigm.
 
 ## Motivation
 
@@ -28,46 +28,49 @@ The Data Exchange Hub framework is composed of two primary modules, each providi
 
 1.  **The Message Hub**: A statically managed `Lifecycle` module that provides the core infrastructure for messaging, service discovery, control, and data notifications. It is built on ZeroMQ and serves as the central broker.
 
-2.  **The DataBlock Hub**: A module providing high-performance, shared-memory-based channels for bulk data transfer. These channels are passive buffers, with all signaling handled by the Message Hub.
+2.  **The DataBlock Hub**: A module providing high-performance, shared-memory channels (`DataBlocks`). These channels are passive buffers, with all signaling handled by the Message Hub.
 
 ### 1. High-Performance Channel (DataBlock Hub)
 
--   **Purpose**: Designed for high-throughput, low-latency communication of large, structured data blocks.
--   **Technology**: Implemented using platform-native shared memory.
--   **Characteristics**:
-    -   Provides zero-copy data access between processes on the same machine.
-    -   Suitable for continuous, high-bandwidth data streams.
-    -   All signaling is decoupled and managed by the Message Hub's Notification Channels.
+-   **Purpose**: To provide shared memory channels (`DataBlocks`) that accommodate both high-throughput, fixed-format data and variable, self-describing data structures.
+-   **Dual-Zone Layout**: Each `DataBlock` is composed of two distinct data areas:
+    1.  **Structured Data Buffer**: A large, contiguous memory block for high-performance streaming of numpy-friendly data types (e.g., image frames, waveforms).
+    2.  **Flexible Data Zone**: A memory area designed to hold a single, variable-size MessagePack or JSON object, ideal for complex configuration, parameters, or state that doesn't fit a rigid `struct`.
+-   **Coordination**: All access and updates are coordinated via the **Message Hub**, which provides discovery, write-side integrity (mutex), and data-ready notifications.
 
 #### 1.1. Shared Memory Layout
 
-Each shared memory segment will be composed of a `SharedMemoryHeader` followed immediately by the raw data buffer.
+A `DataBlock` shared memory segment is partitioned into three contiguous regions:
+1.  **`SharedMemoryHeader`**: Contains control primitives and metadata for both data zones.
+2.  **`FlexibleDataZone`**: The buffer for MessagePack/JSON data. Its capacity is defined at creation.
+3.  **`StructuredDataBuffer`**: The buffer for bulk binary data. Its capacity is also defined at creation.
 
 The `SharedMemoryHeader` will contain:
--   **Control Block**: A minimal set of primitives for write-side integrity.
-    -   **Process-Shared Mutex**: A mutex used exclusively by the producer to ensure atomic updates to the shared memory block. Consumers will not use this lock.
-    -   **Atomic Flags**: A set of `std::atomic` integers or flags for lock-free state checking (e.g., `is_writing`, `frame_id`). A consumer can use these to quickly inspect state, but the primary mechanism for knowing when to read is the Message Hub's Notification Channel.
--   **Static Metadata Block**: A fixed-size `struct` containing performance-critical information needed to interpret the raw data buffer (e.g., `frame_id`, `timestamp`, `data_size`, `dimensions`).
--   **Dynamic Metadata Region**: An optional, fixed-size region for storing non-performance-critical metadata, preferably using **MessagePack**.
+-   **Control Block**:
+    -   **Process-Shared Mutex**: A mutex for ensuring atomic write operations across both zones. Producers must lock this before writing to either zone.
+    -   **Atomic Flags**: `is_writing`, etc., for lock-free state inspection by consumers.
+-   **Zone Metadata**:
+    -   `uint64_t flex_zone_capacity`: The total allocated size of the `FlexibleDataZone`.
+    -   `uint64_t flex_zone_size`: The size of the valid data currently in the `FlexibleDataZone`.
+    -   `uint64_t flex_zone_version`: A version counter for the `FlexibleDataZone`, incremented on each update.
+    -   `uint64_t structured_buffer_capacity`: The total allocated size of the `StructuredDataBuffer`.
+    -   `uint64_t structured_buffer_size`: The size of the valid data in the `StructuredDataBuffer`.
+    -   `uint64_t structured_buffer_version`: A version counter for the `StructuredDataBuffer`, incremented on each update.
+    -   `double timestamp`: A high-resolution timestamp of the last update.
 
 ### 2. General-Purpose Channel (Message Hub)
 
 -   **Purpose**: The Message Hub forms the control plane of the entire framework, handling commands, state, events, and data notifications.
 -   **Technology**: Implemented using **ZeroMQ**.
--   **Serialization**: **MessagePack** is the primary serialization format. **JSON** is a supported alternative for human-readable messages.
+-   **Serialization**: **MessagePack** is the primary serialization format. **JSON** is a supported alternative.
 
 #### 2.1. Data Notification Channels
 
 To fully unify the event model, the system will not use embedded signaling primitives within shared memory. Instead, all data-ready notifications will be dispatched through the Message Hub.
 
--   **Pattern**: For each `DataBlock` channel created, the Message Hub establishes a corresponding, private ZeroMQ `PUB/SUB` topic. This is the **Notification Channel**.
--   **Producer Workflow**: After a producer writes a frame to a `DataBlock` and releases its lock, it publishes a small **notification message** to the associated Notification Channel. This message, serialized with MessagePack, contains metadata like the `frame_id` and `timestamp`.
--   **Consumer Workflow**: A consumer subscribes to the Notification Channel. It uses a standard `zmq_poll` loop to wait for notifications. When a message arrives, the consumer knows a new frame is ready to be read from the shared memory buffer.
-
-**Benefits of this Approach:**
--   **Unified Event Loop**: Consumers can monitor control messages and data notifications within a single, simple `zmq_poll` loop, drastically simplifying client architecture.
--   **Enhanced Decoupling**: The DataBlock Hub becomes a truly passive data store, with all eventing logic consolidated within the Message Hub.
--   **Network Transparency**: Provides a seamless path for network extension. Remote clients can subscribe to notifications and receive data from a local proxy service.
+-   **Pattern**: For each `DataBlock`, the Message Hub establishes a corresponding ZeroMQ `PUB/SUB` topic, the **Notification Channel**.
+-   **Producer Workflow**: After a producer locks the mutex, writes to one or both data zones, and updates the header, it unlocks the mutex and then publishes a **notification message** to the Notification Channel. This message will indicate which zone(s) were updated.
+-   **Consumer Workflow**: A consumer subscribes to the Notification Channel. It uses a `zmq_poll` loop to wait for notifications. When a message arrives, the consumer knows new data is ready and can safely read from the corresponding zone(s) in the shared memory buffer.
 
 ### 3. Service Broker, Discovery, and Security (Message Hub Core)
 
@@ -75,60 +78,72 @@ The **Message Hub** will incorporate a dedicated Service Broker model built on Z
 
 ### 4. C++ API Design Principles
 
-The C++ API will be designed around the `MessageHub` as the central, static entry point. Consumers of `DataBlock`s will receive data-ready signals via a ZeroMQ socket.
+The C++ API will be designed around the `MessageHub` as the central, static entry point.
 
 -   **`MessageHub` Class**: A `Lifecycle`-managed static class that serves as the factory for all channel types.
 -   **Channel Classes**:
-    -   `DataBlockProducer`: Its API remains `begin_publish`/`end_publish`, but `end_publish` now publishes a ZMQ notification.
-    -   `DataBlockConsumer`: The API is redesigned to expose the notification mechanism. It provides access to the notification socket rather than a blocking `consume()` method.
+    -   `DataBlockProducer`: Its API will provide separate access to the flexible and structured zones. `end_publish` will trigger the ZMQ notification.
+    -   `DataBlockConsumer`: Exposes the notification socket for use in a poll loop, and provides non-blocking access to the data zones.
 
 ```cpp
-// A conceptual sketch of the notification-driven API
+// A conceptual sketch of the revised API
 namespace pylabhub::hub {
 
-class MessageHub { /* ... as before: initialize, shutdown, and channel factories ... */ };
+class MessageHub {
+public:
+    // Managed by the Lifecycle system.
+    static bool initialize(const BrokerConfig& config);
+    static void shutdown();
+
+    // Factory for creating a DataBlock with two distinct data zones.
+    static std::unique_ptr<DataBlockProducer> create_datablock_producer(
+        const std::string& name,
+        size_t structured_buffer_size,
+        size_t flexible_zone_size
+    );
+    static std::unique_ptr<DataBlockConsumer> find_datablock_consumer(const std::string& name);
+    
+    // ... other ZMQ channel factories ...
+};
+
+class DataBlockProducer {
+public:
+    // Lock the block for writing
+    void begin_publish();
+
+    // Get pointers to the data zones (valid after begin_publish)
+    void* get_flexible_zone_buffer();
+    void* get_structured_data_buffer();
+
+    // Unlock the block and send notification
+    void end_publish(const ZoneUpdateInfo& update_info);
+};
 
 class DataBlockConsumer {
 public:
-    // Non-blocking access to the data buffer. It is only safe
-    // to call this after receiving a notification.
-    const void* get_data() const;
+    // Non-blocking access to data zones. Safe to call after a notification.
+    const void* get_flexible_zone_data() const;
+    const void* get_structured_data() const;
     const SharedMemoryHeader* header() const;
 
     // Returns the ZMQ SUB socket for the Notification Channel.
-    // The client can add this socket to a zmq::poll loop
-    // to wait for data-ready events.
     void* notification_socket() const;
-
-    // Helper method to parse a notification message received
-    // on the notification_socket().
-    static std::optional<Notification> parse_notification(const zmq::message_t& msg);
 };
-
-// Example Usage:
-// auto consumer = MessageHub::find_datablock_consumer("my_data");
-// zmq::pollitem_t items[] = { { *consumer->notification_socket(), 0, ZMQ_POLLIN, 0 } };
-// while (true) {
-//     zmq::poll(items, 1, -1);
-//     if (items[0].revents & ZMQ_POLLIN) {
-//         // Notification received, now it's safe to read from shared memory.
-//         const SharedMemoryHeader* header = consumer->header();
-//         std::cout << "New frame available: " << header->frame_id << std::endl;
-//     }
-// }
 
 } // namespace pylabhub::hub
 ```
 
 ### 5. Use Case: Real-time Experiment Control
 
--   **Data Streaming**: An acquisition process uses a `DataBlockProducer` to publish a camera feed. After each frame, it sends a notification via the Message Hub. A GUI, subscribed to the notification channel, receives the message and then uses a `DataBlockConsumer` to read and display the frame from shared memory. All other control and state exchange happens over separate Message Hub channels.
+-   **Data Streaming**: An acquisition process uses a `DataBlockProducer` to publish a camera feed into the `StructuredDataBuffer`.
+-   **Parameter Update**: Concurrently, it can write a MessagePack object with the latest camera settings (exposure, gain) into the `FlexibleDataZone`.
+-   **Notification**: It calls `end_publish` once, which sends a single notification that both zones were updated.
+-   **Consumption**: A GUI client receives the notification, reads the settings from the flexible zone to update its display, and reads the image from the structured buffer to render it.
 
 ### 6. Future Work
 
--   **Refactor `SharedMemoryHub.cpp`**: Refactor the existing implementation into the two-module design: the `Lifecycle`-managed **Message Hub** and the passive **DataBlock Hub**.
+-   **Refactor `SharedMemoryHub.cpp`**: Refactor the existing implementation into the two-module design: the `Lifecycle`-managed **Message Hub** and the passive **DataBlock Hub** with its dual-zone layout.
 -   **API Implementation**: Implement the full notification-driven C++ API.
--   **Serialization**: Implement transparent support for both MessagePack and JSON.
 
 ## Copyright
 
