@@ -9,8 +9,8 @@
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <synchapi.h>
 #include <windows.h>
+#include <synchapi.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
