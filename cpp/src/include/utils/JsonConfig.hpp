@@ -150,7 +150,6 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         SkipCommit
     };
 
-
     /**
      * @class TransactionProxy
      * @brief A short-lived, rvalue-only proxy to execute a read or write transaction.
@@ -194,7 +193,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             // If someone calls cfg.transaction(...) and forgets to consume it, warn loudly.
             if (owner_ && !consumed_)
             {
-                LOGGER_ERROR("JsonConfig::transaction() proxy was not consumed (missing .read()/.write()).");
+                LOGGER_ERROR(
+                    "JsonConfig::transaction() proxy was not consumed (missing .read()/.write()).");
             }
 #endif
         }
@@ -401,7 +401,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      *   cfg.transaction(JsonConfig::AccessFlags::FullSync).write([](json& j){ ... });
      * @endcode
      *
-     * @param flags Optional flags to control the transaction's behavior (e.g., reloading, committing).
+     * @param flags Optional flags to control the transaction's behavior (e.g., reloading,
+     * committing).
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return A `TransactionProxy` object. This is an rvalue and must be consumed immediately.
      */
@@ -467,9 +468,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         Transaction(Transaction &&) = delete;
         Transaction &operator=(Transaction &&) = delete;
 
-        Transaction(TxId id) noexcept : d_id(id), d_used(false)
-        {
-        }
+        Transaction(TxId id) noexcept : d_id(id), d_used(false) {}
 
         ~Transaction() = default;
 
@@ -490,7 +489,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     void destroy_transaction_internal(TxId id) noexcept;
     Transaction *find_transaction_locked(TxId id) noexcept;
 
-    // NEW: consume helpers used by TransactionProxy (template, but must not touch Impl fields directly!)
+    // NEW: consume helpers used by TransactionProxy (template, but must not touch Impl fields
+    // directly!)
     template <typename F>
     void consume_read_(TxId id, AccessFlags flags, F &&fn, std::error_code *ec,
                        std::source_location loc) noexcept
@@ -586,13 +586,15 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     void consume_write_(TxId id, AccessFlags flags, F &&fn, std::error_code *ec,
                         std::source_location loc) noexcept
     {
-        static_assert(std::is_invocable_v<F, nlohmann::json &>,
-                      "JsonConfig::write() lambda must be callable with signature (nlohmann::json&).");
+        static_assert(
+            std::is_invocable_v<F, nlohmann::json &>,
+            "JsonConfig::write() lambda must be callable with signature (nlohmann::json&).");
 
         using R = std::invoke_result_t<F, nlohmann::json &>;
 
-        static_assert(std::is_void_v<R> || std::is_same_v<R, CommitDecision>,
-                      "JsonConfig::write() lambda must return either void or JsonConfig::CommitDecision");
+        static_assert(
+            std::is_void_v<R> || std::is_same_v<R, CommitDecision>,
+            "JsonConfig::write() lambda must return either void or JsonConfig::CommitDecision");
 
         if (!is_initialized())
         {
@@ -793,12 +795,14 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                     return;
                 }
 
-                // Release in-memory lock before slow disk I/O. The process lock (fLock) is still held.
+                // Release in-memory lock before slow disk I/O. The process lock (fLock) is still
+                // held.
                 wlock = JsonConfig::WriteLock();
 
                 // Directly call atomic_write_json since we hold the lock.
-                // This avoids calling private_commit_to_disk_unsafe which tries to take its own lock.
-                // We use fLock->path() because it is guaranteed to be valid and holds the actual path.
+                // This avoids calling private_commit_to_disk_unsafe which tries to take its own
+                // lock. We use fLock->path() because it is guaranteed to be valid and holds the
+                // actual path.
                 atomic_write_json(fLock->get_locked_resource_path().value(), snapshot, ec);
                 if (ec && *ec)
                 {

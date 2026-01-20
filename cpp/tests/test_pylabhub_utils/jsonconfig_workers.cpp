@@ -22,7 +22,6 @@ using nlohmann::json;
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::utils;
 
-
 namespace pylabhub::tests::worker
 {
 namespace jsonconfig
@@ -49,15 +48,16 @@ int write_id(const std::string &cfgpath, const std::string &worker_id)
                 std::error_code ec;
                 // Attempt a non-blocking write. The lambda is only executed if the
                 // file lock is acquired successfully.
-                cfg.transaction(JsonConfig::AccessFlags::FullSync).write(
-                    [&](json &data)
-                    {
-                        int attempts = data.value("total_attempts", 0);
-                        data["total_attempts"] = attempts + 1;
-                        data[worker_id] = true;
-                        data["last_worker_id"] = worker_id;
-                    },
-                    &ec);
+                cfg.transaction(JsonConfig::AccessFlags::FullSync)
+                    .write(
+                        [&](json &data)
+                        {
+                            int attempts = data.value("total_attempts", 0);
+                            data["total_attempts"] = attempts + 1;
+                            data[worker_id] = true;
+                            data["last_worker_id"] = worker_id;
+                        },
+                        &ec);
 
                 if (ec.value() == 0)
                 {
@@ -94,8 +94,8 @@ int not_consuming_proxy()
     return run_gtest_worker(
         [&]()
         {
-            // The test fixture will create a temporary directory, but the file doesn't need to exist
-            // for this test. We just need a valid, initialized JsonConfig object.
+            // The test fixture will create a temporary directory, but the file doesn't need to
+            // exist for this test. We just need a valid, initialized JsonConfig object.
             auto temp_dir = std::filesystem::temp_directory_path() / "pylabub_jsonconfig_workers";
             std::filesystem::create_directories(temp_dir);
             JsonConfig cfg(temp_dir / "dummy.json", true);
@@ -104,8 +104,8 @@ int not_consuming_proxy()
             // This should trigger the destructor's warning message in a debug build.
             cfg.transaction();
         },
-        "jsonconfig::not_consuming_proxy", JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        Logger::GetLifecycleModule());
+        "jsonconfig::not_consuming_proxy", JsonConfig::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
 } // namespace jsonconfig

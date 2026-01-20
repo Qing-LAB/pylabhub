@@ -514,10 +514,10 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         pImpl->ec = std::make_error_code(std::errc::io_error);
         return false;
     }
-    //IMPORTANT: ALWAYS MAKE SURE THE SHARE FLAGS INCLUDE FILE_SHARE_DELETE !
-    HANDLE h =
-        CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // IMPORTANT: ALWAYS MAKE SURE THE SHARE FLAGS INCLUDE FILE_SHARE_DELETE !
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
     {

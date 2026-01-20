@@ -8,272 +8,189 @@
 namespace pylabhub::basics
 {
 
-/*******************************************************************************
- * Minimal header-only AtomicOwner + AtomicGuard
- *
- * Design & semantics highlights:
- * - No internal mutex.
- * - Move-only guard semantics: move ctor/assign transfer ownership state.
- * - After a move, the source is left valid, detached, inactive, AND receives
- *   a fresh token so tokens remain unique.
- * - `active()` is authoritative: it checks the AtomicOwner's current token.
- *
- * Thread-safety contract:
- * - It is UB to concurrently access the *same* AtomicGuard object from multiple
- *   threads without external synchronization. Moving a guard must not race with
- *   other operations on that same guard object.
- ******************************************************************************/
+class AtomicGuard; // Forward-declaration
 
 /**
  * @class AtomicOwner
- * @brief Represents the owner of a lock, holding the atomic state.
+ * @brief Represents the owner of a lock, holding the single, authoritative atomic state.
  *
- * This class encapsulates an atomic 64-bit integer that represents the lock state.
- * A value of 0 indicates the lock is free. Any other value is a token representing
- * the `AtomicGuard` that currently holds the lock.
+ * Design Principle: This class enforces a "Walled Garden" approach. The lock state can
+ * ONLY be manipulated by a friend class (`AtomicGuard`). This compiler-enforced rule
+ * ensures a clean, cooperative framework where direct, un-guarded access is impossible.
+ *
+ * The lock state is represented by a 64-bit integer: 0 means "free", and any other
+ * value is the unique token of the `AtomicGuard` that currently holds the lock.
  */
 class AtomicOwner
 {
   public:
     /** @brief Default constructor, initializes the lock to a free state (0). */
     AtomicOwner() noexcept : state_(0) {}
-    /** @brief Constructor to initialize the lock with a specific value. */
-    explicit AtomicOwner(uint64_t initial) noexcept : state_(initial) {}
 
+    /** @brief Checks if the lock is currently free (state is 0). */
+    bool is_free() const noexcept { return state_.load(std::memory_order_acquire) == 0; }
+
+    // Deleted copy/move operations, as an atomic state is a unique resource.
     AtomicOwner(const AtomicOwner &) = delete;
     AtomicOwner &operator=(const AtomicOwner &) = delete;
-    AtomicOwner(AtomicOwner &&) noexcept = delete;            // atomic state cannot be moved
-    AtomicOwner &operator=(AtomicOwner &&) noexcept = delete; // atomic state cannot be moved
+    AtomicOwner(AtomicOwner &&) noexcept = delete;
+    AtomicOwner &operator=(AtomicOwner &&) noexcept = delete;
 
-    /** @brief Atomically loads the current state (token). */
+  private:
+    friend class AtomicGuard; // Grant exclusive access to AtomicGuard
+
+    // Private manipulation API, for `AtomicGuard` use only.
     uint64_t load() const noexcept { return state_.load(std::memory_order_acquire); }
-    /** @brief Atomically stores a new state (token). */
-    void store(uint64_t v) noexcept { state_.store(v, std::memory_order_release); }
 
-    /**
-     * @brief Atomically compares the current state with an expected value and, if they match,
-     * replaces the state with a desired value.
-     * @param expected A reference to the value expected to be found in the state.
-     * @param desired The value to store if the comparison is successful.
-     * @return `true` if the exchange was successful, `false` otherwise.
-     */
     bool compare_exchange_strong(uint64_t &expected, uint64_t desired) noexcept
     {
         return state_.compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
                                               std::memory_order_acquire);
     }
 
-    /** @brief Checks if the lock is currently free (state is 0). */
-    bool is_free() const noexcept { return load() == 0; }
-
-  private:
-    // Methods to access the underlying atomic are private to enforce usage
-    // of the class's public methods, which define consistent memory ordering.
-    /** @brief Returns a mutable reference to the underlying atomic state. */
-    std::atomic<uint64_t> &atomic_ref() noexcept { return state_; }
-
-    /** @brief Returns a const reference to the underlying atomic state. */
-    const std::atomic<uint64_t> &atomic_ref() const noexcept { return state_; }
-
     std::atomic<uint64_t> state_;
 };
+
+#ifndef NDEBUG
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN() debug_enter()
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END()   debug_leave()
+#else
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN() ((void)0)
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END()   ((void)0)
+#endif
 
 /**
  * @class AtomicGuard
  * @brief A move-only, RAII-style guard for acquiring and releasing a lock from an AtomicOwner.
  *
- * An `AtomicGuard` attempts to acquire a lock by writing its unique token into an `AtomicOwner`.
- * The lock is held as long as the guard object exists and is active. The lock is automatically
- * released when the guard is destroyed. Ownership of the lock can be transferred between
- * guards using move semantics.
+ * Design Principle: This guard is stateless. It holds no "belief" about whether it is
+ * active. Its status is derived directly and authoritatively from the `AtomicOwner`.
+ * This eliminates a class of bugs related to state desynchronization.
+ *
+ * The destructor provides an unconditionally safe, best-effort, atomic release.
+ * Ownership can be transferred between guards using move semantics.
  */
 class AtomicGuard
 {
   public:
     /** @brief Default constructor. Creates a detached guard with a unique token. */
-    AtomicGuard() noexcept : owner_(nullptr), token_(generate_token()), is_active_(false) {}
+    AtomicGuard() noexcept : owner_(nullptr), token_(generate_token()) {}
 
     /**
-     * @brief Constructs a guard and attaches it to an owner.
-     * @param owner A pointer to the `AtomicOwner` to manage.
+     * @brief Constructs a guard and attaches it to an owner, optionally acquiring the lock.
+     * @param owner The `AtomicOwner` to manage.
      * @param tryAcquire If `true`, the guard will attempt to acquire the lock upon construction.
      */
     explicit AtomicGuard(AtomicOwner *owner, bool tryAcquire = false) noexcept
-        : owner_(owner), token_(generate_token()), is_active_(false)
+        : owner_(owner), token_(generate_token())
     {
-        if (tryAcquire && owner_)
+        if (tryAcquire)
+        {
             (void)acquire();
+        }
     }
 
+    /**
+     * @brief Destructor. Provides an unconditionally safe, best-effort RAII release.
+     *
+     * If this guard is the current owner of the lock, the lock will be released.
+     * If not, this operation does nothing. It cannot panic or fail unexpectedly.
+     */
+    ~AtomicGuard() noexcept
+    {
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        if (owner_)
+        {
+            uint64_t expected = token_;
+            // Atomically set owner to 0 IF AND ONLY IF the owner is us.
+            // This is a single, safe, best-effort release.
+            owner_->compare_exchange_strong(expected, 0);
+        }
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+    }
+
+    // Deleted copy operations, as a guard represents unique ownership.
     AtomicGuard(const AtomicGuard &) = delete;
     AtomicGuard &operator=(const AtomicGuard &) = delete;
 
     /**
      * @brief Move constructor. Transfers ownership of a lock from another guard.
-     * @param o The source guard to move from. The source guard is left in a detached,
-     *          inactive state with a new unique token.
+     * @param other The source guard to move from. The source is left in a detached state.
      */
-    AtomicGuard(AtomicGuard &&o) noexcept
-        : owner_(o.owner_), token_(o.token_), is_active_(o.is_active_)
+    AtomicGuard(AtomicGuard &&other) noexcept
+        : owner_(other.owner_), token_(other.token_)
     {
-        // detach source and give it a fresh token
-        o.owner_ = nullptr;
-        o.is_active_ = false;
-        o.token_ = generate_token();
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        // Source is now detached and can no longer interact with the owner.
+        other.owner_ = nullptr;
+        // The source guard keeps its token, but it is now inert.
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
     }
 
     /**
-     * @brief Move assignment operator. Releases any active lock held by this guard and
-     * then takes ownership of the lock from the source guard.
-     * @param o The source guard to move from. The source guard is left in a detached,
-     *          inactive state with a new unique token.
+     * @brief Move assignment operator.
+     *
+     * Releases the lock held by this guard (if any), then takes ownership from the source.
+     * @param other The source guard to move from. The source is left in a detached state.
      */
-    AtomicGuard &operator=(AtomicGuard &&o) noexcept
+    AtomicGuard &operator=(AtomicGuard &&other) noexcept
     {
-        if (this == &o)
+        if (this == &other)
             return *this;
 
-        // Release our own active lock (best-effort) if held.
-        if (is_active_ && owner_ != nullptr)
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+
+        // Best-effort release of our own lock, if we hold it.
+        if (owner_)
         {
             uint64_t expected = token_;
             owner_->compare_exchange_strong(expected, 0);
-            is_active_ = false;
         }
 
-        // Take ownership from source
-        owner_ = o.owner_;
-        token_ = o.token_;
-        is_active_ = o.is_active_;
+        // Take ownership from source.
+        owner_ = other.owner_;
+        token_ = other.token_;
 
-        // Leave source detached/inactive and give it a fresh token
-        o.owner_ = nullptr;
-        o.is_active_ = false;
-        o.token_ = generate_token();
+        // Leave source detached.
+        other.owner_ = nullptr;
+
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
 
         return *this;
     }
 
     /**
-     * @brief Destructor. Automatically releases the lock if it is active.
-     *
-     * This is a best-effort release. It will only release the lock if the `AtomicOwner`'s
-     * token matches this guard's token, preventing accidental release of a lock
-     * acquired by another guard.
-     */
-    ~AtomicGuard() noexcept
-    {
-        // Best-effort release ONLY IF we believe we hold the lock.
-        if (!is_active_ || !owner_)
-        {
-            return;
-        }
-
-        // Compare owner state to token; if it matches, attempt CAS -> 0.
-        uint64_t expected = token_;
-        if (owner_->compare_exchange_strong(expected, 0))
-        {
-            is_active_ = false;
-            return;
-        }
-
-#ifndef NDEBUG
-        // In debug builds panic, to catch logic errors early.
-        // If we get here, it means is_active_ was true, but the owner's token
-        // did not match ours. This is a true invariant violation.
-        PLH_PANIC("AtomicGuard destructor: invariant violation (is_active_ is true, but "
-                  "owner has different token).");
-#endif
-        // In release builds, be robust: do nothing (the lock is effectively leaked).
-    }
-
-    /** @brief Attaches the guard to a new `AtomicOwner`. Does not acquire the lock. */
-    void attach(AtomicOwner *owner) noexcept
-    {
-        if (is_active_)
-        {
-#ifndef NDEBUG
-            PLH_PANIC("attach() on active guard is a logic error. "
-                      "The guard remains attached to the old owner. "
-                      "Use detach_and_release() or detach_no_release() first.");
-#endif
-            return; // In release builds, do nothing to prevent a lock leak.
-        }
-        owner_ = owner;
-    }
-
-    /** 
-     * @brief Detaches the guard from its owner without releasing the lock. The guard becomes
-     * inactive.
-     * @warning If called on an active guard, the lock is not released and will be **leaked**.
-     * This is intended for advanced use-cases. Prefer `detach_and_release()` for safety.
-     */
-    void detach_no_release() noexcept
-    {
-        owner_ = nullptr;
-        is_active_ = false;
-    }
-
-    /**
-     * @brief Attempts to release the lock and then detaches the guard from its owner.
-     *
-     * This is a convenience method that provides a safer alternative to `detach_no_release`.
-     * It first attempts to release the lock and then guarantees the guard is detached,
-     * becoming inactive.
-     * @return `true` if the lock was successfully released, `false` otherwise. The guard is
-     *         always detached regardless of the return value.
-     */
-    [[nodiscard]] bool detach_and_release() noexcept
-    {
-        const bool was_active = is_active_;
-        const bool released = release();
-        if (was_active && !released)
-        {
-#ifndef NDEBUG
-            PLH_PANIC("detach_and_release: invariant violation (is_active_ is true, but "
-                      "release failed).");
-#endif
-        }
-        owner_ = nullptr;
-        is_active_ = false; // Guard is always inactive after detach.
-        return released;
-    }
-
-    /**
      * @brief Attempts to acquire the lock.
-     * @return `true` if the lock was acquired successfully, `false` otherwise.
+     * @return `true` if the lock was acquired, `false` otherwise.
      */
     [[nodiscard]] bool acquire() noexcept
     {
-        if (!owner_)
-            return false;
-        uint64_t expected = 0;
-        if (owner_->compare_exchange_strong(expected, token_))
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        bool result = false;
+        if (owner_)
         {
-            is_active_ = true;
-            return true;
+            uint64_t expected = 0; // Acquire only if lock is free.
+            result = owner_->compare_exchange_strong(expected, token_);
         }
-        return false;
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+        return result;
     }
 
     /**
      * @brief Attempts to release the lock.
-     *
-     * The release is only successful if this guard currently holds the lock (i.e., if the
-     * `AtomicOwner`'s state matches this guard's token).
-     * @return `true` if the lock was released successfully, `false` otherwise.
+     * @return `true` if the lock was successfully released, `false` otherwise.
      */
     [[nodiscard]] bool release() noexcept
     {
-        if (!owner_)
-            return false;
-        uint64_t expected = token_;
-        if (owner_->compare_exchange_strong(expected, 0))
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        bool result = false;
+        if (owner_)
         {
-            is_active_ = false;
-            return true;
+            uint64_t expected = token_; // Release only if we are the owner.
+            result = owner_->compare_exchange_strong(expected, 0);
         }
-        return false;
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+        return result;
     }
 
     /**
@@ -283,56 +200,108 @@ class AtomicGuard
      */
     [[nodiscard]] bool attach_and_acquire(AtomicOwner *owner) noexcept
     {
-        owner_ = owner;
+        attach(owner);
         return acquire();
     }
 
     /**
      * @brief Authoritatively checks if this guard currently holds the lock.
      *
-     * This method directly queries the `AtomicOwner`'s state, rather than relying on
-     * the guard's internal `is_active_` flag, providing the most up-to-date status.
-     * @return `true` if the `AtomicOwner`'s token matches this guard's token, `false` otherwise.
+     * This method directly queries the `AtomicOwner`, providing the ground truth.
+     * @return `true` if this guard's token is the one in the `AtomicOwner`.
      */
     bool active() const noexcept
     {
-        if (!owner_)
-            return false;
-        return owner_->load() == token_;
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        bool result = false;
+        if (owner_)
+        {
+            result = (owner_->load() == token_);
+        }
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+        return result;
     }
 
-    /** @brief Returns the unique token associated with this guard. */
-    uint64_t token() const noexcept { return token_; }
+    /**
+     * @brief Returns the unique token for this guard.
+     * This can be used as a handle for advanced coordination between guards.
+     */
+    uint64_t token() const noexcept
+    {
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        uint64_t result = token_;
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+        return result;
+    }
+
+    /**
+     * @brief Attaches the guard to a new `AtomicOwner`.
+     * @warning It is a logic error to call this on a guard that is currently active on
+     *          another owner, as the original lock will be leaked.
+     * @param owner The new `AtomicOwner` to manage.
+     */
+    void attach(AtomicOwner *owner) noexcept
+    {
+        // Note: This method intentionally does not use the DEBUG_ASSERT macros.
+        // Its own internal logic check for active() needs to trigger a panic
+        // for testing purposes, and the concurrent access check interferes with that.
+#ifndef NDEBUG
+        if (active())
+        {
+            PLH_PANIC("attach() called on an active guard. The original lock is now leaked. "
+                      "Release the lock before attaching to a new owner.");
+        }
+#endif
+        owner_ = owner;
+    }
+
+    /**
+     * @brief Detaches the guard from its owner. The guard becomes inert.
+     * The destructor will no longer release the lock for this guard.
+     * @warning If called on an active guard, the lock is leaked.
+     */
+    void detach() noexcept
+    {
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
+        owner_ = nullptr;
+        DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END();
+    }
 
   private:
     /**
      * @brief Generates a new unique, non-zero token.
-     * @note Tokens are generated from a global atomic counter. After 2^64 increments, tokens
-     *       will repeat. This is astronomically unlikely in practice but is a theoretical
-     *       possibility for systems running for extremely long durations.
      */
     static uint64_t generate_token() noexcept
     {
         static std::atomic<uint64_t> next{1};
         uint64_t t;
-        while ((t = next.fetch_add(1, std::memory_order_relaxed)) == 0)
+        do
         {
-            // The counter wrapped around to 0. We must not return 0, as it signifies
-            // a "free" state. We fetch_add again to get 1.
-        }
+            // Relaxed ordering is sufficient, as this just needs to be a unique number.
+            t = next.fetch_add(1, std::memory_order_relaxed);
+        } while (t == 0); // Must not be 0, which signifies "free".
         return t;
     }
 
-    // Members
     AtomicOwner *owner_;
     uint64_t token_;
-    // `is_active_` is a plain `bool` because the AtomicGuard object itself is not designed
-    // for concurrent access by multiple threads. The class contract states: "It is UB to
-    // concurrently access the *same* AtomicGuard object from multiple threads without
-    // external synchronization." Therefore, accesses to `is_active_` do not need to be
-    // atomic, as they occur within an execution path that has exclusive access to
-    // this specific AtomicGuard instance.
-    bool is_active_;
+
+#ifndef NDEBUG
+    // Used to detect concurrent access to THIS AtomicGuard instance.
+    // Guard objects themselves are not thread-safe.
+    mutable std::atomic_flag access_flag_ = ATOMIC_FLAG_INIT;
+
+    void debug_enter() const noexcept
+    {
+        if (access_flag_.test_and_set(std::memory_order_acquire))
+        {
+            PLH_PANIC("Concurrent access detected on a single AtomicGuard instance. "
+                      "Guard objects must not be shared between threads without external locking.");
+        }
+    }
+
+    void debug_leave() const noexcept { access_flag_.clear(std::memory_order_release); }
+#endif
 };
 
 } // namespace pylabhub::basics

@@ -354,8 +354,7 @@ using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorComman
                              SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
 
 // --- Promise Helper Functions ---
-template <typename T>
-void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
+template <typename T> void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
 {
     if (!p)
         return;
@@ -370,8 +369,7 @@ void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
 }
 
 template <typename T>
-void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p,
-                                       std::exception_ptr ep)
+void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p, std::exception_ptr ep)
 {
     if (!p)
         return;
@@ -397,18 +395,25 @@ struct Logger::Impl
     void shutdown();
 
     // Ordered for optimal packing as suggested by clang-tidy:
-    // error_callback_, worker_thread_, sink_, m_max_queue_size, m_messages_dropped, m_dropping_since, queue_, cv_, queue_mutex_, m_sink_mutex, callback_dispatcher_, level_, shutdown_requested_, shutdown_completed_, m_log_sink_messages_enabled_, m_was_dropping
+    // error_callback_, worker_thread_, sink_, m_max_queue_size, m_messages_dropped,
+    // m_dropping_since, queue_, cv_, queue_mutex_, m_sink_mutex, callback_dispatcher_, level_,
+    // shutdown_requested_, shutdown_completed_, m_log_sink_messages_enabled_, m_was_dropping
 
     std::function<void(const std::string &)> error_callback_; // Size: pointer (8 bytes)
-    std::thread worker_thread_;                               // Size: depends on implementation (e.g., 8 bytes on x64 for pointer to thread data)
-    std::unique_ptr<Sink> sink_;                              // Size: pointer (8 bytes)
-    size_t m_max_queue_size{10000};                           // Size: 8 bytes (on x64)
-    std::chrono::system_clock::time_point m_dropping_since;   // Size: depends on implementation (e.g., 8 bytes for duration)
-    std::vector<Command> queue_;                              // Size: 24 bytes (on x64 for pointer, size, capacity)
-    std::condition_variable cv_;                              // Size: depends on implementation (e.g., 40 bytes)
-    std::mutex queue_mutex_;                                  // Size: depends on implementation (e.g., 40 bytes)
-    std::mutex m_sink_mutex;                                  // Size: depends on implementation (e.g., 40 bytes)
-    CallbackDispatcher callback_dispatcher_;                  // Size: depends on implementation (e.g., 104 bytes in CallbackDispatcher: std::deque (24), std::mutex (40), std::condition_variable (40), std::thread (8), std::atomic<bool> (1))
+    std::thread worker_thread_; // Size: depends on implementation (e.g., 8 bytes on x64 for pointer
+                                // to thread data)
+    std::unique_ptr<Sink> sink_;    // Size: pointer (8 bytes)
+    size_t m_max_queue_size{10000}; // Size: 8 bytes (on x64)
+    std::chrono::system_clock::time_point
+        m_dropping_since;        // Size: depends on implementation (e.g., 8 bytes for duration)
+    std::vector<Command> queue_; // Size: 24 bytes (on x64 for pointer, size, capacity)
+    std::condition_variable cv_; // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex queue_mutex_;     // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex m_sink_mutex;     // Size: depends on implementation (e.g., 40 bytes)
+    CallbackDispatcher callback_dispatcher_; // Size: depends on implementation (e.g., 104 bytes in
+                                             // CallbackDispatcher: std::deque (24), std::mutex
+                                             // (40), std::condition_variable (40), std::thread (8),
+                                             // std::atomic<bool> (1))
     std::atomic<Logger::Level> level_{Logger::Level::L_INFO}; // Size: 4 bytes (for int)
     std::atomic<bool> shutdown_requested_{false};             // Size: 1 byte
     std::atomic<bool> shutdown_completed_{false};             // Size: 1 byte
@@ -446,8 +451,7 @@ void Logger::Impl::reject_command_due_to_shutdown(Command &cmd)
         [](auto &&arg)
         {
             using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, SetSinkCommand> ||
-                          std::is_same_v<T, FlushCommand> ||
+            if constexpr (std::is_same_v<T, SetSinkCommand> || std::is_same_v<T, FlushCommand> ||
                           std::is_same_v<T, SetErrorCallbackCommand> ||
                           std::is_same_v<T, SetLogSinkMessagesCommand> ||
                           std::is_same_v<T, SinkCreationErrorCommand>)
