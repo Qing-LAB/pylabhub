@@ -512,6 +512,9 @@ void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue;
     std::optional<LogMessage> recovery_message;
+    bool create_recovery_msg = false;
+    size_t dropped_count = 0;
+    std::chrono::system_clock::time_point dropping_since;
 
     while (true)
     {
@@ -519,10 +522,39 @@ void Logger::Impl::worker_loop()
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
             local_queue.swap(queue_);
+
+            if (m_was_dropping.exchange(false, std::memory_order_relaxed))
+            {
+                dropped_count = m_messages_dropped.exchange(0, std::memory_order_relaxed);
+                if (dropped_count > 0)
+                {
+                    dropping_since = m_dropping_since;
+                    create_recovery_msg = true;
+                }
+            }
+
             if (shutdown_requested_.load())
             {
                 g_logger_state.store(LoggerState::ShuttingDown, std::memory_order_release);
             }
+        }
+
+        if (create_recovery_msg)
+        {
+            const auto now = std::chrono::system_clock::now();
+            const auto duration =
+                std::chrono::duration_cast<std::chrono::duration<double>>(now - dropping_since)
+                    .count();
+
+            recovery_message.emplace(
+                LogMessage{.timestamp = now,
+                           .process_id = pylabhub::platform::get_pid(),
+                           .thread_id = pylabhub::platform::get_native_thread_id(),
+                           .level = static_cast<int>(Logger::Level::L_WARNING),
+                           .body = make_buffer("Logger dropped {} messages over {:.2f}s due to "
+                                               "full queue",
+                                               dropped_count, duration)});
+            create_recovery_msg = false; // Reset flag
         }
 
         // --- Find last SetSinkCommand ---
@@ -540,34 +572,21 @@ void Logger::Impl::worker_loop()
         {
             try
             {
+                // If a recovery message was generated, log it before the first real message.
+                if (recovery_message)
+                {
+                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                    if (sink_)
+                    {
+                        sink_->write(*recovery_message, Sink::ASYNC_WRITE);
+                    }
+                    recovery_message.reset();
+                }
+
                 // Fast path: LogMessage (very common) — use get_if to avoid heavyweight
                 // template dispatch.
                 if (auto *msg = std::get_if<LogMessage>(&local_queue[i]))
                 {
-                    // Detect recovery and prepare message, but don't log it yet.
-                    if (m_was_dropping.exchange(false, std::memory_order_relaxed))
-                    {
-                        const size_t dropped_count =
-                            m_messages_dropped.exchange(0, std::memory_order_relaxed);
-                        if (dropped_count > 0)
-                        {
-                            const auto now = std::chrono::system_clock::now();
-                            const auto duration =
-                                std::chrono::duration_cast<std::chrono::duration<double>>(
-                                    now - m_dropping_since)
-                                    .count();
-
-                            recovery_message.emplace(
-                                LogMessage{.timestamp = now,
-                                           .process_id = pylabhub::platform::get_pid(),
-                                           .thread_id = pylabhub::platform::get_native_thread_id(),
-                                           .level = static_cast<int>(Logger::Level::L_WARNING),
-                                           .body = make_buffer("Logger dropped {} messages over "
-                                                               "{:.2f}s due to full queue",
-                                                               dropped_count, duration)});
-                        }
-                    }
-
                     // Write message if level allows.
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                     if (sink_ &&
