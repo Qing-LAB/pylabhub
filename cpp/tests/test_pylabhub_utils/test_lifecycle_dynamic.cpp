@@ -56,9 +56,9 @@ TEST_F(LifecycleDynamicTest, FinalizeUnloadsAll)
     expect_worker_ok(proc);
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleInDependencyChain)
+TEST_F(LifecycleDynamicTest, PersistentModuleInDependencyChain)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_in_middle", {}, true);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_in_middle", {}, true);
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
@@ -106,17 +106,17 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
                       "module 'DynA' threw on startup", "re-entrant call and failed as expected"});
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleIsNotUnloaded)
+TEST_F(LifecycleDynamicTest, PersistentModuleIsNotUnloaded)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module", {});
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_module", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleIsUnloadedOnFinalize)
+TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module_finalize", {});
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_module_finalize", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);

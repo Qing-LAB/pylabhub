@@ -153,7 +153,7 @@ int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
     module_b.add_dependency("modulea"); // Dependency with wrong case
 
     // This should cause a panic/abort because "modulea" is not found.
-    LifecycleGuard guard({std::move(module_a), std::move(module_b)});
+    LifecycleGuard guard(MakeModDefList(std::move(module_a), std::move(module_b)));
 
     return 1; // Should not be reached.
 }
@@ -463,9 +463,9 @@ int pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all()
     return 0;
 }
 
-int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_in_middle()
 {
-    PLH_DEBUG("--> WORKER dynamic_permanent_in_middle STARTED");
+    PLH_DEBUG("--> WORKER dynamic_persistent_in_middle STARTED");
     reset_dynamic_counters();
     LifecycleGuard guard(Logger::GetLifecycleModule());
 
@@ -477,11 +477,11 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
     if (!RegisterDynamicModule(std::move(modE)))
         return 1;
 
-    // Register D (permanent, bottom of other branch)
+    // Register D (persistent, bottom of other branch)
     ModuleDef modD("DynD");
     modD.set_startup(startup_D);
     modD.set_shutdown(shutdown_D, 100);
-    modD.set_as_permanent();
+    modD.set_as_persistent();
     if (!RegisterDynamicModule(std::move(modD)))
         return 2;
 
@@ -536,7 +536,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
     }
     PLH_DEBUG("WORKER: UnloadModule('DynA') finished. Checking shutdown counters...");
 
-    // A, B, C, E should be stopped. D (permanent) should NOT be stopped.
+    // A, B, C, E should be stopped. D (persistent) should NOT be stopped.
     if (dyn_A_stop != 1)
         return 13;
     if (dyn_B_stop != 1)
@@ -547,7 +547,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle()
         return 16;
     if (dyn_D_stop != 0)
     {
-        PLH_DEBUG("WORKER: Permanent module 'DynD' was incorrectly stopped.");
+        PLH_DEBUG("WORKER: persistent module 'DynD' was incorrectly stopped.");
         return 17;
     }
     PLH_DEBUG("WORKER: Shutdown counters are correct. Test passed.");
@@ -621,7 +621,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
     return 0;
 }
 
-int pylabhub::tests::worker::lifecycle::dynamic_permanent_module()
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_module()
 {
     reset_dynamic_counters();
     LifecycleGuard guard(Logger::GetLifecycleModule());
@@ -629,7 +629,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_module()
     ModuleDef mod_perm("DynPerm");
     mod_perm.set_startup(startup_D); // Using D's counters
     mod_perm.set_shutdown(shutdown_D, 100);
-    mod_perm.set_as_permanent();
+    mod_perm.set_as_persistent();
     if (!RegisterDynamicModule(std::move(mod_perm)))
         return 1;
 
@@ -656,7 +656,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_module()
     return 0;
 }
 
-int pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize()
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize()
 {
     reset_dynamic_counters();
     {
@@ -665,7 +665,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize()
         ModuleDef mod_perm("DynPerm");
         mod_perm.set_startup(startup_D);
         mod_perm.set_shutdown(shutdown_D, 100);
-        mod_perm.set_as_permanent();
+        mod_perm.set_as_persistent();
         if (!RegisterDynamicModule(std::move(mod_perm)))
             return 1;
 

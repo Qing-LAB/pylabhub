@@ -13,7 +13,7 @@
 #pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
 #endif
 
-#define LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize

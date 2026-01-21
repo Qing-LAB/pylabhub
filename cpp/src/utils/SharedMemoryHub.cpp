@@ -1827,7 +1827,7 @@ pylabhub::utils::ModuleDef GetLifecycleModule()
     module.set_startup(&do_hub_startup);
     module.set_shutdown(&do_hub_shutdown, 5000 /*ms timeout*/);
     // Mark as dynamic module (can be loaded/unloaded at runtime)
-    module.set_as_permanent(false);
+    module.set_as_persistent(false);
     return module;
 }
 

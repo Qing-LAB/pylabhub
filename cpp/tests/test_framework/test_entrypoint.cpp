@@ -75,9 +75,10 @@ int main(int argc, char **argv)
     if (argc >= 1)
         g_self_exe_path = argv[0];
 
-    pylabhub::utils::LifecycleGuard guard({pylabhub::utils::Logger::GetLifecycleModule(),
-                                           pylabhub::utils::FileLock::GetLifecycleModule(),
-                                           pylabhub::utils::JsonConfig::GetLifecycleModule()}
+    pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::utils::JsonConfig::GetLifecycleModule())
                                           // Manage lifecycle for the test runner
     );
     // Initialize GoogleTest and run all registered tests.

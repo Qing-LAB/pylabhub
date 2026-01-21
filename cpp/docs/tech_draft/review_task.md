@@ -23,7 +23,7 @@ To ensure we proceed from a reliable foundation, we will restart the review proc
 **Step 2: Conduct a Fresh, In-Depth Review**
 *   With the complete codebase loaded, I will perform a new, comprehensive analysis based on all the core criteria listed above.
 *   I will pay special attention to the files that were recently subject to edits (`Lifecycle.cpp`, `Logger.cpp`, `FileLock.cpp`, `WaveAccess.cpp`) to meticulously check for any "duplicated definitions" or other errors that might have been introduced.
-*   I will also verify the correctness and completeness of the recently added "permanent" dynamic module feature in the `LifecycleManager`.
+*   I will also verify the correctness and completeness of the recently added "persistent" dynamic module feature in the `LifecycleManager`.
 
 **Step 3: Report Findings and Propose Corrections**
 *   After the analysis, I will provide you with a clear, structured report of my findings.

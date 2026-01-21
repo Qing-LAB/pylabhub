@@ -6,6 +6,7 @@
 #include <system_error>
 
 #ifdef PYLABHUB_PLATFORM_WIN64
+#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #else
@@ -68,7 +69,7 @@ void BaseFileSink::close()
     m_path.clear();
 }
 
-void BaseFileSink::write(const std::string &content)
+void BaseFileSink::fwrite(const std::string &content)
 {
     if (!is_open())
         return;
@@ -104,7 +105,7 @@ void BaseFileSink::write(const std::string &content)
 #endif
 }
 
-void BaseFileSink::flush()
+void BaseFileSink::fflush()
 {
     if (!is_open())
         return;

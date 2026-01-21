@@ -190,14 +190,15 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
                       size_t len);
 
     /**
-     * @brief Marks this module as permanent.
-     * @details A permanent dynamic module, once loaded, will not be unloaded until
-     * the application is finalized, regardless of its reference count. This is
-     * useful for modules that are costly to initialize. This flag has no effect
+     * @brief Marks this module as persistent.
+     * @details A persistent dynamic module, once loaded, will not be unloaded
+     * automatically when its reference count drops to zero. It will only be
+     * unloaded when the application is finalized. This is useful for modules that
+     * are costly to initialize and should stay loaded. This flag has no effect
      * on static modules.
-     * @param permanent If `true` (default), marks the module as permanent.
+     * @param persistent If `true` (default), marks the module as persistent.
      */
-    void set_as_permanent(bool permanent = true);
+    void set_as_persistent(bool persistent = true);
 
   private:
     // This friend declaration allows LifecycleManager to access the private pImpl
@@ -207,6 +208,21 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     friend class LifecycleManager;
     std::unique_ptr<ModuleDefImpl> pImpl;
 };
+
+/// @brief Helper factory: constructs a vector<ModuleDef> by moving the supplied ModuleDef args.
+// Call-site: MakeModDefList(std::move(a), std::move(b)) or MakeModDefList(MyFactory(), ...)
+template <typename... Mods>
+inline std::vector<ModuleDef> MakeModDefList(Mods&&... mods)
+{
+    static_assert((std::is_same_v<std::decay_t<Mods>, ModuleDef> && ...),
+                  "MakeModDefList: all arguments must be ModuleDef (rvalues or prvalues)");
+
+    std::vector<ModuleDef> modules;
+    modules.reserve(sizeof...(mods));
+    (modules.emplace_back(std::forward<Mods>(mods)), ...);
+    return modules; // NRVO / move
+}
+
 
 /**
  * @class LifecycleManager
@@ -464,21 +480,15 @@ class LifecycleGuard
     }
 
     // Multiple modules constructor
-    // Usage: LifecycleGuard guard({ModuleDef("Mod1"), ModuleDef("Mod2")});
-    explicit LifecycleGuard(std::initializer_list<ModuleDef> modules,
+    // Usage: LifecycleGuard guard(MakeModDefList(ModuleDef("Mod1"), ModuleDef("Mod2")));
+    explicit LifecycleGuard(std::vector<ModuleDef> &&modules,
                             std::source_location loc = std::source_location::current())
         : m_loc(loc)
     {
         PLH_DEBUG("[PLH_LifeCycle] LifecycleGuard constructed in function {}. ({}:{})",
                   m_loc.function_name(), pylabhub::format_tools::filename_only(m_loc.file_name()),
                   m_loc.line());
-        std::vector<ModuleDef> vec;
-        vec.reserve(modules.size());
-        for (auto &&m : modules)
-        {
-            vec.emplace_back(std::move(const_cast<ModuleDef &>(m)));
-        }
-        init_owner_if_first(std::move(vec));
+        init_owner_if_first(std::move(modules));
     }
 
     // Non-copyable, non-movable

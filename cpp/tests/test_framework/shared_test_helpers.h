@@ -182,7 +182,8 @@ int scaled_value(int original, int small_value);
 template <typename Fn, typename... Mods>
 int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
 {
-    pylabhub::utils::LifecycleGuard guard({std::forward<Mods>(mods)...});
+    pylabhub::utils::LifecycleGuard guard(
+        pylabhub::utils::MakeModDefList(std::forward<Mods>(mods)...));
 
     try
     {

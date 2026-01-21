@@ -16,6 +16,7 @@
 #include <utility>
 
 #if defined(PLATFORM_WIN64)
+#define WIN32_LEAN_AND_MEAN
 #include <sstream>
 #include <windows.h>
 #else

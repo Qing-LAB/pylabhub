@@ -69,7 +69,7 @@ target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_UTILS_EXPORT_DLL=1)
 
 # ==============================================================================
 
-# Check if we are using MSVC
+  # Check if we are using MSVC
 if(MSVC)
     # Enable synchronous exception handling and disable warning C5105.
     target_compile_options(pylabhub-utils PRIVATE /EHsc /wd5105)

@@ -31,8 +31,13 @@ struct LogMessage
 class Sink
 {
   public:
+    enum WRITE_MODE{
+        ASYNC_WRITE,
+        SYNC_WRITE
+    };
+
     virtual ~Sink() = default;
-    virtual void write(const LogMessage &msg) = 0;
+    virtual void write(const LogMessage &msg, Sink::WRITE_MODE mode) = 0;
     virtual void flush() = 0;
     virtual std::string description() const = 0;
 };
@@ -62,12 +67,17 @@ static const char *level_to_string_internal(int lvl)
 }
 
 // Formats a LogMessage into a standardized string format.
-static std::string format_message(const LogMessage &msg)
+static std::string format_logmsg(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
     std::string time_str = formatted_time(msg.timestamp);
-    return fmt::format("[{}] [{:<6}] [PID:{:5} TID:{:5}] {}\n", time_str,
-                       level_to_string_internal(msg.level), msg.process_id, msg.thread_id,
-                       std::string_view(msg.body.data(), msg.body.size()));
+    if (mode == Sink::ASYNC_WRITE) {
+        return fmt::format("[LOGGER] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n", level_to_string_internal(msg.level), time_str,
+                       msg.process_id, msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
+    }
+    else {
+        return fmt::format("[LOGGER_SYNC] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n", level_to_string_internal(msg.level), time_str,
+                       msg.process_id, msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
+    }
 }
 
 } // namespace pylabhub::utils
