@@ -29,7 +29,7 @@ target_link_libraries(pylabhub-test-framework
     pylabhub::third_party::gmock
 )
 
-if(PYLABHUB_SANITIZER_FLAG)
+if(PYLABHUB_SANITIZER_FLAGS)
   target_link_libraries(pylabhub-test-framework PRIVATE pylabhub::sanitizer_flags)
 endif()
 
