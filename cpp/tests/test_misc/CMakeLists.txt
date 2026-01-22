@@ -6,6 +6,8 @@
 
 cmake_minimum_required(VERSION 3.29)
 
+message(STATUS "** Configuring test executable for misc tests...")
+
 add_executable(test_debug_output
   test_debug_output.cpp
 )
@@ -21,6 +23,12 @@ target_link_libraries(test_debug_output
   PRIVATE
     pylabhub::basic
 )
+
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to test_debug_output.")
+  target_compile_options(test_debug_output PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  target_link_libraries(test_debug_output PRIVATE pylabhub::sanitizer_flags)
+endif()
 
 target_compile_features(test_debug_output PRIVATE cxx_std_20)
 

@@ -8,6 +8,8 @@
 # against it should NOT link against gtest_main.
 cmake_minimum_required(VERSION 3.29)
 
+message(STATUS "-- start configuring pylabhub::test_framework static lib...")
+
 add_library(pylabhub-test-framework STATIC
   shared_test_helpers.cpp
   shared_test_helpers.h
@@ -28,10 +30,6 @@ target_link_libraries(pylabhub-test-framework
     pylabhub::third_party::gtest
     pylabhub::third_party::gmock
 )
-
-if(PYLABHUB_SANITIZER_FLAGS)
-  target_link_libraries(pylabhub-test-framework PRIVATE pylabhub::sanitizer_flags)
-endif()
 
 # Publicly expose this directory so consumers can find the helper headers.
 target_include_directories(pylabhub-test-framework PUBLIC

@@ -1,6 +1,6 @@
+#include "platform.hpp"
 #include "format_tools.hpp"
 #include <gtest/gtest.h>
-#include <regex>
 
 using namespace pylabhub::format_tools;
 
@@ -60,9 +60,37 @@ TEST_F(FormatToolsTest, FormattedTime)
     auto now = std::chrono::system_clock::now();
     std::string formatted = formatted_time(now);
 
-    // Regex to match YYYY-MM-DD HH:MM:SS.ffffff
-    std::regex time_regex(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})");
+    // Expected format: YYYY-MM-DD HH:MM:SS.ffffff
+    // Example: 2023-11-20 14:30:55.123456
+    ASSERT_EQ(formatted.length(), 26);
 
-    EXPECT_TRUE(std::regex_match(formatted, time_regex))
-        << "Formatted time '" << formatted << "' does not match expected format.";
+    // Check separators
+    EXPECT_EQ(formatted[4], '-');
+    EXPECT_EQ(formatted[7], '-');
+    EXPECT_EQ(formatted[10], ' ');
+    EXPECT_EQ(formatted[13], ':');
+    EXPECT_EQ(formatted[16], ':');
+    EXPECT_EQ(formatted[19], '.');
+
+    // Helper lambda to check if a substring contains only digits
+    auto is_all_digits = [&](size_t start, size_t len)
+    {
+        for (size_t i = 0; i < len; ++i)
+        {
+            if (!std::isdigit(static_cast<unsigned char>(formatted[start + i])))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Check numeric parts
+    EXPECT_TRUE(is_all_digits(0, 4));   // Year
+    EXPECT_TRUE(is_all_digits(5, 2));   // Month
+    EXPECT_TRUE(is_all_digits(8, 2));   // Day
+    EXPECT_TRUE(is_all_digits(11, 2));  // Hour
+    EXPECT_TRUE(is_all_digits(14, 2));  // Minute
+    EXPECT_TRUE(is_all_digits(17, 2));  // Second
+    EXPECT_TRUE(is_all_digits(20, 6));  // Microseconds
 }

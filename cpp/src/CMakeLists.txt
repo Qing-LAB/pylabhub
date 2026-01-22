@@ -4,10 +4,6 @@
 #
 cmake_minimum_required(VERSION 3.29)
 
-# Add the utils subdirectory, which defines the pylabhub::utils library.
-# This must be done before defining any targets that depend on it.
-add_subdirectory(utils)
-
 # Gather sources for the core static library.
 # This is more robust than using file(GLOB), as it ensures that adding or
 # removing source files requires a direct, version-controlled change to the
@@ -42,8 +38,9 @@ else()
   set(BASIC_LIB_SCOPE PUBLIC)
 endif()
 
-if(PYLABHUB_SANITIZER_FLAGS)
-  target_link_libraries(pylabhub-basic PRIVATE pylabhub::sanitizer_flags)
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to target pylabhub-basic.")
+  target_compile_options(pylabhub-basic PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
 endif()
 
 add_library(pylabhub::basic ALIAS pylabhub-basic)
@@ -60,6 +57,10 @@ target_link_libraries(pylabhub-basic
     pylabhub::third_party::zmq
     pylabhub::third_party::fmt
 )
+
+# Add the utils subdirectory, which defines the pylabhub::utils library.
+# This must be done before defining any targets that depend on it.
+add_subdirectory(utils)
 
 # Define the main application executable.
 add_executable(pylabhub-hubshell hubshell.cpp)
@@ -81,7 +82,9 @@ endif()
 # The app links against the core library and the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::basic pylabhub::utils)
 
-if(PYLABHUB_SANITIZER_FLAGS)
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to linker flags.")
+  target_compile_options(pylabhub-hubshell PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
   target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
 endif()
 

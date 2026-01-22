@@ -149,3 +149,97 @@ TEST(PlatformTest, Panic)
                  AllOf(HasSubstr("This is a panic test."), HasSubstr("PANIC"),
                        HasSubstr("Stack Trace (most recent call first):")));
 }
+
+#include <thread>
+#include <limits>
+
+#ifdef PYLABHUB_SANITIZER_IS_THREAD
+#include <gtest/gtest.h>
+TEST(SanitizerCheckNoLifecycle, DetectsDataRace) {
+    auto data_race_func = []() {
+        long shared_value = 0;
+        std::thread t1([&]{ for(int i=0; i<1000; ++i) shared_value++; });
+        std::thread t2([&]{ for(int i=0; i<1000; ++i) shared_value++; });
+        t1.join();
+        t2.join();
+    };
+    EXPECT_DEATH(data_race_func(), ".*ThreadSanitizer: data race.*");
+}
+#endif
+
+#ifdef PYLABHUB_SANITIZER_IS_ADDRESS
+#include <gtest/gtest.h>
+
+// Test heap-buffer-overflow (write)
+TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowWrite) {
+    auto overflow_func = []() {
+        int* array = new int[10];
+        // Use volatile to prevent optimization
+        *(volatile int*)&array[100] = 0; 
+    };
+    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*");
+}
+
+// Test heap-buffer-overflow (read)
+TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowRead) {
+    auto overflow_func = []() {
+        int* array = new int[10];
+        int volatile x = array[100]; // Trigger overflow with a larger OOB access
+        (void)x; // Avoid unused variable warning
+        delete[] array;
+    };
+    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*");
+}
+
+// Test heap-use-after-free
+TEST(SanitizerCheckNoLifecycle, DetectsHeapUseAfterFree) {
+    auto use_after_free_func = []() {
+        int* array = new int[10];
+        delete[] array;
+        int volatile x = array[5]; // Trigger use-after-free
+        (void)x;
+    };
+    EXPECT_DEATH(use_after_free_func(), ".*AddressSanitizer: heap-use-after-free.*");
+}
+
+// Cross-platform no-inline attribute
+#if defined(_MSC_VER)
+#define PYLABHUB_NOINLINE __declspec(noinline)
+#else
+#define PYLABHUB_NOINLINE __attribute__((noinline))
+#endif
+
+// Keep this noinline so it has a distinct stack frame
+PYLABHUB_NOINLINE
+static void trigger_stack_oob_small_write() {
+    // small buffer so compiler keeps it on the stack predictably
+    fmt::print(stderr, "Before writing to stack buffer...\n");
+    volatile char buf[256];
+    // use the buffer to avoid it being optimized away
+    buf[0] = 1;
+    // write just one byte past the end (most likely to hit ASan's redzone)
+    volatile char *p = buf;
+    p[256] = 0; // 1 byte OOB (index == size)
+    asm volatile("" ::: "memory");    // compiler barrier: avoid reordering/elision
+    fmt::print(stderr, "After writing to stack buffer overflow...\n");
+}
+
+TEST(SanitizerCheckNoLifecycle, DetectsStackBufferOverflow) {
+    // run the noinline function and expect ASan stack-buffer-overflow
+    EXPECT_DEATH(trigger_stack_oob_small_write(),
+                 ".*AddressSanitizer: stack-buffer-overflow.*");
+}
+
+#endif
+
+#ifdef PYLABHUB_SANITIZER_IS_UNDEFINED
+#include <gtest/gtest.h>
+TEST(SanitizerCheckNoLifecycle, DetectsSignedIntegerOverflow) {
+    auto overflow_func = []() {
+        // Use volatile to prevent the compiler from optimizing away the increment.
+        volatile int value = std::numeric_limits<int>::max();
+        value++;
+    };
+    EXPECT_DEATH(overflow_func(), ".*runtime error: signed integer overflow.*");
+}
+#endif

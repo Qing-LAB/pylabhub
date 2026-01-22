@@ -5,6 +5,7 @@
 #
 cmake_minimum_required(VERSION 3.29)
 
+message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 # Define the source files for the utility library explicitly.
 # This is more robust than using file(GLOB), as it ensures that adding or
 # removing source files requires a direct, version-controlled change to the
@@ -31,8 +32,16 @@ pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
 target_link_libraries(pylabhub-utils PUBLIC pylabhub-basic)
 
-if(PYLABHUB_SANITIZER_FLAGS)
-  target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to pylabhub-utils with compilation flags.")
+  target_compile_options(pylabhub-utils PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  # We only apply the compile options for sanitizers to the shared library.
+  # The sanitizer runtime should be linked by the final executable, not by the
+  # shared library. Linking it here would cause a conflict if the executable
+  # also links it, leading to a crash at startup (e.g. "unexpected memory mapping").
+  #
+  # The following was removed:
+  # target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
 endif()
 
 # ==============================================================================
@@ -174,4 +183,4 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
 # Register this local staging target with the global build system.
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_utils)
 
-message(STATUS "Configured shared library 'pylabhub::utils'.")
+message(STATUS "-- Configured shared library 'pylabhub::utils'.")
