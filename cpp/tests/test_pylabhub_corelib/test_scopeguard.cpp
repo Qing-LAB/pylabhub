@@ -281,3 +281,15 @@ TEST(ScopeGuardTest, StaticAsserts)
     // auto guard = make_scope_guard(NonConstructible{});
 }
 */
+// Test that invoke_and_rethrow() works correctly with a noexcept lambda.
+TEST(ScopeGuardTest, InvokeAndRethrowWithNoexceptLambda)
+{
+    bool executed = false;
+    {
+        auto guard = make_scope_guard([&]() noexcept { executed = true; });
+        EXPECT_NO_THROW(guard.invoke_and_rethrow());
+        ASSERT_TRUE(executed);
+        executed = false; // Reset to check no double execution
+    }
+    ASSERT_FALSE(executed);
+}
