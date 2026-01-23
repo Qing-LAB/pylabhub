@@ -1,8 +1,10 @@
-#include "platform.hpp"         // For PLATFORM_WIN64, which is used by test_process_utils.h
-#include "test_entrypoint.h"    // For g_self_exe_path
-#include "test_process_utils.h" // For NULL_PROC_HANDLE and ProcessHandle
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
+#include "plh_service.hpp"
+#include "gtest/gtest.h"
+#include "gmock/gmock.h"
+#include "test_process_utils.h"
+#include "test_entrypoint.h"
+#include "shared_test_helpers.h"
+
 
 using namespace pylabhub::tests::helper; // Bring test helper namespace into scope
 
@@ -56,9 +58,9 @@ TEST_F(LifecycleDynamicTest, FinalizeUnloadsAll)
     expect_worker_ok(proc);
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleInDependencyChain)
+TEST_F(LifecycleDynamicTest, PersistentModuleInDependencyChain)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_in_middle", {}, true);
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_in_middle", {}, true);
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
@@ -101,22 +103,22 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
     ASSERT_TRUE(proc.valid());
 
     proc.wait_for_exit();
-    expect_worker_ok(proc, {"Re-entrant call to load_module('DynB') detected",
-                            "module 'DynA' threw on startup",
-                            "re-entrant call and failed as expected"});
+    expect_worker_ok(proc,
+                     {"Re-entrant call to load_module('DynB') detected",
+                      "module 'DynA' threw on startup", "re-entrant call and failed as expected"});
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleIsNotUnloaded)
+TEST_F(LifecycleDynamicTest, PersistentModuleIsNotUnloaded)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module", {});
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_module", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
 }
 
-TEST_F(LifecycleDynamicTest, PermanentModuleIsUnloadedOnFinalize)
+TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
 {
-    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.permanent_module_finalize", {});
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_module_finalize", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);

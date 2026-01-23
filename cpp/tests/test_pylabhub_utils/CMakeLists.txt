@@ -3,7 +3,7 @@
 # Configures the test executable for the pylabhub-utils shared library.
 # These tests use a custom main() to act as both a test runner and a
 # worker process dispatcher.
-
+message(STATUS "** Configuring test executable for pylabhub-utils...")
 add_executable(test_pylabhub_utils
   # Test suites
   test_filelock.cpp
@@ -27,7 +27,14 @@ add_executable(test_pylabhub_utils
 target_link_libraries(test_pylabhub_utils
   PRIVATE
     pylabhub::test_framework
+    pylabhub::utils
 )
+
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to test_pylabhub_utils.")
+  target_compile_options(test_pylabhub_utils PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  target_link_libraries(test_pylabhub_utils PRIVATE pylabhub::sanitizer_flags)
+endif()
 
 target_compile_features(test_pylabhub_utils PRIVATE cxx_std_20)
 
@@ -51,10 +58,8 @@ pylabhub_register_test_for_staging(TARGET test_pylabhub_utils)
 # variables, especially on Windows where paths can contain spaces.
 # The `cmake -E env --modify` command correctly handles native path separators.
 set_property(TARGET test_pylabhub_utils PROPERTY
-  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${STAGED_LIB_DIR}"
+  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${STAGED_BIN_DIR}"
 )
-
-
 
 gtest_discover_tests(test_pylabhub_utils
   WORKING_DIRECTORY "${STAGED_TEST_DIR}"

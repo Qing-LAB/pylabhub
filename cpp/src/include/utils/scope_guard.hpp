@@ -1,9 +1,4 @@
-#ifndef PYLHUB_SCOPE_GUARD_HPP
-#define PYLHUB_SCOPE_GUARD_HPP
-
-#include <optional>
-#include <type_traits>
-#include <utility>
+#pragma once
 
 namespace pylabhub::basics
 {
@@ -111,4 +106,3 @@ template <typename F> ScopeGuard<F> make_scope_guard(F &&f)
 
 } // namespace pylabhub::basics
 
-#endif // PYLHUB_SCOPE_GUARD_HPP

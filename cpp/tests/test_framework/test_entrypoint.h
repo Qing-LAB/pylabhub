@@ -1,8 +1,8 @@
 // tests/test_framework/test_entrypoint.h
 #pragma once
-#include <filesystem>
-#include <string>
 
+#include "plh_base.hpp"
+#include <gtest/gtest.h>
 /**
  * @file test_entrypoint.h
  * @brief Provides an API for registering worker scenario dispatchers.

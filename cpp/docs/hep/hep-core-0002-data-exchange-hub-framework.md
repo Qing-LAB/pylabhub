@@ -10,137 +10,132 @@
 
 ## Abstract
 
-This Hub Enhancement Proposal (HEP) outlines a design framework for the **Data Exchange Hub**, a core module within the `pylabhub-utils` library. This module will provide robust mechanisms for inter-process communication (IPC), enabling disparate applications and components to share data and commands efficiently. The framework proposes a dual-strategy approach, utilizing both high-performance shared memory and flexible message-based communication to meet diverse technical requirements.
+This Hub Enhancement Proposal (HEP) outlines a definitive design for the **Data Exchange Hub**. The architecture is centered around a **Message Hub** that provides a unified event model and coordinates access to high-performance, queue-like **DataBlocks**. Each DataBlock is a shared memory channel with a policy-based buffer, a stateful **Flexible Data Zone**, and robust safety features like magic numbers and shared secrets. All communication is managed by a strict, header-based messaging protocol and a central broker that actively tracks consumer heartbeats to ensure system integrity. This design provides a comprehensive, secure, and resilient framework for complex data-flow applications.
 
 ## Motivation
 
 Modern scientific and laboratory environments often require integrating multiple, independent software tools and hardware instruments into a cohesive system. A centralized and standardized data exchange mechanism is needed to:
--   Decouple data producers (e.g., acquisition instruments) from consumers (e.g., real-time analysis, data loggers, user interfaces).
--   Provide a unified interface for system control and state monitoring.
--   Enable real-time data streaming and analysis without compromising performance.
--   Ensure data integrity and comprehensive logging of experimental parameters and states.
+-   Decouple data producers from consumers in complex data-flow pipelines.
+-   Provide a unified interface for system control and state monitoring with robust error detection.
+-   Enable both low-latency "latest value" streaming and reliable, lossless data queuing.
+-   Ensure data integrity, security, and comprehensive logging of experimental parameters and states.
 
 The Data Exchange Hub aims to provide this foundational IPC layer, simplifying the development of complex, multi-process experimental control and data acquisition systems.
 
 ## Specification
 
-The Data Exchange Hub will provide two primary mechanisms for communication, exposed through a unified C++ API.
+The framework consists of two primary modules unified under a common discovery system:
 
-### 1. High-Performance Channel (Shared Memory)
+1.  **The Message Hub**: A statically managed `Lifecycle` module built on ZeroMQ. It provides the core infrastructure for service discovery, control messaging, and data notifications, all governed by a strict messaging protocol.
 
--   **Purpose**: Designed for high-throughput, low-latency communication of large, structured data blocks (e.g., image frames, ADC waveforms, spectral data).
--   **Technology**: To be implemented using a custom C++ wrapper that abstracts platform-native shared memory (e.g., `CreateFileMapping` on Windows, `shm_open` on POSIX) to avoid external library dependencies like Boost.Interprocess.
--   **Characteristics**:
-    -   Provides zero-copy data access between processes on the same machine.
-    -   Suitable for continuous, high-bandwidth data streams.
-    -   Requires careful synchronization (e.g., via mutexes or semaphores stored in the shared memory segment) to prevent race conditions.
+2.  **The DataBlock Hub**: A module providing high-performance, shared-memory `DataBlock` channels. These channels function as policy-managed buffers and are coordinated entirely by the Message Hub.
 
-#### 1.1. Shared Memory Layout
+### 1. High-Performance Channel (DataBlock Hub)
 
-To standardize usage and optimize performance, each shared memory segment will be composed of a `SharedMemoryHeader` followed immediately by the raw data buffer. This layout provides fast access to critical metadata and synchronization primitives.
+-   **Purpose**: To provide versatile and secure shared memory channels optimized for different data exchange patterns.
+-   **Policy-Based Buffer Management**: The `StructuredDataBuffer` within a `DataBlock` is managed by a user-chosen policy (e.g., `SingleBuffer`, `DoubleBuffer`, `RingBuffer`) to best fit the application's needs.
+-   **Stateful DataBlocks**: Every `DataBlock` contains a **Flexible Data Zone** to hold a MessagePack/JSON object, allowing each data block to be associated with a rich, variable "state".
 
-The `SharedMemoryHeader` will contain:
--   **Control Block**: Residing at the beginning of the segment, this block contains the necessary synchronization and state-management primitives, managed transparently by the C++ API wrapper.
-    -   **Process-Shared Mutex**: A mutex lockable by any process sharing the memory segment. It will be implemented using platform-native APIs (e.g., a `pthread_mutex_t` with the `PTHREAD_PROCESS_SHARED` attribute on POSIX, or a named `Mutex` object on Windows).
-    -   **Process-Shared Notification/Signaling**: A condition variable-like mechanism for processes to wait for signals (e.g., `data_ready`). It will be implemented using platform-native primitives (e.g., a `pthread_cond_t` with `PTHREAD_PROCESS_SHARED` on POSIX, or a named `Event`/`Semaphore` on Windows).
-    -   **Atomic Flags**: A set of `std::atomic` integers or flags for lock-free state signaling (e.g., `is_writing`, `frame_id`), providing a lightweight way to check status without locking the mutex.
--   **Static Metadata Block**: A fixed-size `struct` containing performance-critical information needed to interpret the raw data buffer. This enables consumers to access metadata with zero parsing overhead. It will include fields such as:
-    -   `uint64_t frame_id`: A monotonically increasing counter for the data frame.
-    -   `double timestamp`: A high-resolution timestamp of data acquisition.
-    -   `uint64_t data_size`: The exact size of the valid data in the buffer.
-    -   `uint32_t data_type_hash`: A hash identifying the data type (e.g., `fnv1a('uint8_image')`).
-    -   `uint64_t dimensions[4]`: An array for the dimensions of the data (e.g., width, height, depth).
--   **Dynamic Metadata Region**: An optional, fixed-size character array (e.g., 1-2 KB) reserved for storing non-performance-critical metadata in a structured format like length-prefixed JSON.
+#### 1.1. Shared Memory Layout and Security
 
-The total size of the shared memory segment will be aligned to page-size boundaries to ensure efficient memory management.
+A `DataBlock` segment contains a header followed by the data region.
+1.  **`SharedMemoryHeader`**: Contains control primitives, security features, and metadata.
+2.  **`FlexibleDataZone`**: The buffer for the state object.
+3.  **`StructuredDataBuffer`**: The region for bulk data, interpreted by the chosen policy.
 
-### 2. General-Purpose Channel (Messaging)
+The `SharedMemoryHeader` is critical for security and coordination and will contain:
+-   **Safety & Identification**:
+    -   `uint64_t magic_number`: A constant value (e.g., `0xBADF00DFEEDFACEL`) to validate that the memory is an initialized `DataBlock` and to check for version compatibility.
+    -   `uint64_t shared_secret`: A key that must be known by connecting consumers to prevent unauthorized access.
+-   **Consumer Management**:
+    -   `atomic<uint32_t> active_consumer_count`: An atomic counter for tracking attached consumers.
+-   **Control & State**:
+    -   **Process-Shared Mutex**: For ensuring atomic writes by a producer.
+    -   **Policy-Specific State**: Atomics for managing the buffer policy (e.g., `write_index`, `commit_index`, `read_index` for a ring buffer).
 
--   **Purpose**: Designed for asynchronous, message-based communication. Ideal for sending commands, exchanging state information, event notifications, and transferring smaller data payloads.
--   **Technology**: To be implemented using the **ZeroMQ** library, which provides robust, high-performance messaging patterns.
--   **Characteristics**:
-    -   Supports various messaging patterns (Request-Reply, Publish-Subscribe, Push-Pull) to suit different use cases.
-    -   Enables communication between processes on the same machine or across a network.
-    -   Manages message queuing, delivery, and connection handling automatically.
+### 2. Message Hub and Protocol
 
-### 3. Service Broker, Discovery, and Security
+#### 2.1. Strict Message Protocol
 
-To provide a robust, secure, and centralized mechanism for service registration, discovery, and monitoring, the framework will adopt a dedicated Service Broker model built on ZeroMQ.
+To ensure performance and reliability, all messages exchanged via the Message Hub (using ZeroMQ) **must** adhere to a strict, two-part structure:
 
--   **Broker Architecture**: A central "Service Broker" process will act as the authority for the entire Data Exchange Hub. It will listen on a well-known TCP port using a ZeroMQ `ROUTER` socket.
--   **Request/Approval Flow**: 
-    -   A producer process that wishes to offer a channel will connect to the Broker and send a "register" request.
-    -   The Broker will validate the request and, upon approval, add the channel to its internal, in-memory registry.
-    -   Consumer processes will query the Broker to discover available channels and receive the necessary connection details.
--   **Watchdog**: The Broker will also serve as the primary watchdog. Registered services must send periodic "heartbeat" messages to the Broker. If a heartbeat is not received within a configured timeout, the Broker will automatically de-register the service, ensuring the system view is always current.
+1.  **Frame 1: Header (16 bytes)**: A fixed-size `const char[16]` frame containing a "magic string" that uniquely identifies the message type. This allows for high-performance routing without payload deserialization. Examples:
+    *   `"PYLABHUB_DB_NOTIFY"`: A `DataBlock` data-ready notification.
+    *   `"PYLABHUB_HB_REQ"`: A client heartbeat request.
+    *   `"PYLABHUB_REG_REQ"`: A channel registration request.
+2.  **Frame 2: Payload**: The actual message content, serialized using **MessagePack**.
 
-#### 3.1. Broker Security using CurveZMQ
+#### 2.2. Data Notification Channels
 
-All communication with the Service Broker must be encrypted and authenticated. This will be implemented using the **CurveZMQ** protocol, a standard feature of the ZeroMQ library.
+All data availability is signaled via ZeroMQ `PUB/SUB` **Notification Channels**, adhering to the strict message protocol. The payload of a `PYLABHUB_DB_NOTIFY` message would contain details like the `slot_index` that is ready for consumption.
 
--   **Key Management**: The Broker will maintain a long-term public/private server key pair. All clients (producers and consumers) must know the Broker's public key to connect.
--   **Authentication and Encryption**: CurveZMQ will be used to establish a secure session for all clients. This prevents eavesdropping and ensures that only authorized applications can participate in the Data Exchange Hub.
+### 3. Consumer Management and Coordination Protocol
 
-#### 3.2. Broker Key Management
+A robust system requires that all participants are well-behaved and that failures are detected gracefully.
 
-To ensure security across restarts, the Broker's CurveZMQ key pair must be managed persistently and securely.
+#### 3.1. Broker-Managed Heartbeats
 
--   **Storage**: The Broker's private key will be stored in a file on disk, encrypted using the authenticated encryption facilities of `libsodium` (a ZeroMQ dependency). The public key will be stored in plaintext.
--   **Decryption**: The password to decrypt the private key will be provided to the Broker on startup via a command-line argument, a configuration file, or an environment variable (e.g., `PYLABHUB_BROKER_SECRET`). This prevents the secret from being stored in plaintext.
--   **Key Generation**: A helper utility (`pylabhub-broker-keygen`) will be provided to generate a new key pair and encrypt the private key. To simplify initial setup, the Broker will, on first run, detect the absence of a key file, automatically generate a new one, and prompt for a password if running in an interactive terminal.
--   **Public Key Distribution**: The Broker will log its public key to the console on startup, allowing administrators to easily retrieve and distribute it to client applications.
+The central broker is responsible for tracking not just producers, but every individual consumer.
+-   **Consumer Heartbeats**: Each `DataBlockConsumer` instance must establish its own connection to the broker and send periodic heartbeats (`PYLABHUB_HB_REQ`).
+-   **Drop-off Detection**: If the broker does not receive a heartbeat from a consumer within a configured timeout, it will consider that consumer "dead".
+-   **Failure Broadcast**: The broker will then broadcast a special management message (e.g., `"PYLABHUB_CONS_DROP"`) containing the ID of the dropped consumer. Producers and other consumers can subscribe to this message to correctly manage resources, such as releasing a ring buffer slot that was held by the dead consumer.
+
+#### 3.2. Well-Behaved Consumer Rules
+
+A consumer of a `DataBlock` must adhere to the following protocol:
+1.  On creation, it must know the `shared_secret` to successfully map the memory. It then registers with the broker and begins sending heartbeats.
+2.  It subscribes to the appropriate Notification Channel.
+3.  Upon receiving a notification for a slot, it may acquire a read lock on that slot (`begin_consume`).
+4.  After it has finished processing the data, it **must** release the slot (`end_consume`) to make it available for future writes. Failure to do so will stall the pipeline.
+5.  On destruction, its destructor must cleanly unregister from the broker.
 
 ### 4. C++ API Design Principles
 
-The C++ API will be designed to be abstract, intuitive, and safe, hiding the underlying complexity of IPC and broker communication. The design will follow a factory pattern centered around a main `Hub` class.
-
--   **`Hub` Class**: The primary entry point for applications. An instance of this class will manage the connection to the Service Broker, handle authentication and heartbeats, and act as a factory for creating communication channels.
--   **Channel Classes**: The `Hub` class will provide methods to create or discover channels, returning RAII-style objects that manage the channel's lifecycle.
-    -   `SharedMemoryProducer`/`SharedMemoryConsumer`: For the High-Performance Channel. These classes will provide simple methods like `begin_publish()`, `end_publish()`, and `consume()` that transparently handle all underlying synchronization and memory management.
-    -   `ZmqPublisher`/`ZmqSubscriber`: For one-to-many message distribution.
-    -   `ZmqRequestServer`/`ZmqRequestClient`: For request-reply style command and control.
--   **Transparency**: The API will completely abstract away broker interactions (registration, discovery), key management, and synchronization primitives. The application developer will only interact with high-level concepts like "channels," "messages," and "data buffers."
+The API will be updated to reflect these robust, secure, and policy-driven concepts.
 
 ```cpp
-// A conceptual sketch of the proposed API
+// A conceptual sketch of the hardened, policy-based API
 namespace pylabhub::hub {
 
-class Hub {
+enum class DataBlockPolicy { Single, DoubleBuffer, RingBuffer };
+
+struct DataBlockConfig {
+    uint64_t shared_secret;
+    size_t structured_buffer_size;
+    size_t flexible_zone_size;
+    int ring_buffer_capacity; // Only for RingBufferPolicy
+};
+
+class MessageHub {
 public:
-    // Connects to broker, handles auth, and starts heartbeat thread.
-    static std::unique_ptr<Hub> connect(const BrokerConfig& config);
+    // Factory method takes a policy and secure config.
+    static std::unique_ptr<IDataBlockProducer> create_datablock_producer(
+        const std::string& name,
+        DataBlockPolicy policy,
+        const DataBlockConfig& config
+    );
+    // Consumer must know the secret to connect.
+    static std::unique_ptr<IDataBlockConsumer> find_datablock_consumer(
+        const std::string& name,
+        uint64_t shared_secret
+    );
+};
 
-    // High-Performance Channel
-    std::unique_ptr<SharedMemoryProducer> create_shm_producer(const std::string& name, size_t size);
-    std::unique_ptr<SharedMemoryConsumer> find_shm_consumer(const std::string& name);
-
-    // General-Purpose Channel (Request-Reply example)
-    std::unique_ptr<ZmqRequestServer> create_req_server(const std::string& service_name);
-    std::unique_ptr<ZmqRequestClient> find_req_client(const std::string& service_name);
-
-    // ... other ZMQ patterns
+// Consumers will be returned via policy-specific interfaces
+class IRingBufferConsumer : public IDataBlockConsumer {
+public:
+    virtual ReadSlot* begin_consume(uint64_t slot_index) = 0;
+    virtual void end_consume(ReadSlot* slot) = 0;
 };
 
 } // namespace pylabhub::hub
 ```
 
-### 5. Use Case: Real-time Experiment Control
+### 5. Future Work
 
-This framework directly addresses the scenario of real-time experiment integration:
--   **Service Registration**: An acquisition process starts and, via its `Hub` object, creates a `SharedMemoryProducer`, which automatically registers the channel with the central Service Broker.
--   **Service Discovery**: A GUI application uses its `Hub` object to find and create a `SharedMemoryConsumer`, which queries the Broker to get the connection details for the shared memory segment.
--   **Data Streaming**: The acquisition process uses the `SharedMemoryProducer` to publish the camera feed. The GUI uses the `SharedMemoryConsumer` to display it in real-time. The API handles all synchronization.
--   **Command and Control**: The GUI, through a `ZmqRequestClient`, sends commands (e.g., "change exposure time") to a `ZmqRequestServer` running in the acquisition process.
--   **State Logging**: A logger service subscribes to all registration and command messages on the Broker, recording a timestamped audit trail.
-
-## 6. Future Work
-
-With the core design principles established, future work will focus on implementation and refinement:
-
--   **Broker Implementation**: Implement the broker logic within the existing `hubshell` executable. This involves adding the ZeroMQ `ROUTER` loop, registry logic, and heartbeat mechanism to `hubshell.cpp`. Develop necessary key management utilities.
--   **C++ API Implementation**: Implement the full C++ API as outlined, ensuring it is cross-platform, robust, and well-documented. This includes the platform-specific wrappers for shared memory and synchronization primitives.
--   **Serialization**: While JSON is chosen for the General-Purpose Channel, and a hybrid static/dynamic model for the High-Performance Channel header, a lightweight binary format like MessagePack could be considered for the body of complex ZeroMQ messages if needed.
--   **Language Bindings**: Once the C++ core is stable, develop bindings for other languages, particularly Python, to maximize the Hub's utility in diverse environments.
+-   **Refactor `SharedMemoryHub.cpp`**: Refactor the implementation to create the base `DataBlock` infrastructure, security features, and the initial set of buffer management policies.
+-   **Broker Implementation**: Enhance the broker logic to handle consumer heartbeats and failure broadcasts.
+-   **API Implementation**: Implement the full policy-based C++ API, ensuring all security and coordination rules are enforced.
 
 ## Copyright
 

@@ -99,20 +99,8 @@
 
 #pragma once
 
-#include <atomic>
-#include <cstddef>
-#include <cstdint>
-#include <filesystem>
-#include <functional>
-#include <memory>
-#include <string>
-#include <string_view>
-
-#include <fmt/chrono.h>
-#include <fmt/format.h>
-
-#include "pylabhub_utils_export.h"
-#include "utils/Lifecycle.hpp" // For ModuleDef
+#include "plh_base.hpp"
+#include "Lifecycle.hpp"
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
 #ifndef LOGGER_FMT_BUFFER_RESERVE

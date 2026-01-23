@@ -10,17 +10,7 @@
  */
 
 // -- Debugging utilities: stack trace printing, panic and debug messages
-
 #pragma once
-#include "format_tools.hpp"
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <fmt/core.h>
-#include <fmt/format.h>
-#include <source_location>
-#include <string>
-#include <utility>
 
 namespace pylabhub::debug
 {
@@ -36,7 +26,7 @@ namespace pylabhub::debug
  *
  * Errors during stack trace capture or symbol resolution are reported to `stderr`.
  */
-void print_stack_trace() noexcept;
+PYLABHUB_UTILS_EXPORT void print_stack_trace() noexcept;
 
 /**
  * @brief Halts program execution with a fatal error message and prints a stack trace.

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "BaseFileSink.hpp"
 #include "Sink.hpp"
+#include "BaseFileSink.hpp"
+
 #include <filesystem>
 #include <string>
 
@@ -29,7 +30,7 @@ class RotatingFileSink : public Sink, private BaseFileSink
     ~RotatingFileSink() override;
 
     // --- Sink Interface ---
-    void write(const LogMessage &msg) override;
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override;
     void flush() override;
     std::string description() const override;
 

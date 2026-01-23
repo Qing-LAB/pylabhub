@@ -109,6 +109,12 @@ include(ProjectToolChainSetup)
 # ===========================================================================
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
+# Set the default visibility for symbols to 'hidden'. This is a best practice
+# that enables the PYLABHUB_UTILS_EXPORT macro to work correctly on Linux/macOS,
+# preventing symbol clashes between shared libraries and the executable.
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+# set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+
 # --- Set RPATH for staged/installed executables ---
 # This ensures that executables can find shared libraries in a relative path.
 # Binaries are in 'bin/', libraries are in 'lib/'. The RPATH should point

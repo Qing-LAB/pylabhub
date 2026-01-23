@@ -7,27 +7,14 @@
  * functionality of the FileLock utility. Each function encapsulates a specific
  * test scenario and is invoked by the main test runner.
  */
-#include "platform.hpp"
-
-#include <atomic>
-#include <barrier> // Add this line
-#include <chrono>
-#include <filesystem>
+#include <barrier>
 #include <fstream>
-#include <memory>
-#include <string>
-#include <system_error>
-#include <thread>
 
-// Third-party
-#include <gtest/gtest.h>
-
-// Project-specific
+#include "plh_datahub.hpp"
+#include "gtest/gtest.h"
 #include "filelock_workers.h"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
-#include "utils/FileLock.hpp"
-#include "utils/Logger.hpp"
 
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::utils;

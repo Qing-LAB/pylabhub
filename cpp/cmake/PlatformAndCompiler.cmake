@@ -160,16 +160,6 @@ if(MSVC)
   message(STATUS "")
 endif()
 
-# --- Sanitizer Support (MSVC) ---
-if(MSVC AND NOT PYLABHUB_USE_SANITIZER STREQUAL "None")
-  if(PYLABHUB_USE_SANITIZER STREQUAL "Address")
-    message(STATUS "*** Enabling MSVC Address sanitizer.")
-    add_compile_options(/fsanitize=address)
-  else()
-    message(WARNING "Sanitizer '${PYLABHUB_USE_SANITIZER}' is not supported with MSVC in this build script.")
-  endif()
-endif()
-
 # ===========================================================================
 # Clang-Tidy Static Analysis Integration
 #

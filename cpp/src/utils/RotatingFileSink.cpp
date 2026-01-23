@@ -1,12 +1,7 @@
-#include "RotatingFileSink.hpp"
-#include "Sink.hpp"
-#include "debug_info.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
+// File: RotatingFileSink.cpp
+#include "plh_base.hpp"
 
-#include <fmt/format.h>
-#include <iostream>
-#include <system_error>
+#include "RotatingFileSink.hpp"
 
 namespace pylabhub::utils
 {
@@ -33,7 +28,7 @@ RotatingFileSink::~RotatingFileSink()
     // BaseFileSink destructor will handle closing the file.
 }
 
-void RotatingFileSink::write(const LogMessage &msg)
+void RotatingFileSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
     if (!is_open())
         return;
@@ -47,14 +42,14 @@ void RotatingFileSink::write(const LogMessage &msg)
             return;
     }
 
-    auto formatted_message = format_message(msg);
-    BaseFileSink::write(formatted_message);
+    auto formatted_message = format_logmsg(msg, mode);
+    BaseFileSink::fwrite(formatted_message);
     m_current_size_bytes += formatted_message.length();
 }
 
 void RotatingFileSink::flush()
 {
-    BaseFileSink::flush();
+    BaseFileSink::fflush();
 }
 
 std::string RotatingFileSink::description() const
@@ -166,15 +161,15 @@ void RotatingFileSink::rotate()
     {
         open(base_path, m_use_flock);
         m_current_size_bytes = 0; // Reset size for the new file.
-        auto formatted_message = format_message(LogMessage{
+        auto formatted_message = format_logmsg(LogMessage{
             .timestamp = std::chrono::system_clock::now(),
             .process_id = pylabhub::platform::get_pid(),
             .thread_id = pylabhub::platform::get_native_thread_id(),
             .level = 5, // L_SYSTEM
             .body = pylabhub::format_tools::make_buffer("--- Log rotated successfully ---"),
-        });
-        BaseFileSink::write(formatted_message);
-        BaseFileSink::flush();
+        }, Sink::ASYNC_WRITE);
+        BaseFileSink::fwrite(formatted_message);
+        BaseFileSink::fflush();
         m_current_size_bytes += formatted_message.length();
     }
     catch (const std::system_error &e)

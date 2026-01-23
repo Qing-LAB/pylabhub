@@ -60,6 +60,9 @@ endif()
 # setup nlohmann_json target
 include(nlohmann_json)
 
+# setup msgpack target
+include(msgpack)
+
 # setup fmt target
 include(fmt)
 
@@ -68,6 +71,9 @@ include(libsodium)
 
 # setup libzmq target
 include(libzmq)
+
+# setup cppzmq target
+include(cppzmq)
 
 # setup XOPToolKit
 include(XOPToolKit)
