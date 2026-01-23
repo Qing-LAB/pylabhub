@@ -181,8 +181,61 @@ The `PythonLoader` provides a C-style, ABI-stable interface for managing an embe
 
 The library includes several header-only, RAII-style guards for managing concurrency and scope.
 
-*   **`ScopeGuard`**: A general-purpose guard that executes a callable object (lambda) upon scope exit. This is useful for ensuring cleanup actions are always performed, even if exceptions are thrown.
-    *   **Usage**: `auto guard = make_scope_guard([&]{ ... cleanup code ... });`
+*   **`ScopeGuard`**: A general-purpose RAII guard that robustly executes a callable object (like a lambda) upon scope exit. It is a critical tool for ensuring that cleanup actions are always performed, even when functions exit early due to exceptions. It enforces unique ownership of the cleanup action as it is movable but not copyable.
+
+    *   **Design and Features**:
+        *   The guard holds a callable and an `active` flag. The callable is executed by the destructor only if the guard is active.
+        *   It is best created with the `make_scope_guard` factory function, which simplifies template deduction.
+        *   The guard's state can be checked via an `explicit operator bool()`. This allows for idioms like `if (guard) { ... }`.
+        *   The cleanup action can be cancelled by calling `dismiss()` or its alias `release()`. This is useful when resource ownership is successfully transferred.
+
+    *   **Correct Usage**:
+        `ScopeGuard` is ideal for managing raw resources that lack their own RAII wrappers, such as C-style file handles, raw pointers, or complex application state.
+
+        ```cpp
+        #include "utils/scope_guard.hpp"
+
+        void process_resource() {
+            ResourceType* res = create_resource();
+
+            // The guard ensures the resource is destroyed even if an error occurs later.
+            auto guard = pylabhub::basics::make_scope_guard([&res]() {
+                if (res) {
+                    destroy_resource(res);
+                    res = nullptr;
+                }
+            });
+
+            // If any of these operations throw an exception, the guard guarantees
+            // that destroy_resource() is still called during stack unwinding.
+            res->do_something();
+            res->do_another_thing();
+
+            // If processing is successful, we can dismiss the guard if we are
+            // intentionally transferring ownership of the resource.
+            // guard.dismiss();
+        } // `guard` executes here if not dismissed, cleaning up the resource.
+        ```
+
+    *   **Exception Handling**:
+        *   To prevent program termination (`std::terminate`), the `ScopeGuard` destructor is `noexcept` and will swallow any exceptions thrown by its callable. The manual `invoke()` method behaves identically.
+        *   If you need to manually trigger the guard and handle potential exceptions, use the `invoke_and_rethrow()` method, which is *not* `noexcept` and will propagate any exceptions thrown by the callable.
+        *   **Best Practice**: Ensure cleanup logic is simple and non-throwing. If failure is possible within the cleanup action, handle it inside the callable (e.g., by logging an error) rather than letting an exception escape.
+
+    *   **Bad Practices and Pitfalls**:
+        *   **Dangling References**: Be extremely careful with lambda captures. Capturing a local variable by reference (`[&]`) that is destroyed before the guard executes will result in undefined behavior.
+            ```cpp
+            auto make_bad_guard() {
+                int local_var = 42;
+                // BAD: `local_var` will be destroyed before the returned guard runs.
+                return pylabhub::basics::make_scope_guard([&]() {
+                    // Accessing `local_var` here is a use-after-free error.
+                    std::cout << local_var;
+                });
+            } // Undefined Behavior when the returned guard is destructed!
+            ```
+        *   **Premature Dismissal**: Only call `dismiss()` when you are intentionally canceling the cleanup action, for example after successfully transferring ownership of a resource.
+        *   **Misunderstanding Move Semantics**: When a `ScopeGuard` is moved, it becomes inactive. The moved-to guard takes over responsibility. The destructor of a moved-from guard has no effect.
 
 *   **`AtomicGuard`**: A fast, stateless, spinlock-like guard for protecting critical sections in high-contention, multi-threaded scenarios. It operates on an `AtomicOwner` object.
     *   **Usage**: `AtomicOwner owner; ... AtomicGuard guard(&owner, /*tryAcquire=*/true); if (guard.active()) { ... }`
