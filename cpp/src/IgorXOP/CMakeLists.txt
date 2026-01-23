@@ -111,6 +111,7 @@ if(DEFINED PLATFORM_APPLE)
     # which would break it on any other machine.
     BUILD_WITH_INSTALL_RPATH FALSE
     INSTALL_RPATH ""
+    CXX_VISIBILITY_PRESET "default" # Ensure symbols are exported by default for this target
   )
 elseif(DEFINED PLATFORM_WIN64)
   # On Windows, XOPs are standard DLLs. Using MODULE accurately describes
@@ -174,10 +175,31 @@ endif()
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)
   message(STATUS "** Sanitizer detected, adding compile flags to ${XOP_TARGET}.")
-  target_compile_options(${XOP_TARGET} PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
   # A shared module (plugin) should not link the sanitizer runtime directly.
   # The host application is responsible for providing the runtime. Linking it
   # here would cause conflicts if the host also provides it.
+endif()
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding to ${XOP_TARGET} with compilation flags.")
+  target_compile_options(${XOP_TARGET} PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  # If sanitizer is enabled, and a runtime path is found, explicitly link to it.
+  # This is necessary when a shared library's objects are compiled with sanitizer
+  # instrumentation, as the shared library itself needs to resolve these symbols.
+  if(PYLABHUB_SANITIZER_RUNTIME_PATH)
+    if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
+      message(STATUS "** The sanitizer is a dynamic lib, we will link ${XOP_TARGET} to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      target_link_libraries(${XOP_TARGET} PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+    else()
+      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
+        message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with ${XOP_TARGET} to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+        target_link_libraries(${XOP_TARGET} PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      else()
+        message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to ${XOP_TARGET}. Please make sure your final executive that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+        message(STATUS "")
+      endif()
+    endif()
+  endif()
 endif()
 
 # -------------------------
