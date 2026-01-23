@@ -187,5 +187,44 @@ The library includes several header-only, RAII-style guards for managing concurr
 *   **`AtomicGuard`**: A fast, stateless, spinlock-like guard for protecting critical sections in high-contention, multi-threaded scenarios. It operates on an `AtomicOwner` object.
     *   **Usage**: `AtomicOwner owner; ... AtomicGuard guard(&owner, /*tryAcquire=*/true); if (guard.active()) { ... }`
 
-*   **`RecursionGuard`**: A thread-local guard to detect and prevent re-entrant function calls on a per-object basis.
-    *   **Usage**: `if (RecursionGuard::is_recursing(this)) { return; } RecursionGuard guard(this);`
+*   **`RecursionGuard`**: A thread-local guard to detect and prevent unwanted re-entrant function calls on a per-object basis. It works by tracking object pointers on a thread's call stack.
+
+    *   **Key Features & Semantics**:
+        *   **Thread-Local**: Each thread has its own independent recursion stack. A guard in one thread has no effect on another.
+        *   **Object-Specific**: The guard is associated with a specific key (e.g., a `this` pointer), allowing it to track recursion on a per-instance basis.
+        *   **Non-LIFO Support**: Correctly handles cases where guards are destroyed out of order (e.g., when managed by `std::unique_ptr`).
+        *   **Movable**: Supports move construction, allowing it to be created and returned from factory functions. It is **not** move-assignable.
+
+    *   **Primary Use Case**: Preventing stack overflows from infinite recursion in complex call chains. This is especially useful in callback-driven systems or when processing graph-like data structures where call cycles can occur.
+
+        ```cpp
+        #include "plh_base.hpp" // Provides RecursionGuard
+
+        class Node {
+        public:
+            void process() {
+                // Prevent infinite loops if nodes form a cycle (e.g., A->B->A)
+                if (pylabhub::basics::RecursionGuard::is_recursing(this)) {
+                    // Log an error or simply return
+                    return;
+                }
+                // The guard is active for the remainder of this scope.
+                pylabhub::basics::RecursionGuard guard(this);
+
+                // ... process this node and call process() on neighbors ...
+            }
+        };
+        ```
+
+    *   **Notes on Usage and Potential Issues**:
+        *   **Exception Handling**: The constructor can throw `std::bad_alloc` if memory allocation for the thread-local stack fails. This is most likely on the first use in a thread or with very deep recursion. In memory-critical applications, wrap the guard's creation in a `try...catch` block.
+            ```cpp
+            try {
+                pylabhub::basics::RecursionGuard guard(this);
+                // ... proceed ...
+            } catch (const std::bad_alloc& e) {
+                // Handle allocation failure: log, release resources, etc.
+            }
+            ```
+        *   **Pointer Lifetime (Dangling Pointers)**: The `key` pointer passed to the guard's constructor **must** remain valid for the guard's entire lifetime. Passing a pointer to a local variable that goes out of scope before the guard is a serious bug that will lead to undefined behavior. Using `this` or pointers to heap-allocated objects is safe.
+        *   **Not for Cross-Thread Protection**: This guard does not prevent race conditions. It only detects recursion *within a single thread*. Use a `std::mutex` or `AtomicGuard` for protecting shared data from simultaneous access by multiple threads.

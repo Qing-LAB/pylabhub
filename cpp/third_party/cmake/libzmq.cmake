@@ -134,19 +134,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] No sanitizer explicitly enabled for libzmq.")
   endif()
 
-  # --- Platform-specific POLLER configuration ---
-  # Explicitly set the POLLER type based on the detected platform for optimal performance.
-  if(PLATFORM_LINUX)
-    set(POLLER "epoll" CACHE STRING "Optimal POLLER for Linux" FORCE)
-    message(STATUS "[pylabhub-third-party] Setting POLLER to 'epoll' for Linux.")
-  elseif(PLATFORM_APPLE)
-    set(POLLER "kqueue" CACHE STRING "Optimal POLLER for macOS" FORCE)
-    message(STATUS "[pylabhub-third-party] Setting POLLER to 'kqueue' for macOS.")
-  else()
-    # For other platforms (e.g., Windows), libzmq's internal CMake typically handles intelligent defaults.
-    # We will let its internal logic determine the best POLLER if not explicitly set by user.
-    message(STATUS "[pylabhub-third-party] Letting libzmq autodetect POLLER for current platform.")
-  endif()
+
 
   # ---------------------------
   # Variant selection: static/shared
@@ -318,26 +306,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   # --- 5. Create wrapper target and define usage requirements ---
   # This provides a stable `pylabhub::third_party::zmq` for consumers.
   # ---------------------------
-  _expose_wrapper(pylabhub_zmq pylabhub::third_party::zmq)
+  _expose_wrapper(pylabhub_libzmq pylabhub::third_party::libzmq)
 
   # --- 5b. Install the wrapper target for export ---
-  # This ensures that pylabhub_zmq is included in the pylabhubTargets export set,
+  # This ensures that pylabhub_libzmq is included in the pylabhubTargets export set,
   # allowing other projects (or other targets within this project) to find its
   # interface properties (like include directories and link libraries).
-  install(TARGETS pylabhub_zmq EXPORT pylabhubTargets)
+  install(TARGETS pylabhub_libzmq EXPORT pylabhubTargets)
 
   if(_zmq_canonical_target)
     # Add a dependency to ensure libsodium is built before libzmq.
     add_dependencies(${_zmq_canonical_target} libsodium_external)
 
     # Binary library case: Link the wrapper to the concrete target.
-    target_link_libraries(pylabhub_zmq INTERFACE ${_zmq_canonical_target})
-    message(STATUS "[pylabhub-third-party] Linking pylabhub_zmq -> ${_zmq_canonical_target}")
+    target_link_libraries(pylabhub_libzmq INTERFACE ${_zmq_canonical_target})
+    message(STATUS "[pylabhub-third-party] Linking pylabhub_libzmq -> ${_zmq_canonical_target}")
   else()
     # This should not happen for libzmq unless the build is misconfigured.
     message(WARNING "[pylabhub-third-party] No canonical binary target found for libzmq. Consumers may fail to link.")
     # Manually add include directory as a fallback.
-    target_include_directories(pylabhub_zmq INTERFACE
+    target_include_directories(pylabhub_libzmq INTERFACE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include>
       $<INSTALL_INTERFACE:include>
     )
