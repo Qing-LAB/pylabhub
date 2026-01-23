@@ -48,12 +48,8 @@
 */
 #include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
-#include "plh_platform.hpp"
-#include "storage.hpp"
-#include "storage.hpp"
-#include "plh_service.hpp"
-#include "logging.hpp"
-#include <fmt/format.h>
+
+#include "plh_datahub.hpp"
 
 // Global Variables
 static int gCallSpinProcess = 1; // Set to 1 to all user abort (cmd dot) and background processing.

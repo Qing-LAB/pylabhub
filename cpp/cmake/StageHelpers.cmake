@@ -261,13 +261,16 @@ function(pylabhub_get_library_staging_commands)
     set(RUNTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
     set(LINKTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/lib")
   endif()
-     
+  
+  message(STATUS "** DEBUG: pylabhub_get_library_staging_commands called for target ${ARG_TARGET}")
+  message(STATUS "** DEBUG: RUNETIME_DEST_DIR set as: ${RUNTIME_DEST_DIR}")
+  message(STATUS "** DEBUG: LINKTIME_DEST_DIR set as: ${LINKTIME_DEST_DIR}")
   get_target_property(TGT_TYPE ${ARG_TARGET} TYPE)
 
   set(commands_list "")
 
   if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
-    if(PLATFORM_WIN64)
+    if(PYLABHUB_IS_WINDOWS)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
       message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
@@ -283,16 +286,20 @@ function(pylabhub_get_library_staging_commands)
         list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
       endif()
-    else()
+    else() # Non-Windows platforms (Linux, macOS)
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
-      # runtime and linking. Stage it to the specified destination (e.g., 'bin').
-      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")      
+      # runtime and linking. Stage it to the specified destination.
+      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
+
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
-      # On Linux, also place a copy/symlink in the 'lib' directory for consumers to find during linking.
-      if(PLATFORM_LINUX)
+      
+      # On Linux and macOS, also place a copy/symlink in the 'lib' directory
+      # if the runtime destination is not already 'lib'. This ensures the library
+      # is discoverable for linking and also at runtime if needed via default search paths.
+      if(PYLABHUB_IS_POSIX) # <--- Correctly handle macOS here
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
-        message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
+          message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
           list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
                "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
         endif()
