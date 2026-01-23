@@ -4,10 +4,7 @@
  * @file RecursionGuard.hpp
  * @brief A thread-local, RAII-based guard to detect and prevent re-entrant calls.
  ******************************************************************************/
-
-#include <algorithm> // for std::find
-#include <type_traits>
-#include <vector>
+// Header only for recursion guard
 
 namespace pylabhub::basics
 {

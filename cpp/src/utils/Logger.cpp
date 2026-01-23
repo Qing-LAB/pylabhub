@@ -2,25 +2,20 @@
  * @file Logger.cpp
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
-#include "utils/Logger.hpp"
-#include "RotatingFileSink.hpp"
-#include "Sink.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "utils/Lifecycle.hpp"
 
-#include <chrono>
 #include <condition_variable>
-#include <cstdio>
 #include <deque>
 #include <functional>
 #include <future>
-#include <memory>
-#include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <variant>
-#include <vector>
+
+ #include "plh_base.hpp"
+#include "Sink.hpp"
+#include "RotatingFileSink.hpp"
+
+#include "utils/Logger.hpp"
+#include "utils/Lifecycle.hpp"
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
@@ -31,6 +26,7 @@ typedef SSIZE_T ssize_t;
 #include <fmt/format.h>
 
 #ifdef PLATFORM_WIN64
+#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #else
@@ -194,7 +190,7 @@ class CallbackDispatcher
 class ConsoleSink : public Sink
 {
   public:
-    void write(const LogMessage &msg) override { fmt::print(stderr, "{}", format_message(msg)); }
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override { fmt::print(stderr, "{}", format_logmsg(msg, mode)); }
     void flush() override { fflush(stderr); }
     std::string description() const override { return "Console"; }
 };
@@ -217,9 +213,12 @@ class FileSink : public Sink, private BaseFileSink
 
     ~FileSink() override = default;
 
-    void write(const LogMessage &msg) override { BaseFileSink::write(format_message(msg)); }
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override { 
+        auto strmsg = format_logmsg(msg, mode);
+        BaseFileSink::fwrite(strmsg); 
+    }
 
-    void flush() override { BaseFileSink::flush(); }
+    void flush() override { BaseFileSink::fflush(); }
 
     std::string description() const override { return "File: " + path().string(); }
 };
@@ -230,9 +229,10 @@ class SyslogSink : public Sink
   public:
     SyslogSink(const char *ident, int option, int facility) { openlog(ident, option, facility); }
     ~SyslogSink() override { closelog(); }
-    void write(const LogMessage &msg) override
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
     {
-        syslog(level_to_syslog_priority(msg.level), "%.*s", (int)msg.body.size(), msg.body.data());
+        auto strmsg = format_logmsg(msg, mode);
+        syslog(level_to_syslog_priority(msg.level), "%.*s", (int)strmsg.size(), strmsg.data());
     }
     void flush() override {}
     std::string description() const override { return "Syslog"; }
@@ -278,7 +278,7 @@ class EventLogSink : public Sink
         if (handle_)
             DeregisterEventSource(handle_);
     }
-    void write(const LogMessage &msg) override
+    void write(const LogMessage &msg, Sink::WRITE_MODE /*mode*/) override
     {
         if (!handle_)
             return;
@@ -354,8 +354,7 @@ using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorComman
                              SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
 
 // --- Promise Helper Functions ---
-template <typename T>
-void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
+template <typename T> void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
 {
     if (!p)
         return;
@@ -370,8 +369,7 @@ void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
 }
 
 template <typename T>
-void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p,
-                                       std::exception_ptr ep)
+void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p, std::exception_ptr ep)
 {
     if (!p)
         return;
@@ -397,18 +395,25 @@ struct Logger::Impl
     void shutdown();
 
     // Ordered for optimal packing as suggested by clang-tidy:
-    // error_callback_, worker_thread_, sink_, m_max_queue_size, m_messages_dropped, m_dropping_since, queue_, cv_, queue_mutex_, m_sink_mutex, callback_dispatcher_, level_, shutdown_requested_, shutdown_completed_, m_log_sink_messages_enabled_, m_was_dropping
+    // error_callback_, worker_thread_, sink_, m_max_queue_size, m_messages_dropped,
+    // m_dropping_since, queue_, cv_, queue_mutex_, m_sink_mutex, callback_dispatcher_, level_,
+    // shutdown_requested_, shutdown_completed_, m_log_sink_messages_enabled_, m_was_dropping
 
     std::function<void(const std::string &)> error_callback_; // Size: pointer (8 bytes)
-    std::thread worker_thread_;                               // Size: depends on implementation (e.g., 8 bytes on x64 for pointer to thread data)
-    std::unique_ptr<Sink> sink_;                              // Size: pointer (8 bytes)
-    size_t m_max_queue_size{10000};                           // Size: 8 bytes (on x64)
-    std::chrono::system_clock::time_point m_dropping_since;   // Size: depends on implementation (e.g., 8 bytes for duration)
-    std::vector<Command> queue_;                              // Size: 24 bytes (on x64 for pointer, size, capacity)
-    std::condition_variable cv_;                              // Size: depends on implementation (e.g., 40 bytes)
-    std::mutex queue_mutex_;                                  // Size: depends on implementation (e.g., 40 bytes)
-    std::mutex m_sink_mutex;                                  // Size: depends on implementation (e.g., 40 bytes)
-    CallbackDispatcher callback_dispatcher_;                  // Size: depends on implementation (e.g., 104 bytes in CallbackDispatcher: std::deque (24), std::mutex (40), std::condition_variable (40), std::thread (8), std::atomic<bool> (1))
+    std::thread worker_thread_; // Size: depends on implementation (e.g., 8 bytes on x64 for pointer
+                                // to thread data)
+    std::unique_ptr<Sink> sink_;    // Size: pointer (8 bytes)
+    size_t m_max_queue_size{10000}; // Size: 8 bytes (on x64)
+    std::chrono::system_clock::time_point
+        m_dropping_since;        // Size: depends on implementation (e.g., 8 bytes for duration)
+    std::vector<Command> queue_; // Size: 24 bytes (on x64 for pointer, size, capacity)
+    std::condition_variable cv_; // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex queue_mutex_;     // Size: depends on implementation (e.g., 40 bytes)
+    std::mutex m_sink_mutex;     // Size: depends on implementation (e.g., 40 bytes)
+    CallbackDispatcher callback_dispatcher_; // Size: depends on implementation (e.g., 104 bytes in
+                                             // CallbackDispatcher: std::deque (24), std::mutex
+                                             // (40), std::condition_variable (40), std::thread (8),
+                                             // std::atomic<bool> (1))
     std::atomic<Logger::Level> level_{Logger::Level::L_INFO}; // Size: 4 bytes (for int)
     std::atomic<bool> shutdown_requested_{false};             // Size: 1 byte
     std::atomic<bool> shutdown_completed_{false};             // Size: 1 byte
@@ -446,8 +451,7 @@ void Logger::Impl::reject_command_due_to_shutdown(Command &cmd)
         [](auto &&arg)
         {
             using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, SetSinkCommand> ||
-                          std::is_same_v<T, FlushCommand> ||
+            if constexpr (std::is_same_v<T, SetSinkCommand> || std::is_same_v<T, FlushCommand> ||
                           std::is_same_v<T, SetErrorCallbackCommand> ||
                           std::is_same_v<T, SetLogSinkMessagesCommand> ||
                           std::is_same_v<T, SinkCreationErrorCommand>)
@@ -502,6 +506,9 @@ void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue;
     std::optional<LogMessage> recovery_message;
+    bool create_recovery_msg = false;
+    size_t dropped_count = 0;
+    std::chrono::system_clock::time_point dropping_since;
 
     while (true)
     {
@@ -509,10 +516,39 @@ void Logger::Impl::worker_loop()
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
             local_queue.swap(queue_);
+
+            if (m_was_dropping.exchange(false, std::memory_order_relaxed))
+            {
+                dropped_count = m_messages_dropped.exchange(0, std::memory_order_relaxed);
+                if (dropped_count > 0)
+                {
+                    dropping_since = m_dropping_since;
+                    create_recovery_msg = true;
+                }
+            }
+
             if (shutdown_requested_.load())
             {
                 g_logger_state.store(LoggerState::ShuttingDown, std::memory_order_release);
             }
+        }
+
+        if (create_recovery_msg)
+        {
+            const auto now = std::chrono::system_clock::now();
+            const auto duration =
+                std::chrono::duration_cast<std::chrono::duration<double>>(now - dropping_since)
+                    .count();
+
+            recovery_message.emplace(
+                LogMessage{.timestamp = now,
+                           .process_id = pylabhub::platform::get_pid(),
+                           .thread_id = pylabhub::platform::get_native_thread_id(),
+                           .level = static_cast<int>(Logger::Level::L_WARNING),
+                           .body = make_buffer("Logger dropped {} messages over {:.2f}s due to "
+                                               "full queue",
+                                               dropped_count, duration)});
+            create_recovery_msg = false; // Reset flag
         }
 
         // --- Find last SetSinkCommand ---
@@ -530,40 +566,27 @@ void Logger::Impl::worker_loop()
         {
             try
             {
+                // If a recovery message was generated, log it before the first real message.
+                if (recovery_message)
+                {
+                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+                    if (sink_)
+                    {
+                        sink_->write(*recovery_message, Sink::ASYNC_WRITE);
+                    }
+                    recovery_message.reset();
+                }
+
                 // Fast path: LogMessage (very common) — use get_if to avoid heavyweight
                 // template dispatch.
                 if (auto *msg = std::get_if<LogMessage>(&local_queue[i]))
                 {
-                    // Detect recovery and prepare message, but don't log it yet.
-                    if (m_was_dropping.exchange(false, std::memory_order_relaxed))
-                    {
-                        const size_t dropped_count =
-                            m_messages_dropped.exchange(0, std::memory_order_relaxed);
-                        if (dropped_count > 0)
-                        {
-                            const auto now = std::chrono::system_clock::now();
-                            const auto duration =
-                                std::chrono::duration_cast<std::chrono::duration<double>>(
-                                    now - m_dropping_since)
-                                    .count();
-
-                            recovery_message.emplace(
-                                LogMessage{.timestamp = now,
-                                           .process_id = pylabhub::platform::get_pid(),
-                                           .thread_id = pylabhub::platform::get_native_thread_id(),
-                                           .level = static_cast<int>(Logger::Level::L_WARNING),
-                                           .body = make_buffer("Logger dropped {} messages over "
-                                                               "{:.2f}s due to full queue",
-                                                               dropped_count, duration)});
-                        }
-                    }
-
                     // Write message if level allows.
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                     if (sink_ &&
                         msg->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
                     {
-                        sink_->write(*msg);
+                        sink_->write(*msg, Sink::ASYNC_WRITE);
                     }
                     continue; // done with this item; keep ordering
                 }
@@ -648,7 +671,7 @@ void Logger::Impl::worker_loop()
         {
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
             if (sink_)
-                sink_->write(*recovery_message);
+                sink_->write(*recovery_message, Sink::ASYNC_WRITE);
             recovery_message.reset();
         }
 
@@ -670,18 +693,21 @@ void Logger::Impl::worker_loop()
                                        .process_id = pylabhub::platform::get_pid(),
                                        .thread_id = pylabhub::platform::get_native_thread_id(),
                                        .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                       .body = make_buffer("Switching log sink to: {}", new_desc)});
+                                       .body = make_buffer("Switching log sink to: {}", new_desc)},
+                            Sink::ASYNC_WRITE);
                         sink_->flush();
                     }
                     sink_ = std::move(sink_cmd->new_sink);
                     if (sink_)
                     {
-                        sink_->write(LogMessage{
-                            .timestamp = std::chrono::system_clock::now(),
-                            .process_id = pylabhub::platform::get_pid(),
-                            .thread_id = pylabhub::platform::get_native_thread_id(),
-                            .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                            .body = make_buffer("Log sink switched from: {}", old_desc)});
+                        sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                                .process_id = pylabhub::platform::get_pid(),
+                                                .thread_id =
+                                                    pylabhub::platform::get_native_thread_id(),
+                                                .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                                .body = make_buffer("Log sink switched from: {}",
+                                                                    old_desc)},
+                                     Sink::ASYNC_WRITE);
                     }
                 }
                 else
@@ -721,7 +747,8 @@ void Logger::Impl::worker_loop()
                                         .process_id = pylabhub::platform::get_pid(),
                                         .thread_id = pylabhub::platform::get_native_thread_id(),
                                         .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                        .body = make_buffer("Logger is shutting down.")});
+                                        .body = make_buffer("Logger is shutting down.")},
+                             Sink::ASYNC_WRITE);
                 sink_->flush();
             }
             queue_.clear(); // Ensure queue is explicitly cleared before exit (final safeguard)
@@ -1074,7 +1101,7 @@ void Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
                                            .process_id = pylabhub::platform::get_pid(),
                                            .thread_id = pylabhub::platform::get_native_thread_id(),
                                            .level = static_cast<int>(lvl),
-                                           .body = std::move(body)});
+                                           .body = std::move(body)}, Sink::SYNC_WRITE);
         }
     }
 }

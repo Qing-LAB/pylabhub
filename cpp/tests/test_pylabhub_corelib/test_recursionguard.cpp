@@ -8,16 +8,10 @@
  * per-object basis. The tests cover single-threaded recursion, independence between
  * objects, non-LIFO destruction order, and thread safety.
  */
-#include <atomic>
-#include <functional>
 #include <future>
-#include <gtest/gtest.h>
-#include <memory>
-#include <thread>
-#include <vector>
 
-#include "platform.hpp"
-#include "recursion_guard.hpp"
+#include "plh_base.hpp"
+#include "gtest/gtest.h"
 
 using pylabhub::basics::RecursionGuard;
 

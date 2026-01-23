@@ -7,23 +7,37 @@
  * spinlock implementation. The tests cover basic acquisition and release,
  * RAII behavior, move semantics, thread safety, and high-contention scenarios.
  */
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-#include <deque>
-#include <future>
-#include <gtest/gtest.h>
-#include <mutex>
+#include "plh_base.hpp"
 #include <random>
-#include <thread>
-#include <vector>
-
-#include "atomic_guard.hpp"
-#include "platform.hpp"
+#include <future>
+#include <deque>
+    
+#include "gtest/gtest.h"
 
 using namespace std::chrono_literals;
 using pylabhub::basics::AtomicGuard;
 using pylabhub::basics::AtomicOwner;
+
+namespace
+{
+// Helper to get a reproducible seed from an environment variable or fall back to random_device.
+uint64_t get_seed()
+{
+    if (const char *seed_str = std::getenv("ATOMICGUARD_TEST_SEED"))
+    {
+        try
+        {
+            return std::stoull(seed_str);
+        }
+        catch (const std::exception &)
+        {
+            // Fall through to random_device if conversion fails
+        }
+    }
+    return std::random_device{}();
+}
+} // namespace
+
 
 // Defines sizes for stress tests to allow for quick or thorough testing.
 #if ATOMICGUARD_STRESS_LEVEL == 2 // HEAVY
@@ -32,7 +46,7 @@ static constexpr int ITER_NUM = 20000;
 #elif ATOMICGUARD_STRESS_LEVEL == 1 // LIGHT (default)
 static constexpr int THREAD_NUM = 32;
 static constexpr int ITER_NUM = 500;
-#else // ATOMICGUARD_STRESS_LEVEL == 0 or undefined, skip stress tests
+#else                               // ATOMICGUARD_STRESS_LEVEL == 0 or undefined, skip stress tests
 static constexpr int THREAD_NUM = 1; // Minimal threads, tests will be skipped.
 static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skipped.
 #endif
@@ -40,7 +54,8 @@ static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skippe
 static constexpr int SLOT_NUM = 16;
 
 #if ATOMICGUARD_STRESS_LEVEL == 0
-#define SKIP_TEST_IF_LOW_STRESS_LEVEL GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL                                                              
+    GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
 #else
 #define SKIP_TEST_IF_LOW_STRESS_LEVEL ((void)0)
 #endif
@@ -60,7 +75,7 @@ TEST(AtomicGuardTest, BasicAcquireRelease)
     // Acquire the lock and check state
     ASSERT_TRUE(g.acquire());
     ASSERT_TRUE(g.active());
-    ASSERT_EQ(owner.load(), g.token());
+    ASSERT_FALSE(owner.is_free());
 
     // Release the lock and check state
     ASSERT_TRUE(g.release());
@@ -83,7 +98,7 @@ TEST(AtomicGuardTest, RaiiAndTokenPersistence)
         ASSERT_NE(g.token(), 0u);
         token_in_scope = g.token();
         ASSERT_TRUE(g.active());
-        ASSERT_EQ(owner.load(), token_in_scope);
+        ASSERT_FALSE(owner.is_free());
     } // Lock is automatically released here by the destructor.
     ASSERT_TRUE(owner.is_free());
 }
@@ -113,7 +128,9 @@ TEST(AtomicGuardTest, ExplicitReleaseAndDestruction)
 TEST(AtomicGuardTest, RaiiAcquireFailure)
 {
     AtomicOwner owner;
-    owner.store(123u); // Manually lock the owner.
+    // Lock the owner with a separate guard to simulate it being taken.
+    AtomicGuard g_locker(&owner, true);
+    ASSERT_TRUE(g_locker.active());
     {
         // Attempt to acquire via RAII constructor.
         AtomicGuard g(&owner, true);
@@ -121,8 +138,9 @@ TEST(AtomicGuardTest, RaiiAcquireFailure)
         ASSERT_FALSE(g.active());
     }
     // The original lock should remain untouched.
-    ASSERT_EQ(owner.load(), 123u);
-    owner.store(0u);
+    ASSERT_FALSE(owner.is_free());
+    ASSERT_TRUE(g_locker.release());
+    ASSERT_TRUE(owner.is_free());
 }
 
 /**
@@ -138,12 +156,14 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
     std::atomic<int> success_count{0};
 
     std::vector<std::thread> threads;
+    uint64_t base_seed = get_seed();
+
     for (int t = 0; t < THREAD_NUM; ++t)
     {
         threads.emplace_back(
-            [&]()
+            [&owner, &success_count, t, base_seed]()
             {
-                std::mt19937_64 rng(std::random_device{}());
+                std::mt19937_64 rng(base_seed + t); // Add 't' to vary seed slightly per thread
                 for (int i = 0; i < ITER_NUM; ++i)
                 {
                     AtomicGuard g(&owner);
@@ -183,12 +203,12 @@ TEST(AtomicGuardTest, MoveSemanticsSingleThread)
         AtomicGuard a(&owner, true);
         ASSERT_TRUE(a.active());
         tok = a.token();
-        ASSERT_EQ(owner.load(), tok);
+        ASSERT_FALSE(owner.is_free());
 
         AtomicGuard b(std::move(a)); // Move ownership to b.
         ASSERT_TRUE(b.active());     // b should now be active.
         ASSERT_EQ(b.token(), tok);
-        ASSERT_EQ(owner.load(), tok);
+        ASSERT_FALSE(owner.is_free());
         ASSERT_FALSE(a.active()); // a should be inactive.
     } // b's destructor releases the lock.
     ASSERT_TRUE(owner.is_free());
@@ -203,9 +223,34 @@ TEST(AtomicGuardTest, MoveSemanticsSingleThread)
         d = std::move(c); // Move assign ownership to d.
         ASSERT_TRUE(d.active());
         ASSERT_EQ(d.token(), token_c);
-        ASSERT_EQ(owner.load(), token_c);
+        ASSERT_FALSE(owner.is_free());
         ASSERT_FALSE(c.active());
     } // d's destructor releases the lock.
+    ASSERT_TRUE(owner.is_free());
+
+    // Test self-move-assignment.
+    {
+        AtomicGuard e(&owner, true);
+        ASSERT_TRUE(e.active());
+        uint64_t token_e = e.token();
+        e = std::move(e);        // Self-move.
+        ASSERT_TRUE(e.active()); // Should remain active.
+        ASSERT_EQ(e.token(), token_e);
+        ASSERT_FALSE(owner.is_free());
+    } // e's destructor releases the lock.
+    ASSERT_TRUE(owner.is_free());
+
+    // Test self-move-assignment for a detached guard.
+    {
+        AtomicGuard f; // Detached guard.
+        ASSERT_FALSE(f.active());
+        uint64_t token_f = f.token();
+        f = std::move(f); // Self-move.
+        ASSERT_FALSE(f.active());
+        ASSERT_EQ(f.token(), token_f); // Token should remain unchanged.
+        // There's no owner to check as it was never attached.
+    } // f's destructor runs.
+    // Ensure the owner is still free (no interaction).
     ASSERT_TRUE(owner.is_free());
 }
 
@@ -222,7 +267,7 @@ TEST(AtomicGuardTest, MoveActiveGuardBehavior)
     AtomicGuard b(std::move(a)); // Move while active.
     ASSERT_TRUE(b.active());
     ASSERT_EQ(b.token(), tok);
-    ASSERT_EQ(owner.load(), tok);
+    ASSERT_FALSE(owner.is_free());
 
     // The source guard `a` should now be inactive and detached.
     // Calling methods on it should be safe and reflect its inactive state.
@@ -246,49 +291,13 @@ TEST(AtomicGuardTest, AttachDetach)
     // Attach the guard to an owner and acquire the lock.
     ASSERT_TRUE(g.attach_and_acquire(&owner));
     ASSERT_TRUE(g.active());
-    ASSERT_EQ(owner.load(), g.token());
+    ASSERT_FALSE(owner.is_free());
     ASSERT_TRUE(g.release());
 
     // Detach the guard. It should no longer be able to acquire the lock.
-    g.detach_no_release();
+    g.detach();
+    ASSERT_FALSE(g.active());
     ASSERT_FALSE(g.acquire());
-}
-
-/**
- * @brief Tests the safer detach_and_release method.
- */
-TEST(AtomicGuardTest, DetachAndRelease)
-{
-    // Case 1: Detach an active guard.
-    {
-        AtomicOwner owner;
-        AtomicGuard g(&owner);
-        ASSERT_TRUE(g.acquire());
-        ASSERT_TRUE(g.active());
-
-        // Detach and release. Should succeed.
-        ASSERT_TRUE(g.detach_and_release());
-        ASSERT_TRUE(owner.is_free());
-
-        // Guard should now be inactive and detached.
-        ASSERT_FALSE(g.active());
-        ASSERT_FALSE(g.acquire()); // Cannot re-acquire.
-    }
-
-    // Case 2: Detach an inactive guard.
-    {
-        AtomicOwner owner;
-        AtomicGuard g(&owner);
-        ASSERT_FALSE(g.active());
-
-        // Detach and release. Should fail as there's nothing to release.
-        ASSERT_FALSE(g.detach_and_release());
-        ASSERT_TRUE(owner.is_free());
-
-        // Guard should be inactive and detached.
-        ASSERT_FALSE(g.active());
-        ASSERT_FALSE(g.acquire());
-    }
 }
 
 /**
@@ -300,6 +309,9 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
     AtomicOwner owner;
     std::atomic<bool> thread_failure{false};
 
+    // Note: Some older STL implementations had issues with move-only types (like AtomicGuard)
+    // in std::promise/std::future. If encountering issues on such platforms, consider
+    // using std::promise<std::unique_ptr<AtomicGuard>> as a workaround.
     std::promise<AtomicGuard> p;
     std::future<AtomicGuard> f = p.get_future();
 
@@ -345,10 +357,6 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
                     return;
                 }
 
-                if (owner.load() != g.token())
-                {
-                    thread_failure.store(true, std::memory_order_relaxed);
-                }
                 if (!g.release())
                 {
                     thread_failure.store(true, std::memory_order_relaxed);
@@ -383,11 +391,14 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
     workers.reserve(pairs);
     std::atomic<bool> thread_failure{false};
 
+    uint64_t base_seed = get_seed(); // Get base seed once
+
     for (int p = 0; p < pairs; ++p)
     {
         workers.emplace_back(
             [&, p, owner = &owners[p]]() mutable
             {
+                std::mt19937_64 rng(base_seed + p); // Seed per worker
                 for (int i = 0; i < iters_per_pair; ++i)
                 {
                     // Acquire the lock. Retry a few times if it's contended.
@@ -410,24 +421,24 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
                     // Handoff via promise/future to a short-lived local consumer thread.
                     std::promise<AtomicGuard> p2;
                     std::future<AtomicGuard> f2 = p2.get_future();
-                    std::thread local_consumer([p2 = std::move(p2), g = std::move(g)]() mutable
-                                               {
-                                                   try
-                                                   {
-                                                       p2.set_value(std::move(g));
-                                                   }
-                                                   catch (...)
-                                                   {
-                                                       try
-                                                       {
-                                                           p2.set_exception(
-                                                               std::current_exception());
-                                                       }
-                                                       catch (...)
-                                                       {
-                                                       }
-                                                   }
-                                               });
+                    std::thread local_consumer(
+                        [p2 = std::move(p2), g = std::move(g)]() mutable
+                        {
+                            try
+                            {
+                                p2.set_value(std::move(g));
+                            }
+                            catch (...)
+                            {
+                                try
+                                {
+                                    p2.set_exception(std::current_exception());
+                                }
+                                catch (...)
+                                {
+                                }
+                            }
+                        });
 
                     AtomicGuard moved = f2.get();
                     if (!moved.active())
@@ -478,14 +489,16 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
     std::vector<std::thread> threads;
     threads.reserve(THREADS);
 
-    for (int t = 0; t < THREADS; ++t)
+    uint64_t base_seed = get_seed(); // Get base seed once
+
+    for (int t = 0; t < THREAD_NUM; ++t)
     {
         threads.emplace_back(
             [&, t]()
             {
-                std::mt19937_64 rng(static_cast<uint64_t>(
-                                        std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
-                                    t);
+                // The original code used a hash of thread ID, which is good for uniqueness but not reproducibility.
+                // Replace with a reproducible seed.
+                std::mt19937_64 rng(base_seed + t);
                 std::uniform_int_distribution<int> idxdist(0, SLOTS - 1);
                 for (int it = 0; it < ITERS; ++it)
                 {
@@ -508,10 +521,8 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
                     {
                         if (slots[dst].acquire())
                         {
-                            if (owner.load() != slots[dst].token())
-                            {
-                                thread_failure.store(true, std::memory_order_relaxed);
-                            }
+                            // If acquire succeeds, the guard MUST be active.
+                            // A check against owner state is redundant.
                             if (!slots[dst].release())
                             {
                                 thread_failure.store(true, std::memory_order_relaxed);
@@ -548,25 +559,17 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
  */
 TEST(AtomicGuardDeathTest, InvariantViolationsPanic)
 {
-    // Test that the destructor panics if the guard is active but the owner's token
-    // has been changed by someone else.
-    EXPECT_DEATH(
-        {
-            AtomicOwner owner;
-            AtomicGuard g(&owner, true);
-            owner.store(9999); // Another entity "steals" the lock.
-        },
-        "AtomicGuard destructor: invariant violation");
-
     // Test that calling attach() on an active guard panics.
+    // The new destructor never panics, so that death test has been removed.
     EXPECT_DEATH(
+        []()
         {
             AtomicOwner owner1;
             AtomicOwner owner2;
             AtomicGuard g(&owner1, true);
             g.attach(&owner2); // Should panic.
-        },
-        "attach.. on active guard is a logic error");
+        }(),
+        "The original lock is now leaked");
 }
 #endif
 

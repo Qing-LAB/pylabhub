@@ -61,7 +61,7 @@
  * ```cpp
  * #include "utils/Lifecycle.hpp"
  * #include "utils/FileLock.hpp"
- * #include "utils/Logger.hpp" // FileLock depends on Logger
+ * #include "logging.hpp" // FileLock depends on Logger
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
  *     // In main() or test setup, ensure the lifecycle is started:
@@ -96,7 +96,6 @@
 #include <system_error>
 
 #include "pylabhub_utils_export.h"
-#include "utils/Lifecycle.hpp" // For ModuleDef
 
 // Disable warning C4251 on MSVC for the std::unique_ptr Pimpl member.
 #if defined(_MSC_VER)

@@ -11,3 +11,10 @@
 [submodule "cpp/third_party/libsodium"]
 	path = cpp/third_party/libsodium
 	url = https://github.com/jedisct1/libsodium.git
+[submodule "cpp/third_party/cppzmq"]
+	path = cpp/third_party/cppzmq
+	url = https://github.com/zeromq/cppzmq.git
+[submodule "cpp/third_party/msgpack-c"]
+	path = cpp/third_party/msgpack-c
+	url = https://github.com/msgpack/msgpack-c.git
+	branch = cpp_master

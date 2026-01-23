@@ -1,5 +1,4 @@
-#include "format_tools.hpp"
-#include "platform.hpp"
+#include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -8,9 +7,6 @@
 #include <sstream>
 #include <windows.h>
 #endif
-#include <optional>
-#include <string>
-#include <string_view>
 
 namespace pylabhub::format_tools
 {

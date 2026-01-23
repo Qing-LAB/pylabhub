@@ -1,9 +1,5 @@
 #pragma once
 
-#include "platform.hpp"
-#include <filesystem>
-#include <string>
-
 namespace pylabhub::utils
 {
 
@@ -48,10 +44,10 @@ class BaseFileSink
      * @param content The string content to write.
      * @throws std::system_error on write failure.
      */
-    void write(const std::string &content);
+    void fwrite(const std::string &content);
 
     /** @brief Flushes any buffered data to the disk. */
-    void flush();
+    void fflush();
 
     /**
      * @brief Gets the current size of the open file.

@@ -35,11 +35,25 @@ target_link_libraries(pylabhub_gtest INTERFACE gtest)
 _expose_wrapper(pylabhub_gtest_main pylabhub::third_party::gtest_main)
 target_link_libraries(pylabhub_gtest_main INTERFACE gtest_main)
 
+
 # --- Expose GMock targets ---
 _expose_wrapper(pylabhub_gmock pylabhub::third_party::gmock)
 target_link_libraries(pylabhub_gmock INTERFACE gmock)
 
 _expose_wrapper(pylabhub_gmock_main pylabhub::third_party::gmock_main)
 target_link_libraries(pylabhub_gmock_main INTERFACE gmock_main)
+
+# # If the sanitizer is enabled, propagate it to the gtest_main wrapper.
+# if(PYLABHUB_SANITIZER_FLAGS_SET)
+#   target_compile_options(gtest_main INTERFACE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+#   target_link_libraries(gtest_main INTERFACE pylabhub::sanitizer_flags)
+#   # Ensure test executables export their symbols  
+#   target_link_options(gtest_main INTERFACE "SHELL:-Wl,-export-dynamic")
+
+#   target_compile_options(gmock_main INTERFACE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+#   target_link_libraries(gmock_main INTERFACE pylabhub::sanitizer_flags)
+#   # Ensure test executables export their symbols  
+#   target_link_options(gmock_main INTERFACE "SHELL:-Wl,-export-dynamic")
+# endif()
 
 message(STATUS "[pylabhub-third-party] GoogleTest configuration complete.")

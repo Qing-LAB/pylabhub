@@ -5,6 +5,8 @@
 | ------------- | ------- | ----------- | ------------------------------------- | ------------------------------------- |
 | GoogleTest    | 1.12.1  | BSD 3-Clause| cpp/third_party/googletest/   | https://github.com/google/googletest  |
 | nlohmann/json | v3.12.0 | MIT         | cpp/third_party/include/nlohmann/     | https://github.com/nlohmann/json      |
+| msgpack-c     | cpp-6.1.1 | BSL-1.0   | cpp/third_party/msgpack-c/ | https://github.com/msgpack/msgpack-c |
+| cppzmq        | v4.10.0   | MIT       | cpp/third_party/cppzmq/    | https://github.com/zeromq/cppzmq     |
 | libzmq        | v4.3.5  | MPL-2.0     | cpp/third_party/libzmq/               | https://github.com/zeromq/libzmq      |
 | {fmt}         | v12.1.0 | MIT         | cpp/third_party/fmt/                  | https://github.com/fmtlib/fmt         |
 | XOPToolkit    | v8.02   | Commercial  | cpp/third_party/XOPToolkit/XOPSupport | https://www.wavemetrics.com/products/ |

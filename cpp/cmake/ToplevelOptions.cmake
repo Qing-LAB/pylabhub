@@ -15,6 +15,7 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 # This is not compatible with MSVC.
 set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). Not for MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
+option(PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB "FORCE utils dynamic lib to link with sanitizer static lib" OFF)
 
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)

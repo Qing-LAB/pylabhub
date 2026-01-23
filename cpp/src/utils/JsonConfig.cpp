@@ -2,21 +2,15 @@
  * @file JsonConfig.cpp
  * @brief Implements the thread-safe and process-safe JSON configuration manager.
  */
-#include "platform.hpp"
+#include "plh_base.hpp"
 
-#include <atomic>
-#include <cerrno>
-#include <chrono>
-#include <cstring>
-#include <fstream>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <shared_mutex>
-#include <system_error>
-#include <utility>
-#include <vector>
+#include <fstream>
 
 #if defined(PLATFORM_WIN64)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -24,11 +18,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-
+#include "nlohmann/json.hpp"
+#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
-#include "recursion_guard.hpp"
+#include "utils/JsonConfig.hpp"
 
 namespace pylabhub::utils
 {
@@ -85,7 +79,8 @@ JsonConfig::JsonConfig() noexcept : pImpl(std::make_unique<Impl>())
 {
     if (!lifecycle_initialized())
     {
-        PLH_PANIC("JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
+        PLH_PANIC(
+            "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
 }
 
@@ -95,7 +90,8 @@ JsonConfig::JsonConfig(const std::filesystem::path &configFile, bool createIfMis
 {
     if (!lifecycle_initialized())
     {
-        PLH_PANIC("JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
+        PLH_PANIC(
+            "JsonConfig created before its module was initialized via LifecycleManager. Aborting.");
     }
     if (!init(configFile, createIfMissing, ec))
     {
@@ -113,8 +109,7 @@ JsonConfig::~JsonConfig()
     d_tx_list.clear();
 }
 
-JsonConfig::JsonConfig(JsonConfig &&other) noexcept
-    : pImpl(std::move(other.pImpl))
+JsonConfig::JsonConfig(JsonConfig &&other) noexcept : pImpl(std::move(other.pImpl))
 {
     // Design note:
     // If you keep move enabled, moving a JsonConfig with outstanding transactions is dangerous.
@@ -123,7 +118,8 @@ JsonConfig::JsonConfig(JsonConfig &&other) noexcept
         std::lock_guard<std::mutex> lg(other.d_tx_mutex);
         if (!other.d_tx_list.empty())
         {
-            LOGGER_ERROR("JsonConfig move-ctor with outstanding transactions. This is unsafe by contract.");
+            LOGGER_ERROR(
+                "JsonConfig move-ctor with outstanding transactions. This is unsafe by contract.");
             // You can PLH_PANIC here if you want it strict.
         }
         // We intentionally do NOT transfer tx records; moved-from object becomes empty.
@@ -134,7 +130,8 @@ JsonConfig::JsonConfig(JsonConfig &&other) noexcept
 
 JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
 {
-    if (this == &other) return *this;
+    if (this == &other)
+        return *this;
 
     {
         std::lock_guard<std::mutex> lg(d_tx_mutex);
@@ -148,7 +145,8 @@ JsonConfig &JsonConfig::operator=(JsonConfig &&other) noexcept
         std::lock_guard<std::mutex> lg(other.d_tx_mutex);
         if (!other.d_tx_list.empty())
         {
-            LOGGER_ERROR("JsonConfig move-assign with outstanding transactions. This is unsafe by contract.");
+            LOGGER_ERROR("JsonConfig move-assign with outstanding transactions. This is unsafe by "
+                         "contract.");
             // Optionally PLH_PANIC.
         }
         other.d_tx_index.clear();
@@ -181,14 +179,16 @@ bool JsonConfig::has_path() const noexcept
 
 bool JsonConfig::is_dirty() const noexcept
 {
-    if (!is_initialized()) return false;
+    if (!is_initialized())
+        return false;
     return pImpl->dirty.load(std::memory_order_acquire);
 }
 
 // New private helper requested by header-only txn logic to avoid touching Impl in headers.
 void JsonConfig::private_set_dirty_unsafe_(bool v) noexcept
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->dirty.store(v, std::memory_order_release);
 }
 
@@ -207,8 +207,9 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
             {
                 if (ec)
                     *ec = std::make_error_code(std::errc::operation_not_permitted);
-                LOGGER_ERROR("JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
-                             configFile.string());
+                LOGGER_ERROR(
+                    "JsonConfig::init: target '{}' is a symbolic link, refusing to initialize.",
+                    configFile.string());
                 return false;
             }
 
@@ -281,7 +282,9 @@ bool JsonConfig::private_load_from_disk_unsafe(std::error_code *ec) noexcept
     {
         if (ec)
             *ec = std::make_error_code(std::errc::io_error);
-        LOGGER_ERROR("JsonConfig::private_load_from_disk_unsafe: JSON parse error or I/O failure: {}", ex.what());
+        LOGGER_ERROR(
+            "JsonConfig::private_load_from_disk_unsafe: JSON parse error or I/O failure: {}",
+            ex.what());
         return false;
     }
     catch (...)
@@ -408,7 +411,8 @@ bool JsonConfig::overwrite(std::error_code *ec) noexcept
 
 // ---------------- Transaction creation / storage ----------------
 
-JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags, std::error_code *ec) noexcept
+JsonConfig::TransactionProxy JsonConfig::transaction(AccessFlags flags,
+                                                     std::error_code *ec) noexcept
 {
     Transaction *t = create_transaction_internal(ec);
     if (!t)
@@ -613,13 +617,12 @@ bool JsonConfig::WriteLock::commit(std::error_code *ec) noexcept
     return false;
 }
 
-
 /**
  * @brief Atomically writes a JSON object to a file.
  *
  * This function ensures that the file is never left in a corrupted state, even
  * if the process is terminated during the write. It does this by first writing
-* to a temporary file and then atomically replacing or renaming it to the target path.
+ * to a temporary file and then atomically replacing or renaming it to the target path.
  *
  * @param target The final destination path for the file.
  * @param j The `nlohmann::json` object to write.
@@ -775,7 +778,8 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
     // 2. Use `mkstemp` to create a unique temporary file with secure permissions.
     // 3. Write data to the temporary file descriptor.
     // 4. `fsync` the file to ensure data is written to the physical device.
-    // 5. `rename` the temporary file to the target path. This is an atomic operation on POSIX filesystems.
+    // 5. `rename` the temporary file to the target path. This is an atomic operation on POSIX
+    // filesystems.
     // 6. `fsync` the parent directory to ensure the directory entry update is on disk.
     try
     {
