@@ -1,9 +1,6 @@
 // AtomicGuard.hpp
 #pragma once
-#include "debug_info.hpp"
-#include <atomic>
-#include <cstdint>
-#include <utility>
+// Header only for atomic guard
 
 namespace pylabhub::basics
 {

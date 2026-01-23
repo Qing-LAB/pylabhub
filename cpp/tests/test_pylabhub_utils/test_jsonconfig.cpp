@@ -8,27 +8,13 @@
  * security features. The tests are organized into a `JsonConfigTest` fixture
  * that manages a temporary directory for test artifacts.
  */
-#include "platform.hpp"
-
-#include <atomic>
-#include <chrono>
-#include <filesystem>
 #include <fstream>
-#include <gmock/gmock.h> // Added for expect_worker_ok and matchers
-#include <gtest/gtest.h>
-#include <memory>
-#include <sstream>
-#include <string>
-#include <thread>
-#include <vector>
 
-#include "format_tools.hpp"
-#include "nlohmann/json.hpp"
-#include "test_entrypoint.h"
+#include "plh_datahub.hpp"
+#include "gtest/gtest.h"
+#include "gmock/gmock.h"
 #include "test_process_utils.h"
-#include "utils/JsonConfig.hpp"
-#include <fmt/core.h>
-#include <fmt/format.h>
+#include "test_entrypoint.h"
 
 using namespace nlohmann;
 using namespace pylabhub::tests::helper;

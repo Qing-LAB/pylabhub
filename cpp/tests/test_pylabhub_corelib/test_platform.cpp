@@ -1,9 +1,5 @@
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <regex>
-#include <string>
+#include "plh_base.hpp"
+#include "plh_service.hpp"
 
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
@@ -11,20 +7,16 @@
 #include <unistd.h> // for open()
 #endif
 
-#include "format_tools.hpp"
-#include "platform.hpp"
 #include "shared_test_helpers.h" // For StringCapture & read_file_contents
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+
 
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
-
-// test_platform.cpp
-#include <gtest/gtest.h>
-#include <string>
 
 // #include "string_capture.h" // <-- include your project's StringCapture definition if needed
 // #include "debug.h" // <-- include your PLH_DEBUG / debug_msg macros if needed

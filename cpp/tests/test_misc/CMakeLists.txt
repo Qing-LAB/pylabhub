@@ -21,7 +21,7 @@ add_executable(test_debug_output
 # linker error.
 target_link_libraries(test_debug_output
   PRIVATE
-    pylabhub::basic
+    pylabhub::utils
 )
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)

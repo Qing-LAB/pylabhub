@@ -7,21 +7,12 @@
  * spinlock implementation. The tests cover basic acquisition and release,
  * RAII behavior, move semantics, thread safety, and high-contention scenarios.
  */
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-#include <deque>
-#include <future>
-#include <gtest/gtest.h>
-#include <mutex>
+#include "plh_base.hpp"
 #include <random>
-#include <thread>
-#include <vector>
-#include <cstdlib> // For std::getenv
-#include <string>  // For std::stoull
-
-#include "atomic_guard.hpp"
-#include "platform.hpp"
+#include <future>
+#include <deque>
+    
+#include "gtest/gtest.h"
 
 using namespace std::chrono_literals;
 using pylabhub::basics::AtomicGuard;

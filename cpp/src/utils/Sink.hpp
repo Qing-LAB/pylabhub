@@ -1,13 +1,6 @@
 #pragma once
 
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include <chrono>
-#include <fmt/chrono.h>
-#include <fmt/format.h>
-#include <memory>
-#include <string>
-#include <string_view>
+#include "plh_base.hpp"
 
 namespace pylabhub::utils
 {

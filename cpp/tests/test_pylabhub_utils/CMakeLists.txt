@@ -27,6 +27,7 @@ add_executable(test_pylabhub_utils
 target_link_libraries(test_pylabhub_utils
   PRIVATE
     pylabhub::test_framework
+    pylabhub::utils
 )
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)

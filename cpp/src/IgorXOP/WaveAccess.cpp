@@ -48,11 +48,11 @@
 */
 #include "WaveAccess.h"
 #include "XOPStandardHeaders.h" // Include ANSI headers, Mac headers, IgorXOP.h, XOP.h and XOPSupport.h
-#include "platform.hpp"
-#include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
+#include "plh_platform.hpp"
+#include "storage.hpp"
+#include "storage.hpp"
+#include "plh_service.hpp"
+#include "logging.hpp"
 #include <fmt/format.h>
 
 // Global Variables

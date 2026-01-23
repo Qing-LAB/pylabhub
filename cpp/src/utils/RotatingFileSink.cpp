@@ -1,14 +1,7 @@
 // File: RotatingFileSink.cpp
-#include "platform.hpp"
+#include "plh_base.hpp"
 
 #include "RotatingFileSink.hpp"
-#include "Sink.hpp"
-#include "debug_info.hpp"
-#include "format_tools.hpp"
-
-#include <fmt/format.h>
-#include <iostream>
-#include <system_error>
 
 namespace pylabhub::utils
 {

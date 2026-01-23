@@ -3,20 +3,14 @@
  * @file jsonconfig_workers.cpp
  * @brief Implements the worker function for JsonConfig multi-process tests.
  */
-#include "platform.hpp"
+#include <fstream>
 
-#include <chrono>
-#include <cstdlib>
-#include <functional>
-#include <string>
-#include <system_error>
-#include <thread>
-
-#include "jsonconfig_workers.h"
-#include "nlohmann/json.hpp"
+#include "plh_datahub.hpp"
+#include "gtest/gtest.h"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
-#include "utils/JsonConfig.hpp"
+#include "jsonconfig_workers.h"
+
 
 using nlohmann::json;
 using namespace pylabhub::tests::helper;

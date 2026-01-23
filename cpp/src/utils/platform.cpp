@@ -1,11 +1,4 @@
-#include "platform.hpp"
-
-#include <cstdint>
-#include <cstdlib>
-#include <filesystem>
-#include <memory>
-#include <string>
-#include <vector>
+#include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #if defined(MSVC_VER)
@@ -44,8 +37,6 @@
 #include "fmt/core.h"
 #include "fmt/format.h"
 
-#include "debug_info.hpp"
-#include "format_tools.hpp"
 
 namespace pylabhub::platform
 {

@@ -26,6 +26,7 @@ add_dependencies(test_pylabhub_corelib stage_pylabhub_utils)
 target_link_libraries(test_pylabhub_corelib
   PRIVATE
     pylabhub::test_framework
+    pylabhub::utils
 )
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)

@@ -2,19 +2,12 @@
  * @file JsonConfig.cpp
  * @brief Implements the thread-safe and process-safe JSON configuration manager.
  */
-#include "platform.hpp"
+#include "plh_base.hpp"
 
-#include <atomic>
-#include <cerrno>
-#include <chrono>
-#include <cstring>
-#include <fstream>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <shared_mutex>
-#include <system_error>
-#include <utility>
-#include <vector>
+#include <fstream>
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -25,11 +18,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-
-#include "recursion_guard.hpp"
+#include "nlohmann/json.hpp"
+#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
 #include "utils/Logger.hpp"
+#include "utils/JsonConfig.hpp"
 
 namespace pylabhub::utils
 {

@@ -1,6 +1,5 @@
+#include "plh_base.hpp"
 #include "BaseFileSink.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
 
 #include <stdexcept>
 #include <system_error>

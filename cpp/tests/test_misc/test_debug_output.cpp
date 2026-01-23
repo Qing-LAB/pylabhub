@@ -1,8 +1,6 @@
 // tests/test_misc/test_debug_output.cpp
-#include "debug_info.hpp"
-#include "platform.hpp"
+#include "plh_base.hpp"
 #include <iostream>
-#include <string>
 
 using namespace pylabhub::debug;
 

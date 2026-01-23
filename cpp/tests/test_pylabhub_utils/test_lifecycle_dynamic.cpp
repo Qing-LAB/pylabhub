@@ -1,8 +1,10 @@
-#include "platform.hpp"         // For PLATFORM_WIN64, which is used by test_process_utils.h
-#include "test_entrypoint.h"    // For g_self_exe_path
-#include "test_process_utils.h" // For NULL_PROC_HANDLE and ProcessHandle
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
+#include "plh_service.hpp"
+#include "gtest/gtest.h"
+#include "gmock/gmock.h"
+#include "test_process_utils.h"
+#include "test_entrypoint.h"
+#include "shared_test_helpers.h"
+
 
 using namespace pylabhub::tests::helper; // Bring test helper namespace into scope
 

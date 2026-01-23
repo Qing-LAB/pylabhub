@@ -10,14 +10,18 @@ message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 # This is more robust than using file(GLOB), as it ensures that adding or
 # removing source files requires a direct, version-controlled change to the
 # build script. This prevents "silent" build failures where new files are not
-# automatically compiled.
+# automatically compiled.else()
+
 set(UTILS_SOURCES
+  format_tools.cpp
+  debug_info.cpp  
+  platform.cpp
   Lifecycle.cpp
-  Logger.cpp
-  JsonConfig.cpp
   FileLock.cpp
-  RotatingFileSink.cpp
   BaseFileSink.cpp
+  RotatingFileSink.cpp
+  Logger.cpp
+  JsonConfig.cpp  
   SharedMemoryHub.cpp
   # Add any new .cpp files for this library to the list above.
 )
@@ -25,12 +29,47 @@ set(UTILS_SOURCES
 # Define the shared library target.
 add_library(pylabhub-utils SHARED ${UTILS_SOURCES})
 add_library(pylabhub::utils ALIAS pylabhub-utils)
-
-pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
-
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
-target_link_libraries(pylabhub-utils PUBLIC pylabhub-basic)
+if(NOT MSVC)
+  target_compile_options(pylabhub-utils PRIVATE -fvisibility=hidden)
+endif()
+
+# ------------------------------------------------------------------------------
+# Symbol Export and Visibility Control
+# ------------------------------------------------------------------------------
+include(GenerateExportHeader)
+
+# Use a consistent filename (underscores) and macro name.
+# This will generate: <binary-dir>/pylabhub_utils_export.h
+# Use an absolute path for EXPORT_FILE_NAME to avoid ambiguity.
+generate_export_header(pylabhub-utils
+  BASE_NAME         "pylabhub_utils"                 # used for internal checks
+  EXPORT_MACRO_NAME "PYLABHUB_UTILS_EXPORT"         # macro used by sources
+  EXPORT_FILE_NAME  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"  # absolute path
+)
+
+# Make sure the generated header directory is on the public include path.
+target_include_directories(pylabhub-utils
+  PUBLIC
+    ${PYLABHUB_INCLUDE_DIR}
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+
+# When building the library itself, the generated header expects a symbol like
+# pylabhub_utils_EXPORTS to be defined so the header emits dllexport on Windows.
+# GenerateExportHeader creates conditionals based on BASE_NAME/_EXPORTS, so
+# define the token the header uses for the build.
+# (Do not set PYLABHUB_UTILS_EXPORT_DLL — the generated header uses *_EXPORTS.)
+target_compile_definitions(pylabhub-utils PRIVATE pylabhub_utils_EXPORTS)
+
+# ------------------------------------------------------------------------------
+
+
+# ================================================================================
+pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
+#=================================================================================
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)
   message(STATUS "** Sanitizer detected, adding to pylabhub-utils with compilation flags.")
@@ -43,38 +82,6 @@ if(PYLABHUB_SANITIZER_FLAGS_SET)
   # The following was removed:
   # target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
 endif()
-
-# ==============================================================================
-# Symbol Export and Visibility Control
-#
-# Use GenerateExportHeader to create export macros for this library.
-# This ensures that symbols are correctly exported from the DLL on Windows and
-# that visibility is managed on other platforms.
-include(GenerateExportHeader)
-generate_export_header(pylabhub-utils
-  BASE_NAME "pylabhub_utils"
-  EXPORT_MACRO_NAME "PYLABHUB_UTILS_EXPORT"
-)
-
-# By default, we want all symbols to be hidden unless explicitly exported.
-# On Windows, this is the default for DLLs.
-# On GCC/Clang, we must explicitly set the compiler flag.
-if(NOT MSVC)
-  target_compile_options(pylabhub-utils PRIVATE -fvisibility=hidden)
-endif()
-
-# The generated header needs to be on the include path. Since this is a public
-# dependency for consumers of the library, we make it a PUBLIC include.
-# The generated header is placed in the build directory for the current source
-# directory.
-target_include_directories(pylabhub-utils
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-)
-
-# Ensure the generated header is available to consumers
-target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_UTILS_EXPORT_DLL=1)
-
 
 # ==============================================================================
 
@@ -100,8 +107,6 @@ target_include_directories(pylabhub-utils
     $<INSTALL_INTERFACE:include>
 )
 
-
-
 # Link against necessary third-party libraries and system libraries.
 target_link_libraries(pylabhub-utils
   PUBLIC
@@ -122,6 +127,33 @@ target_compile_definitions(pylabhub-utils
     HAVE_FMT_CHRONO_SUBSECONDS=${HAVE_FMT_CHRONO_SUBSECONDS}
     FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE}
 )
+
+# Header-only INTERFACE target for consumers that should not link to the shared library.
+# It only propagates include dirs, compile definitions and compile options — no linking.
+add_library(pylabhub-utils_headers INTERFACE)
+add_library(pylabhub::utils_headers ALIAS pylabhub-utils_headers)
+
+# Propagate the same usage requirements that pylabhub-utils publishes for headers.
+target_include_directories(pylabhub-utils_headers
+  INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Propagate any compile definitions the consumers need (but not pylabhub_utils_EXPORTS).
+# For consumers we *do not* define pylabhub_utils_EXPORTS (that is only for the library build).
+target_compile_definitions(pylabhub-utils_headers
+  INTERFACE
+    HAVE_FMT_CHRONO_SUBSECONDS=${HAVE_FMT_CHRONO_SUBSECONDS}
+    FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE}
+)
+
+# If you have target_compile_options or features to propagate, add them too:
+target_compile_features(pylabhub-utils_headers INTERFACE cxx_std_20)
+if(NOT MSVC)
+  target_compile_options(pylabhub-utils_headers INTERFACE -fvisibility=hidden)
+endif()
 
 # ==============================================================================
 # Installation

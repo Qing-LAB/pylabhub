@@ -1,17 +1,6 @@
 // tests/test_harness/shared_test_helpers.h
 #pragma once
 
-#include <chrono>
-#include <filesystem>
-#include <fmt/core.h>
-#include <gtest/gtest.h>
-#include <string>
-
-#include "debug_info.hpp"
-#include "platform.hpp"
-#include "scope_guard.hpp"
-#include "utils/Lifecycle.hpp"
-
 namespace fs = std::filesystem;
 
 /**
@@ -34,6 +23,8 @@ namespace fs = std::filesystem;
 #define STDERR_FILENO _fileno(stderr)
 typedef int ssize_t;
 #endif
+
+#include "gtest/gtest.h"
 
 namespace pylabhub::tests::helper
 {

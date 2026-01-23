@@ -2,26 +2,20 @@
  * @file Logger.cpp
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
-#include "utils/Logger.hpp"
-#include "RotatingFileSink.hpp"
-#include "Sink.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "utils/Lifecycle.hpp"
 
-#include <chrono>
 #include <condition_variable>
-#include <cstdio>
 #include <deque>
 #include <functional>
 #include <future>
-#include <memory>
-#include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <variant>
-#include <vector>
-#include <string>
+
+ #include "plh_base.hpp"
+#include "Sink.hpp"
+#include "RotatingFileSink.hpp"
+
+#include "utils/Logger.hpp"
+#include "utils/Lifecycle.hpp"
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>

@@ -71,19 +71,12 @@
  * }
  * ```
  ******************************************************************************/
+#include "plh_base.hpp"
+#include "pylabhub_utils_export.h"
 
-#include "fmt/core.h"
-#include <atomic>
-#include <memory> // For std::unique_ptr
-#include <source_location>
+#include <memory>
 #include <type_traits>
 #include <utility>
-#include <vector>
-
-#include "debug_info.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "pylabhub_utils_export.h"
 
 // Disable warning C4251 on MSVC. This is a common practice for exported classes
 // that use std::unique_ptr to a forward-declared (incomplete) type (Pimpl).

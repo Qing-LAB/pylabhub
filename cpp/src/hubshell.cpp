@@ -1,8 +1,4 @@
-#include "platform.hpp"
-#include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
+#include "plh_datahub.hpp"
 
 using namespace pylabhub::utils;
 int main()

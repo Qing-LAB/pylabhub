@@ -29,23 +29,13 @@
  * 5.  **Timed Shutdown**: `finalize()` first shuts down all active dynamic
  *     modules, then the static modules, using timeouts to prevent hangs.
  ******************************************************************************/
-#include "utils/Lifecycle.hpp"
-#include "debug_info.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "recursion_guard.hpp"
-#include "utils/Logger.hpp" // For LOGGER_ERROR, etc.
+#include "plh_base.hpp"
 
-#include <algorithm> // For std::reverse, std::sort
 #include <future>    // For std::async, std::future
 #include <map>       // For std::map
-#include <mutex>     // For std::mutex, std::lock_guard
 #include <stdexcept> // For std::runtime_error, std::length_error
-#include <string>    // For std::string
-#include <vector>    // For std::vector
-
-#include <fmt/core.h>   // For fmt::print
 #include <fmt/ranges.h> // For fmt::join on vectors
+#include "utils/Lifecycle.hpp"
 
 namespace pylabhub::utils::lifecycle_internal
 {
