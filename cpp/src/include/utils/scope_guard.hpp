@@ -239,6 +239,10 @@ class ScopeGuard
  * deduction and ensures that the ScopeGuard is not instantiated with a
  * reference type, which simplifies its behavior and avoids potential issues.
  *
+ * @note The callable `f` is always stored by value (either copied or moved)
+ *       into the `ScopeGuard`. Ensure that any references captured by `f`
+ *       remain valid until the guard executes.
+ *
  * @tparam F The type of the callable object.
  * @param f The callable object to be managed by the guard.
  * @return A ScopeGuard instance for the given callable.
