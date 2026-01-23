@@ -37,8 +37,8 @@ Checks: >
 #   simple functions. We use them where they add clarity, but do not
 #   require them globally.
 #
--readability-identifier-naming,
--modernize-use-trailing-return-type
+  -readability-identifier-naming,
+  -modernize-use-trailing-return-type
 
 # The 'WarningsAsErrors' option elevates the severity of specific warnings
 # to errors, which will fail the build. This is used for critical issues

@@ -74,13 +74,23 @@ pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 if(PYLABHUB_SANITIZER_FLAGS_SET)
   message(STATUS "** Sanitizer detected, adding to pylabhub-utils with compilation flags.")
   target_compile_options(pylabhub-utils PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
-  # We only apply the compile options for sanitizers to the shared library.
-  # The sanitizer runtime should be linked by the final executable, not by the
-  # shared library. Linking it here would cause a conflict if the executable
-  # also links it, leading to a crash at startup (e.g. "unexpected memory mapping").
-  #
-  # The following was removed:
-  # target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
+  # If sanitizer is enabled, and a runtime path is found, explicitly link to it.
+  # This is necessary when a shared library's objects are compiled with sanitizer
+  # instrumentation, as the shared library itself needs to resolve these symbols.
+  if(PYLABHUB_SANITIZER_RUNTIME_PATH)
+    if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
+      message(STATUS "** The sanitizer is a dynamic lib, we will link pylabhub-utils to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      target_link_libraries(pylabhub-utils PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+    else()
+      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
+        message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with pylabhub-utils to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+        target_link_libraries(pylabhub-utils PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      else()
+        message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to pylabhub-utils. Please make sure your final executive that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+        message(STATUS "")
+      endif()
+    endif()
+  endif()
 endif()
 
 # ==============================================================================
@@ -183,14 +193,16 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/utils/
 # Define a local custom target to handle staging for this component.
 message(STATUS "Configuring staging for pylabhub-utils library.")
 
-if(WIN32)
+if(PYLABHUB_IS_WINDOWS)
   # On Windows, stage the DLL next to the executables and tests
   pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION bin OUT_COMMANDS stage_commands)
   pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION tests OUT_COMMANDS stage_commands_for_tests)
   list(APPEND stage_commands ${stage_commands_for_tests})
-else()
+elseif(PYLABHUB_IS_POSIX)
   # On POSIX platforms, stage the shared library to the 'lib' directory.
   pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION lib OUT_COMMANDS stage_commands)
+else()
+  message(ERROR, "Unknown platform for staging...")
 endif()
 
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")
