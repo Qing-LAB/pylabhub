@@ -172,8 +172,12 @@ if(TARGET pylabhub::utils)
   message(STATUS "IgorXOP: linked to pylabhub::utils")
 endif()
 
-if(PYLABHUB_SANITIZER_FLAGS)
-  target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
+if(PYLABHUB_SANITIZER_FLAGS_SET)
+  message(STATUS "** Sanitizer detected, adding compile flags to ${XOP_TARGET}.")
+  target_compile_options(${XOP_TARGET} PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  # A shared module (plugin) should not link the sanitizer runtime directly.
+  # The host application is responsible for providing the runtime. Linking it
+  # here would cause conflicts if the host also provides it.
 endif()
 
 # -------------------------

@@ -1,13 +1,6 @@
 // Tools for formatting string
 #pragma once
 
-#include <chrono>
-#include <filesystem>
-#include <fmt/chrono.h>
-#include <optional>
-#include <string>
-#include <string_view>
-
 namespace pylabhub::format_tools
 {
 
@@ -16,7 +9,7 @@ namespace pylabhub::format_tools
  * @param timestamp The time_point to format.
  * @return A string in the format "YYYY-MM-DD HH:MM:SS.us".
  */
-std::string formatted_time(std::chrono::system_clock::time_point timestamp);
+PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time_point timestamp);
 
 /**
  * @brief Extracts a value from a dictionary-like string.
@@ -32,33 +25,33 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp);
  * @return An std::optional<std::string> containing the value if found,
  *         otherwise std::nullopt.
  */
-std::optional<std::string> extract_value_from_string(std::string_view keyword,
-                                                     std::string_view input, char separator = ';',
-                                                     char assignment_symbol = '=');
+PYLABHUB_UTILS_EXPORT std::optional<std::string>
+extract_value_from_string(std::string_view keyword, std::string_view input, char separator = ';',
+                          char assignment_symbol = '=');
 
 /**
  * @brief Converts a path to its Windows long path representation (e.g., `\\?\C:\...`).
  * @param path The path to convert.
  * @return The long path as a wstring. Returns an empty string on non-Windows platforms.
  */
-std::wstring win32_to_long_path(const std::filesystem::path &);
+PYLABHUB_UTILS_EXPORT std::wstring win32_to_long_path(const std::filesystem::path &);
 /**
  * @brief Generates a unique suffix for temporary filenames on Windows.
  * @return A unique wstring suffix. Returns an empty string on non-Windows platforms.
  */
-std::wstring win32_make_unique_suffix();
+PYLABHUB_UTILS_EXPORT std::wstring win32_make_unique_suffix();
 /**
  * @brief Converts a UTF-8 encoded std::string to a std::wstring on Windows.
  * @param s The source string.
  * @return The converted wstring. Returns an empty string on non-Windows platforms.
  */
-std::wstring s2ws(const std::string &s);
+PYLABHUB_UTILS_EXPORT std::wstring s2ws(const std::string &s);
 /**
  * @brief Converts a std::wstring to a UTF-8 encoded std::string on Windows.
  * @param w The source wstring.
  * @return The converted string. Returns an empty string on non-Windows platforms.
  */
-std::string ws2s(const std::wstring &w);
+PYLABHUB_UTILS_EXPORT std::string ws2s(const std::wstring &w);
 
 /**
  * @brief Creates a `fmt::memory_buffer` from a compile-time format string and arguments.

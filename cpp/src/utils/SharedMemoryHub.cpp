@@ -4,7 +4,7 @@
  *
  * This implements the Data Exchange Hub framework as specified in HEP core-0002.
  ******************************************************************************/
-#include "platform.hpp"
+#include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -20,20 +20,14 @@
 #include <time.h>
 #include <unistd.h>
 #endif
-
-#include <nlohmann/json.hpp>
-#include <sodium.h>
-#include <zmq.h>
-
-#include <atomic>
-#include <cctype>
-#include <chrono>
-#include <cstring>
-#include <sstream>
 #include <thread>
-#include <vector>
+
+#include "nlohmann/json.hpp"
+#include "sodium.h"
+#include "zmq.h"
 
 #include "utils/Lifecycle.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
 #include "utils/SharedMemoryHub.hpp"
 
@@ -1827,7 +1821,7 @@ pylabhub::utils::ModuleDef GetLifecycleModule()
     module.set_startup(&do_hub_startup);
     module.set_shutdown(&do_hub_shutdown, 5000 /*ms timeout*/);
     // Mark as dynamic module (can be loaded/unloaded at runtime)
-    module.set_as_permanent(false);
+    module.set_as_persistent(false);
     return module;
 }
 

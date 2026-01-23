@@ -9,17 +9,12 @@
  * and state. This file is responsible for spawning those worker processes and
  * verifying their results.
  */
-#include "platform.hpp"
-#include <filesystem>
-#include <gtest/gtest.h>
-#include <memory>
-#include <string>
-#include <vector>
-
-#include "shared_test_helpers.h"
-#include "test_entrypoint.h"
+#include "plh_datahub.hpp"
+#include "gtest/gtest.h"
+#include "gmock/gmock.h"
 #include "test_process_utils.h"
-#include "utils/Logger.hpp"
+#include "test_entrypoint.h"
+#include "shared_test_helpers.h"
 
 namespace fs = std::filesystem;
 using namespace pylabhub::tests::helper;

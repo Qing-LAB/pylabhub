@@ -1,21 +1,13 @@
-#include "utils/FileLock.hpp"
 
-#include <atomic>
-#include <cerrno>
-#include <chrono>
 #include <condition_variable>
-#include <cstring>
-#include <filesystem>
 #include <mutex>
-#include <optional>
-#include <set>
-#include <string>
-#include <system_error>
-#include <thread>
 #include <unordered_map>
-#include <utility>
+#include <functional>
+
+#include "plh_base.hpp"
 
 #if defined(PLATFORM_WIN64)
+#define WIN32_LEAN_AND_MEAN
 #include <sstream>
 #include <windows.h>
 #else
@@ -27,12 +19,8 @@
 #include <unistd.h>
 #endif
 
-#include "debug_info.hpp"
-#include "format_tools.hpp"
-#include "platform.hpp"
-#include "scope_guard.hpp"
 #include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
+#include "utils/FileLock.hpp"
 
 using namespace pylabhub::platform;
 
@@ -514,10 +502,10 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         pImpl->ec = std::make_error_code(std::errc::io_error);
         return false;
     }
-    //IMPORTANT: ALWAYS MAKE SURE THE SHARE FLAGS INCLUDE FILE_SHARE_DELETE !
-    HANDLE h =
-        CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // IMPORTANT: ALWAYS MAKE SURE THE SHARE FLAGS INCLUDE FILE_SHARE_DELETE !
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (h == INVALID_HANDLE_VALUE)
     {

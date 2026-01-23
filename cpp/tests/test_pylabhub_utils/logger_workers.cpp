@@ -7,16 +7,13 @@
  * various features of the Logger, including multi-process and multi-threaded
  * logging, lifecycle management, and error handling.
  */
-#include "platform.hpp"
-
-// Standard Library
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
 #include <future>
-#include <string>
-#include <thread>
-#include <vector>
+
+#include "plh_datahub.hpp"
+#include "gtest/gtest.h"
+#include "logger_workers.h"
+#include "shared_test_helpers.h"
+#include "test_process_utils.h"
 
 // Platform-specific
 #if defined(PLATFORM_WIN64)
@@ -24,13 +21,7 @@
 #else
 #include <unistd.h> // for getpid
 #endif
-
-// Project-specific
-#include "logger_workers.h"
-#include "shared_test_helpers.h"
-#include "test_process_utils.h"
-#include "utils/Logger.hpp"
-
+    
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::utils;
 namespace fs = std::filesystem;

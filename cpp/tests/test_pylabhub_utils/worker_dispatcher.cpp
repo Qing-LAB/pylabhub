@@ -156,9 +156,9 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all();
         }
-        if (scenario == "dynamic.permanent_in_middle")
+        if (scenario == "dynamic.persistent_in_middle")
         {
-            return pylabhub::tests::worker::lifecycle::dynamic_permanent_in_middle();
+            return pylabhub::tests::worker::lifecycle::dynamic_persistent_in_middle();
         }
         if (scenario == "dynamic.static_dependency_fail")
         {
@@ -177,13 +177,13 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_register_before_init_fail();
         }
-        if (scenario == "dynamic.permanent_module")
+        if (scenario == "dynamic.persistent_module")
         {
-            return pylabhub::tests::worker::lifecycle::dynamic_permanent_module();
+            return pylabhub::tests::worker::lifecycle::dynamic_persistent_module();
         }
-        if (scenario == "dynamic.permanent_module_finalize")
+        if (scenario == "dynamic.persistent_module_finalize")
         {
-            return pylabhub::tests::worker::lifecycle::dynamic_permanent_module_finalize();
+            return pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize();
         }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;

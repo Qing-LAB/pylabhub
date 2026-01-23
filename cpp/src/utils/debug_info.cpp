@@ -10,8 +10,7 @@
  * The implementation aims to maximize code reuse between macOS and other POSIX systems.
  */
 
-#include "platform.hpp"
-#include <fmt/core.h>
+#include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -64,7 +63,7 @@
 
 #endif // platform selection
 
-#include "debug_info.hpp"
+#include "utils/debug_info.hpp"
 
 namespace pylabhub::debug
 {

@@ -3,23 +3,15 @@
  * @file test_process_utils.cpp
  * @brief Implements platform-abstracted utilities for spawning and managing child processes.
  */
-#include "test_process_utils.h"
-#include "shared_test_helpers.h" // For read_file_contents
 
-#include <chrono>
-#include <cstdio>  // For stderr
-#include <fcntl.h> // For open, O_WRONLY
-#include <iostream>
-#include <string>
-#include <vector>
+#include <list>
+
+#include "test_process_utils.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "debug_info.hpp"
-#include "format_tools.hpp" // For s2ws, ws2s
-#include "platform.hpp"
-#include <fmt/core.h>
+#include "shared_test_helpers.h" // For read_file_contents
 
 namespace pylabhub::tests::helper
 {

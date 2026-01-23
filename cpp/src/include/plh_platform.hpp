@@ -4,41 +4,86 @@
 // compiler predefined macros.
 
 #if defined(PLATFORM_WIN64)
+
 #define PYLABHUB_PLATFORM_WIN64 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_LINUX
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #elif defined(PLATFORM_APPLE)
+
 #define PYLABHUB_PLATFORM_APPLE 1
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_LINUX
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #elif defined(PLATFORM_FREEBSD)
+
 #define PYLABHUB_PLATFORM_FREEBSD 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_LINUX
+
 #elif defined(PLATFORM_LINUX)
+
 #define PYLABHUB_PLATFORM_LINUX 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #elif defined(PLATFORM_UNKNOWN)
+
 #define PYLABHUB_PLATFORM_UNKNOWN 1
+#undef PYLABHUB_PLATFORM_FREEBSD
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_WIN64
+
 #else
 // Fallback detection
 #if defined(_WIN64)
 #define PYLABHUB_PLATFORM_WIN64 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_LINUX
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #elif defined(__APPLE__) && defined(__MACH__)
 #define PYLABHUB_PLATFORM_APPLE 1
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_LINUX
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #elif defined(__FreeBSD__)
 #define PYLABHUB_PLATFORM_FREEBSD 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_LINUX
+
 #elif defined(__linux__)
 #define PYLABHUB_PLATFORM_LINUX 1
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_FREEBSD
+
 #else
 #define PYLABHUB_PLATFORM_UNKNOWN 1
+#undef PYLABHUB_PLATFORM_FREEBSD
+#undef PYLABHUB_PLATFORM_APPLE
+#undef PYLABHUB_PLATFORM_WIN64
+#undef PYLABHUB_PLATFORM_WIN64
 #endif
 #endif
 
 // Convenience booleans for source code usage:
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define PYLABHUB_IS_WINDOWS 1
-#define PYLABHUB_IS_POSIX 0
-#elif defined(PYLABHUB_PLATFORM_APPLE) || defined(PYLABHUB_PLATFORM_FREEBSD) ||                    \
-    defined(PYLABHUB_PLATFORM_LINUX)
-#define PYLABHUB_IS_WINDOWS 0
+#undef PYLABHUB_IS_POSIX
+#elif defined(PYLABHUB_PLATFORM_APPLE) || defined(PYLABHUB_PLATFORM_FREEBSD) || defined(PYLABHUB_PLATFORM_LINUX)
+#undef PYLABHUB_IS_WINDOWS
 #define PYLABHUB_IS_POSIX 1
 #else
-#define PYLABHUB_IS_WINDOWS 0
-#define PYLABHUB_IS_POSIX 0
+#undef PYLABHUB_IS_WINDOWS
+#undef PYLABHUB_IS_POSIX
 #endif
 
 // --- Require C++20 or later --------------------------------------------------
@@ -58,8 +103,7 @@
 #endif
 #endif
 
-#include <cstdint>
-#include <string>
+#include "pylabhub_utils_export.h"
 
 namespace pylabhub::platform
 {
@@ -68,18 +112,18 @@ namespace pylabhub::platform
  * @brief Gets the native thread ID for the calling thread.
  * @return A 64-bit unsigned integer representing the thread ID.
  */
-uint64_t get_native_thread_id() noexcept;
+PYLABHUB_UTILS_EXPORT uint64_t get_native_thread_id() noexcept;
 /**
  * @brief Gets the process ID (PID) for the current process.
  * @return A 64-bit unsigned integer representing the process ID.
  */
-uint64_t get_pid();
+PYLABHUB_UTILS_EXPORT uint64_t get_pid();
 /**
  * @brief Gets the name of the current executable.
  * @param include_path If `true`, returns the full absolute path to the executable.
  *                     If `false` (default), returns only the filename.
  * @return A string containing the name of the executable. Returns "unknown" on failure.
  */
-std::string get_executable_name(bool include_path = false) noexcept;
+PYLABHUB_UTILS_EXPORT std::string get_executable_name(bool include_path = false) noexcept;
 
 } // namespace pylabhub::platform
