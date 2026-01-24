@@ -108,14 +108,15 @@ namespace pylabhub::basics
 // `make_scope_guard` rather than a confusing one deep within the guard's
 // implementation.
 template <typename Callable>
-requires std::invocable<Callable &>
+    requires std::invocable<Callable &>
 class ScopeGuard
 {
   public:
     // A ScopeGuard cannot be instantiated with a reference type. This is
     // because it stores the callable by value. Use `make_scope_guard` to ensure
     // the type is correctly decayed.
-    static_assert(!std::is_reference_v<Callable>, "ScopeGuard cannot hold a reference to a callable.");
+    static_assert(!std::is_reference_v<Callable>,
+                  "ScopeGuard cannot hold a reference to a callable.");
 
     // The callable must be copyable or movable.
     static_assert(std::is_move_constructible_v<Callable> || std::is_copy_constructible_v<Callable>,
@@ -253,4 +254,3 @@ template <typename F> auto make_scope_guard(F &&f) -> ScopeGuard<std::decay_t<F>
 }
 
 } // namespace pylabhub::basics
-

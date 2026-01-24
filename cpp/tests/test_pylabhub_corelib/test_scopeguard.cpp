@@ -9,10 +9,10 @@
  * corner cases.
  */
 #include "plh_base.hpp" // For plh_base types and std utilities
-#include <gtest/gtest.h>
 #include <atomic>
-#include <stdexcept>
 #include <functional>
+#include <gtest/gtest.h>
+#include <stdexcept>
 
 using pylabhub::basics::make_scope_guard;
 using pylabhub::basics::ScopeGuard;
@@ -45,10 +45,12 @@ TEST(ScopeGuardTest, StatefulMutableLambda)
 {
     int counter = 0;
     {
-        auto guard = make_scope_guard([i = 0, &counter]() mutable {
-            i++;
-            counter = i;
-        });
+        auto guard = make_scope_guard(
+            [i = 0, &counter]() mutable
+            {
+                i++;
+                counter = i;
+            });
     }
     ASSERT_EQ(counter, 1);
 }
@@ -103,7 +105,6 @@ TEST(ScopeGuardTest, InvokeIdempotency)
     guard.invoke(); // This call should do nothing.
     ASSERT_EQ(execution_count, 1);
 }
-
 
 // Test that moving a ScopeGuard transfers ownership of the function call.
 TEST(ScopeGuardTest, MoveConstruction)
@@ -244,11 +245,12 @@ TEST(ScopeGuardTest, InvokeIsDismissedOnException)
     int execution_count = 0;
     try
     {
-        auto guard = make_scope_guard([&]()
-                                      {
-                                          execution_count++;
-                                          throw std::runtime_error("Test");
-                                      });
+        auto guard = make_scope_guard(
+            [&]()
+            {
+                execution_count++;
+                throw std::runtime_error("Test");
+            });
         EXPECT_NO_THROW(guard.invoke()); // Exception is swallowed
     }
     catch (...)

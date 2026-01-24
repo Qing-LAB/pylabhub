@@ -12,12 +12,12 @@
 // -- Debugging utilities: stack trace printing, panic and debug messages
 #pragma once
 
+#include "utils/format_tools.hpp" // for pylabhub::format_tools::filename_only
+#include <cstdio>                 // for fflush
 #include <fmt/format.h>           // for fmt::format_string, fmt::print, fmt::format
 #include <source_location>        // for std::source_location
-#include <string_view>            // for std::string_view
 #include <string>                 // for std::string
-#include <cstdio>                 // for fflush
-#include "utils/format_tools.hpp" // for pylabhub::format_tools::filename_only
+#include <string_view>            // for std::string_view
 
 namespace pylabhub::debug
 {
@@ -189,7 +189,8 @@ inline std::string SRCLOC_TO_STR(std::source_location loc)
  */
 #ifndef PLH_PANIC
 #define PLH_PANIC(fmt, ...)                                                                        \
-    ::pylabhub::debug::panic(std::source_location::current(), FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    ::pylabhub::debug::panic(std::source_location::current(),                                      \
+                             FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #endif
 
 /**
