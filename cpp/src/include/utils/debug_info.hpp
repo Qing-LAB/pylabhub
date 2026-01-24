@@ -19,6 +19,21 @@
 #include <string>                 // for std::string
 #include <string_view>            // for std::string_view
 
+// ---------------- thin macros for convenience --------------
+/**
+ * @brief Macro to capture the current source location.
+ * @details Expands to `std::source_location::current()`.
+ */
+inline std::string SRCLOC_TO_STR(std::source_location loc)
+{
+    return fmt::format("{}:{}:{}", pylabhub::format_tools::filename_only(loc.file_name()),
+                       loc.line(), loc.function_name());
+}
+
+#ifndef PLH_LOC_HERE_STR
+#define PLH_LOC_HERE_STR (SRCLOC_TO_STR(std::source_location::current()))
+#endif
+
 namespace pylabhub::debug
 {
 
@@ -164,26 +179,11 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
 
 } // namespace pylabhub::debug
 
-// ---------------- thin macros for convenience --------------
-/**
- * @brief Macro to capture the current source location.
- * @details Expands to `std::source_location::current()`.
- */
-inline std::string SRCLOC_TO_STR(std::source_location loc)
-{
-    return fmt::format("{}:{}:{}", pylabhub::format_tools::filename_only(loc.file_name()),
-                       loc.line(), loc.function_name());
-}
-
-#ifndef PLH_LOC_HERE_STR
-#define PLH_LOC_HERE_STR (SRCLOC_TO_STR(std::source_location::current()))
-#endif
 
 /**
  * @brief Macro for calling `pylabhub::debug::panic` with automatic source location.
  * @details This macro provides a convenient way to trigger a fatal error with
  *          a compile-time checked format string.
- * @param fmt The `fmt`-style format string literal.
  * @param ... Variable arguments to be formatted into `fmt`.
  * @see pylabhub::debug::panic
  */

@@ -1,4 +1,3 @@
-#include "BaseFileSink.hpp"
 #include "plh_base.hpp"
 
 #include <stdexcept>
@@ -13,6 +12,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "BaseFileSink.hpp"
 
 namespace pylabhub::utils
 {
