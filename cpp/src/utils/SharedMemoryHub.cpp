@@ -9,8 +9,8 @@
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
 #include <synchapi.h>
+#include <windows.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -26,8 +26,8 @@
 #include "sodium.h"
 #include "zmq.h"
 
-#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
 #include "utils/SharedMemoryHub.hpp"
 

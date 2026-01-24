@@ -37,7 +37,6 @@
 #include "fmt/core.h"
 #include "fmt/format.h"
 
-
 namespace pylabhub::platform
 {
 // Anonymous namespace for helpers local to this translation unit.

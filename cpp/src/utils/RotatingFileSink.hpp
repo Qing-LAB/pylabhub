@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Sink.hpp"
 #include "BaseFileSink.hpp"
+#include "Sink.hpp"
 
 #include <filesystem>
 #include <string>
