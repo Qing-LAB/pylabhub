@@ -20,8 +20,8 @@
 #include <unistd.h>
 #endif
 
-#include "utils/FileLock.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/FileLock.hpp"
 
 using namespace pylabhub::platform;
 

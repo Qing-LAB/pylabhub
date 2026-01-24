@@ -264,6 +264,73 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
 
 #endif // PYLABHUB_IS_POSIX
 
+namespace  // anonymous namespace
+{
+// Try to format into a fixed stack buffer first. If the output was truncated,
+// attempt one heap-format fallback. Returns true on success, false on formatting error.
+template <typename... Args>
+inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+{
+    try
+    {
+        // Tunable stack buffer size: choose a value large enough for common lines.
+        constexpr std::size_t STACK_BUF_SZ = 2048;
+        char stack_buf[STACK_BUF_SZ];
+
+        // format_to_n writes up to STACK_BUF_SZ bytes and does not allocate.
+        // It may still throw fmt::format_error on an invalid format specification.
+        auto result = fmt::format_to_n(stack_buf, STACK_BUF_SZ, fmt_str,
+                                       std::forward<Args>(args)...);
+
+        const std::size_t needed = static_cast<std::size_t>(result.size); // total required
+        const std::size_t have = needed < STACK_BUF_SZ ? needed : STACK_BUF_SZ;
+
+        if (have > 0)
+        {
+            std::fwrite(stack_buf, 1, have, stderr);
+        }
+        // // If truncated, perform one safe dynamic allocation attempt and write full output.
+        // if (needed > STACK_BUF_SZ)
+        // {
+        //     try
+        //     {
+        //         const std::string full = fmt::format(fmt_str, std::forward<Args>(args)...);
+        //         if (!full.empty())
+        //             std::fwrite(full.data(), 1, full.size(), stderr);
+        //     }
+        //     catch (const fmt::format_error &)
+        //     {
+        //         // format string invalid for the provided args -> fail
+        //         return false;
+        //     }
+        //     catch (const std::bad_alloc &)
+        //     {
+        //         // allocation failed -> fail (caller should bail)
+        //         return false;
+        //     }
+        // }
+        return true; // success
+    }
+    catch (const fmt::format_error &)
+    {
+        // invalid format spec -> caller bail
+        return false;
+    }
+    catch (const std::bad_alloc &)
+    {
+        // unexpected allocation during formatting (very unlikely here) -> bail
+        return false;
+    }
+    catch (...)
+    {
+        // any other unexpected failure -> bail conservative
+        return false;
+    }
+}
+
+} // namespace
+
+
 // -------------------------------
 // Public API: print_stack_trace
 // -------------------------------
@@ -291,7 +358,7 @@ void print_stack_trace() noexcept
 {
     try
     {
-        fmt::print(stderr, "Stack Trace (most recent call first):\n");
+        safe_format_to_stderr("Stack Trace (most recent call first):\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -302,7 +369,7 @@ void print_stack_trace() noexcept
         HANDLE process = GetCurrentProcess();
 
         constexpr size_t kNameBuf = 1024;
-        const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + (kNameBuf - 1);
+        const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + (kNameBuf - 1) * sizeof((SYMBOL_INFO *)0)->Name[0]);
         std::unique_ptr<uint8_t[]> symbolArea(new (std::nothrow) uint8_t[symbolBufferSize]);
         SYMBOL_INFO *symbol = nullptr;
         if (symbolArea)
@@ -320,13 +387,13 @@ void print_stack_trace() noexcept
         for (USHORT i = 0; i < framesCaptured; ++i)
         {
             uintptr_t addr = reinterpret_cast<uintptr_t>(frames[i]);
-            fmt::print(stderr, "  #{:02}  {:#018x}  ", i, static_cast<unsigned long long>(addr));
+            safe_format_to_stderr("  #{:02}  {:#018x}  ", i, static_cast<unsigned long long>(addr));
             bool printed = false;
 
             DWORD64 displacement = 0;
             if (symbol && SymFromAddr(process, static_cast<DWORD64>(addr), &displacement, symbol))
             {
-                fmt::print(stderr, "{} + {:#x}", symbol->Name,
+                safe_format_to_stderr("{} + {:#x}", symbol->Name,
                            static_cast<unsigned long long>(displacement));
                 printed = true;
             }
@@ -336,7 +403,7 @@ void print_stack_trace() noexcept
                                      &lineInfo))
             {
                 const char *fname = lineInfo.FileName ? lineInfo.FileName : "(unknown)";
-                fmt::print(stderr, " -- {}:{}", fname, lineInfo.LineNumber);
+                safe_format_to_stderr(" -- {}:{}", fname, lineInfo.LineNumber);
                 printed = true;
             }
 
@@ -351,15 +418,15 @@ void print_stack_trace() noexcept
                                       : modInfo.LoadedImageName ? modInfo.LoadedImageName
                                                                 : "(unknown)";
                     uintptr_t base = static_cast<uintptr_t>(modInfo.BaseOfImage);
-                    fmt::print(stderr, "(module: {}) + {:#x}", img,
+                    safe_format_to_stderr("(module: {}) + {:#x}", img,
                                static_cast<unsigned long long>(addr - base));
                 }
                 else
                 {
-                    fmt::print(stderr, "[symbol unknown]");
+                    safe_format_to_stderr("[symbol unknown]");
                 }
             }
-            fmt::print(stderr, "\n");
+            safe_format_to_stderr("\n");
         }
 
 #elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
@@ -370,7 +437,7 @@ void print_stack_trace() noexcept
         int nframes = backtrace(callstack, kMaxFrames);
         if (nframes <= 0)
         {
-            fmt::print(stderr, "  [No stack frames available]\n");
+            safe_format_to_stderr("  [No stack frames available]\n");
             return;
         }
 
@@ -508,7 +575,7 @@ void print_stack_trace() noexcept
         for (size_t i = 0; i < metas.size(); ++i)
         {
             const FrameMeta &m = metas[i];
-            fmt::print(stderr, "  #{:02}  {:#018x}  ", m.idx,
+            safe_format_to_stderr("  #{:02}  {:#018x}  ", m.idx,
                        static_cast<unsigned long long>(m.addr));
             bool printed = false;
 
@@ -516,15 +583,15 @@ void print_stack_trace() noexcept
             {
                 uintptr_t saddr = reinterpret_cast<uintptr_t>(m.saddr);
                 if (saddr)
-                    fmt::print(stderr, "{} + {:#x}", m.demangled,
+                    safe_format_to_stderr("{} + {:#x}", m.demangled,
                                static_cast<unsigned long long>(m.addr - saddr));
                 else
-                    fmt::print(stderr, "{}", m.demangled);
+                    safe_format_to_stderr("{}", m.demangled);
                 printed = true;
             }
             else if (symbols && symbols[i])
             {
-                fmt::print(stderr, "{}", symbols[i]);
+                safe_format_to_stderr("{}", symbols[i]);
                 printed = true;
             }
 
@@ -545,7 +612,7 @@ void print_stack_trace() noexcept
                         const auto &symText = resIt->second[pos];
                         if (!symText.empty())
                         {
-                            fmt::print(stderr, "  \n         -> {}", symText);
+                            safe_format_to_stderr("  \n         -> [{}]", symText);
                             printed = true;
                         }
                     }
@@ -555,12 +622,12 @@ void print_stack_trace() noexcept
             if (!printed)
             {
                 if (!m.dli_fname.empty())
-                    fmt::print(stderr, "({}) + {:#x}", m.dli_fname,
+                    safe_format_to_stderr("({}) + {:#x}", m.dli_fname,
                                static_cast<unsigned long long>(m.offset));
                 else
-                    fmt::print(stderr, "[unknown]");
+                    safe_format_to_stderr("[unknown]");
             }
-            fmt::print(stderr, "\n");
+            safe_format_to_stderr("\n");
         }
 
         if (symbols)
@@ -569,7 +636,7 @@ void print_stack_trace() noexcept
 #else
 
         // Unsupported platform
-        fmt::print(stderr, "  [Stack trace not available on this platform]\n");
+        safe_format_to_stderr("  [Stack trace not available on this platform]\n");
 
 #endif
     }
@@ -593,5 +660,7 @@ void print_stack_trace() noexcept
         std::fflush(stderr);
         return;
     }
+}
 
 } // namespace pylabhub::debug
+
