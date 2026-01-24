@@ -11,10 +11,10 @@
 #include <fstream>
 
 #include "plh_datahub.hpp"
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
-#include "test_process_utils.h"
 #include "test_entrypoint.h"
+#include "test_process_utils.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 
 using namespace nlohmann;
 using namespace pylabhub::tests::helper;

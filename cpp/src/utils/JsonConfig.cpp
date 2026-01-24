@@ -4,10 +4,10 @@
  */
 #include "plh_base.hpp"
 
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
-#include <fstream>
 
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
@@ -19,10 +19,10 @@
 #include <unistd.h>
 #endif
 #include "nlohmann/json.hpp"
-#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
-#include "utils/Logger.hpp"
 #include "utils/JsonConfig.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 
 namespace pylabhub::utils
 {

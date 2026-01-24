@@ -1,9 +1,9 @@
 
 #include <condition_variable>
-#include <mutex>
-#include <unordered_map>
 #include <functional>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include "plh_base.hpp"
 
@@ -20,8 +20,8 @@
 #include <unistd.h>
 #endif
 
-#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
 
 using namespace pylabhub::platform;
 

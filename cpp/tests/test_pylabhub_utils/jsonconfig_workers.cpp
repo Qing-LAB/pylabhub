@@ -5,12 +5,11 @@
  */
 #include <fstream>
 
+#include "jsonconfig_workers.h"
 #include "plh_datahub.hpp"
-#include "gtest/gtest.h"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
-#include "jsonconfig_workers.h"
-
+#include "gtest/gtest.h"
 
 using nlohmann::json;
 using namespace pylabhub::tests::helper;
