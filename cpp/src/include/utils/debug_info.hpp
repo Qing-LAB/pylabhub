@@ -12,6 +12,13 @@
 // -- Debugging utilities: stack trace printing, panic and debug messages
 #pragma once
 
+#include <fmt/format.h>           // for fmt::format_string, fmt::print, fmt::format
+#include <source_location>        // for std::source_location
+#include <string_view>            // for std::string_view
+#include <string>                 // for std::string
+#include <cstdio>                 // for fflush
+#include "utils/format_tools.hpp" // for pylabhub::format_tools::filename_only
+
 namespace pylabhub::debug
 {
 
@@ -47,24 +54,27 @@ PYLABHUB_UTILS_EXPORT void print_stack_trace() noexcept;
  * @noreturn This function never returns.
  */
 template <typename... Args>
-[[noreturn]] inline void panic(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+[[noreturn]] inline void panic(std::source_location loc, fmt::format_string<Args...> fmt_str,
+                               Args &&...args) noexcept
 {
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "[PANIC] {}\n", body);
+        fmt::print(stderr, "[PANIC] {} -- {}\n", SRCLOC_TO_STR(loc), body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "[PANIC]  FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
+                   "[PANIC] {} -- FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
                    "[PANIC]  Exception: '{}'\n",
-                   fmt_str.get(), e.what());
+                   SRCLOC_TO_STR(loc), fmt_str.get(), e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
-        fmt::print(stderr, "[PANIC]  FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
-                   fmt_str.get());
+        fmt::print(stderr, "[PANIC] {} -- FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
+                   SRCLOC_TO_STR(loc), fmt_str.get());
+        std::fflush(stderr);
     }
     print_stack_trace();
     std::abort();
@@ -100,11 +110,13 @@ inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args) noexc
                    "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG: fmt_str['{}']\n"
                    "[DBG]  Exception: '{}'\n",
                    fmt_str.get(), e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
         fmt::print(stderr, "[DBG]  FATAL EXCEPTION DURING DEBUG_MSG: fmt_str['{}']\n",
                    fmt_str.get());
+        std::fflush(stderr);
     }
 }
 
@@ -140,11 +152,13 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
                    "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG_RT: fmt_str['{}']\n"
                    "[DBG]  Exception: '{}'\n",
                    fmt_str, e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
         fmt::print(stderr, "[DBG]  FATAL UNKNOWN EXCEPTION DURING DEBUG_MSG_RT: fmt_str['{}']\n",
                    fmt_str);
+        std::fflush(stderr);
     }
 }
 
@@ -174,7 +188,8 @@ inline std::string SRCLOC_TO_STR(std::source_location loc)
  * @see pylabhub::debug::panic
  */
 #ifndef PLH_PANIC
-#define PLH_PANIC(fmt, ...) ::pylabhub::debug::panic(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_PANIC(fmt, ...)                                                                        \
+    ::pylabhub::debug::panic(std::source_location::current(), FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #endif
 
 /**

@@ -128,15 +128,15 @@ namespace internal
 {
     std::string out;
     out.reserve(s.size() + 2);
-    out.push_back('"');
+    out.push_back('\'');
     for (char c : s)
     {
-        if (c == '"')
-            out += "\\\"";
+        if (c == '\'')
+            out += "'\\''"; // close, escape, reopen
         else
             out.push_back(c);
     }
-    out.push_back('"');
+    out.push_back('\'');
     return out;
 }
 
@@ -267,8 +267,30 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
 // -------------------------------
 // Public API: print_stack_trace
 // -------------------------------
+/**
+ * @brief Prints the current call stack (stack trace) to `stderr`.
+ *
+ * This function provides a platform-specific implementation to capture and print
+ * the program's call stack. On Windows, it uses `CaptureStackBackTrace` and `DbgHelp`
+ * functions to resolve symbols and line numbers. On POSIX systems, it uses
+ * `backtrace`, `backtrace_symbols`, `dladdr`, and `addr2line` (if available)
+ * to provide detailed stack information.
+ *
+ * Errors during stack trace capture or symbol resolution are reported to `stderr`.
+ *
+ * @warning This function is NOT async-signal-safe. It uses functions like `fmt::print`,
+ *          `popen`, memory allocation (`new`, `std::string`), and `dladdr`/`abi::__cxa_demangle`
+ *          which are not guaranteed to be safe to call from within a signal handler.
+ *          Calling it from a signal handler may lead to deadlocks or other undefined behavior.
+ * @warning This function is NOT thread-safe across multiple concurrent calls, especially
+ *          on POSIX systems where `popen` and `pclose` might not be thread-safe if shared
+ *          resources or file descriptors interact. Prefer calling it from a single thread
+ *          or from crash handlers that are aware of these limitations.
+ */
 void print_stack_trace() noexcept
 {
+    try
+    {
     fmt::print(stderr, "Stack Trace (most recent call first):\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -280,7 +302,7 @@ void print_stack_trace() noexcept
     HANDLE process = GetCurrentProcess();
 
     constexpr size_t kNameBuf = 1024;
-    const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + kNameBuf;
+    const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + (kNameBuf - 1);
     std::unique_ptr<uint8_t[]> symbolArea(new (std::nothrow) uint8_t[symbolBufferSize]);
     SYMBOL_INFO *symbol = nullptr;
     if (symbolArea)
@@ -548,6 +570,26 @@ void print_stack_trace() noexcept
     fmt::print(stderr, "  [Stack trace not available on this platform]\n");
 
 #endif
-}
+    }
+    catch (const fmt::format_error &e)
+    {
+        std::fputs("Error: Stack trace generation failed with fmt::format_error.\n", stderr);
+        std::fputs(e.what(), stderr);
+        std::fputs("\n", stderr);
+        std::fflush(stderr);
+        return;
+    }
+    catch(const std::bad_alloc &e)
+    {
+        std::fputs("Error: Stack trace generation failed with std::bad_alloc.\n", stderr);
+        std::fflush(stderr);
+        return;
+    }
+    catch (...)
+    {
+        std::fputs("Error: Stack trace generation failed with unknown error.\n", stderr);
+        std::fflush(stderr);
+        return;
+    }
 
 } // namespace pylabhub::debug
