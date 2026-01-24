@@ -24,7 +24,8 @@ struct LogMessage
 class Sink
 {
   public:
-    enum WRITE_MODE{
+    enum WRITE_MODE
+    {
         ASYNC_WRITE,
         SYNC_WRITE
     };
@@ -63,13 +64,17 @@ static const char *level_to_string_internal(int lvl)
 static std::string format_logmsg(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
     std::string time_str = formatted_time(msg.timestamp);
-    if (mode == Sink::ASYNC_WRITE) {
-        return fmt::format("[LOGGER] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n", level_to_string_internal(msg.level), time_str,
-                       msg.process_id, msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
+    if (mode == Sink::ASYNC_WRITE)
+    {
+        return fmt::format("[LOGGER] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n",
+                           level_to_string_internal(msg.level), time_str, msg.process_id,
+                           msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
     }
-    else {
-        return fmt::format("[LOGGER_SYNC] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n", level_to_string_internal(msg.level), time_str,
-                       msg.process_id, msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
+    else
+    {
+        return fmt::format("[LOGGER_SYNC] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n",
+                           level_to_string_internal(msg.level), time_str, msg.process_id,
+                           msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
     }
 }
 

@@ -95,6 +95,7 @@
 #include <memory>
 #include <optional>
 #include <system_error>
+#include <thread>
 
 #include "pylabhub_utils_export.h"
 
