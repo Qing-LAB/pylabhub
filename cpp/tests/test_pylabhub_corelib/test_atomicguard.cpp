@@ -8,10 +8,10 @@
  * RAII behavior, move semantics, thread safety, and high-contention scenarios.
  */
 #include "plh_base.hpp"
-#include <random>
-#include <future>
 #include <deque>
-    
+#include <future>
+#include <random>
+
 #include "gtest/gtest.h"
 
 using namespace std::chrono_literals;
@@ -38,7 +38,6 @@ uint64_t get_seed()
 }
 } // namespace
 
-
 // Defines sizes for stress tests to allow for quick or thorough testing.
 #if ATOMICGUARD_STRESS_LEVEL == 2 // HEAVY
 static constexpr int THREAD_NUM = 64;
@@ -54,18 +53,18 @@ static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skippe
 static constexpr int SLOT_NUM = 16;
 
 #if ATOMICGUARD_STRESS_LEVEL == 0
-#define SKIP_TEST_IF_LOW_STRESS_LEVEL                                                              
-    GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
+#define SKIP_TEST_IF_LOW_STRESS_LEVEL
+GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL."
 #else
 #define SKIP_TEST_IF_LOW_STRESS_LEVEL ((void)0)
 #endif
 
-/**
- * @brief Tests the fundamental manual acquire and release behavior.
- * It verifies that a guard can successfully acquire a lock on a free owner,
- * making the owner non-free, and can subsequently release it, making the owner free again.
- */
-TEST(AtomicGuardTest, BasicAcquireRelease)
+    /**
+     * @brief Tests the fundamental manual acquire and release behavior.
+     * It verifies that a guard can successfully acquire a lock on a free owner,
+     * making the owner non-free, and can subsequently release it, making the owner free again.
+     */
+    TEST(AtomicGuardTest, BasicAcquireRelease)
 {
     AtomicOwner owner;
     AtomicGuard g(&owner);
@@ -496,8 +495,8 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
         threads.emplace_back(
             [&, t]()
             {
-                // The original code used a hash of thread ID, which is good for uniqueness but not reproducibility.
-                // Replace with a reproducible seed.
+                // The original code used a hash of thread ID, which is good for uniqueness but not
+                // reproducibility. Replace with a reproducible seed.
                 std::mt19937_64 rng(base_seed + t);
                 std::uniform_int_distribution<int> idxdist(0, SLOTS - 1);
                 for (int it = 0; it < ITERS; ++it)

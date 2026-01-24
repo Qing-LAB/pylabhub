@@ -10,11 +10,11 @@
 #include <barrier>
 #include <fstream>
 
-#include "plh_datahub.hpp"
-#include "gtest/gtest.h"
 #include "filelock_workers.h"
+#include "plh_datahub.hpp"
 #include "shared_test_helpers.h"
 #include "test_process_utils.h"
+#include "gtest/gtest.h"
 
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::utils;
