@@ -86,11 +86,11 @@ TEST_F(FormatToolsTest, FormattedTime)
     };
 
     // Check numeric parts
-    EXPECT_TRUE(is_all_digits(0, 4));   // Year
-    EXPECT_TRUE(is_all_digits(5, 2));   // Month
-    EXPECT_TRUE(is_all_digits(8, 2));   // Day
-    EXPECT_TRUE(is_all_digits(11, 2));  // Hour
-    EXPECT_TRUE(is_all_digits(14, 2));  // Minute
-    EXPECT_TRUE(is_all_digits(17, 2));  // Second
-    EXPECT_TRUE(is_all_digits(20, 6));  // Microseconds
+    EXPECT_TRUE(is_all_digits(0, 4));  // Year
+    EXPECT_TRUE(is_all_digits(5, 2));  // Month
+    EXPECT_TRUE(is_all_digits(8, 2));  // Day
+    EXPECT_TRUE(is_all_digits(11, 2)); // Hour
+    EXPECT_TRUE(is_all_digits(14, 2)); // Minute
+    EXPECT_TRUE(is_all_digits(17, 2)); // Second
+    EXPECT_TRUE(is_all_digits(20, 6)); // Microseconds
 }
