@@ -25,10 +25,9 @@
 #include "nlohmann/json.hpp"
 #include "sodium.h"
 #include "zmq.h"
-
-#include "utils/FileLock.hpp"
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/SharedMemoryHub.hpp"
 
 namespace pylabhub::hub
