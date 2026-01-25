@@ -44,19 +44,27 @@ namespace pylabhub::debug
  * the program's call stack. On Windows, it uses `CaptureStackBackTrace` and `DbgHelp`
  * functions to resolve symbols and line numbers. On POSIX systems, it uses
  * `backtrace`, `backtrace_symbols`, `dladdr`, and `addr2line` (if available)
- * to provide detailed stack information.
+ * to provide detailed stack information. This is implemented as a two-phase process:
+ * 1. An immediate, safe print of in-process information (e.g., from `dladdr`).
+ * 2. A conditional, secondary print of detailed line numbers from external
+ *    tools like `addr2line` or `atos`. This phase can be disabled for safety.
+ *
+ * @param use_external_tools If `false` (default), only the fast and safe
+ *        in-process symbol resolution is performed. If `true`, the function will
+ *        also attempt to call external tools for more detailed symbols, which
+ *        carries a minor risk of hanging in multithreaded contexts. This
+ *        parameter has no effect on Windows.
  *
  * Errors during stack trace capture or symbol resolution are reported to `stderr`.
  */
-PYLABHUB_UTILS_EXPORT void print_stack_trace() noexcept;
+PYLABHUB_UTILS_EXPORT void print_stack_trace(bool use_external_tools = false) noexcept;
 
 /**
  * @brief Halts program execution with a fatal error message and prints a stack trace.
  *
  * This function is intended for unrecoverable errors. It formats and prints an
  * error message to `stderr`, along with the source location where `panic` was called.
- * It then calls `print_stack_trace()` and `std::abort()`, ensuring the program terminates
- * immediately.
+ * It then calls `print_stack_trace(true)` for a detailed trace and `std::abort()`.
  *
  * The format string is checked at compile-time using `fmt::format_string`.
  * Exception handling is included to prevent further issues if formatting itself fails.
@@ -91,7 +99,7 @@ template <typename... Args>
                    SRCLOC_TO_STR(loc), fmt_str.get());
         std::fflush(stderr);
     }
-    print_stack_trace();
+    print_stack_trace(true); // Go for max detail on panic, accepting the risks.
     std::abort();
 }
 
