@@ -158,6 +158,52 @@ namespace internal
     return lines;
 }
 
+// Helper to distribute output lines from a symbolizer tool among the expected frames.
+// This is a fallback for when the tool's output format is not as expected.
+[[nodiscard]] static std::vector<std::string>
+distribute_popen_lines(const std::vector<std::string> &lines, size_t expected_count)
+{
+    std::vector<std::string> perFrame;
+    if (expected_count == 0)
+    {
+        return perFrame;
+    }
+    perFrame.reserve(expected_count);
+
+    // Ideal case: at least one line per frame
+    if (!lines.empty() && lines.size() >= expected_count)
+    {
+        for (size_t j = 0; j < expected_count; ++j)
+        {
+            perFrame.push_back(lines[j]);
+        }
+    }
+    // Fallback: distribute the lines we have as evenly as possible
+    else
+    {
+        size_t per = (lines.empty() ? 1 : (lines.size() + expected_count - 1) / expected_count);
+        size_t cur = 0;
+        for (size_t fi = 0; fi < expected_count; ++fi)
+        {
+            std::ostringstream acc;
+            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
+            {
+                if (k > 0)
+                    acc << "\n";
+                acc << lines[cur];
+            }
+            perFrame.push_back(acc.str());
+        }
+    }
+    // Ensure the output vector has the expected size
+    while (perFrame.size() < expected_count)
+    {
+        perFrame.emplace_back();
+    }
+    return perFrame;
+}
+
+
 // Generic addr2line resolver (handles addr2line and llvm-addr2line)
 [[nodiscard]] static std::vector<std::string>
 resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offsets,
@@ -181,40 +227,23 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
         oss << " 0x" << std::hex << off;
 
     auto lines = read_popen_lines(oss.str());
-    std::vector<std::string> perFrame;
-    perFrame.reserve(offsets.size());
 
-    // addr2line usually emits 2 lines per address (function, file:line) when -f used.
+    // addr2line with -f usually emits 2 lines per address (function, file:line).
     if (!lines.empty() && lines.size() >= offsets.size() * 2)
     {
+        std::vector<std::string> perFrame;
+        perFrame.reserve(offsets.size());
         for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
             perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
-    }
-    else if (!lines.empty() && lines.size() >= offsets.size())
-    {
-        for (size_t j = 0; j < offsets.size() && j < lines.size(); ++j)
-            perFrame.push_back(lines[j]);
-    }
-    else
-    {
-        // distribute lines as fallback
-        size_t per = (lines.empty() ? 1 : (lines.size() + offsets.size() - 1) / offsets.size());
-        size_t cur = 0;
-        for (size_t fi = 0; fi < offsets.size(); ++fi)
+        while (perFrame.size() < offsets.size())
         {
-            std::ostringstream acc;
-            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-            {
-                if (k)
-                    acc << "\n";
-                acc << lines[cur];
-            }
-            perFrame.push_back(acc.str());
+            perFrame.emplace_back();
         }
+        return perFrame;
     }
-    while (perFrame.size() < offsets.size())
-        perFrame.emplace_back();
-    return perFrame;
+
+    // Fallback to simple distribution if output format is not 2 lines per frame
+    return distribute_popen_lines(lines, offsets.size());
 }
 
 #if defined(PYLABHUB_PLATFORM_APPLE)
@@ -231,32 +260,7 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
         oss << " 0x" << std::hex << a;
 
     auto lines = read_popen_lines(oss.str());
-    std::vector<std::string> perFrame;
-    perFrame.reserve(addrs.size());
-    if (!lines.empty() && lines.size() >= addrs.size())
-    {
-        for (size_t j = 0; j < addrs.size() && j < lines.size(); ++j)
-            perFrame.push_back(lines[j]);
-    }
-    else
-    {
-        size_t per = (lines.empty() ? 1 : (lines.size() + addrs.size() - 1) / addrs.size());
-        size_t cur = 0;
-        for (size_t fi = 0; fi < addrs.size(); ++fi)
-        {
-            std::ostringstream acc;
-            for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
-            {
-                if (k)
-                    acc << "\n";
-                acc << lines[cur];
-            }
-            perFrame.push_back(acc.str());
-        }
-    }
-    while (perFrame.size() < addrs.size())
-        perFrame.emplace_back();
-    return perFrame;
+    return distribute_popen_lines(lines, addrs.size());
 }
 #endif // PYLABHUB_PLATFORM_APPLE
 
@@ -289,26 +293,6 @@ inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&..
         {
             std::fwrite(stack_buf, 1, have, stderr);
         }
-        // // If truncated, perform one safe dynamic allocation attempt and write full output.
-        // if (needed > STACK_BUF_SZ)
-        // {
-        //     try
-        //     {
-        //         const std::string full = fmt::format(fmt_str, std::forward<Args>(args)...);
-        //         if (!full.empty())
-        //             std::fwrite(full.data(), 1, full.size(), stderr);
-        //     }
-        //     catch (const fmt::format_error &)
-        //     {
-        //         // format string invalid for the provided args -> fail
-        //         return false;
-        //     }
-        //     catch (const std::bad_alloc &)
-        //     {
-        //         // allocation failed -> fail (caller should bail)
-        //         return false;
-        //     }
-        // }
         return true; // success
     }
     catch (const fmt::format_error &)
@@ -354,13 +338,13 @@ inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&..
  *          resources or file descriptors interact. Prefer calling it from a single thread
  *          or from crash handlers that are aware of these limitations.
  */
-void print_stack_trace() noexcept
+void print_stack_trace(bool use_external_tools) noexcept
 {
     try
     {
-        safe_format_to_stderr("Stack Trace (most recent call first):\n");
-
 #if defined(PYLABHUB_PLATFORM_WIN64)
+        (void)use_external_tools; // This flag has no effect on Windows
+        safe_format_to_stderr("Stack Trace (most recent call first):\n");
 
         // Windows implementation: unchanged behavior, kept concise
         constexpr int kMaxFrames = 62;
@@ -369,7 +353,8 @@ void print_stack_trace() noexcept
         HANDLE process = GetCurrentProcess();
 
         constexpr size_t kNameBuf = 1024;
-        const size_t symbolBufferSize = sizeof(SYMBOL_INFO) + (kNameBuf - 1) * sizeof((SYMBOL_INFO *)0)->Name[0]);
+        const size_t symbolBufferSize =
+            sizeof(SYMBOL_INFO) + (kNameBuf - 1) * sizeof((SYMBOL_INFO *)0)->Name[0]);
         std::unique_ptr<uint8_t[]> symbolArea(new (std::nothrow) uint8_t[symbolBufferSize]);
         SYMBOL_INFO *symbol = nullptr;
         if (symbolArea)
@@ -394,7 +379,7 @@ void print_stack_trace() noexcept
             if (symbol && SymFromAddr(process, static_cast<DWORD64>(addr), &displacement, symbol))
             {
                 safe_format_to_stderr("{} + {:#x}", symbol->Name,
-                           static_cast<unsigned long long>(displacement));
+                                      static_cast<unsigned long long>(displacement));
                 printed = true;
             }
 
@@ -414,12 +399,12 @@ void print_stack_trace() noexcept
                 modInfo.SizeOfStruct = sizeof(modInfo);
                 if (SymGetModuleInfo64(process, static_cast<DWORD64>(addr), &modInfo))
                 {
-                    const char *img = modInfo.ImageName         ? modInfo.ImageName
+                    const char *img = modInfo.ImageName ? modInfo.ImageName
                                       : modInfo.LoadedImageName ? modInfo.LoadedImageName
                                                                 : "(unknown)";
                     uintptr_t base = static_cast<uintptr_t>(modInfo.BaseOfImage);
                     safe_format_to_stderr("(module: {}) + {:#x}", img,
-                               static_cast<unsigned long long>(addr - base));
+                                          static_cast<unsigned long long>(addr - base));
                 }
                 else
                 {
@@ -498,7 +483,54 @@ void print_stack_trace() noexcept
             metas.push_back(std::move(m));
         }
 
-        // Group frames by binary (prefer dli_fname, fallback to exe_path)
+        // --- Phase 1: Print safe, in-process information immediately ---
+        safe_format_to_stderr("Stack Trace (most recent call first):\n");
+        for (const auto &m : metas)
+        {
+            safe_format_to_stderr("  #{:02}  {:#018x}  ", m.idx,
+                                  static_cast<unsigned long long>(m.addr));
+            bool printed = false;
+            if (!m.demangled.empty())
+            {
+                uintptr_t saddr = reinterpret_cast<uintptr_t>(m.saddr);
+                if (saddr)
+                    safe_format_to_stderr("{} + {:#x}", m.demangled,
+                                          static_cast<unsigned long long>(m.addr - saddr));
+                else
+                    safe_format_to_stderr("{}", m.demangled);
+                printed = true;
+            }
+            else if (symbols && m.idx < nframes && symbols[m.idx])
+            {
+                safe_format_to_stderr("{}", symbols[m.idx]);
+                printed = true;
+            }
+
+            if (!printed)
+            {
+                if (!m.dli_fname.empty())
+                    safe_format_to_stderr("({}) + {:#x}", m.dli_fname,
+                                          static_cast<unsigned long long>(m.offset));
+                else
+                    safe_format_to_stderr("[unknown]");
+            }
+            safe_format_to_stderr("\n");
+        }
+        if (symbols)
+        {
+            std::free(symbols);
+            symbols = nullptr;
+        }
+        std::fflush(stderr); // Ensure safe info is visible before risky phase
+
+        if (!use_external_tools)
+        {
+            return;
+        }
+
+        // --- Phase 2: Attempt to resolve symbols with external tools ---
+        safe_format_to_stderr("\n--- External Symbol Resolution ---\n");
+
         std::map<std::string, std::vector<int>> binToIdx;
         for (size_t i = 0; i < metas.size(); ++i)
         {
@@ -507,36 +539,21 @@ void print_stack_trace() noexcept
             binToIdx[key].push_back(static_cast<int>(i));
         }
 
-        // For each binary, resolve frames using appropriate symbolizer
-        std::unordered_map<std::string, std::vector<std::string>> binResults;
-        binResults.reserve(binToIdx.size());
-
         for (auto &kv : binToIdx)
         {
             const std::string &binary = kv.first;
             const std::vector<int> &indices = kv.second;
+            std::vector<std::string> results;
 
             if (binary == "[unknown]" || binary.empty())
             {
-                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
                 continue;
             }
 
 #if defined(PYLABHUB_PLATFORM_APPLE)
-            // macOS: prefer atos, else fallback to llvm-addr2line/addr2line
             const bool has_atos = internal::find_in_path("atos");
-            const bool has_llvm_addr2line = internal::find_in_path("llvm-addr2line");
-            const bool has_addr2line = internal::find_in_path("addr2line");
-
-            if (!has_atos && !has_llvm_addr2line && !has_addr2line)
-            {
-                binResults[binary] = std::vector<std::string>(indices.size(), std::string());
-                continue;
-            }
-
             if (has_atos)
             {
-                // Build vector of VM addresses and base_for_bin (first non-zero dli_fbase)
                 std::vector<uintptr_t> addrs;
                 addrs.reserve(indices.size());
                 uintptr_t base_for_bin = 0;
@@ -546,98 +563,42 @@ void print_stack_trace() noexcept
                     if (base_for_bin == 0 && metas[idx].dli_fbase != 0)
                         base_for_bin = metas[idx].dli_fbase;
                 }
-                binResults[binary] = internal::resolve_with_atos(
+                results = internal::resolve_with_atos(
                     binary, std::span(addrs.data(), addrs.size()), base_for_bin);
             }
-            else
+            else // fallback to addr2line on mac
             {
                 std::vector<uintptr_t> offsets;
                 offsets.reserve(indices.size());
                 for (int idx : indices)
                     offsets.push_back(metas[idx].offset);
-                binResults[binary] = internal::resolve_with_addr2line(
-                    binary, std::span(offsets.data(), offsets.size()), has_llvm_addr2line);
+                results = internal::resolve_with_addr2line(
+                    binary, std::span(offsets.data(), offsets.size()),
+                    internal::find_in_path("llvm-addr2line"));
             }
-
 #else
-            // Non-Apple POSIX: use addr2line (prefer llvm-addr2line only if you decide so; keep
-            // false by default)
             std::vector<uintptr_t> offsets;
             offsets.reserve(indices.size());
             for (int idx : indices)
                 offsets.push_back(metas[idx].offset);
-            binResults[binary] = internal::resolve_with_addr2line(
+            results = internal::resolve_with_addr2line(
                 binary, std::span(offsets.data(), offsets.size()), false);
 #endif
-        }
-
-        // Print frames
-        for (size_t i = 0; i < metas.size(); ++i)
-        {
-            const FrameMeta &m = metas[i];
-            safe_format_to_stderr("  #{:02}  {:#018x}  ", m.idx,
-                       static_cast<unsigned long long>(m.addr));
-            bool printed = false;
-
-            if (!m.demangled.empty())
+            // Print results for this binary
+            for (size_t i = 0; i < results.size(); ++i)
             {
-                uintptr_t saddr = reinterpret_cast<uintptr_t>(m.saddr);
-                if (saddr)
-                    safe_format_to_stderr("{} + {:#x}", m.demangled,
-                               static_cast<unsigned long long>(m.addr - saddr));
-                else
-                    safe_format_to_stderr("{}", m.demangled);
-                printed = true;
-            }
-            else if (symbols && symbols[i])
-            {
-                safe_format_to_stderr("{}", symbols[i]);
-                printed = true;
-            }
-
-            const std::string &binaryKey =
-                m.dli_fname.empty() ? (exe_path.empty() ? std::string("[unknown]") : exe_path)
-                                    : m.dli_fname;
-            auto binIt = binToIdx.find(binaryKey);
-            if (binIt != binToIdx.end())
-            {
-                const std::vector<int> &vec = binIt->second;
-                auto it = std::find(vec.begin(), vec.end(), static_cast<int>(i));
-                if (it != vec.end())
+                if (i < indices.size() && !results[i].empty() && results[i] != "??" &&
+                    results[i].find("??") == std::string::npos)
                 {
-                    size_t pos = static_cast<size_t>(std::distance(vec.begin(), it));
-                    auto resIt = binResults.find(binaryKey);
-                    if (resIt != binResults.end() && pos < resIt->second.size())
-                    {
-                        const auto &symText = resIt->second[pos];
-                        if (!symText.empty())
-                        {
-                            safe_format_to_stderr("  \n         -> [{}]", symText);
-                            printed = true;
-                        }
-                    }
+                    safe_format_to_stderr("  #{:02} -> {}\n", indices[i], results[i]);
                 }
             }
-
-            if (!printed)
-            {
-                if (!m.dli_fname.empty())
-                    safe_format_to_stderr("({}) + {:#x}", m.dli_fname,
-                               static_cast<unsigned long long>(m.offset));
-                else
-                    safe_format_to_stderr("[unknown]");
-            }
-            safe_format_to_stderr("\n");
         }
-
-        if (symbols)
-            std::free(symbols);
+        std::fflush(stderr);
 
 #else
-
-        // Unsupported platform
+        (void)use_external_tools;
         safe_format_to_stderr("  [Stack trace not available on this platform]\n");
-
 #endif
     }
     catch (const fmt::format_error &e)
@@ -648,7 +609,7 @@ void print_stack_trace() noexcept
         std::fflush(stderr);
         return;
     }
-    catch (const std::bad_alloc &e)
+    catch (const std::bad_alloc &)
     {
         std::fputs("Error: Stack trace generation failed with std::bad_alloc.\n", stderr);
         std::fflush(stderr);
