@@ -10,12 +10,17 @@
 #include <stdexcept>
 #include <variant>
 
-#include "RotatingFileSink.hpp"
-#include "Sink.hpp"
 #include "plh_base.hpp"
 
 #include "utils/Lifecycle.hpp"
 #include "utils/Logger.hpp"
+
+#include "utils/logger_sinks/Sink.hpp"
+#include "utils/logger_sinks/ConsoleSink.hpp"
+#include "utils/logger_sinks/FileSink.hpp"
+#include "utils/logger_sinks/RotatingFileSink.hpp"
+#include "utils/logger_sinks/SyslogSink.hpp"
+#include "utils/logger_sinks/EventLogSink.hpp"
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
@@ -25,15 +30,10 @@ typedef SSIZE_T ssize_t;
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#ifdef PLATFORM_WIN64
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#else
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/syscall.h>
-#include <syslog.h>
 #include <unistd.h>
 #endif
 
@@ -79,7 +79,7 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
             dir / fmt::format("pylabhub_write_check_{}.tmp",
                               std::chrono::high_resolution_clock::now().time_since_epoch().count());
 
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
         if (wpath.empty())
         {
@@ -188,150 +188,7 @@ class CallbackDispatcher
     std::atomic<bool> shutdown_requested_;
 };
 
-#include "BaseFileSink.hpp"
 
-// NOTE: LogMessage, Sink, and helper functions are now in Sink.hpp
-
-// Concrete Sink Implementations
-class ConsoleSink : public Sink
-{
-  public:
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
-    {
-        fmt::print(stderr, "{}", format_logmsg(msg, mode));
-    }
-    void flush() override { fflush(stderr); }
-    std::string description() const override { return "Console"; }
-};
-
-class FileSink : public Sink, private BaseFileSink
-{
-  public:
-    FileSink(const std::string &path, bool use_flock)
-    {
-        try
-        {
-            open(path, use_flock);
-        }
-        catch (const std::system_error &e)
-        {
-            throw std::runtime_error(
-                fmt::format("Failed to open log file '{}': {}", path, e.what()));
-        }
-    }
-
-    ~FileSink() override = default;
-
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
-    {
-        auto strmsg = format_logmsg(msg, mode);
-        BaseFileSink::fwrite(strmsg);
-    }
-
-    void flush() override { BaseFileSink::fflush(); }
-
-    std::string description() const override { return "File: " + path().string(); }
-};
-
-#if !defined(PLATFORM_WIN64)
-class SyslogSink : public Sink
-{
-  public:
-    SyslogSink(const char *ident, int option, int facility) { openlog(ident, option, facility); }
-    ~SyslogSink() override { closelog(); }
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
-    {
-        auto strmsg = format_logmsg(msg, mode);
-        syslog(level_to_syslog_priority(msg.level), "%.*s", (int)strmsg.size(), strmsg.data());
-    }
-    void flush() override {}
-    std::string description() const override { return "Syslog"; }
-
-  private:
-    static int level_to_syslog_priority(int level)
-    {
-        switch (level)
-        {
-        case 0: // TRACE
-            return LOG_DEBUG;
-        case 1: // DEBUG
-            return LOG_DEBUG;
-        case 2: // INFO
-            return LOG_INFO;
-        case 3: // WARNING
-            return LOG_WARNING;
-        case 4: // ERROR
-            return LOG_ERR;
-        case 5: // SYSTEM
-            return LOG_CRIT;
-        default:
-            return LOG_INFO;
-        }
-    }
-};
-#endif
-
-#ifdef PLATFORM_WIN64
-class EventLogSink : public Sink
-{
-  public:
-    EventLogSink(const wchar_t *source_name)
-    {
-        handle_ = RegisterEventSourceW(nullptr, source_name);
-        if (!handle_)
-        {
-            throw std::runtime_error("Failed to register event source");
-        }
-    }
-    ~EventLogSink() override
-    {
-        if (handle_)
-            DeregisterEventSource(handle_);
-    }
-    void write(const LogMessage &msg, Sink::WRITE_MODE /*mode*/) override
-    {
-        if (!handle_)
-            return;
-        int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(),
-                                         static_cast<int>(msg.body.size()), nullptr, 0);
-        if (needed <= 0)
-        {
-            const wchar_t *empty_str = L"";
-            ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0,
-                         &empty_str, nullptr);
-            return;
-        }
-        std::wstring wbody(needed, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()),
-                            &wbody[0], needed);
-        const wchar_t *strings[1] = {wbody.c_str()};
-        ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, strings,
-                     nullptr);
-    }
-    void flush() override {}
-    std::string description() const override { return "Windows Event Log"; }
-
-  private:
-    HANDLE handle_ = nullptr;
-    static WORD level_to_eventlog_type(int level)
-    {
-        switch (level)
-        {
-        case 0: // TRACE
-        case 1: // DEBUG
-        case 2: // INFO
-            return EVENTLOG_INFORMATION_TYPE;
-        case 3: // WARNING
-            return EVENTLOG_WARNING_TYPE;
-        case 4: // ERROR
-        case 5: // SYSTEM
-            return EVENTLOG_ERROR_TYPE;
-        default:
-            return EVENTLOG_INFORMATION_TYPE;
-        }
-    }
-};
-#endif
 
 // Command Definitions
 struct SetSinkCommand
@@ -947,7 +804,7 @@ bool Logger::set_eventlog(const wchar_t *source_name)
 {
     if (!logger_is_loggable("Logger::set_eventlog"))
         return false;
-#ifdef PLATFORM_WIN64
+#ifdef PYLABHUB_PLATFORM_WIN64
     try
     {
         auto promise = std::make_shared<std::promise<bool>>();
