@@ -429,17 +429,14 @@ function(pylabhub_stage_libraries)
       set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
       # The commands to execute for staging this library
-      set(FULL_COMMANDS "")
-      list(APPEND FULL_COMMANDS ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers")
-      list(APPEND FULL_COMMANDS ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib") # Ensure lib dir exists
-      list(APPEND FULL_COMMANDS ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin") # Ensure bin dir exists
-      list(APPEND FULL_COMMANDS ${stage_commands_list})
-      list(APPEND FULL_COMMANDS ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}")
-      
       add_custom_command(
         OUTPUT "${STAGING_MARKER_FILE}"
         # Removed BYPRODUCTS to avoid generator expression issues
-        COMMAND ${FULL_COMMANDS}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin" # Ensure bin dir exists
+        COMMAND ${stage_commands_list}
+        COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
         DEPENDS ${DEPENDENCY_FILES}
         COMMENT "Staging library artifacts for ${TGT}"
         VERBATIM

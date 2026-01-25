@@ -766,7 +766,7 @@ void print_stack_trace(bool use_external_tools) noexcept
             // Print module info (always try to include if available from dladdr)
             if (!m.module_file_name.empty())
             {
-                safe_format_to_stderr(" , (Module: {} Base: {:#018x}, Offset: {:#x})",
+                safe_format_to_stderr(" , (module: {} base: {:#018x}, offset: {:#x})",
                                       m.module_file_name,
                                       static_cast<unsigned long long>(m.dli_fbase),
                                       static_cast<unsigned long long>(m.offset));
