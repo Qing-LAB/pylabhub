@@ -150,8 +150,12 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E touch \"${STAGING_MARKER_FILE}\")
       COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
       VERBATIM)
     
-    # Make the ATTACH_TO target depend on this marker file.
-    add_dependencies(${ARG_ATTACH_TO} "${STAGING_MARKER_FILE}")
+    # Create a custom target that depends on the marker file.
+    string(MAKE_C_IDENTIFIER "pylabhub_stage_target_dir_headers_${SCRIPT_ID}" _unique_stage_target_name)
+    add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+    # Make the ATTACH_TO target depend on this unique custom target.
+    add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
   endforeach()
 
   # Stage headers associated with targets
@@ -203,7 +207,12 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E touch \"${STAGING_MARKER_FILE}\")
         COMMENT "Staging headers for target ${TGT} to ${DEST_DIR}"
         VERBATIM)
       
-      add_dependencies(${ARG_ATTACH_TO} "${STAGING_MARKER_FILE}")
+      # Create a custom target that depends on the marker file.
+      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_tgt_headers_${TGT}" _unique_stage_target_name)
+      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+      # Make the ATTACH_TO target depend on this unique custom target.
+      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
     endif()
   endforeach()
 endfunction()
@@ -236,32 +245,26 @@ function(pylabhub_stage_executable)
 
   set(DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
   set(SOURCE_FILE "$<TARGET_FILE:${ARG_TARGET}>")
-  set(DEST_FILE_PATH "${DEST_DIR}/$<TARGET_FILE_NAME:${ARG_TARGET}>")
-
-  # Define the actual copy command.
+  
   set(COMMANDS "")
-  list(APPEND COMMANDS ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_FILE_PATH}")
+  list(APPEND COMMANDS ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_DIR}/") # Copy to directory
 
   set(DEPENDENCY_FILES ${ARG_TARGET} create_staging_dirs)
-  set(BYPRODUCTS_FILES "")
 
   if(MSVC)
     set(SOURCE_PDB "$<TARGET_PDB_FILE:${ARG_TARGET}>")
-    set(DEST_PDB_PATH "${DEST_DIR}/$<TARGET_PDB_FILE_NAME:${ARG_TARGET}>")
-    list(APPEND COMMANDS ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_PDB}" "${DEST_PDB_PATH}")
+    list(APPEND COMMANDS ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_PDB}" "${DEST_DIR}/") # Copy to directory
     list(APPEND DEPENDENCY_FILES "${SOURCE_PDB}")
-    list(APPEND BYPRODUCTS_FILES "${DEST_PDB_PATH}")
   endif()
 
   # Create a unique marker file that indicates this specific staging operation has completed.
-  # This marker file will be the OUTPUT of our custom command.
   string(MAKE_C_IDENTIFIER "stage_exe_${ARG_TARGET}_${ARG_DESTINATION}_marker" _marker_name)
   set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
   # Create the custom command that performs the copy and then touches the marker file.
   add_custom_command(
     OUTPUT "${STAGING_MARKER_FILE}"
-    BYPRODUCTS ${DEST_FILE_PATH} ${BYPRODUCTS_FILES}
+    # Removed BYPRODUCTS to avoid generator expression issues
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}" # Ensure destination dir exists
     COMMAND ${COMMANDS}
@@ -271,9 +274,12 @@ function(pylabhub_stage_executable)
     VERBATIM
   )
 
-  # Make the ATTACH_TO target depend on this marker file.
-  # This ensures the custom command runs only if the marker is outdated or missing.
-  add_dependencies(${ARG_ATTACH_TO} "${STAGING_MARKER_FILE}")
+  # Create a custom target that depends on the marker file.
+  string(MAKE_C_IDENTIFIER "pylabhub_stage_target_exe_${ARG_TARGET}_${ARG_DESTINATION}" _unique_stage_target_name)
+  add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+  # Make the ATTACH_TO target depend on this unique custom target.
+  add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
 
 endfunction()
 
@@ -405,13 +411,18 @@ function(pylabhub_stage_libraries)
         OUT_COMMANDS stage_commands_list
       )
 
-      # Extract actual staged file paths for BYPRODUCTS
-      set(staged_files_byproducts "")
-      foreach(cmd ${stage_commands_list})
-        if(cmd MATCHES "copy_if_different \"([^\"]*)\" \"([^\"]*)\"")
-          list(APPEND staged_files_byproducts "${CMAKE_MATCH_2}")
+      # Collect DEPENDS for the custom command
+      set(DEPENDENCY_FILES ${TGT} create_staging_dirs)
+      
+      # Extract actual staged file paths for BYPRODUCTS and add to DEPENDS if they are target files
+      get_target_property(TGT_TYPE ${TGT} TYPE)
+      if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY" OR TGT_TYPE STREQUAL "STATIC_LIBRARY")
+        list(APPEND DEPENDENCY_FILES "$<TARGET_FILE:${TGT}>")
+        if(MSVC)
+          list(APPEND DEPENDENCY_FILES "$<TARGET_PDB_FILE:${TGT}>")
+          list(APPEND DEPENDENCY_FILES "$<TARGET_LINKER_FILE:${TGT}>")
         endif()
-      endforeach()
+      endif()
 
       # Create a unique marker file that indicates this specific staging operation has completed.
       string(MAKE_C_IDENTIFIER "stage_lib_${TGT}_marker" _marker_name)
@@ -425,30 +436,21 @@ function(pylabhub_stage_libraries)
       list(APPEND FULL_COMMANDS ${stage_commands_list})
       list(APPEND FULL_COMMANDS ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}")
       
-      # Determine dependencies
-      get_target_property(TGT_TYPE ${TGT} TYPE)
-      set(DEPENDENCY_FILES ${TGT} create_staging_dirs)
-      # For STATIC_LIBRARY and SHARED_LIBRARY, the target file is a dependency
-      if(TGT_TYPE STREQUAL "STATIC_LIBRARY" OR TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
-        list(APPEND DEPENDENCY_FILES "$<TARGET_FILE:${TGT}>")
-        if(MSVC)
-          list(APPEND DEPENDENCY_FILES "$<TARGET_PDB_FILE:${TGT}>")
-          list(APPEND DEPENDENCY_FILES "$<TARGET_LINKER_FILE:${TGT}>")
-        endif()
-      endif()
-
-
       add_custom_command(
         OUTPUT "${STAGING_MARKER_FILE}"
-        BYPRODUCTS ${staged_files_byproducts}
+        # Removed BYPRODUCTS to avoid generator expression issues
         COMMAND ${FULL_COMMANDS}
         DEPENDS ${DEPENDENCY_FILES}
         COMMENT "Staging library artifacts for ${TGT}"
         VERBATIM
       )
 
-      # Make the ATTACH_TO target depend on this marker file.
-      add_dependencies(${ARG_ATTACH_TO} "${STAGING_MARKER_FILE}")
+      # Create a custom target that depends on the marker file.
+      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_lib_${TGT}" _unique_stage_target_name)
+      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+      # Make the ATTACH_TO target depend on this unique custom target.
+      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
 
     endif()
   endforeach()
