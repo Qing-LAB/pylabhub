@@ -106,8 +106,6 @@ template <typename... Args>
  * enabled/disabled or filtered.
  *
  * @tparam Args Variadic template arguments for the format string.
- * @param loc The source location (file, line, function) where `debug_msg` was called.
- *            Automatically captured by `PLH_HERE` or `std::source_location::current()`.
  * @param fmt_str The `fmt`-style format string for the debug message.
  * @param args The arguments to be formatted into `fmt_str`.
  */
@@ -147,8 +145,6 @@ inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args) noexc
  * them correctly.
  *
  * @tparam Args Variadic template arguments for the format string.
- * @param loc The source location (file, line, function) where `debug_msg_rt` was called.
- *            Automatically captured by `PLH_HERE` or `std::source_location::current()`.
  * @param fmt_str A `std::string_view` representing the `fmt`-style format string.
  * @param args The arguments to be formatted into `fmt_str`.
  */
@@ -183,7 +179,8 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
 /**
  * @brief Macro for calling `pylabhub::debug::panic` with automatic source location.
  * @details This macro provides a convenient way to trigger a fatal error with
- *          a compile-time checked format string.
+ *          a compile-time checked format string. It will record the place where the macro
+ *          is called.
  * @param ... Variable arguments to be formatted into `fmt`.
  * @see pylabhub::debug::panic
  */

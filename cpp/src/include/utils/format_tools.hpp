@@ -1,5 +1,11 @@
 // Tools for formatting string
 #pragma once
+#include <string>
+#include <string_view>
+#include <optional>
+#include <chrono>
+#include <filesystem>
+#include <fmt/format.h>      // or the specific fmt headers used
 
 namespace pylabhub::format_tools
 {
@@ -17,11 +23,11 @@ PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time
  * This function parses a string containing key-value pairs (e.g.,
  * "key1=val1; key2=val2") and returns the value for a specified key.
  * It handles whitespace around separators and assignment symbols.
- *
+ * 
+ * @param keyword The key to search for.
  * @param input The string_view to parse.
  * @param separator The character separating key-value pairs.
  * @param assignment_symbol The character separating a key from its value.
- * @param keyword The key to search for.
  * @return An std::optional<std::string> containing the value if found,
  *         otherwise std::nullopt.
  */
@@ -90,7 +96,7 @@ fmt::memory_buffer make_buffer_rt(fmt::string_view fmt_str, Args &&...args)
  * @param file_path A string_view of the full path.
  * @return A string_view of just the filename portion of the path.
  */
-constexpr std::string_view filename_only(std::string_view file_path)
+constexpr std::string_view filename_only(std::string_view file_path) noexcept
 {
     const auto last_slash = file_path.find_last_of('/');
     const auto last_backslash = file_path.find_last_of('\\');
