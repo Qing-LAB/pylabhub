@@ -68,15 +68,6 @@ pylabhub_stage_executable(
   ATTACH_TO stage_main_artifacts
 )
 
-# Stage the public headers for the core library.
-add_custom_command(TARGET stage_main_artifacts POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${CORE_HEADER_FILES}
-    "${PYLABHUB_STAGING_DIR}/include/"
-    COMMENT "Staging core headers"
-    VERBATIM
-)
-
 # Ensure the local staging target depends on both build targets before executing.
 add_dependencies(stage_main_artifacts pylabhub-hubshell create_staging_dirs)
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_main_artifacts)
