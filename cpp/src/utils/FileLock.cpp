@@ -1,16 +1,9 @@
-
-#include <condition_variable>
-#include <functional>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
-
-#include "plh_base.hpp"
-
+// FileLock.cpp
 #if defined(PLATFORM_WIN64)
 #define WIN32_LEAN_AND_MEAN
-#include <sstream>
+#define NOMINMAX
 #include <windows.h>
+#include <sstream>
 #else
 #include <fcntl.h>
 #include <sys/file.h> // added for flock
@@ -19,6 +12,14 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
+
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+
+#include "plh_base.hpp"
 
 #include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
