@@ -113,7 +113,9 @@ project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 # that enables the PYLABHUB_UTILS_EXPORT macro to work correctly on Linux/macOS,
 # preventing symbol clashes between shared libraries and the executable.
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-# set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+
+include(SanitizeDebugInformation)
 
 # --- Set RPATH for staged/installed executables ---
 # This ensures that executables can find shared libraries in a relative path.
@@ -188,6 +190,7 @@ message(STATUS "PYLABHUB_ENABLE_CLANG_TIDY = ${PYLABHUB_ENABLE_CLANG_TIDY}")
 message(STATUS "BUILD_TESTS = ${BUILD_TESTS}")
 message(STATUS "PYLABHUB_ATOMICGUARD_STRESS_LEVEL = ${PYLABHUB_ATOMICGUARD_STRESS_LEVEL}")
 message(STATUS "PYLABHUB_LOGGER_COMPILE_LEVEL = ${PYLABHUB_LOGGER_COMPILE_LEVEL}")
+message(STATUS "PYLABHUB_ENABLE_DEBUG_MESSAGES = ${PYLABHUB_ENABLE_DEBUG_MESSAGES}")
 message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")
