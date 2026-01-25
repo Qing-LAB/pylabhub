@@ -14,8 +14,7 @@ FileSink::FileSink(const std::string &path, bool use_flock)
     }
     catch (const std::system_error &e)
     {
-        throw std::runtime_error(
-            fmt::format("Failed to open log file '{}': {}", path, e.what()));
+        throw std::runtime_error(fmt::format("Failed to open log file '{}': {}", path, e.what()));
     }
 }
 
@@ -23,7 +22,7 @@ FileSink::~FileSink() = default;
 
 void FileSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
-    auto strmsg = format_logmsg(msg, mode);
+    auto strmsg = pylabhub::utils::Sink::format_logmsg(msg, mode);
     BaseFileSink::fwrite(strmsg);
 }
 
