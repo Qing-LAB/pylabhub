@@ -537,7 +537,8 @@ if(_remap_flags)
 
     if(_msvc_remap_flags)
       list(REMOVE_DUPLICATES _msvc_remap_flags)
-      add_compile_options(${_msvc_remap_flags})
+      # /pathmap requires /experimental:deterministic for MSVC to be effective.
+      add_compile_options(${_msvc_remap_flags} /experimental:deterministic)
     endif()
   endif()
 else()
