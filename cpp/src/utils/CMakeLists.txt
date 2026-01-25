@@ -18,8 +18,11 @@ set(UTILS_SOURCES
   platform.cpp
   Lifecycle.cpp
   FileLock.cpp
-  BaseFileSink.cpp
-  RotatingFileSink.cpp
+  logger_sinks/BaseFileSink.cpp
+  logger_sinks/RotatingFileSink.cpp
+  logger_sinks/FileSink.cpp
+  logger_sinks/SyslogSink.cpp
+  logger_sinks/EventLogSink.cpp
   Logger.cpp
   JsonConfig.cpp  
   SharedMemoryHub.cpp

@@ -3,11 +3,7 @@
 #include <stdexcept>
 #include <system_error>
 
-#ifdef PYLABHUB_PLATFORM_WIN64
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#else
+#if defined(PYLABHUB_IS_POSIX)
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
