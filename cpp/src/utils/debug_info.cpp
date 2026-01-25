@@ -58,6 +58,7 @@
 #endif // platform selection
 
 #include "utils/debug_info.hpp"
+#include "utils/format_tools.hpp"
 
 namespace pylabhub::debug
 {
@@ -80,6 +81,21 @@ class DbgHelpInitializer
 };
 
 static DbgHelpInitializer g_dbghelp_initializer;
+
+// Struct to hold collected debug info for a single frame on Windows
+struct WinFrameMeta
+{
+    int idx{};
+    uintptr_t addr{};
+    std::string symbol_name;
+    uintptr_t symbol_displacement{};
+    std::string file_name;
+    DWORD line_number{};
+    std::string module_full_path;
+    std::string module_file_name;
+    uintptr_t module_base_address{};
+    uintptr_t module_offset{};
+};
 
 } // namespace
 #endif
@@ -336,9 +352,7 @@ void print_stack_trace(bool use_external_tools) noexcept
     {
 #if defined(PYLABHUB_PLATFORM_WIN64)
         (void)use_external_tools; // This flag has no effect on Windows
-        safe_format_to_stderr("Stack Trace (most recent call first):\n");
-
-        // Windows implementation: unchanged behavior, kept concise
+        // Windows implementation: two-phase approach
         constexpr int kMaxFrames = 62;
         void *frames[kMaxFrames] = {nullptr};
         USHORT framesCaptured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
@@ -361,42 +375,79 @@ void print_stack_trace(bool use_external_tools) noexcept
         std::memset(&lineInfo, 0, sizeof(lineInfo));
         lineInfo.SizeOfStruct = sizeof(lineInfo);
 
+        std::vector<WinFrameMeta> metas;
+        metas.reserve(framesCaptured);
+
         for (USHORT i = 0; i < framesCaptured; ++i)
         {
-            uintptr_t addr = reinterpret_cast<uintptr_t>(frames[i]);
-            safe_format_to_stderr("  #{:02}  {:#018x}  ", i, static_cast<unsigned long long>(addr));
-            bool printed = false;
+            WinFrameMeta m;
+            m.idx = i;
+            m.addr = reinterpret_cast<uintptr_t>(frames[i]);
 
             DWORD64 displacement = 0;
-            if (symbol && SymFromAddr(process, static_cast<DWORD64>(addr), &displacement, symbol))
+            if (symbol && SymFromAddr(process, static_cast<DWORD64>(m.addr), &displacement, symbol))
             {
-                safe_format_to_stderr("{} + {:#x}", symbol->Name,
-                                      static_cast<unsigned long long>(displacement));
-                printed = true;
+                m.symbol_name = symbol->Name;
+                m.symbol_displacement = static_cast<uintptr_t>(displacement);
             }
 
             DWORD displacementLine = 0;
-            if (SymGetLineFromAddr64(process, static_cast<DWORD64>(addr), &displacementLine,
+            if (SymGetLineFromAddr64(process, static_cast<DWORD64>(m.addr), &displacementLine,
                                      &lineInfo))
             {
-                const char *fname = lineInfo.FileName ? lineInfo.FileName : "(unknown)";
-                safe_format_to_stderr(" -- {}:{}", fname, lineInfo.LineNumber);
-                printed = true;
+                m.file_name = lineInfo.FileName ? lineInfo.FileName : "";
+                m.line_number = lineInfo.LineNumber;
             }
 
-            if (!printed)
+            IMAGEHLP_MODULE64 modInfo;
+            std::memset(&modInfo, 0, sizeof(modInfo));
+            modInfo.SizeOfStruct = sizeof(modInfo);
+            if (SymGetModuleInfo64(process, static_cast<DWORD64>(m.addr), &modInfo))
             {
-                IMAGEHLP_MODULE64 modInfo;
-                std::memset(&modInfo, 0, sizeof(modInfo));
-                modInfo.SizeOfStruct = sizeof(modInfo);
-                if (SymGetModuleInfo64(process, static_cast<DWORD64>(addr), &modInfo))
+                m.module_full_path = modInfo.ImageName         ? modInfo.ImageName
+                                   : modInfo.LoadedImageName ? modInfo.LoadedImageName
+                                                             : "";
+                m.module_file_name = pylabhub::format_tools::filename_only(m.module_full_path);
+                m.module_base_address = static_cast<uintptr_t>(modInfo.BaseOfImage);
+                m.module_offset = m.addr - m.module_base_address;
+            }
+            metas.push_back(std::move(m));
+        }
+
+        // --- Phase 1: Print safe, concise information immediately ---
+        safe_format_to_stderr("Stack Trace (most recent call first):\n");
+        for (const auto &m : metas)
+        {
+            safe_format_to_stderr("  #{:02}  {:#018x}  ", m.idx,
+                                  static_cast<unsigned long long>(m.addr));
+            bool printed_symbol_or_line = false;
+            if (!m.symbol_name.empty())
+            {
+                safe_format_to_stderr("{} + {:#x}", m.symbol_name,
+                                      static_cast<unsigned long long>(m.symbol_displacement));
+                printed_symbol_or_line = true;
+            }
+
+            if (!m.file_name.empty())
+            {
+                if (!printed_symbol_or_line)
+                { // If symbol wasn't printed, start with file:line
+                    safe_format_to_stderr("{}:{}", m.file_name, m.line_number);
+                }
+                else
+                { // If symbol was printed, append file:line
+                    safe_format_to_stderr(" -- {}:{}", m.file_name, m.line_number);
+                }
+                printed_symbol_or_line = true;
+            }
+
+            if (!printed_symbol_or_line)
+            {
+                if (!m.module_file_name.empty())
                 {
-                    const char *img = modInfo.ImageName         ? modInfo.ImageName
-                                      : modInfo.LoadedImageName ? modInfo.LoadedImageName
-                                                                : "(unknown)";
-                    uintptr_t base = static_cast<uintptr_t>(modInfo.BaseOfImage);
-                    safe_format_to_stderr("(module: {}) + {:#x}", img,
-                                          static_cast<unsigned long long>(addr - base));
+                    safe_format_to_stderr("(module: {} @ {:#018x} + {:#x})", m.module_file_name,
+                                          static_cast<unsigned long long>(m.module_base_address),
+                                          static_cast<unsigned long long>(m.module_offset));
                 }
                 else
                 {
@@ -405,6 +456,38 @@ void print_stack_trace(bool use_external_tools) noexcept
             }
             safe_format_to_stderr("\n");
         }
+        std::fflush(stderr); // Ensure safe info is visible before risky phase
+
+        if (!use_external_tools)
+        {
+            return;
+        }
+
+        // --- Phase 2: Attempt to resolve symbols with external tools (Verbose Windows Output) ---
+        safe_format_to_stderr("\n--- External Symbol Resolution (Verbose Windows Output) ---\n");
+        for (const auto &m : metas)
+        {
+            safe_format_to_stderr("  #{:02} -> {:#018x} ", m.idx,
+                                  static_cast<unsigned long long>(m.addr));
+            if (!m.symbol_name.empty())
+            {
+                safe_format_to_stderr("[{} + {:#x} at", m.symbol_name,
+                                      static_cast<unsigned long long>(m.symbol_displacement));
+            }
+            if (!m.file_name.empty())
+            {
+                safe_format_to_stderr("{}:{} ", m.file_name, m.line_number);
+            }
+            if (!m.module_file_name.empty())
+            {
+                safe_format_to_stderr(", (module: {} base: {:#018x}, offset: {:#x})]",
+                                      m.module_file_name,
+                                      static_cast<unsigned long long>(m.module_base_address),
+                                      static_cast<unsigned long long>(m.module_offset));
+            }
+            safe_format_to_stderr("\n");
+        }
+        std::fflush(stderr);
 
 #elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
 
@@ -429,6 +512,7 @@ void print_stack_trace(bool use_external_tools) noexcept
             void *saddr{};         // symbol address returned by dladdr
             std::string demangled; // demangled symbol name if available
             std::string dli_fname; // dli fname
+            std::string module_file_name;
             uintptr_t dli_fbase{}; // module base
         };
 
@@ -464,6 +548,7 @@ void print_stack_trace(bool use_external_tools) noexcept
                 if (dlinfo.dli_fname)
                 {
                     m.dli_fname = dlinfo.dli_fname;
+                    m.module_file_name = pylabhub::format_tools::filename_only(m.dli_fname);
                     uintptr_t base = reinterpret_cast<uintptr_t>(dlinfo.dli_fbase);
                     m.dli_fbase = base;
                     if (base != 0)
@@ -500,11 +585,12 @@ void print_stack_trace(bool use_external_tools) noexcept
 
             if (!printed)
             {
-                if (!m.dli_fname.empty())
-                    safe_format_to_stderr("({}) + {:#x}", m.dli_fname,
+                if (!m.module_file_name.empty())
+                    safe_format_to_stderr("(module: {} @ {:#018x} + {:#x})", m.module_file_name,
+                                          static_cast<unsigned long long>(m.dli_fbase),
                                           static_cast<unsigned long long>(m.offset));
                 else
-                    safe_format_to_stderr("[unknown]");
+                    safe_format_to_stderr("[symbol unknown]");
             }
             safe_format_to_stderr("\n");
         }
@@ -523,9 +609,13 @@ void print_stack_trace(bool use_external_tools) noexcept
         // --- Phase 2: Attempt to resolve symbols with external tools ---
         safe_format_to_stderr("\n--- External Symbol Resolution ---\n");
 
+        // We need a map from actual frame index to the resolved string.
+        std::map<int, std::string> resolved_symbols_by_frame_idx;
+
         std::map<std::string, std::vector<int>> binToIdx;
         for (size_t i = 0; i < metas.size(); ++i)
         {
+            // Use the module's full path for grouping, as addr2line/atos expect it.
             const std::string &fname = metas[i].dli_fname.empty() ? exe_path : metas[i].dli_fname;
             std::string key = fname.empty() ? std::string("[unknown]") : fname;
             binToIdx[key].push_back(static_cast<int>(i));
@@ -534,11 +624,15 @@ void print_stack_trace(bool use_external_tools) noexcept
         for (auto &kv : binToIdx)
         {
             const std::string &binary = kv.first;
-            const std::vector<int> &indices = kv.second;
-            std::vector<std::string> results;
+            const std::vector<int> &indices = kv.second; // These are frame indices for this binary
+            std::vector<std::string> tool_results; // Raw output from addr2line/atos
 
             if (binary == "[unknown]" || binary.empty())
             {
+                // We cannot symbolize unknown binaries
+                for (int frame_idx : indices) {
+                    resolved_symbols_by_frame_idx[frame_idx] = "[could not resolve - unknown binary]";
+                }
                 continue;
             }
 
@@ -555,7 +649,7 @@ void print_stack_trace(bool use_external_tools) noexcept
                     if (base_for_bin == 0 && metas[idx].dli_fbase != 0)
                         base_for_bin = metas[idx].dli_fbase;
                 }
-                results = internal::resolve_with_atos(binary, std::span(addrs.data(), addrs.size()),
+                tool_results = internal::resolve_with_atos(binary, std::span(addrs.data(), addrs.size()),
                                                       base_for_bin);
             }
             else // fallback to addr2line on mac
@@ -564,7 +658,7 @@ void print_stack_trace(bool use_external_tools) noexcept
                 offsets.reserve(indices.size());
                 for (int idx : indices)
                     offsets.push_back(metas[idx].offset);
-                results = internal::resolve_with_addr2line(
+                tool_results = internal::resolve_with_addr2line(
                     binary, std::span(offsets.data(), offsets.size()),
                     internal::find_in_path("llvm-addr2line"));
             }
@@ -573,19 +667,88 @@ void print_stack_trace(bool use_external_tools) noexcept
             offsets.reserve(indices.size());
             for (int idx : indices)
                 offsets.push_back(metas[idx].offset);
-            results = internal::resolve_with_addr2line(
+            tool_results = internal::resolve_with_addr2line(
                 binary, std::span(offsets.data(), offsets.size()), false);
 #endif
-            // Print results for this binary
-            for (size_t i = 0; i < results.size(); ++i)
+            // Map tool_results back to frame indices
+            for (size_t i = 0; i < tool_results.size(); ++i)
             {
-                if (i < indices.size() && !results[i].empty() && results[i] != "??" &&
-                    results[i].find("??") == std::string::npos)
+                if (i < indices.size() && !tool_results[i].empty() && tool_results[i] != "??" &&
+                    tool_results[i].find("??") == std::string::npos)
                 {
-                    safe_format_to_stderr("  #{:02} -> [{}]\n", indices[i], results[i]);
+                    resolved_symbols_by_frame_idx[indices[i]] = tool_results[i];
+                } else {
+                    resolved_symbols_by_frame_idx[indices[i]] = "[could not resolve]";
                 }
             }
-        }
+        } // end of binToIdx loop
+
+        // Now print all frames using the resolved_symbols_by_frame_idx map
+        for (size_t i = 0; i < metas.size(); ++i)
+        {
+            const auto &m = metas[i];
+            std::string resolved_str = resolved_symbols_by_frame_idx.count(m.idx) ? resolved_symbols_by_frame_idx.at(m.idx) : "[not processed by external tools]";
+
+            // Attempt to parse resolved_str
+            std::string symbol_name;
+            std::string file_line; // file:line or just file
+
+            // addr2line format: "function_name at file:line"
+            // atos format: "function_name (file:line)" or "function_name"
+            // atos format with offset: "function_name + 0xSOMETHING (file:line)"
+
+            // Try to find " at " first (addr2line style)
+            size_t at_pos = resolved_str.find(" at ");
+            if (at_pos != std::string::npos) {
+                symbol_name = resolved_str.substr(0, at_pos);
+                file_line = resolved_str.substr(at_pos + 4);
+            } else {
+                // Then try parsing for atos-like output: "function_name (file:line)"
+                size_t open_paren = resolved_str.find('(');
+                size_t close_paren = resolved_str.rfind(')');
+                if (open_paren != std::string::npos && close_paren != std::string::npos && close_paren > open_paren) {
+                    symbol_name = resolved_str.substr(0, open_paren);
+                    // Trim trailing space from symbol_name
+                    symbol_name.erase(symbol_name.find_last_not_of(' ') + 1);
+                    file_line = resolved_str.substr(open_paren + 1, close_paren - (open_paren + 1));
+                } else {
+                    // Fallback: entire string is symbol_name, no file:line
+                    symbol_name = resolved_str;
+                    file_line = "";
+                }
+            }
+
+            safe_format_to_stderr("  #{:02} -> {:#018x} ", m.idx, static_cast<unsigned long long>(m.addr));
+            safe_format_to_stderr("[");
+
+            // Print symbol info
+            if (!symbol_name.empty() && symbol_name != "[could not resolve]" && symbol_name != "[could not resolve - unknown binary]") {
+                // If dladdr provided a symbol address, calculate offset from that.
+                // Otherwise, the tool_results might have an offset already (e.g., atos) or we just use module offset.
+                uintptr_t print_offset = m.offset; // Default to module offset
+                if (m.saddr != nullptr) {
+                    print_offset = m.addr - reinterpret_cast<uintptr_t>(m.saddr);
+                }
+                safe_format_to_stderr("{} + {:#x}", symbol_name, static_cast<unsigned long long>(print_offset));
+            } else {
+                safe_format_to_stderr("{}", resolved_str); // Print raw resolved_str if parsing failed or generic message
+            }
+
+            // Print file:line if available
+            if (!file_line.empty()) {
+                safe_format_to_stderr(" at {}", file_line);
+            }
+
+            // Print module info (always try to include if available from dladdr)
+            if (!m.module_file_name.empty())
+            {
+                safe_format_to_stderr(" , (Module: {} Base: {:#018x}, Offset: {:#x})",
+                                      m.module_file_name,
+                                      static_cast<unsigned long long>(m.dli_fbase),
+                                      static_cast<unsigned long long>(m.offset));
+            }
+            safe_format_to_stderr("]\n");
+        } // end of printing loop
         std::fflush(stderr);
 
 #else
