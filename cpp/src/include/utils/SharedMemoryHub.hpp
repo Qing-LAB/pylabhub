@@ -16,7 +16,6 @@
 #pragma warning(disable : 4251)
 #endif
 
-
 namespace pylabhub::hub
 {
 
@@ -481,4 +480,3 @@ PYLABHUB_UTILS_EXPORT bool lifecycle_initialized() noexcept;
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
-

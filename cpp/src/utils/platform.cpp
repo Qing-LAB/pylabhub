@@ -6,8 +6,6 @@
 #pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
 #endif
 
-
-
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib

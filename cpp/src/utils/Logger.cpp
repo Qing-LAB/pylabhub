@@ -188,8 +188,6 @@ class CallbackDispatcher
     std::atomic<bool> shutdown_requested_;
 };
 
-
-
 // Command Definitions
 struct SetSinkCommand
 {

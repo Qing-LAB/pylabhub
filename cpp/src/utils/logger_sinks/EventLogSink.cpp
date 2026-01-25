@@ -25,21 +25,20 @@ void EventLogSink::write(const LogMessage &msg, Sink::WRITE_MODE /*mode*/)
 {
     if (!handle_)
         return;
-    int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(),
-                                     static_cast<int>(msg.body.size()), nullptr, 0);
+    int needed = MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()),
+                                     nullptr, 0);
     if (needed <= 0)
     {
         const wchar_t *empty_str = L"";
-        ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0,
-                     &empty_str, nullptr);
+        ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, &empty_str,
+                     nullptr);
         return;
     }
     std::wstring wbody(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()),
-                        &wbody[0], needed);
+    MultiByteToWideChar(CP_UTF8, 0, msg.body.data(), static_cast<int>(msg.body.size()), &wbody[0],
+                        needed);
     const wchar_t *strings[1] = {wbody.c_str()};
-    ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, strings,
-                 nullptr);
+    ReportEventW(handle_, level_to_eventlog_type(msg.level), 0, 0, nullptr, 1, 0, strings, nullptr);
 }
 
 void EventLogSink::flush()
