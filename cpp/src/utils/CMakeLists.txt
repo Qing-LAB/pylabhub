@@ -18,6 +18,7 @@ set(UTILS_SOURCES
   platform.cpp
   Lifecycle.cpp
   FileLock.cpp
+  logger_sinks/Sink.cpp
   logger_sinks/BaseFileSink.cpp
   logger_sinks/RotatingFileSink.cpp
   logger_sinks/FileSink.cpp
@@ -217,14 +218,6 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
           "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
           "${PYLABHUB_STAGING_DIR}/include/"
   COMMENT "Staging generated export header for pylabhub-utils"
-)
-
-# Stage the public headers for this library to match the installation.
-add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/src/include/utils"
-          "${PYLABHUB_STAGING_DIR}/include/utils"
-  COMMENT "Staging public headers for pylabhub-utils"
 )
 
 # Register this local staging target with the global build system.
