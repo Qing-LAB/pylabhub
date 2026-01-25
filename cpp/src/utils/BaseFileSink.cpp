@@ -1,5 +1,4 @@
 #include "plh_base.hpp"
-#include "BaseFileSink.hpp"
 
 #include <stdexcept>
 #include <system_error>
@@ -13,6 +12,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "BaseFileSink.hpp"
 
 namespace pylabhub::utils
 {
@@ -33,6 +34,12 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
 #ifdef PYLABHUB_PLATFORM_WIN64
     (void)m_use_flock; // Prevent unused parameter warning on Windows
     std::wstring wpath = pylabhub::format_tools::win32_to_long_path(m_path);
+    if (wpath.empty())
+    {
+        throw std::filesystem::filesystem_error("Failed to convert path to Win32 long-path form",
+                                                m_path,
+                                                std::make_error_code(std::errc::invalid_argument));
+    }
     m_file_handle = CreateFileW(wpath.c_str(), FILE_APPEND_DATA,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

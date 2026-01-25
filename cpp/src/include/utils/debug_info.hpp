@@ -12,6 +12,28 @@
 // -- Debugging utilities: stack trace printing, panic and debug messages
 #pragma once
 
+#include "utils/format_tools.hpp" // for pylabhub::format_tools::filename_only
+#include <cstdio>                 // for fflush
+#include <fmt/format.h>           // for fmt::format_string, fmt::print, fmt::format
+#include <source_location>        // for std::source_location
+#include <string>                 // for std::string
+#include <string_view>            // for std::string_view
+
+// ---------------- thin macros for convenience --------------
+/**
+ * @brief Macro to capture the current source location.
+ * @details Expands to `std::source_location::current()`.
+ */
+inline std::string SRCLOC_TO_STR(std::source_location loc)
+{
+    return fmt::format("{}:{}:{}", pylabhub::format_tools::filename_only(loc.file_name()),
+                       loc.line(), loc.function_name());
+}
+
+#ifndef PLH_LOC_HERE_STR
+#define PLH_LOC_HERE_STR (SRCLOC_TO_STR(std::source_location::current()))
+#endif
+
 namespace pylabhub::debug
 {
 
@@ -22,19 +44,27 @@ namespace pylabhub::debug
  * the program's call stack. On Windows, it uses `CaptureStackBackTrace` and `DbgHelp`
  * functions to resolve symbols and line numbers. On POSIX systems, it uses
  * `backtrace`, `backtrace_symbols`, `dladdr`, and `addr2line` (if available)
- * to provide detailed stack information.
+ * to provide detailed stack information. This is implemented as a two-phase process:
+ * 1. An immediate, safe print of in-process information (e.g., from `dladdr`).
+ * 2. A conditional, secondary print of detailed line numbers from external
+ *    tools like `addr2line` or `atos`. This phase can be disabled for safety.
+ *
+ * @param use_external_tools If `false` (default), only the fast and safe
+ *        in-process symbol resolution is performed. If `true`, the function will
+ *        also attempt to call external tools for more detailed symbols, which
+ *        carries a minor risk of hanging in multithreaded contexts. This
+ *        parameter has no effect on Windows.
  *
  * Errors during stack trace capture or symbol resolution are reported to `stderr`.
  */
-PYLABHUB_UTILS_EXPORT void print_stack_trace() noexcept;
+PYLABHUB_UTILS_EXPORT void print_stack_trace(bool use_external_tools = false) noexcept;
 
 /**
  * @brief Halts program execution with a fatal error message and prints a stack trace.
  *
  * This function is intended for unrecoverable errors. It formats and prints an
  * error message to `stderr`, along with the source location where `panic` was called.
- * It then calls `print_stack_trace()` and `std::abort()`, ensuring the program terminates
- * immediately.
+ * It then calls `print_stack_trace(true)` for a detailed trace and `std::abort()`.
  *
  * The format string is checked at compile-time using `fmt::format_string`.
  * Exception handling is included to prevent further issues if formatting itself fails.
@@ -47,26 +77,29 @@ PYLABHUB_UTILS_EXPORT void print_stack_trace() noexcept;
  * @noreturn This function never returns.
  */
 template <typename... Args>
-[[noreturn]] inline void panic(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+[[noreturn]] inline void panic(std::source_location loc, fmt::format_string<Args...> fmt_str,
+                               Args &&...args) noexcept
 {
     try
     {
         const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "[PANIC] {}\n", body);
+        fmt::print(stderr, "[PANIC] {} -- {}\n", SRCLOC_TO_STR(loc), body);
     }
     catch (const fmt::format_error &e)
     {
         fmt::print(stderr,
-                   "[PANIC]  FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
+                   "[PANIC] {} -- FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
                    "[PANIC]  Exception: '{}'\n",
-                   fmt_str.get(), e.what());
+                   SRCLOC_TO_STR(loc), fmt_str.get(), e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
-        fmt::print(stderr, "[PANIC]  FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
-                   fmt_str.get());
+        fmt::print(stderr, "[PANIC] {} -- FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
+                   SRCLOC_TO_STR(loc), fmt_str.get());
+        std::fflush(stderr);
     }
-    print_stack_trace();
+    print_stack_trace(true); // Go for max detail on panic, accepting the risks.
     std::abort();
 }
 
@@ -81,8 +114,6 @@ template <typename... Args>
  * enabled/disabled or filtered.
  *
  * @tparam Args Variadic template arguments for the format string.
- * @param loc The source location (file, line, function) where `debug_msg` was called.
- *            Automatically captured by `PLH_HERE` or `std::source_location::current()`.
  * @param fmt_str The `fmt`-style format string for the debug message.
  * @param args The arguments to be formatted into `fmt_str`.
  */
@@ -100,11 +131,13 @@ inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args) noexc
                    "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG: fmt_str['{}']\n"
                    "[DBG]  Exception: '{}'\n",
                    fmt_str.get(), e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
         fmt::print(stderr, "[DBG]  FATAL EXCEPTION DURING DEBUG_MSG: fmt_str['{}']\n",
                    fmt_str.get());
+        std::fflush(stderr);
     }
 }
 
@@ -120,8 +153,6 @@ inline void debug_msg(fmt::format_string<Args...> fmt_str, Args &&...args) noexc
  * them correctly.
  *
  * @tparam Args Variadic template arguments for the format string.
- * @param loc The source location (file, line, function) where `debug_msg_rt` was called.
- *            Automatically captured by `PLH_HERE` or `std::source_location::current()`.
  * @param fmt_str A `std::string_view` representing the `fmt`-style format string.
  * @param args The arguments to be formatted into `fmt_str`.
  */
@@ -140,41 +171,30 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
                    "[DBG]  FATAL FORMAT ERROR DURING DEBUG_MSG_RT: fmt_str['{}']\n"
                    "[DBG]  Exception: '{}'\n",
                    fmt_str, e.what());
+        std::fflush(stderr);
     }
     catch (...)
     {
         fmt::print(stderr, "[DBG]  FATAL UNKNOWN EXCEPTION DURING DEBUG_MSG_RT: fmt_str['{}']\n",
                    fmt_str);
+        std::fflush(stderr);
     }
 }
 
 } // namespace pylabhub::debug
 
-// ---------------- thin macros for convenience --------------
-/**
- * @brief Macro to capture the current source location.
- * @details Expands to `std::source_location::current()`.
- */
-inline std::string SRCLOC_TO_STR(std::source_location loc)
-{
-    return fmt::format("{}:{}:{}", pylabhub::format_tools::filename_only(loc.file_name()),
-                       loc.line(), loc.function_name());
-}
-
-#ifndef PLH_LOC_HERE_STR
-#define PLH_LOC_HERE_STR (SRCLOC_TO_STR(std::source_location::current()))
-#endif
-
 /**
  * @brief Macro for calling `pylabhub::debug::panic` with automatic source location.
  * @details This macro provides a convenient way to trigger a fatal error with
- *          a compile-time checked format string.
- * @param fmt The `fmt`-style format string literal.
+ *          a compile-time checked format string. It will record the place where the macro
+ *          is called.
  * @param ... Variable arguments to be formatted into `fmt`.
  * @see pylabhub::debug::panic
  */
 #ifndef PLH_PANIC
-#define PLH_PANIC(fmt, ...) ::pylabhub::debug::panic(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+#define PLH_PANIC(fmt, ...)                                                                        \
+    ::pylabhub::debug::panic(std::source_location::current(),                                      \
+                             FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
 #endif
 
 /**
