@@ -19,7 +19,7 @@ SyslogSink::~SyslogSink()
 
 void SyslogSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
-    auto strmsg = format_logmsg(msg, mode);
+    auto strmsg = pylabhub::utils::Sink::format_logmsg(msg, mode);
     syslog(level_to_syslog_priority(msg.level), "%.*s", (int)strmsg.size(), strmsg.data());
 }
 
