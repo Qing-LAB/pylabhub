@@ -81,6 +81,12 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
 
 #ifdef PLATFORM_WIN64
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
+        if (wpath.empty())
+        {
+            ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            return false;
+        }
+
         // Create a temporary file that is deleted immediately on close.
         HANDLE h = CreateFileW(wpath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);

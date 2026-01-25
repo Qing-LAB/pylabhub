@@ -34,8 +34,15 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
     {
 #if defined(PLATFORM_WIN64)
         std::wstring longw = pylabhub::format_tools::win32_to_long_path(lockpath);
+
+        if (longw.empty())
+        {
+            return lockpath.generic_string();
+        }
+
         for (auto &ch : longw)
             ch = towlower(ch);
+
         return pylabhub::format_tools::ws2s(longw);
 #else
         // Use the lexically-normal absolute representation for a deterministic key
@@ -59,7 +66,13 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::path &lockpath)
 {
 #if defined(PLATFORM_WIN64)
-    return std::filesystem::path(pylabhub::format_tools::win32_to_long_path(lockpath));
+    auto wpath = pylabhub::format_tools::win32_to_long_path(lockpath);
+    if (wpath.empty())
+    {
+        return lockpath;
+    }
+    
+    return std::filesystem::path(wpath);
 #else
     return lockpath;
 #endif
@@ -497,6 +510,10 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     try
     {
         wpath = pylabhub::format_tools::win32_to_long_path(os_path);
+        if (wpath.empty())
+        {
+            return false;
+        }
     }
     catch (...)
     {

@@ -1,3 +1,4 @@
+// format_tools.cpp
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -39,7 +40,11 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp)
     // no runtime support detected — fallback to manual two-step method
     auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
     auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-    int fractional_us = static_cast<int>((tp_us - secs).count());
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(tp_us - secs).count();
+    // normalize to 0..999999 even for negative timestamps
+    int fractional_us = static_cast<int>(us % 1000000);
+    if (fractional_us < 0)
+        fractional_us += 1000000;
     auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
     return fmt::format("{}.{:06d}", sec_part, fractional_us);
 #endif
@@ -56,12 +61,19 @@ static inline std::wstring normalize_backslashes(std::wstring s)
 
 /// Convert a path to Win32 long-path form with \\?\ or \\?\UNC\ prefix.
 /// If path is already prefixed, return it unchanged. Caller should pass an absolute or relative
-/// path.
+/// path. When error encountered, return a blank wstring
 std::wstring win32_to_long_path(const std::filesystem::path &p_in)
 {
+    std::error_code ec;
     std::filesystem::path abs = p_in;
     if (!abs.is_absolute())
-        abs = std::filesystem::absolute(abs);
+    {
+        abs = std::filesystem::absolute(abs, ec);
+        if (ec)
+        {
+            return std::wstring{};
+        }
+    }
     std::wstring ws = abs.wstring();
     ws = normalize_backslashes(ws);
 
@@ -111,8 +123,11 @@ std::wstring s2ws(const std::string &s)
 
     std::wstring w(required, L'\0');
 
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()),
+    int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()),
                         w.data(), required);
+
+    if(written == 0)
+        return {};
 
     return w;
 }
@@ -131,8 +146,11 @@ std::string ws2s(const std::wstring &w)
 
     std::string s(required, '\0');
 
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
+    int written = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
                         s.data(), required, nullptr, nullptr);
+
+    if(written == 0)
+        return {};
 
     return s;
 }
@@ -164,7 +182,7 @@ std::string ws2s([[maybe_unused]] const std::wstring &w)
 
 // Helper to trim whitespace from both ends of a string_view.
 // It's defined in an anonymous namespace to limit its scope to this file.
-constexpr std::string_view trim_whitespace(std::string_view s)
+constexpr std::string_view trim_whitespace(std::string_view s) noexcept
 {
     constexpr std::string_view whitespace = " \t\n\r\f\v";
 
@@ -172,7 +190,7 @@ constexpr std::string_view trim_whitespace(std::string_view s)
     if (first == std::string_view::npos)
     {
         // all whitespace
-        return std::string_view{};
+        return s.substr(0, 0);
     }
     auto last = s.find_last_not_of(whitespace);
     // substr takes (pos, count). last >= first so count = last-first+1
