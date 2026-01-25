@@ -10,12 +10,12 @@
 #include <stdexcept>
 #include <variant>
 
- #include "plh_base.hpp"
-#include "Sink.hpp"
 #include "RotatingFileSink.hpp"
+#include "Sink.hpp"
+#include "plh_base.hpp"
 
-#include "utils/Logger.hpp"
 #include "utils/Lifecycle.hpp"
+#include "utils/Logger.hpp"
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
@@ -81,6 +81,12 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
 
 #ifdef PLATFORM_WIN64
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
+        if (wpath.empty())
+        {
+            ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            return false;
+        }
+
         // Create a temporary file that is deleted immediately on close.
         HANDLE h = CreateFileW(wpath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
@@ -190,7 +196,10 @@ class CallbackDispatcher
 class ConsoleSink : public Sink
 {
   public:
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override { fmt::print(stderr, "{}", format_logmsg(msg, mode)); }
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
+    {
+        fmt::print(stderr, "{}", format_logmsg(msg, mode));
+    }
     void flush() override { fflush(stderr); }
     std::string description() const override { return "Console"; }
 };
@@ -213,9 +222,10 @@ class FileSink : public Sink, private BaseFileSink
 
     ~FileSink() override = default;
 
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override { 
+    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
+    {
         auto strmsg = format_logmsg(msg, mode);
-        BaseFileSink::fwrite(strmsg); 
+        BaseFileSink::fwrite(strmsg);
     }
 
     void flush() override { BaseFileSink::fflush(); }
@@ -700,14 +710,13 @@ void Logger::Impl::worker_loop()
                     sink_ = std::move(sink_cmd->new_sink);
                     if (sink_)
                     {
-                        sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                                .process_id = pylabhub::platform::get_pid(),
-                                                .thread_id =
-                                                    pylabhub::platform::get_native_thread_id(),
-                                                .level = static_cast<int>(Logger::Level::L_SYSTEM),
-                                                .body = make_buffer("Log sink switched from: {}",
-                                                                    old_desc)},
-                                     Sink::ASYNC_WRITE);
+                        sink_->write(
+                            LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                       .process_id = pylabhub::platform::get_pid(),
+                                       .thread_id = pylabhub::platform::get_native_thread_id(),
+                                       .level = static_cast<int>(Logger::Level::L_SYSTEM),
+                                       .body = make_buffer("Log sink switched from: {}", old_desc)},
+                            Sink::ASYNC_WRITE);
                     }
                 }
                 else
@@ -1101,7 +1110,8 @@ void Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
                                            .process_id = pylabhub::platform::get_pid(),
                                            .thread_id = pylabhub::platform::get_native_thread_id(),
                                            .level = static_cast<int>(lvl),
-                                           .body = std::move(body)}, Sink::SYNC_WRITE);
+                                           .body = std::move(body)},
+                                Sink::SYNC_WRITE);
         }
     }
 }

@@ -37,7 +37,6 @@
 #include "fmt/core.h"
 #include "fmt/format.h"
 
-
 namespace pylabhub::platform
 {
 // Anonymous namespace for helpers local to this translation unit.
@@ -74,8 +73,8 @@ std::string get_executable_name(bool include_path) noexcept
 {
     try
     {
+        std::string full_path;
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        // Loop to handle long paths: start with MAX_PATH and grow if truncated.
         std::vector<wchar_t> buf;
         buf.resize(MAX_PATH);
         DWORD len = 0;
@@ -84,28 +83,15 @@ std::string get_executable_name(bool include_path) noexcept
             len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
             if (len == 0)
             {
-                // failure
-                return std::string("unknown_win");
+                return "unknown_win";
             }
             if (len < buf.size() - 1)
             {
-                // success (not truncated)
                 break;
             }
-            // truncated: enlarge and try again
             buf.resize(buf.size() * 2);
         }
-
-        std::filesystem::path p{std::wstring(buf.data(), len)};
-        if (include_path)
-        {
-            // convert to UTF-8 explicitly
-            return pylabhub::format_tools::ws2s(p.native());
-        }
-        else
-        {
-            return pylabhub::format_tools::ws2s(p.filename().native());
-        }
+        full_path = pylabhub::format_tools::ws2s(std::wstring(buf.data(), len));
 
 #elif defined(PYLABHUB_PLATFORM_LINUX)
         std::vector<char> buf;
@@ -113,53 +99,37 @@ std::string get_executable_name(bool include_path) noexcept
         ssize_t count = readlink("/proc/self/exe", buf.data(), buf.size());
         if (count == -1)
         {
-            return std::string("unknown_linux");
+            return "unknown_linux";
         }
-        // if output filled the buffer, it might be truncated:
         if (static_cast<size_t>(count) >= buf.size())
         {
-            // grow and retry
             buf.resize(buf.size() * 2);
             count = readlink("/proc/self/exe", buf.data(), buf.size());
             if (count == -1)
-                return std::string("unknown_linux");
+                return "unknown_linux";
         }
-
-        std::string full(buf.data(), static_cast<size_t>(count));
-        std::filesystem::path p{full};
-        if (include_path)
-            return full;
-        return p.filename().string();
+        full_path.assign(buf.data(), static_cast<size_t>(count));
 
 #elif defined(PYLABHUB_PLATFORM_APPLE)
-
-        // 1) Preferred: _NSGetExecutablePath to get path (may be a symlink)
         uint32_t size = 0;
         if (_NSGetExecutablePath(nullptr, &size) == -1 && size > 0)
         {
             std::vector<char> buf(size);
-            if (_NSGetExecutablePath(buf.data(), &size) == 0) // success
+            if (_NSGetExecutablePath(buf.data(), &size) == 0)
             {
-                // normalize path to resolve symlinks
                 char resolved[PATH_MAX];
                 if (realpath(buf.data(), resolved) != nullptr)
                 {
-                    std::filesystem::path p{resolved};
-                    if (include_path)
-                        return std::string(resolved);
-                    return p.filename().string();
+                    full_path = resolved;
                 }
                 else
                 {
-                    std::filesystem::path p{std::string(buf.data(), size)};
-                    if (include_path)
-                        return p.string();
-                    return p.filename().string();
+                    full_path.assign(buf.data(), size);
                 }
             }
         }
 
-        // 2) Fallback: proc_pidpath
+        if (full_path.empty())
         {
             char procbuf[PROC_PIDPATHINFO_MAXSIZE];
             int ret = proc_pidpath(getpid(), procbuf, sizeof(procbuf));
@@ -168,22 +138,29 @@ std::string get_executable_name(bool include_path) noexcept
                 char resolved[PATH_MAX];
                 if (realpath(procbuf, resolved) != nullptr)
                 {
-                    if (include_path)
-                        return std::string(resolved);
-                    return std::filesystem::path(resolved).filename().string();
+                    full_path = resolved;
                 }
-                if (include_path)
-                    return std::string(procbuf);
-                return std::filesystem::path(procbuf).filename().string();
+                else
+                {
+                    full_path = procbuf;
+                }
             }
         }
 
-        return std::string("unknown_macos");
-
+        if (full_path.empty())
+        {
+            return "unknown_macos";
+        }
 #else
         (void)include_path;
-        return std::string("unknown");
+        return "unknown";
 #endif
+
+        if (include_path)
+        {
+            return full_path;
+        }
+        return std::filesystem::path(full_path).filename().string();
     } // try
     catch (const std::exception &e)
     {

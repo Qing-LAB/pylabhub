@@ -20,7 +20,7 @@ endif()
 
 # Set the compile-time log level based on the build type (Debug/Release).
 target_compile_definitions(pylabhub-hubshell PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
-if(PYLABHUB_LOGGER_DEBUG_ENABLED)
+if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(pylabhub-hubshell PRIVATE _LOGGER_DEBUG_ENABLED=1)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
