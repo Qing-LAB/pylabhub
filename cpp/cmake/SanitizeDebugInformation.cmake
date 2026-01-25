@@ -491,21 +491,21 @@ foreach(_i ${_emit_order})
   list(GET _final_origins ${_i} _o)
 
   if("${_o}" STREQUAL "SOURCE")
-    set(_to "/./$SOURCE")
+    set(_to "/{SOURCE}")
   elseif("${_o}" STREQUAL "BUILD")
-    set(_to "/./$BUILD")
+    set(_to "/{BUILD}")
   elseif("${_o}" STREQUAL "CONDA")
-    set(_to "/./$CONDA")
+    set(_to "/{CONDA}")
   elseif("${_o}" STREQUAL "TOOLCHAIN")
-    set(_to "/./$TOOLCHAIN")
+    set(_to "/{TOOLCHAIN}")
   elseif("${_o}" STREQUAL "SYSROOT")
-    set(_to "/./$SYSROOT")
+    set(_to "/{SYSROOT}")
   elseif("${_o}" STREQUAL "IMP_INC")
-    set(_to "/./$IMPL_INC")
+    set(_to "/{IMP_INC}")
   elseif("${_o}" STREQUAL "IMP_LIB")
-    set(_to "/./$IMPL_LIB")
+    set(_to "/{IMP_LIB}")
   else()
-    set(_to "/./$HOME")
+    set(_to "/{HOME}")
   endif()
 
   list(APPEND _remap_flags "-ffile-prefix-map=${_p}=${_to}")
@@ -526,13 +526,16 @@ if(_remap_flags)
     # and then deduplicate the result for robustness.
     set(_msvc_remap_flags "")
     foreach(_flag IN LISTS _remap_flags)
-      if(_flag MATCHES "^-ffile-prefix-map=")
-        string(REPLACE "-ffile-prefix-map=" "/pathmap:" _msvc_flag "${_flag}")
-        list(APPEND _msvc_remap_flags "${_msvc_flag}")
-      elseif(_flag MATCHES "^-fdebug-prefix-map=")
-        string(REPLACE "-fdebug-prefix-map=" "/pathmap:" _msvc_flag "${_flag}")
-        list(APPEND _msvc_remap_flags "${_msvc_flag}")
-      endif()
+      # Extract original path and Unix-style remapped path
+      string(REGEX REPLACE "^-f(file|debug)-prefix-map=(.*)=(/.*)$" "\\2" _p_extracted "${_flag}")
+      string(REGEX REPLACE "^-f(file|debug)-prefix-map=(.*)=(/.*)$" "\\3" _to_unix_extracted "${_flag}")
+
+      # Now, convert _to_unix_extracted to MSVC-friendly format using a fake hostname
+      # Assuming _to_unix_extracted is like "/{SOURCE}"
+      string(REGEX REPLACE "/{(.*)}" "//development/{\\1}" _to_msvc_converted "${_to_unix_extracted}")
+
+      # Construct the MSVC flag
+      list(APPEND _msvc_remap_flags "/pathmap:${_p_extracted}=${_to_msvc_converted}")
     endforeach()
 
     if(_msvc_remap_flags)

@@ -2,11 +2,9 @@
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
 #include <chrono>
 #include <random>
 #include <sstream>
-#include <windows.h>
 #endif
 
 namespace pylabhub::format_tools

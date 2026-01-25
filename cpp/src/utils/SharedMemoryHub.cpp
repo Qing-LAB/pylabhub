@@ -7,10 +7,7 @@
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include <synchapi.h>
-#include <windows.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
