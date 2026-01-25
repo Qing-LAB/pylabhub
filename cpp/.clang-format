@@ -6,4 +6,4 @@ AllowShortFunctionsOnASingleLine: Inline
 DerivePointerBinding: false
 PointerBindsToType: false
 BreakBeforeBraces: Allman
-SortIncludes: true
+SortIncludes: false
