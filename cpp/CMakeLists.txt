@@ -229,6 +229,18 @@ add_custom_target(create_staging_dirs
     COMMENT "Initializing staging directories"
 )
 
+# --- Stage Core Project Source Headers Early ---
+# This target stages all static source headers that are part of our project,
+# before any compilation or library building begins, but after directories are created.
+add_custom_target(stage_project_source_headers
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include" # Ensure destination dir exists
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/src/include" "${PYLABHUB_STAGING_DIR}/include"
+    COMMENT "Staging project source headers early"
+)
+add_dependencies(stage_project_source_headers create_staging_dirs)
+
+
 # --- Stage Sanitizer Runtimes ---
 include(FindSanitizerRuntime)
 
@@ -256,8 +268,9 @@ add_custom_target(stage_core_artifacts)
 
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
-add_dependencies(stage_core_artifacts create_staging_dirs)
-add_dependencies(stage_all create_staging_dirs)
+add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
+add_dependencies(stage_all create_staging_dirs stage_project_source_headers)
+
 
 
 
