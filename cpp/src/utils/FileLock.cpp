@@ -1,10 +1,16 @@
 // FileLock.cpp
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+#include "plh_base.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/FileLock.hpp"
+
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <sstream>
-#else
+#include <thread>
+#include <unordered_map>
+
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/file.h> // added for flock
 #include <sys/stat.h>
@@ -12,17 +18,6 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
-
-#include <condition_variable>
-#include <functional>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
-
-#include "plh_base.hpp"
-
-#include "utils/Lifecycle.hpp"
-#include "utils/FileLock.hpp"
 
 using namespace pylabhub::platform;
 
@@ -33,7 +28,7 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
     try
     {
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
         std::wstring longw = pylabhub::format_tools::win32_to_long_path(lockpath);
 
         if (longw.empty())
@@ -66,7 +61,7 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 
 static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::path &lockpath)
 {
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     auto wpath = pylabhub::format_tools::win32_to_long_path(lockpath);
     if (wpath.empty())
     {
@@ -107,7 +102,7 @@ struct FileLockImpl
     std::string lock_key;
     std::shared_ptr<ProcLockState> proc_state;
 
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     void *handle = nullptr;
 #else
     int fd = -1;
@@ -127,7 +122,7 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
 
     if (p->valid)
     {
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
         if (p->handle)
         {
             OVERLAPPED ov = {};
@@ -499,7 +494,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 {
     const auto &lockpath = pImpl->canonical_lock_file_path;
 
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows implementation
     std::chrono::steady_clock::time_point start_time;
     if (timeout)

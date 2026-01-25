@@ -1,19 +1,18 @@
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#if defined(MSVC_VER)
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+
 
 #include <dbghelp.h> // For CaptureStackBackTrace, StackWalk64, SymInitialize
 
 #pragma comment(lib, "dbghelp.lib") // Link with Dbghelp.lib
 
-#if defined(MSVC_VER)
+#if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
 

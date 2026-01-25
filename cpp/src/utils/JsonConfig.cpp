@@ -9,10 +9,7 @@
 #include <mutex>
 #include <shared_mutex>
 
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -634,7 +631,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
 {
     if (ec)
         *ec = std::error_code{};
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows implementation:
     // 1. Create a unique temporary file in the same directory as the target.
     // 2. Write the JSON data to the temporary file.

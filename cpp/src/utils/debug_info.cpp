@@ -19,18 +19,12 @@
 #pragma warning(disable : 5105) // macro expansion producing 'defined' has undefined behavior
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
 
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
-
-#include <dbghelp.h>
-#include <memory>
-#include <string>
-#include <vector>
-#pragma comment(lib, "dbghelp.lib")
 
 #elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
 
@@ -352,7 +346,7 @@ void print_stack_trace(bool use_external_tools) noexcept
 
         constexpr size_t kNameBuf = 1024;
         const size_t symbolBufferSize =
-            sizeof(SYMBOL_INFO) + (kNameBuf - 1) * sizeof((SYMBOL_INFO *)0)->Name[0]);
+            sizeof(SYMBOL_INFO) + (kNameBuf - 1) * sizeof(((SYMBOL_INFO *)0)->Name[0]);
         std::unique_ptr<uint8_t[]> symbolArea(new (std::nothrow) uint8_t[symbolBufferSize]);
         SYMBOL_INFO *symbol = nullptr;
         if (symbolArea)

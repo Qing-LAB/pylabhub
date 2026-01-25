@@ -22,3 +22,4 @@
 #include "utils/atomic_guard.hpp"
 #include "utils/recursion_guard.hpp"
 #include "utils/scope_guard.hpp"
+#include "utils/ModuleDef.hpp"
