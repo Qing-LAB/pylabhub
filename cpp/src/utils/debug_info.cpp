@@ -189,7 +189,7 @@ distribute_popen_lines(const std::vector<std::string> &lines, size_t expected_co
             for (size_t k = 0; k < per && cur < lines.size(); ++k, ++cur)
             {
                 if (k > 0)
-                    acc << "\n";
+                    acc << " ";
                 acc << lines[cur];
             }
             perFrame.push_back(acc.str());
@@ -202,7 +202,6 @@ distribute_popen_lines(const std::vector<std::string> &lines, size_t expected_co
     }
     return perFrame;
 }
-
 
 // Generic addr2line resolver (handles addr2line and llvm-addr2line)
 [[nodiscard]] static std::vector<std::string>
@@ -234,7 +233,7 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
         std::vector<std::string> perFrame;
         perFrame.reserve(offsets.size());
         for (size_t j = 0; j + 1 < lines.size() && perFrame.size() < offsets.size(); j += 2)
-            perFrame.push_back(lines[j] + "\n" + lines[j + 1]);
+            perFrame.push_back(lines[j] + " at " + lines[j + 1]);
         while (perFrame.size() < offsets.size())
         {
             perFrame.emplace_back();
@@ -268,7 +267,7 @@ resolve_with_addr2line(std::string_view binary, std::span<const uintptr_t> offse
 
 #endif // PYLABHUB_IS_POSIX
 
-namespace  // anonymous namespace
+namespace // anonymous namespace
 {
 // Try to format into a fixed stack buffer first. If the output was truncated,
 // attempt one heap-format fallback. Returns true on success, false on formatting error.
@@ -283,8 +282,8 @@ inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&..
 
         // format_to_n writes up to STACK_BUF_SZ bytes and does not allocate.
         // It may still throw fmt::format_error on an invalid format specification.
-        auto result = fmt::format_to_n(stack_buf, STACK_BUF_SZ, fmt_str,
-                                       std::forward<Args>(args)...);
+        auto result =
+            fmt::format_to_n(stack_buf, STACK_BUF_SZ, fmt_str, std::forward<Args>(args)...);
 
         const std::size_t needed = static_cast<std::size_t>(result.size); // total required
         const std::size_t have = needed < STACK_BUF_SZ ? needed : STACK_BUF_SZ;
@@ -313,7 +312,6 @@ inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&..
 }
 
 } // namespace
-
 
 // -------------------------------
 // Public API: print_stack_trace
@@ -399,7 +397,7 @@ void print_stack_trace(bool use_external_tools) noexcept
                 modInfo.SizeOfStruct = sizeof(modInfo);
                 if (SymGetModuleInfo64(process, static_cast<DWORD64>(addr), &modInfo))
                 {
-                    const char *img = modInfo.ImageName ? modInfo.ImageName
+                    const char *img = modInfo.ImageName         ? modInfo.ImageName
                                       : modInfo.LoadedImageName ? modInfo.LoadedImageName
                                                                 : "(unknown)";
                     uintptr_t base = static_cast<uintptr_t>(modInfo.BaseOfImage);
@@ -563,8 +561,8 @@ void print_stack_trace(bool use_external_tools) noexcept
                     if (base_for_bin == 0 && metas[idx].dli_fbase != 0)
                         base_for_bin = metas[idx].dli_fbase;
                 }
-                results = internal::resolve_with_atos(
-                    binary, std::span(addrs.data(), addrs.size()), base_for_bin);
+                results = internal::resolve_with_atos(binary, std::span(addrs.data(), addrs.size()),
+                                                      base_for_bin);
             }
             else // fallback to addr2line on mac
             {
@@ -590,7 +588,7 @@ void print_stack_trace(bool use_external_tools) noexcept
                 if (i < indices.size() && !results[i].empty() && results[i] != "??" &&
                     results[i].find("??") == std::string::npos)
                 {
-                    safe_format_to_stderr("  #{:02} -> {}\n", indices[i], results[i]);
+                    safe_format_to_stderr("  #{:02} -> [{}]\n", indices[i], results[i]);
                 }
             }
         }
@@ -624,4 +622,3 @@ void print_stack_trace(bool use_external_tools) noexcept
 }
 
 } // namespace pylabhub::debug
-

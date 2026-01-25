@@ -1,11 +1,11 @@
 // Tools for formatting string
 #pragma once
-#include <string>
-#include <string_view>
-#include <optional>
 #include <chrono>
 #include <filesystem>
-#include <fmt/format.h>      // or the specific fmt headers used
+#include <fmt/format.h> // or the specific fmt headers used
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace pylabhub::format_tools
 {
@@ -23,7 +23,7 @@ PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time
  * This function parses a string containing key-value pairs (e.g.,
  * "key1=val1; key2=val2") and returns the value for a specified key.
  * It handles whitespace around separators and assignment symbols.
- * 
+ *
  * @param keyword The key to search for.
  * @param input The string_view to parse.
  * @param separator The character separating key-value pairs.

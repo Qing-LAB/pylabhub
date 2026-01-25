@@ -183,7 +183,6 @@ inline void debug_msg_rt(std::string_view fmt_str, const Args &...args) noexcept
 
 } // namespace pylabhub::debug
 
-
 /**
  * @brief Macro for calling `pylabhub::debug::panic` with automatic source location.
  * @details This macro provides a convenient way to trigger a fatal error with

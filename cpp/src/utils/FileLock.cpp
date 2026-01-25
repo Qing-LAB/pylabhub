@@ -20,8 +20,8 @@
 #include <unistd.h>
 #endif
 
-#include "utils/Lifecycle.hpp"
 #include "utils/FileLock.hpp"
+#include "utils/Lifecycle.hpp"
 
 using namespace pylabhub::platform;
 
@@ -71,7 +71,7 @@ static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::p
     {
         return lockpath;
     }
-    
+
     return std::filesystem::path(wpath);
 #else
     return lockpath;
