@@ -405,8 +405,8 @@ void print_stack_trace(bool use_external_tools) noexcept
             if (SymGetModuleInfo64(process, static_cast<DWORD64>(m.addr), &modInfo))
             {
                 m.module_full_path = modInfo.ImageName         ? modInfo.ImageName
-                                   : modInfo.LoadedImageName ? modInfo.LoadedImageName
-                                                             : "";
+                                     : modInfo.LoadedImageName ? modInfo.LoadedImageName
+                                                               : "";
                 m.module_file_name = pylabhub::format_tools::filename_only(m.module_full_path);
                 m.module_base_address = static_cast<uintptr_t>(modInfo.BaseOfImage);
                 m.module_offset = m.addr - m.module_base_address;
@@ -625,13 +625,15 @@ void print_stack_trace(bool use_external_tools) noexcept
         {
             const std::string &binary = kv.first;
             const std::vector<int> &indices = kv.second; // These are frame indices for this binary
-            std::vector<std::string> tool_results; // Raw output from addr2line/atos
+            std::vector<std::string> tool_results;       // Raw output from addr2line/atos
 
             if (binary == "[unknown]" || binary.empty())
             {
                 // We cannot symbolize unknown binaries
-                for (int frame_idx : indices) {
-                    resolved_symbols_by_frame_idx[frame_idx] = "[could not resolve - unknown binary]";
+                for (int frame_idx : indices)
+                {
+                    resolved_symbols_by_frame_idx[frame_idx] =
+                        "[could not resolve - unknown binary]";
                 }
                 continue;
             }
@@ -649,8 +651,8 @@ void print_stack_trace(bool use_external_tools) noexcept
                     if (base_for_bin == 0 && metas[idx].dli_fbase != 0)
                         base_for_bin = metas[idx].dli_fbase;
                 }
-                tool_results = internal::resolve_with_atos(binary, std::span(addrs.data(), addrs.size()),
-                                                      base_for_bin);
+                tool_results = internal::resolve_with_atos(
+                    binary, std::span(addrs.data(), addrs.size()), base_for_bin);
             }
             else // fallback to addr2line on mac
             {
@@ -677,7 +679,9 @@ void print_stack_trace(bool use_external_tools) noexcept
                     tool_results[i].find("??") == std::string::npos)
                 {
                     resolved_symbols_by_frame_idx[indices[i]] = tool_results[i];
-                } else {
+                }
+                else
+                {
                     resolved_symbols_by_frame_idx[indices[i]] = "[could not resolve]";
                 }
             }
@@ -687,7 +691,9 @@ void print_stack_trace(bool use_external_tools) noexcept
         for (size_t i = 0; i < metas.size(); ++i)
         {
             const auto &m = metas[i];
-            std::string resolved_str = resolved_symbols_by_frame_idx.count(m.idx) ? resolved_symbols_by_frame_idx.at(m.idx) : "[not processed by external tools]";
+            std::string resolved_str = resolved_symbols_by_frame_idx.count(m.idx)
+                                           ? resolved_symbols_by_frame_idx.at(m.idx)
+                                           : "[not processed by external tools]";
 
             // Attempt to parse resolved_str
             std::string symbol_name;
@@ -699,43 +705,61 @@ void print_stack_trace(bool use_external_tools) noexcept
 
             // Try to find " at " first (addr2line style)
             size_t at_pos = resolved_str.find(" at ");
-            if (at_pos != std::string::npos) {
+            if (at_pos != std::string::npos)
+            {
                 symbol_name = resolved_str.substr(0, at_pos);
                 file_line = resolved_str.substr(at_pos + 4);
-            } else {
+            }
+            else
+            {
                 // Then try parsing for atos-like output: "function_name (file:line)"
                 size_t open_paren = resolved_str.find('(');
                 size_t close_paren = resolved_str.rfind(')');
-                if (open_paren != std::string::npos && close_paren != std::string::npos && close_paren > open_paren) {
+                if (open_paren != std::string::npos && close_paren != std::string::npos &&
+                    close_paren > open_paren)
+                {
                     symbol_name = resolved_str.substr(0, open_paren);
                     // Trim trailing space from symbol_name
                     symbol_name.erase(symbol_name.find_last_not_of(' ') + 1);
                     file_line = resolved_str.substr(open_paren + 1, close_paren - (open_paren + 1));
-                } else {
+                }
+                else
+                {
                     // Fallback: entire string is symbol_name, no file:line
                     symbol_name = resolved_str;
                     file_line = "";
                 }
             }
 
-            safe_format_to_stderr("  #{:02} -> {:#018x} ", m.idx, static_cast<unsigned long long>(m.addr));
+            safe_format_to_stderr("  #{:02} -> {:#018x} ", m.idx,
+                                  static_cast<unsigned long long>(m.addr));
             safe_format_to_stderr("[");
 
             // Print symbol info
-            if (!symbol_name.empty() && symbol_name != "[could not resolve]" && symbol_name != "[could not resolve - unknown binary]") {
+            if (!symbol_name.empty() && symbol_name != "[could not resolve]" &&
+                symbol_name != "[could not resolve - unknown binary]")
+            {
                 // If dladdr provided a symbol address, calculate offset from that.
-                // Otherwise, the tool_results might have an offset already (e.g., atos) or we just use module offset.
+                // Otherwise, the tool_results might have an offset already (e.g., atos) or we just
+                // use module offset.
                 uintptr_t print_offset = m.offset; // Default to module offset
-                if (m.saddr != nullptr) {
+                if (m.saddr != nullptr)
+                {
                     print_offset = m.addr - reinterpret_cast<uintptr_t>(m.saddr);
                 }
-                safe_format_to_stderr("{} + {:#x}", symbol_name, static_cast<unsigned long long>(print_offset));
-            } else {
-                safe_format_to_stderr("{}", resolved_str); // Print raw resolved_str if parsing failed or generic message
+                safe_format_to_stderr("{} + {:#x}", symbol_name,
+                                      static_cast<unsigned long long>(print_offset));
+            }
+            else
+            {
+                safe_format_to_stderr(
+                    "{}",
+                    resolved_str); // Print raw resolved_str if parsing failed or generic message
             }
 
             // Print file:line if available
-            if (!file_line.empty()) {
+            if (!file_line.empty())
+            {
                 safe_format_to_stderr(" at {}", file_line);
             }
 
