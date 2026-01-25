@@ -123,10 +123,10 @@ std::wstring s2ws(const std::string &s)
 
     std::wstring w(required, L'\0');
 
-    int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()),
-                        w.data(), required);
+    int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
+                                      static_cast<int>(s.size()), w.data(), required);
 
-    if(written == 0)
+    if (written == 0)
         return {};
 
     return w;
@@ -146,10 +146,11 @@ std::string ws2s(const std::wstring &w)
 
     std::string s(required, '\0');
 
-    int written = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
-                        s.data(), required, nullptr, nullptr);
+    int written =
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
+                            s.data(), required, nullptr, nullptr);
 
-    if(written == 0)
+    if (written == 0)
         return {};
 
     return s;
