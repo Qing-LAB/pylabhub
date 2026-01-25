@@ -39,19 +39,6 @@ endif()
 # ==============================================================================
 install(TARGETS pylabhub-hubshell DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# This assumes the current CMakeLists is in cpp/src and headers are in cpp/src/include
-get_filename_component(_this_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)   # e.g. .../project/cpp/src
-set(PYLABHUB_CORE_INCLUDE_DIR "${_this_dir}/include")
-
-set(CORE_HEADER_FILES
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_platform.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_base.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_service.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_datahub.hpp"
-)
-
-# Install the public headers associated with the core library.
-install(FILES ${CORE_HEADER_FILES} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 
 # --- Staging ---
