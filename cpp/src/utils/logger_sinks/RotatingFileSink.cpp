@@ -42,7 +42,7 @@ void RotatingFileSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
             return;
     }
 
-    auto formatted_message = format_logmsg(msg, mode);
+    auto formatted_message = pylabhub::utils::Sink::format_logmsg(msg, mode);
     BaseFileSink::fwrite(formatted_message);
     m_current_size_bytes += formatted_message.length();
 }
@@ -161,7 +161,7 @@ void RotatingFileSink::rotate()
     {
         open(base_path, m_use_flock);
         m_current_size_bytes = 0; // Reset size for the new file.
-        auto formatted_message = format_logmsg(
+        auto formatted_message = pylabhub::utils::Sink::format_logmsg(
             LogMessage{
                 .timestamp = std::chrono::system_clock::now(),
                 .process_id = pylabhub::platform::get_pid(),
