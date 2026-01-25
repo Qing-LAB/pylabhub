@@ -191,7 +191,7 @@ message(STATUS "[pylabhub-third-party]   - Exporting libsodium root: ${PYLABHUB_
 if(THIRD_PARTY_INSTALL)
   message(STATUS "[pylabhub-third-party] Scheduling libsodium artifacts for staging...")
 
-  # Stage the astatic library
+  # Stage the static library
   pylabhub_stage_libraries(TARGETS pylabhub::third_party::sodium)
 
   # Stage the header files

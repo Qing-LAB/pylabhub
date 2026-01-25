@@ -99,8 +99,8 @@
 
 #pragma once
 
-#include "plh_base.hpp"
 #include "Lifecycle.hpp"
+#include "plh_base.hpp"
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
 #ifndef LOGGER_FMT_BUFFER_RESERVE

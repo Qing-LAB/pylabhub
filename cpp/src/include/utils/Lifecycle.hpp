@@ -204,8 +204,7 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
 
 /// @brief Helper factory: constructs a vector<ModuleDef> by moving the supplied ModuleDef args.
 // Call-site: MakeModDefList(std::move(a), std::move(b)) or MakeModDefList(MyFactory(), ...)
-template <typename... Mods>
-inline std::vector<ModuleDef> MakeModDefList(Mods&&... mods)
+template <typename... Mods> inline std::vector<ModuleDef> MakeModDefList(Mods &&...mods)
 {
     static_assert((std::is_same_v<std::decay_t<Mods>, ModuleDef> && ...),
                   "MakeModDefList: all arguments must be ModuleDef (rvalues or prvalues)");
@@ -215,7 +214,6 @@ inline std::vector<ModuleDef> MakeModDefList(Mods&&... mods)
     (modules.emplace_back(std::forward<Mods>(mods)), ...);
     return modules; // NRVO / move
 }
-
 
 /**
  * @class LifecycleManager
