@@ -171,8 +171,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
 
     # Stage the header directory
     pylabhub_stage_headers(
-      #the third_party include folder already has /fmt/ in its path
-      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include" 
+      # Stage the fmt headers. The source directory is '.../fmt/include', and the
+      # SUBDIR "" argument ensures its contents are copied directly into the
+      # staging include directory.
+      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
       SUBDIR ""
     )
 

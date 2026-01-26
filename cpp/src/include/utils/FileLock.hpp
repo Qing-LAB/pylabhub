@@ -90,11 +90,11 @@
 #pragma once
 
 #include <chrono>
-#include <thread>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <system_error>
+#include <thread>
 
 #include "pylabhub_utils_export.h"
 

@@ -7,9 +7,6 @@
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
 #include <synchapi.h>
 #else
 #include <errno.h>
@@ -25,10 +22,9 @@
 #include "nlohmann/json.hpp"
 #include "sodium.h"
 #include "zmq.h"
-
 #include "utils/Lifecycle.hpp"
-#include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/SharedMemoryHub.hpp"
 
 namespace pylabhub::hub

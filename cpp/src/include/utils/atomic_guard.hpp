@@ -50,10 +50,10 @@ class AtomicOwner
 
 #ifndef NDEBUG
 #define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN() debug_enter()
-#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END()   debug_leave()
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END() debug_leave()
 #else
 #define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN() ((void)0)
-#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END()   ((void)0)
+#define DEBUG_ASSERT_NO_CONCURRENT_ACCESS_END() ((void)0)
 #endif
 
 /**
@@ -114,8 +114,7 @@ class AtomicGuard
      * @brief Move constructor. Transfers ownership of a lock from another guard.
      * @param other The source guard to move from. The source is left in a detached state.
      */
-    AtomicGuard(AtomicGuard &&other) noexcept
-        : owner_(other.owner_), token_(other.token_)
+    AtomicGuard(AtomicGuard &&other) noexcept : owner_(other.owner_), token_(other.token_)
     {
         DEBUG_ASSERT_NO_CONCURRENT_ACCESS_BEGIN();
         // Source is now detached and can no longer interact with the owner.

@@ -11,6 +11,11 @@
 
 #pragma once
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace pylabhub::hub
 {
 
@@ -471,3 +476,7 @@ PYLABHUB_UTILS_EXPORT pylabhub::utils::ModuleDef GetLifecycleModule();
 PYLABHUB_UTILS_EXPORT bool lifecycle_initialized() noexcept;
 
 } // namespace pylabhub::hub
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

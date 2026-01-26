@@ -20,7 +20,7 @@ endif()
 
 # Set the compile-time log level based on the build type (Debug/Release).
 target_compile_definitions(pylabhub-hubshell PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
-if(PYLABHUB_LOGGER_DEBUG_ENABLED)
+if(PYLABHUB_LOGGER_DEBUG)
   target_compile_definitions(pylabhub-hubshell PRIVATE _LOGGER_DEBUG_ENABLED=1)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
@@ -39,19 +39,6 @@ endif()
 # ==============================================================================
 install(TARGETS pylabhub-hubshell DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# This assumes the current CMakeLists is in cpp/src and headers are in cpp/src/include
-get_filename_component(_this_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)   # e.g. .../project/cpp/src
-set(PYLABHUB_CORE_INCLUDE_DIR "${_this_dir}/include")
-
-set(CORE_HEADER_FILES
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_platform.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_base.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_service.hpp"
-    "${PYLABHUB_CORE_INCLUDE_DIR}/plh_datahub.hpp"
-)
-
-# Install the public headers associated with the core library.
-install(FILES ${CORE_HEADER_FILES} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 
 # --- Staging ---
@@ -66,15 +53,6 @@ pylabhub_stage_executable(
   TARGET pylabhub-hubshell
   DESTINATION bin
   ATTACH_TO stage_main_artifacts
-)
-
-# Stage the public headers for the core library.
-add_custom_command(TARGET stage_main_artifacts POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${CORE_HEADER_FILES}
-    "${PYLABHUB_STAGING_DIR}/include/"
-    COMMENT "Staging core headers"
-    VERBATIM
 )
 
 # Ensure the local staging target depends on both build targets before executing.

@@ -19,19 +19,30 @@ if(NOT DEFINED SIGNING_IDENTITY OR "${SIGNING_IDENTITY}" STREQUAL "")
   return()
 endif()
 
-# Find the codesign executable.
-# On macOS, the system `codesign` is located at `/usr/bin/codesign`.
-# We use this absolute path to avoid issues with environments like Conda that
-# can prepend their own, potentially incompatible, tools to the PATH.
-if(EXISTS "/usr/bin/codesign")
-  set(CODESIGN_EXECUTABLE "/usr/bin/codesign")
-  message(STATUS "Found codesign executable at /usr/bin/codesign")
-else()
-  message(FATAL_ERROR "Could not find codesign at the expected system path: /usr/bin/codesign. Please ensure the Xcode Command Line Tools are installed correctly.")
+# Find Apple's codesign executable.
+# First, try xcrun to get the tool from the active Xcode toolchain.
+execute_process(
+  COMMAND xcrun --find codesign
+  OUTPUT_VARIABLE CODESIGN_EXECUTABLE
+  RESULT_VARIABLE _xcrun_result
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+
+# If xcrun fails, fall back to the standard system location for command line tools.
+if(NOT _xcrun_result EQUAL 0 OR NOT EXISTS "${CODESIGN_EXECUTABLE}")
+  if(EXISTS "/usr/bin/codesign")
+    set(CODESIGN_EXECUTABLE "/usr/bin/codesign")
+  else()
+    set(CODESIGN_EXECUTABLE) # Explicitly clear the variable
+  endif()
 endif()
 
+# If neither method found the official tool, exit with an error.
 if(NOT CODESIGN_EXECUTABLE)
-  message(FATAL_ERROR "Code signing failed: 'codesign' executable not found in PATH.")
+  message(FATAL_ERROR "Code signing failed: Apple's 'codesign' executable not found via 'xcrun' or at '/usr/bin/codesign'. Please ensure the Xcode Command Line Tools are installed correctly.")
+else()
+  message(STATUS "Found Apple codesign executable at: ${CODESIGN_EXECUTABLE}")
 endif()
 
 message(STATUS "Signing bundle: ${BUNDLE_PATH} with identity: ${SIGNING_IDENTITY}")
