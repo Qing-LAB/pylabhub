@@ -69,7 +69,7 @@ cmake_minimum_required(VERSION 3.29)
 #
 function(pylabhub_stage_headers)
   set(options "")
-  set(oneValueArgs "SUBDIR;ATTACH_TO")
+  set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
   set(multiValueArgs "TARGETS;DIRECTORIES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -146,13 +146,18 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E touch \"${STAGING_MARKER_FILE}\")
     add_custom_command(
       OUTPUT "${STAGING_MARKER_FILE}"
       COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-      DEPENDS "${DIR}" create_staging_dirs # Depend on the source directory itself and dir creation
+      DEPENDS create_staging_dirs # Remove "${DIR}" from here
       COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
       VERBATIM)
     
     # Create a custom target that depends on the marker file.
     string(MAKE_C_IDENTIFIER "pylabhub_stage_target_dir_headers_${SCRIPT_ID}" _unique_stage_target_name)
-    add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+    set(_target_dependencies "${STAGING_MARKER_FILE}")
+    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+        # Add the external project as a dependency to ensure it's built/installed before we try to stage its headers.
+        list(APPEND _target_dependencies ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+    endif()
+    add_custom_target(${_unique_stage_target_name} DEPENDS ${_target_dependencies})
 
     # Make the ATTACH_TO target depend on this unique custom target.
     add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})

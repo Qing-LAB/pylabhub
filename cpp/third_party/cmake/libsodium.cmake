@@ -198,5 +198,6 @@ if(THIRD_PARTY_INSTALL)
   pylabhub_stage_headers(
     DIRECTORIES "${install_dir}/include"
     SUBDIR ""
+    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
   )
 endif()
