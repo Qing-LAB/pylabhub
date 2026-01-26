@@ -17,6 +17,9 @@
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>
+
+#include <thread>
 
 #if defined(PYLABHUB_IS_POSIX)
 #include <cxxabi.h>   // For __cxa_demangle
@@ -148,6 +151,28 @@ std::string get_executable_name(bool include_path) noexcept
         {
             return "unknown_macos";
         }
+#elif defined(PYLABHUB_PLATFORM_FREEBSD)
+        // For FreeBSD, use sysctl to get the executable path.
+        // There are a few ways, but kern.proc.pathname is generally reliable.
+        int mib[4];
+        mib[0] = CTL_KERN;
+        mib[1] = KERN_PROC;
+        mib[2] = KERN_PROC_PATHNAME;
+        mib[3] = -1; // Current process
+
+        size_t buffer_size;
+        // First call to sysctl to get the required buffer size
+        if (sysctl(mib, 4, nullptr, &buffer_size, nullptr, 0) == -1)
+        {
+            return "unknown_freebsd_sysctl_size_fail";
+        }
+
+        std::vector<char> buf(buffer_size);
+        if (sysctl(mib, 4, buf.data(), &buffer_size, nullptr, 0) == -1)
+        {
+            return "unknown_freebsd_sysctl_read_fail";
+        }
+        full_path.assign(buf.data(), buffer_size - 1); // -1 to remove null terminator
 #else
         (void)include_path;
         return "unknown";
