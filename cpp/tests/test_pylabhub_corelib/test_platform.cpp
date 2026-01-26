@@ -300,7 +300,11 @@ TEST(DebugPlatformTest, GetExecutableName) {
     // Test with include_path = false
     std::string filename_only = get_executable_name(false);
     EXPECT_FALSE(filename_only.empty());
+#ifdef PYLABHUB_IS_WINDOWS
+    EXPECT_EQ(filename_only, "test_pylabhub_corelib.exe");
+#else
     EXPECT_EQ(filename_only, "test_pylabhub_corelib");
+#endif
 
     // Test error path (difficult to simulate, relies on internal exception handling)
     // For now, we trust the internal `try-catch` in `get_executable_name`.
