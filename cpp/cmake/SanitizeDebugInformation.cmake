@@ -397,13 +397,13 @@ while(_remaining_len GREATER 0)
 
   if("${_oo}" STREQUAL "SOURCE")
     # remove any kept entries under this SOURCE, then append SOURCE
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "BUILD")
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
     continue()
   elseif("${_oo}" STREQUAL "TOOLCHAIN")
     # remove any entries under this TOOLCHAIN, then append TOOLCHAIN
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*" )
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
     continue()
@@ -532,7 +532,7 @@ if(_remap_flags)
 
       # Now, convert _to_unix_extracted to MSVC-friendly format using a fake hostname
       # Assuming _to_unix_extracted is like "/{SOURCE}"
-      string(REGEX REPLACE "/{(.*)}" "//development/{\\1}" _to_msvc_converted "${_to_unix_extracted}")
+      string(REGEX REPLACE "/{(.*)}" "//ROOT/{\\1}" _to_msvc_converted "${_to_unix_extracted}")
 
       # Construct the MSVC flag
       list(APPEND _msvc_remap_flags "/pathmap:${_p_extracted}=${_to_msvc_converted}")
