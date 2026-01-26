@@ -11,15 +11,18 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-
+#include "utils/format_tools.hpp" // Required for SRCLOC_TO_STR and filename_only
 
 using namespace pylabhub::platform;
 using namespace pylabhub::debug;
+using namespace pylabhub::format_tools; // Added for filename_only in SRCLOC_TO_STR test
 using namespace ::testing;
 using pylabhub::tests::helper::StringCapture;
 
 // #include "string_capture.h" // <-- include your project's StringCapture definition if needed
 // #include "debug.h" // <-- include your PLH_DEBUG / debug_msg macros if needed
+
+
 
 // The test checks the three important pieces separately:
 //  - the debug preamble and file path
@@ -39,7 +42,7 @@ TEST(PlatformTest, DebugMsg)
     PLH_DEBUG("This is a test debug message with value {}. Called at {}", 42, PLH_LOC_HERE_STR);
 
     // Get the captured output
-    std::string output = stderr_capture.GetOutput();
+    std::string output = stderr_capture.GetOutput(); // Changed to use new StderrCapture
 
     // --- Helper that asserts a substring exists with a clear failure message ---
     auto expect_contains = [&](const std::string &needle)
@@ -59,7 +62,7 @@ TEST(PlatformTest, DebugMsg)
     bool found_body = (output.find(test_message) != std::string::npos) ||
                       (output.find(test_message + "\n") != std::string::npos);
     EXPECT_TRUE(found_body) << "Expected message body not found. Expected: \"" << test_message
-                            << "\"\nActual output:\n"
+                            << "\nActual output:\n"
                             << output;
 
     // Optional: (uncomment if you want to be strict about trailing newline)
@@ -142,20 +145,30 @@ TEST(PlatformTest, Panic)
                        HasSubstr("Stack Trace (most recent call first):")));
 }
 
-#include <thread>
 #include <limits>
+#include <thread>
 
 #ifdef PYLABHUB_SANITIZER_IS_THREAD
 #include <gtest/gtest.h>
-TEST(SanitizerCheckNoLifecycle, DetectsDataRace) {
-    auto data_race_func = []() {
+TEST(SanitizerCheckNoLifecycle, DetectsDataRace)
+{
+    auto data_race_func = []()
+    {
         long shared_value = 0;
-        std::thread t1([&]{ for(int i=0; i<1000; ++i) shared_value++; });
-        std::thread t2([&]{ for(int i=0; i<1000; ++i) shared_value++; });
+        std::thread t1(
+            [&] () {
+                for (int i = 0; i < 1000; ++i)
+                    shared_value++;
+            });
+        std::thread t2(
+            [&] () {
+                for (int i = 0; i < 1000; ++i)
+                    shared_value++;
+            });
         t1.join();
         t2.join();
     };
-    EXPECT_DEATH(data_race_func(), ".*ThreadSanitizer: data race.*");
+    EXPECT_DEATH(data_race_func(), ".*ThreadSanitizer: data race.*\n");
 }
 #endif
 
@@ -163,35 +176,41 @@ TEST(SanitizerCheckNoLifecycle, DetectsDataRace) {
 #include <gtest/gtest.h>
 
 // Test heap-buffer-overflow (write)
-TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowWrite) {
-    auto overflow_func = []() {
-        int* array = new int[10];
+TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowWrite)
+{
+    auto overflow_func = []()
+    {
+        int *array = new int[10];
         // Use volatile to prevent optimization
-        *(volatile int*)&array[100] = 0; 
+        *(volatile int *)&array[100] = 0;
     };
-    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*");
+    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*\n");
 }
 
 // Test heap-buffer-overflow (read)
-TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowRead) {
-    auto overflow_func = []() {
-        int* array = new int[10];
+TEST(SanitizerCheckNoLifecycle, DetectsHeapBufferOverflowRead)
+{
+    auto overflow_func = []()
+    {
+        int *array = new int[10];
         int volatile x = array[100]; // Trigger overflow with a larger OOB access
-        (void)x; // Avoid unused variable warning
+        (void)x;                     // Avoid unused variable warning
         delete[] array;
     };
-    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*");
+    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*\n");
 }
 
 // Test heap-use-after-free
-TEST(SanitizerCheckNoLifecycle, DetectsHeapUseAfterFree) {
-    auto use_after_free_func = []() {
-        int* array = new int[10];
+TEST(SanitizerCheckNoLifecycle, DetectsHeapUseAfterFree)
+{
+    auto use_after_free_func = []()
+    {
+        int *array = new int[10];
         delete[] array;
         int volatile x = array[5]; // Trigger use-after-free
         (void)x;
     };
-    EXPECT_DEATH(use_after_free_func(), ".*AddressSanitizer: heap-use-after-free.*");
+    EXPECT_DEATH(use_after_free_func(), ".*AddressSanitizer: heap-use-after-free.*\n");
 }
 
 // Cross-platform no-inline attribute
@@ -203,7 +222,8 @@ TEST(SanitizerCheckNoLifecycle, DetectsHeapUseAfterFree) {
 
 // Keep this noinline so it has a distinct stack frame
 PYLABHUB_NOINLINE
-static void trigger_stack_oob_small_write() {
+static void trigger_stack_oob_small_write()
+{
     // small buffer so compiler keeps it on the stack predictably
     fmt::print(stderr, "Before writing to stack buffer...\n");
     volatile char buf[256];
@@ -211,27 +231,97 @@ static void trigger_stack_oob_small_write() {
     buf[0] = 1;
     // write just one byte past the end (most likely to hit ASan's redzone)
     volatile char *p = buf;
-    p[256] = 0; // 1 byte OOB (index == size)
-    asm volatile("" ::: "memory");    // compiler barrier: avoid reordering/elision
+    p[256] = 0;                    // 1 byte OOB (index == size)
+    asm volatile("" ::: "memory"); // compiler barrier: avoid reordering/elision
     fmt::print(stderr, "After writing to stack buffer overflow...\n");
 }
 
-TEST(SanitizerCheckNoLifecycle, DetectsStackBufferOverflow) {
+TEST(SanitizerCheckNoLifecycle, DetectsStackBufferOverflow)
+{
     // run the noinline function and expect ASan stack-buffer-overflow
-    EXPECT_DEATH(trigger_stack_oob_small_write(),
-                 ".*AddressSanitizer: stack-buffer-overflow.*");
+    EXPECT_DEATH(trigger_stack_oob_small_write(), ".*AddressSanitizer: stack-buffer-overflow.*\n");
 }
 
 #endif
 
 #ifdef PYLABHUB_SANITIZER_IS_UNDEFINED
 #include <gtest/gtest.h>
-TEST(SanitizerCheckNoLifecycle, DetectsSignedIntegerOverflow) {
-    auto overflow_func = []() {
+TEST(SanitizerCheckNoLifecycle, DetectsSignedIntegerOverflow)
+{
+    auto overflow_func = []()
+    {
         // Use volatile to prevent the compiler from optimizing away the increment.
         volatile int value = std::numeric_limits<int>::max();
         value++;
     };
-    EXPECT_DEATH(overflow_func(), ".*runtime error: signed integer overflow.*");
+    EXPECT_DEATH(overflow_func(), ".*runtime error: signed integer overflow.*\n");
 }
 #endif
+
+// --- Tests from test_debug_platform.cpp ---
+
+TEST(DebugPlatformTest, SRCLOC_TO_STR) {
+    std::source_location loc = std::source_location::current();
+    std::string expected_filename(pylabhub::format_tools::filename_only(loc.file_name()));
+    std::string result = SRCLOC_TO_STR(loc);
+
+    // Expected format: filename:line:function_name
+    EXPECT_THAT(result, StartsWith(expected_filename + ":"));
+    EXPECT_THAT(result, HasSubstr(std::to_string(loc.line())));
+    EXPECT_THAT(result, EndsWith(std::string(":") + loc.function_name()));
+}
+
+TEST(DebugPlatformTest, GetPID) {
+    uint64_t pid = get_pid();
+    // On most systems, PID is > 0.
+    EXPECT_GT(pid, 0);
+}
+
+TEST(DebugPlatformTest, GetNativeThreadID) {
+    uint64_t tid = get_native_thread_id();
+    // On most systems, TID is > 0.
+    EXPECT_GT(tid, 0);
+
+    // Verify that different threads get different TIDs (or at least valid ones).
+    std::thread t([&]() {
+        uint64_t new_tid = get_native_thread_id();
+        EXPECT_GT(new_tid, 0);
+    });
+    t.join();
+}
+
+TEST(DebugPlatformTest, GetExecutableName) {
+    // Test with include_path = true
+    std::string full_path = get_executable_name(true);
+    EXPECT_FALSE(full_path.empty());
+    // The name of the executable for these tests is 'test_pylabhub_corelib'
+    EXPECT_THAT(full_path, HasSubstr("test_pylabhub_corelib"));
+
+    // Test with include_path = false
+    std::string filename_only = get_executable_name(false);
+    EXPECT_FALSE(filename_only.empty());
+#ifdef PYLABHUB_IS_WINDOWS
+    EXPECT_EQ(filename_only, "test_pylabhub_corelib.exe");
+#else
+    EXPECT_EQ(filename_only, "test_pylabhub_corelib");
+#endif
+
+    // Test error path (difficult to simulate, relies on internal exception handling)
+    // For now, we trust the internal `try-catch` in `get_executable_name`.
+}
+
+TEST(DebugPlatformTest, DebugMsgRtFormatError) {
+    StringCapture capture(STDERR_FILENO); // Use the shared helper class
+
+    // Trigger fmt::format_error by providing an incorrect number of arguments for a runtime format string.
+    // debug_msg_rt expects (string_view fmt_str, const Args&... args)
+    // If we pass an invalid format specifier, fmt::vprint will throw.
+    std::string runtime_fmt = "Value: {} {}"; // Expects 2 args, but we'll pass 1.
+    debug_msg_rt(runtime_fmt, 123);
+
+    std::string output = capture.GetOutput();
+
+    EXPECT_THAT(output, HasSubstr("FATAL FORMAT ERROR DURING DEBUG_MSG_RT"));
+    EXPECT_THAT(output, HasSubstr("fmt_str['Value: {} {}']"));
+    EXPECT_THAT(output, HasSubstr("Exception: 'argument not found'"));
+}

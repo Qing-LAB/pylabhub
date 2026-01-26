@@ -9,6 +9,13 @@
 #undef PYLABHUB_PLATFORM_APPLE
 #undef PYLABHUB_PLATFORM_LINUX
 #undef PYLABHUB_PLATFORM_FREEBSD
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 #elif defined(PLATFORM_APPLE)
 
@@ -46,6 +53,13 @@
 #undef PYLABHUB_PLATFORM_APPLE
 #undef PYLABHUB_PLATFORM_LINUX
 #undef PYLABHUB_PLATFORM_FREEBSD
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 #elif defined(__APPLE__) && defined(__MACH__)
 #define PYLABHUB_PLATFORM_APPLE 1
@@ -78,7 +92,8 @@
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #define PYLABHUB_IS_WINDOWS 1
 #undef PYLABHUB_IS_POSIX
-#elif defined(PYLABHUB_PLATFORM_APPLE) || defined(PYLABHUB_PLATFORM_FREEBSD) || defined(PYLABHUB_PLATFORM_LINUX)
+#elif defined(PYLABHUB_PLATFORM_APPLE) || defined(PYLABHUB_PLATFORM_FREEBSD) ||                    \
+    defined(PYLABHUB_PLATFORM_LINUX)
 #undef PYLABHUB_IS_WINDOWS
 #define PYLABHUB_IS_POSIX 1
 #else

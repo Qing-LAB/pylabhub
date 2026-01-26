@@ -4,24 +4,22 @@
  */
 #include "plh_base.hpp"
 
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
-#include <fstream>
 
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 #include "nlohmann/json.hpp"
+
 #include "utils/Lifecycle.hpp"
-#include "utils/FileLock.hpp"
 #include "utils/Logger.hpp"
+#include "utils/FileLock.hpp"
 #include "utils/JsonConfig.hpp"
 
 namespace pylabhub::utils
@@ -633,7 +631,7 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
 {
     if (ec)
         *ec = std::error_code{};
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows implementation:
     // 1. Create a unique temporary file in the same directory as the target.
     // 2. Write the JSON data to the temporary file.

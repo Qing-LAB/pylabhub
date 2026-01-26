@@ -10,7 +10,7 @@ message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 # This is more robust than using file(GLOB), as it ensures that adding or
 # removing source files requires a direct, version-controlled change to the
 # build script. This prevents "silent" build failures where new files are not
-# automatically compiled.else()
+# automatically compiled.
 
 set(UTILS_SOURCES
   format_tools.cpp
@@ -18,8 +18,12 @@ set(UTILS_SOURCES
   platform.cpp
   Lifecycle.cpp
   FileLock.cpp
-  BaseFileSink.cpp
-  RotatingFileSink.cpp
+  logger_sinks/Sink.cpp
+  logger_sinks/BaseFileSink.cpp
+  logger_sinks/RotatingFileSink.cpp
+  logger_sinks/FileSink.cpp
+  logger_sinks/SyslogSink.cpp
+  logger_sinks/EventLogSink.cpp
   Logger.cpp
   JsonConfig.cpp  
   SharedMemoryHub.cpp
@@ -80,11 +84,11 @@ if(PYLABHUB_SANITIZER_FLAGS_SET)
   if(PYLABHUB_SANITIZER_RUNTIME_PATH)
     if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
       message(STATUS "** The sanitizer is a dynamic lib, we will link pylabhub-utils to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-      target_link_libraries(pylabhub-utils PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
     else()
       if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
         message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with pylabhub-utils to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-        target_link_libraries(pylabhub-utils PRIVATE "${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+        target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
       else()
         message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to pylabhub-utils. Please make sure your final executive that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
         message(STATUS "")
@@ -122,7 +126,7 @@ target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
     pylabhub::third_party::nlohmann_json
-    pylabhub::third_party::zmq
+    pylabhub::third_party::libzmq
     pylabhub::third_party::sodium
     Threads::Threads
 )
@@ -214,14 +218,6 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
           "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
           "${PYLABHUB_STAGING_DIR}/include/"
   COMMENT "Staging generated export header for pylabhub-utils"
-)
-
-# Stage the public headers for this library to match the installation.
-add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/src/include/utils"
-          "${PYLABHUB_STAGING_DIR}/include/utils"
-  COMMENT "Staging public headers for pylabhub-utils"
 )
 
 # Register this local staging target with the global build system.
