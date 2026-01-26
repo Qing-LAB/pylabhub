@@ -113,7 +113,9 @@ project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 # that enables the PYLABHUB_UTILS_EXPORT macro to work correctly on Linux/macOS,
 # preventing symbol clashes between shared libraries and the executable.
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-# set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+
+include(SanitizeDebugInformation)
 
 # --- Set RPATH for staged/installed executables ---
 # This ensures that executables can find shared libraries in a relative path.
@@ -185,9 +187,9 @@ message(STATUS "FORCE_USE_CLANG_ON_APPLE = ${FORCE_USE_CLANG_ON_APPLE}")
 message(STATUS "PYLABHUB_LOGGER_DEBUG = ${PYLABHUB_LOGGER_DEBUG}")
 message(STATUS "PYLABHUB_STAGE_ON_BUILD = ${PYLABHUB_STAGE_ON_BUILD}")
 message(STATUS "PYLABHUB_ENABLE_CLANG_TIDY = ${PYLABHUB_ENABLE_CLANG_TIDY}")
-message(STATUS "PYLABHUB_ENABLE_TESTING = ${PYLABHUB_ENABLE_TESTING}")
 message(STATUS "PYLABHUB_ATOMICGUARD_STRESS_LEVEL = ${PYLABHUB_ATOMICGUARD_STRESS_LEVEL}")
 message(STATUS "PYLABHUB_LOGGER_COMPILE_LEVEL = ${PYLABHUB_LOGGER_COMPILE_LEVEL}")
+message(STATUS "PYLABHUB_ENABLE_DEBUG_MESSAGES = ${PYLABHUB_ENABLE_DEBUG_MESSAGES}")
 message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")
@@ -226,6 +228,18 @@ add_custom_target(create_staging_dirs
     COMMENT "Initializing staging directories"
 )
 
+# --- Stage Core Project Source Headers Early ---
+# This target stages all static source headers that are part of our project,
+# before any compilation or library building begins, but after directories are created.
+add_custom_target(stage_project_source_headers
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include" # Ensure destination dir exists
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/src/include" "${PYLABHUB_STAGING_DIR}/include"
+    COMMENT "Staging project source headers early"
+)
+add_dependencies(stage_project_source_headers create_staging_dirs)
+
+
 # --- Stage Sanitizer Runtimes ---
 include(FindSanitizerRuntime)
 
@@ -253,8 +267,9 @@ add_custom_target(stage_core_artifacts)
 
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
-add_dependencies(stage_core_artifacts create_staging_dirs)
-add_dependencies(stage_all create_staging_dirs)
+add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
+add_dependencies(stage_all create_staging_dirs stage_project_source_headers)
+
 
 
 
@@ -362,32 +377,12 @@ message(STATUS "==============================================")
 message(STATUS "pyLabHub Configuration Summary")
 message(STATUS "----------------------------------------------")
 
-if(BUILD_TESTS)
-  set(_build_tests "ON")
-else()
-  set(_build_tests "OFF")
-endif()
-if(BUILD_XOP)
-  set(_build_xop "ON")
-else()
-  set(_build_xop "OFF")
-endif()
-if(PYLABHUB_CREATE_INSTALL_TARGET)
-  set(_install_enabled "ON")
-else()
-  set(_install_enabled "OFF")
-endif()
-
 message(STATUS "  Install Prefix:      ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Build Type:          ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Utility Library:     pylabhub-utils (SHARED)")
-message(STATUS "  Build Tests:         ${_build_tests}")
-message(STATUS "  Build IgorXOP:       ${_build_xop}")
-if(THIRD_PARTY_INSTALL)
-message(STATUS "  3rd-Party Staging:   ON")
-else()
-message(STATUS "  3rd-Party Staging:   OFF")
-endif()
+message(STATUS "  Build Tests:         ${BUILD_TESTS}")
+message(STATUS "  Build IgorXOP:       ${BUILD_XOP}")
+message(STATUS "  3rd-Party Staging:   ${THIRD_PARTY_INSTALL}")
 message(STATUS "  Create Install Target: ${PYLABHUB_CREATE_INSTALL_TARGET} (from ${PYLABHUB_STAGING_DIR})")
 message(STATUS "==============================================")
 message(STATUS "")
