@@ -171,7 +171,10 @@ set(PYLABHUB_LIBSODIUM_ROOT_DIR "${install_dir}"
 add_library(pylabhub::third_party::sodium STATIC IMPORTED GLOBAL)
 set_target_properties(pylabhub::third_party::sodium PROPERTIES
   IMPORTED_LOCATION "${LIBSODIUM_LIBRARY_PATH}"
-  INTERFACE_INCLUDE_DIRECTORIES "${LIBSODIUM_SOURCE_DIR}/src/libsodium/include"
+)
+target_include_directories(pylabhub::third_party::sodium INTERFACE
+  $<BUILD_INTERFACE:${LIBSODIUM_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 if(MSVC)

@@ -293,7 +293,6 @@ endif()
 # finally touch the marker in a separate add_custom_command so it runs after the copies
 add_custom_command(
   OUTPUT "${STAGING_MARKER_FILE}"
-  VERBATIM
   COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
   APPEND
 )
