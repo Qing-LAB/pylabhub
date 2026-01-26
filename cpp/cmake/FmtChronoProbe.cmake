@@ -7,8 +7,13 @@ message(STATUS "Performing test: probing fmt chrono subseconds support...")
 if (CMAKE_CROSSCOMPILING)
   message(STATUS "Cross-compiling: skipping fmt chrono subseconds runtime probe; defaulting to fallback (no subseconds).")
   set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
-  set(FMT_CHRONO_FMT_STYLE 0 CACHE INTERNAL "fmt chrono format style")
 else()
+  # Check if the probe has already been run and its results cached.
+  if (DEFINED HAVE_FMT_CHRONO_SUBSECONDS AND DEFINED FMT_CHRONO_FMT_STYLE)
+    message(STATUS "    ** fmt chrono: probe results found in cache. Skipping re-run.")
+    message(STATUS "    ** HAVE_FMT_CHRONO_SUBSECONDS = ${HAVE_FMT_CHRONO_SUBSECONDS}")
+    message(STATUS "    ** FMT_CHRONO_FMT_STYLE = ${FMT_CHRONO_FMT_STYLE}")
+  else()
   # Get fmt include directories from the fmt::fmt target
   if (TARGET fmt::fmt)
     get_target_property(_fmt_includes fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
@@ -105,5 +110,6 @@ int main() {
     message(VERBOSE "        Compiler output:\n\n${FMT_PROBE_COMPILE_OUTPUT}")
     set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
     set(FMT_CHRONO_FMT_STYLE 0 CACHE INTERNAL "fmt chrono format style")
-  endif()
-endif()
+  endif() # Closes the `if(FMT_PROBE_COMPILE_RESULT)` block
+  endif() # Closes the `else()` block for caching
+endif() # Closes the `else()` block for `CMAKE_CROSSCOMPILING`

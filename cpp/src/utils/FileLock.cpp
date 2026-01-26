@@ -1,17 +1,16 @@
+// FileLock.cpp
+#include "plh_base.hpp"
+#include "utils/Lifecycle.hpp"
+#include "utils/FileLock.hpp"
 
 #include <condition_variable>
-#include <mutex>
-#include <unordered_map>
 #include <functional>
-#include <thread>
-
-#include "plh_base.hpp"
-
-#if defined(PLATFORM_WIN64)
-#define WIN32_LEAN_AND_MEAN
+#include <mutex>
 #include <sstream>
-#include <windows.h>
-#else
+#include <thread>
+#include <unordered_map>
+
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/file.h> // added for flock
 #include <sys/stat.h>
@@ -19,9 +18,6 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
-
-#include "utils/Lifecycle.hpp"
-#include "utils/FileLock.hpp"
 
 using namespace pylabhub::platform;
 
@@ -32,10 +28,17 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
     try
     {
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
         std::wstring longw = pylabhub::format_tools::win32_to_long_path(lockpath);
+
+        if (longw.empty())
+        {
+            return lockpath.generic_string();
+        }
+
         for (auto &ch : longw)
             ch = towlower(ch);
+
         return pylabhub::format_tools::ws2s(longw);
 #else
         // Use the lexically-normal absolute representation for a deterministic key
@@ -58,8 +61,14 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
 
 static std::filesystem::path canonical_lock_path_for_os(const std::filesystem::path &lockpath)
 {
-#if defined(PLATFORM_WIN64)
-    return std::filesystem::path(pylabhub::format_tools::win32_to_long_path(lockpath));
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    auto wpath = pylabhub::format_tools::win32_to_long_path(lockpath);
+    if (wpath.empty())
+    {
+        return lockpath;
+    }
+
+    return std::filesystem::path(wpath);
 #else
     return lockpath;
 #endif
@@ -93,7 +102,7 @@ struct FileLockImpl
     std::string lock_key;
     std::shared_ptr<ProcLockState> proc_state;
 
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     void *handle = nullptr;
 #else
     int fd = -1;
@@ -113,7 +122,7 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
 
     if (p->valid)
     {
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
         if (p->handle)
         {
             OVERLAPPED ov = {};
@@ -485,7 +494,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 {
     const auto &lockpath = pImpl->canonical_lock_file_path;
 
-#if defined(PLATFORM_WIN64)
+#if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows implementation
     std::chrono::steady_clock::time_point start_time;
     if (timeout)
@@ -497,6 +506,10 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     try
     {
         wpath = pylabhub::format_tools::win32_to_long_path(os_path);
+        if (wpath.empty())
+        {
+            return false;
+        }
     }
     catch (...)
     {

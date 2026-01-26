@@ -69,7 +69,7 @@ cmake_minimum_required(VERSION 3.29)
 #
 function(pylabhub_stage_headers)
   set(options "")
-  set(oneValueArgs "SUBDIR;ATTACH_TO")
+  set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
   set(multiValueArgs "TARGETS;DIRECTORIES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -87,16 +87,12 @@ function(pylabhub_stage_headers)
 
   # Stage headers from explicit directories
   foreach(DIR IN LISTS ARG_DIRECTORIES)
-    # To handle complex directory structures (like libsodium's), we can't
-    # use a simple `copy_directory`. It can create incorrect nested folders.
-    # Instead, we generate a small CMake script that is executed at build time.
-    # This script recursively finds all *files* and copies them one by one,
-    # preserving the relative directory structure. This is like a robust
-    # `copy_directory` that correctly merges directory contents.
-
-    # Create a unique name for the script to avoid collisions.
+    # Create a unique name for the script and marker file
     string(RANDOM LENGTH 8 SCRIPT_ID)
-    set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_${ARG_ATTACH_TO}_${SCRIPT_ID}.cmake")
+    set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_dir_${SCRIPT_ID}.cmake")
+
+    string(MAKE_C_IDENTIFIER "stage_headers_dir_${SCRIPT_ID}_marker" _marker_name)
+    set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
     # Content of the build-time script
     set(SCRIPT_CONTENT "
@@ -117,6 +113,9 @@ file(GLOB_RECURSE ALL_FILES
     \"\${SOURCE_DIR}/*.hpp\"
 )
 
+# Ensure destination directory exists at execution time
+execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_DIR}\")
+
 foreach(FILE \${ALL_FILES})
     # Get the path of the file relative to the source directory
     string(REPLACE \"\${SOURCE_DIR}/\" \"\" REL_PATH \"\${FILE}\")
@@ -128,9 +127,15 @@ foreach(FILE \${ALL_FILES})
     get_filename_component(DEST_FILE_DIR \"\${DEST_FILE}\" DIRECTORY)
 
     # Ensure the destination directory exists, then copy the file
-    execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory \"\${DEST_FILE_DIR}\")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different \"\${FILE}\" \"\${DEST_FILE}\")
+    execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_FILE_DIR}\")
+    execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"copy_if_different\" \"\${FILE}\" \"\${DEST_FILE}\")
 endforeach()
+
+# Create marker directory
+execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"${CMAKE_CURRENT_BINARY_DIR}/.staging_markers\")
+# Touch the marker file to indicate completion
+execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER_FILE}\")
+
 # --- End of generated script ---
 ")
 
@@ -138,44 +143,81 @@ endforeach()
     file(GENERATE OUTPUT ${SCRIPT_PATH} CONTENT "${SCRIPT_CONTENT}")
 
     # Add a command to execute this script at build time.
-    add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
+    add_custom_command(
+      OUTPUT "${STAGING_MARKER_FILE}"
       COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
+      DEPENDS create_staging_dirs # Remove "${DIR}" from here
       COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
       VERBATIM)
+    
+    # Create a custom target that depends on the marker file.
+    string(MAKE_C_IDENTIFIER "pylabhub_stage_target_dir_headers_${SCRIPT_ID}" _unique_stage_target_name)
+    set(_target_dependencies "${STAGING_MARKER_FILE}")
+    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+        # Add the external project as a dependency to ensure it's built/installed before we try to stage its headers.
+        list(APPEND _target_dependencies ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+    endif()
+    add_custom_target(${_unique_stage_target_name} DEPENDS ${_target_dependencies})
+
+    # Make the ATTACH_TO target depend on this unique custom target.
+    add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
   endforeach()
 
   # Stage headers associated with targets
   foreach(TGT IN LISTS ARG_TARGETS)
     if(TARGET ${TGT})
-      # The INTERFACE_INCLUDE_DIRECTORIES property can be a list. The add_custom_command
-      # needs to handle this list, which is expanded at build time via the generator
-      # expression. We use file(GENERATE) to create a small helper script that iterates
-      # the list and performs the copy for each directory. This is robust against
-      # multiple include directories and paths with spaces.
-      set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_${TGT}_headers.cmake")
+      # Unique names for script and marker
+      string(MAKE_C_IDENTIFIER "stage_headers_tgt_${TGT}_marker" _marker_name)
+      set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
+      set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_tgt_${TGT}_headers.cmake")
+
+      # Content of the script
       file(GENERATE
         OUTPUT ${SCRIPT_PATH}
         CONTENT "
           set(DIRS \"$<TARGET_PROPERTY:${TGT},INTERFACE_INCLUDE_DIRECTORIES>\")
+          set(DEST_DIR \"${DEST_DIR}\") # Pass DEST_DIR from parent scope
+          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_DIR}\")
+
           foreach(DIR IN LISTS DIRS)
             if(EXISTS \"\${DIR}\")
-              # We reuse the same file-by-file copy logic here for consistency
               file(GLOB_RECURSE ALL_FILES LIST_DIRECTORIES false FOLLOW_SYMLINKS \"\${DIR}/*\")
               foreach(FILE \${ALL_FILES})
-                string(REPLACE \"\${DIR}/\" \"\" REL_PATH \"\${FILE}\")
-                set(DEST_FILE \"\${DEST_DIR}/\${REL_PATH}\")
-                get_filename_component(DEST_FILE_DIR \"\${DEST_FILE}\" DIRECTORY)
-                execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory \"\${DEST_FILE_DIR}\")
-                execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different \"\${FILE}\" \"\${DEST_FILE}\")
+                # Check if it's a header file
+                get_filename_extension(FILE_EXT \"\${FILE}\")
+                if(FILE_EXT STREQUAL \".h\" OR FILE_EXT STREQUAL \".hpp\")
+                  string(REPLACE \"\${DIR}/\" \"\" REL_PATH \"\${FILE}\")
+                  set(DEST_FILE \"\${DEST_DIR}/\${REL_PATH}\")
+                  get_filename_component(DEST_FILE_DIR \"\${DEST_FILE}\" DIRECTORY)
+                  execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_FILE_DIR}\")
+                  execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"copy_if_different\" \"\${FILE}\" \"\${DEST_FILE}\")
+                endif()
               endforeach()
             endif()
           endforeach()
+
+          # Create marker directory
+          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"${CMAKE_CURRENT_BINARY_DIR}/.staging_markers\")
+          # Touch the marker file to indicate completion
+          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER_FILE}\")
         "
       )
-      add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
+
+      add_custom_command(
+        OUTPUT "${STAGING_MARKER_FILE}"
         COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
+        # Depend on the target itself, as its INTERFACE_INCLUDE_DIRECTORIES might change,
+        # and on create_staging_dirs.
+        DEPENDS ${TGT} create_staging_dirs
         COMMENT "Staging headers for target ${TGT} to ${DEST_DIR}"
         VERBATIM)
+      
+      # Create a custom target that depends on the marker file.
+      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_tgt_headers_${TGT}" _unique_stage_target_name)
+      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+      # Make the ATTACH_TO target depend on this unique custom target.
+      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
     endif()
   endforeach()
 endfunction()
@@ -207,23 +249,64 @@ function(pylabhub_stage_executable)
   endif()
 
   set(DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
-
-  set(stage_commands "")
-  list(APPEND stage_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:${ARG_TARGET}>"
-        "${DEST_DIR}/")
+  set(SOURCE_FILE "$<TARGET_FILE:${ARG_TARGET}>")
   
-  if(MSVC)
-    list(APPEND stage_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "$<TARGET_PDB_FILE:${ARG_TARGET}>"
-          "${DEST_DIR}/")
-  endif()
+# Create a unique marker file that indicates this specific staging operation has completed.
+string(MAKE_C_IDENTIFIER "stage_exe_${ARG_TARGET}_${ARG_DESTINATION}_marker" _marker_name)
+set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
-  add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
-    ${stage_commands}
-    COMMENT "Staging executable and symbols for ${ARG_TARGET} to ${DEST_DIR}"
-    VERBATIM)
+# Ensure we list the files we depend on
+set(DEPENDENCY_FILES "${SOURCE_FILE}" create_staging_dirs) # Always depend on create_staging_dirs
+if(MSVC)
+  set(SOURCE_PDB "$<TARGET_PDB_FILE:${ARG_TARGET}>")
+  list(APPEND DEPENDENCY_FILES "${SOURCE_PDB}")
+endif()
+
+# Build the custom command with separate COMMAND lines so each ${CMAKE_COMMAND} invocation runs alone.
+add_custom_command(
+  OUTPUT "${STAGING_MARKER_FILE}"
+  DEPENDS ${DEPENDENCY_FILES}
+  COMMENT "Staging executable and symbols for ${ARG_TARGET} to ${DEST_DIR}"
+  VERBATIM
+
+  # create the marker directory
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${ARG_TARGET}>/.dummy"  # harmless ensure-parents
+  # ensure the staging mark dir exists
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+  # ensure destination dir exists
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}"
+  # copy the exe (use generator expression if SOURCE_FILE is target file)
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_DIR}/"
+)
+
+if(MSVC)
+  # add the PDB copy as additional custom command step by attaching to same OUTPUT
+  add_custom_command(
+    OUTPUT "${STAGING_MARKER_FILE}"  # same marker file: CMake will consider the commands together
+    DEPENDS "${SOURCE_PDB}"
+    VERBATIM
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_PDB}" "${DEST_DIR}/"
+    APPEND
+  )
+endif()
+
+# finally touch the marker in a separate add_custom_command so it runs after the copies
+add_custom_command(
+  OUTPUT "${STAGING_MARKER_FILE}"
+  VERBATIM
+  COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
+  APPEND
+)
+
+# Create a custom target that depends on the marker file.
+string(MAKE_C_IDENTIFIER "pylabhub_stage_target_exe_${ARG_TARGET}_${ARG_DESTINATION}" _unique_stage_target_name)
+add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+# Make the ATTACH_TO target depend on this unique custom target.
+add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
+
 endfunction()
+
 
 # --- pylabhub_get_library_staging_commands ---
 #
@@ -349,11 +432,60 @@ function(pylabhub_stage_libraries)
       pylabhub_get_library_staging_commands(
         TARGET ${TGT}
         DESTINATION bin
-        OUT_COMMANDS stage_commands
+        OUT_COMMANDS stage_commands_list
       )
-      add_custom_command(TARGET ${ARG_ATTACH_TO} POST_BUILD
-        ${stage_commands}
-        COMMENT "Staging library artifacts for ${TGT}" VERBATIM)
+
+      # Collect DEPENDS for the custom command
+      set(DEPENDENCY_FILES ${TGT} create_staging_dirs)
+      
+      # Get target properties
+      get_target_property(TGT_TYPE ${TGT} TYPE)
+      get_target_property(IS_IMPORTED ${TGT} IMPORTED)
+
+      # Only add target_file for types that have them
+      if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY" OR TGT_TYPE STREQUAL "STATIC_LIBRARY" OR TGT_TYPE STREQUAL "EXECUTABLE")
+        list(APPEND DEPENDENCY_FILES "$<TARGET_FILE:${TGT}>")
+      endif()
+
+      # Add PDB and Linker File only for MSVC and appropriate target types
+      if(MSVC)
+        if(NOT IS_IMPORTED) # Generator expression TARGET_PDB_FILE not allowed for IMPORTED targets
+          if(TGT_TYPE STREQUAL "EXECUTABLE" OR TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
+            # These are the primary types that produce PDBs directly managed by the current build
+            list(APPEND DEPENDENCY_FILES "$<TARGET_PDB_FILE:${TGT}>")
+          endif()
+        endif()
+        # TARGET_LINKER_FILE is only for shared libraries on Windows (the import lib)
+        if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
+          list(APPEND DEPENDENCY_FILES "$<TARGET_LINKER_FILE:${TGT}>")
+        endif()
+      endif()
+
+      # Create a unique marker file that indicates this specific staging operation has completed.
+      string(MAKE_C_IDENTIFIER "stage_lib_${TGT}_marker" _marker_name)
+      set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
+
+      # The commands to execute for staging this library
+      add_custom_command(
+        OUTPUT "${STAGING_MARKER_FILE}"
+        # Removed BYPRODUCTS to avoid generator expression issues
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin" # Ensure bin dir exists
+        COMMAND ${stage_commands_list}
+        COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
+        DEPENDS ${DEPENDENCY_FILES}
+        COMMENT "Staging library artifacts for ${TGT}"
+        VERBATIM
+      )
+
+      # Create a custom target that depends on the marker file.
+      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_lib_${TGT}" _unique_stage_target_name)
+      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
+
+      # Make the ATTACH_TO target depend on this unique custom target.
+      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
+
     endif()
   endforeach()
 endfunction()
