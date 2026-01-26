@@ -31,11 +31,11 @@
  ******************************************************************************/
 #include "plh_base.hpp"
 
-#include <future>    // For std::async, std::future
-#include <map>       // For std::map
-#include <stdexcept> // For std::runtime_error, std::length_error
-#include <fmt/ranges.h> // For fmt::join on vectors
 #include "utils/Lifecycle.hpp"
+#include <fmt/ranges.h> // For fmt::join on vectors
+#include <future>       // For std::async, std::future
+#include <map>          // For std::map
+#include <stdexcept>    // For std::runtime_error, std::length_error
 
 namespace pylabhub::utils::lifecycle_internal
 {
@@ -151,18 +151,13 @@ class LifecycleManagerImpl
     struct InternalGraphNode
     {
         InternalGraphNode() = default;
-        InternalGraphNode(std::string name_in,
-                          std::function<void()> startup_in,
+        InternalGraphNode(std::string name_in, std::function<void()> startup_in,
                           lifecycle_internal::InternalModuleShutdownDef shutdown_in,
-                          std::vector<std::string> dependencies_in,
-                          bool is_dynamic_in,
+                          std::vector<std::string> dependencies_in, bool is_dynamic_in,
                           bool is_persistent_in)
-            : name(std::move(name_in)),
-              startup(std::move(startup_in)),
-              shutdown(std::move(shutdown_in)),
-              dependencies(std::move(dependencies_in)),
-              is_dynamic(is_dynamic_in),
-              is_persistent(is_persistent_in)
+            : name(std::move(name_in)), startup(std::move(startup_in)),
+              shutdown(std::move(shutdown_in)), dependencies(std::move(dependencies_in)),
+              is_dynamic(is_dynamic_in), is_persistent(is_persistent_in)
         {
         }
 
@@ -386,8 +381,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     std::vector<InternalGraphNode *> loaded_dyn_nodes;
     for (auto &p : m_module_graph)
         if (p.second.is_dynamic &&
-            p.second.dynamic_status.load(std::memory_order_acquire) ==
-                DynamicModuleStatus::LOADED)
+            p.second.dynamic_status.load(std::memory_order_acquire) == DynamicModuleStatus::LOADED)
             loaded_dyn_nodes.push_back(&p.second);
 
     if (!loaded_dyn_nodes.empty())
@@ -406,8 +400,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                     if (fut.wait_for(mod->shutdown.timeout) == std::future_status::timeout)
                     {
                         debug_info += "TIMOUT!\n";
-                        mod->status.store(ModuleStatus::FailedShutdown,
-                                          std::memory_order_release);
+                        mod->status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
                     }
                     else
                     {
@@ -812,9 +805,8 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
     for (auto &pair : m_module_graph)
     {
         InternalGraphNode &source_node = pair.second;
-        if (source_node.is_dynamic &&
-            source_node.dynamic_status.load(std::memory_order_acquire) ==
-                DynamicModuleStatus::LOADED)
+        if (source_node.is_dynamic && source_node.dynamic_status.load(std::memory_order_acquire) ==
+                                          DynamicModuleStatus::LOADED)
         {
             // 3. For each direct dependency...
             for (const auto &dep_name : source_node.dependencies)
@@ -850,10 +842,10 @@ void LifecycleManagerImpl::buildStaticGraph()
     {
         if (m_module_graph.count(def.name))
             throw std::runtime_error("Duplicate module name: " + def.name);
-        m_module_graph.emplace(
-            std::piecewise_construct, std::forward_as_tuple(def.name),
-            std::forward_as_tuple(def.name, def.startup, def.shutdown, def.dependencies,
-                                  false /*is_dynamic*/, def.is_persistent));
+        m_module_graph.emplace(std::piecewise_construct, std::forward_as_tuple(def.name),
+                               std::forward_as_tuple(def.name, def.startup, def.shutdown,
+                                                     def.dependencies, false /*is_dynamic*/,
+                                                     def.is_persistent));
     }
     for (auto &p : m_module_graph)
     {

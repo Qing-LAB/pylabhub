@@ -16,7 +16,6 @@
 #include "test_entrypoint.h"
 #include "plh_datahub.hpp"
 
-
 // Define the global for the executable path, used by worker-spawning tests
 std::string g_self_exe_path;
 
@@ -57,27 +56,31 @@ int main(int argc, char **argv)
         g_self_exe_path = argv[0];
 
     bool use_modules = true;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i)
+    {
         // If ctest is run with a filter like --gtest_filter=*NoLifecycle*, this
         // string will appear in argv and we can use it as a flag to disable
         // the lifecycle modules that cause threading conflicts with TSan.
-        if (std::string(argv[i]).find("NoLifecycle") != std::string::npos) {
+        if (std::string(argv[i]).find("NoLifecycle") != std::string::npos)
+        {
             use_modules = false;
             break;
         }
     }
 
-    if (use_modules) {
-        pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
-            pylabhub::utils::Logger::GetLifecycleModule(),
-            pylabhub::utils::FileLock::GetLifecycleModule(),
-            pylabhub::utils::JsonConfig::GetLifecycleModule())
-        );
+    if (use_modules)
+    {
+        pylabhub::utils::LifecycleGuard guard(
+            pylabhub::utils::MakeModDefList(pylabhub::utils::Logger::GetLifecycleModule(),
+                                            pylabhub::utils::FileLock::GetLifecycleModule(),
+                                            pylabhub::utils::JsonConfig::GetLifecycleModule()));
         // Initialize GoogleTest and run all registered tests.
         ::testing::InitGoogleTest(&argc, argv);
         int result = RUN_ALL_TESTS();
         return result;
-    } else {
+    }
+    else
+    {
         pylabhub::utils::LifecycleGuard guard;
         // Initialize GoogleTest and run all registered tests.
         ::testing::InitGoogleTest(&argc, argv);
