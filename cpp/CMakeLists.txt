@@ -177,7 +177,7 @@ else()
   set(_platform_string "Unknown")
 endif()
 message(STATUS "Platform:            ${_platform_string}")
-message(STATUS "Here are the list of global settings:")
+message(STATUS "Here is the list of global settings:")
 message(STATUS "BUILD_TESTS = ${BUILD_TESTS}")
 message(STATUS "BUILD_XOP = ${BUILD_XOP}")
 message(STATUS "PYLABHUB_USE_SANITIZER = ${PYLABHUB_USE_SANITIZER}")
@@ -249,6 +249,7 @@ add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo "Staging complete. The project is now ready for installation."
     COMMAND ${CMAKE_COMMAND} -E echo "To install to ${CMAKE_INSTALL_PREFIX}, run: cmake --install ."
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} -E touch "${PYLABHUB_STAGING_DIR}/.stage_complete"
     COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
 )
 
@@ -268,7 +269,7 @@ add_custom_target(stage_core_artifacts)
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
 add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
-add_dependencies(stage_all create_staging_dirs stage_project_source_headers)
+
 
 
 
@@ -335,6 +336,9 @@ endif()
 
 # --- 3.5. Final Installation and Packaging ---
 if(PYLABHUB_CREATE_INSTALL_TARGET)
+  # First, run a pre-install check to ensure staging was completed.
+  install(SCRIPT cmake/PreInstallCheck.cmake)
+
   # Install the exported targets file.
   install(EXPORT pylabhubTargets
     FILE

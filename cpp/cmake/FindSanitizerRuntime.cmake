@@ -68,42 +68,35 @@ if(MSVC)
 else()
   # --- Sanitizer Support (GCC/Clang) ---
 
-  if(_san_name_lower STREQUAL "address")
-    set(SANITIZER_COMPILE_OPTIONS -fsanitize=address -fno-omit-frame-pointer)
-    set(SANITIZER_LINK_OPTIONS -fsanitize=address)
-    set(SANITIZER_FLAGS_SET ON)
-  elseif(_san_name_lower STREQUAL "thread")
-    set(SANITIZER_COMPILE_OPTIONS -fsanitize=thread -fno-omit-frame-pointer)
-    set(SANITIZER_LINK_OPTIONS -fsanitize=thread)
-    set(SANITIZER_FLAGS_SET ON)
-  elseif(_san_name_lower STREQUAL "undefinedbehavior" OR _san_name_lower STREQUAL "undefined")
-    set(SANITIZER_COMPILE_OPTIONS -fsanitize=undefined -fno-omit-frame-pointer)
-    set(SANITIZER_LINK_OPTIONS -fsanitize=undefined)
-    set(SANITIZER_FLAGS_SET ON)
-  endif()
-
-  if(NOT SANITIZER_FLAGS_SET)
-     message(FATAL_ERROR "PYLABHUB_USE_SANITIZER is set to an unrecognized value: '${PYLABHUB_USE_SANITIZER}'. "
-                      "Accepted values are: None, Address, Thread, UndefinedBehavior, Undefined.")
-  endif()
-
-  message(STATUS "  ** Enabling ${PYLABHUB_USE_SANITIZER} sanitizer with flags: ${SANITIZER_FLAGS_SET}.")
-  message(STATUS "")
-
   # detect the library for sanitizer with linker
   set(_san_lib_shortname "")
   set(_sanitizer_cmake_flag "")
 
   if(_san_name_lower STREQUAL "address")
+    set(SANITIZER_COMPILE_OPTIONS -fsanitize=address -fno-omit-frame-pointer)
+    set(SANITIZER_LINK_OPTIONS -fsanitize=address)
+    set(SANITIZER_FLAGS_SET ON)
     set(_san_lib_shortname "asan")
     set(_sanitizer_cmake_flag "-fsanitize=address")
   elseif(_san_name_lower STREQUAL "thread")
+    set(SANITIZER_COMPILE_OPTIONS -fsanitize=thread -fno-omit-frame-pointer)
+    set(SANITIZER_LINK_OPTIONS -fsanitize=thread)
+    set(SANITIZER_FLAGS_SET ON)
     set(_san_lib_shortname "tsan")
     set(_sanitizer_cmake_flag "-fsanitize=thread")
   elseif(_san_name_lower STREQUAL "undefinedbehavior" OR _san_name_lower STREQUAL "undefined")
+    set(SANITIZER_COMPILE_OPTIONS -fsanitize=undefined -fno-omit-frame-pointer)
+    set(SANITIZER_LINK_OPTIONS -fsanitize=undefined)
+    set(SANITIZER_FLAGS_SET ON)
     set(_san_lib_shortname "ubsan")
     set(_sanitizer_cmake_flag "-fsanitize=undefined")
+  else()
+    message(FATAL_ERROR "PYLABHUB_USE_SANITIZER is set to an unrecognized value: '${PYLABHUB_USE_SANITIZER}'. "
+                      "Accepted values are: None, Address, Thread, UndefinedBehavior, Undefined.")
   endif()
+
+  message(STATUS "  ** Enabling ${PYLABHUB_USE_SANITIZER} sanitizer with flags: ${SANITIZER_FLAGS_SET}.")
+  message(STATUS "")
 
   set(_sanitizer_comment_name "${PYLABHUB_USE_SANITIZER}Sanitizer runtime")
 
@@ -117,7 +110,7 @@ else()
 
   message(STATUS "  ** PYLABHUB_USE_SANITIZER is set to ${PYLABHUB_USE_SANITIZER}")
   message(STATUS "  ** using an empty.c to find sanitizer lib path.")
-  message(STATUS "  pylabhub::sanitizer_flags** CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER}")
+  message(STATUS "  ** CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER}")
   message(STATUS "  ** _sanitizer_cmake_flag: ${_sanitizer_cmake_flag}")
   message(STATUS "  ** accepted suffixes: ${_accepted_suffixes}")
 
@@ -213,11 +206,6 @@ endif() # End of if(MSVC) / else()
 # --- Apply flags globally and create INTERFACE helper target ---
 if(SANITIZER_FLAGS_SET)
   set(PYLABHUB_SANITIZER_FLAGS_SET "${SANITIZER_FLAGS_SET}" CACHE STRING "Sanitizer flags" FORCE)
-
-  # # Append to C/CXX flags and linker flags (cache so subdirectories can read them)
-  # set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS_SET}"  CACHE STRING "C flags (including sanitizer)" FORCE)
-  # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SANITIZER_FLAGS_SET}" CACHE STRING "CXX flags (including sanitizer)" FORCE)
-  # set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS_SET}" CACHE STRING "EXE linker flags (including sanitizer)" FORCE)
 
   # Create an INTERFACE target to propagate flags
   set(_san_iface_target pylabhub_sanitizer_flags)
