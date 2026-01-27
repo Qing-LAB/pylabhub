@@ -17,7 +17,10 @@
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
+
+#ifdef PYLABHUB_PLATFORM_FREEBSD
 #include <sys/sysctl.h>
+#endif
 
 #include <thread>
 

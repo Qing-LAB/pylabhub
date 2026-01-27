@@ -84,6 +84,37 @@ function(print_list_pairs msg list1_var list2_var)
   endforeach()
 endfunction()
 
+# _collect_implicit_paths_with_origin(var_name origin out_paths_var out_origins_var)
+#
+# Helper function to collect implicit compiler/linker paths.
+# This function canonicalizes paths from a given list variable and appends them
+# to a pair of output lists (`out_paths_var`, `out_origins_var`) in the parent scope.
+#
+# Arguments:
+#   var_name: The name of the CMake list variable (e.g., CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+#             containing paths to process.
+#   origin:   The string label for the origin of these paths (e.g., "IMP_INC", "IMP_LIB").
+#   out_paths_var:   The name of the list variable in the parent scope to append canonicalized paths to.
+#   out_origins_var: The name of the list variable in the parent scope to append path origins to.
+#
+function(_collect_implicit_paths_with_origin var_name origin out_paths_var out_origins_var)
+  set(local_paths "${${out_paths_var}}") # Dereference the list from the parent
+  set(local_origins "${${out_origins_var}}")
+  if(DEFINED ${var_name})
+    foreach(_path IN LISTS ${${var_name}})
+      if(_path AND NOT "${_path}" STREQUAL "")
+        _canon_if_exists(_p "${_path}")
+        if(_p)
+          list(APPEND local_paths "${_p}")
+          list(APPEND local_origins "${origin}")
+        endif()
+      endif()
+    endforeach()
+  endif()
+  set(${out_paths_var} "${local_paths}" PARENT_SCOPE) # Set the result back to the parent
+  set(${out_origins_var} "${local_origins}" PARENT_SCOPE)
+endfunction()
+
 
 message(STATUS "=============================================================================")
 message(STATUS " Setting up sanitization of file and path names for debug information")
@@ -99,15 +130,16 @@ set(_origins "")
 message(STATUS "[Sanitize debug information] canonical CMAKE_SOURCE_DIR = ${_canon_source}")
 message(STATUS "[Sanitize debug information] canonical CMAKE_BINARY_DIR = ${_canon_binary}")
 
+# Project build roots (use canonical values)
+if(_canon_binary)
+  list(APPEND _paths "${_canon_binary}")
+  list(APPEND _origins "BUILD")
+endif()
+
 # Project source and binary roots (use canonical values)
 if(_canon_source)
   list(APPEND _paths "${_canon_source}")
   list(APPEND _origins "SOURCE")
-endif()
-
-if(_canon_binary)
-  list(APPEND _paths "${_canon_binary}")
-  list(APPEND _origins "BUILD")
 endif()
 
 # TOOLCHAIN (heuristic: two parents above compiler binary)
@@ -155,31 +187,9 @@ if(DEFINED ENV{VCToolsInstallDir} AND NOT "$ENV{VCToolsInstallDir}" STREQUAL "")
   endif()
 endif()
 
-# Implicit include directories (CMake >= 3.20)
-if(DEFINED CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-  foreach(_inc IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-    if(_inc AND NOT _inc STREQUAL "")
-      _canon_if_exists(_p "${_inc}")
-      if(_p)
-        list(APPEND _paths "${_p}")
-        list(APPEND _origins "IMP_INC")
-      endif()
-    endif()
-  endforeach()
-endif()
-
-# Implicit include directories (CMake >= 3.20)
-if(DEFINED CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
-  foreach(_inc IN LISTS CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
-    if(_inc AND NOT _inc STREQUAL "")
-      _canon_if_exists(_p "${_inc}")
-      if(_p)
-        list(APPEND _paths "${_p}")
-        list(APPEND _origins "IMP_LIB")
-      endif()
-    endif()
-  endforeach()
-endif()
+# Implicit include and link directories (CMake >= 3.20)
+_collect_implicit_paths_with_origin(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES "IMP_INC" _paths _origins)
+_collect_implicit_paths_with_origin(CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES "IMP_LIB" _paths _origins)
 
 # Candidate HOME (consider later — only add if nothing else under HOME)
 if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
@@ -349,25 +359,23 @@ while(_remaining_len GREATER 0)
   list(REMOVE_AT _shrink_origins 0)
   list(LENGTH _shrink_paths _remaining_len)
 
-  print_list_pairs("[before processing we have these directories to futher examine]" _shrink_paths _shrink_origins)
-  message(STATUS "  remaining length: ${_remaining_len}")
-  print_list_pairs("[before processing, current _final_paths is]" _final_paths _final_origins)
-  message(STATUS "  continue to process: ${_pp} (origin=${_oo})")
-  message(STATUS "")
+  # print_list_pairs("[before processing we have these directories to futher examine]" _shrink_paths _shrink_origins)
+  # message(STATUS "  remaining length: ${_remaining_len}")
+  # print_list_pairs("[before processing, current _final_paths is]" _final_paths _final_origins)
+  # message(STATUS "  continue to process: ${_pp} (origin=${_oo})")
+  # message(STATUS "")
 
   if("${_oo}" STREQUAL "SOURCE")
     # remove any kept entries under this SOURCE, then append SOURCE
     process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "BUILD")
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
-    print_list_pairs("[SOURCE processed, final path now is]" _final_paths _final_origins)
     continue()
   elseif("${_oo}" STREQUAL "TOOLCHAIN")
     # remove any entries under this TOOLCHAIN, then append TOOLCHAIN
     process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
-    print_list_pairs("[TOOLCHAIN processed, final path now is]" _final_paths _final_origins)
     continue()
   elseif("${_oo}" STREQUAL "CONDA")
     # remove any entries under this CONDA prefix, then append CONDA
@@ -380,13 +388,6 @@ while(_remaining_len GREATER 0)
     process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
-    continue()
-  elseif("${_oo}" STREQUAL "VCTOOLS")
-    # remove any entries under this CONDA prefix, then append CONDA
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
-    list(APPEND _final_paths "${_pp}")
-    list(APPEND _final_origins "${_oo}")
-    print_list_pairs("[CONDA processed, final path now is]" _final_paths _final_origins)
     continue()
   endif()
 
@@ -404,20 +405,14 @@ while(_remaining_len GREATER 0)
   if(NOT _is_parent)
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
-    print_list_pairs("[${_oo} is processed, final path now is]" _final_paths _final_origins)
-  else()
-    print_list_pairs("[${_oo} has parent in the list, not added]" _final_paths _final_origins)
   endif()
 endwhile()
 
 
 # -----------------------------
 # Sanity check: lengths must match
-print_list_pairs("[final candidates for sanitizing debug information:]" _final_paths _final_origins)
 list(LENGTH _final_paths _flen)
 list(LENGTH _final_origins _olen)
-message(STATUS "_flen and _olen: ${_flen} ${_olen}")
-
 if(NOT _flen EQUAL _olen)
   message(FATAL_ERROR "[Sanitize debug information] internal error: _final_paths/_final_origins length mismatch: ${_flen} != ${_olen}")
 endif()
@@ -438,9 +433,7 @@ endif()
 set(_emit_order "")
 set(_shortest_len -1)
 list(LENGTH _idxs _ilen)
-list(LENGTH _idxs _ilen)
 
-while(_ilen GREATER 0)
 while(_ilen GREATER 0)
   set(_best_pos -1)
   set(_best_len 9999)
@@ -451,9 +444,9 @@ while(_ilen GREATER 0)
     endif()
     list(GET _idxs ${_pos} _ival)
     list(GET _final_paths ${_ival} _ipath)
-    message(STATUS " ** currently shortest length is ${_shortest_len}")
+    # message(STATUS " ** currently shortest length is ${_shortest_len}")
     string(LENGTH "${_ipath}" _l)
-    message(STATUS " ** examining ${_ipath}, len is: ${_l}")
+    # message(STATUS " ** examining ${_ipath}, len is: ${_l}")
     if(_l LESS_EQUAL _best_len AND _l GREATER_EQUAL _shortest_len)
       set(_best_len ${_l})
       set(_best_pos ${_pos})
@@ -466,7 +459,7 @@ while(_ilen GREATER 0)
   set(_shortest_len ${_best_len})
   
   list(GET _idxs ${_best_pos} _chosen)
-  message(STATUS " ** chosen one is ${_chosen}")
+  # message(STATUS " ** chosen one is ${_chosen}")
 
   list(APPEND _emit_order "${_chosen}")
   list(REMOVE_AT _idxs ${_best_pos})
