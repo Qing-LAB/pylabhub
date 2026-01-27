@@ -98,20 +98,34 @@ endfunction()
 #   out_origins_var: The name of the list variable in the parent scope to append path origins to.
 #
 function(_collect_implicit_paths_with_origin var_name origin out_paths_var out_origins_var)
-  set(local_paths "${${out_paths_var}}") # Dereference the list from the parent
+  # Copy the current parent lists into local variables (may be empty)
+  set(local_paths "${${out_paths_var}}")
   set(local_origins "${${out_origins_var}}")
+
+  #message(STATUS "[_collect_implicit_paths_with_origin] ${var_name} is ${${var_name}}")
+
   if(DEFINED ${var_name})
-    foreach(_path IN LISTS ${${var_name}})
-      if(_path AND NOT "${_path}" STREQUAL "")
-        _canon_if_exists(_p "${_path}")
-        if(_p)
-          list(APPEND local_paths "${_p}")
-          list(APPEND local_origins "${origin}")
-        endif()
+    # Put the contents into a named local list variable so IN LISTS can use the name.
+    set(_iterable "${${var_name}}")
+
+    foreach(_path IN LISTS _iterable)
+      # message(STATUS "[**DEBUG**] checking: ${_path}")
+
+      # Canonicalize / check existence. Replace this with your _canon_if_exists if you prefer.
+      if(EXISTS "${_path}")
+        # produce canonical absolute path
+        get_filename_component(_p "${_path}" REALPATH)
+        list(APPEND local_paths "${_p}")
+        list(APPEND local_origins "${origin}")
+        # message(STATUS "[**DEBUG**] appended: ${_p} (origin=${origin})")
       endif()
     endforeach()
   endif()
-  set(${out_paths_var} "${local_paths}" PARENT_SCOPE) # Set the result back to the parent
+
+  #message(STATUS "  ** DEBUG ** final local_paths=${local_paths} local_origins=${local_origins}")
+
+  # Export back to parent scope
+  set(${out_paths_var} "${local_paths}" PARENT_SCOPE)
   set(${out_origins_var} "${local_origins}" PARENT_SCOPE)
 endfunction()
 
@@ -373,7 +387,7 @@ while(_remaining_len GREATER 0)
     continue()
   elseif("${_oo}" STREQUAL "TOOLCHAIN")
     # remove any entries under this TOOLCHAIN, then append TOOLCHAIN
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*" )
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
     continue()
