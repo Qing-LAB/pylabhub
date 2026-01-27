@@ -21,6 +21,7 @@
 #ifdef PYLABHUB_PLATFORM_FREEBSD
 #include <sys/sysctl.h>
 #endif
+#endif
 
 #include <thread>
 

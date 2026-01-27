@@ -3,7 +3,7 @@
 # Igor XOP subproject (macOS x64 and Windows x64)
 #
 # Responsibilities:
-#   - build the XOP module (MODULE on macOS, SHARED on Windows)
+#   - build the XOP module (MODULE on macOS, MODULE on Windows)
 #   - assemble .xop bundle on macOS via cmake/assemble_xop.cmake
 #   - stage the bundle / dll into a post-build staging root (default: <build>/stage)
 #   - export the XOP target name and an alias so the parent CMake can refer to it
@@ -39,7 +39,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # -------------------------
 # Basic expectations from parent / environment
 # -------------------------
-# Parent should set one of PLATFORM_APPLE or PLATFORM_WIN64 (preferred). Attempt minimal detection otherwise.
+# Parent is required to set one of PLATFORM_APPLE or PLATFORM_WIN64.
+# A FATAL_ERROR is triggered if neither is defined.
 if(NOT (DEFINED PLATFORM_APPLE OR DEFINED PLATFORM_WIN64))
   message(FATAL_ERROR "IgorXOP: Only PLATFORM_APPLE or PLATFORM_WIN64 is supported.")
 endif()
@@ -84,7 +85,7 @@ elseif(DEFINED PLATFORM_WIN64)
 endif()
 
 # -------------------------
-# Create the build target (MODULE for mac, SHARED for win)
+# Create the build target (MODULE for mac, MODULE for win)
 # -------------------------
 if(DEFINED PLATFORM_APPLE)
   # On macOS, we build a standard MODULE library. The bundling is handled by a post-build script.

@@ -1,5 +1,9 @@
 # third_party/CMakeLists.txt
-
+#
+# This file manages and configures external third-party dependencies for the project.
+# It sets up prerequisite builds, defines imported targets for these dependencies,
+# and orchestrates their staging into the unified staging directory.
+#
 cmake_minimum_required(VERSION 3.18)
 project(third_party NONE)
 
@@ -59,7 +63,8 @@ include(msgpack)
 include(fmt)
 
 # setup libzmq target
-# This will be modified to depend on 'build_prerequisites'
+# libzmq's internal targets will depend on 'build_prerequisites',
+# the master target for pre-built external dependencies like libsodium.
 include(libzmq)
 
 # setup cppzmq target

@@ -2,14 +2,13 @@
 #
 # It defines the following variables:
 #  pylabhub_INCLUDE_DIRS - include directories for pylabhub
-#  pylabhub_LIBRARIES    - libraries to link against to use pylabhub
 #  pylabhub_EXECUTABLES  - executables provided by the package
 #  pylabhub_FOUND        - true if pylabhub has been found
 
 @PACKAGE_INIT@
 
 # --- Dependencies ---
-# Find dependencies of the pylabhub::utils library.
+# Find direct dependencies required by the pylabhub package.
 include(CMakeFindDependencyMacro)
 find_dependency(Threads REQUIRED)
 find_dependency(fmt REQUIRED)
@@ -23,7 +22,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/pylabhubTargets.cmake")
 # Note: Modern CMake encourages using targets directly, but these variables can be helpful.
 get_target_property(pylabhub_INCLUDE_DIRS pylabhub::utils INTERFACE_INCLUDE_DIRECTORIES)
 
-# For EXECUTABLES, we get the LOCATION of the installed pylabhub::app target
+# For EXECUTABLES, we get the LOCATION of the installed pylabhub::hubshell target
 if(TARGET pylabhub::hubshell)
     get_target_property(pylabhub_EXECUTABLES pylabhub::hubshell LOCATION)
 endif()
