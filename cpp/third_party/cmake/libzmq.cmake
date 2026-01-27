@@ -237,11 +237,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   # These variables will shadow the CMakeLists.txt under libzmq/
   # such that we are forcing libzmq to use our specific libsodium build.
   set(SODIUM_FOUND TRUE)
-  set(SODIUM_INCLUDE_DIRS ${PYLABHUB_LIBSODIUM_ROOT_DIR}/include)
+  set(SODIUM_INCLUDE_DIRS ${PREREQ_INSTALL_DIR}/include)
   if(MSVC)
-    set(SODIUM_LIBRARIES ${PYLABHUB_LIBSODIUM_ROOT_DIR}/lib/libsodium.lib)
+    set(SODIUM_LIBRARIES ${PREREQ_INSTALL_DIR}/lib/libsodium.lib)
   else()
-    set(SODIUM_LIBRARIES ${PYLABHUB_LIBSODIUM_ROOT_DIR}/lib/libsodium.a)
+    set(SODIUM_LIBRARIES ${PREREQ_INSTALL_DIR}/lib/libsodium.a)
   endif()
 
   message(STATUS "[pylabhub-third-party]   - Manually forcing libsodium location for libzmq:")
@@ -303,6 +303,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     endif()
   endforeach()
 
+  if(_zmq_canonical_target)
+    target_link_libraries(${_zmq_canonical_target} pylabhub::third_party::sodium)
+  endif()
+
   # --- 5. Create wrapper target and define usage requirements ---
   # This provides a stable `pylabhub::third_party::zmq` for consumers.
   # ---------------------------
@@ -316,7 +320,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
 
   if(_zmq_canonical_target)
     # Add a dependency to ensure libsodium is built before libzmq.
-    add_dependencies(${_zmq_canonical_target} libsodium_external)
+    add_dependencies(${_zmq_canonical_target} build_prerequisites)
 
     # Binary library case: Link the wrapper to the concrete target.
     target_link_libraries(pylabhub_libzmq INTERFACE ${_zmq_canonical_target})
