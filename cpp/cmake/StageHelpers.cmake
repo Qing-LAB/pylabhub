@@ -142,25 +142,16 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
     # Use file(GENERATE) to create the script file at build-system generation time.
     file(GENERATE OUTPUT ${SCRIPT_PATH} CONTENT "${SCRIPT_CONTENT}")
 
-    # Add a command to execute this script at build time.
+    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+        add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+    endif()
+
     add_custom_command(
-      OUTPUT "${STAGING_MARKER_FILE}"
+      TARGET ${ARG_ATTACH_TO}
+      POST_BUILD
       COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-      DEPENDS create_staging_dirs # Remove "${DIR}" from here
       COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
       VERBATIM)
-    
-    # Create a custom target that depends on the marker file.
-    string(MAKE_C_IDENTIFIER "pylabhub_stage_target_dir_headers_${SCRIPT_ID}" _unique_stage_target_name)
-    set(_target_dependencies "${STAGING_MARKER_FILE}")
-    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
-        # Add the external project as a dependency to ensure it's built/installed before we try to stage its headers.
-        list(APPEND _target_dependencies ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
-    endif()
-    add_custom_target(${_unique_stage_target_name} DEPENDS ${_target_dependencies})
-
-    # Make the ATTACH_TO target depend on this unique custom target.
-    add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
   endforeach()
 
   # Stage headers associated with targets
@@ -203,107 +194,66 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
         "
       )
 
+      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
-        OUTPUT "${STAGING_MARKER_FILE}"
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-        # Depend on the target itself, as its INTERFACE_INCLUDE_DIRECTORIES might change,
-        # and on create_staging_dirs.
-        DEPENDS ${TGT} create_staging_dirs
         COMMENT "Staging headers for target ${TGT} to ${DEST_DIR}"
         VERBATIM)
-      
-      # Create a custom target that depends on the marker file.
-      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_tgt_headers_${TGT}" _unique_stage_target_name)
-      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
-
-      # Make the ATTACH_TO target depend on this unique custom target.
-      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
     endif()
   endforeach()
 endfunction()
 
 # --- pylabhub_stage_executable ---
 #
-# Schedules the copying of an executable target to the staging area.
-# This is a simple wrapper around `add_custom_command` that ensures a
-# consistent pattern for staging executables.
+# Sets the output directory for an executable target to place it directly
+# into the staging area. This is the preferred modern CMake approach.
 #
 # Usage:
 #   pylabhub_stage_executable(
 #     TARGET <target_name>          # The executable target to stage.
 #     DESTINATION <subdir>          # The subdirectory within `${PYLABHUB_STAGING_DIR}` (e.g., 'bin').
-#     ATTACH_TO <target_name>       # The custom target to attach the copy command to.
 #   )
 #
 function(pylabhub_stage_executable)
   set(options "")
-  set(oneValueArgs "TARGET;DESTINATION;ATTACH_TO")
+  set(oneValueArgs "TARGET;DESTINATION")
   set(multiValueArgs "")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT ARG_TARGET OR NOT ARG_DESTINATION OR NOT ARG_ATTACH_TO)
-    message(FATAL_ERROR "pylabhub_stage_executable requires TARGET, DESTINATION, and ATTACH_TO arguments.")
+  if(NOT ARG_TARGET OR NOT ARG_DESTINATION)
+    message(FATAL_ERROR "pylabhub_stage_executable requires TARGET and DESTINATION arguments.")
   endif()
   if(NOT TARGET ${ARG_TARGET})
     message(FATAL_ERROR "pylabhub_stage_executable: Target '${ARG_TARGET}' does not exist.")
   endif()
 
-  set(DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
-  set(SOURCE_FILE "$<TARGET_FILE:${ARG_TARGET}>")
-  
-# Create a unique marker file that indicates this specific staging operation has completed.
-string(MAKE_C_IDENTIFIER "stage_exe_${ARG_TARGET}_${ARG_DESTINATION}_marker" _marker_name)
-set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
+  set(STAGED_DEST_DIR "${PYLABHUB_STAGING_DIR}/${ARG_DESTINATION}")
 
-# Ensure we list the files we depend on
-set(DEPENDENCY_FILES "${SOURCE_FILE}" create_staging_dirs) # Always depend on create_staging_dirs
-if(MSVC)
-  set(SOURCE_PDB "$<TARGET_PDB_FILE:${ARG_TARGET}>")
-  list(APPEND DEPENDENCY_FILES "${SOURCE_PDB}")
-endif()
-
-# Build the custom command with separate COMMAND lines so each ${CMAKE_COMMAND} invocation runs alone.
-add_custom_command(
-  OUTPUT "${STAGING_MARKER_FILE}"
-  DEPENDS ${DEPENDENCY_FILES}
-  COMMENT "Staging executable and symbols for ${ARG_TARGET} to ${DEST_DIR}"
-  VERBATIM
-
-  # create the marker directory
-  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${ARG_TARGET}>/.dummy"  # harmless ensure-parents
-  # ensure the staging mark dir exists
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
-  # ensure destination dir exists
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}"
-  # copy the exe (use generator expression if SOURCE_FILE is target file)
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_DIR}/"
-)
-
-if(MSVC)
-  # add the PDB copy as additional custom command step by attaching to same OUTPUT
-  add_custom_command(
-    OUTPUT "${STAGING_MARKER_FILE}"  # same marker file: CMake will consider the commands together
-    DEPENDS "${SOURCE_PDB}"
-    VERBATIM
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_PDB}" "${DEST_DIR}/"
-    APPEND
-  )
-endif()
-
-# finally touch the marker in a separate add_custom_command so it runs after the copies
-add_custom_command(
-  OUTPUT "${STAGING_MARKER_FILE}"
-  VERBATIM
-  COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
-  APPEND
-)
-
-# Create a custom target that depends on the marker file.
-string(MAKE_C_IDENTIFIER "pylabhub_stage_target_exe_${ARG_TARGET}_${ARG_DESTINATION}" _unique_stage_target_name)
-add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
-
-# Make the ATTACH_TO target depend on this unique custom target.
-add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
+  # For multi-config generators (e.g., Visual Studio, Xcode), we must set the
+  # output directory property for each configuration type. For single-config
+  # generators, setting the base property is sufficient.
+  if(CMAKE_CONFIGURATION_TYPES)
+    set(output_dir_props "")
+    foreach(config ${CMAKE_CONFIGURATION_TYPES})
+      string(TOUPPER ${config} config_upper)
+      list(APPEND output_dir_props RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${STAGED_DEST_DIR}")
+      if(MSVC)
+        list(APPEND output_dir_props PDB_OUTPUT_DIRECTORY_${config_upper} "${STAGED_DEST_DIR}")
+      endif()
+    endforeach()
+    set_target_properties(${ARG_TARGET} PROPERTIES ${output_dir_props})
+  else()
+    set_target_properties(${ARG_TARGET} PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${STAGED_DEST_DIR}"
+    )
+    if(MSVC)
+       set_target_properties(${ARG_TARGET} PROPERTIES
+        PDB_OUTPUT_DIRECTORY "${STAGED_DEST_DIR}"
+      )
+    endif()
+  endif()
 
 endfunction()
 
@@ -465,26 +415,16 @@ function(pylabhub_stage_libraries)
       string(MAKE_C_IDENTIFIER "stage_lib_${TGT}_marker" _marker_name)
       set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
-      # The commands to execute for staging this library
+      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
-        OUTPUT "${STAGING_MARKER_FILE}"
-        # Removed BYPRODUCTS to avoid generator expression issues
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
         COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin" # Ensure bin dir exists
         COMMAND ${stage_commands_list}
-        COMMAND ${CMAKE_COMMAND} -E touch "${STAGING_MARKER_FILE}"
-        DEPENDS ${DEPENDENCY_FILES}
         COMMENT "Staging library artifacts for ${TGT}"
         VERBATIM
       )
-
-      # Create a custom target that depends on the marker file.
-      string(MAKE_C_IDENTIFIER "pylabhub_stage_target_lib_${TGT}" _unique_stage_target_name)
-      add_custom_target(${_unique_stage_target_name} DEPENDS "${STAGING_MARKER_FILE}")
-
-      # Make the ATTACH_TO target depend on this unique custom target.
-      add_dependencies(${ARG_ATTACH_TO} ${_unique_stage_target_name})
 
     endif()
   endforeach()
