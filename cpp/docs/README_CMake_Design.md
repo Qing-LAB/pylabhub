@@ -72,6 +72,7 @@ graph TD
 The `stage_all` target orchestrates several smaller, modular staging targets from different parts of the project. The dependency flow ensures that directories are created first, third-party libraries are staged next, and finally the project's own core artifacts are staged.
 
 ```mermaid
+%%{ init : { "flowchart" : { "rankSpacing": 100, "nodeSpacing": 100 } } }%%
 graph TD
     subgraph "Global Master Target"
         stage_all;
@@ -95,7 +96,7 @@ graph TD
     stage_tests --> create_staging_dirs;
     stage_third_party_deps --> create_staging_dirs;
 
-    subgraph "Individual Artifacts (via global properties)"
+    subgraph "`Individual Artifacts<br/>(via global properties)`"
         subgraph " "
             direction LR
             A["pylabhub-hubshell (target)"]
