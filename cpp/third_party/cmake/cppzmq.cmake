@@ -30,6 +30,7 @@ message(STATUS "[pylabhub-third-party] Linking pylabhub_cppzmq -> pylabhub::thir
 if(THIRD_PARTY_INSTALL)
   # Stage the cppzmq header. The function will glob for .hpp files.
   pylabhub_stage_headers(
+    # Stage the cppzmq headers. The function will glob for .h and .hpp files.
     DIRECTORIES "${_cppzmq_include_dir}"
     SUBDIR "cppzmq"
   )
