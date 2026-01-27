@@ -142,16 +142,14 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
     # Use file(GENERATE) to create the script file at build-system generation time.
     file(GENERATE OUTPUT ${SCRIPT_PATH} CONTENT "${SCRIPT_CONTENT}")
 
-    set(_command_depends "create_staging_dirs")
     if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
-        list(APPEND _command_depends ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+        add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
     endif()
 
     add_custom_command(
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-      DEPENDS ${_command_depends}
       COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
       VERBATIM)
   endforeach()
@@ -196,11 +194,11 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
         "
       )
 
+      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-        DEPENDS ${TGT} create_staging_dirs
         COMMENT "Staging headers for target ${TGT} to ${DEST_DIR}"
         VERBATIM)
     endif()
@@ -449,13 +447,13 @@ function(pylabhub_stage_libraries)
       string(MAKE_C_IDENTIFIER "stage_lib_${TGT}_marker" _marker_name)
       set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
+      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
         COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin" # Ensure bin dir exists
         COMMAND ${stage_commands_list}
-        DEPENDS ${DEPENDENCY_FILES}
         COMMENT "Staging library artifacts for ${TGT}"
         VERBATIM
       )
