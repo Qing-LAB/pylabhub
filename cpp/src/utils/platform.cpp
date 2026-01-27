@@ -18,16 +18,6 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 
-#ifdef PYLABHUB_PLATFORM_FREEBSD
-#include <sys/sysctl.h>
-#endif
-
-#include <thread>
-
-#ifdef PYLABHUB_PLATFORM_FREEBSD
-#include <sys/sysctl.h>
-#endif
-
 #include <thread>
 
 #if defined(PYLABHUB_IS_POSIX)
@@ -36,7 +26,11 @@
 #include <execinfo.h> // For backtrace, backtrace_symbols
 #include <unistd.h>
 #endif
+
+#ifdef PYLABHUB_PLATFORM_FREEBSD
+#include <sys/sysctl.h>
 #endif
+
 #if defined(PYLABHUB_PLATFORM_APPLE)
 #include <libproc.h>     // proc_pidpath
 #include <limits.h>      // PATH_MAX
