@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- 
 # cmake/StageHelpers.cmake
 #
 # Purpose: Provides a consistent API for staging project artifacts.
@@ -16,29 +16,22 @@
 #   staging area's `include/` directory.
 #
 # - pylabhub_stage_executable(...)
-#   Schedules an executable target to be copied to a destination in the
-#   staging area.
+#   Sets the output directory for an executable to stage it directly.
 #
 # - pylabhub_get_library_staging_commands(...)
-#   Generates a list of commands to stage a library target. It correctly
-#   handles platform differences (e.g., DLLs vs. .so) and separates runtime
-#   from link-time artifacts. This function is intended for use with our own
-#   project's targets via `add_custom_target`.
+#   Generates a list of commands to stage a library's files. It correctly
+#   handles platform differences and is used by the centralized staging logic.
 #
-# - pylabhub_stage_libraries(...)
-#   A convenience wrapper that schedules third-party library artifacts to be
-#   copied to the staging area. It attaches commands directly to the global
-#   `stage_third_party_deps` target.
+# - pylabhub_register_library_for_staging(...)
+#   Registers a library target to a global property, marking it for staging.
+#   The actual staging commands are generated later by a centralized process.
 #
-# These functions rely on variables being set by the top-level `CMakeLists.txt`:
+# - pylabhub_register_test_for_staging(...)
+#   Registers a test executable for staging and inclusion in the test aggregator target.
 #
-# - PYLABHUB_STAGING_DIR: The root directory for all staged artifacts.
-#
-# And on custom targets defined in the build system:
-#
-# - stage_third_party_deps: The global custom target to which staging
-#   commands for third-party libraries are attached.
-# ---------------------------------------------------------------------------
+# These functions rely on variables like PYLABHUB_STAGING_DIR and custom targets
+# like stage_third_party_deps being defined in the top-level CMakeLists.txt.
+# --------------------------------------------------------------------------- 
 #
 cmake_minimum_required(VERSION 3.29)
 
@@ -348,87 +341,35 @@ function(pylabhub_get_library_staging_commands)
   set(${ARG_OUT_COMMANDS} ${commands_list} PARENT_SCOPE)
 endfunction()
 
-# --- pylabhub_stage_libraries ---
+# --- pylabhub_register_library_for_staging ---
 #
-# A convenience wrapper for staging third-party libraries.
+# Registers a library target to be staged.
 #
-# This function attaches staging commands for the given library targets directly
-# to the `stage_third_party_deps` custom target. It uses the more general
-# `pylabhub_get_library_staging_commands` function internally to generate the
-# correct, platform-aware copy commands.
+# This function simply appends the target name to a global property. A separate,
+# centralized process will collect all targets from this property and generate
+# the necessary staging commands. This decouples the declaration from the
+# implementation.
 #
 # Usage:
-#   pylabhub_stage_libraries(TARGETS <target1> <target2> ...)
-#   pylabhub_stage_libraries(
-#     TARGETS <target1> ...         # The library targets to stage.
-#     [ATTACH_TO <target_name>]     # The custom target to attach commands to. (Default: stage_third_party_deps)
-#   )
+#   pylabhub_register_library_for_staging(TARGET <target_name>)
 #
-function(pylabhub_stage_libraries)
+function(pylabhub_register_library_for_staging)
   set(options "")
-  set(oneValueArgs "ATTACH_TO")
-  set(multiValueArgs "TARGETS")
+  set(oneValueArgs "TARGET")
+  set(multiValueArgs "")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT ARG_ATTACH_TO)
-    set(ARG_ATTACH_TO "stage_third_party_deps")
+  if(NOT ARG_TARGET)
+    message(FATAL_ERROR "pylabhub_register_library_for_staging requires a TARGET argument.")
   endif()
 
-  foreach(TGT IN LISTS ARG_TARGETS)
-    if(TARGET ${TGT})
-      # Generate the appropriate staging commands for this library target.
-      # Runtime components will be directed to 'bin/'.
-      # Link-time components will be directed to 'lib/'.
-      pylabhub_get_library_staging_commands(
-        TARGET ${TGT}
-        DESTINATION bin
-        OUT_COMMANDS stage_commands_list
-      )
-
-      # Collect DEPENDS for the custom command
-      set(DEPENDENCY_FILES ${TGT} create_staging_dirs)
-      
-      # Get target properties
-      get_target_property(TGT_TYPE ${TGT} TYPE)
-      get_target_property(IS_IMPORTED ${TGT} IMPORTED)
-
-      # Only add target_file for types that have them
-      if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY" OR TGT_TYPE STREQUAL "STATIC_LIBRARY" OR TGT_TYPE STREQUAL "EXECUTABLE")
-        list(APPEND DEPENDENCY_FILES "$<TARGET_FILE:${TGT}>")
-      endif()
-
-      # Add PDB and Linker File only for MSVC and appropriate target types
-      if(MSVC)
-        if(NOT IS_IMPORTED) # Generator expression TARGET_PDB_FILE not allowed for IMPORTED targets
-          if(TGT_TYPE STREQUAL "EXECUTABLE" OR TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
-            # These are the primary types that produce PDBs directly managed by the current build
-            list(APPEND DEPENDENCY_FILES "$<TARGET_PDB_FILE:${TGT}>")
-          endif()
-        endif()
-        # TARGET_LINKER_FILE is only for shared libraries on Windows (the import lib)
-        if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
-          list(APPEND DEPENDENCY_FILES "$<TARGET_LINKER_FILE:${TGT}>")
-        endif()
-      endif()
-
-      # Create a unique marker file that indicates this specific staging operation has completed.
-      string(MAKE_C_IDENTIFIER "stage_lib_${TGT}_marker" _marker_name)
-      set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
-
-      add_dependencies(${ARG_ATTACH_TO} ${TGT})
-      add_custom_command(
-        TARGET ${ARG_ATTACH_TO}
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin" # Ensure bin dir exists
-        COMMAND ${stage_commands_list}
-        COMMENT "Staging library artifacts for ${TGT}"
-        VERBATIM
-      )
-
-    endif()
-  endforeach()
+  if(NOT TARGET ${ARG_TARGET})
+    message(FATAL_ERROR "pylabhub_register_library_for_staging: Target '${ARG_TARGET}' does not exist.")
+  endif()
+  
+  set_property(GLOBAL APPEND PROPERTY PYLABHUB_LIBRARIES_TO_STAGE ${ARG_TARGET})
 endfunction()
+
 
 # --- pylabhub_register_test_for_staging ---
 #
@@ -480,4 +421,3 @@ function(pylabhub_register_test_for_staging)
   # Register this target to a global property so the parent scope can collect it
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})
 endfunction()
-
