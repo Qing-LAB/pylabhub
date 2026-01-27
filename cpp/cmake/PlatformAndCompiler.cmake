@@ -10,8 +10,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # -------------------------------------------------------------------------------
 # Platform detection & compile-time macros (robust, with diagnostics)
 # -------------------------------------------------------------------------------
-# We want exactly one PLATFORM_* macro defined and visible to all targets.
-# Use add_compile_definitions() so macros are globally visible.
+# We want exactly one PLATFORM_* macro defined and visible to all our project's targets.
+# Use add_compile_definitions() to achieve this.
 
 set(_platform_macro_defined FALSE)
 
