@@ -131,6 +131,10 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
 )
 
+if(PYLABHUB_EXECINFO_LIB)
+  target_link_libraries(pylabhub-utils PRIVATE ${PYLABHUB_EXECINFO_LIB})
+endif()
+
 # Ensure libsodium is built before pylabhub-utils (following libzmq pattern)
 add_dependencies(pylabhub-utils libsodium_external)
 
