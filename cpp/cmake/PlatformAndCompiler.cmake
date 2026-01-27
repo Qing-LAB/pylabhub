@@ -15,11 +15,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(_platform_macro_defined FALSE)
 
-if(NOT CMAKE_BUILD_TYPE)
-  message(STATUS "CMAKE_BUILD_TYPE not set. Default to Debug.")
-  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the build type: (Release, Debug, RelWithDebInfo, MinSizeRel)" FORCE)
-endif()
-
 # Helpful diagnostics that will be printed so user can see what CMake sees.
 message(STATUS "CMake generator information (diagnostics):")
 message(STATUS "  CMAKE_GENERATOR...........: ${CMAKE_GENERATOR}")
@@ -143,11 +138,11 @@ endif()
 message(STATUS "============================================================")
 
 
-# Default to Release if no type selected and generator is single-config.
+# For single-configuration generators, set a default build type if none is provided.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "No build type selected, defaulting to Release")
-  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
-  message(STATUS "")
+  # Default to Debug for development, consistent with IDE behavior.
+  message(STATUS "No build type specified for single-config generator; defaulting to 'Debug'.")
+  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the build type: Release, Debug, RelWithDebInfo, MinSizeRel" FORCE)
 endif()
 
 # Compiler warnings and parallel build options
