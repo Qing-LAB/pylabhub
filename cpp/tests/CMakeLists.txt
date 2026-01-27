@@ -1,4 +1,10 @@
 # /cpp/tests/CMakeLists.txt
+#
+# Configures the project's test suite.
+# This file enables testing, includes GoogleTest, defines an aggregator target
+# for staging test executables, and configures various test sub-projects.
+# It relies on the BUILD_TESTS option to enable or disable the test build.
+#
 cmake_minimum_required(VERSION 3.29)
 
 if(BUILD_TESTS)

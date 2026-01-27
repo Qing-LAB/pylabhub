@@ -84,6 +84,19 @@ function(print_list_pairs msg list1_var list2_var)
   endforeach()
 endfunction()
 
+# _collect_implicit_paths_with_origin(var_name origin out_paths_var out_origins_var)
+#
+# Helper function to collect implicit compiler/linker paths.
+# This function canonicalizes paths from a given list variable and appends them
+# to a pair of output lists (`out_paths_var`, `out_origins_var`) in the parent scope.
+#
+# Arguments:
+#   var_name: The name of the CMake list variable (e.g., CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+#             containing paths to process.
+#   origin:   The string label for the origin of these paths (e.g., "IMP_INC", "IMP_LIB").
+#   out_paths_var:   The name of the list variable in the parent scope to append canonicalized paths to.
+#   out_origins_var: The name of the list variable in the parent scope to append path origins to.
+#
 function(_collect_implicit_paths_with_origin var_name origin out_paths_var out_origins_var)
   set(local_paths "${${out_paths_var}}") # Dereference the list from the parent
   set(local_origins "${${out_origins_var}}")

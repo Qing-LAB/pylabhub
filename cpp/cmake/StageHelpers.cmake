@@ -105,7 +105,7 @@ if(NOT EXISTS \"\${SOURCE_DIR}\")
     return()
 endif()
 
-# Find all files recursively within the source directory
+# Find header files recursively within the source directory
 file(GLOB_RECURSE ALL_FILES
     LIST_DIRECTORIES false
     FOLLOW_SYMLINKS
@@ -330,7 +330,7 @@ function(pylabhub_get_library_staging_commands)
       # On Linux and macOS, also place a copy/symlink in the 'lib' directory
       # if the runtime destination is not already 'lib'. This ensures the library
       # is discoverable for linking and also at runtime if needed via default search paths.
-      if(PYLABHUB_IS_POSIX) # <--- Correctly handle macOS here
+      if(PYLABHUB_IS_POSIX) # Handle POSIX systems (Linux and macOS)
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
           message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
           list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
