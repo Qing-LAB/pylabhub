@@ -25,7 +25,7 @@ if(PYLABHUB_LOGGER_DEBUG)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
 
-# The app links against the core library and the utils library.
+# The app links against the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::utils)
 
 if(PYLABHUB_SANITIZER_FLAGS_SET)
@@ -37,6 +37,10 @@ endif()
 # ==============================================================================
 # Installation
 # ==============================================================================
+# Defines standard installation rules for the executable. This is important for
+# CPack integration and allowing downstream projects to find and use this target
+# via CMake's package configuration files. This is distinct from the project's
+# overall staging mechanism.
 install(TARGETS pylabhub-hubshell DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 

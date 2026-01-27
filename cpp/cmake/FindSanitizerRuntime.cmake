@@ -207,11 +207,6 @@ endif() # End of if(MSVC) / else()
 if(SANITIZER_FLAGS_SET)
   set(PYLABHUB_SANITIZER_FLAGS_SET "${SANITIZER_FLAGS_SET}" CACHE STRING "Sanitizer flags" FORCE)
 
-  # # Append to C/CXX flags and linker flags (cache so subdirectories can read them)
-  # set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS_SET}"  CACHE STRING "C flags (including sanitizer)" FORCE)
-  # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SANITIZER_FLAGS_SET}" CACHE STRING "CXX flags (including sanitizer)" FORCE)
-  # set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS_SET}" CACHE STRING "EXE linker flags (including sanitizer)" FORCE)
-
   # Create an INTERFACE target to propagate flags
   set(_san_iface_target pylabhub_sanitizer_flags)
   
