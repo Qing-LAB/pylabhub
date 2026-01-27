@@ -14,9 +14,7 @@ if(BUILD_TESTS)
   # Create an aggregator target for all test-related staging.
   # Sub-projects will register their executables to the PYLABHUB_TEST_EXECUTABLES_TO_STAGE
   # global property. We collect them here and add them as dependencies.
-  if(NOT TARGET stage_tests)
-      add_custom_target(stage_tests COMMENT "Aggregate target for staging test executables and dependencies")
-  endif()
+  add_custom_target(stage_tests COMMENT "Aggregate target for staging test executables and dependencies")
 
   # Ensure staged library (pylabhub-utils) is available before its dependent tests are staged.
   if (TARGET stage_pylabhub_utils)
