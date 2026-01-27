@@ -17,6 +17,9 @@
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>
+
+#include <thread>
 
 #ifdef PYLABHUB_PLATFORM_FREEBSD
 #include <sys/sysctl.h>
