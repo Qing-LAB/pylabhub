@@ -42,22 +42,15 @@ install(TARGETS pylabhub-hubshell DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 
 # --- Staging ---
-
-# Create a single local staging target for all artifacts in this file (the app and the core library).
-# This target will be registered with the global build system, following the project's modular staging pattern.
-# The target is named 'stage_main_artifacts' for clarity, as it stages both the core library and the app.
-add_custom_target(stage_main_artifacts COMMENT "Staging main project artifacts (core lib and app)")
-
-# Attach the command to stage the main application executable to this same local target.
+# Set the output directory for the main executable to place it directly into the
+# staged 'bin' directory. Then, register the executable target with the global
+# 'stage_core_artifacts' target.
 pylabhub_stage_executable(
   TARGET pylabhub-hubshell
   DESTINATION bin
-  ATTACH_TO stage_main_artifacts
 )
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS pylabhub-hubshell)
 
-# Ensure the local staging target depends on both build targets before executing.
-add_dependencies(stage_main_artifacts pylabhub-hubshell create_staging_dirs)
-set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_main_artifacts)
 
 
 message(STATUS "Configured executable 'pylabhub::hubshell'.")

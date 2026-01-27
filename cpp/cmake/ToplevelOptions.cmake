@@ -36,9 +36,6 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
-# Option to enable testing.
-option(PYLABHUB_ENABLE_TESTING "Enable testing" ON)
-
 # Option to control the intensity of the atomic_guard stress tests
 set(VALID_STRESS_LEVELS "None;Light;Heavy")
 set(PYLABHUB_ATOMICGUARD_STRESS_LEVEL "Light" CACHE STRING "Set the stress level for atomic_guard tests. Valid values are: ${VALID_STRESS_LEVELS}")
