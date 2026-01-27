@@ -146,13 +146,7 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
         add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
     endif()
 
-    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
-        add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
-    endif()
-
     add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
@@ -201,10 +195,7 @@ execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER
       )
 
       add_dependencies(${ARG_ATTACH_TO} ${TGT})
-      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
-        TARGET ${ARG_ATTACH_TO}
-        POST_BUILD
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
@@ -425,10 +416,7 @@ function(pylabhub_stage_libraries)
       set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
 
       add_dependencies(${ARG_ATTACH_TO} ${TGT})
-      add_dependencies(${ARG_ATTACH_TO} ${TGT})
       add_custom_command(
-        TARGET ${ARG_ATTACH_TO}
-        POST_BUILD
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib" # Ensure lib dir exists
