@@ -45,6 +45,12 @@ else()
   message(STATUS "Found Apple codesign executable at: ${CODESIGN_EXECUTABLE}")
 endif()
 
+# IMPORTANT: The specific search order (xcrun, then /usr/bin) is intentional.
+# Relying on a general `find_program(codesign)` is avoided because
+# it might discover a non-Apple 'codesign' (e.g., from Homebrew/MacPorts)
+# that could behave differently or be incompatible with official macOS signing.
+# Only the Apple-provided 'codesign' guarantees correct behavior for bundles.
+
 message(STATUS "Signing bundle: ${BUNDLE_PATH} with identity: ${SIGNING_IDENTITY}")
 
 # Use the simple, robust command confirmed to work with the official codesign tool.
