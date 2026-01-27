@@ -24,6 +24,12 @@
 
 #include <thread>
 
+#ifdef PYLABHUB_PLATFORM_FREEBSD
+#include <sys/sysctl.h>
+#endif
+
+#include <thread>
+
 #if defined(PYLABHUB_IS_POSIX)
 #include <cxxabi.h>   // For __cxa_demangle
 #include <dlfcn.h>    // For dladdr
