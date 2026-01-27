@@ -2,10 +2,7 @@
 #
 # This script uses ExternalProject_Add to build libsodium.
 # It is designed to be the first step in a prerequisite build chain.
-#
-# This script uses ExternalProject_Add to build libsodium.
-# It is designed to be the first step in a prerequisite build chain.
-#
+
 include(ExternalProject)
 include(ThirdPartyPolicyAndHelper)
 
@@ -14,13 +11,7 @@ if(NOT PREREQ_INSTALL_DIR)
   set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
 endif()
 
-# This will be set in the parent scope (third_party/CMakeLists.txt)
-if(NOT PREREQ_INSTALL_DIR)
-  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
-endif()
-
 set(LIBSODIUM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libsodium")
-set(LIBSODIUM_INSTALL_DIR "${PREREQ_INSTALL_DIR}") # Install to the prerequisite dir
 set(LIBSODIUM_INSTALL_DIR "${PREREQ_INSTALL_DIR}") # Install to the prerequisite dir
 set(LIBSODIUM_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/libsodium-build")
 
@@ -120,9 +111,6 @@ else()
         "CC=${CMAKE_C_COMPILER}"
         "CXX=${CMAKE_CXX_COMPILER}"
       "${LIBSODIUM_SOURCE_DIR}/configure"
-        "CC=${CMAKE_C_COMPILER}"
-        "CXX=${CMAKE_CXX_COMPILER}"
-      "${LIBSODIUM_SOURCE_DIR}/configure"
         --prefix=<INSTALL_DIR>
         --disable-shared
         --enable-static
@@ -135,5 +123,4 @@ else()
   )
 endif()
 
-message(STATUS "[pylabhub-third-party] Defined libsodium_external project to install to ${LIBSODIUM_INSTALL_DIR}")
 message(STATUS "[pylabhub-third-party] Defined libsodium_external project to install to ${LIBSODIUM_INSTALL_DIR}")
