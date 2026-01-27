@@ -367,6 +367,16 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
   )
 
+  # --- Final Installation Step ---
+  # This is the core installation command. It takes the entire contents of the
+  # fully populated staging directory and copies it to the installation prefix.
+  # This ensures the installed layout perfectly mirrors the development layout.
+  install(
+    DIRECTORY "${PYLABHUB_STAGING_DIR}/"
+    DESTINATION .
+    COMPONENT Runtime
+  )
+
   message(STATUS "Installation target enabled. Run 'cmake --install' to create a package.")
 else()
   message(STATUS "Installation target disabled.")
