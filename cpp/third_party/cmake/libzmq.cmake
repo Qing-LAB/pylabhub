@@ -349,7 +349,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
 
     # Stage the library file, if a concrete target was found
     if(_zmq_canonical_target)
-      pylabhub_stage_libraries(TARGETS ${_zmq_canonical_target})
+      pylabhub_register_library_for_staging(TARGET ${_zmq_canonical_target})
     endif()
   else()
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for libzmq.")
