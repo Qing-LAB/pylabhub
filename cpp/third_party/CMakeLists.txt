@@ -114,65 +114,19 @@ if(THIRD_PARTY_INSTALL)
     get_property(header_registrations GLOBAL PROPERTY PYLABHUB_HEADERS_TO_STAGE)
     if(header_registrations)
         message(STATUS "Processing registered third-party headers for staging...")
-        
-        set(staging_script_content "")
-        set(script_dependencies "")
-
         foreach(REG_STRING IN LISTS header_registrations)
             if(NOT REG_STRING)
                 continue()
             endif()
-
+            
+            # The registration string is a set of key-value pairs separated by '@@'.
+            # We replace '@@' with ';' to create a standard CMake argument list,
+            # and then pass it directly to our helper function.
             string(REPLACE "@@" ";" ARGS_LIST "${REG_STRING}")
-            cmake_parse_arguments(ARG "" "SUBDIR;ATTACH_TO;DEPENDS;EXTERNAL_PROJECT_DEPENDENCY" "DIRECTORIES" "${ARGS_LIST}")
-
-            if(NOT ARG_DIRECTORIES)
-                message(WARNING "Header registration invalid: missing DIRECTORIES for '${REG_STRING}'.")
-                continue()
-            endif()
-
-            if(ARG_DEPENDS)
-                list(APPEND script_dependencies ${ARG_DEPENDS})
-            endif()
-            if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
-                list(APPEND script_dependencies ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
-            endif()
-
-            foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-                if(ARG_SUBDIR)
-                    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-                else()
-                    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
-                endif()
-                
-                string(APPEND staging_script_content "
-# --- Staging for ${SRC_DIR} ---
-file(MAKE_DIRECTORY \"${DEST_DIR}\")
-execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory \"${SRC_DIR}\" \"${DEST_DIR}\")
-"
-                )
-            endforeach()
+            pylabhub_attach_headers_staging_commands(
+                ${ARGS_LIST}
+                ATTACH_TO stage_third_party_deps
+            )
         endforeach()
-
-        if(staging_script_content)
-            set(STAGING_SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/cmake_build_time_stage_headers.cmake")
-            file(GENERATE
-                OUTPUT  ${STAGING_SCRIPT_PATH}
-                CONTENT "${staging_script_content}"
-            )
-
-            add_custom_target(run_header_staging_script
-                COMMAND ${CMAKE_COMMAND} -P ${STAGING_SCRIPT_PATH}
-                COMMENT "Running build-time script to stage all third-party headers"
-                VERBATIM
-            )
-
-            if(script_dependencies)
-                list(REMOVE_DUPLICATES script_dependencies)
-                add_dependencies(run_header_staging_script ${script_dependencies})
-            endif()
-
-            add_dependencies(stage_third_party_deps run_header_staging_script)
-        endif()
     endif()
 endif()
