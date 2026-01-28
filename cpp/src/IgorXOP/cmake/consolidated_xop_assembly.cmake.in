@@ -42,6 +42,10 @@ if(NOT DEFINED MACHO_BINARY_PATH OR NOT DEFINED BUNDLE_DIR OR NOT DEFINED XOP_BU
                       "Check the POST_BUILD command in src/IgorXOP/CMakeLists.txt.")
 endif()
 
+if(NOT DEFINED DEPENDENCY_DYLIB_PATH)
+  set(DEPENDENCY_DYLIB_PATH "")
+endif()
+
 # Define internal paths based on provided BUNDLE_DIR
 set(_contents_dir "${BUNDLE_DIR}/Contents")
 set(_macos_dir    "${_contents_dir}/MacOS")
@@ -135,6 +139,17 @@ function(_verify_xop_bundle bundle_path executable_name)
   endif()
   message(STATUS "    - Executable file.................... OK")
 
+  # 2b. Check for the resource file
+  set(RSRC_PATH "${bundle_path}/Contents/Resources/${executable_name}.rsrc")
+  if(EXISTS "${REZ_SOURCE_FILE}")
+    if(NOT EXISTS "${RSRC_PATH}")
+      message(FATAL_ERROR "    Verification failed: Missing resource file at '${RSRC_PATH}'. "
+                          "This usually means the Rez compiler failed to produce it.")
+    else()
+      message(STATUS "    - Resource file...................... OK")
+    endif()
+  endif()
+
   # 3. Check for exported _XOPMain symbol
   find_program(NM_EXECUTABLE nm)
   if(NOT NM_EXECUTABLE)
@@ -206,6 +221,16 @@ if(EXISTS "${_macos_dir}/${XOP_BUNDLE_NAME}")
   execute_process(COMMAND /bin/chmod +x "${_macos_dir}/${XOP_BUNDLE_NAME}")
 endif()
 
+# 3b. Copy dependency dylib if provided
+if(NOT "${DEPENDENCY_DYLIB_PATH}" STREQUAL "" AND EXISTS "${DEPENDENCY_DYLIB_PATH}")
+  message(STATUS "  - Copying dependency dylib '${DEPENDENCY_DYLIB_PATH}' to '${_macos_dir}/'")
+  file(COPY "${DEPENDENCY_DYLIB_PATH}" DESTINATION "${_macos_dir}")
+  get_filename_component(dep_name "${DEPENDENCY_DYLIB_PATH}" NAME)
+  if(EXISTS "${_macos_dir}/${dep_name}")
+    execute_process(COMMAND /bin/chmod +x "${_macos_dir}/${dep_name}")
+  endif()
+endif()
+
 # ------------------------------------------------------------------------------
 # 4. Place the Info.plist and InfoPlist.strings files
 # ------------------------------------------------------------------------------
@@ -253,13 +278,16 @@ if(EXISTS "${REZ_SOURCE_FILE}")
     execute_process(
       COMMAND ${REZ_EXECUTABLE} ${rez_args} -useDF -o "${rez_output_rsrc}" "${REZ_SOURCE_FILE}"
       RESULT_VARIABLE rez_result
+      OUTPUT_VARIABLE rez_output
       ERROR_VARIABLE rez_error
     )
 
     if(rez_result EQUAL 0)
       message(STATUS "  - Created resource file: ${rez_output_rsrc}")
     else()
-      message(WARNING "  - Rez failed to compile resource file. Error: ${rez_error}")
+      message(FATAL_ERROR "  Rez compiler failed with exit code ${rez_result} when processing ${REZ_SOURCE_FILE}.\n"
+                          "  Error: ${rez_error}\n"
+                          "  Output: ${rez_output}")
     endif()
   else()
       message(WARNING "  - Rez compiler not found. Cannot compile .r file.")
