@@ -1,6 +1,7 @@
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
+
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
@@ -14,14 +15,13 @@
 #pragma warning(pop)
 #endif
 
-#else
-#include <sys/syscall.h>
-#include <sys/types.h>
-#endif
+#endif // for WINDOWS PLATFORM
 
 #include <thread>
 
 #if defined(PYLABHUB_IS_POSIX)
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <cxxabi.h>   // For __cxa_demangle
 #include <dlfcn.h>    // For dladdr
 #include <execinfo.h> // For backtrace, backtrace_symbols
