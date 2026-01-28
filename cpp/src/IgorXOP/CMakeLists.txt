@@ -279,6 +279,16 @@ if(DEFINED PLATFORM_APPLE)
     message(STATUS "IgorXOP: macOS code signing is ENABLED with identity: ${MACOSX_CODESIGN_IDENTITY}")
   endif()
 
+  # Determine if there is a dependency dylib to bundle.
+  set(XOP_DEPENDENCY_DYLIB_PATH "")
+  if(TARGET pylabhub::utils)
+      get_target_property(_utils_type pylabhub::utils TYPE)
+      if(_utils_type STREQUAL "SHARED_LIBRARY" OR _utils_type STREQUAL "MODULE_LIBRARY")
+          set(XOP_DEPENDENCY_DYLIB_PATH "$<TARGET_FILE:pylabhub::utils>")
+          message(STATUS "IgorXOP: Found dependency dylib to bundle: pylabhub::utils")
+      endif()
+  endif()
+
   # Add the post-build command to run the consolidated script.
   # We pass all variables via -D to the script. The path to the compiled
   # binary is passed using a generator expression ($<TARGET_FILE:...>) which
@@ -288,6 +298,7 @@ if(DEFINED PLATFORM_APPLE)
     POST_BUILD
     COMMAND ${CMAKE_COMMAND}
       -DMACHO_BINARY_PATH=$<TARGET_FILE:${XOP_TARGET}>
+      -DDEPENDENCY_DYLIB_PATH=${XOP_DEPENDENCY_DYLIB_PATH}
       -DBUNDLE_DIR=${BUNDLE_DIR}
       -DXOP_BUNDLE_NAME=${XOP_BUNDLE_NAME}
       -DCONFIGURED_INFO_PLIST=${CONFIGURED_INFO_PLIST}
@@ -321,6 +332,16 @@ elseif(DEFINED PLATFORM_WIN64)
   list(APPEND stage_commands
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
   )
+  # Also copy the pylabhub::utils dependency if it is a shared library
+  if(TARGET pylabhub::utils)
+    get_target_property(_utils_type pylabhub::utils TYPE)
+    if(_utils_type STREQUAL "SHARED_LIBRARY" OR _utils_type STREQUAL "MODULE_LIBRARY")
+      list(APPEND stage_commands
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub::utils>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+      )
+      message(STATUS "IgorXOP: Adding command to stage dependent library: pylabhub::utils")
+    endif()
+  endif()
 endif()
 
 # Conditionally add the command to copy helper files.
