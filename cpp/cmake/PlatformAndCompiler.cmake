@@ -10,15 +10,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # -------------------------------------------------------------------------------
 # Platform detection & compile-time macros (robust, with diagnostics)
 # -------------------------------------------------------------------------------
-# We want exactly one PLATFORM_* macro defined and visible to all targets.
-# Use add_compile_definitions() so macros are globally visible.
+# We want exactly one PLATFORM_* macro defined and visible to all our project's targets.
+# Use add_compile_definitions() to achieve this.
 
 set(_platform_macro_defined FALSE)
-
-if(NOT CMAKE_BUILD_TYPE)
-  message(STATUS "CMAKE_BUILD_TYPE not set. Default to Debug.")
-  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the build type: (Release, Debug, RelWithDebInfo, MinSizeRel)" FORCE)
-endif()
 
 # Helpful diagnostics that will be printed so user can see what CMake sees.
 message(STATUS "CMake generator information (diagnostics):")
@@ -104,6 +99,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
   set(PLATFORM_FREEBSD TRUE CACHE BOOL "Building for FreeBSD platform" FORCE)
   set(_platform_macro_defined TRUE)
   set(_platform_name "FreeBSD")
+  find_library(EXECINFO_LIB execinfo)
+  if(NOT EXECINFO_LIB)
+    message(FATAL_ERROR "libexecinfo not found, which is required for backtrace support on FreeBSD.")
+  else()
+    message(STATUS "Found libexecinfo for backtrace support: ${EXECINFO_LIB}")
+    set(PYLABHUB_EXECINFO_LIB "${EXECINFO_LIB}" CACHE INTERNAL "Path to libexecinfo")
+  endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "LINUX")
   set(PYLABHUB_IS_POSIX TRUE CACHE BOOL "Building for POSIX platform" FORCE)
   add_compile_definitions(PLATFORM_LINUX=1)
@@ -136,11 +138,11 @@ endif()
 message(STATUS "============================================================")
 
 
-# Default to Release if no type selected and generator is single-config.
+# For single-configuration generators, set a default build type if none is provided.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "No build type selected, defaulting to Release")
-  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
-  message(STATUS "")
+  # Default to Debug for development, consistent with IDE behavior.
+  message(STATUS "No build type specified for single-config generator; defaulting to 'Debug'.")
+  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the build type: Release, Debug, RelWithDebInfo, MinSizeRel" FORCE)
 endif()
 
 # Compiler warnings and parallel build options

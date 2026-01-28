@@ -177,7 +177,7 @@ else()
   set(_platform_string "Unknown")
 endif()
 message(STATUS "Platform:            ${_platform_string}")
-message(STATUS "Here are the list of global settings:")
+message(STATUS "Here is the list of global settings:")
 message(STATUS "BUILD_TESTS = ${BUILD_TESTS}")
 message(STATUS "BUILD_XOP = ${BUILD_XOP}")
 message(STATUS "PYLABHUB_USE_SANITIZER = ${PYLABHUB_USE_SANITIZER}")
@@ -249,6 +249,7 @@ add_custom_target(stage_all
     COMMAND ${CMAKE_COMMAND} -E echo "Staging complete. The project is now ready for installation."
     COMMAND ${CMAKE_COMMAND} -E echo "To install to ${CMAKE_INSTALL_PREFIX}, run: cmake --install ."
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} -E touch "${PYLABHUB_STAGING_DIR}/.stage_complete"
     COMMENT "Staging all project dependencies and artifacts to ${PYLABHUB_STAGING_DIR}"
 )
 
@@ -268,7 +269,7 @@ add_custom_target(stage_core_artifacts)
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
 add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
-add_dependencies(stage_all create_staging_dirs stage_project_source_headers)
+
 
 
 
@@ -298,6 +299,11 @@ if(BUILD_TESTS)
 else()
   message(STATUS "Skipping tests sub-project (BUILD_TESTS is OFF).")
 endif()
+
+# Configure add-ons, if the directory exists.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/add-ons")
+  add_subdirectory(add-ons)
+endif()
 message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
@@ -308,6 +314,7 @@ if(core_stage_targets)
   message(STATUS "Adding core stage targets to 'stage_core_artifacts': ${core_stage_targets}")
   add_dependencies(stage_core_artifacts ${core_stage_targets})
 endif()
+
 
 # The global `stage_all` target depends on the individual staging targets
 # from each sub-project. This ensures all artifacts are staged correctly
@@ -335,6 +342,9 @@ endif()
 
 # --- 3.5. Final Installation and Packaging ---
 if(PYLABHUB_CREATE_INSTALL_TARGET)
+  # First, run a pre-install check to ensure staging was completed.
+  install(SCRIPT cmake/PreInstallCheck.cmake)
+
   # Install the exported targets file.
   install(EXPORT pylabhubTargets
     FILE
@@ -365,6 +375,16 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
     "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfigVersion.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
+  )
+
+  # --- Final Installation Step ---
+  # This is the core installation command. It takes the entire contents of the
+  # fully populated staging directory and copies it to the installation prefix.
+  # This ensures the installed layout perfectly mirrors the development layout.
+  install(
+    DIRECTORY "${PYLABHUB_STAGING_DIR}/"
+    DESTINATION .
+    COMPONENT Runtime
   )
 
   message(STATUS "Installation target enabled. Run 'cmake --install' to create a package.")
