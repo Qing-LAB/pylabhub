@@ -77,14 +77,56 @@ include(cmake/googletest.cmake)
 # --- 5. Staging ---
 # Stage the staged prerequisites
 if(THIRD_PARTY_INSTALL)
-  pylabhub_stage_headers(
+  pylabhub_register_headers_for_staging(
     DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
     SUBDIR ""
-    ATTACH_TO stage_third_party_deps
     EXTERNAL_PROJECT_DEPENDENCY libsodium_external
   )
-  pylabhub_stage_libraries(
-    TARGETS pylabhub::third_party::sodium
-    ATTACH_TO stage_third_party_deps
-  )
+  pylabhub_register_library_for_staging(TARGET pylabhub::third_party::sodium)
+endif()
+
+# ===========================================================================
+# FINAL PHASE: Process all staging registrations
+#
+# This must be the very last thing in this file. By this point, all third-party
+# libraries have been configured and have registered themselves for staging
+# using the helper functions. Now, we process those global registration lists
+# to generate the final staging commands.
+# ===========================================================================
+if(THIRD_PARTY_INSTALL)
+    # --- Finalize Third-Party Library Staging ---
+    get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
+    if(third_party_libs_to_stage)
+        message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
+        foreach(TGT ${third_party_libs_to_stage})
+            if(TARGET ${TGT})
+                pylabhub_attach_library_staging_commands(
+                    TARGET ${TGT}
+                    ATTACH_TO stage_third_party_deps
+                )
+            else()
+                message(WARNING "A registered library target for staging does not exist: ${TGT}")
+            endif()
+        endforeach()
+    endif()
+
+    # --- Finalize Third-Party Header Staging ---
+    get_property(header_registrations GLOBAL PROPERTY PYLABHUB_HEADERS_TO_STAGE)
+    if(header_registrations)
+        message(STATUS "Processing registered third-party headers for staging...")
+        foreach(REG_STRING IN LISTS header_registrations)
+            if(NOT REG_STRING)
+                continue()
+            endif()
+            
+            # The registration string is a set of key-value pairs separated by '@@'.
+            # We replace '@@' with ';' to create a standard CMake argument list,
+            # and then pass it directly to our helper function.
+            string(REPLACE "@@" ";" ARGS_LIST "${REG_STRING}")
+            pylabhub_attach_headers_staging_commands(
+                ${ARGS_LIST}
+                ATTACH_TO stage_third_party_deps
+            )
+        endforeach()
+    endif()
 endif()
