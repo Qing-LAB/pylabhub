@@ -12,8 +12,8 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 
 # Define the sanitizer to use.
 # Possible values: "None", "Address", "Thread", "UndefinedBehavior", "Undefined".
-# This is not compatible with MSVC.
-set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). Not for MSVC.")
+# Note: AddressSanitizer is supported on MSVC; Thread and UndefinedBehavior sanitizers are not currently supported on MSVC in this build script.
+set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). AddressSanitizer supported on MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
 option(PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB "FORCE utils dynamic lib to link with sanitizer static lib" OFF)
 
@@ -35,9 +35,6 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
-
-# Option to enable testing.
-option(PYLABHUB_ENABLE_TESTING "Enable testing" ON)
 
 # Option to control the intensity of the atomic_guard stress tests
 set(VALID_STRESS_LEVELS "None;Light;Heavy")

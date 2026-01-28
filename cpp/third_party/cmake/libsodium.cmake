@@ -1,20 +1,18 @@
-# ---------------------------------------------------------------------------
 # third_party/cmake/libsodium.cmake
-# Wrapper for libsodium.
 #
-# This script uses ExternalProject_Add to configure, build, and install
-# libsodium into a temporary location within our build directory. It then
-# creates an IMPORTED library target that can be used by other CMake targets
-# within this project.
-#
-# Exports PYLABHUB_LIBSODIUM_ROOT_DIR for downstream consumers (e.g., libzmq).
-# ---------------------------------------------------------------------------
+# This script uses ExternalProject_Add to build libsodium.
+# It is designed to be the first step in a prerequisite build chain.
 
 include(ExternalProject)
 include(ThirdPartyPolicyAndHelper)
 
+# This will be set in the parent scope (third_party/CMakeLists.txt)
+if(NOT PREREQ_INSTALL_DIR)
+  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
+endif()
+
 set(LIBSODIUM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libsodium")
-set(LIBSODIUM_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/libsodium-install")
+set(LIBSODIUM_INSTALL_DIR "${PREREQ_INSTALL_DIR}") # Install to the prerequisite dir
 set(LIBSODIUM_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/libsodium-build")
 
 if(MSVC)
@@ -55,7 +53,9 @@ if(MSVC)
   elseif(MSVC_TOOLSET_VERSION STREQUAL "143")
     set(_vs_dir "vs2022")
   else()
-    message(FATAL_ERROR "Unsupported Visual Studio toolset version: ${MSVC_TOOLSET_VERSION} (expected 140/141/142/143).")
+    # Fallback to the latest known version
+    set(_vs_dir "vs2022")
+    message(WARNING "Unsupported Visual Studio toolset version: ${MSVC_TOOLSET_VERSION}. Falling back to vs2022. Build may fail.")
   endif()
 
   set(LIBSODIUM_PROJECT_ROOT_DIR "${LIBSODIUM_SOURCE_DIR}/builds/msvc/${_vs_dir}")
@@ -97,107 +97,30 @@ if(MSVC)
 
     # The library name produced by libsodium MSVC builds is typically "libsodium.lib"
     BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libsodium.lib"
-    BUILD_COMMAND    ${_msbuild_cmd}    
+    BUILD_COMMAND    ${_msbuild_cmd}
   )
-
-  set(LIBSODIUM_LIBRARY_PATH "${LIBSODIUM_INSTALL_DIR}/lib/libsodium.lib")
-
 else()
-  # -----------------------------
   # macOS/Linux: autotools build
-  # -----------------------------
-  set(_configure_cmd "${LIBSODIUM_SOURCE_DIR}/configure")
-
-  set(_configure_env_args
-    "CC=${CMAKE_C_COMPILER}"
-    "CXX=${CMAKE_CXX_COMPILER}"
-  )
-
-  if(APPLE)
-    message(STATUS "[libsodium.cmake] CMAKE_OSX_DEPLOYMENT_TARGET='${CMAKE_OSX_DEPLOYMENT_TARGET}'")
-
-    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-      message(FATAL_ERROR "[libsodium.cmake] CMAKE_OSX_DEPLOYMENT_TARGET must be set on macOS (e.g. -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0).")
-    endif()
-
-    set(_minver_flag "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-    list(APPEND _configure_env_args
-      "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
-      "CFLAGS=${_minver_flag}"
-      "CXXFLAGS=${_minver_flag}"
-      "LDFLAGS=${_minver_flag}"
-      # If you still see /usr/local/bin/gcc-15 being chosen, uncomment to constrain discovery:
-      # "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
-    )
-  endif()
-
   ExternalProject_Add(
     libsodium_external
     SOURCE_DIR   "${LIBSODIUM_SOURCE_DIR}"
     BINARY_DIR   "${LIBSODIUM_BUILD_DIR}"
     INSTALL_DIR  "${LIBSODIUM_INSTALL_DIR}"
-
     CONFIGURE_COMMAND
       "${CMAKE_COMMAND}" -E env
-        ${_configure_env_args}
-      "${_configure_cmd}"
+        "CC=${CMAKE_C_COMPILER}"
+        "CXX=${CMAKE_CXX_COMPILER}"
+      "${LIBSODIUM_SOURCE_DIR}/configure"
         --prefix=<INSTALL_DIR>
         --disable-shared
         --enable-static
         --disable-tests
         --disable-dependency-tracking
         --with-pic
-
     BUILD_COMMAND    "$(MAKE)"
     INSTALL_COMMAND  "$(MAKE)" install
-
     BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libsodium.a"
   )
-
-  set(LIBSODIUM_LIBRARY_PATH "${LIBSODIUM_INSTALL_DIR}/lib/libsodium.a")
 endif()
 
-# ----------------------------------------------------------------------------
-# Export install dir for downstream consumers
-# ----------------------------------------------------------------------------
-ExternalProject_Get_Property(libsodium_external install_dir)
-set(PYLABHUB_LIBSODIUM_ROOT_DIR "${install_dir}"
-  CACHE INTERNAL "Root directory for pylabhub's libsodium build"
-)
-
-# ----------------------------------------------------------------------------
-# Imported target used by the rest of the project
-# ----------------------------------------------------------------------------
-add_library(pylabhub::third_party::sodium STATIC IMPORTED GLOBAL)
-set_target_properties(pylabhub::third_party::sodium PROPERTIES
-  IMPORTED_LOCATION "${LIBSODIUM_LIBRARY_PATH}"
-  INTERFACE_INCLUDE_DIRECTORIES "${LIBSODIUM_SOURCE_DIR}/src/libsodium/include"
-)
-
-if(MSVC)
-  set_property(TARGET pylabhub::third_party::sodium APPEND PROPERTY
-    INTERFACE_COMPILE_DEFINITIONS "SODIUM_STATIC"
-  )
-endif()
-
-add_dependencies(pylabhub::third_party::sodium libsodium_external)
-
-message(STATUS "[pylabhub-third-party] Configured libsodium external project.")
-message(STATUS "[pylabhub-third-party]   - Source:  ${LIBSODIUM_SOURCE_DIR}")
-message(STATUS "[pylabhub-third-party]   - Install: ${install_dir}")
-message(STATUS "[pylabhub-third-party]   - Library: ${LIBSODIUM_LIBRARY_PATH}")
-message(STATUS "[pylabhub-third-party]   - Exporting libsodium root: ${PYLABHUB_LIBSODIUM_ROOT_DIR}")
-
-if(THIRD_PARTY_INSTALL)
-  message(STATUS "[pylabhub-third-party] Scheduling libsodium artifacts for staging...")
-
-  # Stage the static library
-  pylabhub_stage_libraries(TARGETS pylabhub::third_party::sodium)
-
-  # Stage the header files
-  pylabhub_stage_headers(
-    DIRECTORIES "${install_dir}/include"
-    SUBDIR ""
-    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
-  )
-endif()
+message(STATUS "[pylabhub-third-party] Defined libsodium_external project to install to ${LIBSODIUM_INSTALL_DIR}")

@@ -84,6 +84,44 @@ function(print_list_pairs msg list1_var list2_var)
   endforeach()
 endfunction()
 
+# _collect_implicit_paths_with_origin(var_name origin out_paths_var out_origins_var)
+#
+# Helper function to collect implicit compiler/linker paths.
+# This function canonicalizes paths from a given list variable and appends them
+# to a pair of output lists (`out_paths_var`, `out_origins_var`) in the parent scope.
+#
+# Arguments:
+#   var_name: The name of the CMake list variable (e.g., CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+#             containing paths to process.
+#   origin:   The string label for the origin of these paths (e.g., "IMP_INC", "IMP_LIB").
+#   out_paths_var:   The name of the list variable in the parent scope to append canonicalized paths to.
+#   out_origins_var: The name of the list variable in the parent scope to append path origins to.
+#
+function(_collect_implicit_paths_with_origin var_name origin out_paths_var out_origins_var)
+  # Copy the current parent lists into local variables (may be empty)
+  set(local_paths "${${out_paths_var}}")
+  set(local_origins "${${out_origins_var}}")
+
+  if(DEFINED ${var_name})
+    # Put the contents into a named local list variable so IN LISTS can use the name.
+    set(_iterable "${${var_name}}")
+
+    foreach(_path IN LISTS _iterable)
+      # Canonicalize / check existence.
+      if(EXISTS "${_path}")
+        # produce canonical absolute path
+        get_filename_component(_p "${_path}" REALPATH)
+        list(APPEND local_paths "${_p}")
+        list(APPEND local_origins "${origin}")
+      endif()
+    endforeach()
+  endif()
+
+  # Export back to parent scope
+  set(${out_paths_var} "${local_paths}" PARENT_SCOPE)
+  set(${out_origins_var} "${local_origins}" PARENT_SCOPE)
+endfunction()
+
 
 message(STATUS "=============================================================================")
 message(STATUS " Setting up sanitization of file and path names for debug information")
@@ -99,15 +137,16 @@ set(_origins "")
 message(STATUS "[Sanitize debug information] canonical CMAKE_SOURCE_DIR = ${_canon_source}")
 message(STATUS "[Sanitize debug information] canonical CMAKE_BINARY_DIR = ${_canon_binary}")
 
+# Project build roots (use canonical values)
+if(_canon_binary)
+  list(APPEND _paths "${_canon_binary}")
+  list(APPEND _origins "BUILD")
+endif()
+
 # Project source and binary roots (use canonical values)
 if(_canon_source)
   list(APPEND _paths "${_canon_source}")
   list(APPEND _origins "SOURCE")
-endif()
-
-if(_canon_binary)
-  list(APPEND _paths "${_canon_binary}")
-  list(APPEND _origins "BUILD")
 endif()
 
 # TOOLCHAIN (heuristic: two parents above compiler binary)
@@ -145,31 +184,19 @@ if(DEFINED ENV{CONDA_PREFIX} AND NOT "$ENV{CONDA_PREFIX}" STREQUAL "")
   endif()
 endif()
 
-# Implicit include directories (CMake >= 3.20)
-if(DEFINED CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-  foreach(_inc IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-    if(_inc AND NOT _inc STREQUAL "")
-      _canon_if_exists(_p "${_inc}")
-      if(_p)
-        list(APPEND _paths "${_p}")
-        list(APPEND _origins "IMP_INC")
-      endif()
-    endif()
-  endforeach()
+# VCTOOLS
+if(DEFINED ENV{VCToolsInstallDir} AND NOT "$ENV{VCToolsInstallDir}" STREQUAL "")
+  _canon_if_exists(_p "$ENV{VCToolsInstallDir}")
+  if(_p)
+    list(APPEND _paths "${_p}")
+    list(APPEND _origins "VCTOOLS")
+    message(STATUS "[Sanitize debug information] canonical VCTOOLS = ${_p}")
+  endif()
 endif()
 
-# Implicit include directories (CMake >= 3.20)
-if(DEFINED CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
-  foreach(_inc IN LISTS CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
-    if(_inc AND NOT _inc STREQUAL "")
-      _canon_if_exists(_p "${_inc}")
-      if(_p)
-        list(APPEND _paths "${_p}")
-        list(APPEND _origins "IMP_LIB")
-      endif()
-    endif()
-  endforeach()
-endif()
+# Implicit include and link directories (CMake >= 3.20)
+_collect_implicit_paths_with_origin(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES "IMP_INC" _paths _origins)
+_collect_implicit_paths_with_origin(CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES "IMP_LIB" _paths _origins)
 
 # Candidate HOME (consider later — only add if nothing else under HOME)
 if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
@@ -243,56 +270,6 @@ if(_plen GREATER 0)
     list(APPEND _indices "${_ii}")
   endforeach()
 endif()
-
-# # Robust selection-sort indices by path length descending (position-based)
-# set(_sorted_indices "")
-# while(_indices)
-#   set(_best_pos -1)
-#   set(_best_len -1)
-
-#   list(LENGTH _indices _ilen)
-#   foreach(_pos RANGE 0 ${_ilen})
-#     if(${_pos} GREATER_EQUAL ${_ilen})
-#       break()
-#     endif()
-#     list(GET _indices ${_pos} _idx_val)   # original index into _paths
-#     list(GET _paths ${_idx_val} _ppath)
-#     list(GET _origins ${_idx_val} _oorig)
-#     string(LENGTH "${_ppath}" _plen)
-#     # If this is SOURCE, pick it immediately for this iteration
-#     if(_oorig STREQUAL "SOURCE")
-#       set(_best_len ${_plen})
-#       set(_best_pos ${_pos})
-#       # message(STATUS "DEBUG : ${_ppath} as ${_oorig}")
-#       break()
-#     elseif(__oorig STREQUAL "TOOLCHAIN")
-#       set(_best_len ${_plen})
-#       set(_best_pos ${_pos})
-#       # message(STATUS "DEBUG : ${_ppath} as ${_oorig}")
-#       break()
-#     elseif(__oorig STREQUAL "CONDA")
-#       set(_best_len ${_plen})
-#       set(_best_pos ${_pos})
-#       # message(STATUS "DEBUG : ${_ppath} as ${_oorig}")
-#       break()
-#     elseif(_plen GREATER _best_len)
-#       set(_best_len ${_plen})
-#       set(_best_pos ${_pos})
-#       # message(STATUS "DEBUG : ${_ppath} as ${_oorig}")
-#     endif()
-#   endforeach()
-
-#   if(_best_pos EQUAL -1)
-#     break()
-#   endif()
-
-#   # move the chosen value (original index) into _sorted_indices
-#   list(GET _indices ${_best_pos} _chosen_val)
-#   list(APPEND _sorted_indices "${_chosen_val}")
-#   list(REMOVE_AT _indices ${_best_pos})
-# endwhile()
-
-# message(STATUS "${_sorted_indices}")
 
 print_list_pairs("[Sanitize debug information] The following directories will be examined:" _paths _origins)
 message(STATUS "")
@@ -397,17 +374,23 @@ while(_remaining_len GREATER 0)
 
   if("${_oo}" STREQUAL "SOURCE")
     # remove any kept entries under this SOURCE, then append SOURCE
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "BUILD")
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
     continue()
   elseif("${_oo}" STREQUAL "TOOLCHAIN")
     # remove any entries under this TOOLCHAIN, then append TOOLCHAIN
-    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*" )
     list(APPEND _final_paths "${_pp}")
     list(APPEND _final_origins "${_oo}")
     continue()
   elseif("${_oo}" STREQUAL "CONDA")
+    # remove any entries under this CONDA prefix, then append CONDA
+    process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
+    list(APPEND _final_paths "${_pp}")
+    list(APPEND _final_origins "${_oo}")
+    continue()
+  elseif("${_oo}" STREQUAL "VCTOOLS")
     # remove any entries under this CONDA prefix, then append CONDA
     process_candidate(_shrink_paths _shrink_origins "${_pp}" "${_oo}" "*")
     list(APPEND _final_paths "${_pp}")
@@ -442,15 +425,23 @@ if(NOT _flen EQUAL _olen)
 endif()
 
 # Sort final pairs by descending path length (selection)
-math(EXPR _flen_1 "${_flen} - 1")
-foreach(_i RANGE ${_flen_1})
-  list(APPEND _idxs ${_i})
-endforeach()
-
+if(_flen GREATER 0)
+  if(_flen GREATER 1)
+    math(EXPR _flen_1 "${_flen} - 1")
+    foreach(_i RANGE 0 ${_flen_1})
+      list(APPEND _idxs ${_i})
+    endforeach()
+  else()
+    set(_idxs "0")
+  endif()
+else()
+  set(_idxs "")
+endif()
 set(_emit_order "")
 set(_shortest_len -1)
+list(LENGTH _idxs _ilen)
 
-while(_idxs)
+while(_ilen GREATER 0)
   set(_best_pos -1)
   set(_best_len 9999)
   list(LENGTH _idxs _ilen)
@@ -481,6 +472,7 @@ while(_idxs)
   list(REMOVE_AT _idxs ${_best_pos})
   # message(STATUS "  ** current _emit_order is ${_emit_order}")
   # message(STATUS "  ** current _idxs is ${_idxs}")
+  list(LENGTH _idxs _ilen)
 endwhile()
 
 list(REVERSE _emit_order)
@@ -496,6 +488,8 @@ foreach(_i ${_emit_order})
     set(_to "/{BUILD}")
   elseif("${_o}" STREQUAL "CONDA")
     set(_to "/{CONDA}")
+  elseif("${_o}" STREQUAL "VCTOOLS")
+    set(_to "/{VCTOOLS}")
   elseif("${_o}" STREQUAL "TOOLCHAIN")
     set(_to "/{TOOLCHAIN}")
   elseif("${_o}" STREQUAL "SYSROOT")
@@ -514,12 +508,14 @@ endforeach()
 
 # Diagnostics and apply flags
 if(_remap_flags)
-  message(STATUS "[Sanitized debug information] Will pass file/debug prefix map flags:")
-  foreach(_f IN LISTS _remap_flags)
-    message(STATUS "  ${_f}")
-  endforeach()
+  
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(${_remap_flags})
+    message(STATUS "[Sanitized debug information] Will pass file/debug prefix map flags:")
+    foreach(_f IN LISTS _remap_flags)
+      message(STATUS "  ${_f}")
+    endforeach()
+
   elseif(MSVC)
     # MSVC uses /pathmap:old=new. We convert both -ffile-prefix-map and
     # -fdebug-prefix-map to /pathmap, as MSVC does not separate the concepts,
@@ -532,7 +528,7 @@ if(_remap_flags)
 
       # Now, convert _to_unix_extracted to MSVC-friendly format using a fake hostname
       # Assuming _to_unix_extracted is like "/{SOURCE}"
-      string(REGEX REPLACE "/{(.*)}" "//development/{\\1}" _to_msvc_converted "${_to_unix_extracted}")
+      string(REGEX REPLACE "/{(.*)}" "//ROOT/{\\1}" _to_msvc_converted "${_to_unix_extracted}")
 
       # Construct the MSVC flag
       list(APPEND _msvc_remap_flags "/pathmap:${_p_extracted}=${_to_msvc_converted}")
@@ -543,7 +539,13 @@ if(_remap_flags)
       # /pathmap requires /experimental:deterministic for MSVC to be effective.
       add_compile_options(${_msvc_remap_flags} /experimental:deterministic)
     endif()
+
+    message(STATUS "[Sanitized debug information] Will pass file/debug prefix map flags:")
+    foreach(_f IN LISTS _msvc_remap_flags)
+      message(STATUS "  ${_f}")
+    endforeach()
   endif()
+  
 else()
   message(STATUS "[Sanitized debug information] No remap flags generated.")
 endif()

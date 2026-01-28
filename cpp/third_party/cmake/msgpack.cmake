@@ -26,7 +26,7 @@ message(STATUS "[pylabhub-third-party] Configured pylabhub_msgpackc with include
 # --- 3. Stage artifacts for installation ---
 if(THIRD_PARTY_INSTALL)
   # Stage the entire 'msgpack-c/include' directory.
-  pylabhub_stage_headers(
+  pylabhub_register_headers_for_staging(
     DIRECTORIES "${_msgpack_include_dir}"
     SUBDIR ""  # This will copy 'msgpack.hpp' and the 'msgpack' subdirectory.
   )

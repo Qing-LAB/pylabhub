@@ -3,7 +3,7 @@
 # Igor XOP subproject (macOS x64 and Windows x64)
 #
 # Responsibilities:
-#   - build the XOP module (MODULE on macOS, SHARED on Windows)
+#   - build the XOP module (MODULE on macOS, MODULE on Windows)
 #   - assemble .xop bundle on macOS via cmake/assemble_xop.cmake
 #   - stage the bundle / dll into a post-build staging root (default: <build>/stage)
 #   - export the XOP target name and an alias so the parent CMake can refer to it
@@ -39,7 +39,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # -------------------------
 # Basic expectations from parent / environment
 # -------------------------
-# Parent should set one of PLATFORM_APPLE or PLATFORM_WIN64 (preferred). Attempt minimal detection otherwise.
+# Parent is required to set one of PLATFORM_APPLE or PLATFORM_WIN64.
+# A FATAL_ERROR is triggered if neither is defined.
 if(NOT (DEFINED PLATFORM_APPLE OR DEFINED PLATFORM_WIN64))
   message(FATAL_ERROR "IgorXOP: Only PLATFORM_APPLE or PLATFORM_WIN64 is supported.")
 endif()
@@ -84,7 +85,7 @@ elseif(DEFINED PLATFORM_WIN64)
 endif()
 
 # -------------------------
-# Create the build target (MODULE for mac, SHARED for win)
+# Create the build target (MODULE for mac, MODULE for win)
 # -------------------------
 if(DEFINED PLATFORM_APPLE)
   # On macOS, we build a standard MODULE library. The bundling is handled by a post-build script.
@@ -266,62 +267,35 @@ endif()
 # macOS: Assembly (POST_BUILD) and Staging (custom target)
 # ==============================================================================
 if(DEFINED PLATFORM_APPLE)
-  # --- Overview of the macOS Post-Build Process ---
-  # The goal is to create a standard macOS .xop bundle. This is done via a
-  # POST_BUILD command on the main library target.
-  #   1. Compile the C++ code into a single Mach-O binary.
-  #   2. After the build, a bootstrap script (`run_assemble_xop.cmake`) is executed.
-  #   3. This script first runs an assembly script to create the .xop bundle
-  #      directory structure in the build tree.
-  #   4. It then runs a processing script to clean, sign, and verify the bundle in-place.
-  #   5. A separate `stage_pylabhubxop` target copies the final, verified bundle
-  #      to the global staging directory.
-
-  # --- The Bootstrap Mechanism for Running Post-Build Scripts ---
-  # A challenge in CMake is that the exact path to a built target (the Mach-O binary)
-  # is only known at build time. We solve this using a two-stage "bootstrap" process:
-  #
-  # 1. `run_assemble_xop.cmake.in` (The Bootstrap Script):
-  #    At configure time, we create this script from a template. It is designed
-  #    to receive the target's path as a command-line argument.
-  #
-  # 2. `add_custom_command(POST_BUILD ...)`:
-  #    After the `pylabhubxop` target is built, this command executes the
-  #    bootstrap script, passing the binary's path using a "generator expression"
-  #    (`$<TARGET_FILE:...>`), which CMake resolves at build time. The script then
-  #    handles the rest of the post-build steps.
-  set(BOOTSTRAP_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/run_assemble_xop.cmake.in")
-  set(CONFIGURED_BOOTSTRAP_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/run_assemble_xop.cmake")
-
-  set(ASSEMBLE_SCRIPT_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/assemble_xop.cmake.in")
-  set(CONFIGURED_ASSEMBLE_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/assemble_xop.cmake")
+  # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
+  # On macOS, a post-build command is used to assemble the .xop bundle.
+  # This is handled by a single, consolidated script that performs all necessary
+  # steps: creating the bundle structure, compiling resources, cleaning
+  # attributes, code signing, and verification.
 
   set(BUNDLE_DIR "${CMAKE_CURRENT_BINARY_DIR}/${XOP_BUNDLE_NAME}.xop")
-  set(REZ_SOURCE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r")
-  set(INFO_PLIST_STRINGS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/InfoPlist.strings")
-  set(R_INCLUDE_DIRS_LIST "${_r_include_dirs_list}")
-
-  # Use "-" for an ad-hoc signature, which is sufficient for local execution and testing.
   set(MACOSX_CODESIGN_IDENTITY "-" CACHE STRING "The identity to use for code signing the macOS bundle.")
   if(MACOSX_CODESIGN_IDENTITY)
     message(STATUS "IgorXOP: macOS code signing is ENABLED with identity: ${MACOSX_CODESIGN_IDENTITY}")
   endif()
 
-  set(PROCESS_BUNDLE_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/process_bundle.cmake")
-  set(CODESIGN_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/CodeSign.cmake")
-  set(VERIFY_SCRIPT_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/VerifyXOP.cmake")
-  
-  configure_file("${BOOTSTRAP_SCRIPT_TEMPLATE}" "${CONFIGURED_BOOTSTRAP_SCRIPT}" @ONLY)
-
-  # --- Step 1: Assembly, Processing, and Verification (POST_BUILD) ---
-  # After the binary is built, run the bootstrap script to assemble, clean,
-  # sign, and verify the .xop bundle in the build directory.
+  # Add the post-build command to run the consolidated script.
+  # We pass all variables via -D to the script. The path to the compiled
+  # binary is passed using a generator expression ($<TARGET_FILE:...>) which
+  # is resolved at build time.
   add_custom_command(
     TARGET ${XOP_TARGET}
     POST_BUILD
     COMMAND ${CMAKE_COMMAND}
-      -DMACHO_BINARY_PATH_ARG=$<TARGET_FILE:${XOP_TARGET}>
-      -P "${CONFIGURED_BOOTSTRAP_SCRIPT}"
+      -DMACHO_BINARY_PATH=$<TARGET_FILE:${XOP_TARGET}>
+      -DBUNDLE_DIR=${BUNDLE_DIR}
+      -DXOP_BUNDLE_NAME=${XOP_BUNDLE_NAME}
+      -DCONFIGURED_INFO_PLIST=${CONFIGURED_INFO_PLIST}
+      -DINFO_PLIST_STRINGS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/InfoPlist.strings
+      -DREZ_SOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r
+      -DR_INCLUDE_DIRS_LIST="${_r_include_dirs_list}"
+      -DMACOSX_CODESIGN_IDENTITY=${MACOSX_CODESIGN_IDENTITY}
+      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/consolidated_xop_assembly.cmake.in"
     COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
