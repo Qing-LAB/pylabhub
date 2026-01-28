@@ -170,7 +170,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] Scheduling fmt artifacts for staging...")
 
     # Stage the header directory
-    pylabhub_stage_headers(
+    pylabhub_register_headers_for_staging(
       # Stage the fmt headers. The source directory is '.../fmt/include', and the
       # SUBDIR "" argument ensures its contents are copied directly into the
       # staging include directory.

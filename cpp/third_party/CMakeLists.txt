@@ -77,14 +77,102 @@ include(cmake/googletest.cmake)
 # --- 5. Staging ---
 # Stage the staged prerequisites
 if(THIRD_PARTY_INSTALL)
-  pylabhub_stage_headers(
+  pylabhub_register_headers_for_staging(
     DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
     SUBDIR ""
-    ATTACH_TO stage_third_party_deps
     EXTERNAL_PROJECT_DEPENDENCY libsodium_external
   )
-  pylabhub_stage_libraries(
-    TARGETS pylabhub::third_party::sodium
-    ATTACH_TO stage_third_party_deps
-  )
+  pylabhub_register_library_for_staging(TARGET pylabhub::third_party::sodium)
+endif()
+
+# ===========================================================================
+# FINAL PHASE: Process all staging registrations
+#
+# This must be the very last thing in this file. By this point, all third-party
+# libraries have been configured and have registered themselves for staging
+# using the helper functions. Now, we process those global registration lists
+# to generate the final staging commands.
+# ===========================================================================
+if(THIRD_PARTY_INSTALL)
+    # --- Finalize Third-Party Library Staging ---
+    get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
+    if(third_party_libs_to_stage)
+        message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
+        foreach(TGT ${third_party_libs_to_stage})
+            if(TARGET ${TGT})
+                pylabhub_attach_library_staging_commands(
+                    TARGET ${TGT}
+                    ATTACH_TO stage_third_party_deps
+                )
+            else()
+                message(WARNING "A registered library target for staging does not exist: ${TGT}")
+            endif()
+        endforeach()
+    endif()
+
+    # --- Finalize Third-Party Header Staging ---
+    get_property(header_registrations GLOBAL PROPERTY PYLABHUB_HEADERS_TO_STAGE)
+    if(header_registrations)
+        message(STATUS "Processing registered third-party headers for staging...")
+        
+        set(staging_script_content "")
+        set(script_dependencies "")
+
+        foreach(REG_STRING IN LISTS header_registrations)
+            if(NOT REG_STRING)
+                continue()
+            endif()
+
+            string(REPLACE "@@" ";" ARGS_LIST "${REG_STRING}")
+            cmake_parse_arguments(ARG "" "SUBDIR;ATTACH_TO;DEPENDS;EXTERNAL_PROJECT_DEPENDENCY" "DIRECTORIES" "${ARGS_LIST}")
+
+            if(NOT ARG_DIRECTORIES)
+                message(WARNING "Header registration invalid: missing DIRECTORIES for '${REG_STRING}'.")
+                continue()
+            endif()
+
+            if(ARG_DEPENDS)
+                list(APPEND script_dependencies ${ARG_DEPENDS})
+            endif()
+            if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+                list(APPEND script_dependencies ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+            endif()
+
+            foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+                if(ARG_SUBDIR)
+                    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+                else()
+                    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
+                endif()
+                
+                string(APPEND staging_script_content "
+# --- Staging for ${SRC_DIR} ---
+file(MAKE_DIRECTORY \"${DEST_DIR}\")
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory \"${SRC_DIR}\" \"${DEST_DIR}\")
+"
+                )
+            endforeach()
+        endforeach()
+
+        if(staging_script_content)
+            set(STAGING_SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/cmake_build_time_stage_headers.cmake")
+            file(GENERATE
+                OUTPUT  ${STAGING_SCRIPT_PATH}
+                CONTENT "${staging_script_content}"
+            )
+
+            add_custom_target(run_header_staging_script
+                COMMAND ${CMAKE_COMMAND} -P ${STAGING_SCRIPT_PATH}
+                COMMENT "Running build-time script to stage all third-party headers"
+                VERBATIM
+            )
+
+            if(script_dependencies)
+                list(REMOVE_DUPLICATES script_dependencies)
+                add_dependencies(run_header_staging_script ${script_dependencies})
+            endif()
+
+            add_dependencies(stage_third_party_deps run_header_staging_script)
+        endif()
+    endif()
 endif()

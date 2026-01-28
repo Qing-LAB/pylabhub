@@ -148,7 +148,7 @@ if(THIRD_PARTY_INSTALL)
   if(_nlohmann_include_dir AND EXISTS "${_nlohmann_include_dir}/nlohmann/json.hpp")
     # The layout is guaranteed to be namespaced at this point. Copy the nlohmann
     # directory from the resolved include path into the staging include directory.
-    pylabhub_stage_headers(DIRECTORIES "${_nlohmann_include_dir}" SUBDIR "")
+    pylabhub_register_headers_for_staging(DIRECTORIES "${_nlohmann_include_dir}" SUBDIR "")
     message(STATUS "[pylabhub-third-party] Staging nlohmann/json headers.")
   else()
     message(WARNING "[pylabhub-third-party] No include directory resolved for nlohmann/json; skipping header staging.")

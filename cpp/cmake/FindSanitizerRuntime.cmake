@@ -195,7 +195,7 @@ else()
     message(STATUS "  ** Adding RPATH for sanitizer: ${PYLABHUB_STAGING_DIR}/lib")
   elseif(PYLABHUB_SANITIZER_RUNTIME_PATH) # static
     message(STATUS "Sanitizer runtime found but it's static (${PYLABHUB_SANITIZER_RUNTIME_BASENAME}); skipping copy to staging (not necessary).")
-    message(WARNING "Static sanitizer lib may not link properly with tests. If you have BULID_TESTS=ON, you may encounter errors.")
+    message(WARNING "Static sanitizer lib may not link properly with tests. If you have BUILD_TESTS=ON, you may encounter errors.")
   else()
     message(WARNING "Could not find ${_sanitizer_comment_name}. Staged executables may not run from a clean environment.")
   endif()

@@ -1,4 +1,4 @@
-# --------------------------------------------------------------------------- 
+# ---------------------------------------------------------------------------
 # cmake/StageHelpers.cmake
 #
 # Purpose: Provides a consistent API for staging project artifacts.
@@ -11,9 +11,8 @@
 #
 # This script provides the following functions:
 #
-# - pylabhub_stage_headers(...)
-#   Schedules third-party header files or directories to be copied to the
-#   staging area's `include/` directory.
+# - pylabhub_register_headers_for_staging(...)
+#   Registers a directory of header files to be staged.
 #
 # - pylabhub_stage_executable(...)
 #   Sets the output directory for an executable to stage it directly.
@@ -24,178 +23,51 @@
 #
 # - pylabhub_register_library_for_staging(...)
 #   Registers a library target to a global property, marking it for staging.
-#   The actual staging commands are generated later by a centralized process.
 #
 # - pylabhub_register_test_for_staging(...)
 #   Registers a test executable for staging and inclusion in the test aggregator target.
 #
+# - pylabhub_attach_headers_staging_commands(...)
+#   Attaches custom commands to a target to stage header directories.
+#
 # These functions rely on variables like PYLABHUB_STAGING_DIR and custom targets
-# like stage_third_party_deps being defined in the top-level CMakeLists.txt.
-# --------------------------------------------------------------------------- 
+# being defined in the top-level CMakeLists.txt.
+# ---------------------------------------------------------------------------
 #
 cmake_minimum_required(VERSION 3.29)
 
-# --- pylabhub_stage_headers ---
+# --- pylabhub_register_headers_for_staging ---
 #
-# Schedules the copying of header files or directories to the staging area.
-# This function is specifically designed for staging third-party headers by
-# attaching copy commands to the `stage_third_party_deps` target.
+# Registers a request to stage header files from a given directory.
+# This function serializes the arguments into a string and appends it to the
+# PYLABHUB_HEADERS_TO_STAGE global property list. A centralized loop later
+# processes this property to generate the staging commands.
 #
-# Usage:
-#   pylabhub_stage_headers(
-#     [TARGETS <target1> ...]       # Stage headers from the INTERFACE_INCLUDE_DIRECTORIES of these targets.
-#     [DIRECTORIES <dir1> ...]      # Stage headers from these explicit directories.
-#     SUBDIR <subdir_name>          # The subdirectory within `${PYLABHUB_STAGING_DIR}/include` to copy to. (Required)
-#     [ATTACH_TO <target_name>]     # The custom target to attach commands to. (Default: stage_third_party_deps)
-#   )
-#
-# Design Notes:
-#   This function is primarily for third-party headers, hence the default ATTACH_TO target.
-#
-#   Staging headers from a target's `INTERFACE_INCLUDE_DIRECTORIES` is complex
-#   because the property can contain a generator expression that expands to a
-#   list of paths at build time. To handle this robustly, this function uses
-#   `file(GENERATE)` to create a small CMake script. This script is executed at
-#   build time (via `add_custom_command`), where it can correctly resolve the
-#   generator expression, iterate over the resulting list of directories, and
-#   copy each one.
-#
-function(pylabhub_stage_headers)
+function(pylabhub_register_headers_for_staging)
   set(options "")
   set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
-  set(multiValueArgs "TARGETS;DIRECTORIES")
+  set(multiValueArgs "DIRECTORIES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT ARG_ATTACH_TO)
-    set(ARG_ATTACH_TO "stage_third_party_deps")
+  # Serialize the arguments into a single list.
+  set(REGISTRATION_LIST "")
+  if(ARG_DIRECTORIES)
+    list(APPEND REGISTRATION_LIST "DIRECTORIES;${ARG_DIRECTORIES}")
+  endif()
+  if(ARG_SUBDIR)
+    list(APPEND REGISTRATION_LIST "SUBDIR;${ARG_SUBDIR}")
+  endif()
+  if(ARG_ATTACH_TO)
+    list(APPEND REGISTRATION_LIST "ATTACH_TO;${ARG_ATTACH_TO}")
+  endif()
+  if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+    list(APPEND REGISTRATION_LIST "EXTERNAL_PROJECT_DEPENDENCY;${ARG_EXTERNAL_PROJECT_DEPENDENCY}")
   endif()
 
-  if(NOT ARG_SUBDIR)
-    message(STATUS " ** pylabhub_stage_headers prepare staging to ${PYLABHUB_STAGING_DIR}/include")
-    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
-  else()
-    message(STATUS " ** pylabhub_stage_headers prepare staging to ${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-  endif()
-
-  # Stage headers from explicit directories
-  foreach(DIR IN LISTS ARG_DIRECTORIES)
-    # Create a unique name for the script and marker file
-    string(RANDOM LENGTH 8 SCRIPT_ID)
-    set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_dir_${SCRIPT_ID}.cmake")
-
-    string(MAKE_C_IDENTIFIER "stage_headers_dir_${SCRIPT_ID}_marker" _marker_name)
-    set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
-
-    # Content of the build-time script
-    set(SCRIPT_CONTENT "
-# --- This script is generated by pylabhub_stage_headers ---
-set(SOURCE_DIR \"${DIR}\")
-set(DEST_DIR \"${DEST_DIR}\")
-message(STATUS \"[pylabhub_stage_headers customed script] checking source directory \${SOURCE_DIR}.....\")
-if(NOT EXISTS \"\${SOURCE_DIR}\")
-    message(SEND_ERROR \"Source directory '\${SOURCE_DIR}' for staging does not exist.\")
-    return()
-endif()
-
-# Find header files recursively within the source directory
-file(GLOB_RECURSE ALL_FILES
-    LIST_DIRECTORIES false
-    FOLLOW_SYMLINKS
-    \"\${SOURCE_DIR}/*.h\"
-    \"\${SOURCE_DIR}/*.hpp\"
-)
-
-# Ensure destination directory exists at execution time
-execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_DIR}\")
-
-foreach(FILE \${ALL_FILES})
-    # Get the path of the file relative to the source directory
-    string(REPLACE \"\${SOURCE_DIR}/\" \"\" REL_PATH \"\${FILE}\")
-
-    # Construct the full destination path for the file
-    set(DEST_FILE \"\${DEST_DIR}/\${REL_PATH}\")
-
-    # Get the directory part of the destination file path
-    get_filename_component(DEST_FILE_DIR \"\${DEST_FILE}\" DIRECTORY)
-
-    # Ensure the destination directory exists, then copy the file
-    execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_FILE_DIR}\")
-    execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"copy_if_different\" \"\${FILE}\" \"\${DEST_FILE}\")
-endforeach()
-
-# Create marker directory
-execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"${CMAKE_CURRENT_BINARY_DIR}/.staging_markers\")
-# Touch the marker file to indicate completion
-execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER_FILE}\")
-
-# --- End of generated script ---
-")
-
-    # Use file(GENERATE) to create the script file at build-system generation time.
-    file(GENERATE OUTPUT ${SCRIPT_PATH} CONTENT "${SCRIPT_CONTENT}")
-
-    if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
-        add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
-    endif()
-
-    add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-      COMMENT "Staging headers from ${DIR} to ${DEST_DIR}"
-      VERBATIM)
-  endforeach()
-
-  # Stage headers associated with targets
-  foreach(TGT IN LISTS ARG_TARGETS)
-    if(TARGET ${TGT})
-      # Unique names for script and marker
-      string(MAKE_C_IDENTIFIER "stage_headers_tgt_${TGT}_marker" _marker_name)
-      set(STAGING_MARKER_FILE "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers/${_marker_name}")
-      set(SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/stage_headers_scripts/stage_tgt_${TGT}_headers.cmake")
-
-      # Content of the script
-      file(GENERATE
-        OUTPUT ${SCRIPT_PATH}
-        CONTENT "
-          set(DIRS \"$<TARGET_PROPERTY:${TGT},INTERFACE_INCLUDE_DIRECTORIES>\")
-          set(DEST_DIR \"${DEST_DIR}\") # Pass DEST_DIR from parent scope
-          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_DIR}\")
-
-          foreach(DIR IN LISTS DIRS)
-            if(EXISTS \"\${DIR}\")
-              file(GLOB_RECURSE ALL_FILES LIST_DIRECTORIES false FOLLOW_SYMLINKS \"\${DIR}/*\")
-              foreach(FILE \${ALL_FILES})
-                # Check if it's a header file
-                get_filename_extension(FILE_EXT \"\${FILE}\")
-                if(FILE_EXT STREQUAL \".h\" OR FILE_EXT STREQUAL \".hpp\")
-                  string(REPLACE \"\${DIR}/\" \"\" REL_PATH \"\${FILE}\")
-                  set(DEST_FILE \"\${DEST_DIR}/\${REL_PATH}\")
-                  get_filename_component(DEST_FILE_DIR \"\${DEST_FILE}\" DIRECTORY)
-                  execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"\${DEST_FILE_DIR}\")
-                  execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"copy_if_different\" \"\${FILE}\" \"\${DEST_FILE}\")
-                endif()
-              endforeach()
-            endif()
-          endforeach()
-
-          # Create marker directory
-          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"make_directory\" \"${CMAKE_CURRENT_BINARY_DIR}/.staging_markers\")
-          # Touch the marker file to indicate completion
-          execute_process(COMMAND \"${CMAKE_COMMAND}\" \"-E\" \"touch\" \"${STAGING_MARKER_FILE}\")
-        "
-      )
-
-      add_dependencies(${ARG_ATTACH_TO} ${TGT})
-      add_custom_command(
-        TARGET ${ARG_ATTACH_TO}
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -P ${SCRIPT_PATH}
-        COMMENT "Staging headers for target ${TGT} to ${DEST_DIR}"
-        VERBATIM)
-    endif()
-  endforeach()
+  # Serialize the list into a string with a unique separator and append it
+  # to a global property that holds a LIST of these registration strings.
+  string(REPLACE ";" "@@" REGISTRATION_STRING "${REGISTRATION_LIST}")
+  set_property(GLOBAL APPEND PROPERTY PYLABHUB_HEADERS_TO_STAGE "${REGISTRATION_STRING}")
 endfunction()
 
 # --- pylabhub_stage_executable ---
@@ -288,9 +160,6 @@ function(pylabhub_get_library_staging_commands)
     set(LINKTIME_DEST_DIR "${PYLABHUB_STAGING_DIR}/lib")
   endif()
   
-  message(STATUS "** DEBUG: pylabhub_get_library_staging_commands called for target ${ARG_TARGET}")
-  message(STATUS "** DEBUG: RUNETIME_DEST_DIR set as: ${RUNTIME_DEST_DIR}")
-  message(STATUS "** DEBUG: LINKTIME_DEST_DIR set as: ${LINKTIME_DEST_DIR}")
   get_target_property(TGT_TYPE ${ARG_TARGET} TYPE)
 
   set(commands_list "")
@@ -299,7 +168,6 @@ function(pylabhub_get_library_staging_commands)
     if(PYLABHUB_IS_WINDOWS)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
-      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       if(MSVC)
@@ -308,15 +176,12 @@ function(pylabhub_get_library_staging_commands)
       endif()
       # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
       if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
-        message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
         list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
       endif()
     else() # Non-Windows platforms (Linux, macOS)
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
       # runtime and linking. Stage it to the specified destination.
-      message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: runtime staging dir: ${RUNTIME_DEST_DIR}")
-
       list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
            "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       
@@ -325,7 +190,6 @@ function(pylabhub_get_library_staging_commands)
       # is discoverable for linking and also at runtime if needed via default search paths.
       if(PYLABHUB_IS_POSIX) # Handle POSIX systems (Linux and macOS)
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
-          message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: link-time staging dir: ${LINKTIME_DEST_DIR}")
           list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
                "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
         endif()
@@ -333,7 +197,6 @@ function(pylabhub_get_library_staging_commands)
     endif()
   elseif(TGT_TYPE STREQUAL "STATIC_LIBRARY")
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
-    message(STATUS "  ** pylabhub staging Target: ${ARG_TARGET}: static lib staging dir: ${LINKTIME_DEST_DIR}")
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
          "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
   endif()
@@ -420,4 +283,119 @@ function(pylabhub_register_test_for_staging)
 
   # Register this target to a global property so the parent scope can collect it
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})
+endfunction()
+
+# --- pylabhub_attach_library_staging_commands ---
+#
+# Attaches custom commands to a given target to stage a library's artifacts.
+# This function encapsulates the logic for determining which files to copy
+# and adding the necessary dependencies and custom commands. It correctly
+# handles platform-specific conventions: on Windows, shared libraries (.dll) are
+# placed in 'bin/', while on other platforms they are placed in 'lib/' and
+# found via RPATH.
+#
+# Usage:
+#   pylabhub_attach_library_staging_commands(
+#     TARGET <target_name>      # The library target to stage.
+#     ATTACH_TO <target_name>   # The custom target to attach the commands to.
+#   )
+#
+function(pylabhub_attach_library_staging_commands)
+  set(options "")
+  set(oneValueArgs "TARGET;ATTACH_TO")
+  set(multiValueArgs "")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_TARGET OR NOT ARG_ATTACH_TO)
+    message(FATAL_ERROR "pylabhub_attach_library_staging_commands requires TARGET and ATTACH_TO arguments.")
+  endif()
+  if(NOT TARGET ${ARG_TARGET})
+    message(WARNING "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist, skipping.")
+    return()
+  endif()
+  if(NOT TARGET ${ARG_ATTACH_TO})
+    message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
+  endif()
+
+  # Determine the correct destination for runtime artifacts based on the platform.
+  # On Windows, executables expect DLLs to be in the same directory or in PATH.
+  # On Linux/macOS, we use RPATH to point executables in 'bin/' to libraries in 'lib/'.
+  if(PYLABHUB_IS_WINDOWS)
+    set(runtime_dest "bin")
+  else()
+    set(runtime_dest "lib")
+  endif()
+
+  # Generate the list of staging commands for the given library target.
+  pylabhub_get_library_staging_commands(
+    TARGET ${ARG_TARGET}
+    DESTINATION ${runtime_dest}
+    OUT_COMMANDS stage_commands_list
+  )
+
+  if(NOT stage_commands_list)
+    # This can happen for INTERFACE libraries or other non-artifact targets.
+    return()
+  endif()
+  
+  # Ensure the main staging target depends on the library target itself, so the
+  # library is built before we try to stage it.
+  add_dependencies(${ARG_ATTACH_TO} ${ARG_TARGET})
+
+  # Attach the generated commands to the 'ATTACH_TO' target. These commands
+  # will execute after the 'ATTACH_TO' target is built.
+  add_custom_command(
+    TARGET ${ARG_ATTACH_TO}
+    POST_BUILD
+    COMMAND ${stage_commands_list}
+    COMMENT "Staging library artifacts for ${ARG_TARGET}"
+    VERBATIM
+  )
+endfunction()
+
+# --- pylabhub_attach_headers_staging_commands ---
+#
+# Attaches custom commands to a target to stage header directories. This is
+# used to simplify the staging logic for third-party libraries.
+#
+function(pylabhub_attach_headers_staging_commands)
+  set(options "")
+  set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
+  set(multiValueArgs "DIRECTORIES")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_ATTACH_TO)
+    message(FATAL_ERROR "pylabhub_attach_headers_staging_commands requires ATTACH_TO argument.")
+  endif()
+  if(NOT TARGET ${ARG_ATTACH_TO})
+    message(FATAL_ERROR "pylabhub_attach_headers_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
+  endif()
+
+  set(copy_commands "")
+  foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+    if(ARG_SUBDIR)
+      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+    else()
+      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
+    endif()
+    # Create the directory at build time, and then copy contents.
+    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
+    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
+  endforeach()
+
+  if(copy_commands)
+    add_custom_command(
+      TARGET ${ARG_ATTACH_TO}
+      POST_BUILD
+      ${copy_commands}
+      COMMENT "Staging header directories: ${ARG_DIRECTORIES}"
+      VERBATIM
+    )
+  endif()
+
+  # If the headers come from an ExternalProject, ensure the staging target
+  # depends on it, so the headers are downloaded/built before we try to copy them.
+  if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
+    add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
+  endif()
 endfunction()
