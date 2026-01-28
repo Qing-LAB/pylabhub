@@ -315,56 +315,6 @@ if(core_stage_targets)
   add_dependencies(stage_core_artifacts ${core_stage_targets})
 endif()
 
-# --- 3.4a. Finalize Third-Party Library Staging ---
-# Collect all library targets registered for staging and generate the commands.
-get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
-if(third_party_libs_to_stage)
-  message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
-  foreach(TGT ${third_party_libs_to_stage})
-    if(TARGET ${TGT})
-      # Generate the appropriate staging commands for this library target.
-      # Runtime components will be directed to 'bin/'.
-      # Link-time components will be directed to 'lib/'.
-      pylabhub_get_library_staging_commands(
-        TARGET ${TGT}
-        DESTINATION bin
-        OUT_COMMANDS stage_commands_list
-      )
-
-      # Collect DEPENDS for the custom command, including MSVC-specific files.
-      set(DEPENDENCY_FILES ${TGT} create_staging_dirs)
-      get_target_property(TGT_TYPE ${TGT} TYPE)
-      get_target_property(IS_IMPORTED ${TGT} IMPORTED)
-
-      if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY" OR TGT_TYPE STREQUAL "STATIC_LIBRARY" OR TGT_TYPE STREQUAL "EXECUTABLE")
-        list(APPEND DEPENDENCY_FILES "$<TARGET_FILE:${TGT}>")
-      endif()
-
-      if(MSVC)
-        if(NOT IS_IMPORTED)
-          if(TGT_TYPE STREQUAL "EXECUTABLE" OR TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
-            list(APPEND DEPENDENCY_FILES "$<TARGET_PDB_FILE:${TGT}>")
-          endif()
-        endif()
-        if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
-          list(APPEND DEPENDENCY_FILES "$<TARGET_LINKER_FILE:${TGT}>")
-        endif()
-      endif()
-
-      # Attach the staging commands to the main third-party staging target.
-      add_dependencies(stage_third_party_deps ${TGT})
-      add_custom_command(
-        TARGET stage_third_party_deps
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
-        COMMAND ${stage_commands_list}
-        COMMENT "Staging library artifacts for ${TGT}"
-        VERBATIM
-      )
-    endif()
-  endforeach()
-endif()
 
 # The global `stage_all` target depends on the individual staging targets
 # from each sub-project. This ensures all artifacts are staged correctly
