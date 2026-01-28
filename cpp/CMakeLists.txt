@@ -299,6 +299,11 @@ if(BUILD_TESTS)
 else()
   message(STATUS "Skipping tests sub-project (BUILD_TESTS is OFF).")
 endif()
+
+# Configure add-ons, if the directory exists.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/add-ons")
+  add_subdirectory(add-ons)
+endif()
 message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
@@ -309,6 +314,7 @@ if(core_stage_targets)
   message(STATUS "Adding core stage targets to 'stage_core_artifacts': ${core_stage_targets}")
   add_dependencies(stage_core_artifacts ${core_stage_targets})
 endif()
+
 
 # The global `stage_all` target depends on the individual staging targets
 # from each sub-project. This ensures all artifacts are staged correctly
