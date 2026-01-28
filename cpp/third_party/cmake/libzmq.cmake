@@ -342,7 +342,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] Scheduling libzmq artifacts for staging...")
 
     # Stage the header directory
-    pylabhub_stage_headers(
+    pylabhub_register_headers_for_staging(
       DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include"
       SUBDIR "zmq"
     )
