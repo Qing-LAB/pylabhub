@@ -359,7 +359,7 @@ message(STATUS "IgorXOP: Resolved Rez include dirs for bundle assembly script: $
       -DREZ_SOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r
       -DR_INCLUDE_DIRS_LIST="${_resolved_r_include_dirs_list}" # Use the resolved list
       -DMACOSX_CODESIGN_IDENTITY=${MACOSX_CODESIGN_IDENTITY}
-      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/consolidated_xop_assembly.cmake.in"
+      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/consolidated_xop_assembly.cmake"
     COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
