@@ -4,7 +4,7 @@
 #
 # Responsibilities:
 #   - build the XOP module (MODULE on macOS, MODULE on Windows)
-#   - assemble .xop bundle on macOS via cmake/assemble_xop.cmake
+#   - assemble .xop bundle on macOS via the post-build consolidated_xop_assembly.cmake.in script
 #   - stage the bundle / dll into a post-build staging root (default: <build>/stage)
 #   - export the XOP target name and an alias so the parent CMake can refer to it
 #
