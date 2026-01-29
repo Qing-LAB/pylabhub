@@ -55,7 +55,7 @@ Each third-party helper script must (where possible) do the following **inside `
 
 ### 3. Stage Artifacts for Installation
 - The top-level project defines a global staging directory (`PYLABHUB_STAGING_DIR`) and two custom targets: `stage_third_party_deps` (for third-party only) and `stage_all` (for the entire project).
-- Each wrapper script must use the `pylabhub_stage_headers` and `pylabhub_stage_libraries` helper functions (provided by `StageHelpers.cmake`) to schedule the copying of its artifacts. These helpers automatically attach the necessary `add_custom_command` calls to the global `stage_third_party_deps` target.
+- Each wrapper script must use the `pylabhub_register_headers_for_staging` and `pylabhub_register_library_for_staging` helper functions. These functions register the artifacts to a global property list. A centralized loop in `third_party/CMakeLists.txt` then processes this list and attaches the necessary `add_custom_command` calls to the `stage_third_party_deps` target.
   - **Headers**: `pylabhub_stage_headers(DIRECTORIES <path-to-headers> SUBDIR <pkg-name>)`
   - **Libraries**: `pylabhub_stage_libraries(TARGETS <concrete-target>)`
 - This approach ensures that the logic for finding and copying artifacts is consistent, while knowledge of *what* to copy remains encapsulated within the script that knows the most about the package.
@@ -137,9 +137,9 @@ endforeach()
 _expose_wrapper(pylabhub_fmt pylabhub::third_party::fmt)
 
 if(_fmt_canonical)
-  # Found a binary library, link the wrapper to it and schedule staging.
+  # Found a binary library, link the wrapper to it and register it for staging.
   target_link_libraries(pylabhub_fmt INTERFACE "${_fmt_canonical}")
-  pylabhub_stage_libraries(TARGETS ${_fmt_canonical})
+  pylabhub_register_library_for_staging(TARGET ${_fmt_canonical})
 else()
   # Header-only fallback: expose include directory directly.
   target_include_directories(pylabhub_fmt INTERFACE
@@ -147,10 +147,10 @@ else()
   )
 endif()
 
-# Always schedule the header directory for staging.
-pylabhub_stage_headers(
+# Always register the header directory for staging.
+pylabhub_register_headers_for_staging(
   DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
-  SUBDIR "fmt"
+  SUBDIR "fmt" # Stage into include/fmt
 )
 ```
 
