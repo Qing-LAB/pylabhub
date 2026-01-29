@@ -4,7 +4,7 @@
 #
 # Responsibilities:
 #   - build the XOP module (MODULE on macOS, MODULE on Windows)
-#   - assemble .xop bundle on macOS via cmake/assemble_xop.cmake
+#   - assemble .xop bundle on macOS via the post-build consolidated_xop_assembly.cmake.in script
 #   - stage the bundle / dll into a post-build staging root (default: <build>/stage)
 #   - export the XOP target name and an alias so the parent CMake can refer to it
 #
@@ -214,27 +214,7 @@ if(DEFINED PLATFORM_WIN64)
   endif()
 endif()
 
-# -------------------------
-# Prepare r_include_dirs_list (semicol-separated) to pass to assemble script.
-# Preference order:
-#   1) C++ include directories from the XOPToolKit target.
-#   2) Rez-specific include directories from the XOPToolKit target's custom property.
-# -------------------------
-set(_r_include_dirs_list "")
 
-# Get the Rez-specific include directories from the custom property.
-get_target_property(_rez_includes pylabhub::third_party::XOPToolKit INTERFACE_REZ_INCLUDE_DIRECTORIES)
-
-if(_rez_includes)
-  list(APPEND _r_include_dirs_list ${_rez_includes})
-endif()
-
-# Log for visibility
-if(NOT "${_r_include_dirs_list}" STREQUAL "")
-  message(STATUS "IgorXOP: Passing Rez include dirs to bundle assembly script: ${_r_include_dirs_list}")
-else()
-  message(STATUS "IgorXOP: no Rez include dirs discovered (Rez may fail if .r includes toolkit headers)")
-endif()
 
 # -------------------------
 # Staging the final bundle/dll.
@@ -272,12 +252,95 @@ if(DEFINED PLATFORM_APPLE)
   # This is handled by a single, consolidated script that performs all necessary
   # steps: creating the bundle structure, compiling resources, cleaning
   # attributes, code signing, and verification.
+  # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
+  # On macOS, a post-build command is used to assemble the .xop bundle.
+  # This is handled by a single, consolidated script that performs all necessary
+  # steps: creating the bundle structure, compiling resources, cleaning
+  # attributes, code signing, and verification.
 
   set(BUNDLE_DIR "${CMAKE_CURRENT_BINARY_DIR}/${XOP_BUNDLE_NAME}.xop")
   set(MACOSX_CODESIGN_IDENTITY "-" CACHE STRING "The identity to use for code signing the macOS bundle.")
   if(MACOSX_CODESIGN_IDENTITY)
     message(STATUS "IgorXOP: macOS code signing is ENABLED with identity: ${MACOSX_CODESIGN_IDENTITY}")
   endif()
+
+  # Determine if there is a dependency dylib to bundle.
+  set(XOP_DEPENDENCY_DYLIB_PATH "")
+  if(TARGET pylabhub::utils)
+      get_target_property(_utils_type pylabhub::utils TYPE)
+      if(_utils_type STREQUAL "SHARED_LIBRARY" OR _utils_type STREQUAL "MODULE_LIBRARY")
+          set(XOP_DEPENDENCY_DYLIB_PATH "$<TARGET_FILE:pylabhub::utils>")
+          message(STATUS "IgorXOP: Found dependency dylib to bundle: pylabhub::utils")
+      endif()
+  endif()
+
+# -------------------------
+# Prepare r_include_dirs_list (semicol-separated) to pass to assemble script.
+# Preference order:
+#   1) C++ include directories from the XOPToolKit target.
+#   2) Rez-specific include directories from the XOPToolKit target's custom property.
+# -------------------------
+set(_r_include_dirs_list "")
+
+# Get C++ include directories from the XOPToolKit target.
+get_target_property(_xop_sdk_cpp_includes pylabhub::third_party::XOPToolKit INTERFACE_INCLUDE_DIRECTORIES)
+if(_xop_sdk_cpp_includes)
+  list(APPEND _r_include_dirs_list ${_xop_sdk_cpp_includes})
+endif()
+
+# Get the Rez-specific include directories from the custom property.
+get_target_property(_rez_includes pylabhub::third_party::XOPToolKit INTERFACE_REZ_INCLUDE_DIRECTORIES)
+
+if(_rez_includes)
+  list(APPEND _r_include_dirs_list ${_rez_includes})
+endif()
+
+# Log for visibility
+if(NOT "${_r_include_dirs_list}" STREQUAL "")
+  message(STATUS "IgorXOP: Passing Rez include dirs to bundle assembly script: ${_r_include_dirs_list}")
+else()
+  message(STATUS "IgorXOP: no Rez include dirs discovered (Rez may fail if .r includes toolkit headers)")
+endif()
+
+# Resolve/generate _r_include_dirs_list entries safely.
+set(_resolved_r_include_dirs_list "")
+math(EXPR _genex_idx 0)
+
+foreach(item IN LISTS _r_include_dirs_list)
+  # 1) Try to strip common interface wrappers (portable)
+  string(GENEX_STRIP "${item}" item_stripped)
+  string(STRIP "${item_stripped}" item_stripped)
+
+  # 2) If the stripped item still appears to contain a genex ($<...>), evaluate it
+  if(item_stripped MATCHES "\\$<")
+    # Use file(GENERATE) to evaluate genex into a file at generate time, then read it back.
+    # Create a unique output file per-item.
+    math(EXPR _genex_idx "${_genex_idx} + 1")
+    set(_genex_out "${CMAKE_CURRENT_BINARY_DIR}/_resolved_r_include_${_genex_idx}.txt")
+
+    # CONTENT uses the original item (not item_stripped) so generator expressions are preserved.
+    # file(GENERATE) will evaluate generator expressions when CMake generates the buildsystem.
+    file(GENERATE OUTPUT "${_genex_out}" CONTENT "${item}")
+
+    # Read the generated file back into a variable. It may contain trailing newline; strip whitespace.
+    file(READ "${_genex_out}" item_resolved_raw)
+    string(STRIP "${item_resolved_raw}" item_resolved)
+
+    # If reading failed or result is empty, fall back to passing the original raw item so we don't lose data.
+    if(NOT item_resolved)
+      message(WARNING "IgorXOP: file(GENERATE) produced empty result for include entry: ${item}; passing raw value")
+      set(item_resolved "${item}")
+    endif()
+  else()
+    # No genex left — use the stripped result.
+    set(item_resolved "${item_stripped}")
+  endif()
+
+  # Append resolved entry
+  list(APPEND _resolved_r_include_dirs_list "${item_resolved}")
+endforeach()
+
+message(STATUS "IgorXOP: Resolved Rez include dirs for bundle assembly script: ${_resolved_r_include_dirs_list}")
 
   # Add the post-build command to run the consolidated script.
   # We pass all variables via -D to the script. The path to the compiled
@@ -288,14 +351,15 @@ if(DEFINED PLATFORM_APPLE)
     POST_BUILD
     COMMAND ${CMAKE_COMMAND}
       -DMACHO_BINARY_PATH=$<TARGET_FILE:${XOP_TARGET}>
+      -DDEPENDENCY_DYLIB_PATH=${XOP_DEPENDENCY_DYLIB_PATH}
       -DBUNDLE_DIR=${BUNDLE_DIR}
       -DXOP_BUNDLE_NAME=${XOP_BUNDLE_NAME}
       -DCONFIGURED_INFO_PLIST=${CONFIGURED_INFO_PLIST}
       -DINFO_PLIST_STRINGS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/InfoPlist.strings
       -DREZ_SOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/WaveAccess.r
-      -DR_INCLUDE_DIRS_LIST="${_r_include_dirs_list}"
+      -DR_INCLUDE_DIRS_LIST="${_resolved_r_include_dirs_list}" # Use the resolved list
       -DMACOSX_CODESIGN_IDENTITY=${MACOSX_CODESIGN_IDENTITY}
-      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/consolidated_xop_assembly.cmake.in"
+      -P "${CMAKE_CURRENT_LIST_DIR}/cmake/consolidated_xop_assembly.cmake"
     COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
@@ -321,6 +385,16 @@ elseif(DEFINED PLATFORM_WIN64)
   list(APPEND stage_commands
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
   )
+  # Also copy the pylabhub::utils dependency if it is a shared library
+  if(TARGET pylabhub::utils)
+    get_target_property(_utils_type pylabhub::utils TYPE)
+    if(_utils_type STREQUAL "SHARED_LIBRARY" OR _utils_type STREQUAL "MODULE_LIBRARY")
+      list(APPEND stage_commands
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub::utils>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+      )
+      message(STATUS "IgorXOP: Adding command to stage dependent library: pylabhub::utils")
+    endif()
+  endif()
 endif()
 
 # Conditionally add the command to copy helper files.

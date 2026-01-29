@@ -28,13 +28,14 @@ message(STATUS "[pylabhub-third-party] Linking pylabhub_cppzmq -> pylabhub::thir
 
 # --- 3. Stage artifacts for installation ---
 if(THIRD_PARTY_INSTALL)
-  # Stage the cppzmq header. The function will glob for .hpp files.
+  # Register the specific cppzmq headers for staging using the new FILES argument.
   pylabhub_register_headers_for_staging(
-    # Stage the cppzmq headers. The function will glob for .h and .hpp files.
-    DIRECTORIES "${_cppzmq_include_dir}"
+    FILES
+      "${_cppzmq_include_dir}/zmq.hpp"
+      "${_cppzmq_include_dir}/zmq_addon.hpp"
     SUBDIR "cppzmq"
   )
-  message(STATUS "[pylabhub-third-party] Staging cppzmq headers.")
+  message(STATUS "[pylabhub-third-party] Staging cppzmq headers (zmq.hpp, zmq_addon.hpp).")
 else()
   message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for cppzmq.")
 endif()
