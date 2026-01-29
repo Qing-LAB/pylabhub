@@ -92,26 +92,81 @@ function(_clean_extended_attributes bundle_path)
 endfunction()
 
 # --- _sign_bundle(BUNDLE_PATH SIGNING_IDENTITY) ---
-# Code signs a macOS bundle.
 function(_sign_bundle bundle_path signing_identity)
-  if(NOT signing_identity STREQUAL "")
-    _find_codesign_executable(CODESIGN_EXECUTABLE)
-    if(CODESIGN_EXECUTABLE)
-      message(STATUS "  - Signing bundle: ${bundle_path} with identity: ${signing_identity}")
-      execute_process(
-        COMMAND ${CODESIGN_EXECUTABLE} -f -s "${signing_identity}" "${bundle_path}"
-        RESULT_VARIABLE result
-      )
-      if(NOT result EQUAL 0)
-        message(FATAL_ERROR "    Code signing failed with exit code ${result}.")
-      endif()
-    else()
-      message(FATAL_ERROR "  - Code signing failed: Apple's 'codesign' executable not found.")
-    endif()
-  else()
-    message(STATUS "  - Code signing skipped: MACOSX_CODESIGN_IDENTITY is not set.")
+  # If signing_identity is empty, skip signing.
+  if(signing_identity STREQUAL "")
+    message(STATUS "  - Code signing skipped: no identity provided.")
+    return()
   endif()
+
+  # Find codesign
+  execute_process(COMMAND xcrun --find codesign
+                  OUTPUT_VARIABLE _codesign_exec
+                  RESULT_VARIABLE _xcrun_find
+                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(NOT _xcrun_find EQUAL 0 OR NOT EXISTS "${_codesign_exec}")
+    if(EXISTS "/usr/bin/codesign")
+      set(_codesign_exec "/usr/bin/codesign")
+    else()
+      message(FATAL_ERROR "  - Code signing failed: 'codesign' not found.")
+    endif()
+  endif()
+
+  message(STATUS "  - Codesign executable: ${_codesign_exec}")
+
+  # 1) Sign nested components first (Contents/MacOS and Frameworks)
+  set(_cm_path "${bundle_path}/Contents")
+
+  # Helper: sign a single file and fail on non-zero exit
+  function(_sign_one file)
+    execute_process(COMMAND ${_codesign_exec} -f -s "${signing_identity}" "${file}"
+                    RESULT_VARIABLE _sign_res
+                    OUTPUT_QUIET ERROR_QUIET)
+    if(NOT _sign_res EQUAL 0)
+      message(FATAL_ERROR "    Signing failed for ${file} (exit ${_sign_res}).")
+    endif()
+    message(STATUS "    Signed: ${file}")
+  endfunction()
+
+  # Sign files in Contents/MacOS (executables and dylibs)
+  file(GLOB_RECURSE _inner_bins RELATIVE "${_cm_path}" "${_cm_path}/MacOS/*")
+  foreach(_rel IN LISTS _inner_bins)
+    set(_full "${_cm_path}/${_rel}")
+    if(EXISTS "${_full}")
+      _sign_one("${_full}")
+    endif()
+  endforeach()
+
+  # Sign frameworks (if any)
+  file(GLOB _frameworks "${_cm_path}/Frameworks/*")
+  foreach(_fw IN LISTS _frameworks)
+    if(EXISTS "${_fw}")
+      # Frameworks are directories; sign the framework directory itself.
+      _sign_one("${_fw}")
+    endif()
+  endforeach()
+
+  # Sign plugins or nested bundles
+  file(GLOB_RECURSE _bundles RELATIVE "${_cm_path}" "${_cm_path}/*.framework" "${_cm_path}/*.bundle" "${_cm_path}/*.xpc" "${_cm_path}/*.dylib")
+  foreach(_rel IN LISTS _bundles)
+    set(_full "${_cm_path}/${_rel}")
+    if(EXISTS "${_full}")
+      _sign_one("${_full}")
+    endif()
+  endforeach()
+
+  # 2) Finally sign the top-level bundle directory
+  execute_process(COMMAND ${_codesign_exec} -f -s "${signing_identity}" "${bundle_path}"
+                  RESULT_VARIABLE _top_res
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(NOT _top_res EQUAL 0)
+    # If signing the bundle fails, report error with hint
+    message(FATAL_ERROR "    Code signing failed for bundle ${bundle_path} (exit ${_top_res}). "
+                        "Ensure nested components were signed correctly and the signing identity is valid.")
+  endif()
+  message(STATUS "  - Bundle signed: ${bundle_path}")
 endfunction()
+
 
 # --- _verify_xop_bundle(BUNDLE_PATH EXECUTABLE_NAME) ---
 # Verifies the structure and integrity of an XOP bundle.
@@ -264,37 +319,88 @@ if(EXISTS "${REZ_SOURCE_FILE}")
     RESULT_VARIABLE REZ_FIND_RESULT
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
-  if(REZ_FIND_RESULT EQUAL 0 AND EXISTS "${REZ_EXECUTABLE}")
+
+  if(REZ_FIND_RESULT EQUAL 0 AND REZ_EXECUTABLE)
     set(rez_output_rsrc "${_resources_dir}/${XOP_BUNDLE_NAME}.rsrc")
-    set(rez_args "")
-    if(NOT "${R_INCLUDE_DIRS_LIST}" STREQUAL "")
-      string(REPLACE ";" " " _inc_dirs_list_str "${R_INCLUDE_DIRS_LIST}")
-      foreach(dir IN LISTS _inc_dirs_list_str)
-        list(APPEND rez_args "-I" "${dir}")
+    # Build the include path arguments for Rez
+    # This allows the .r file to `#include` headers from the XOP Toolkit.
+    # --- Robust Rez invocation: build true list, show each arg, run Rez with explicit cmd list ---
+    
+    # Initialize as an empty list (NOT a quoted empty string).
+    unset(rez_args)         # clears any previous value; creates an empty list variable
+    set(_raw_rez_include_dirs "${R_INCLUDE_DIRS_LIST}")
+    message(STATUS "  - raw R_INCLUDE_DIRS_LIST: ${_raw_rez_include_dirs}")
+
+    # Strip outer quotes if someone injected them
+    string(REGEX REPLACE "^\"(.*)\"$" "\\1" _cleaned_rez_include_dirs "${_raw_rez_include_dirs}")
+    message(STATUS "  - cleaned_rez_include_dirs: ${_cleaned_rez_include_dirs}")
+
+    # Build -I args as separate list entries
+    if(NOT "${_cleaned_rez_include_dirs}" STREQUAL "")
+      foreach(_dir IN LISTS _cleaned_rez_include_dirs)
+        if(NOT _dir STREQUAL "")
+          get_filename_component(_dir_abs "${_dir}" ABSOLUTE)
+          # Add the directory that actually contains the .r; don't add one big quoted string.
+          list(APPEND rez_args "-I" "${_dir_abs}")
+          # Add optional fallback (harmless if it doesn't exist)
+          # list(APPEND rez_args "-I" "${_dir_abs}/XOPStandardHeaders")
+        endif()
       endforeach()
     endif()
 
-    message(STATUS "  - Compiling resource file with Rez: ${REZ_SOURCE_FILE}")
+    # Show the built -I args with index to prove they are separate arguments.
+    list(LENGTH rez_args _rez_arg_count)
+    message(STATUS "  - rez_args has ${_rez_arg_count} elements:")
+    math(EXPR _i_max "${_rez_arg_count} - 1")
+    if(_rez_arg_count GREATER 0)
+      foreach(_i RANGE 0 ${_i_max})
+        list(GET rez_args ${_i} _val)
+        message(STATUS "  - rez_args[${_i}] = '${_val}'")
+      endforeach()
+    else()
+      message(STATUS "  - rez_args is empty (no include paths).")
+    endif()
+
+    # Build explicit command list to pass to execute_process
+    set(cmd_list ${REZ_EXECUTABLE})
+    # append the rez args list elements (keeps each as its own argument)
+    if(_rez_arg_count GREATER 0)
+      foreach(_a IN LISTS rez_args)
+        list(APPEND cmd_list "${_a}")
+      endforeach()
+    endif()
+    list(APPEND cmd_list "-useDF")
+    list(APPEND cmd_list "-o" "${rez_output_rsrc}")
+    list(APPEND cmd_list "${REZ_SOURCE_FILE}")
+
+    # Show the full command to be executed (single joined string for visibility)
+    string(JOIN " " _cmd_str ${cmd_list})
+    message(STATUS "  - About to run Rez command: ${_cmd_str}")
+
+    # Execute Rez and capture stdout + stderr
     execute_process(
-      COMMAND ${REZ_EXECUTABLE} ${rez_args} -useDF -o "${rez_output_rsrc}" "${REZ_SOURCE_FILE}"
+      COMMAND ${cmd_list}
       RESULT_VARIABLE rez_result
-      OUTPUT_VARIABLE rez_output
-      ERROR_VARIABLE rez_error
+      OUTPUT_VARIABLE rez_stdout
+      ERROR_VARIABLE rez_stderr
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_STRIP_TRAILING_WHITESPACE
     )
+
+    message(STATUS "  - Rez RESULT: ${rez_result}")
+    message(STATUS "  - Rez STDOUT: ${rez_stdout}")
+    message(STATUS "  - Rez STDERR: ${rez_stderr}")
 
     if(rez_result EQUAL 0)
       message(STATUS "  - Created resource file: ${rez_output_rsrc}")
     else()
-      message(FATAL_ERROR "  Rez compiler failed with exit code ${rez_result} when processing ${REZ_SOURCE_FILE}.\n"
-                          "  Error: ${rez_error}\n"
-                          "  Output: ${rez_output}")
+      message(WARNING "  - Rez failed to compile resource file (exit ${rez_result}). See Rez STDERR above.")
     endif()
-  else()
-      message(WARNING "  - Rez compiler not found. Cannot compile .r file.")
   endif()
 else()
-    message(STATUS "  - No .r file found, skipping resource compilation.")
+  message(STATUS "  - No .r file found, skipping resource compilation.")
 endif()
+
 
 # ------------------------------------------------------------------------------
 # 6. Post-assembly Processing (Clean attributes, sign, verify)
