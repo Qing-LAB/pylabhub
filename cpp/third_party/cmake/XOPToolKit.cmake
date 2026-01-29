@@ -137,8 +137,8 @@ function(_find_xopsupport_impl)
     # Find the resource header directory, starting from the C++ header location.
     find_path(_try_xop_resource_header_dir
       NAMES "XOPStandardHeaders.r"
-      HINTS ${_try_include} # HINT with the already-found C++ include directory
-      PATH_SUFFIXES "Xcode" "VC" "" # Common subdirectories
+      HINTS "${root}"
+      NO_DEFAULT_PATH # Only search within the provided hint
       DOC "Path to the directory containing Igor Pro XOP resource headers (.r files)"
     )
     message(STATUS "XOPToolKit: Found Rez resource headers at: ${_try_xop_resource_header_dir}")

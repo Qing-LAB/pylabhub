@@ -46,13 +46,16 @@ cmake_minimum_required(VERSION 3.29)
 function(pylabhub_register_headers_for_staging)
   set(options "")
   set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
-  set(multiValueArgs "DIRECTORIES")
+  set(multiValueArgs "DIRECTORIES;FILES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   # Serialize the arguments into a single list.
   set(REGISTRATION_LIST "")
   if(ARG_DIRECTORIES)
     list(APPEND REGISTRATION_LIST "DIRECTORIES;${ARG_DIRECTORIES}")
+  endif()
+  if(ARG_FILES)
+    list(APPEND REGISTRATION_LIST "FILES;${ARG_FILES}")
   endif()
   if(ARG_SUBDIR)
     list(APPEND REGISTRATION_LIST "SUBDIR;${ARG_SUBDIR}")
@@ -361,7 +364,7 @@ endfunction()
 function(pylabhub_attach_headers_staging_commands)
   set(options "")
   set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
-  set(multiValueArgs "DIRECTORIES")
+  set(multiValueArgs "DIRECTORIES;FILES")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT ARG_ATTACH_TO)
@@ -372,23 +375,39 @@ function(pylabhub_attach_headers_staging_commands)
   endif()
 
   set(copy_commands "")
-  foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+  if(ARG_DIRECTORIES OR ARG_FILES)
     if(ARG_SUBDIR)
       set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
     else()
       set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
     endif()
-    # Create the directory at build time, and then copy contents.
     list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
-  endforeach()
+  endif()
+
+  if(ARG_DIRECTORIES)
+    foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+      list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
+    endforeach()
+  endif()
+
+  if(ARG_FILES)
+    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy ${ARG_FILES} "${DEST_DIR}/")
+  endif()
 
   if(copy_commands)
+    set(_comment "Staging headers")
+    if(ARG_DIRECTORIES)
+      string(APPEND _comment " from directories: ${ARG_DIRECTORIES}")
+    endif()
+    if(ARG_FILES)
+      string(APPEND _comment " (specific files)")
+    endif()
+
     add_custom_command(
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
       ${copy_commands}
-      COMMENT "Staging header directories: ${ARG_DIRECTORIES}"
+      COMMENT "${_comment}"
       VERBATIM
     )
   endif()

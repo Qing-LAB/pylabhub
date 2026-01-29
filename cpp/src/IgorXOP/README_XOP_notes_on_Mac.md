@@ -234,11 +234,11 @@ A successful build from our CMake system implies all these checks have passed.
 
 ## 11. Build Process Details and Enhancements
 
+- **Consolidated Assembly Script:** The XOP bundle assembly is now handled by a single, consolidated CMake script (`consolidated_xop_assembly.cmake.in`). This script is executed as a `POST_BUILD` command on the XOP target and performs all necessary steps: creating the bundle structure, compiling resources, copying dependencies, cleaning attributes, code signing, and verification. This simplifies the build logic and removes the need for multiple intermediary scripts.
+
+- **Dependency Bundling**: On macOS, the dynamic library `pylabhub-utils.dylib` is now automatically copied into the XOP bundle's `Contents/MacOS` directory during assembly. This crucial step ensures that the XOP can find its necessary runtime dependencies, resolving "module not found" errors when loading the XOP in Igor Pro.
+
 - **Code Signing:** The build automatically performs ad-hoc signing via the `CodeSign.cmake` post-build script. This is required for local execution on Apple Silicon Macs. Signing is triggered if the CMake variable `MACOSX_CODESIGN_IDENTITY` is set. For ad-hoc signing, set it to `-`. For distribution, this would be set to a proper Developer ID. The script prioritizes the system's `codesign` tool at `/usr/bin`.
-
-- **Toolchain Discovery (`Rez`, `nm`, etc.):** The build expects `Rez`, `nm`, and `plutil` to be available in the system `PATH`. These are standard components of the Xcode Command Line Tools. If you encounter errors about them being missing, run `xcode-select --install` and ensure your shell is configured to find them.
-
-- **Two-Phase Assembly:** The bundle assembly uses a two-step CMake script process (`run_assemble_xop.cmake.in` -> `assemble_xop.cmake`). This is a technical requirement to correctly resolve CMake "generator expressions" (e.g., the final path to the compiled binary) at the right time during the build.
 
 - **Localization:** `InfoPlist.strings` is currently hardcoded for English (`en.lproj`). The build could be extended to support multiple localizations by adding other `.lproj` directories.
 
