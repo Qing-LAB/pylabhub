@@ -75,7 +75,8 @@ void RotatingFileSink::rotate()
         {
             PLH_DEBUG("Logger Error: Failed to remove oldest backup '{}': {}",
                       oldest_backup.string(), ec.message());
-            // Attempt to recover by re-opening the original file and continuing logging.
+            // Recovery attempt: Try to re-open the original file to continue logging
+            // without losing further messages, even though rotation failed.
             try
             {
                 open(base_path, m_use_flock);
@@ -101,6 +102,7 @@ void RotatingFileSink::rotate()
             {
                 PLH_DEBUG("Logger Error: Failed to rename backup '{}' to '{}': {}",
                           current_backup.string(), next_backup.string(), ec.message());
+                // Recovery attempt: Try to re-open the original file.
                 try
                 {
                     open(base_path, m_use_flock);
@@ -124,6 +126,7 @@ void RotatingFileSink::rotate()
         {
             PLH_DEBUG("Logger Error: Failed to rename base log file to '{}': {}",
                       first_backup.string(), ec.message());
+            // Recovery attempt: Try to re-open the original file.
             try
             {
                 open(base_path, m_use_flock);
@@ -143,6 +146,7 @@ void RotatingFileSink::rotate()
         {
             PLH_DEBUG("Logger Error: Failed to remove base log file '{}': {}", base_path.string(),
                       ec.message());
+            // Recovery attempt: Try to re-open the original file.
             try
             {
                 open(base_path, m_use_flock);
