@@ -638,6 +638,10 @@ class LifecycleManagerImpl
         return true;
     }
     
+    /**
+     * @brief Internal implementation for recursively unloading a module and its now-unused dependencies.
+     * @warning This is a destructive operation that removes the module from the graph.
+     */
     void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
     {
         PLH_DEBUG("unloadModuleInternal: trying to unload '{}', ref_count={}", node.name,

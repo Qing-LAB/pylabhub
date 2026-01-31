@@ -417,6 +417,9 @@ void Logger::Impl::worker_loop()
         }
 
         // --- Find last SetSinkCommand ---
+        // Optimization: If multiple sink changes were requested in a single batch,
+        // only the final one needs to be executed. We find its index here and
+        // will ignore any others during processing.
         ssize_t last_set_sink_idx = -1;
         for (ssize_t i = static_cast<ssize_t>(local_queue.size()) - 1; i >= 0; --i)
         {
