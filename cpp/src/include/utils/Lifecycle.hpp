@@ -237,8 +237,6 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
     std::unique_ptr<LifecycleManagerImpl> pImpl;
 };
 
-using namespace pylabhub::platform;
-using namespace pylabhub::debug;
 /**
  * The following functions and classes are the actual interface for the users.
  */
@@ -445,7 +443,7 @@ class LifecycleGuard
                 "were ignored.\n[PLH_Lifecycle] Constructor was located in function {}. ({}:{}).",
                 app_name, pid, m_loc.function_name(),
                 pylabhub::format_tools::filename_only(m_loc.file_name()), m_loc.line());
-            print_stack_trace();
+            pylabhub::debug::print_stack_trace();
         }
     }
 

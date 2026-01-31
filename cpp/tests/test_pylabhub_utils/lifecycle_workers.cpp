@@ -675,3 +675,31 @@ int pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize()
 
     return 0;
 }
+
+int pylabhub::tests::worker::lifecycle::dynamic_unload_timeout()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod("HangingModule");
+    mod.set_shutdown(
+        [](const char *)
+        {
+            PLH_DEBUG("HangingModule shutdown started, sleeping for 250ms...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            PLH_DEBUG("HangingModule shutdown finished sleep.");
+        },
+        50); // 50ms timeout
+
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
+
+    if (!LoadModule("HangingModule"))
+        return 2;
+
+    // This should return in ~50ms, not hang for 250ms.
+    // The test runner will verify the "TIMEOUT!" message in stderr.
+    if (!UnloadModule("HangingModule"))
+        return 3;
+
+    return 0;
+}

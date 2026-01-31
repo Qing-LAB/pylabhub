@@ -24,28 +24,30 @@ The `Lifecycle` module provides a dependency-aware manager for application start
     *   Modules are defined using `ModuleDef`, specifying a name, dependencies, and startup/shutdown callbacks.
     *   A topological sort of the dependency graph determines the correct initialization order. Shutdown occurs in the reverse order.
     *   Supports both **static modules** (core components registered before `initialize()`) and **dynamic modules** (components registered and loaded at runtime).
-    *   Shutdown callbacks have timeouts to prevent the application from hanging on exit.
+    *   Shutdown callbacks have configurable timeouts to prevent the application from hanging. The timeout is provided in milliseconds when defining a module with `ModuleDef::set_shutdown()`. This timeout is respected during both application finalization and dynamic module unloading.
 
 *   **Usage**:
+    The recommended way to manage the application lifecycle is with the `LifecycleGuard` RAII helper. It ensures that `InitializeApp()` is called once when the first guard is created, and `FinalizeApp()` is called when that first "owner" guard goes out of scope.
+
     ```cpp
     #include "utils/Lifecycle.hpp"
     #include "utils/Logger.hpp" // Example module
 
     int main(int argc, char* argv[]) {
-        // Create a scope guard to ensure finalize() is called on exit.
-        pylabhub::utils::LifecycleManager::Scope lifecycle_scope;
+        // Create a LifecycleGuard and pass it the modules to register.
+        // The first guard becomes the "owner" and manages the lifecycle.
+        pylabhub::utils::LifecycleGuard app_lifecycle(
+            pylabhub::utils::Logger::GetLifecycleModule()
+            // ... add other modules via MakeModDefList() if needed
+        );
 
-        // Register all static modules before initialization.
-        pylabhub::utils::LifecycleManager::instance().register_module(
-            pylabhub::utils::Logger::GetLifecycleModule());
-        // ... register other modules
-
-        // Initialize all static modules.
-        pylabhub::utils::LifecycleManager::instance().initialize();
+        // The guard's constructor registers and initializes the modules.
+        // It is now safe to use them.
+        LOGGER_INFO("Application started.");
 
         // ... application logic ...
 
-        return 0; // finalize() is called automatically here
+        return 0; // app_lifecycle destructor calls FinalizeApp() automatically
     }
     ```
 
