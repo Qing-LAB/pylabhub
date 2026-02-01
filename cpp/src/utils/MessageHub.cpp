@@ -2,8 +2,8 @@
 #include "utils/MessageHub.hpp"
 
 #include "sodium.h"
-#include "zmq.hpp"
-#include "zmq_addon.hpp"
+#include "cppzmq/zmq.hpp"
+#include "cppzmq/zmq_addon.hpp"
 
 #include <vector>
 #include <atomic>
