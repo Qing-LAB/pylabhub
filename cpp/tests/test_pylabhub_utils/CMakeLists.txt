@@ -11,6 +11,8 @@ add_executable(test_pylabhub_utils
   test_logger.cpp
   test_lifecycle.cpp
   test_lifecycle_dynamic.cpp
+  test_messagehub.cpp
+  test_datablock.cpp
 
   # Worker implementations
   filelock_workers.cpp
