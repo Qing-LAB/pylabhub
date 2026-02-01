@@ -7,31 +7,19 @@
 #include <thread>
 #include <chrono>
 
+#include "test_process_utils.h"
+#include "test_entrypoint.h" // For g_self_exe_path
 
 // ============================================================================
-// Lifecycle Tests
+// Lifecycle Tests (Worker-Based)
 // ============================================================================
-
-class MessageHubLifecycleTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        // The hub module depends on the Logger. Initialize it.
-        pylabhub::utils::LifecycleManager::instance().load_module("pylabhub::utils::Logger", std::source_location::current());
-    }
-
-    void TearDown() override {
-        pylabhub::utils::LifecycleManager::instance().unload_module("pylabhub::utils::Logger", std::source_location::current());
-    }
-};
-
-TEST_F(MessageHubLifecycleTest, lifecycle_initialized_FollowsState) {
-    EXPECT_FALSE(pylabhub::hub::lifecycle_initialized());
-    auto& lifecycle_manager = pylabhub::utils::LifecycleManager::instance();
-    lifecycle_manager.register_module(pylabhub::hub::GetLifecycleModule());
-    ASSERT_TRUE(lifecycle_manager.load_module("pylabhub::hub::DataExchangeHub", std::source_location::current()));
-    EXPECT_TRUE(pylabhub::hub::lifecycle_initialized());
-    ASSERT_TRUE(lifecycle_manager.unload_module("pylabhub::hub::DataExchangeHub", std::source_location::current()));
-    EXPECT_FALSE(pylabhub::hub::lifecycle_initialized());
+TEST(MessageHubLifecycle, FollowsState)
+{
+    pylabhub::tests::helper::WorkerProcess worker(
+        g_self_exe_path, "messagehub.lifecycle_initialized_follows_state", {});
+    ASSERT_TRUE(worker.valid());
+    worker.wait_for_exit();
+    pylabhub::tests::helper::expect_worker_ok(worker);
 }
 
 // ============================================================================
@@ -80,7 +68,7 @@ public:
 
 private:
     void run() {
-        zmq::context_t context(0);
+        zmq::context_t context(1);
         zmq::socket_t socket(context, zmq::socket_type::router);
         
         socket.set(zmq::sockopt::curve_server, 1);
@@ -99,7 +87,14 @@ private:
                 if (!result || request_parts.size() < 2) continue;
 
                 auto& identity = request_parts[0];
+                const auto& header_msg = request_parts[1];
+                std::string_view header_sv(header_msg.data<const char>(), header_msg.size());
                 
+                // Notifications should not receive a reply. Only reply in OK mode if it's not a notification.
+                if (m_response_mode.load() == ResponseMode::Ok && header_sv.find("NOTIFY") != std::string_view::npos) {
+                    continue; // Do not reply to notifications
+                }
+
                 switch(m_response_mode.load()) {
                     case ResponseMode::Ok: {
                         nlohmann::json ok_payload = {{"status", "OK"}};

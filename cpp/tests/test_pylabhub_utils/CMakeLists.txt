@@ -19,6 +19,7 @@ add_executable(test_pylabhub_utils
   jsonconfig_workers.cpp
   logger_workers.cpp
   lifecycle_workers.cpp
+  messagehub_workers.cpp
   worker_dispatcher.cpp
 )
 
