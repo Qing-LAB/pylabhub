@@ -27,8 +27,11 @@ file(MAKE_DIRECTORY "${PREREQ_INSTALL_DIR}/lib")
 # This include defines the 'libsodium_external' target.
 include(libsodium)
 
+# This include defines the 'luajit_external' target.
+include(luajit)
+
 # This is the master target for all prerequisites.
-add_custom_target(build_prerequisites DEPENDS libsodium_external)
+add_custom_target(build_prerequisites DEPENDS libsodium_external luajit_external)
 
 # --- 3. Define IMPORTED Targets for Prerequisites ---
 # Now that the prerequisite directory structure is known, we can define
@@ -85,6 +88,28 @@ set_target_properties(pylabhub::third_party::libzmq PROPERTIES
 )
 add_dependencies(pylabhub::third_party::libzmq build_prerequisites)
 
+# --- Define IMPORTED target for LuaJIT ---
+# This section defines a stable, namespaced IMPORTED target for LuaJIT.
+set(LUAJIT_INCLUDE_DIR "${PREREQ_INSTALL_DIR}/include/luajit-5.1") # LuaJIT installs headers into luajit-5.1 subdirectory
+if(MSVC)
+  # Needs proper MSVC integration for luajit ExternalProject first
+  set(LUAJIT_LIBRARY_PATH "")
+  message(WARNING "LuaJIT library path for MSVC is not defined as MSVC build is not yet implemented.")
+else()
+  set(LUAJIT_LIBRARY_PATH "${PREREQ_INSTALL_DIR}/lib/libluajit-5.1.a")
+endif()
+
+if(LUAJIT_LIBRARY_PATH AND EXISTS "${LUAJIT_LIBRARY_PATH}")
+  add_library(pylabhub::third_party::luajit STATIC IMPORTED GLOBAL)
+  set_target_properties(pylabhub::third_party::luajit PROPERTIES
+    IMPORTED_LOCATION "${LUAJIT_LIBRARY_PATH}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUAJIT_INCLUDE_DIR}"
+  )
+  add_dependencies(pylabhub::third_party::luajit build_prerequisites)
+else()
+  message(WARNING "LuaJIT library not found at ${LUAJIT_LIBRARY_PATH}. Skipping creation of pylabhub::third_party::luajit IMPORTED target.")
+endif()
+
 
 # setup cppzmq target
 include(cppzmq)
@@ -103,6 +128,15 @@ if(THIRD_PARTY_INSTALL)
   )
   pylabhub_register_library_for_staging(TARGET pylabhub::third_party::sodium)
   pylabhub_register_library_for_staging(TARGET pylabhub::third_party::libzmq)
+  
+  if(TARGET pylabhub::third_party::luajit)
+    pylabhub_register_headers_for_staging(
+      DIRECTORIES "${PREREQ_INSTALL_DIR}/include/luajit-5.1"
+      SUBDIR "luajit-5.1"
+      EXTERNAL_PROJECT_DEPENDENCY luajit_external
+    )
+    pylabhub_register_library_for_staging(TARGET pylabhub::third_party::luajit)
+  endif()
 endif()
 
 # ===========================================================================

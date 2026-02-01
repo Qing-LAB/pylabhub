@@ -91,51 +91,292 @@ A consumer of a `DataBlock` must adhere to the following protocol:
 
 ### 4. C++ API Design Principles
 
-The API will be updated to reflect these robust, secure, and policy-driven concepts.
+The API is designed to expose a clean, policy-driven interface for high-performance inter-process communication using shared memory. It provides distinct interfaces for producers and consumers, orchestrated by the `MessageHub` for coordination.
 
 ```cpp
-// A conceptual sketch of the hardened, policy-based API
+// Namespace for all Data Exchange Hub components
 namespace pylabhub::hub {
 
+// Forward declaration for MessageHub
+class MessageHub;
+
+/**
+ * @enum DataBlockPolicy
+ * @brief Defines the buffer management strategy for a DataBlock.
+ */
 enum class DataBlockPolicy { Single, DoubleBuffer, RingBuffer };
 
+/**
+ * @struct DataBlockConfig
+ * @brief Configuration for creating a new DataBlock.
+ *
+ * This configuration is provided by the producer and is essential for
+ * creating the shared memory segment and initializing its header.
+ */
 struct DataBlockConfig {
-    uint64_t shared_secret;
-    size_t structured_buffer_size;
-    size_t flexible_zone_size;
-    int ring_buffer_capacity; // Only for RingBufferPolicy
+    uint64_t shared_secret;           // Key for unauthorized access prevention
+    size_t structured_buffer_size;    // Size of the bulk data buffer
+    size_t flexible_zone_size;        // Size of the flexible data zone for MessagePack/JSON
+    int ring_buffer_capacity;         // Only for RingBufferPolicy: number of slots
 };
 
-class MessageHub {
+/**
+ * @class IDataBlockProducer
+ * @brief Interface for a DataBlock producer.
+ *
+ * This interface defines the contract for writing data to a shared DataBlock.
+ * Specific implementations will manage policy-based buffering.
+ */
+class IDataBlockProducer {
 public:
-    // Factory method takes a policy and secure config.
-    static std::unique_ptr<IDataBlockProducer> create_datablock_producer(
-        const std::string& name,
-        DataBlockPolicy policy,
-        const DataBlockConfig& config
-    );
-    // Consumer must know the secret to connect.
-    static std::unique_ptr<IDataBlockConsumer> find_datablock_consumer(
-        const std::string& name,
-        uint64_t shared_secret
-    );
+    virtual ~IDataBlockProducer() = default;
+
+    /**
+     * @brief Acquires a slot for writing data.
+     * @param timeout_ms Maximum time to wait for a slot to become available.
+     * @return Pointer to the writeable structured data buffer, or nullptr on timeout/failure.
+     */
+    virtual char* begin_write(int timeout_ms = 0) = 0;
+
+    /**
+     * @brief Commits the data written to the slot, making it available for consumers.
+     * @param bytes_written The actual number of bytes written to the structured buffer.
+     * @param flexible_data Optional JSON object for the flexible data zone.
+     * @return True on success, false on failure.
+     */
+    virtual bool end_write(size_t bytes_written, const nlohmann::json* flexible_data = nullptr) = 0;
+
+    /**
+     * @brief Accesses the mutable flexible data zone directly.
+     * @return Pointer to the flexible data zone.
+     */
+    virtual char* flexible_zone() = 0;
 };
 
-// Consumers will be returned via policy-specific interfaces
-class IRingBufferConsumer : public IDataBlockConsumer {
+/**
+ * @class IDataBlockConsumer
+ * @brief Interface for a DataBlock consumer.
+ *
+ * This interface defines the contract for reading data from a shared DataBlock.
+ * Specific implementations will manage policy-based buffering.
+ */
+class IDataBlockConsumer {
 public:
-    virtual ReadSlot* begin_consume(uint64_t slot_index) = 0;
-    virtual void end_consume(ReadSlot* slot) = 0;
+    virtual ~IDataBlockConsumer() = default;
+
+    /**
+     * @brief Acquires a slot for reading data.
+     * @param timeout_ms Maximum time to wait for data to become available.
+     * @return Pointer to the readable structured data buffer, or nullptr on timeout/failure.
+     */
+    virtual const char* begin_consume(int timeout_ms = 0) = 0;
+
+    /**
+     * @brief Releases the consumed slot.
+     * @return True on success, false on failure.
+     */
+    virtual bool end_consume() = 0;
+
+    /**
+     * @brief Accesses the read-only flexible data zone directly.
+     * @return Pointer to the flexible data zone.
+     */
+    virtual const char* flexible_zone() const = 0;
 };
+
+/**
+ * @brief Factory function to create a DataBlock producer.
+ * @param hub A connected MessageHub instance for broker communication.
+ * @param name The unique name for the DataBlock channel.
+ * @param policy The buffer management policy to use.
+ * @param config The configuration for the DataBlock.
+ * @return A unique_ptr to the producer, or nullptr on failure.
+ */
+std::unique_ptr<IDataBlockProducer> create_datablock_producer(
+    MessageHub &hub,
+    const std::string &name,
+    DataBlockPolicy policy,
+    const DataBlockConfig &config
+);
+
+/**
+ * @brief Factory function to find and connect to a DataBlock as a consumer.
+ * @param hub A connected MessageHub instance for broker communication.
+ * @param name The name of the DataBlock channel to find.
+ * @param shared_secret The secret required to access the channel.
+ * @return A unique_ptr to the consumer, or nullptr on failure.
+ */
+std::unique_ptr<IDataBlockConsumer> find_datablock_consumer(
+    MessageHub &hub,
+    const std::string &name,
+    uint64_t shared_secret
+);
 
 } // namespace pylabhub::hub
 ```
 
+#### 4.1. Internal DataBlock Management
+
+The core shared memory segment management is handled by an internal `DataBlock` helper class (defined in `src/utils/DataBlock.cpp`). This class encapsulates the Boost.Interprocess `managed_shared_memory` and provides direct access to the `SharedMemoryHeader`, `FlexibleDataZone`, and `StructuredDataBuffer`. It handles the creation and destruction of the named shared memory object, ensuring proper lifecycle management.
+
+#### 4.2. Synchronization Primitives
+
+The `SharedMemoryHeader` plays a crucial role in coordinating access and ensuring data integrity within the shared memory segment. It contains several atomic variables and a process-shared mutex:
+
+*   **`uint64_t magic_number`**: A fixed constant (`0xBADF00DFEEDFACEL`) used by consumers to verify that the shared memory segment is indeed a valid `DataBlock` and is compatible with the expected version.
+*   **`uint64_t shared_secret`**: A security key that must be supplied by consumers to gain access, preventing unauthorized processes from reading or writing to the DataBlock.
+*   **`uint32_t version`**: Indicates the version of the `SharedMemoryHeader` layout, allowing for robust version checking and potential backward/forward compatibility.
+*   **`uint32_t header_size`**: Stores the size of the `SharedMemoryHeader` structure itself, which is used to calculate the starting offsets of the `FlexibleDataZone` and `StructuredDataBuffer` within the shared memory.
+*   **`std::atomic<uint32_t> active_consumer_count`**: An atomic counter that tracks the number of currently active consumers connected to this `DataBlock`. This is crucial for the broker's heartbeat mechanism and for producers to manage resources. Consumers increment this on successful connection and decrement on disconnection.
+*   **`std::atomic<uint64_t> write_index`**: A policy-specific atomic variable, primarily used by the producer to indicate the next available buffer slot or write position within the `StructuredDataBuffer`.
+*   **`std::atomic<uint64_t> commit_index`**: A policy-specific atomic variable, used by the producer to signal that the data in a particular slot or at a specific write position has been fully written and is ready for consumers to read.
+*   **`std::atomic<uint64_t> read_index`**: A policy-specific atomic variable, used by consumers to track which data slots have been processed or are currently being read.
+*   **`std::atomic<uint64_t> current_slot_id`**: A monotonically increasing identifier assigned to each new data unit (slot) written by the producer. Consumers can use this ID to detect new data availability and ensure ordered processing, especially in ring buffer scenarios.
+*   **`char mutex_storage[64]`**: This provides storage for a process-shared mutex (e.g., `pthread_mutex_t` on POSIX systems, or named mutexes on Windows). This mutex is used to protect critical sections of the `SharedMemoryHeader` and coordinate complex multi-step operations (like buffer management) that require exclusive access, particularly for producers.
+
+### Example Usage
+
+Here are conceptual examples demonstrating how a producer and consumer might interact with the Data Exchange Hub API:
+
+```cpp
+#include "plh_service.hpp" // For LOGGER_INFO etc.
+#include "utils/DataBlock.hpp"
+#include "utils/MessageHub.hpp"
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <chrono>
+
+// --- Producer Example ---
+void producer_example(const std::string& name, uint64_t secret) {
+    pylabhub::hub::MessageHub message_hub;
+    // Assume message_hub is connected to the broker (e.g., message_hub.connect("tcp://localhost:5555", "SERVER_KEY");)
+
+    pylabhub::hub::DataBlockConfig config;
+    config.shared_secret = secret;
+    config.structured_buffer_size = 1024; // 1KB buffer for structured data
+    config.flexible_zone_size = 256;      // 256 bytes for flexible data (JSON)
+    config.ring_buffer_capacity = 4;      // For RingBuffer policy
+
+    try {
+        std::unique_ptr<pylabhub::hub::IDataBlockProducer> producer =
+            pylabhub::hub::create_datablock_producer(message_hub, name, pylabhub::hub::DataBlockPolicy::RingBuffer, config);
+
+        if (!producer) {
+            LOGGER_ERROR("Producer: Failed to create DataBlock '{}'.", name);
+            return;
+        }
+
+        LOGGER_INFO("Producer: DataBlock '{}' created. Starting to write data...", name);
+
+        for (int i = 0; i < 10; ++i) {
+            char* buffer = producer->begin_write(100); // Wait up to 100ms for a slot
+            if (buffer) {
+                // Write some structured data
+                std::string msg = "Hello from producer " + std::to_string(i);
+                size_t bytes_to_write = std::min(msg.length() + 1, config.structured_buffer_size);
+                memcpy(buffer, msg.c_str(), bytes_to_write);
+
+                // Write some flexible data (JSON)
+                nlohmann::json flex_data;
+                flex_data["sequence"] = i;
+                flex_data["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                flex_data["producer_id"] = "my_app_1";
+
+                if (producer->end_write(bytes_to_write, &flex_data)) {
+                    LOGGER_INFO("Producer: Wrote data for sequence {}", i);
+                    // In a real scenario, producer would notify broker via MessageHub
+                    // message_hub.send_notification("PYLABHUB_DB_NOTIFY", {{"name", name}, {"slot_id", producer->current_slot_id()}});
+                } else {
+                    LOGGER_ERROR("Producer: Failed to commit write for sequence {}", i);
+                }
+            } else {
+                LOGGER_WARN("Producer: Could not acquire write slot for sequence {}", i);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+
+        LOGGER_INFO("Producer: Finished writing data to DataBlock '{}'.", name);
+
+    } catch (const std::exception& e) {
+        LOGGER_ERROR("Producer: An error occurred: {}", e.what());
+    }
+}
+
+// --- Consumer Example ---
+void consumer_example(const std::string& name, uint64_t secret) {
+    pylabhub::hub::MessageHub message_hub;
+    // Assume message_hub is connected to the broker
+
+    try {
+        std::unique_ptr<pylabhub::hub::IDataBlockConsumer> consumer =
+            pylabhub::hub::find_datablock_consumer(message_hub, name, secret);
+
+        if (!consumer) {
+            LOGGER_ERROR("Consumer: Failed to find DataBlock '{}' with secret {:#x}.", name, secret);
+            return;
+        }
+
+        LOGGER_INFO("Consumer: Connected to DataBlock '{}'. Starting to read data...", name);
+
+        for (int i = 0; i < 15; ++i) { // Try to read more than producer writes to test blocking
+            const char* buffer = consumer->begin_consume(500); // Wait up to 500ms for data
+            if (buffer) {
+                // Read structured data
+                std::string received_msg(buffer);
+                LOGGER_INFO("Consumer: Received structured data: '{}'", received_msg);
+
+                // Read flexible data (conceptual: needs deserialization from flexible_zone())
+                // In a real scenario, flexible_zone() would contain MessagePack data.
+                // const char* flex_zone_ptr = consumer->flexible_zone();
+                // nlohmann::json flex_data = nlohmann::json::from_msgpack(flex_zone_ptr, ...);
+                // LOGGER_INFO("Consumer: Flexible data sequence: {}", flex_data["sequence"].get<int>());
+
+                if (!consumer->end_consume()) {
+                    LOGGER_ERROR("Consumer: Failed to release consumed slot.");
+                }
+            } else {
+                LOGGER_WARN("Consumer: No data available for consumption after 500ms.");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        LOGGER_INFO("Consumer: Finished reading data from DataBlock '{}'.", name);
+
+    } catch (const std::exception& e) {
+        LOGGER_ERROR("Consumer: An error occurred: {}", e.what());
+    }
+}
+
+// int main() {
+//     // Initialize logging and other framework components as needed
+//     // For demonstration, assume LOGGER_INFO, LOGGER_ERROR are functional.
+//
+//     const std::string db_name = "MyTestDataBlock";
+//     const uint64_t db_secret = 0x123456789ABCDEF0;
+//
+//     std::thread prod_thread(producer_example, db_name, db_secret);
+//     std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Give producer time to create
+//     std::thread cons_thread(consumer_example, db_name, db_secret);
+//
+//     prod_thread.join();
+//     cons_thread.join();
+//
+//     // DataBlock shared memory is automatically removed when the last DataBlock
+//     // instance that created it is destroyed.
+//
+//     return 0;
+// }
+```
+
 ### 5. Future Work
 
--   **Refactor `SharedMemoryHub.cpp`**: Refactor the implementation to create the base `DataBlock` infrastructure, security features, and the initial set of buffer management policies.
--   **Broker Implementation**: Enhance the broker logic to handle consumer heartbeats and failure broadcasts.
+-   **Broker Implementation**: Enhance the broker logic to handle consumer heartbeats and failure broadcasts. This is critical for robust consumer management and resource release.
+-   **Full Policy-Based Buffer Management**: Implement the `begin_write`, `end_write`, `begin_consume`, and `end_consume` methods within the `IDataBlockProducer` and `IDataBlockConsumer` concrete implementations (e.g., for `SingleBuffer`, `DoubleBuffer`, `RingBuffer` policies). This includes managing the `write_index`, `commit_index`, `read_index`, `current_slot_id` atomics and the process-shared mutex.
+-   **Flexible Data Zone Serialization**: Integrate MessagePack serialization/deserialization for the `FlexibleDataZone` within the producer and consumer implementations.
 -   **API Implementation**: Implement the full policy-based C++ API, ensuring all security and coordination rules are enforced.
+-   **Testing**: Develop comprehensive unit and integration tests for all DataBlock policies and scenarios.
 
 ## Copyright
 

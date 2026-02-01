@@ -54,10 +54,11 @@ struct SharedMemoryHeader
     // Consumer Management
     std::atomic<uint32_t> active_consumer_count;
 
-    // Policy-Specific State and control primitives will be added here
-    // e.g., for a ring buffer:
-    // std::atomic<uint64_t> write_index;
-    // std::atomic<uint64_t> commit_index;
+    // Policy-Specific State and control primitives
+    std::atomic<uint64_t> write_index;
+    std::atomic<uint64_t> commit_index;
+    std::atomic<uint64_t> read_index;
+    std::atomic<uint64_t> current_slot_id; // For unique identification of data slots
 
     // Process-Shared Mutex storage
 #if defined(PYLABHUB_PLATFORM_WIN64)
