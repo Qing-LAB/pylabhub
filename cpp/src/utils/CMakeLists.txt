@@ -25,8 +25,9 @@ set(UTILS_SOURCES
   logger_sinks/SyslogSink.cpp
   logger_sinks/EventLogSink.cpp
   Logger.cpp
-  JsonConfig.cpp  
-  SharedMemoryHub.cpp
+  JsonConfig.cpp
+  MessageHub.cpp
+  DataBlock.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
@@ -126,7 +127,7 @@ target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
     pylabhub::third_party::nlohmann_json
-    pylabhub::third_party::libzmq
+    pylabhub::third_party::cppzmq
     pylabhub::third_party::sodium
     Threads::Threads
 )
