@@ -1,8 +1,8 @@
 #include "gtest/gtest.h"
 #include "plh_datahub.hpp" // Main include for Lifecycle, Logger, etc.
 
-#include "zmq.hpp"
-#include "zmq_addon.hpp"
+#include "cppzmq/zmq.hpp"
+#include "cppzmq/zmq_addon.hpp"
 #include "sodium.h"
 #include <thread>
 #include <chrono>
