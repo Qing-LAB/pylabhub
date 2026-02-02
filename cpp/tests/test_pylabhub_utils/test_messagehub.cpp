@@ -26,16 +26,19 @@ TEST(MessageHubLifecycle, FollowsState)
 // Mock Broker for Connection Tests
 // ============================================================================
 
-class MockBroker {
-public:
-    enum class ResponseMode {
+class MockBroker
+{
+  public:
+    enum class ResponseMode
+    {
         Ok,
         Timeout,
         Malformed_NoPayload,
         Malformed_BadPayload
     };
 
-    MockBroker() {
+    MockBroker()
+    {
         unsigned char server_public_key[crypto_box_PUBLICKEYBYTES];
         unsigned char server_secret_key[crypto_box_SECRETKEYBYTES];
         crypto_box_keypair(server_public_key, server_secret_key);
@@ -47,79 +50,91 @@ public:
         m_secret_key = z85_secret;
     }
 
-    void start() {
+    void start()
+    {
         m_running = true;
         m_thread = std::thread(&MockBroker::run, this);
     }
 
-    void stop() {
+    void stop()
+    {
         m_running = false;
-        if (m_thread.joinable()) {
+        if (m_thread.joinable())
+        {
             m_thread.join();
         }
     }
 
-    void set_next_response(ResponseMode mode) {
-        m_response_mode = mode;
-    }
+    void set_next_response(ResponseMode mode) { m_response_mode = mode; }
 
-    const std::string& get_public_key() const { return m_public_key; }
-    const std::string& get_endpoint() const { return m_endpoint; }
+    const std::string &get_public_key() const { return m_public_key; }
+    const std::string &get_endpoint() const { return m_endpoint; }
 
-private:
-    void run() {
+  private:
+    void run()
+    {
         zmq::context_t context(1);
         zmq::socket_t socket(context, zmq::socket_type::router);
-        
+
         socket.set(zmq::sockopt::curve_server, 1);
         socket.set(zmq::sockopt::curve_secretkey, m_secret_key);
-        
+
         socket.bind(m_endpoint);
 
-        while (m_running) {
+        while (m_running)
+        {
             std::vector<zmq::pollitem_t> items = {{socket, 0, ZMQ_POLLIN, 0}};
             zmq::poll(items, std::chrono::milliseconds(100));
 
-            if (items[0].revents & ZMQ_POLLIN) {
+            if (items[0].revents & ZMQ_POLLIN)
+            {
                 std::vector<zmq::message_t> request_parts;
                 auto result = zmq::recv_multipart(socket, std::back_inserter(request_parts));
 
-                if (!result || request_parts.size() < 2) continue;
+                if (!result || request_parts.size() < 2)
+                    continue;
 
-                auto& identity = request_parts[0];
-                const auto& header_msg = request_parts[1];
+                auto &identity = request_parts[0];
+                const auto &header_msg = request_parts[1];
                 std::string_view header_sv(header_msg.data<const char>(), header_msg.size());
-                
-                // Notifications should not receive a reply. Only reply in OK mode if it's not a notification.
-                if (m_response_mode.load() == ResponseMode::Ok && header_sv.find("NOTIFY") != std::string_view::npos) {
+
+                // Notifications should not receive a reply. Only reply in OK mode if it's not a
+                // notification.
+                if (m_response_mode.load() == ResponseMode::Ok &&
+                    header_sv.find("NOTIFY") != std::string_view::npos)
+                {
                     continue; // Do not reply to notifications
                 }
 
-                switch(m_response_mode.load()) {
-                    case ResponseMode::Ok: {
-                        nlohmann::json ok_payload = {{"status", "OK"}};
-                        auto msgpack = nlohmann::json::to_msgpack(ok_payload);
-                        
-                        socket.send(identity, zmq::send_flags::sndmore);
-                        socket.send(zmq::str_buffer("PYLABHUB_ACK"), zmq::send_flags::sndmore);
-                        socket.send(zmq::buffer(msgpack));
-                        break;
-                    }
-                    case ResponseMode::Malformed_NoPayload: {
-                        socket.send(identity, zmq::send_flags::sndmore);
-                        socket.send(zmq::str_buffer("PYLABHUB_ACK"));
-                        break;
-                    }
-                    case ResponseMode::Malformed_BadPayload: {
-                        std::vector<uint8_t> bad_msgpack = {0xDE, 0xAD, 0xBE, 0xEF};
-                        socket.send(identity, zmq::send_flags::sndmore);
-                        socket.send(zmq::str_buffer("PYLABHUB_ACK"), zmq::send_flags::sndmore);
-                        socket.send(zmq::buffer(bad_msgpack));
-                        break;
-                    }
-                    case ResponseMode::Timeout:
-                    default:
-                        break;
+                switch (m_response_mode.load())
+                {
+                case ResponseMode::Ok:
+                {
+                    nlohmann::json ok_payload = {{"status", "OK"}};
+                    auto msgpack = nlohmann::json::to_msgpack(ok_payload);
+
+                    socket.send(identity, zmq::send_flags::sndmore);
+                    socket.send(zmq::str_buffer("PYLABHUB_ACK"), zmq::send_flags::sndmore);
+                    socket.send(zmq::buffer(msgpack));
+                    break;
+                }
+                case ResponseMode::Malformed_NoPayload:
+                {
+                    socket.send(identity, zmq::send_flags::sndmore);
+                    socket.send(zmq::str_buffer("PYLABHUB_ACK"));
+                    break;
+                }
+                case ResponseMode::Malformed_BadPayload:
+                {
+                    std::vector<uint8_t> bad_msgpack = {0xDE, 0xAD, 0xBE, 0xEF};
+                    socket.send(identity, zmq::send_flags::sndmore);
+                    socket.send(zmq::str_buffer("PYLABHUB_ACK"), zmq::send_flags::sndmore);
+                    socket.send(zmq::buffer(bad_msgpack));
+                    break;
+                }
+                case ResponseMode::Timeout:
+                default:
+                    break;
                 }
             }
         }
@@ -137,14 +152,17 @@ private:
 // Connection and Communication Tests
 // ============================================================================
 
-class MessageHubConnectionTest : public ::testing::Test {
-protected:
-    void SetUp() override {
+class MessageHubConnectionTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
         broker.start();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    void TearDown() override {
+    void TearDown() override
+    {
         hub.disconnect();
         broker.stop();
     }
@@ -153,49 +171,56 @@ protected:
     pylabhub::hub::MessageHub hub;
 };
 
-TEST_F(MessageHubConnectionTest, Connect_FailsWithEmptyEndpoint) {
+TEST_F(MessageHubConnectionTest, Connect_FailsWithEmptyEndpoint)
+{
     ASSERT_FALSE(hub.connect("", broker.get_public_key()));
 }
 
-TEST_F(MessageHubConnectionTest, Connect_FailsWithInvalidServerKey) {
+TEST_F(MessageHubConnectionTest, Connect_FailsWithInvalidServerKey)
+{
     ASSERT_FALSE(hub.connect(broker.get_endpoint(), "short-key"));
 }
 
-TEST_F(MessageHubConnectionTest, Connect_SucceedsWithValidBroker) {
+TEST_F(MessageHubConnectionTest, Connect_SucceedsWithValidBroker)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
 }
 
-TEST_F(MessageHubConnectionTest, Disconnect_CleansUpConnection) {
+TEST_F(MessageHubConnectionTest, Disconnect_CleansUpConnection)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
     hub.disconnect();
-    
+
     nlohmann::json payload = {{"data", 1}};
     nlohmann::json response;
     ASSERT_FALSE(hub.send_request("PYLABHUB_REQ", payload, response, 500));
 }
 
-TEST_F(MessageHubConnectionTest, SendRequest_SucceedsWithOkResponse) {
+TEST_F(MessageHubConnectionTest, SendRequest_SucceedsWithOkResponse)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
-    
+
     broker.set_next_response(MockBroker::ResponseMode::Ok);
     nlohmann::json payload = {{"req", "echo"}};
     nlohmann::json response;
-    
+
     ASSERT_TRUE(hub.send_request("PYLABHUB_REQ", payload, response, 1000));
     ASSERT_EQ(response["status"], "OK");
 }
 
-TEST_F(MessageHubConnectionTest, SendRequest_FailsOnTimeout) {
+TEST_F(MessageHubConnectionTest, SendRequest_FailsOnTimeout)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
-    
+
     broker.set_next_response(MockBroker::ResponseMode::Timeout);
     nlohmann::json payload = {{"req", "echo"}};
     nlohmann::json response;
-    
+
     ASSERT_FALSE(hub.send_request("PYLABHUB_REQ", payload, response, 200));
 }
 
-TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_NoPayload) {
+TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_NoPayload)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
 
     broker.set_next_response(MockBroker::ResponseMode::Malformed_NoPayload);
@@ -204,7 +229,8 @@ TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_NoPayloa
     ASSERT_FALSE(hub.send_request("PYLABHUB_REQ", payload, response, 500));
 }
 
-TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_BadPayload) {
+TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_BadPayload)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
 
     broker.set_next_response(MockBroker::ResponseMode::Malformed_BadPayload);
@@ -213,21 +239,24 @@ TEST_F(MessageHubConnectionTest, SendRequest_FailsWithMalformedResponse_BadPaylo
     ASSERT_FALSE(hub.send_request("PYLABHUB_REQ", payload, response, 500));
 }
 
-TEST_F(MessageHubConnectionTest, SendNotification_Succeeds) {
+TEST_F(MessageHubConnectionTest, SendNotification_Succeeds)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
-    
+
     nlohmann::json payload = {{"notify", "something_happened"}};
     ASSERT_TRUE(hub.send_notification("PYLABHUB_NOTIFY", payload));
 }
 
-TEST_F(MessageHubConnectionTest, Send_FailsBeforeConnect) {
+TEST_F(MessageHubConnectionTest, Send_FailsBeforeConnect)
+{
     nlohmann::json payload = {{"data", 1}};
     nlohmann::json response;
     ASSERT_FALSE(hub.send_request("PYLABHUB_REQ", payload, response, 500));
     ASSERT_FALSE(hub.send_notification("PYLABHUB_NOTIFY", payload));
 }
 
-TEST_F(MessageHubConnectionTest, Reconnect_Succeeds) {
+TEST_F(MessageHubConnectionTest, Reconnect_Succeeds)
+{
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));
     hub.disconnect();
     ASSERT_TRUE(hub.connect(broker.get_endpoint(), broker.get_public_key()));

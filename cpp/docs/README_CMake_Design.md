@@ -40,19 +40,31 @@ This pattern provides a unified, robust API for staging library and header artif
 ### 1.3. Modular & Stable Target Interfaces
 
 *   **Internal Libraries**: The project's main internal library is `pylabhub::utils`, a shared library for high-level utilities.
-*   **Alias Targets**: Consumers **must** link against namespaced `ALIAS` or `IMPORTED` targets (e.g., `pylabhub::utils`, `pylabhub::third_party::fmt`, `pylabhub::third_party::sodium`) rather than raw target names. This provides a stable public API for all dependencies.
+*   **Alias Targets**: Consumers **must** link against namespaced `ALIAS` or `IMPORTED` targets (e.g., `pylabhub::utils`, `pylabhub::third_party::fmt`, `pylabhub::third_party::libsodium`) rather than raw target names. This provides a stable public API for all dependencies.
 *   **Third-Party Isolation**: Third-party dependencies built via `add_subdirectory` are configured in isolated scopes using wrapper scripts in `third_party/cmake/`. This prevents their build options from "leaking" and affecting other parts of the project, thanks to the `snapshot_cache_var`/`restore_cache_var` helpers.
 
-### 1.4. Prerequisite Build System (`ExternalProject_Add`)
+### 1.4. Prerequisite Build System (Post-Build Detection Pattern)
 
-Some third-party libraries (`libsodium`, `libzmq`) are built as prerequisites before the main project. This pattern is ideal for libraries with non-CMake build systems or those that need to be built in a more controlled, sandboxed environment.
+For third-party libraries that do not use CMake or require a highly controlled build environment (e.g., `libsodium`, `libzmq`, `luajit`), the project uses a robust `ExternalProject_Add` pattern that avoids brittle, hard-coded filenames and works reliably across platforms. This "post-build detection" pattern is the standard for all such dependencies.
 
-1.  **External Build**: A script in `third_party/cmake/` (e.g., `libsodium.cmake`) uses `ExternalProject_Add` to define a target (e.g., `libsodium_external`) that downloads, configures, and builds the library.
-2.  **Prerequisite Install Directory**: The library is installed into a sandboxed directory within the build tree (`build/prereqs`). The install step is customized to ensure a predictable layout (e.g., headers in `include/sodium/`).
-3.  **Master Prerequisite Target**: A master custom target, `build_prerequisites`, depends on all such external projects (e.g., `libsodium_external`, `libzmq_external`).
-4.  **IMPORTED Target Creation**: The central `third_party/CMakeLists.txt` script defines a stable `IMPORTED` target (e.g., `pylabhub::third_party::sodium`) that points to the artifacts in the prerequisite install directory. This target exists at configure-time, making it visible to the rest of the CMake project.
-5.  **Dependency Chaining**: Any target (either another prerequisite or a main project library) that depends on the prerequisite links against the `IMPORTED` target (e.g., `pylabhub::third_party::sodium`) and adds a dependency on `build_prerequisites` to ensure the correct build order.
-6.  **Staging Integration**: The `IMPORTED` target is registered for staging using **Pattern B**, just like any other library target.
+1.  **External Build Target**: A script in `third_party/cmake/` (e.g., `libsodium.cmake`) defines an `ExternalProject_Add` target (e.g., `libsodium_external`) that downloads, configures, and builds the library. The library's own build/install commands place the final artifacts into a temporary, sandboxed directory (`build/prereqs`).
+
+2.  **Build Isolation for non-CMake Projects**: Many non-CMake build systems (like LuaJIT's) do not properly support "out-of-source" builds. To ensure the project's own source tree is never modified, the `CONFIGURE_COMMAND` step of the `ExternalProject_Add` call is used to copy the pristine source code into a dedicated `BINARY_DIR`. All subsequent build steps then occur within this isolated directory. This maintains a clean and reproducible build environment, enforcing project conventions even on external dependencies.
+
+3.  **Post-Build Detection Script**: The key to this pattern is a custom command that runs *after* the external build is complete. This command executes a small CMake script (`detect_libsodium.cmake`) which runs at **build-time**.
+    *   **Discover**: The detection script scans the temporary output directories (including the `BINARY_DIR` for in-place builds and the `INSTALL_DIR` for installed artifacts) for the actual library file using a pattern (e.g., `*sodium*.a`, `*sodium*.lib`).
+    *   **Stabilize**: It copies this discovered file to a **stable, predictable path** (e.g., `build/prereqs/lib/libsodium-stable.a`). The rest of our build system can now rely on this stable path.
+    *   **Stamp**: Finally, the script creates a "stamp file" (e.g., `build/prereqs/libsodium-stamp.txt`) to signal that the entire process is complete.
+
+4.  **`BUILD_BYPRODUCTS`**: The `ExternalProject_Add` command lists this stamp file in its `BUILD_BYPRODUCTS`. This tells CMake's dependency tracker that the ultimate goal of the `libsodium_external` target is to create this stamp file.
+
+5.  **`UNKNOWN IMPORTED` Target**: The central `third_party/CMakeLists.txt` script defines a platform-agnostic `UNKNOWN IMPORTED` target (e.g., `pylabhub::third_party::libsodium`).
+    *   Its `IMPORTED_LOCATION` is set to the **stable path without an extension** (e.g., `.../lib/libsodium-stable`). The `UNKNOWN` type allows CMake to resolve the correct file (`.a` or `.lib`) at link time.
+    *   This eliminates all platform-specific `if(MSVC)` logic from the target definition, making it clean and simple.
+
+6.  **Dependency Chaining**: Any target that consumes the library (e.g., `pylabhub::third_party::libzmq`) depends on the stable `IMPORTED` target (`pylabhub::third_party::libsodium`). That `IMPORTED` target, in turn, depends on the master `build_prerequisites` target, which depends on the `ExternalProject_Add` target (`libsodium_external`). This ensures the correct build order is always enforced.
+
+7.  **Staging**: The stable `IMPORTED` target is registered for staging using **Pattern B**, just like any other library. The staging helpers will copy the library from its stable path in the `prereqs` directory to the final `stage` directory.
 
 ### 1.5. Notes on Specific Libraries & Workarounds
 
@@ -79,7 +91,7 @@ graph TD
         D(pylabhub::third_party::cppzmq)
         E(pylabhub::third_party::nlohmann_json)
         F(pylabhub::third_party::libzmq)
-        G(pylabhub::third_party::sodium)
+        G(pylabhub::third_party::libsodium)
     end
     
     A --> B;

@@ -128,7 +128,7 @@ target_link_libraries(pylabhub-utils
     pylabhub::third_party::fmt
     pylabhub::third_party::nlohmann_json
     pylabhub::third_party::cppzmq
-    pylabhub::third_party::sodium
+    pylabhub::third_party::libsodium
     Threads::Threads
 )
 
@@ -136,8 +136,7 @@ if(PYLABHUB_EXECINFO_LIB)
   target_link_libraries(pylabhub-utils PRIVATE ${PYLABHUB_EXECINFO_LIB})
 endif()
 
-# Ensure libsodium is built before pylabhub-utils (following libzmq pattern)
-add_dependencies(pylabhub-utils libsodium_external)
+
 
 # Probe for fmt::chrono subsecond support
 include(FmtChronoProbe)

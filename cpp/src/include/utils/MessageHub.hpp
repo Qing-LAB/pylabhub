@@ -52,8 +52,8 @@ class PYLABHUB_UTILS_EXPORT MessageHub
      * @param timeout_ms Timeout for waiting for a response.
      * @return True on success, false on failure or timeout.
      */
-    bool send_request(const char *header, const nlohmann::json &payload,
-                      nlohmann::json &response, int timeout_ms = 5000);
+    bool send_request(const char *header, const nlohmann::json &payload, nlohmann::json &response,
+                      int timeout_ms = 5000);
 
     /**
      * @brief Sends a one-way notification to the broker.
@@ -66,7 +66,6 @@ class PYLABHUB_UTILS_EXPORT MessageHub
   private:
     std::unique_ptr<MessageHubImpl> pImpl;
 };
-
 
 /**
  * @brief Checks if the Data Exchange Hub module has been initialized by the Lifecycle manager.
