@@ -1,257 +1,424 @@
-cmake_minimum_required(VERSION 3.18)
-# --- Include Guard ---
-# This ensures that the contents of this file are processed only once, even if
-# it is included multiple times from different scripts. This prevents redundant
-# processing and repeated message output.
-if(THIRD_PARTY_POLICY_AND_HELPER_INCLUDED)
+# third_party/cmake/ThirdPartyPolicyAndHelper.cmake
+# Consolidated and cleaned helper + policy file for third-party ExternalProject wrappers.
+# Place this file before per-package wrapper includes.
+
+cmake_minimum_required(VERSION 3.15)
+include(ExternalProject)
+include(CMakeParseArguments)
+
+# --- Include guard ---
+if(DEFINED THIRD_PARTY_POLICY_AND_HELPER_INCLUDED)
   return()
 endif()
 set(THIRD_PARTY_POLICY_AND_HELPER_INCLUDED TRUE)
-# ---------------------------------------------------------------------------
-# ThirdPartyPolicyAndHelper.cmake
-#
-# This file serves two primary purposes:
-# 1.  It defines the central, user-configurable CACHE variables that govern
-#     the behavior of all third-party builds (e.g., enabling installation,
-#     disabling tests).
-# 2.  It provides a suite of robust helper functions (`snapshot_cache_var`,
-#     `_is_target_installable`, etc.) that individual package scripts
-#     (like `fmt.cmake`) must use to ensure consistent and isolated builds.
-#
-# This script is included by the top-level `third_party/CMakeLists.txt` and
-# its helpers are included by each package-specific `.cmake` file.
-# ---------------------------------------------------------------------------
 
-# --- General Build & Install Policies ---
+# ----------------------------
+# Policy options and defaults
+# ----------------------------
 option(THIRD_PARTY_ALLOW_UPSTREAM_PCH "Allow upstream projects to enable precompiled headers" OFF)
 option(THIRD_PARTY_FORCE_ALLOW_PCH "Force upstream PCH even on MSVC+Ninja (may produce errors)" OFF)
 option(THIRD_PARTY_DISABLE_TESTS "Globally disable tests for all third-party libraries." ON)
+option(THIRD_PARTY_BUILD_SHARED "Default: build shared third-party libs when supported" OFF)
+option(THIRD_PARTY_FORCE_STATIC "Force static builds for third-party libs (overrides shared)" OFF)
+option(THIRD_PARTY_VERBOSE_EXTERNAL "Enable verbose external-project build output" OFF)
+option(THIRD_PARTY_STRIP_MARCH_FLAGS "Strip -march / -mtune and similar tokens before passing flags to external builds" ON)
 
-# --- Per-Library Build Policies ---
-
-# These CACHE variables allow fine-grained control over specific libraries.
-# They can be set from the command line (e.g., -DTHIRD_PARTY_FMT_FORCE_VARIANT=shared).
-
-# Force build variant for {fmt}. Values: "static", "shared", "none".
+# Per-library controls (CACHE so users can override via -D)
 set(THIRD_PARTY_FMT_FORCE_VARIANT "static" CACHE STRING "Force fmt build variant: none|shared|static")
-
-# Force build variant for libzmq. Values: "static", "shared", "none".
 set(THIRD_PARTY_ZMQ_FORCE_VARIANT "static" CACHE STRING "Force libzmq build variant: none|shared|static")
 
-# --- libzmq Specific Tunables ---
 option(PYLABHUB_ZMQ_WITH_OPENPGM "Enable OpenPGM transport in libzmq" OFF)
 option(PYLABHUB_ZMQ_WITH_NORM "Enable NORM transport in libzmq" OFF)
 option(PYLABHUB_ZMQ_WITH_VMCI "Enable VMCI transport in libzmq" OFF)
 
-# Policy for nlohmann/json.
 option(USE_VENDOR_NLOHMANN_ONLY "Force the build to use only the vendored nlohmann/json headers." ON)
 
-# ----------------------------------------------------------------------------
-# XOPToolkit / XOPSupport build options
-# ----------------------------------------------------------------------------
-# Prefer the project vendor copy; override by setting USE_SYSTEM_XOPSUPPORT to a path.
-# Example to force system XOPSupport:
-#   cmake -D USE_SYSTEM_XOPSUPPORT="/opt/XOPSupport" ...
+# STAGING/INSTALL variables defaults (CACHE)
+if(NOT DEFINED PREREQ_INSTALL_DIR)
+  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs" CACHE PATH "Third-party staging install directory")
+endif()
 
-# Single override path: if non-empty, FindXOPSupport will use this path and bypass vendor.
-set(USE_SYSTEM_XOPSUPPORT "" CACHE PATH "Optional: path to system-installed XOPSupport (overrides vendor tree when set).")
 
-# ----------------------------------------------------------------------------
-# Helper macros for snapshotting and restoring cache variables.
+
 #
-# Design:
-# When using `add_subdirectory()` to include a third-party project, that
-# project can modify CMake variables (both normal and cached). These
-# modifications can "leak" out and affect the parent project or other
-# third-party builds, leading to unpredictable behavior.
-#
-# These macros provide a robust mechanism to create an isolated scope for a
-# sub-project. They save the state of specified variables before including the
-# sub-project and restore them afterward.
-#
-# Usage:
-#   # 1. Snapshot variables that the sub-project might change.
-#   snapshot_cache_var(BUILD_SHARED_LIBS)
-#
-#   # 2. Set options for the sub-project.
-#   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-#
-#   # 3. Include the sub-project.
-#   add_subdirectory(third_party/subproject)
-#
-#   # 4. Restore the variables to their original state.
-#   restore_cache_var(BUILD_SHARED_LIBS BOOL)
-#
-# This ensures the sub-project's build settings do not affect the main build.
+# Registration API for package semantics (Option B)
+# Place this near the top of ThirdPartyPolicyAndHelper.cmake.
 #
 
-# --- snapshot_cache_var(VAR_NAME) ---
-#
-# Behavior:
-#   Saves the current state of a variable named <VAR_NAME>. It captures:
-#   1. Whether a normal (non-cached) variable of that name exists and its value.
-#   2. Whether a cached variable of that name exists and its value.
-#   This state is stored in internal `_save_*` variables for later use by
-#   `restore_cache_var`.
-macro(snapshot_cache_var _var)
-  # --- Capture the state of the normal (non-cached) variable ---
-  if(DEFINED ${_var})
-    set(_save_${_var}_was_defined TRUE)
-    set(_save_${_var}_value "${${_var}}")
-  else()
-    set(_save_${_var}_was_defined FALSE)
-  endif()
+# Explicit lists (CACHE INTERNAL so other cmake files can append before evaluation if needed)
+set(THIRD_PARTY_REGISTERED_HEADER_ONLY "" CACHE INTERNAL "Packages explicitly registered as header-only")
+set(THIRD_PARTY_REGISTERED_IMPORTED_LIBS "" CACHE INTERNAL "Packages explicitly registered as binary imported libs")
 
-  # --- Capture the state of the CACHE variable ---
-  # Requires CMake 3.18+ for `DEFINED CACHE{...}`
-  if(DEFINED CACHE{${_var}})
-    set(_save_${_var}_was_in_cache TRUE)
-    # The cached value is available as a normal variable expansion.
-    set(_save_${_var}_cache_value "${${_var}}")
-  else()
-    set(_save_${_var}_was_in_cache FALSE)
+# Helper to register a package as header-only
+macro(pylabhub_register_header_only pkg)
+  # append to list if not present
+  list(FIND THIRD_PARTY_REGISTERED_HEADER_ONLY "${pkg}" _found)
+  if(_found EQUAL -1)
+    list(APPEND THIRD_PARTY_REGISTERED_HEADER_ONLY "${pkg}")
+    # save back to cache so other included files can read it
+    set(THIRD_PARTY_REGISTERED_HEADER_ONLY "${THIRD_PARTY_REGISTERED_HEADER_ONLY}" CACHE INTERNAL "")
   endif()
 endmacro()
 
-# --- restore_cache_var(VAR_NAME CACHE_TYPE) ---
-#
-# Behavior:
-#   Restores a variable named <VAR_NAME> to the state captured by
-#   `snapshot_cache_var`. It correctly handles all cases:
-#   - If the variable was originally cached, its cached value is restored.
-#   - If it was not cached, any cache entry created by the sub-project is removed.
-#   - If it was a normal variable, its value is restored.
-#   - If it did not exist at all, it is unset.
-#
-# Arguments:
-#   _var: The name of the variable to restore.
-#   _cache_type: The expected type (e.g., BOOL, STRING, PATH) if the variable
-#                needs to be re-added to the cache. This is required by the
-#                `set(... CACHE ...)` command.
-macro(restore_cache_var _var _cache_type)
-  # --- Restore the CACHE variable state ---
-  if(_save_${_var}_was_in_cache) # This is safe as it's always TRUE or FALSE
-    # The variable was originally in the cache. Restore it with its saved value.
-    # We use FORCE to ensure we overwrite any changes made by the sub-project.
-    if(DEFINED _save_${_var}_cache_value) # Explicitly check if a value was saved
-      set(${_var} "${_save_${_var}_cache_value}" CACHE ${_cache_type} "" FORCE)
-    else()
-      # This case is unlikely (cached but undefined value), but for robustness,
-      # we restore it as an empty cached variable.
-      set(${_var} "" CACHE ${_cache_type} "" FORCE) # Re-create with empty value
-    endif()
+# Helper to register a package as an imported library (binary)
+macro(pylabhub_register_imported_lib pkg)
+  list(FIND THIRD_PARTY_REGISTERED_IMPORTED_LIBS "${pkg}" _found)
+  if(_found EQUAL -1)
+    list(APPEND THIRD_PARTY_REGISTERED_IMPORTED_LIBS "${pkg}")
+    set(THIRD_PARTY_REGISTERED_IMPORTED_LIBS "${THIRD_PARTY_REGISTERED_IMPORTED_LIBS}" CACHE INTERNAL "")
+  endif()
+endmacro()
+
+# # Fallback static header-only candidates (kept for safety if wrappers are not updated)
+# set(THIRD_PARTY_FALLBACK_HEADER_ONLY
+#   nlohmann_json
+#   msgpackc
+#   fmt
+#   CACHE INTERNAL "Fallback known header-only third-party packages")
+
+
+# ----------------------------
+# Utility: sanitize compiler flags
+# ----------------------------
+function(pylabhub_sanitize_compiler_flags _in_var _out_var)
+  set(_val "")
+  if(DEFINED ${_in_var})
+    set(_val "${${_in_var}}")
+  endif()
+  if(NOT _val OR NOT THIRD_PARTY_STRIP_MARCH_FLAGS)
+    set(${_out_var} "${_val}" PARENT_SCOPE)
+    return()
+  endif()
+
+  string(REGEX REPLACE "-march=[^ ]+" "" _val "${_val}")
+  string(REGEX REPLACE "-mtune=[^ ]+" "" _val "${_val}")
+  string(REGEX REPLACE "\\bnocona\\b" "" _val "${_val}")
+  string(REGEX REPLACE "-Wl,--as-needed" "" _val "${_val}")
+  string(REGEX REPLACE "  +" " " _val "${_val}")
+  string(STRIP "${_val}" _val)
+  set(${_out_var} "${_val}" PARENT_SCOPE)
+endfunction()
+
+# ----------------------------
+# Snapshot / restore helpers
+# - snapshot_cache_var(VAR): capture existence/value (cache & normal)
+# - restore_cache_var(VAR TYPE): restore into CACHE or remove added cache entry
+# ----------------------------
+function(snapshot_cache_var)
+  if(ARGC LESS 1)
+    message(FATAL_ERROR "snapshot_cache_var requires at least 1 argument (variable name)")
+  endif()
+  set(_var "${ARGV0}")
+
+  # Record normal variable existence/value
+  if(DEFINED ${_var})
+    set("SNAPSHOT_${_var}_EXISTS" TRUE)
+    set("SNAPSHOT_${_var}_VALUE" "${${_var}}")
   else()
-    # The variable was NOT originally in the cache.
-    # If the sub-project added it to the cache, we must remove it to prevent leakage.
-    if(DEFINED CACHE{${_var}}) # Strict check
+    set("SNAPSHOT_${_var}_EXISTS" FALSE)
+    set("SNAPSHOT_${_var}_VALUE" "")
+  endif()
+
+  # Record cache presence/value (CMake exposes cached value as normal var)
+  if(DEFINED CACHE{${_var}})
+    set("SNAPSHOT_${_var}_IN_CACHE" TRUE)
+    set("SNAPSHOT_${_var}_CACHE_VALUE" "${${_var}}")
+  else()
+    set("SNAPSHOT_${_var}_IN_CACHE" FALSE)
+    set("SNAPSHOT_${_var}_CACHE_VALUE" "")
+  endif()
+endfunction()
+
+function(restore_cache_var)
+  if(ARGC LESS 1)
+    message(FATAL_ERROR "restore_cache_var requires at least 1 argument (variable name)")
+  endif()
+  set(_var "${ARGV0}")
+  set(_type "STRING")
+  if(ARGC GREATER 1)
+    set(_type "${ARGV1}")
+  endif()
+
+  # Restore cache entry if it existed before
+  if(DEFINED SNAPSHOT_${_var}_IN_CACHE AND "${SNAPSHOT_${_var}_IN_CACHE}" STREQUAL "TRUE")
+    set(_val "${SNAPSHOT_${_var}_CACHE_VALUE}")
+    set(${_var} "${_val}" CACHE ${_type} "restored by restore_cache_var" FORCE)
+  else()
+    if(DEFINED CACHE{${_var}})
       unset(${_var} CACHE)
     endif()
   endif()
 
-  # --- Restore the normal (non-cached) variable state ---
-  if(_save_${_var}_was_defined) # This is safe as it's always TRUE or FALSE
-    # The variable existed as a normal variable. Restore its value.
-    if(DEFINED _save_${_var}_value) # Explicitly check if a value was saved
-      set(${_var} "${_save_${_var}_value}")
-    else()
-      # It existed but was empty. Unset it to be safe.
-      unset(${_var})
-    endif()
+  # Restore normal variable
+  if(DEFINED SNAPSHOT_${_var}_EXISTS AND "${SNAPSHOT_${_var}_EXISTS}" STREQUAL "TRUE")
+    set(_val "${SNAPSHOT_${_var}_VALUE}")
+    set(${_var} "${_val}")
   else()
-    # The variable did not exist as a normal variable. Ensure it is unset now.
     unset(${_var})
   endif()
 
-  # --- Clean up the temporary snapshot variables to keep the CMake scope clean ---
-  unset(_save_${_var}_was_defined)
-  unset(_save_${_var}_value)
-  unset(_save_${_var}_was_in_cache)
-  unset(_save_${_var}_cache_value)
-endmacro()
+  # Clean snapshot records
+  unset(SNAPSHOT_${_var}_EXISTS)
+  unset(SNAPSHOT_${_var}_VALUE)
+  unset(SNAPSHOT_${_var}_IN_CACHE)
+  unset(SNAPSHOT_${_var}_CACHE_VALUE)
+endfunction()
 
-# --- _resolve_alias_to_concrete(TARGET_NAME OUT_VAR) ---
-#
-# Design:
-#   Recursively resolves an `ALIAS` target to its underlying concrete target.
-#   This is useful because third-party projects often provide namespaced
-#   aliases (e.g., `fmt::fmt`) that point to the real target (e.g., `fmt`).
-#   To get the physical file path for staging, we need the name of the real target.
-#
-# Behavior:
-#   - If <TARGET_NAME> is an alias, it follows the `ALIASED_TARGET` property
-#     until it finds a target that is not an alias.
-#   - If <TARGET_NAME> is not an alias, it returns the original name.
-#   - The final, concrete target name is stored in <OUT_VAR>.
-#
-# Usage:
-#   _resolve_alias_to_concrete("fmt::fmt" real_fmt_target)
-#   # real_fmt_target will now contain "fmt"
-#
-function(_resolve_alias_to_concrete target_name out_var)
-  set(resolved_target "${target_name}")
-  set(original_target "${target_name}")
-  while(TARGET "${resolved_target}")
-    get_target_property(aliased_target "${resolved_target}" ALIASED_TARGET)
-    # The `if(aliased_target)` check is the robust, idiomatic way to do this.
-    # If the ALIASED_TARGET property does not exist, get_target_property sets the
-    # variable to a value ending in "-NOTFOUND", which CMake's if() command evaluates as FALSE.
-    if(aliased_target)
-      set(resolved_target "${aliased_target}")
+# ----------------------------
+# Resolve alias targets recursively to find the concrete target
+# _resolve_alias_to_concrete(CANDIDATE OUTVAR)
+# ----------------------------
+function(_resolve_alias_to_concrete)
+  if(ARGC LESS 1)
+    message(FATAL_ERROR "_resolve_alias_to_concrete requires at least 1 argument")
+  endif()
+  set(_candidate "${ARGV0}")
+  set(_out_var "")
+  if(ARGC GREATER 1)
+    set(_out_var "${ARGV1}")
+  endif()
+
+  set(_resolved "${_candidate}")
+  set(_orig "${_candidate}")
+  while(TARGET "${_resolved}")
+    get_target_property(_aliased "${_resolved}" ALIASED_TARGET)
+    if(_aliased)
+      set(_resolved "${_aliased}")
     else()
-      break() # Found the concrete target, exit the loop.
+      break()
     endif()
   endwhile()
-  if(NOT "${original_target}" STREQUAL "${resolved_target}")
-    message(STATUS "[pylabhub-third-party] Resolved alias '${original_target}' to concrete target '${resolved_target}'.")
-  endif()
-  set(${out_var} "${resolved_target}" PARENT_SCOPE)
-endfunction()
 
-# --- _expose_wrapper(WRAPPER_NAME NAMESPACE_ALIAS) ---
-#
-# Design:
-#   Creates the standard two-layer abstraction for a third-party library:
-#   1. A non-namespaced `INTERFACE` wrapper target (e.g., `pylabhub_fmt`).
-#   2. A namespaced `ALIAS` target for consumers (e.g., `pylabhub::third_party::fmt`).
-#   This provides a stable, consistent naming convention for all dependencies,
-#   decoupling consumers from the implementation details of the third-party build.
-#
-# Behavior:
-#   - Creates the `INTERFACE` target `pylabhub_<pkg>` if it doesn't exist.
-#   - Creates the `ALIAS` target `pylabhub::third_party::<pkg>` pointing to the
-#     wrapper if it doesn't exist.
-#
-# Usage:
-#   _expose_wrapper(pylabhub_fmt pylabhub::third_party::fmt)
-#
-function(_expose_wrapper wrapper_name namespace_alias)
-  if(NOT TARGET ${wrapper_name})
-    add_library(${wrapper_name} INTERFACE)
-    message(STATUS "[pylabhub-third-party] Created INTERFACE wrapper target: ${wrapper_name}")
-  endif()
-  if(NOT TARGET ${namespace_alias})
-    add_library(${namespace_alias} ALIAS ${wrapper_name})
-    message(STATUS "[pylabhub-third-party] Created ALIAS target: ${namespace_alias} -> ${wrapper_name}")
+  if(_out_var)
+    set(${_out_var} "${_resolved}" PARENT_SCOPE)
+  else()
+    set(_RESOLVED_ALIAS "${_resolved}" PARENT_SCOPE)
   endif()
 endfunction()
 
-# --- Final Policy Summary ---
-# Print a summary of the configured policies for easy debugging.
-message(STATUS "=========================================================")
-message(STATUS "[pylabhub-third-party] Global Policies:")
-message(STATUS "  - Create Install Target:${PYLABHUB_CREATE_INSTALL_TARGET}")
-message(STATUS "  - Stage 3rd-Party:      ${THIRD_PARTY_INSTALL}")
-message(STATUS "  - Disable tests:        ${THIRD_PARTY_DISABLE_TESTS}")
-message(STATUS "  - Allow upstream PCH:   ${THIRD_PARTY_ALLOW_UPSTREAM_PCH}")
-message(STATUS "[pylabhub-third-party] Per-Library Policies:")
-message(STATUS "  - fmt variant:          ${THIRD_PARTY_FMT_FORCE_VARIANT}")
-message(STATUS "  - libzmq variant:       ${THIRD_PARTY_ZMQ_FORCE_VARIANT}")
-message(STATUS "  - libzmq with OpenPGM:  ${PYLABHUB_ZMQ_WITH_OPENPGM}")
-message(STATUS "  - libzmq with NORM:     ${PYLABHUB_ZMQ_WITH_NORM}")
-message(STATUS "  - libzmq with VMCI:     ${PYLABHUB_ZMQ_WITH_VMCI}")
-message(STATUS "=========================================================")
-message(STATUS "")
+# ----------------------------
+# Expose wrapper: create INTERFACE wrapper and namespaced alias
+# _expose_wrapper(WRAPPER_NAME NAMESPACE_ALIAS)
+# ----------------------------
+function(_expose_wrapper)
+  if(ARGC LESS 2)
+    message(FATAL_ERROR "_expose_wrapper requires 2 args: wrapper_name namespace_alias")
+  endif()
+  set(_wrapper "${ARGV0}")
+  set(_alias "${ARGV1}")
 
-# ----------------------------------------------------------------------------
-# End of Third-Party Policy
-# ----------------------------------------------------------------------------
+  if(NOT TARGET ${_wrapper})
+    add_library(${_wrapper} INTERFACE)
+    # best-effort include dir: prefer PREREQ_INSTALL_DIR if available
+    if(DEFINED PREREQ_INSTALL_DIR)
+      target_include_directories(${_wrapper} INTERFACE "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>" "$<INSTALL_INTERFACE:include>")
+    endif()
+  endif()
+
+  if(NOT TARGET ${_alias})
+    add_library(${_alias} ALIAS ${_wrapper})
+  endif()
+endfunction()
+
+# ----------------------------
+# Primary macro: pylabhub_add_external_prerequisite
+# - Registers ExternalProject_<pkg> and creates pylabhub::third_party::<pkg> imported target
+# ----------------------------
+macro(pylabhub_add_external_prerequisite)
+  cmake_parse_arguments(_pylab
+    ""
+    "NAME;SOURCE_DIR;BINARY_DIR;INSTALL_DIR"
+    "DEPENDS;CMAKE_ARGS"
+    ${ARGN}
+  )
+
+  if(NOT _pylab_NAME)
+    message(FATAL_ERROR "pylabhub_add_external_prerequisite requires NAME")
+  endif()
+  if(NOT _pylab_SOURCE_DIR OR NOT _pylab_BINARY_DIR OR NOT _pylab_INSTALL_DIR)
+    message(FATAL_ERROR "pylabhub_add_external_prerequisite requires SOURCE_DIR, BINARY_DIR and INSTALL_DIR")
+  endif()
+
+  set(_pkg "${_pylab_NAME}")
+  set(_src "${_pylab_SOURCE_DIR}")
+  set(_bin "${_pylab_BINARY_DIR}")
+  set(_inst "${_pylab_INSTALL_DIR}")
+
+  pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
+  pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
+
+  # Build CMAKE_ARGS list
+  set(_cmake_args "")
+  if(_pylab_CMAKE_ARGS)
+    foreach(_a IN LISTS _pylab_CMAKE_ARGS)
+      list(APPEND _cmake_args "${_a}")
+    endforeach()
+  endif()
+
+  list(FIND _cmake_args "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>" _has_prefix)
+  if(_has_prefix EQUAL -1)
+    list(APPEND _cmake_args "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>")
+  endif()
+
+  list(APPEND _cmake_args "-DCMAKE_C_FLAGS=${_clean_c_flags}")
+  list(APPEND _cmake_args "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}")
+
+  # prepare detect script header
+  set(_detect_script "${CMAKE_CURRENT_BINARY_DIR}/detect_${_pkg}.cmake")
+  file(WRITE "${_detect_script}" "set(PACKAGE_NAME \"${_pkg}\")\n")
+  file(APPEND "${_detect_script}" "set(PREREQ_INSTALL_DIR \"${_inst}\")\n")
+  file(APPEND "${_detect_script}" "set(PACKAGE_BINARY_DIR \"${_bin}\")\n")
+  if(DEFINED LIB_PATTERNS)
+    file(APPEND "${_detect_script}" "set(LIB_PATTERNS \"${LIB_PATTERNS}\")\n")
+  else()
+    file(APPEND "${_detect_script}" "set(LIB_PATTERNS \"\")\n")
+  endif()
+  if(DEFINED HEADER_SOURCE_PATTERNS)
+    file(APPEND "${_detect_script}" "set(HEADER_SOURCE_PATTERNS \"${HEADER_SOURCE_PATTERNS}\")\n")
+  else()
+    file(APPEND "${_detect_script}" "set(HEADER_SOURCE_PATTERNS \"\")\n")
+  endif()
+  file(APPEND "${_detect_script}" "set(STABLE_BASENAME \"${_pkg}-stable\")\n\n")
+  file(APPEND "${_detect_script}" "include(\"${CMAKE_CURRENT_LIST_DIR}/detect_external_project.cmake.in\")\n")
+
+  # ensure directories exist
+  file(MAKE_DIRECTORY "${_inst}")
+  file(MAKE_DIRECTORY "${_inst}/lib")
+  file(MAKE_DIRECTORY "${_inst}/include")
+  file(MAKE_DIRECTORY "${_bin}")
+
+  set(_stamp "${_inst}/${_pkg}-stamp.txt")
+
+  # prepare ExternalProject args
+  set(_ext_args
+    SOURCE_DIR "${_src}"
+    BINARY_DIR "${_bin}"
+    DOWNLOAD_COMMAND ""
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}"
+    BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE}
+    COMMAND ${CMAKE_COMMAND} -P "${_detect_script}"
+    BUILD_BYPRODUCTS "${_stamp}"
+  )
+
+  if(_cmake_args)
+    list(APPEND _ext_args CMAKE_ARGS)
+    foreach(_a IN LISTS _cmake_args)
+      list(APPEND _ext_args "${_a}")
+    endforeach()
+  endif()
+
+  if(_pylab_DEPENDS)
+    foreach(_d IN LISTS _pylab_DEPENDS)
+      string(STRIP "${_d}" _d_trim)
+      if(_d_trim)
+        list(APPEND _ext_args DEPENDS "${_d_trim}_external")
+      endif()
+    endforeach()
+  endif()
+
+  ExternalProject_Add(${_pkg}_external ${_ext_args})
+
+  # create canonical imported target for consumers
+  set(_stable_lib "${_inst}/lib/lib${_pkg}-stable")
+  add_library(pylabhub::third_party::${_pkg} UNKNOWN IMPORTED GLOBAL)
+  set_target_properties(pylabhub::third_party::${_pkg} PROPERTIES
+    IMPORTED_LOCATION "${_stable_lib}"
+    INTERFACE_INCLUDE_DIRECTORIES "${_inst}/include"
+  )
+  add_dependencies(pylabhub::third_party::${_pkg} ${_pkg}_external)
+endmacro()
+
+# ----------------------------
+# Legacy compatibility utilities
+# ----------------------------
+# Create a legacy INTERFACE target for header-only packages
+function(pylabhub_create_legacy_header_target legacy_name)
+  if(NOT TARGET ${legacy_name})
+    add_library(${legacy_name} INTERFACE)
+    # Use generator expressions so the INTERFACE include dir is valid both in-source and in-build.
+    if(DEFINED PREREQ_INSTALL_DIR)
+      target_include_directories(${legacy_name} INTERFACE
+        "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>"
+        "$<INSTALL_INTERFACE:include>"
+      )
+    else()
+      target_include_directories(${legacy_name} INTERFACE
+        "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/prereqs/include>"
+        "$<INSTALL_INTERFACE:include>"
+      )
+    endif()
+  endif()
+endfunction()
+
+
+# Create a legacy UNKNOWN IMPORTED target for libs
+function(pylabhub_create_legacy_imported_lib legacy_name pkg_name)
+  if(NOT TARGET ${legacy_name})
+    add_library(${legacy_name} UNKNOWN IMPORTED GLOBAL)
+    if(DEFINED PREREQ_INSTALL_DIR)
+      set(_lib_stub "${PREREQ_INSTALL_DIR}/lib/lib${pkg_name}-stable")
+      set(_inc_stub "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>$<SEMICOLON>$<INSTALL_INTERFACE:include>")
+    else()
+      set(_lib_stub "${CMAKE_BINARY_DIR}/prereqs/lib/lib${pkg_name}-stable")
+      set(_inc_stub "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/prereqs/include>$<SEMICOLON>$<INSTALL_INTERFACE:include>")
+    endif()
+    set_target_properties(${legacy_name} PROPERTIES
+      IMPORTED_LOCATION "${_lib_stub}"
+      # INTERFACE_INCLUDE_DIRECTORIES accepts generator expressions; split with SEMICOLON
+      INTERFACE_INCLUDE_DIRECTORIES "${_inc_stub}"
+    )
+  endif()
+endfunction()
+
+
+function(pylabhub_ensure_legacy_alias pkg legacy_name)
+  # First consult explicit registrations (highest priority)
+  list(FIND THIRD_PARTY_REGISTERED_HEADER_ONLY "${pkg}" _is_hdr_reg)
+  list(FIND THIRD_PARTY_REGISTERED_IMPORTED_LIBS "${pkg}" _is_imp_reg)
+
+  if(_is_hdr_reg GREATER -1)
+    # registered header-only
+    pylabhub_create_legacy_header_target(${legacy_name})
+  elseif(_is_imp_reg GREATER -1)
+    # registered imported library
+    pylabhub_create_legacy_imported_lib(${legacy_name} ${pkg})
+  else()
+    # fallback: consult the static fallback list
+    list(FIND THIRD_PARTY_FALLBACK_HEADER_ONLY "${pkg}" _is_hdr_fallback)
+    if(NOT _is_hdr_fallback EQUAL -1)
+      pylabhub_create_legacy_header_target(${legacy_name})
+    else()
+      pylabhub_create_legacy_imported_lib(${legacy_name} ${pkg})
+    endif()
+  endif()
+
+  # If canonical target exists, prefer creating an ALIAS to it (keeps single source of truth)
+  if(TARGET pylabhub::third_party::${pkg} AND NOT TARGET ${legacy_name})
+    add_library(${legacy_name} ALIAS pylabhub::third_party::${pkg})
+  endif()
+endfunction()
+
+
+# Default legacy aliases used by wrappers; extend if necessary
+# pylabhub_ensure_legacy_alias("nlohmann_json" "pylabhub_nlohmann_json")
+# pylabhub_ensure_legacy_alias("msgpackc" "pylabhub_msgpackc")
+# pylabhub_ensure_legacy_alias("fmt" "pylabhub_fmt")
+# Add more mappings below when needed:
+# pylabhub_ensure_legacy_alias("libsodium" "pylabhub_libsodium")
+# pylabhub_ensure_legacy_alias("libzmq" "pylabhub_libzmq")
+# pylabhub_ensure_legacy_alias("luajit" "pylabhub_luajit")
+
+# ----------------------------
+# Print brief policy summary (only if configured)
+# ----------------------------
+message(STATUS "---------------------------------------------------------")
+message(STATUS "[pylabhub-third-party] Third-party policy summary:")
+if(DEFINED PYLABHUB_CREATE_INSTALL_TARGET)
+  message(STATUS "  - Create Install Target: ${PYLABHUB_CREATE_INSTALL_TARGET}")
+endif()
+message(STATUS "  - Stage 3rd-Party Install Dir: ${PREREQ_INSTALL_DIR}")
+message(STATUS "  - Disable tests: ${THIRD_PARTY_DISABLE_TESTS}")
+message(STATUS "  - Allow upstream PCH: ${THIRD_PARTY_ALLOW_UPSTREAM_PCH}")
+message(STATUS "  - fmt variant: ${THIRD_PARTY_FMT_FORCE_VARIANT}")
+message(STATUS "---------------------------------------------------------")

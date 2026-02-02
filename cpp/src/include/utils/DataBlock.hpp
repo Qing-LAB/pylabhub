@@ -46,10 +46,10 @@ struct DataBlockConfig
 struct SharedMemoryHeader
 {
     // Safety & Identification
-    uint64_t magic_number;    // Magic constant to validate memory
-    uint64_t shared_secret;   // Key to prevent unauthorized access
-    uint32_t version;         // Version of the header layout
-    uint32_t header_size;     // sizeof(SharedMemoryHeader)
+    uint64_t magic_number;  // Magic constant to validate memory
+    uint64_t shared_secret; // Key to prevent unauthorized access
+    uint32_t version;       // Version of the header layout
+    uint32_t header_size;   // sizeof(SharedMemoryHeader)
 
     // Consumer Management
     std::atomic<uint32_t> active_consumer_count;
@@ -64,7 +64,7 @@ struct SharedMemoryHeader
 #if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows doesn't store mutex handles in shared memory. Named objects are used.
 #else
-    char mutex_storage[64];   // Storage for pthread_mutex_t
+    char mutex_storage[64]; // Storage for pthread_mutex_t
 #endif
 };
 

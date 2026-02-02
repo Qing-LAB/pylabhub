@@ -198,7 +198,8 @@ static int dispatch_utils_workers(int argc, char **argv)
         fmt::print("Dispatching to messagehub worker scenario: '{}'\n", scenario);
         if (scenario == "lifecycle_initialized_follows_state")
         {
-            return pylabhub::tests::worker::messagehub::lifecycle_initialized_follows_state(argc, argv);
+            return pylabhub::tests::worker::messagehub::lifecycle_initialized_follows_state(argc,
+                                                                                            argv);
         }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;

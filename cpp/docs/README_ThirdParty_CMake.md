@@ -158,6 +158,137 @@ pylabhub_register_headers_for_staging(
 
 ---
 
+## Example — `ExternalProject_Add` for non-CMake libraries (robust pattern)
+
+This is the most robust pattern, used for libraries like `libzmq`, `libsodium`, and `luajit` that are built as prerequisites. It uses `ExternalProject_Add` with a post-build detection script to create a stable, predictable library target that is resilient to changes in platform or library version.
+
+**Scenario**: Add `libexternal`, a non-CMake library, to the project.
+
+1.  **Add Submodule**: Add `libexternal` source to `third_party/`.
+
+2.  **Create Prerequisite Build Script**: Create `third_party/cmake/libexternal.cmake`. This script will contain the complete logic for building and discovering the library.
+
+    ```cmake
+    # third_party/cmake/libexternal.cmake
+    include(ExternalProject)
+    include(ThirdPartyPolicyAndHelper)
+
+    # Define source and temporary install paths
+    set(LIBEXTERNAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libexternal")
+    set(LIBEXTERNAL_INSTALL_DIR "${PREREQ_INSTALL_DIR}")
+
+    # --- Define a stable path for the final library artifact ---
+    set(LIBEXTERNAL_STABLE_LIB_PATH "${LIBEXTERNAL_INSTALL_DIR}/lib/libexternal-stable")
+    set(LIBEXTERNAL_STAMP_FILE "${LIBEXTERNAL_INSTALL_DIR}/libexternal-stamp.txt")
+
+    # --- Define platform-specific build commands ---
+    # This project does not support out-of-source builds, so we must copy the source
+    # to a temporary build directory to keep our own source tree pristine.
+    set(LIBEXTERNAL_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party/libexternal-build")
+    set(LIBEXTERNAL_CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${LIBEXTERNAL_SOURCE_DIR}/"
+      "${LIBEXTERNAL_BINARY_DIR}"
+    )
+
+    if(MSVC)
+      set(LIBEXTERNAL_BUILD_COMMAND      "msbuild.exe libexternal.sln /p:Configuration=Release")
+      set(LIBEXTERNAL_BUILD_WORKING_DIR  "${LIBEXTERNAL_BINARY_DIR}/msvc")
+      set(LIBEXTERNAL_INSTALL_COMMAND    "") # Let detection script copy artifacts
+    else()
+      set(LIBEXTERNAL_BUILD_COMMAND      "${CMAKE_MAKE_PROGRAM}")
+      set(LIBEXTERNAL_BUILD_WORKING_DIR  "${LIBEXTERNAL_BINARY_DIR}")
+      set(LIBEXTERNAL_INSTALL_COMMAND    "${CMAKE_MAKE_PROGRAM}" install PREFIX="${LIBEXTERNAL_INSTALL_DIR}")
+    endif()
+
+    # --- Create the post-build detection script ---
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/detect_libexternal.cmake" [[
+      message(STATUS "detect_libexternal.cmake: Discovering artifacts...")
+      set(INSTALL_DIR "${LIBEXTERNAL_INSTALL_DIR}")
+      set(BINARY_DIR "${LIBEXTERNAL_BINARY_DIR}") # Use the binary dir for searching
+      set(STABLE_LIB_PATH_NO_EXT "${LIBEXTERNAL_STABLE_LIB_PATH}")
+      set(STAMP_FILE "${LIBEXTERNAL_STAMP_FILE}")
+
+      # Search for the compiled library in likely output locations
+      file(GLOB LIBS
+        "${INSTALL_DIR}/lib/libexternal*.a"
+        "${BINARY_DIR}/msvc/Release/libexternal*.lib" # Example for MSVC
+      )
+      if(NOT LIBS)
+        message(FATAL_ERROR "detect_libexternal.cmake: Could not find library artifact.")
+      endif()
+
+      # Copy the found library to the stable path
+      list(GET LIBS 0 REAL_LIB_PATH)
+      get_filename_component(REAL_LIB_EXT "${REAL_LIB_PATH}" EXT)
+      set(STABLE_LIB_FULL_PATH "${STABLE_LIB_PATH_NO_EXT}${REAL_LIB_EXT}")
+      file(COPY "${REAL_LIB_PATH}" DESTINATION "${INSTALL_DIR}/lib/")
+      get_filename_component(REAL_LIB_NAME "${REAL_LIB_PATH}" NAME)
+      file(RENAME "${INSTALL_DIR}/lib/${REAL_LIB_NAME}" "${STABLE_LIB_FULL_PATH}")
+
+      # Copy headers
+      file(COPY_DIRECTORY "${BINARY_DIR}/include/" DESTINATION "${INSTALL_DIR}/include/libexternal/")
+      
+      # Create stamp file to signal completion
+      file(WRITE "${STAMP_FILE}" "OK")
+    ]])
+
+    # --- Define the ExternalProject_Add target ---
+    ExternalProject_Add(libexternal_external
+      SOURCE_DIR        "${LIBEXTERNAL_SOURCE_DIR}"
+      BINARY_DIR        "${LIBEXTERNAL_BINARY_DIR}"
+      INSTALL_DIR       "${LIBEXTERNAL_INSTALL_DIR}"
+      
+      CONFIGURE_COMMAND ${LIBEXTERNAL_CONFIGURE_COMMAND}
+      BUILD_COMMAND     ${LIBEXTERNAL_BUILD_COMMAND}
+      WORKING_DIRECTORY ${LIBEXTERNAL_BUILD_WORKING_DIR}
+      INSTALL_COMMAND   ${LIBEXTERNAL_INSTALL_COMMAND}
+      
+      # This command runs *after* install to perform detection and create the stable artifact
+      COMMAND           ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/detect_libexternal.cmake"
+      
+      # The stamp file is the final, predictable output of this entire process
+      BUILD_BYPRODUCTS  "${LIBEXTERNAL_STAMP_FILE}"
+    )
+    ```
+
+3.  **Integrate and Stage in `third_party/CMakeLists.txt`**: Now, create the clean `IMPORTED` target that the rest of the project will use.
+
+    ```cmake
+    # third_party/CMakeLists.txt
+
+    # ... other libraries ...
+
+    # 1. Include the script that defines the libexternal_external target.
+    include(libexternal)
+    
+    # 2. Add the external target to the master prerequisite build.
+    add_dependencies(build_prerequisites libexternal_external)
+
+    # --- 3. Define the clean IMPORTED target for consumers ---
+    # This block is simple and platform-agnostic.
+    set(LIBEXTERNAL_STABLE_LIB_PATH "${PREREQ_INSTALL_DIR}/lib/libexternal-stable")
+    set(LIBEXTERNAL_INCLUDE_DIR "${PREREQ_INSTALL_DIR}/include/libexternal")
+
+    add_library(pylabhub::third_party::libexternal UNKNOWN IMPORTED GLOBAL)
+    set_target_properties(pylabhub::third_party::libexternal PROPERTIES
+      IMPORTED_LOCATION "${LIBEXTERNAL_STABLE_LIB_PATH}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LIBEXTERNAL_INCLUDE_DIR}"
+    )
+    add_dependencies(pylabhub::third_party::libexternal build_prerequisites)
+
+    # --- 4. Register the artifacts for final staging ---
+    if(THIRD_PARTY_INSTALL)
+      pylabhub_register_library_for_staging(TARGET pylabhub::third_party::libexternal)
+      pylabhub_register_headers_for_staging(
+        DIRECTORIES "${LIBEXTERNAL_INCLUDE_DIR}"
+        SUBDIR "" # Copy contents of include/libexternal/ to stage/include/
+        EXTERNAL_PROJECT_DEPENDENCY libexternal_external
+      )
+    endif()
+    ```
+
+---
+
 ## Error handling & diagnostics
 
 - All helper scripts must print informative `message(STATUS "...")` lines that make it clear:

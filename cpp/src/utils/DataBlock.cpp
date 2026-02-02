@@ -16,12 +16,12 @@ namespace pylabhub::hub
 // ============================================================================
 namespace
 {
-    static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
-    static constexpr uint32_t DATABLOCK_VERSION = 1;
+static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
+static constexpr uint32_t DATABLOCK_VERSION = 1;
 } // namespace
 
-    static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
-    static constexpr uint32_t DATABLOCK_VERSION = 1;
+static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
+static constexpr uint32_t DATABLOCK_VERSION = 1;
 } // namespace
 
 // ============================================================================
@@ -39,12 +39,12 @@ class DataBlock
 {
   public:
     // For producer: create and initialize shared memory
-    DataBlock(const std::string &name, const DataBlockConfig &config)
-        : m_name(name)
+    DataBlock(const std::string &name, const DataBlockConfig &config) : m_name(name)
     {
         // Calculate total size needed for shared memory
         // Header + Flexible Data Zone + Structured Data Buffer
-        size_t total_shm_size = sizeof(SharedMemoryHeader) + config.flexible_zone_size + config.structured_buffer_size;
+        size_t total_shm_size =
+            sizeof(SharedMemoryHeader) + config.flexible_zone_size + config.structured_buffer_size;
 
         try
         {
@@ -75,7 +75,8 @@ class DataBlock
             pthread_mutexattr_init(&mattr);
             pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
             // Initialize the mutex in the shared memory
-            pthread_mutex_init(reinterpret_cast<pthread_mutex_t*>(m_header->mutex_storage), &mattr);
+            pthread_mutex_init(reinterpret_cast<pthread_mutex_t *>(m_header->mutex_storage),
+                               &mattr);
             pthread_mutexattr_destroy(&mattr);
 #endif
             // Get pointers to the flexible data zone and structured buffer
@@ -93,8 +94,7 @@ class DataBlock
     }
 
     // For consumer: open existing shared memory
-    DataBlock(const std::string &name)
-        : m_name(name)
+    DataBlock(const std::string &name) : m_name(name)
     {
         try
         {
@@ -111,10 +111,10 @@ class DataBlock
             m_header = res.first;
 
             // Get pointers to the flexible data zone and structured buffer
-            // For consumer, we need to read buffer sizes from the header or config obtained via message hub
-            // For now, we assume the producer config would be known via message hub discovery.
-            // Placeholder for getting actual sizes from a discovery mechanism.
-            // For a consumer, these will be set after successful discovery of producer's config.
+            // For consumer, we need to read buffer sizes from the header or config obtained via
+            // message hub For now, we assume the producer config would be known via message hub
+            // discovery. Placeholder for getting actual sizes from a discovery mechanism. For a
+            // consumer, these will be set after successful discovery of producer's config.
             m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
             m_structured_data_buffer = nullptr; // Will be set after discovery
 
@@ -130,7 +130,8 @@ class DataBlock
 
     ~DataBlock()
     {
-        if (m_segment->get_segment_manager()->get_destroy_on_deletion()) {
+        if (m_segment->get_segment_manager()->get_destroy_on_deletion())
+        {
             // Only remove if this instance was the creator (producer)
             boost::interprocess::shared_memory_object::remove(m_name.c_str());
             LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
@@ -142,7 +143,6 @@ class DataBlock
     char *flexible_data_zone() const { return m_flexible_data_zone; }
     char *structured_data_buffer() const { return m_structured_data_buffer; }
     boost::interprocess::managed_shared_memory *segment() const { return m_segment.get(); }
-
 
   private:
     std::string m_name;
@@ -156,14 +156,15 @@ class DataBlockProducerImpl : public IDataBlockProducer
 {
   public:
     DataBlockProducerImpl(const std::string &name, const DataBlockConfig &config)
-        try : m_dataBlock(std::make_unique<DataBlock>(name, config))
+    try : m_dataBlock(std::make_unique<DataBlock>(name, config))
     {
         m_name = name;
         LOGGER_INFO("DataBlockProducerImpl: Initialized for '{}'.", m_name);
     }
     catch (const boost::interprocess::interprocess_exception &ex)
     {
-        LOGGER_ERROR("DataBlockProducerImpl: Failed to create DataBlock for '{}': {}", name, ex.what());
+        LOGGER_ERROR("DataBlockProducerImpl: Failed to create DataBlock for '{}': {}", name,
+                     ex.what());
         throw; // Re-throw to indicate construction failure
     }
 
@@ -189,7 +190,7 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
 {
   public:
     DataBlockConsumerImpl(const std::string &name, uint64_t shared_secret)
-        try : m_dataBlock(std::make_unique<DataBlock>(name))
+    try : m_dataBlock(std::make_unique<DataBlock>(name))
     {
         m_name = name;
 
@@ -211,7 +212,8 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
     }
     catch (const boost::interprocess::interprocess_exception &ex)
     {
-        LOGGER_ERROR("DataBlockConsumerImpl: Failed to open DataBlock for '{}': {}", name, ex.what());
+        LOGGER_ERROR("DataBlockConsumerImpl: Failed to open DataBlock for '{}': {}", name,
+                     ex.what());
         throw; // Re-throw to indicate construction failure
     }
 
@@ -220,12 +222,14 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
         if (m_dataBlock && m_dataBlock->header())
         {
             m_dataBlock->header()->active_consumer_count.fetch_sub(1, std::memory_order_acq_rel);
-            LOGGER_INFO("DataBlockConsumerImpl: Shutting down for '{}'. Active consumers: {}.", m_name,
-                        m_dataBlock->header()->active_consumer_count.load());
+            LOGGER_INFO("DataBlockConsumerImpl: Shutting down for '{}'. Active consumers: {}.",
+                        m_name, m_dataBlock->header()->active_consumer_count.load());
         }
         else
         {
-            LOGGER_WARN("DataBlockConsumerImpl: Shutting down for '{}' but DataBlock or header was null.", m_name);
+            LOGGER_WARN(
+                "DataBlockConsumerImpl: Shutting down for '{}' but DataBlock or header was null.",
+                m_name);
         }
     }
 
@@ -241,11 +245,12 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
 // Factory Functions
 // ============================================================================
 
-std::unique_ptr<IDataBlockProducer>
-create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const DataBlockConfig &config)
+std::unique_ptr<IDataBlockProducer> create_datablock_producer(MessageHub &hub,
+                                                              const std::string &name,
+                                                              DataBlockPolicy policy,
+                                                              const DataBlockConfig &config)
 {
-    (void)hub; // MessageHub will be used for registration in future steps
+    (void)hub;    // MessageHub will be used for registration in future steps
     (void)policy; // Policy will influence DataBlock's internal management
 
     try
@@ -254,12 +259,14 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
     }
     catch (const boost::interprocess::interprocess_exception &ex)
     {
-        LOGGER_ERROR("create_datablock_producer: Failed to create producer for '{}': {}", name, ex.what());
+        LOGGER_ERROR("create_datablock_producer: Failed to create producer for '{}': {}", name,
+                     ex.what());
         return nullptr;
     }
     catch (const std::bad_alloc &ex)
     {
-        LOGGER_ERROR("create_datablock_producer: Memory allocation failed for '{}': {}", name, ex.what());
+        LOGGER_ERROR("create_datablock_producer: Memory allocation failed for '{}': {}", name,
+                     ex.what());
         return nullptr;
     }
 }
@@ -275,12 +282,14 @@ find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t share
     }
     catch (const boost::interprocess::interprocess_exception &ex)
     {
-        LOGGER_ERROR("find_datablock_consumer: Failed to create consumer for '{}': {}", name, ex.what());
+        LOGGER_ERROR("find_datablock_consumer: Failed to create consumer for '{}': {}", name,
+                     ex.what());
         return nullptr;
     }
     catch (const std::bad_alloc &ex)
     {
-        LOGGER_ERROR("find_datablock_consumer: Memory allocation failed for '{}': {}", name, ex.what());
+        LOGGER_ERROR("find_datablock_consumer: Memory allocation failed for '{}': {}", name,
+                     ex.what());
         return nullptr;
     }
 }

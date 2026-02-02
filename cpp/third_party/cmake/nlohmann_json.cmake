@@ -1,4 +1,17 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
+
+# This package is header-only: register it so the helper creates an INTERFACE target.
+pylabhub_register_header_only(nlohmann_json)
+
+# Expose legacy alias and canonical names (this uses the helper)
+# legacy name used by older wrappers
+pylabhub_ensure_legacy_alias("nlohmann_json" "pylabhub_nlohmann_json")
+
+# Optionally create a canonical namespaced alias now if the macro hasn't already:
+# (if you create canonical pylabhub::third_party::nlohmann_json elsewhere, the helper will add alias)
+# _expose_wrapper(pylabhub_nlohmann_json pylabhub::third_party::nlohmann_json)
+
+
 # --------------------------------------------
 # third_party/cmake/nlohmann_json.cmake
 # Setup nlohmann/json

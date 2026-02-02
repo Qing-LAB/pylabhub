@@ -1,6 +1,15 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 include(StageHelpers)
 
+
+# This package is header-only: register it so the helper creates an INTERFACE target.
+pylabhub_register_header_only(msgpack)
+
+# Expose legacy alias and canonical names (this uses the helper)
+# legacy name used by older wrappers
+pylabhub_ensure_legacy_alias("msgpack" "pylabhub_msgpack")
+
+
 message(STATUS "[pylabhub-third-party] Configuring msgpack-c...")
 
 # This project uses the vendored msgpack-c submodule.
