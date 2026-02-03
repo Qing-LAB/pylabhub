@@ -1,12 +1,17 @@
-
 #include "plh_service.hpp"
 #include "utils/DataBlock.hpp"
 #include "utils/MessageHub.hpp"
+#include <stdexcept>
 
-#include <boost/interprocess/managed_shared_memory.hpp>
-#include <boost/interprocess/sync/interprocess_mutex.hpp>
-#include <boost/interprocess/sync/scoped_lock.hpp>
-#include <boost/interprocess/creation_parameters.hpp>
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace pylabhub::hub
 {
@@ -20,10 +25,6 @@ static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
 static constexpr uint32_t DATABLOCK_VERSION = 1;
 } // namespace
 
-static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
-static constexpr uint32_t DATABLOCK_VERSION = 1;
-} // namespace
-
 // ============================================================================
 // Internal DataBlock Helper Class
 // ============================================================================
@@ -33,121 +34,176 @@ static constexpr uint32_t DATABLOCK_VERSION = 1;
  * @brief Internal helper class to manage the shared memory segment for a DataBlock.
  *
  * This class encapsulates the creation, mapping, and destruction of the underlying
- * shared memory, providing access to the SharedMemoryHeader and data regions.
+ * shared memory, providing access to the pylabhub::hub::SharedMemoryHeader and data regions.
  */
 class DataBlock
 {
   public:
     // For producer: create and initialize shared memory
-    DataBlock(const std::string &name, const DataBlockConfig &config) : m_name(name)
+    DataBlock(const std::string &name, const pylabhub::hub::DataBlockConfig &config)
+        : m_name(name), m_is_creator(true)
     {
         // Calculate total size needed for shared memory
         // Header + Flexible Data Zone + Structured Data Buffer
-        size_t total_shm_size =
-            sizeof(SharedMemoryHeader) + config.flexible_zone_size + config.structured_buffer_size;
+        m_size = sizeof(pylabhub::hub::SharedMemoryHeader) + config.flexible_zone_size +
+                 config.structured_buffer_size;
 
-        try
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        m_shm_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                                          static_cast<DWORD>(m_size), m_name.c_str());
+        if (m_shm_handle == NULL)
         {
-            // Remove any previous shared memory with the same name
-            boost::interprocess::shared_memory_object::remove(m_name.c_str());
+            throw std::runtime_error("Failed to create file mapping.");
+        }
 
-            // Create managed shared memory
-            m_segment = std::make_unique<boost::interprocess::managed_shared_memory>(
-                boost::interprocess::create_only, m_name.c_str(), total_shm_size);
+        m_mapped_address = MapViewOfFile(m_shm_handle, FILE_MAP_ALL_ACCESS, 0, 0, m_size);
+        if (m_mapped_address == NULL)
+        {
+            CloseHandle(m_shm_handle);
+            throw std::runtime_error("Failed to map view of file.");
+        }
+#else
+        // Remove any previous shared memory with the same name
+        shm_unlink(m_name.c_str());
 
-            // Allocate and construct the SharedMemoryHeader
-            m_header = m_segment->construct<SharedMemoryHeader>("SharedMemoryHeader")();
+        m_shm_fd = shm_open(m_name.c_str(), O_CREAT | O_RDWR, 0666);
+        if (m_shm_fd == -1)
+        {
+            throw std::runtime_error("shm_open failed.");
+        }
 
-            // Initialize header fields
-            m_header->magic_number = DATABLOCK_MAGIC_NUMBER;
-            m_header->shared_secret = config.shared_secret;
-            m_header->version = DATABLOCK_VERSION;
-            m_header->header_size = sizeof(SharedMemoryHeader);
-            m_header->active_consumer_count.store(0, std::memory_order_release);
-            m_header->write_index.store(0, std::memory_order_release);
-            m_header->commit_index.store(0, std::memory_order_release);
-            m_header->read_index.store(0, std::memory_order_release);
-            m_header->current_slot_id.store(0, std::memory_order_release);
+        if (ftruncate(m_shm_fd, m_size) == -1)
+        {
+            close(m_shm_fd);
+            shm_unlink(m_name.c_str());
+            throw std::runtime_error("ftruncate failed.");
+        }
+
+        m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
+        if (m_mapped_address == MAP_FAILED)
+        {
+            close(m_shm_fd);
+            shm_unlink(m_name.c_str());
+            throw std::runtime_error("mmap failed.");
+        }
+#endif
+
+        // construct the pylabhub::hub::SharedMemoryHeader
+        m_header = new (m_mapped_address) pylabhub::hub::SharedMemoryHeader();
+
+        // Initialize header fields
+        m_header->magic_number = DATABLOCK_MAGIC_NUMBER;
+        m_header->shared_secret = config.shared_secret;
+        m_header->version = DATABLOCK_VERSION;
+        m_header->header_size = sizeof(pylabhub::hub::SharedMemoryHeader);
+        m_header->active_consumer_count.store(0, std::memory_order_release);
+        m_header->write_index.store(0, std::memory_order_release);
+        m_header->commit_index.store(0, std::memory_order_release);
+        m_header->read_index.store(0, std::memory_order_release);
+        m_header->current_slot_id.store(0, std::memory_order_release);
 
 #if !defined(PYLABHUB_PLATFORM_WIN64)
-            // Initialize pthread mutex attributes for process sharing
-            pthread_mutexattr_t mattr;
-            pthread_mutexattr_init(&mattr);
-            pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
-            // Initialize the mutex in the shared memory
-            pthread_mutex_init(reinterpret_cast<pthread_mutex_t *>(m_header->mutex_storage),
-                               &mattr);
-            pthread_mutexattr_destroy(&mattr);
+        // Initialize pthread mutex attributes for process sharing
+        pthread_mutexattr_t mattr;
+        pthread_mutexattr_init(&mattr);
+        pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
+        // Initialize the mutex in the shared memory
+        pthread_mutex_init(reinterpret_cast<pthread_mutex_t *>(m_header->mutex_storage), &mattr);
+        pthread_mutexattr_destroy(&mattr);
 #endif
-            // Get pointers to the flexible data zone and structured buffer
-            m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
-            m_structured_data_buffer = m_flexible_data_zone + config.flexible_zone_size;
+        // Get pointers to the flexible data zone and structured buffer
+        m_flexible_data_zone =
+            reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
+        m_structured_data_buffer = m_flexible_data_zone + config.flexible_zone_size;
 
-            LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, total_shm_size);
-        }
-        catch (const boost::interprocess::interprocess_exception &ex)
-        {
-            LOGGER_ERROR("DataBlock: Failed to create shared memory '{}': {}", m_name, ex.what());
-            // Re-throw to indicate failure in constructor
-            throw;
-        }
+        LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, m_size);
     }
 
     // For consumer: open existing shared memory
-    DataBlock(const std::string &name) : m_name(name)
+    DataBlock(const std::string &name) : m_name(name), m_is_creator(false)
     {
-        try
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        m_shm_handle = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, m_name.c_str());
+        if (m_shm_handle == NULL)
         {
-            m_segment = std::make_unique<boost::interprocess::managed_shared_memory>(
-                boost::interprocess::open_only, m_name.c_str());
-
-            // Find the header
-            auto res = m_segment->find<SharedMemoryHeader>("SharedMemoryHeader");
-            if (!res.first)
-            {
-                LOGGER_ERROR("DataBlock: Shared memory '{}' exists but header not found.", m_name);
-                throw boost::interprocess::interprocess_exception("Header not found");
-            }
-            m_header = res.first;
-
-            // Get pointers to the flexible data zone and structured buffer
-            // For consumer, we need to read buffer sizes from the header or config obtained via
-            // message hub For now, we assume the producer config would be known via message hub
-            // discovery. Placeholder for getting actual sizes from a discovery mechanism. For a
-            // consumer, these will be set after successful discovery of producer's config.
-            m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
-            m_structured_data_buffer = nullptr; // Will be set after discovery
-
-            LOGGER_INFO("DataBlock '{}' opened.", m_name);
+            throw std::runtime_error("Failed to open file mapping.");
         }
-        catch (const boost::interprocess::interprocess_exception &ex)
+
+        m_mapped_address = MapViewOfFile(m_shm_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+        if (m_mapped_address == NULL)
         {
-            LOGGER_ERROR("DataBlock: Failed to open shared memory '{}': {}", m_name, ex.what());
-            // Re-throw to indicate failure in constructor
-            throw;
+            CloseHandle(m_shm_handle);
+            throw std::runtime_error("Failed to map view of file for consumer.");
         }
+#else
+        m_shm_fd = shm_open(m_name.c_str(), O_RDWR, 0666);
+        if (m_shm_fd == -1)
+        {
+            throw std::runtime_error("shm_open failed for consumer.");
+        }
+
+        struct stat shm_stat;
+        if (fstat(m_shm_fd, &shm_stat) == -1)
+        {
+            close(m_shm_fd);
+            throw std::runtime_error("fstat failed.");
+        }
+        m_size = shm_stat.st_size;
+
+        m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
+        if (m_mapped_address == MAP_FAILED)
+        {
+            close(m_shm_fd);
+            throw std::runtime_error("mmap failed for consumer.");
+        }
+#endif
+
+        m_header = reinterpret_cast<pylabhub::hub::SharedMemoryHeader *>(m_mapped_address);
+
+        // Get pointers to the flexible data zone and structured buffer
+        m_flexible_data_zone =
+            reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
+        m_structured_data_buffer = nullptr; // Will be set after discovery
+
+        LOGGER_INFO("DataBlock '{}' opened.", m_name);
     }
 
     ~DataBlock()
     {
-        if (m_segment->get_segment_manager()->get_destroy_on_deletion())
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        UnmapViewOfFile(m_mapped_address);
+        CloseHandle(m_shm_handle);
+#else
+        munmap(m_mapped_address, m_size);
+        close(m_shm_fd);
+        if (m_is_creator)
         {
-            // Only remove if this instance was the creator (producer)
-            boost::interprocess::shared_memory_object::remove(m_name.c_str());
+            shm_unlink(m_name.c_str());
             LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
         }
+#endif
     }
 
     // Accessors
-    SharedMemoryHeader *header() const { return m_header; }
+    pylabhub::hub::SharedMemoryHeader *header() const { return m_header; }
     char *flexible_data_zone() const { return m_flexible_data_zone; }
     char *structured_data_buffer() const { return m_structured_data_buffer; }
-    boost::interprocess::managed_shared_memory *segment() const { return m_segment.get(); }
+    void *segment() const { return m_mapped_address; }
 
   private:
     std::string m_name;
-    std::unique_ptr<boost::interprocess::managed_shared_memory> m_segment;
-    SharedMemoryHeader *m_header{nullptr};
+    bool m_is_creator;
+    size_t m_size = 0;
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    HANDLE m_shm_handle = NULL;
+    LPVOID m_mapped_address = NULL;
+#else
+    int m_shm_fd = -1;
+    void *m_mapped_address = nullptr;
+#endif
+
+    pylabhub::hub::SharedMemoryHeader *m_header{nullptr};
     char *m_flexible_data_zone{nullptr};
     char *m_structured_data_buffer{nullptr};
 };
@@ -155,13 +211,13 @@ class DataBlock
 class DataBlockProducerImpl : public IDataBlockProducer
 {
   public:
-    DataBlockProducerImpl(const std::string &name, const DataBlockConfig &config)
+    DataBlockProducerImpl(const std::string &name, const pylabhub::hub::DataBlockConfig &config)
     try : m_dataBlock(std::make_unique<DataBlock>(name, config))
     {
         m_name = name;
         LOGGER_INFO("DataBlockProducerImpl: Initialized for '{}'.", m_name);
     }
-    catch (const boost::interprocess::interprocess_exception &ex)
+    catch (const std::runtime_error &ex)
     {
         LOGGER_ERROR("DataBlockProducerImpl: Failed to create DataBlock for '{}': {}", name,
                      ex.what());
@@ -198,19 +254,19 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
         if (m_dataBlock->header()->magic_number != DATABLOCK_MAGIC_NUMBER)
         {
             LOGGER_ERROR("DataBlockConsumerImpl: Invalid magic number for '{}'.", name);
-            throw boost::interprocess::interprocess_exception("Invalid magic number");
+            throw std::runtime_error("Invalid magic number");
         }
         if (m_dataBlock->header()->shared_secret != shared_secret)
         {
             LOGGER_ERROR("DataBlockConsumerImpl: Invalid shared secret for '{}'.", name);
-            throw boost::interprocess::interprocess_exception("Invalid shared secret");
+            throw std::runtime_error("Invalid shared secret");
         }
 
         m_dataBlock->header()->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
         LOGGER_INFO("DataBlockConsumerImpl: Initialized for '{}'. Active consumers: {}.", m_name,
                     m_dataBlock->header()->active_consumer_count.load());
     }
-    catch (const boost::interprocess::interprocess_exception &ex)
+    catch (const std::runtime_error &ex)
     {
         LOGGER_ERROR("DataBlockConsumerImpl: Failed to open DataBlock for '{}': {}", name,
                      ex.what());
@@ -245,10 +301,9 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
 // Factory Functions
 // ============================================================================
 
-std::unique_ptr<IDataBlockProducer> create_datablock_producer(MessageHub &hub,
-                                                              const std::string &name,
-                                                              DataBlockPolicy policy,
-                                                              const DataBlockConfig &config)
+std::unique_ptr<IDataBlockProducer>
+create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+                          const pylabhub::hub::DataBlockConfig &config)
 {
     (void)hub;    // MessageHub will be used for registration in future steps
     (void)policy; // Policy will influence DataBlock's internal management
@@ -257,7 +312,7 @@ std::unique_ptr<IDataBlockProducer> create_datablock_producer(MessageHub &hub,
     {
         return std::make_unique<DataBlockProducerImpl>(name, config);
     }
-    catch (const boost::interprocess::interprocess_exception &ex)
+    catch (const std::runtime_error &ex)
     {
         LOGGER_ERROR("create_datablock_producer: Failed to create producer for '{}': {}", name,
                      ex.what());
@@ -280,7 +335,7 @@ find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t share
     {
         return std::make_unique<DataBlockConsumerImpl>(name, shared_secret);
     }
-    catch (const boost::interprocess::interprocess_exception &ex)
+    catch (const std::runtime_error &ex)
     {
         LOGGER_ERROR("find_datablock_consumer: Failed to create consumer for '{}': {}", name,
                      ex.what());

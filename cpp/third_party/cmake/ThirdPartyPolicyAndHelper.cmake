@@ -69,14 +69,6 @@ macro(pylabhub_register_imported_lib pkg)
   endif()
 endmacro()
 
-# # Fallback static header-only candidates (kept for safety if wrappers are not updated)
-# set(THIRD_PARTY_FALLBACK_HEADER_ONLY
-#   nlohmann_json
-#   msgpackc
-#   fmt
-#   CACHE INTERNAL "Fallback known header-only third-party packages")
-
-
 # ----------------------------
 # Utility: sanitize compiler flags
 # ----------------------------
@@ -290,23 +282,54 @@ macro(pylabhub_add_external_prerequisite)
   set(_stamp "${_inst}/${_pkg}-stamp.txt")
 
   # prepare ExternalProject args
+
+  #
+  # Build an explicit configure command with actual install path substituted.
+  # This avoids ExternalProject token substitution ambiguity (so -DCMAKE_INSTALL_PREFIX
+  # is always an absolute path instead of a placeholder that may be ignored).
+  #
+  set(_cmake_args_for_cmd "")
+  if(_cmake_args)
+    foreach(_ca IN LISTS _cmake_args)
+      string(REPLACE "<INSTALL_DIR>" "${_inst}" _ca_subst "${_ca}")
+      list(APPEND _cmake_args_for_cmd "${_ca_subst}")
+    endforeach()
+  endif()
+
+  # Ensure CMAKE_INSTALL_PREFIX is present and absolute.
+  list(FIND _cmake_args_for_cmd "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}" _found_prefix2)
+  if(_found_prefix2 EQUAL -1)
+    list(APPEND _cmake_args_for_cmd "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}")
+  endif()
+
+  # Append sanitized flags
+  list(APPEND _cmake_args_for_cmd "-DCMAKE_C_FLAGS=${_clean_c_flags}")
+  list(APPEND _cmake_args_for_cmd "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}")
+
+  # Build the configure command list
+  set(_configure_cmd_list ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}")
+  foreach(_arg IN LISTS _cmake_args_for_cmd)
+    list(APPEND _configure_cmd_list "${_arg}")
+  endforeach()
+
+  # ExternalProject args: pass the explicit configure command tokens
   set(_ext_args
     SOURCE_DIR "${_src}"
     BINARY_DIR "${_bin}"
     DOWNLOAD_COMMAND ""
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}"
-    BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE}
-    INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE}
-    COMMAND ${CMAKE_COMMAND} -P "${_detect_script}"
-    BUILD_BYPRODUCTS "${_stamp}"
   )
+  list(APPEND _ext_args CONFIGURE_COMMAND)
+  list(APPEND _ext_args ${_configure_cmd_list})
+  list(APPEND _ext_args BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE})
+  list(APPEND _ext_args INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE})
+  list(APPEND _ext_args COMMAND ${CMAKE_COMMAND} -P "${_detect_script}")
+  list(APPEND _ext_args BUILD_BYPRODUCTS "${_stamp}")
+  
 
-  if(_cmake_args)
-    list(APPEND _ext_args CMAKE_ARGS)
-    foreach(_a IN LISTS _cmake_args)
-      list(APPEND _ext_args "${_a}")
-    endforeach()
-  endif()
+
+# (NOTE: we intentionally do not append CMAKE_ARGS separately; args are baked
+# into the explicit CONFIGURE_COMMAND above to guarantee prefix substitution.)
+  
 
   if(_pylab_DEPENDS)
     foreach(_d IN LISTS _pylab_DEPENDS)
@@ -320,11 +343,22 @@ macro(pylabhub_add_external_prerequisite)
   ExternalProject_Add(${_pkg}_external ${_ext_args})
 
   # create canonical imported target for consumers
-  set(_stable_lib "${_inst}/lib/lib${_pkg}-stable")
+  if(${_pkg} MATCHES "^lib")
+    set(_stable_lib_base "${_inst}/lib/${_pkg}-stable")
+  else()
+    set(_stable_lib_base "${_inst}/lib/lib${_pkg}-stable")
+  endif()
+
+  if(MSVC)
+    set(_stable_lib "${_stable_lib_base}.lib")
+  else()
+    set(_stable_lib "${_stable_lib_base}.a")
+  endif()
+
   add_library(pylabhub::third_party::${_pkg} UNKNOWN IMPORTED GLOBAL)
   set_target_properties(pylabhub::third_party::${_pkg} PROPERTIES
     IMPORTED_LOCATION "${_stable_lib}"
-    INTERFACE_INCLUDE_DIRECTORIES "${_inst}/include"
+    INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${_inst}/include>;$<INSTALL_INTERFACE:include>"
   )
   add_dependencies(pylabhub::third_party::${_pkg} ${_pkg}_external)
 endmacro()
