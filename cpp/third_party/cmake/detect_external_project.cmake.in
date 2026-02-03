@@ -1,28 +1,26 @@
 # detect_external_project.cmake.in
 # expects the following variables to be set:
-#   PACKAGE_NAME         - package short name (e.g., luajit, libsodium, libzmq)
-#   PREREQ_INSTALL_DIR   - install dir used by the external project's install
-#   PACKAGE_BINARY_DIR   - binary dir used for the build
-#   LIB_PATTERNS         - semicolon-separated list of glob patterns to search for libs
-#   HEADER_SOURCE_PATTERNS - semicolon-separated list of header relative paths to copy
-#   STABLE_BASENAME      - basename to write stable lib (e.g., "luajit-stable")
-#
+#   PACKAGE_NAME
+#   PREREQ_INSTALL_DIR
+#   PACKAGE_BINARY_DIR
+#   LIB_PATTERNS
+#   HEADER_SOURCE_PATTERNS
+#   STABLE_BASENAME
+
 message(STATUS "detect: PACKAGE_NAME=${PACKAGE_NAME}")
 message(STATUS "detect: PREREQ_INSTALL_DIR=${PREREQ_INSTALL_DIR}")
 message(STATUS "detect: PACKAGE_BINARY_DIR=${PACKAGE_BINARY_DIR}")
 
 set(_found_lib "")
-if(LIB_PATTERNS)
-  string(REPLACE ";" "|" _lib_regex "${LIB_PATTERNS}")
-  # try search in install lib directory first
-  file(GLOB_RECURSE _candidates RELATIVE "${PREREQ_INSTALL_DIR}"
-    "${PREREQ_INSTALL_DIR}/lib/*"
-  )
-  foreach(_c ${_candidates})
-    foreach(_pat ${LIB_PATTERNS})
-      if("${_c}" MATCHES "${_pat}")
-        set(_found_lib "${PREREQ_INSTALL_DIR}/lib/${_c}")
-        break()
+
+# --- 1) try patterns under install/lib ---
+if(DEFINED LIB_PATTERNS AND LIB_PATTERNS)
+  foreach(_pat IN LISTS LIB_PATTERNS)
+    # Use glob to expand candidate matches under install/lib
+    file(GLOB _matches RELATIVE "${PREREQ_INSTALL_DIR}/lib" "${PREREQ_INSTALL_DIR}/lib/${_pat}" )
+    foreach(_m IN LISTS _matches)
+      if(NOT _found_lib)
+        set(_found_lib "${PREREQ_INSTALL_DIR}/lib/${_m}")
       endif()
     endforeach()
     if(_found_lib)
@@ -31,7 +29,7 @@ if(LIB_PATTERNS)
   endforeach()
 endif()
 
-# fallback: scan binary dir for common library suffixes
+# --- 2) fallback: scan binary dir for common libs (first match wins) ---
 if(NOT _found_lib)
   file(GLOB _bin_libs
     "${PACKAGE_BINARY_DIR}/*/*.a"
@@ -48,8 +46,9 @@ if(NOT _found_lib)
   endif()
 endif()
 
+# --- 3) relaxed search under install/lib by name ---
 if(NOT _found_lib)
-  message(WARNING "detect: unable to find library artifact for ${PACKAGE_NAME}. Attempting relaxed search under install/lib")
+  message(WARNING "detect: unable to find library artifact for ${PACKAGE_NAME} using patterns. Attempting relaxed search under install/lib")
   file(GLOB _relaxed "${PREREQ_INSTALL_DIR}/lib/*${PACKAGE_NAME}*.*")
   if(_relaxed)
     list(GET _relaxed 0 _found_lib)
@@ -64,38 +63,108 @@ message(STATUS "detect: discovered artifact: ${_found_lib}")
 
 # determine extension and stable path
 get_filename_component(_found_name "${_found_lib}" NAME)
-get_filename_component(_found_ext "${_found_lib}" EXT)
+# Old: get_filename_component(_found_ext "${_found_lib}" EXT)
+# New: Robustly determine extension
+set(_found_ext "")
+string(REGEX MATCH "\\.a$" _match_a "${_found_lib}")
+string(REGEX MATCH "\\.so$" _match_so "${_found_lib}")
+string(REGEX MATCH "\\.dylib$" _match_dylib "${_found_lib}")
+string(REGEX MATCH "\\.lib$" _match_lib "${_found_lib}")
+
+if(_match_a)
+  set(_found_ext ".a")
+elseif(_match_so)
+  set(_found_ext ".so")
+elseif(_match_dylib)
+  set(_found_ext ".dylib")
+elseif(_match_lib)
+  set(_found_ext ".lib")
+else()
+  # Fallback to CMake's default behavior if none match, or error
+  get_filename_component(_found_ext "${_found_lib}" EXT)
+  message(WARNING "detect: Unknown library extension for ${_found_lib}. Falling back to default get_filename_component EXT behavior.")
+endif()
 set(_stable_lib_path "${PREREQ_INSTALL_DIR}/lib/${STABLE_BASENAME}${_found_ext}")
 
 # copy/rename artifact to stable path (overwrite if exists)
+# Use COPY then RENAME as before
 file(COPY "${_found_lib}" DESTINATION "${PREREQ_INSTALL_DIR}/lib")
-# rename from the copied filename
-file(RENAME "${PREREQ_INSTALL_DIR}/lib/${_found_name}" "${_stable_lib_path}")
+file(RENAME "${PREREQ_INSTALL_DIR}/lib/${_found_name}" "${_stable_lib_path}" )
 
 message(STATUS "detect: wrote stable artifact to ${_stable_lib_path}")
 
-# handle headers: if header patterns provided, copy them into include/<pkg> subdir
+# -------------------------------------------------------------------------
+# Headers: copy patterns into include/<PACKAGE_NAME>, but avoid copying a
+# source that already lives inside that destination (prevents self-copying).
+# If the header source is a directory, copy its children (not the directory
+# itself) to avoid adding an extra nesting layer each run.
+# -------------------------------------------------------------------------
 if(DEFINED HEADER_SOURCE_PATTERNS AND HEADER_SOURCE_PATTERNS)
   set(_hdr_dir "${PREREQ_INSTALL_DIR}/include/${PACKAGE_NAME}")
   file(MAKE_DIRECTORY "${_hdr_dir}")
-  foreach(_hp IN LISTS HEADER_SOURCE_PATTERNS)
-    # first try in source include paths under PACKAGE_BINARY_DIR
-    set(_try1 "${PACKAGE_BINARY_DIR}/${_hp}")
-    if(EXISTS "${_try1}")
-      file(COPY "${_try1}" DESTINATION "${_hdr_dir}")
-      continue()
+
+  # Compute canonical absolute path of destination for robust checks
+  get_filename_component(_hdr_dir_abs "${_hdr_dir}" ABSOLUTE)
+
+  foreach(_hp_pattern IN LISTS HEADER_SOURCE_PATTERNS)
+    set(_found_header_source FALSE)
+
+    # Try candidate 1: glob for pattern under PACKAGE_BINARY_DIR
+    file(GLOB _header_sources_bin "${PACKAGE_BINARY_DIR}/${_hp_pattern}")
+    if(_header_sources_bin)
+      foreach(_source_path IN LISTS _header_sources_bin)
+        get_filename_component(_source_path_abs "${_source_path}" ABSOLUTE)
+        # Avoid copying into itself
+        if(NOT _source_path_abs STREQUAL "${_hdr_dir_abs}" AND NOT _source_path_abs MATCHES "^${_hdr_dir_abs}/")
+          if(IS_DIRECTORY "${_source_path}")
+            file(GLOB _children RELATIVE "${_source_path}" "${_source_path}/*")
+            foreach(_child IN LISTS _children)
+              file(COPY "${_source_path}/${_child}" DESTINATION "${_hdr_dir}")
+            endforeach()
+          else()
+            file(COPY "${_source_path}" DESTINATION "${_hdr_dir}")
+          endif()
+          message(STATUS "detect: copied headers from ${_source_path} (from bin) -> ${_hdr_dir}")
+          set(_found_header_source TRUE)
+        endif()
+      endforeach()
+      if(_found_header_source)
+        continue() # Move to next _hp_pattern if any were found
+      endif()
     endif()
-    # next try PREREQ_INSTALL_DIR
-    set(_try2 "${PREREQ_INSTALL_DIR}/${_hp}")
-    if(EXISTS "${_try2}")
-      file(COPY "${_try2}" DESTINATION "${_hdr_dir}")
-      continue()
+
+    # Try candidate 2: glob for pattern under PREREQ_INSTALL_DIR
+    file(GLOB _header_sources_install "${PREREQ_INSTALL_DIR}/${_hp_pattern}")
+    if(_header_sources_install)
+      foreach(_source_path IN LISTS _header_sources_install)
+        get_filename_component(_source_path_abs "${_source_path}" ABSOLUTE)
+        # Avoid copying into itself
+        if(NOT _source_path_abs STREQUAL "${_hdr_dir_abs}" AND NOT _source_path_abs MATCHES "^${_hdr_dir_abs}/")
+          if(IS_DIRECTORY "${_source_path}")
+            file(GLOB _children2 RELATIVE "${_source_path}" "${_source_path}/*")
+            foreach(_child IN LISTS _children2)
+              file(COPY "${_source_path}/${_child}" DESTINATION "${_hdr_dir}")
+            endforeach()
+          else()
+            file(COPY "${_source_path}" DESTINATION "${_hdr_dir}")
+          endif()
+          message(STATUS "detect: copied headers from ${_source_path} (from install) -> ${_hdr_dir}")
+          set(_found_header_source TRUE)
+        endif()
+      endforeach()
+      if(_found_header_source)
+        continue() # Move to next _hp_pattern if any were found
+      endif()
     endif()
-    # if not found, warn but continue
-    message(WARNING "detect: header pattern ${_hp} not found for ${PACKAGE_NAME}")
+
+    if(NOT _found_header_source)
+      message(WARNING "detect: header pattern '${_hp_pattern}' not found for ${PACKAGE_NAME}; skipping.")
+    endif()
   endforeach()
+else()
+  message(STATUS "detect: no HEADER_SOURCE_PATTERNS provided for ${PACKAGE_NAME}; skipping header copy.")
 endif()
 
 # write stamp file
-file(WRITE "${PREREQ_INSTALL_DIR}/${PACKAGE_NAME}-stamp.txt" "OK")
+file(WRITE "${PREREQ_INSTALL_DIR}/${PACKAGE_NAME}-stamp.txt" "OK\n")
 message(STATUS "detect: wrote stamp ${PREREQ_INSTALL_DIR}/${PACKAGE_NAME}-stamp.txt")
