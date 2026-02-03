@@ -129,6 +129,7 @@ target_link_libraries(pylabhub-utils
     pylabhub::third_party::nlohmann_json
     pylabhub::third_party::cppzmq
     pylabhub::third_party::libsodium
+    pylabhub::third_party::luajit
     Threads::Threads
 )
 

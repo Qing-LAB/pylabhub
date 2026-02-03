@@ -235,9 +235,9 @@ endif()
 set(_libsodium_stable_lib "${_install_dir}/lib/libsodium-stable")
 # Also set platform-specific fallback filenames for imported location to help tools
 if(MSVC)
-  set(_imported_location "<INSTALL_DIR>/lib/libsodium.lib")
+  set(_imported_location "${_install_dir}/lib/libsodium.lib")
 else()
-  set(_imported_location "<INSTALL_DIR>/lib/libsodium.a")
+  set(_imported_location "${_install_dir}/lib/libsodium.a")
 endif()
 
 # Create the imported target (IMPORTED location uses the expected stable path).
