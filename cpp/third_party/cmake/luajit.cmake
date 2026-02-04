@@ -108,11 +108,13 @@ if(MSVC)
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/src/.git"
 
   # copy the .relver into place (use your prepared temp file)
-  COMMAND ${CMAKE_COMMAND} -E echo "Copying ${_relver_temp_file} into ${_build_dir}/src/.relver"
+  COMMAND ${CMAKE_COMMAND} -E echo "Copying ${_relver_temp_file} into ${_build_dir}/src/.relver and ${_build_dir}/.relver"
   COMMAND ${CMAKE_COMMAND} -E copy
     "${_relver_temp_file}"
     "${_build_dir}/src/.relver"
-
+  COMMAND ${CMAKE_COMMAND} -E copy
+    "${_relver_temp_file}"
+    "${_build_dir}/.relver"
   # run msvcbuild.bat in the build/src directory (single cmake -E invocation)
   COMMAND ${CMAKE_COMMAND} -E echo "Running msvcbuild.bat in ${_build_dir}/src"
   COMMAND ${CMAKE_COMMAND} -E chdir "${_build_dir}/src" cmd.exe /c msvcbuild.bat static
