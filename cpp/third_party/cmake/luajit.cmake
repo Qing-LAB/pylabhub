@@ -27,10 +27,8 @@ pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
 pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
 # Choose make program
-if(DEFINED CMAKE_MAKE_PROGRAM AND CMAKE_MAKE_PROGRAM)
-  set(_make_prog "${CMAKE_MAKE_PROGRAM}")
-else()
-  find_program(_make_prog make REQUIRED)
+if(NOT CMAKE_MAKE_PROGRAM)
+  find_program(CMAKE_MAKE_PROGRAM NAMES gmake make REQUIRED)
 endif()
 
 # Parallel build args
@@ -84,6 +82,9 @@ set(_relver_temp_file "${CMAKE_CURRENT_BINARY_DIR}/luajit_relver.txt")
 file(WRITE "${_relver_temp_file}" "${_luajit_rolling_version}\n")
 message(VERBOSE "[pylabhub-third-party][luajit] Generated rolling version file at: ${_relver_temp_file}")
 
+# Common install script path (use the same script on all platforms)
+set(_install_script "${CMAKE_CURRENT_LIST_DIR}/luajit_install.cmake")
+
 # Conditional commands for MSVC (Windows)
 if(MSVC)
   # CONFIGURE_COMMAND: Copy source.
@@ -117,13 +118,12 @@ if(MSVC)
   COMMAND ${CMAKE_COMMAND} -E chdir "${_build_dir}/src" cmd.exe /c msvcbuild.bat static
 )
 
-  # INSTALL_COMMAND: Copy the built artifacts (static lib, dll, headers) to the install directory.
-  # Place both .lib and .dll into lib/ directory, as the staging helpers will move the DLL to bin/ later.
+  # Call the install script at build time, passing build and install directories.
   set(_install_command
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua51.lib" "${_install_dir}/lib/"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua51.dll" "${_install_dir}/lib/" # Place DLL in lib, staging will move it.
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua.h" "${_install_dir}/include/"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/luajit.h" "${_install_dir}/include/"
+    COMMAND ${CMAKE_COMMAND}
+      -D "_build_dir=${_build_dir}"
+      -D "_install_dir=${_install_dir}"
+      -P "${_install_script}"
   )
 
   # Update LIB_PATTERNS and BUILD_BYPRODUCTS for MSVC.
@@ -131,6 +131,7 @@ if(MSVC)
   set(_luajit_lib_patterns "lua*.lib;lua*.dll")
   # Expect the detection script to create luajit-stable.lib from lua*.lib
   set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.lib")
+  set(_luajit_header_patterns "luajit.h;luajit_rolling.h;lua.h;lauxlib.h;lualib.h")
 
 else() # POSIX (Linux, macOS)
   # At BUILD time, the CONFIGURE_COMMAND will copy the source code.
@@ -140,37 +141,38 @@ else() # POSIX (Linux, macOS)
 
   # The BUILD_COMMAND copies the version file, then runs make with a disabled
   # GIT_RELVER rule to prevent it from overwriting our file.
+  # BUILD_COMMAND: clean .git, copy relver, then run make inside ${_build_dir}/src
   set(_build_command
-    # report action
     COMMAND ${CMAKE_COMMAND} -E echo "Cleaning .git from ${_build_dir} and ${_build_dir}/src (if present)"
-    # try to remove .git if it is a file (gitfile for worktrees) - remove won't fail if it doesn't exist with -f
     COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/.git"
     COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/src/.git"
-    # try to remove .git if it is a directory
     COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/.git"
     COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/src/.git"
 
-    # copy the .relver into place (use your prepared temp file)
-    COMMAND ${CMAKE_COMMAND} -E echo "Copying ${_relver_temp_file} into ${_build_dir}/src/luajit_relver.txt"
-    ${CMAKE_COMMAND} -E copy
-      "${_relver_temp_file}"
-      "${_build_dir}/src/luajit_relver.txt"
-    COMMAND ${CMAKE_COMMAND} -E env
-      "CC=${CMAKE_C_COMPILER}"
-      "CFLAGS=${_clean_c_flags}"
-      ${_make_prog} -C "${_build_dir}/src" "GIT_RELVER=:" ${_par_args}
+    COMMAND ${CMAKE_COMMAND} -E echo "Copying relver into ${_build_dir}/src (.relver and luajit_relver.txt)"
+    COMMAND ${CMAKE_COMMAND} -E copy "${_relver_temp_file}" "${_build_dir}/src/.relver"
+    COMMAND ${CMAKE_COMMAND} -E copy "${_relver_temp_file}" "${_build_dir}/src/luajit_relver.txt"
+
+    # COMMAND ${CMAKE_COMMAND} -E echo "Debug: C compiler = ${CMAKE_C_COMPILER}"
+    # COMMAND ${CMAKE_COMMAND} -E echo "Debug: CFLAGS = ${_clean_c_flags}"
+    # COMMAND ${CMAKE_COMMAND} -E echo "Debug: Make program = ${CMAKE_MAKE_PROGRAM}"
+
+    COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${_clean_c_flags}" 
+      -- ${CMAKE_MAKE_PROGRAM} -C "${_build_dir}/src" GIT_RELVER=: ${_par_args}
   )
 
+  # Call the install script at build time, passing build and install directories.
   set(_install_command
-    ${CMAKE_COMMAND} -E env
-      "CC=${CMAKE_C_COMPILER}"
-      "CFLAGS=${_clean_c_flags}"
-      ${_make_prog} -C "${_build_dir}" install "GIT_RELVER=:" PREFIX=${_install_dir}
+    COMMAND ${CMAKE_COMMAND}
+      -D "_build_dir=${_build_dir}"
+      -D "_install_dir=${_install_dir}"
+      -P "${_install_script}"
   )
 
   # Existing LIB_PATTERNS and BUILD_BYPRODUCTS for POSIX
   set(_luajit_lib_patterns "libluajit*.a;luajit*.a;libluajit*.so;luajit*.so;libluajit*.dylib;luajit*.dylib")
   set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.a")
+  set(_luajit_header_patterns "luajit.h;luajit_rolling.h;lua.h;lauxlib.h;lualib.h")
 
 endif()
 
@@ -186,12 +188,15 @@ pylabhub_add_external_prerequisite(
   BUILD_COMMAND     ${_build_command}
   INSTALL_COMMAND   ${_install_command}
 
-  # Pass patterns for the post-build detection script
-  LIB_PATTERNS      "${_luajit_lib_patterns}"
-  HEADER_SOURCE_PATTERNS "include/luajit-*"
+  # # Pass patterns for the post-build detection script
+  # LIB_PATTERNS      "${_luajit_lib_patterns}"
+  # HEADER_SOURCE_PATTERNS "${_luajit_header_patterns}"
 
   # The detection script creates the stable lib, which is our byproduct
   BUILD_BYPRODUCTS  "${_luajit_build_byproduct}"
+
+  # EXTRA_COPY_DIRECTIVES 
+  #   "src/jit" "share/luajit/jit"
 )
 
 message(STATUS "[pylabhub-third-party] luajit configuration complete.")

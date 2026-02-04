@@ -165,6 +165,94 @@ else()
   message(STATUS "detect: no HEADER_SOURCE_PATTERNS provided for ${PACKAGE_NAME}; skipping header copy.")
 endif()
 
+
+# -------------------------------------------------------------------------
+# EXTRA_COPY_DIRECTIVES handling
+# EXTRA_COPY_DIRECTIVES is expected to be a flat list of pairs:
+#   <source> <dest-relative-to-install> ...
+# Source paths are interpreted relative to PACKAGE_BINARY_DIR unless absolute.
+# If a source is a directory, copy its children; if a glob, expand matches.
+# -------------------------------------------------------------------------
+if(DEFINED EXTRA_COPY_DIRECTIVES AND EXTRA_COPY_DIRECTIVES)
+  # create function to perform a single copy directive
+  function(_perform_copy_directive _src_spec _dest_rel)
+    # resolve source(s) relative to PACKAGE_BINARY_DIR if not absolute
+    if(NOT IS_ABSOLUTE "${_src_spec}")
+      set(_candidate_pattern "${PACKAGE_BINARY_DIR}/${_src_spec}")
+    else()
+      set(_candidate_pattern "${_src_spec}")
+    endif()
+
+    # expand globs (if any) otherwise treat literal
+    file(GLOB _matches RELATIVE "${PACKAGE_BINARY_DIR}" "${_candidate_pattern}" "${_candidate_pattern}")
+    if(NOT _matches)
+      # if no glob match, check literal existence
+      if(EXISTS "${_candidate_pattern}")
+        set(_abs_matches "${_candidate_pattern}")
+      else()
+        set(_abs_matches "")
+      endif()
+    else()
+      # convert to absolute paths
+      set(_abs_matches "")
+      foreach(_m IN LISTS _matches)
+        # if match is relative to PACKAGE_BINARY_DIR, get absolute, else keep as-is
+        if(NOT IS_ABSOLUTE "${_m}")
+          list(APPEND _abs_matches "${PACKAGE_BINARY_DIR}/${_m}")
+        else()
+          list(APPEND _abs_matches "${_m}")
+        endif()
+      endforeach()
+    endif()
+
+    if(NOT _abs_matches)
+      message(STATUS "detect: EXTRA_COPY: no matches for '${_src_spec}' (skipping)")
+      return()
+    endif()
+
+    # compute absolute dest dir
+    file(TO_CMAKE_PATH "${PREREQ_INSTALL_DIR}/${_dest_rel}" _dest_dir_abs)
+    file(MAKE_DIRECTORY "${_dest_dir_abs}")
+
+    foreach(_s IN LISTS _abs_matches)
+      if(IS_DIRECTORY "${_s}")
+        # copy children of directory into dest (avoid double-nesting)
+        file(GLOB _children RELATIVE "${_s}" "${_s}/*")
+        foreach(_c IN LISTS _children)
+          file(COPY "${_s}/${_c}" DESTINATION "${_dest_dir_abs}")
+          message(STATUS "detect: EXTRA_COPY dir-child: ${_s}/${_c} -> ${_dest_dir_abs}")
+        endforeach()
+      else()
+        file(COPY "${_s}" DESTINATION "${_dest_dir_abs}")
+        message(STATUS "detect: EXTRA_COPY file: ${_s} -> ${_dest_dir_abs}")
+      endif()
+    endforeach()
+  endfunction()
+
+  # iterate over the flat list in pairs
+  list(LENGTH EXTRA_COPY_DIRECTIVES _len)
+  math(EXPR _pairs_count "${_len} / 2")
+  if(_pairs_count LESS 1)
+    message(WARNING "detect: EXTRA_COPY_DIRECTIVES provided but not as pairs; ignoring.")
+  else()
+    foreach(_idx RANGE 0 ${_pairs_count} -1)
+      math(EXPR _src_index "${_idx} * 2")
+      math(EXPR _dst_index "${_src_index} + 1")
+      list(GET EXTRA_COPY_DIRECTIVES ${_src_index} _src_spec)
+      list(GET EXTRA_COPY_DIRECTIVES ${_dst_index} _dest_rel)
+      # trim whitespace
+      string(STRIP "${_src_spec}" _src_spec)
+      string(STRIP "${_dest_rel}" _dest_rel)
+      if(_src_spec AND _dest_rel)
+        _perform_copy_directive("${_src_spec}" "${_dest_rel}")
+      else()
+        message(WARNING "detect: invalid EXTRA_COPY_DIRECTIVES pair at index ${_idx}; skipping")
+      endif()
+    endforeach()
+  endif()
+endif()
+
+
 # -------------------------------------------------------------------------
 # Generate a basic CMake package config file so that other CMake projects
 # (like libzmq, when built via add_subdirectory) can find this prerequisite.
