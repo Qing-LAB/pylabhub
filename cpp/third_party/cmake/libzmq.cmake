@@ -29,6 +29,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   snapshot_cache_var(WITH_DOCS)
   snapshot_cache_var(ENABLE_CURVE)
   snapshot_cache_var(WITH_LIBSODIUM)
+  snapshot_cache_var(WITH_LIBSODIUM_STATIC)
 
   # --- 2. Set options for the isolated build scope ---
   set(BUILD_STATIC ON CACHE BOOL "pylab: build static libzmq" FORCE)
@@ -38,6 +39,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   set(WITH_DOCS OFF CACHE BOOL "pylab: disable libzmq docs" FORCE)
   set(ENABLE_CURVE ON CACHE BOOL "pylab: required for security" FORCE)
   set(WITH_LIBSODIUM ON CACHE BOOL "pylab: required for CurveZMQ" FORCE)
+  set(WITH_LIBSODIUM_STATIC ON CACHE BOOL "pylab: required for CurveZMQ" FORCE)
   
   # --- 3. Add the subdirectory ---
   # `find_package(Sodium)` inside this call will now search the `CMAKE_PREFIX_PATH`
@@ -73,6 +75,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   restore_cache_var(WITH_DOCS BOOL)
   restore_cache_var(ENABLE_CURVE BOOL)
   restore_cache_var(WITH_LIBSODIUM BOOL)
+  restore_cache_var(WITH_LIBSODIUM_STATIC BOOL)
 
   message(STATUS "[pylabhub-third-party] libzmq configuration complete.")
 else()

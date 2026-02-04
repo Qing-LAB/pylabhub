@@ -371,6 +371,9 @@ endfunction()
 # Attaches custom commands to a target to stage header directories. This is
 # used to simplify the staging logic for third-party libraries.
 #
+# This version is hardened to correctly expand list arguments and ensure
+# commands are deferred until post-build using COMMAND_EXPAND_LISTS.
+#
 function(pylabhub_attach_headers_staging_commands)
   set(options "")
   set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
@@ -384,56 +387,42 @@ function(pylabhub_attach_headers_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_headers_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
   endif()
 
-  set(copy_commands "")
-  if(ARG_DIRECTORIES OR ARG_FILES)
-    if(ARG_SUBDIR)
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-    else()
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
-    endif()
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
+  if(NOT ARG_DIRECTORIES AND NOT ARG_FILES)
+    return()
   endif()
 
-  if(ARG_DIRECTORIES)
-    foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-      list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
-    endforeach()
+  if(ARG_SUBDIR)
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+  else()
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
   endif()
 
-  if(ARG_FILES)
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy ${ARG_FILES} "${DEST_DIR}/")
-  endif()
+  set(custom_cmds "")
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Preparing staging headers -> ${DEST_DIR}")
+  # Ensure destination directory exists (idempotent — does not remove siblings)
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
 
-  if(copy_commands)
-    set(_comment "Staging headers")
-    if(ARG_DIRECTORIES)
-      string(APPEND _comment " from directories: ${ARG_DIRECTORIES}")
-    endif()
-    if(ARG_FILES)
-      string(APPEND _comment " (specific files)")
-    endif()
+  # Copy directories (use copy_directory_if_different — non-destructive for siblings)
+  foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DEST_DIR}")
+  endforeach()
 
-    message(STATUS "DEBUG: Staging headers to DEST_DIR: ${DEST_DIR}")
-    if(ARG_DIRECTORIES)
-      foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-        message(STATUS "DEBUG: Copying directory: ${SRC_DIR} to ${DEST_DIR}")
-      endforeach()
-    endif()
-    if(ARG_FILES)
-      message(STATUS "DEBUG: Copying files: ${ARG_FILES} to ${DEST_DIR}/")
-    endif()
-    
-    add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
-      ${copy_commands}
-      COMMENT "${_comment}"
-      VERBATIM
-    )
-  endif()
+  # Copy individual files (copy_if_different each file)
+  foreach(_file IN LISTS ARG_FILES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying file: ${_file} -> ${DEST_DIR}/")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "${DEST_DIR}/")
+  endforeach()
 
-  # If the headers come from an ExternalProject, ensure the staging target
-  # depends on it, so the headers are downloaded/built before we try to copy them.
+  add_custom_command(
+    TARGET ${ARG_ATTACH_TO}
+    POST_BUILD
+    COMMAND_EXPAND_LISTS
+    ${custom_cmds}
+    COMMENT "Staging headers for ${ARG_ATTACH_TO}"
+    VERBATIM
+  )
+
   if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
     add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
   endif()
