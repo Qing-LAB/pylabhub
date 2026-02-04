@@ -62,7 +62,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
       DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include"
       SUBDIR ""
     )
-    pylabhub_register_library_for_staging(TARGET pylabhub_libzmq)
+    pylabhub_register_library_for_staging(TARGET libzmq-static)
   endif()
 
   # --- 7. Restore cache variables ---
