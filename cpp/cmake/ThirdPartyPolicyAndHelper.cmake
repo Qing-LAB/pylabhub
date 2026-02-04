@@ -104,20 +104,21 @@ function(snapshot_cache_var)
 
   # Record normal variable existence/value
   if(DEFINED ${_var})
-    set("SNAPSHOT_${_var}_EXISTS" TRUE)
-    set("SNAPSHOT_${_var}_VALUE" "${${_var}}")
+    set(SNAPSHOT_${_var}_EXISTS TRUE)
+    set(SNAPSHOT_${_var}_VALUE "${${_var}}")
   else()
-    set("SNAPSHOT_${_var}_EXISTS" FALSE)
-    set("SNAPSHOT_${_var}_VALUE" "")
+    set(SNAPSHOT_${_var}_EXISTS FALSE)
+    set(SNAPSHOT_${_var}_VALUE "")
   endif()
 
-  # Record cache presence/value (CMake exposes cached value as normal var)
+  # Record cache presence/value (test cache entry explicitly)
   if(DEFINED CACHE{${_var}})
-    set("SNAPSHOT_${_var}_IN_CACHE" TRUE)
-    set("SNAPSHOT_${_var}_CACHE_VALUE" "${${_var}}")
+    set(SNAPSHOT_${_var}_IN_CACHE TRUE)
+    # When cache exists, the current value of the variable is the cached value.
+    set(SNAPSHOT_${_var}_CACHE_VALUE "${${_var}}")
   else()
-    set("SNAPSHOT_${_var}_IN_CACHE" FALSE)
-    set("SNAPSHOT_${_var}_CACHE_VALUE" "")
+    set(SNAPSHOT_${_var}_IN_CACHE FALSE)
+    set(SNAPSHOT_${_var}_CACHE_VALUE "")
   endif()
 endfunction()
 
@@ -131,21 +132,28 @@ function(restore_cache_var)
     set(_type "${ARGV1}")
   endif()
 
+  # Read snapshot fields into locals to avoid nested expansion pitfalls
+  set(_snap_in_cache "${SNAPSHOT_${_var}_IN_CACHE}")
+  set(_snap_cache_value "${SNAPSHOT_${_var}_CACHE_VALUE}")
+  set(_snap_exists "${SNAPSHOT_${_var}_EXISTS}")
+  set(_snap_value "${SNAPSHOT_${_var}_VALUE}")
+
   # Restore cache entry if it existed before
-  if(DEFINED SNAPSHOT_${_var}_IN_CACHE AND "${SNAPSHOT_${_var}_IN_CACHE}" STREQUAL "TRUE")
-    set(_val "${SNAPSHOT_${_var}_CACHE_VALUE}")
-    set(${_var} "${_val}" CACHE ${_type} "restored by restore_cache_var" FORCE)
+  if(_snap_in_cache AND "${_snap_in_cache}" STREQUAL "TRUE")
+    # restore the cache entry (may be empty string)
+    set(${_var} "${_snap_cache_value}" CACHE ${_type} "restored by restore_cache_var" FORCE)
   else()
+    # If snapshot said cache did not exist, remove any cache entry that may have been added.
     if(DEFINED CACHE{${_var}})
       unset(${_var} CACHE)
     endif()
   endif()
 
-  # Restore normal variable
-  if(DEFINED SNAPSHOT_${_var}_EXISTS AND "${SNAPSHOT_${_var}_EXISTS}" STREQUAL "TRUE")
-    set(_val "${SNAPSHOT_${_var}_VALUE}")
-    set(${_var} "${_val}")
+  # Restore normal variable (non-cache)
+  if(_snap_exists AND "${_snap_exists}" STREQUAL "TRUE")
+    set(${_var} "${_snap_value}")
   else()
+    # remove normal variable if it didn't exist before
     unset(${_var})
   endif()
 
@@ -155,6 +163,7 @@ function(restore_cache_var)
   unset(SNAPSHOT_${_var}_IN_CACHE)
   unset(SNAPSHOT_${_var}_CACHE_VALUE)
 endfunction()
+
 
 # ----------------------------
 # Resolve alias targets recursively to find the concrete target
@@ -290,33 +299,7 @@ function(pylabhub_add_external_prerequisite)
   file(APPEND "${_detect_script}" "include(\"${CMAKE_SOURCE_DIR}/third_party/cmake/detect_external_project.cmake.in\")\n")
 
   # --- Ensure directories exist ---
-  file(MAKE_DIRECTORY "${_inst}/lib" "${_inst}/include" "${_bin}")
 
-  # --- Default CMake Commands ---
-  # If no custom commands are provided, fall back to a standard CMake build.
-  if(NOT pylab_CONFIGURE_COMMAND)
-    pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
-    pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
-
-    set(_default_cmake_args
-      "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}"
-      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-      "-DCMAKE_C_FLAGS=${_clean_c_flags}"
-      "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}"
-    )
-    if(pylab_CMAKE_ARGS)
-      list(APPEND _default_cmake_args ${pylab_CMAKE_ARGS})
-    endif()
-    set(pylab_CONFIGURE_COMMAND ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}" ${_default_cmake_args})
-  endif()
-
-  if(NOT pylab_BUILD_COMMAND)
-    set(pylab_BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE})
-  endif()
-
-  if(NOT pylab_INSTALL_COMMAND)
-    set(pylab_INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE})
-  endif()
 
   # --- Construct ExternalProject Arguments ---
   set(_ext_args

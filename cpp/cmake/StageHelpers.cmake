@@ -202,6 +202,16 @@ function(pylabhub_get_library_staging_commands)
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
          "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+  elseif(TGT_TYPE STREQUAL "UNKNOWN_LIBRARY")
+    # Handle UNKNOWN IMPORTED libraries, which are typically pre-built binaries.
+    # We rely on their IMPORTED_LOCATION property to find the actual file.
+    get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
+    if(imported_location)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "${imported_location}" "${LINKTIME_DEST_DIR}/")
+    else()
+        message(WARNING "UNKNOWN_LIBRARY target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
+    endif()
   endif()
 
   set(${ARG_OUT_COMMANDS} ${commands_list} PARENT_SCOPE)
@@ -403,6 +413,16 @@ function(pylabhub_attach_headers_staging_commands)
       string(APPEND _comment " (specific files)")
     endif()
 
+    message(STATUS "DEBUG: Staging headers to DEST_DIR: ${DEST_DIR}")
+    if(ARG_DIRECTORIES)
+      foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+        message(STATUS "DEBUG: Copying directory: ${SRC_DIR} to ${DEST_DIR}")
+      endforeach()
+    endif()
+    if(ARG_FILES)
+      message(STATUS "DEBUG: Copying files: ${ARG_FILES} to ${DEST_DIR}/")
+    endif()
+    
     add_custom_command(
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
