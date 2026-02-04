@@ -46,7 +46,9 @@ set(_nlohmann_layout "unknown")      # "namespaced" or "flat" or "unknown" (for 
 
 # --- 1. Create the wrapper and alias ---
 # This provides the stable, namespaced target for consumers.
-_expose_wrapper(pylabhub_nlohmann_json pylabhub::third_party::nlohmann_json)
+add_library(pylabhub_nlohmann_json INTERFACE)
+add_library(pylabhub::third_party::nlohmann_json ALIAS pylabhub_nlohmann_json)
+
 
 # --- Local Helper Function ---
 # Checks for the existence of the canonical nlohmann_json targets and sets
@@ -157,13 +159,5 @@ if(THIRD_PARTY_INSTALL)
 else()
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for nlohmann/json.")
 endif()
-
-# --- 5. Add to export set for installation ---
-# This target is an INTERFACE library, but it must be part of the export
-# set so that downstream projects consuming our package can find its
-# include directories.
-install(TARGETS pylabhub_nlohmann_json
-  EXPORT pylabhubTargets
-)
 
 message(STATUS "[pylabhub-third-party] nlohmann/json configuration complete.")

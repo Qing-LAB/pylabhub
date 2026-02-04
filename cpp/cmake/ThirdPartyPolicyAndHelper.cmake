@@ -189,30 +189,6 @@ function(_resolve_alias_to_concrete)
 endfunction()
 
 # ----------------------------
-# Expose wrapper: create INTERFACE wrapper and namespaced alias
-# _expose_wrapper(WRAPPER_NAME NAMESPACE_ALIAS)
-# ----------------------------
-function(_expose_wrapper)
-  if(ARGC LESS 2)
-    message(FATAL_ERROR "_expose_wrapper requires 2 args: wrapper_name namespace_alias")
-  endif()
-  set(_wrapper "${ARGV0}")
-  set(_alias "${ARGV1}")
-
-  if(NOT TARGET ${_wrapper})
-    add_library(${_wrapper} INTERFACE)
-    # best-effort include dir: prefer PREREQ_INSTALL_DIR if available
-    if(DEFINED PREREQ_INSTALL_DIR)
-      target_include_directories(${_wrapper} INTERFACE "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>" "$<INSTALL_INTERFACE:include>")
-    endif()
-  endif()
-
-  if(NOT TARGET ${_alias})
-    add_library(${_alias} ALIAS ${_wrapper})
-  endif()
-endfunction()
-
-# ----------------------------
 # Helper for printing command lists for debugging ExternalProject calls.
 # ----------------------------
 function(_pylab_prereq_print_command name command_list_var)
@@ -376,20 +352,6 @@ function(pylabhub_add_external_prerequisite)
   # Wire this external project into the master `build_prerequisites` target.
   # This allows a developer to build all prerequisites by building one target.
   add_dependencies(build_prerequisites ${_pkg}_external)
-
-  # --- Create Canonical Imported Target ---
-  # This target represents the normalized, post-build artifact.
-  # Its location is stable and platform-agnostic (no file extension).
-  set(_stable_lib_path_no_ext "${_inst}/lib/${_pkg}-stable")
-
-  if(NOT TARGET pylabhub::third_party::${_pkg})
-    add_library(pylabhub::third_party::${_pkg} UNKNOWN IMPORTED GLOBAL)
-    set_target_properties(pylabhub::third_party::${_pkg} PROPERTIES
-      IMPORTED_LOCATION "${_stable_lib_path_no_ext}"
-      INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${_inst}/include>;$<INSTALL_INTERFACE:include>"
-    )
-  endif()
-  add_dependencies(pylabhub::third_party::${_pkg} ${_pkg}_external)
 
 endfunction()
 

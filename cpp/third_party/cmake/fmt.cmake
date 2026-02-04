@@ -145,10 +145,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     endif()
   endforeach()
 
-  # --- 5. Create wrapper target and define usage requirements ---
-  # This provides a stable `pylabhub::third_party::fmt` for consumers.
-  # ---------------------------
-  _expose_wrapper(pylabhub_fmt pylabhub::third_party::fmt)
+  # --- 5. Create canonical targets ---
+  # Create the canonical INTERFACE wrapper target.
+  add_library(pylabhub_fmt INTERFACE)
+  # Create the final, public-facing ALIAS.
+  add_library(pylabhub::third_party::fmt ALIAS pylabhub_fmt)
 
   if(_fmt_canonical_target)
     # Binary library case: Link the wrapper to the concrete target.
@@ -170,38 +171,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
   if(THIRD_PARTY_INSTALL)
     message(STATUS "[pylabhub-third-party] Scheduling fmt artifacts for staging...")
 
-    # Stage the header directory
+    # Stage the fmt headers.
     pylabhub_register_headers_for_staging(
-      # Stage the fmt headers. The source directory is '.../fmt/include', and the
-      # SUBDIR "" argument ensures its contents are copied directly into the
-      # staging include directory.
       DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
       SUBDIR ""
     )
 
     # Stage the library file, if a concrete target was found
     if(_fmt_canonical_target)
-      pylabhub_register_library_for_staging(TARGET ${_fmt_canonical_target})
+      pylabhub_register_library_for_staging(TARGET pylabhub_fmt)
     endif()
   else()
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for fmt.")
-  endif()
-
-  # --- 7. Add to export set for installation ---
-  # The wrapper target must be exported so downstream projects can find it.
-  install(TARGETS pylabhub_fmt
-    EXPORT pylabhubTargets
-  )
-
-  # If fmt was built as a library, its canonical target must also be exported.
-  if(_fmt_canonical_target)
-    install(TARGETS ${_fmt_canonical_target}
-      EXPORT pylabhubTargets
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}
-    )
   endif()
 
   # --- 8. Restore cache variables ---

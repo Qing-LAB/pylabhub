@@ -10,7 +10,9 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cppzmq/zmq.hpp")
 endif()
 
 # --- 1. Create the wrapper and alias ---
-_expose_wrapper(pylabhub_cppzmq pylabhub::third_party::cppzmq)
+add_library(pylabhub_cppzmq INTERFACE)
+add_library(pylabhub::third_party::cppzmq ALIAS pylabhub_cppzmq)
+
 
 # --- 2. Define usage requirements ---
 set(_cppzmq_include_dir "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -39,10 +41,5 @@ if(THIRD_PARTY_INSTALL)
 else()
   message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for cppzmq.")
 endif()
-
-# --- 4. Add to export set for installation ---
-install(TARGETS pylabhub_cppzmq
-  EXPORT pylabhubTargets
-)
 
 message(STATUS "[pylabhub-third-party] cppzmq configuration complete.")

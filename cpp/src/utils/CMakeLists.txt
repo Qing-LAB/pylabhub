@@ -119,6 +119,7 @@ endif()
 target_include_directories(pylabhub-utils
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+    $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
