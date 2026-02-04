@@ -30,33 +30,53 @@ This modern, property-based approach is used for the project's native executable
 
 #### Pattern B: Registration-Based Staging (for All Libraries)
 
-This pattern provides a unified, robust API for staging artifacts from both complex internal libraries and all third-party dependencies, especially those whose outputs may not be known at configure time (e.g., built with `ExternalProject_Add`).
+This pattern provides a unified, robust API for staging library and header artifacts from both internal subprojects and externally-built prerequisites.
 
-1.  **Registration**: A component's build script calls `pylabhub_register_library_for_staging` or `pylabhub_register_headers_for_staging`. This records the staging request in a global property.
+1.  **Registration**: A component's build script calls `pylabhub_register_library_for_staging(TARGET ...)` or `pylabhub_register_headers_for_staging(DIRECTORIES ...)` at **configure-time**. This records the staging request in a global property. The `TARGET` passed to the library function can be a native target from `add_library` or an `IMPORTED` target representing a prerequisite.
 2.  **Processing**: At the end of the `third_party/CMakeLists.txt` configuration, a loop iterates through all registrations.
-3.  **Execution**: For each registration, a helper function (e.g., `pylabhub_attach_library_staging_commands` or `pylabhub_attach_headers_staging_commands`) attaches a `POST_BUILD` custom command to the `stage_third_party_deps` target. This command performs the actual file copying at build time. This applies equally to both library and header staging.
-4.  **Result**: This decouples the declaration of "what to stage" from the execution of "how to stage," and correctly handles dependencies on non-native CMake targets. This is the required pattern for all libraries, internal or third-party.
+3.  **Execution**: For each registration, a helper function (e.g., `pylabhub_attach_library_staging_commands`) attaches a `POST_BUILD` custom command to the `stage_third_party_deps` target. This command performs the actual file copying at **build-time**, using generator expressions (`$<TARGET_FILE:...>`) to get the location of the target's artifacts.
+4.  **Result**: This decouples the declaration of "what to stage" from the execution of "how to stage," and correctly handles dependencies on all types of libraries. This is the required pattern for all libraries, internal or third-party.
 
 ### 1.3. Modular & Stable Target Interfaces
 
 *   **Internal Libraries**: The project's main internal library is `pylabhub::utils`, a shared library for high-level utilities.
-*   **Alias Targets**: Consumers **must** link against namespaced `ALIAS` targets (e.g., `pylabhub::utils`, `pylabhub::third_party::fmt`) rather than raw target names. This provides a stable public API for all dependencies and allows the underlying implementation targets to be modified without breaking consumer code.
-*   **Third-Party Isolation**: Third-party dependencies are configured in isolated scopes using wrapper scripts in `third_party/cmake/`. This prevents their build options from "leaking" and affecting other parts of the project, thanks to the `snapshot_cache_var`/`restore_cache_var` helpers.
+*   **Alias Targets**: Consumers **must** link against namespaced `ALIAS` or `IMPORTED` targets (e.g., `pylabhub::utils`, `pylabhub::third_party::fmt`, `pylabhub::third_party::libsodium`) rather than raw target names. This provides a stable public API for all dependencies.
+*   **Third-Party Isolation**: Third-party dependencies built via `add_subdirectory` are configured in isolated scopes using wrapper scripts in `third_party/cmake/`. This prevents their build options from "leaking" and affecting other parts of the project, thanks to the `snapshot_cache_var`/`restore_cache_var` helpers.
 
-### 1.4. Prerequisite Build System
+### 1.4. Prerequisite Build System (Unified Framework)
 
-Some third-party libraries, like `libsodium`, are not built with CMake. To handle this, we use a prerequisite build mechanism:
-1.  **ExternalProject_Add**: `libsodium` is built using `ExternalProject_Add`, which can run external build commands like `make`.
-2.  **Prerequisite Install Directory**: The library is installed into a sandboxed directory within the build tree (`build/prereqs`).
-3.  **Master Prerequisite Target**: A master custom target, `build_prerequisites`, depends on all such external projects.
-4.  **Imported Target**: A stable `IMPORTED` target (`pylabhub::third_party::sodium`) is created that points to the artifacts in the prerequisite install directory.
-5.  **Dependency Chaining**: Any other library (like `libzmq`) that depends on `libsodium` links against this `IMPORTED` target and adds a dependency on `build_prerequisites` to ensure the correct build order.
+For third-party libraries that do not use CMake or require a highly controlled build environment (e.g., `libsodium`, `libzmq`, `luajit`), the project uses a robust, unified framework that avoids brittle, hard-coded filenames and works reliably across platforms. This framework is encapsulated in a single generic helper function: `pylabhub_add_external_prerequisite`.
+
+The core principle is to **separate platform-specific build knowledge from the underlying `ExternalProject_Add` boilerplate**.
+
+1.  **Wrapper Script (`third_party/cmake/<pkg>.cmake`)**: For each prerequisite, a wrapper script is responsible for defining *how* to build the library on different platforms. It constructs the appropriate command lists (e.g., for `msbuild` on Windows or `make` on Linux) but does not call `ExternalProject_Add` directly.
+
+2.  **Generic Helper Function (`pylabhub_add_external_prerequisite`)**: The wrapper script passes its constructed command lists to this central function, whose responsibilities are to:
+    *   Create the `ExternalProject_Add` target (e.g., `libsodium_external`), passing the custom commands to it.
+    *   Append a post-build step that runs a detection script (`detect_external_project.cmake.in`).
+    *   Create a stable, namespaced `UNKNOWN IMPORTED` target (e.g., `pylabhub::third_party::libsodium`) for consumers to link against.
+    *   Add dependencies to ensure correct build ordering (see below).
+
+3.  **Post-Build Detection & Normalization**: The key to this pattern is the post-build detection script that runs *after* the external build is complete.
+    *   **Discover**: It scans the temporary output directories for the actual library file using patterns provided by the wrapper script.
+    *   **Stabilize**: It copies this discovered file to a **stable, predictable, and platform-agnostic path** (e.g., `build/prereqs/lib/libsodium-stable`). The rest of our build system can now rely on this stable path.
+    *   The `IMPORTED_LOCATION` of the `UNKNOWN IMPORTED` target points to this path *without a file extension*, allowing CMake to automatically find the correct `.lib`, `.a`, or `.so` file at link time.
+
+4.  **Dependency Chaining**: The helper function creates a robust dependency chain:
+    *   It makes the `IMPORTED` target (`pylabhub::third_party::libsodium`) depend on the `ExternalProject_Add` target (`libsodium_external`). This ensures that any of our code linking against the imported target will automatically trigger the external build.
+    *   It also makes the master `build_prerequisites` target depend on the `ExternalProject_Add` target. This provides a convenient way for developers to build all prerequisites at once by running `cmake --build . --target build_prerequisites`.
+
+This framework makes adding and managing complex prerequisites declarative and consistent, removing redundant boilerplate from the individual package scripts.
+
+### 1.5. Notes on Specific Libraries & Workarounds
+
+*   **`libzmq` Build Workaround**: The `libzmq` library contains a bug in its build script where an internal tool (`curve_keygen`) is hardcoded to link against the shared `libzmq` library. This causes the build to fail if only a static library is requested. To work around this without modifying `libzmq`, our `ExternalProject_Add` configuration for it builds *both* the shared and static libraries. However, the rest of our build system is configured to only use, link against, and stage the **static** library, preserving the project's static-only integration policy. The shared library is a transient artifact that is discarded.
 
 ## 2. System Diagrams
 
 ### Internal Project Dependencies
 
-This diagram illustrates how the main application and internal libraries depend on each other and on third-party libraries. The nodes represent **CMake alias targets**.
+This diagram illustrates how the main application and internal libraries depend on each other and on third-party libraries. The nodes represent **CMake alias or imported targets**.
 
 ```mermaid
 graph TD
@@ -72,18 +92,24 @@ graph TD
         C(pylabhub::third_party::fmt)
         D(pylabhub::third_party::cppzmq)
         E(pylabhub::third_party::nlohmann_json)
+        F(pylabhub::third_party::libzmq)
+        G(pylabhub::third_party::libsodium)
     end
     
     A --> B;
     B --> C;
     B --> D;
     B --> E;
+    D --> F;
+    F --> G;
 
     style A fill:#D5F5E3
     style B fill:#E6F3FF,stroke:#66a3ff,stroke-width:2px
     style C fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
     style D fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
     style E fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
+    style F fill:#FFE0B3,stroke:#FF9A00,stroke-width:2px
+    style G fill:#FFE0B3,stroke:#FF9A00,stroke-width:2px
 ```
 
 ### Staging Target Dependencies
@@ -208,9 +234,9 @@ This recipe shows the general structure for an internal library, which must use 
     ```
 3.  **Include the subdirectory in `src/CMakeLists.txt`:** `add_subdirectory(my-lib)`
 
-### Recipe 3: How to Add a New Third-Party Library
+### Recipe 3: How to Add a New Third-Party Library (CMake Subproject)
 
-This is the most complex task and uses the full power of the **Registration-Based Staging** pattern. The goal is to create a self-contained wrapper script in `third_party/cmake/`.
+This recipe is for libraries that have a CMake build system and can be integrated via `add_subdirectory`. It uses the **Registration-Based Staging** pattern.
 
 **Scenario**: Add a new library `new-lib` built with CMake.
 
@@ -223,45 +249,40 @@ This is the most complex task and uses the full power of the **Registration-Base
     # third_party/cmake/new-lib.cmake
     include(ThirdPartyPolicyAndHelper)
     include(StageHelpers)
-
     message(STATUS "[pylabhub-third-party] Configuring new-lib...")
 
-    # 1. Snapshot any cache variables the library might modify.
+    # 1. Snapshot any cache variables the subproject might modify.
     snapshot_cache_var(BUILD_SHARED_LIBS)
-    snapshot_cache_var(BUILD_TESTS) # Snapshot common upstream test variable
-    
-    # 2. Set options for the isolated build scope.
-    set(BUILD_SHARED_LIBS ON CACHE BOOL "Build new-lib as a shared lib" FORCE)
-    if(THIRD_PARTY_DISABLE_TESTS) # Use the global policy variable
+    snapshot_cache_var(BUILD_TESTS) # A common upstream option
+
+    # 2. Set options for the isolated build scope, respecting global policies.
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build new-lib as a static lib" FORCE)
+    if(THIRD_PARTY_DISABLE_TESTS)
       set(BUILD_TESTS OFF CACHE BOOL "Disable new-lib tests via global policy" FORCE)
     endif()
 
-    # 3. Add the subdirectory (assuming new-lib is a CMake project).
-    # If new-lib uses ExternalProject_Add, the logic will be different.
+    # 3. Add the subdirectory.
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/new-lib EXCLUDE_FROM_ALL)
 
     # 4. Find the canonical target created by the library.
     _resolve_alias_to_concrete("new-lib::new-lib" _canonical_target)
 
-    # 5. Create our stable, namespaced alias.
+    # 5. Create our stable, namespaced wrapper target.
     _expose_wrapper(pylabhub_new-lib pylabhub::third_party::new-lib)
     target_link_libraries(pylabhub_new-lib INTERFACE ${_canonical_target})
 
-    # 6. Register artifacts for staging using the project's API.
+    # 6. Register its artifacts for staging.
     if(THIRD_PARTY_INSTALL)
       pylabhub_register_headers_for_staging(
         DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/new-lib/include"
-        SUBDIR "new-lib" # Stage into include/new-lib
+        SUBDIR "new-lib" # Stage into include/new-lib/
       )
       pylabhub_register_library_for_staging(TARGET ${_canonical_target})
     endif()
     
-    # 7. Add to the install export set.
-    install(TARGETS pylabhub_new-lib EXPORT pylabhubTargets)
-    install(TARGETS ${_canonical_target} EXPORT pylabhubTargets
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    # 7. Add to the install export set for packaging.
+    install(TARGETS pylabhub_new-lib ${_canonical_target} EXPORT pylabhubTargets
+      ARCHIVE DESTINATION lib
     )
 
     # 8. Restore the cache variables to prevent leakage.
@@ -270,7 +291,67 @@ This is the most complex task and uses the full power of the **Registration-Base
     ```
 4.  **Include the Wrapper**: Add `include(new-lib)` to `third_party/CMakeLists.txt`.
 
-### Recipe 4: How to Add a New Test Suite
+### Recipe 4: How to Add a New Third-Party Library (External Build)
+
+This is the pattern for libraries like `libzmq` or `libsodium` that require `ExternalProject_Add`. It uses the unified `pylabhub_add_external_prerequisite` function.
+
+**Scenario**: Add `libexternal`, a non-CMake library, to the project.
+
+1.  **Add Submodule**: Add `libexternal` source to `third_party/`.
+
+2.  **Create Prerequisite Build Script**: Create `third_party/cmake/libexternal.cmake`.
+
+3.  **Edit the Build Script `libexternal.cmake`**: The script's only job is to define the platform-specific build commands and call the generic helper.
+    ```cmake
+    # third_party/cmake/libexternal.cmake
+    # This helper is now in the top-level `cmake/` directory.
+    include(ThirdPartyPolicyAndHelper)
+
+    # 1. Define paths
+    set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libexternal")
+    set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libexternal-build")
+    set(_install_dir "${PREREQ_INSTALL_DIR}")
+
+    # 2. Define platform-specific build commands
+    if(MSVC)
+        # MSVC uses msbuild
+        find_program(_MSBUILD_EXE msbuild REQUIRED)
+        set(_build_command ${_MSBUILD_EXE} libexternal.sln /p:Configuration=Release)
+        set(_install_command "") # Let post-build detection handle copying
+        set(_byproducts "${_install_dir}/lib/libexternal.lib")
+    else()
+        # POSIX systems use Makefiles
+        find_program(_MAKE_PROG make REQUIRED)
+        set(_configure_command ${_source_dir}/configure --prefix=${_install_dir})
+        set(_build_command ${_MAKE_PROG})
+        set(_install_command ${_MAKE_PROG} install)
+        set(_byproducts "${_install_dir}/lib/libexternal.a")
+    endif()
+
+    # 3. Call the generic helper function
+    pylabhub_add_external_prerequisite(
+      NAME              libexternal
+      SOURCE_DIR        "${_source_dir}"
+      BINARY_DIR        "${_build_dir}"
+      INSTALL_DIR       "${_install_dir}"
+
+      # Pass the platform-specific commands
+      CONFIGURE_COMMAND ${_configure_command}
+      BUILD_COMMAND     ${_build_command}
+      INSTALL_COMMAND   ${_install_command}
+      BUILD_BYPRODUCTS  ${_byproducts}
+
+      # Pass patterns for post-build detection script
+      LIB_PATTERNS      "libexternal.lib;libexternal.a"
+      HEADER_SOURCE_PATTERNS "include"
+    )
+    
+    # 4. (Optional) Provide a convenience alias
+    add_library(libexternal::pylabhub ALIAS pylabhub::third_party::libexternal)
+    ```
+4.  **Include the Wrapper**: Add `include(libexternal)` to `third_party/CMakeLists.txt`. The helper function automatically wires the new external project into the `build_prerequisites` master target, and the stable `pylabhub::third_party::libexternal` target is immediately available for other targets to link against.
+
+### Recipe 5: How to Add a New Test Suite
 
 *(This section from the original document is accurate and detailed. A key point for developers is how to handle runtime dependencies for tests on Windows.)*
 

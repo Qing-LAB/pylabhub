@@ -23,67 +23,130 @@ set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
 file(MAKE_DIRECTORY "${PREREQ_INSTALL_DIR}/include")
 file(MAKE_DIRECTORY "${PREREQ_INSTALL_DIR}/lib")
 
-# --- 2. Define Prerequisite Build Targets ---
-# This include defines the 'libsodium_external' target.
+
+# --- 2. Define Prerequisite Build Orchestration ---
+# The 'build_prerequisites' custom target serves as the central hub for building
+# all external libraries that must be compiled from source before the main project
+# can be configured (e.g., libsodium, libzmq).
+#
+# How it works:
+# 1. Each prerequisite's .cmake file (e.g., `third_party/cmake/libsodium.cmake`)
+#    calls the generic helper function `pylabhub_add_external_prerequisite`.
+# 2. This function defines an `ExternalProject_Add` target (e.g., `libsodium_external`)
+#    and adds it as a dependency to this `build_prerequisites` target. The helper
+#    is generic and handles different build systems (Makefiles, MSBuild, etc.)
+#    by accepting custom command lists.
+# 3. The helper also creates a stable, namespaced `UNKNOWN IMPORTED` library
+#    (e.g., `pylabhub::third_party::libsodium`) that represents the final,
+#    normalized artifact.
+#
+# This ensures that whenever a developer tries to link against a library like
+# `pylabhub::third_party::libzmq`, the entire prerequisite build chain is triggered
+# automatically and in the correct order.
+add_custom_target(build_prerequisites)
+
+
+# --- 3. Configure All Third-Party Libraries ---
+# This section defines how external prerequisites are built and how their
+# stable, namespaced targets are created for the rest of the project.
+
+# --- 3.1 External Projects (libsodium, luajit) ---
+# These wrappers define the `_external` targets (e.g., `libsodium_external`).
 include(libsodium)
+include(luajit)
 
-# This is the master target for all prerequisites.
-add_custom_target(build_prerequisites DEPENDS libsodium_external)
+# Hint to subsequent find_package calls where to find the prerequisites we just built.
+list(APPEND CMAKE_PREFIX_PATH "${PREREQ_INSTALL_DIR}")
 
-# --- 3. Define IMPORTED Targets for Prerequisites ---
-# Now that the prerequisite directory structure is known, we can define
-# a stable IMPORTED target for libsodium.
-set(LIBSODIUM_INCLUDE_DIR "${PREREQ_INSTALL_DIR}/include")
-if(MSVC)
-  set(LIBSODIUM_LIBRARY_PATH "${PREREQ_INSTALL_DIR}/lib/libsodium.lib")
-else()
-  set(LIBSODIUM_LIBRARY_PATH "${PREREQ_INSTALL_DIR}/lib/libsodium.a")
-endif()
+# Manually create the pylabhub::third_party targets for ExternalProject dependencies.
+# This explicitly defines the stable interface that our project will link against.
 
-add_library(pylabhub::third_party::sodium STATIC IMPORTED GLOBAL)
-set_target_properties(pylabhub::third_party::sodium PROPERTIES
-  IMPORTED_LOCATION "${LIBSODIUM_LIBRARY_PATH}"
-  INTERFACE_INCLUDE_DIRECTORIES "${LIBSODIUM_INCLUDE_DIR}"
+# --- libsodium ---
+set(_pkg "libsodium")
+
+# 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
+set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
+add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
+set_target_properties(${_internal_imported_target} PROPERTIES
+  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+  INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
 )
-# Any target linking to pylabhub::third_party::sodium will now depend on the
-# prerequisites being built first.
-add_dependencies(pylabhub::third_party::sodium build_prerequisites)
+# This target relies on the external project completing its build.
+add_dependencies(${_internal_imported_target} libsodium_external)
 
+# 2. Create the canonical INTERFACE wrapper target (pylabhub_libsodium).
+add_library(pylabhub_${_pkg} INTERFACE)
+target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
 
-# --- 4. Configure Other Third-Party Libraries ---
-# These libraries will now be configured with the stable prerequisite targets available.
+# 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
+add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
 
-# setup nlohmann_json target
-include(nlohmann_json)
-
-# setup msgpack target
-include(msgpack)
-
-# setup fmt target
-include(fmt)
-
-# setup libzmq target
-# libzmq's internal targets will depend on 'build_prerequisites',
-# the master target for pre-built external dependencies like libsodium.
-include(libzmq)
-
-# setup cppzmq target
-include(cppzmq)
-
-# setup XOPToolKit
-include(XOPToolKit)
-include(cmake/googletest.cmake)
-
-# --- 5. Staging ---
-# Stage the staged prerequisites
 if(THIRD_PARTY_INSTALL)
+  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
   pylabhub_register_headers_for_staging(
-    DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
+    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/sodium"
+    SUBDIR "sodium"  # Stage directly under include/sodium
+    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
+  )
+
+  # Stage sodium.h directly into include/
+  pylabhub_register_headers_for_staging(
+    FILES "${PREREQ_INSTALL_DIR}/include/sodium.h"
     SUBDIR ""
     EXTERNAL_PROJECT_DEPENDENCY libsodium_external
   )
-  pylabhub_register_library_for_staging(TARGET pylabhub::third_party::sodium)
 endif()
+
+
+# --- luajit ---
+set(_pkg "luajit")
+
+# 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
+set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
+add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
+set_target_properties(${_internal_imported_target} PROPERTIES
+  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+  INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
+)
+# This target relies on the external project completing its build.
+add_dependencies(${_internal_imported_target} luajit_external)
+
+# 2. Create the canonical INTERFACE wrapper target (pylabhub_luajit).
+add_library(pylabhub_${_pkg} INTERFACE)
+target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
+
+# 3. Create the public-facing ALIAS (pylabhub::third_party::luajit).
+add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
+
+if(THIRD_PARTY_INSTALL)
+  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
+  pylabhub_register_headers_for_staging(
+    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/luajit"
+    SUBDIR "luajit"
+    EXTERNAL_PROJECT_DEPENDENCY luajit_external
+  )
+endif()
+
+
+
+
+# --- 3.2 CMake Subprojects (libzmq, fmt, etc.) and Header-Only Libraries ---
+# These are included after ExternalProjects and their wrappers are defined.
+# They will use standard find_package or add_subdirectory, and create their
+# pylabhub::third_party::* targets directly.
+include(libzmq) # Now uses add_subdirectory and finds libsodium via CMAKE_PREFIX_PATH
+include(nlohmann_json)
+include(msgpack)
+include(fmt)
+include(cppzmq)
+include(XOPToolKit)
+include(cmake/googletest.cmake)
+
+# --- 4. Staging ---
+# This section is now much simpler, as the registration for prerequisites is
+# handled inside the `pylabhub_add_external_prerequisite` helper.
+# We only need to process the final registrations.
+
 
 # ===========================================================================
 # FINAL PHASE: Process all staging registrations
@@ -130,3 +193,24 @@ if(THIRD_PARTY_INSTALL)
         endforeach()
     endif()
 endif()
+
+# ===========================================================================
+# FINAL PHASE: Export all public-facing third-party targets for packaging
+#
+# This must be the very last thing in this file, ensuring all targets are
+# fully defined before they are added to the export set.
+# ===========================================================================
+install(TARGETS
+  pylabhub_libsodium
+  pylabhub_luajit
+  pylabhub_libzmq # This is the INTERFACE target for libzmq
+  libzmq-static # Concrete target linked by pylabhub_libzmq
+  pylabhub_fmt # This is the INTERFACE target for fmt
+  fmt # Concrete target linked by pylabhub_fmt
+  pylabhub_nlohmann_json # Canonical INTERFACE target for nlohmann_json
+  pylabhub_msgpack # Canonical INTERFACE target for msgpack
+  pylabhub_cppzmq # Canonical INTERFACE target for cppzmq
+  # Add other targets as they are consistently defined
+  EXPORT pylabhubTargets
+)
+

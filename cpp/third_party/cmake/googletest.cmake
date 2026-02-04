@@ -13,6 +13,13 @@
 
 include(ThirdPartyPolicyAndHelper)
 
+# Macro to create pylabhub::third_party::* alias for GoogleTest components
+macro(pylabhub_wrap_gtest_target _target_name)
+  add_library(pylabhub_${_target_name} INTERFACE)
+  add_library(pylabhub::third_party::${_target_name} ALIAS pylabhub_${_target_name})
+  target_link_libraries(pylabhub_${_target_name} INTERFACE ${_target_name})
+endmacro()
+
 message(STATUS "[pylabhub-third-party] Configuring GoogleTest submodule...")
 
 # Prevent gtest from being installed as part of our 'install' target.
@@ -28,20 +35,13 @@ set(gtest_hide_internal_symbols ON CACHE BOOL "Hide gtest internal symbols" FORC
 # something (like our test executables) explicitly depends on them.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/googletest EXCLUDE_FROM_ALL)
 
-# --- Expose GTest targets ---
-_expose_wrapper(pylabhub_gtest pylabhub::third_party::gtest)
-target_link_libraries(pylabhub_gtest INTERFACE gtest)
+  # --- Expose GTest targets ---
+  pylabhub_wrap_gtest_target(gtest)
+  pylabhub_wrap_gtest_target(gtest_main)
 
-_expose_wrapper(pylabhub_gtest_main pylabhub::third_party::gtest_main)
-target_link_libraries(pylabhub_gtest_main INTERFACE gtest_main)
-
-
-# --- Expose GMock targets ---
-_expose_wrapper(pylabhub_gmock pylabhub::third_party::gmock)
-target_link_libraries(pylabhub_gmock INTERFACE gmock)
-
-_expose_wrapper(pylabhub_gmock_main pylabhub::third_party::gmock_main)
-target_link_libraries(pylabhub_gmock_main INTERFACE gmock_main)
+  # --- Expose GMock targets ---
+  pylabhub_wrap_gtest_target(gmock)
+  pylabhub_wrap_gtest_target(gmock_main)
 
 
 

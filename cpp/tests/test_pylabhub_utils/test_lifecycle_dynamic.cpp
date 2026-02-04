@@ -116,9 +116,27 @@ TEST_F(LifecycleDynamicTest, PersistentModuleIsNotUnloaded)
 }
 
 TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
+
 {
+
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.persistent_module_finalize", {});
+
     ASSERT_TRUE(proc.valid());
+
     proc.wait_for_exit();
+
     expect_worker_ok(proc);
+}
+
+TEST_F(LifecycleDynamicTest, UnloadTimeout)
+
+{
+
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.unload_timeout", {}, true);
+
+    ASSERT_TRUE(proc.valid());
+
+    proc.wait_for_exit();
+
+    expect_worker_ok(proc, {"TIMEOUT!"});
 }
