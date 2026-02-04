@@ -29,18 +29,21 @@ set(gtest_hide_internal_symbols ON CACHE BOOL "Hide gtest internal symbols" FORC
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/googletest EXCLUDE_FROM_ALL)
 
 # --- Expose GTest targets ---
-_expose_wrapper(pylabhub_gtest pylabhub::third_party::gtest)
+add_library(pylabhub_gtest INTERFACE)
+add_library(pylabhub::third_party::gtest ALIAS pylabhub_gtest)
 target_link_libraries(pylabhub_gtest INTERFACE gtest)
 
-_expose_wrapper(pylabhub_gtest_main pylabhub::third_party::gtest_main)
+add_library(pylabhub_gtest_main INTERFACE)
+add_library(pylabhub::third_party::gtest_main ALIAS pylabhub_gtest_main)
 target_link_libraries(pylabhub_gtest_main INTERFACE gtest_main)
 
-
 # --- Expose GMock targets ---
-_expose_wrapper(pylabhub_gmock pylabhub::third_party::gmock)
+add_library(pylabhub_gmock INTERFACE)
+add_library(pylabhub::third_party::gmock ALIAS pylabhub_gmock)
 target_link_libraries(pylabhub_gmock INTERFACE gmock)
 
-_expose_wrapper(pylabhub_gmock_main pylabhub::third_party::gmock_main)
+add_library(pylabhub_gmock_main INTERFACE)
+add_library(pylabhub::third_party::gmock_main ALIAS pylabhub_gmock_main)
 target_link_libraries(pylabhub_gmock_main INTERFACE gmock_main)
 
 

@@ -128,10 +128,4 @@ pylabhub_add_external_prerequisite(
   BUILD_BYPRODUCTS  "${_install_dir}/lib/luajit-stable.a"
 )
 
-# --- 5. Provide convenience alias ---
-if(NOT TARGET luajit::pylabhub)
-  add_library(luajit::pylabhub ALIAS pylabhub::third_party::luajit)
-endif()
-
 message(STATUS "[pylabhub-third-party] luajit configuration complete.")
-

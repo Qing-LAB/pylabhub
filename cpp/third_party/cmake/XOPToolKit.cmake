@@ -198,7 +198,9 @@ if(NOT XOP_SDK_FOUND)
 endif()
 
 # --- Create and populate the wrapper target ---
-_expose_wrapper(pylabhub_xoptoolkit pylabhub::third_party::XOPToolKit)
+add_library(pylabhub_xoptoolkit INTERFACE)
+add_library(pylabhub::third_party::XOPToolKit ALIAS pylabhub_xoptoolkit)
+
 
 target_include_directories(pylabhub_xoptoolkit INTERFACE
   $<BUILD_INTERFACE:${XOP_SDK_INCLUDE_DIR}>
