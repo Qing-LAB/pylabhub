@@ -64,6 +64,8 @@ if(MSVC)
   string(REPLACE "\\" "/" _out_dir_fwd "${_build_dir}/lib/")
   string(REPLACE "\\" "/" _int_dir_fwd "${_build_dir}/obj/")
 
+  set(_configure_command COMMAND ${CMAKE_COMMAND} -E echo "No configure step for libsodium (MSVC)")
+
   set(_build_command
     "${_MSBUILD_EXECUTABLE}" "${_sln_file}" /m
     "/p:Configuration=${_libsodium_cfg}"
