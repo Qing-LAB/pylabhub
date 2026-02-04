@@ -43,28 +43,30 @@ This pattern provides a unified, robust API for staging library and header artif
 *   **Alias Targets**: Consumers **must** link against namespaced `ALIAS` or `IMPORTED` targets (e.g., `pylabhub::utils`, `pylabhub::third_party::fmt`, `pylabhub::third_party::libsodium`) rather than raw target names. This provides a stable public API for all dependencies.
 *   **Third-Party Isolation**: Third-party dependencies built via `add_subdirectory` are configured in isolated scopes using wrapper scripts in `third_party/cmake/`. This prevents their build options from "leaking" and affecting other parts of the project, thanks to the `snapshot_cache_var`/`restore_cache_var` helpers.
 
-### 1.4. Prerequisite Build System (Post-Build Detection Pattern)
+### 1.4. Prerequisite Build System (Unified Framework)
 
-For third-party libraries that do not use CMake or require a highly controlled build environment (e.g., `libsodium`, `libzmq`, `luajit`), the project uses a robust `ExternalProject_Add` pattern that avoids brittle, hard-coded filenames and works reliably across platforms. This "post-build detection" pattern is the standard for all such dependencies.
+For third-party libraries that do not use CMake or require a highly controlled build environment (e.g., `libsodium`, `libzmq`, `luajit`), the project uses a robust, unified framework that avoids brittle, hard-coded filenames and works reliably across platforms. This framework is encapsulated in a single generic helper function: `pylabhub_add_external_prerequisite`.
 
-1.  **External Build Target**: A script in `third_party/cmake/` (e.g., `libsodium.cmake`) defines an `ExternalProject_Add` target (e.g., `libsodium_external`) that downloads, configures, and builds the library. The library's own build/install commands place the final artifacts into a temporary, sandboxed directory (`build/prereqs`).
+The core principle is to **separate platform-specific build knowledge from the underlying `ExternalProject_Add` boilerplate**.
 
-2.  **Build Isolation for non-CMake Projects**: Many non-CMake build systems (like LuaJIT's) do not properly support "out-of-source" builds. To ensure the project's own source tree is never modified, the `CONFIGURE_COMMAND` step of the `ExternalProject_Add` call is used to copy the pristine source code into a dedicated `BINARY_DIR`. All subsequent build steps then occur within this isolated directory. This maintains a clean and reproducible build environment, enforcing project conventions even on external dependencies.
+1.  **Wrapper Script (`third_party/cmake/<pkg>.cmake`)**: For each prerequisite, a wrapper script is responsible for defining *how* to build the library on different platforms. It constructs the appropriate command lists (e.g., for `msbuild` on Windows or `make` on Linux) but does not call `ExternalProject_Add` directly.
 
-3.  **Post-Build Detection Script**: The key to this pattern is a custom command that runs *after* the external build is complete. This command executes a small CMake script (`detect_libsodium.cmake`) which runs at **build-time**.
-    *   **Discover**: The detection script scans the temporary output directories (including the `BINARY_DIR` for in-place builds and the `INSTALL_DIR` for installed artifacts) for the actual library file using a pattern (e.g., `*sodium*.a`, `*sodium*.lib`).
-    *   **Stabilize**: It copies this discovered file to a **stable, predictable path** (e.g., `build/prereqs/lib/libsodium-stable.a`). The rest of our build system can now rely on this stable path.
-    *   **Stamp**: Finally, the script creates a "stamp file" (e.g., `build/prereqs/libsodium-stamp.txt`) to signal that the entire process is complete.
+2.  **Generic Helper Function (`pylabhub_add_external_prerequisite`)**: The wrapper script passes its constructed command lists to this central function, whose responsibilities are to:
+    *   Create the `ExternalProject_Add` target (e.g., `libsodium_external`), passing the custom commands to it.
+    *   Append a post-build step that runs a detection script (`detect_external_project.cmake.in`).
+    *   Create a stable, namespaced `UNKNOWN IMPORTED` target (e.g., `pylabhub::third_party::libsodium`) for consumers to link against.
+    *   Add dependencies to ensure correct build ordering (see below).
 
-4.  **`BUILD_BYPRODUCTS`**: The `ExternalProject_Add` command lists this stamp file in its `BUILD_BYPRODUCTS`. This tells CMake's dependency tracker that the ultimate goal of the `libsodium_external` target is to create this stamp file.
+3.  **Post-Build Detection & Normalization**: The key to this pattern is the post-build detection script that runs *after* the external build is complete.
+    *   **Discover**: It scans the temporary output directories for the actual library file using patterns provided by the wrapper script.
+    *   **Stabilize**: It copies this discovered file to a **stable, predictable, and platform-agnostic path** (e.g., `build/prereqs/lib/libsodium-stable`). The rest of our build system can now rely on this stable path.
+    *   The `IMPORTED_LOCATION` of the `UNKNOWN IMPORTED` target points to this path *without a file extension*, allowing CMake to automatically find the correct `.lib`, `.a`, or `.so` file at link time.
 
-5.  **`UNKNOWN IMPORTED` Target**: The central `third_party/CMakeLists.txt` script defines a platform-agnostic `UNKNOWN IMPORTED` target (e.g., `pylabhub::third_party::libsodium`).
-    *   Its `IMPORTED_LOCATION` is set to the **stable path without an extension** (e.g., `.../lib/libsodium-stable`). The `UNKNOWN` type allows CMake to resolve the correct file (`.a` or `.lib`) at link time.
-    *   This eliminates all platform-specific `if(MSVC)` logic from the target definition, making it clean and simple.
+4.  **Dependency Chaining**: The helper function creates a robust dependency chain:
+    *   It makes the `IMPORTED` target (`pylabhub::third_party::libsodium`) depend on the `ExternalProject_Add` target (`libsodium_external`). This ensures that any of our code linking against the imported target will automatically trigger the external build.
+    *   It also makes the master `build_prerequisites` target depend on the `ExternalProject_Add` target. This provides a convenient way for developers to build all prerequisites at once by running `cmake --build . --target build_prerequisites`.
 
-6.  **Dependency Chaining**: Any target that consumes the library (e.g., `pylabhub::third_party::libzmq`) depends on the stable `IMPORTED` target (`pylabhub::third_party::libsodium`). That `IMPORTED` target, in turn, depends on the master `build_prerequisites` target, which depends on the `ExternalProject_Add` target (`libsodium_external`). This ensures the correct build order is always enforced.
-
-7.  **Staging**: The stable `IMPORTED` target is registered for staging using **Pattern B**, just like any other library. The staging helpers will copy the library from its stable path in the `prereqs` directory to the final `stage` directory.
+This framework makes adding and managing complex prerequisites declarative and consistent, removing redundant boilerplate from the individual package scripts.
 
 ### 1.5. Notes on Specific Libraries & Workarounds
 
@@ -291,93 +293,63 @@ This recipe is for libraries that have a CMake build system and can be integrate
 
 ### Recipe 4: How to Add a New Third-Party Library (External Build)
 
-This is the most complex pattern, used for libraries like `libzmq` or `libsodium` that are built as prerequisites. It combines the **Prerequisite Build System** and **Registration-Based Staging**.
+This is the pattern for libraries like `libzmq` or `libsodium` that require `ExternalProject_Add`. It uses the unified `pylabhub_add_external_prerequisite` function.
 
-**Scenario**: Add `libexternal`, whose build is driven by `ExternalProject_Add`.
+**Scenario**: Add `libexternal`, a non-CMake library, to the project.
 
 1.  **Add Submodule**: Add `libexternal` source to `third_party/`.
 
-2.  **Create Prerequisite Build Script**: Create `third_party/cmake/libexternal.cmake`. This file should *only* define the `ExternalProject_Add` target.
+2.  **Create Prerequisite Build Script**: Create `third_party/cmake/libexternal.cmake`.
+
+3.  **Edit the Build Script `libexternal.cmake`**: The script's only job is to define the platform-specific build commands and call the generic helper.
     ```cmake
     # third_party/cmake/libexternal.cmake
-    include(ExternalProject)
+    # This helper is now in the top-level `cmake/` directory.
     include(ThirdPartyPolicyAndHelper)
 
-    # Collect CMake arguments to pass to the external build.
-    set(_libexternal_cmake_args
-      "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>"
-      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-      # Pass any other necessary toolchain or project variables
-      "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
-      # Force options for the external build
-      "-DBUILD_SHARED_LIBS=OFF"
-      "-DBUILD_STATIC=ON"
-    )
+    # 1. Define paths
+    set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libexternal")
+    set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libexternal-build")
+    set(_install_dir "${PREREQ_INSTALL_DIR}")
 
-    # Respect the global policy for disabling tests.
-    if(THIRD_PARTY_DISABLE_TESTS)
-      list(APPEND _libexternal_cmake_args "-DBUILD_TESTS=OFF")
-    endif()
-
-    # Define how to build the external project.
-    ExternalProject_Add(libexternal_external
-      SOURCE_DIR      ${CMAKE_CURRENT_SOURCE_DIR}/libexternal
-      CMAKE_ARGS      ${_libexternal_cmake_args}
-      # ... other ExternalProject_Add arguments (e.g., DEPENDS) ...
-      
-      # Use a custom install command to copy artifacts to the prereq dir
-      # with the desired hierarchy (e.g., include/libexternal/).
-      INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory ...
-    )
-    # Add this new target to the master prerequisite target.
-    add_dependencies(build_prerequisites libexternal_external)
-    ```
-
-3.  **Integrate and Stage in `third_party/CMakeLists.txt`**: This is the crucial step where the pre-built artifact is integrated into the main project.
-    ```cmake
-    # third_party/CMakeLists.txt
-
-    # ... other libraries ...
-
-    # Include the script that defines the ExternalProject_Add target.
-    include(libexternal)
-
-    # --- Define IMPORTED target for libexternal ---
-    # This creates a configure-time target that represents the build-time artifact.
-    set(LIBEXTERNAL_INCLUDE_DIR "${PREREQ_INSTALL_DIR}/include")
+    # 2. Define platform-specific build commands
     if(MSVC)
-      # You must know the final library name for the IMPORTED_LOCATION.
-      # This can be a limitation of this pattern on Windows.
-      set(LIBEXTERNAL_LIBRARY_PATH "${PREREQ_INSTALL_DIR}/lib/libexternal.lib")
+        # MSVC uses msbuild
+        find_program(_MSBUILD_EXE msbuild REQUIRED)
+        set(_build_command ${_MSBUILD_EXE} libexternal.sln /p:Configuration=Release)
+        set(_install_command "") # Let post-build detection handle copying
+        set(_byproducts "${_install_dir}/lib/libexternal.lib")
     else()
-      set(LIBEXTERNAL_LIBRARY_PATH "${PREREQ_INSTALL_DIR}/lib/libexternal.a")
+        # POSIX systems use Makefiles
+        find_program(_MAKE_PROG make REQUIRED)
+        set(_configure_command ${_source_dir}/configure --prefix=${_install_dir})
+        set(_build_command ${_MAKE_PROG})
+        set(_install_command ${_MAKE_PROG} install)
+        set(_byproducts "${_install_dir}/lib/libexternal.a")
     endif()
 
-    add_library(pylabhub::third_party::libexternal STATIC IMPORTED GLOBAL)
-    set_target_properties(pylabhub::third_party::libexternal PROPERTIES
-      IMPORTED_LOCATION "${LIBEXTERNAL_LIBRARY_PATH}"
-      INTERFACE_INCLUDE_DIRECTORIES "${LIBEXTERNAL_INCLUDE_DIR}"
+    # 3. Call the generic helper function
+    pylabhub_add_external_prerequisite(
+      NAME              libexternal
+      SOURCE_DIR        "${_source_dir}"
+      BINARY_DIR        "${_build_dir}"
+      INSTALL_DIR       "${_install_dir}"
+
+      # Pass the platform-specific commands
+      CONFIGURE_COMMAND ${_configure_command}
+      BUILD_COMMAND     ${_build_command}
+      INSTALL_COMMAND   ${_install_command}
+      BUILD_BYPRODUCTS  ${_byproducts}
+
+      # Pass patterns for post-build detection script
+      LIB_PATTERNS      "libexternal.lib;libexternal.a"
+      HEADER_SOURCE_PATTERNS "include"
     )
-    # Ensure any consumer of this target waits for the prerequisite to build.
-    add_dependencies(pylabhub::third_party::libexternal build_prerequisites)
-
-    # ... later in the file, in the Staging section ...
-    if(THIRD_PARTY_INSTALL)
-      # ... other staging registrations ...
-      
-      # Register the IMPORTED target for library staging.
-      pylabhub_register_library_for_staging(TARGET pylabhub::third_party::libexternal)
-
-      # Register the headers from the prerequisite directory for staging.
-      # The EXTERNAL_PROJECT_DEPENDENCY hint ensures the staging step
-      # depends on the external build completing.
-      pylabhub_register_headers_for_staging(
-        DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
-        SUBDIR ""
-        EXTERNAL_PROJECT_DEPENDENCY libexternal_external
-      )
-    endif()
+    
+    # 4. (Optional) Provide a convenience alias
+    add_library(libexternal::pylabhub ALIAS pylabhub::third_party::libexternal)
     ```
+4.  **Include the Wrapper**: Add `include(libexternal)` to `third_party/CMakeLists.txt`. The helper function automatically wires the new external project into the `build_prerequisites` master target, and the stable `pylabhub::third_party::libexternal` target is immediately available for other targets to link against.
 
 ### Recipe 5: How to Add a New Test Suite
 

@@ -213,235 +213,185 @@ function(_expose_wrapper)
 endfunction()
 
 # ----------------------------
-# Primary macro: pylabhub_add_external_prerequisite
-# - Registers ExternalProject_<pkg> and creates pylabhub::third_party::<pkg> imported target
+# Helper for printing command lists for debugging ExternalProject calls.
 # ----------------------------
-macro(pylabhub_add_external_prerequisite)
-  cmake_parse_arguments(_pylab
+function(_pylab_prereq_print_command name command_list_var)
+  # command_list_var is the NAME of the list variable, not its content
+  set(command_list ${${command_list_var}}) # Dereference the variable name
+  list(LENGTH command_list len)
+  if(len GREATER 0)
+    message(STATUS "[pylab_prereq]   - ${name}:")
+    foreach(arg IN LISTS command_list)
+      # Quote the argument to make spaces visible.
+      message(STATUS "      - \"${arg}\"")
+    endforeach()
+  endif()
+endfunction()
+
+
+# ----------------------------
+# Primary function: pylabhub_add_external_prerequisite
+# - Generic wrapper for ExternalProject_Add that enforces a post-build
+#   detection and normalization step.
+# - Creates a pylabhub::third_party::<pkg> UNKNOWN IMPORTED target.
+# ----------------------------
+function(pylabhub_add_external_prerequisite)
+  # This function defines a set of standard and custom arguments for the ExternalProject.
+  # Standard arguments like NAME, SOURCE_DIR, etc., define the core properties.
+  # Custom command arguments (e.g., CONFIGURE_COMMAND) allow overriding default build steps.
+  # Pattern arguments (e.g., LIB_PATTERNS) provide inputs for the post-build detection script.
+  cmake_parse_arguments(pylab
     ""
-    "NAME;SOURCE_DIR;BINARY_DIR;INSTALL_DIR"
-    "DEPENDS;CMAKE_ARGS"
+    "NAME;SOURCE_DIR;BINARY_DIR;INSTALL_DIR" # Single-value arguments
+    "DEPENDS;CMAKE_ARGS;CONFIGURE_COMMAND;BUILD_COMMAND;INSTALL_COMMAND;BUILD_BYPRODUCTS;LIB_PATTERNS;HEADER_SOURCE_PATTERNS" # List-valued arguments
     ${ARGN}
   )
 
-  if(NOT _pylab_NAME)
+  # --- Argument Validation ---
+  if(NOT pylab_NAME)
     message(FATAL_ERROR "pylabhub_add_external_prerequisite requires NAME")
   endif()
-  if(NOT _pylab_SOURCE_DIR OR NOT _pylab_BINARY_DIR OR NOT _pylab_INSTALL_DIR)
+  if(NOT pylab_SOURCE_DIR OR NOT pylab_BINARY_DIR OR NOT pylab_INSTALL_DIR)
     message(FATAL_ERROR "pylabhub_add_external_prerequisite requires SOURCE_DIR, BINARY_DIR and INSTALL_DIR")
   endif()
 
-  set(_pkg "${_pylab_NAME}")
-  set(_src "${_pylab_SOURCE_DIR}")
-  set(_bin "${_pylab_BINARY_DIR}")
-  set(_inst "${_pylab_INSTALL_DIR}")
+  set(_pkg "${pylab_NAME}")
+  set(_src "${pylab_SOURCE_DIR}")
+  set(_bin "${pylab_BINARY_DIR}")
+  set(_inst "${pylab_INSTALL_DIR}")
 
-  pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
-  pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
+  # --- Default CMake Commands ---
+  # If no custom commands are provided, fall back to a standard CMake build.
+  if(NOT pylab_CONFIGURE_COMMAND)
+    pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
+    pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
-  # Build CMAKE_ARGS list
-  set(_cmake_args "")
-  if(_pylab_CMAKE_ARGS)
-    foreach(_a IN LISTS _pylab_CMAKE_ARGS)
-      list(APPEND _cmake_args "${_a}")
-    endforeach()
+    set(_default_cmake_args
+      "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}"
+      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+      "-DCMAKE_C_FLAGS=${_clean_c_flags}"
+      "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}"
+    )
+    if(pylab_CMAKE_ARGS)
+      list(APPEND _default_cmake_args ${pylab_CMAKE_ARGS})
+    endif()
+    set(pylab_CONFIGURE_COMMAND ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}" ${_default_cmake_args})
   endif()
 
-  list(FIND _cmake_args "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>" _has_prefix)
-  if(_has_prefix EQUAL -1)
-    list(APPEND _cmake_args "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>")
+  if(NOT pylab_BUILD_COMMAND)
+    set(pylab_BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE})
   endif()
 
-  list(APPEND _cmake_args "-DCMAKE_C_FLAGS=${_clean_c_flags}")
-  list(APPEND _cmake_args "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}")
+  if(NOT pylab_INSTALL_COMMAND)
+    set(pylab_INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE})
+  endif()
 
-  # prepare detect script header
+  # --- Debugging Output ---
+  message(STATUS "")
+  message(STATUS "======================================================================")
+  message(STATUS "[pylab_prereq] Configuring external project: ${_pkg}")
+  message(STATUS "----------------------------------------------------------------------")
+  _pylab_prereq_print_command("Configure Command" pylab_CONFIGURE_COMMAND)
+  _pylab_prereq_print_command("Build Command"     pylab_BUILD_COMMAND)
+  _pylab_prereq_print_command("Install Command"   pylab_INSTALL_COMMAND)
+  _pylab_prereq_print_command("Build Byproducts"  pylab_BUILD_BYPRODUCTS)
+  _pylab_prereq_print_command("Lib Patterns"      pylab_LIB_PATTERNS)
+  _pylab_prereq_print_command("Header Patterns"   pylab_HEADER_SOURCE_PATTERNS)
+  _pylab_prereq_print_command("Dependencies"      pylab_DEPENDS)
+  message(STATUS "======================================================================")
+  message(STATUS "")
+
+
+  # --- Prepare Post-Build Detection Script ---
   set(_detect_script "${CMAKE_CURRENT_BINARY_DIR}/detect_${_pkg}.cmake")
-  file(WRITE "${_detect_script}" "set(PACKAGE_NAME \"${_pkg}\")\n")
+  file(WRITE  "${_detect_script}" "set(PACKAGE_NAME \"${_pkg}\")\n")
   file(APPEND "${_detect_script}" "set(PREREQ_INSTALL_DIR \"${_inst}\")\n")
   file(APPEND "${_detect_script}" "set(PACKAGE_BINARY_DIR \"${_bin}\")\n")
-  if(DEFINED LIB_PATTERNS)
-    file(APPEND "${_detect_script}" "set(LIB_PATTERNS \"${LIB_PATTERNS}\")\n")
-  else()
-    file(APPEND "${_detect_script}" "set(LIB_PATTERNS \"\")\n")
-  endif()
-  if(DEFINED HEADER_SOURCE_PATTERNS)
-    file(APPEND "${_detect_script}" "set(HEADER_SOURCE_PATTERNS \"${HEADER_SOURCE_PATTERNS}\")\n")
-  else()
-    file(APPEND "${_detect_script}" "set(HEADER_SOURCE_PATTERNS \"\")\n")
-  endif()
+  file(APPEND "${_detect_script}" "set(LIB_PATTERNS \"${pylab_LIB_PATTERNS}\")\n")
+  file(APPEND "${_detect_script}" "set(HEADER_SOURCE_PATTERNS \"${pylab_HEADER_SOURCE_PATTERNS}\")\n")
   file(APPEND "${_detect_script}" "set(STABLE_BASENAME \"${_pkg}-stable\")\n\n")
-  file(APPEND "${_detect_script}" "include(\"${CMAKE_CURRENT_LIST_DIR}/detect_external_project.cmake.in\")\n")
+  # The detection script is located in the third_party/cmake directory.
+  file(APPEND "${_detect_script}" "include(\"${CMAKE_SOURCE_DIR}/third_party/cmake/detect_external_project.cmake.in\")\n")
 
-  # ensure directories exist
-  file(MAKE_DIRECTORY "${_inst}")
-  file(MAKE_DIRECTORY "${_inst}/lib")
-  file(MAKE_DIRECTORY "${_inst}/include")
-  file(MAKE_DIRECTORY "${_bin}")
+  # --- Ensure directories exist ---
+  file(MAKE_DIRECTORY "${_inst}/lib" "${_inst}/include" "${_bin}")
 
-  set(_stamp "${_inst}/${_pkg}-stamp.txt")
+  # --- Default CMake Commands ---
+  # If no custom commands are provided, fall back to a standard CMake build.
+  if(NOT pylab_CONFIGURE_COMMAND)
+    pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
+    pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
-  # prepare ExternalProject args
-
-  #
-  # Build an explicit configure command with actual install path substituted.
-  # This avoids ExternalProject token substitution ambiguity (so -DCMAKE_INSTALL_PREFIX
-  # is always an absolute path instead of a placeholder that may be ignored).
-  #
-  set(_cmake_args_for_cmd "")
-  if(_cmake_args)
-    foreach(_ca IN LISTS _cmake_args)
-      string(REPLACE "<INSTALL_DIR>" "${_inst}" _ca_subst "${_ca}")
-      list(APPEND _cmake_args_for_cmd "${_ca_subst}")
-    endforeach()
+    set(_default_cmake_args
+      "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}"
+      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+      "-DCMAKE_C_FLAGS=${_clean_c_flags}"
+      "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}"
+    )
+    if(pylab_CMAKE_ARGS)
+      list(APPEND _default_cmake_args ${pylab_CMAKE_ARGS})
+    endif()
+    set(pylab_CONFIGURE_COMMAND ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}" ${_default_cmake_args})
   endif()
 
-  # Ensure CMAKE_INSTALL_PREFIX is present and absolute.
-  list(FIND _cmake_args_for_cmd "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}" _found_prefix2)
-  if(_found_prefix2 EQUAL -1)
-    list(APPEND _cmake_args_for_cmd "-DCMAKE_INSTALL_PREFIX:PATH=${_inst}")
+  if(NOT pylab_BUILD_COMMAND)
+    set(pylab_BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE})
   endif()
 
-  # Append sanitized flags
-  list(APPEND _cmake_args_for_cmd "-DCMAKE_C_FLAGS=${_clean_c_flags}")
-  list(APPEND _cmake_args_for_cmd "-DCMAKE_CXX_FLAGS=${_clean_cxx_flags}")
+  if(NOT pylab_INSTALL_COMMAND)
+    set(pylab_INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE})
+  endif()
 
-  # Build the configure command list
-  set(_configure_cmd_list ${CMAKE_COMMAND} -S "${_src}" -B "${_bin}")
-  foreach(_arg IN LISTS _cmake_args_for_cmd)
-    list(APPEND _configure_cmd_list "${_arg}")
-  endforeach()
-
-  # ExternalProject args: pass the explicit configure command tokens
+  # --- Construct ExternalProject Arguments ---
   set(_ext_args
-    SOURCE_DIR "${_src}"
-    BINARY_DIR "${_bin}"
+    SOURCE_DIR       "${_src}"
+    BINARY_DIR       "${_bin}"
+    INSTALL_DIR      "${_inst}"
     DOWNLOAD_COMMAND ""
+    CONFIGURE_COMMAND ${pylab_CONFIGURE_COMMAND}
+    BUILD_COMMAND     ${pylab_BUILD_COMMAND}
+    INSTALL_COMMAND   ${pylab_INSTALL_COMMAND}
+    COMMAND           ${CMAKE_COMMAND} -P "${_detect_script}" # Post-build normalization
   )
-  list(APPEND _ext_args CONFIGURE_COMMAND)
-  list(APPEND _ext_args ${_configure_cmd_list})
-  list(APPEND _ext_args BUILD_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --config ${CMAKE_BUILD_TYPE})
-  list(APPEND _ext_args INSTALL_COMMAND ${CMAKE_COMMAND} --build "${_bin}" --target install --config ${CMAKE_BUILD_TYPE})
-  list(APPEND _ext_args COMMAND ${CMAKE_COMMAND} -P "${_detect_script}")
-  list(APPEND _ext_args BUILD_BYPRODUCTS "${_stamp}")
-  
 
+  if(pylab_BUILD_BYPRODUCTS)
+    list(APPEND _ext_args BUILD_BYPRODUCTS ${pylab_BUILD_BYPRODUCTS})
+  endif()
 
-# (NOTE: we intentionally do not append CMAKE_ARGS separately; args are baked
-# into the explicit CONFIGURE_COMMAND above to guarantee prefix substitution.)
-  
-
-  if(_pylab_DEPENDS)
-    foreach(_d IN LISTS _pylab_DEPENDS)
+  if(pylab_DEPENDS)
+    set(_ep_deps "")
+    foreach(_d IN LISTS pylab_DEPENDS)
       string(STRIP "${_d}" _d_trim)
       if(_d_trim)
-        list(APPEND _ext_args DEPENDS "${_d_trim}_external")
+        # ExternalProject expects dependencies to have the `_external` suffix.
+        list(APPEND _ep_deps "${_d_trim}_external")
       endif()
     endforeach()
+    list(APPEND _ext_args DEPENDS ${_ep_deps})
   endif()
 
+  # --- Define the External Project ---
   ExternalProject_Add(${_pkg}_external ${_ext_args})
 
-  # create canonical imported target for consumers
-  if(${_pkg} MATCHES "^lib")
-    set(_stable_lib_base "${_inst}/lib/${_pkg}-stable")
-  else()
-    set(_stable_lib_base "${_inst}/lib/lib${_pkg}-stable")
-  endif()
+  # Wire this external project into the master `build_prerequisites` target.
+  # This allows a developer to build all prerequisites by building one target.
+  add_dependencies(build_prerequisites ${_pkg}_external)
 
-  if(MSVC)
-    set(_stable_lib "${_stable_lib_base}.lib")
-  else()
-    set(_stable_lib "${_stable_lib_base}.a")
-  endif()
+  # --- Create Canonical Imported Target ---
+  # This target represents the normalized, post-build artifact.
+  # Its location is stable and platform-agnostic (no file extension).
+  set(_stable_lib_path_no_ext "${_inst}/lib/${_pkg}-stable")
 
-  add_library(pylabhub::third_party::${_pkg} UNKNOWN IMPORTED GLOBAL)
-  set_target_properties(pylabhub::third_party::${_pkg} PROPERTIES
-    IMPORTED_LOCATION "${_stable_lib}"
-    INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${_inst}/include>;$<INSTALL_INTERFACE:include>"
-  )
-  add_dependencies(pylabhub::third_party::${_pkg} ${_pkg}_external)
-endmacro()
-
-# ----------------------------
-# Legacy compatibility utilities
-# ----------------------------
-# Create a legacy INTERFACE target for header-only packages
-function(pylabhub_create_legacy_header_target legacy_name)
-  if(NOT TARGET ${legacy_name})
-    add_library(${legacy_name} INTERFACE)
-    # Use generator expressions so the INTERFACE include dir is valid both in-source and in-build.
-    if(DEFINED PREREQ_INSTALL_DIR)
-      target_include_directories(${legacy_name} INTERFACE
-        "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>"
-        "$<INSTALL_INTERFACE:include>"
-      )
-    else()
-      target_include_directories(${legacy_name} INTERFACE
-        "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/prereqs/include>"
-        "$<INSTALL_INTERFACE:include>"
-      )
-    endif()
-  endif()
-endfunction()
-
-
-# Create a legacy UNKNOWN IMPORTED target for libs
-function(pylabhub_create_legacy_imported_lib legacy_name pkg_name)
-  if(NOT TARGET ${legacy_name})
-    add_library(${legacy_name} UNKNOWN IMPORTED GLOBAL)
-    if(DEFINED PREREQ_INSTALL_DIR)
-      set(_lib_stub "${PREREQ_INSTALL_DIR}/lib/lib${pkg_name}-stable")
-      set(_inc_stub "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>$<SEMICOLON>$<INSTALL_INTERFACE:include>")
-    else()
-      set(_lib_stub "${CMAKE_BINARY_DIR}/prereqs/lib/lib${pkg_name}-stable")
-      set(_inc_stub "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/prereqs/include>$<SEMICOLON>$<INSTALL_INTERFACE:include>")
-    endif()
-    set_target_properties(${legacy_name} PROPERTIES
-      IMPORTED_LOCATION "${_lib_stub}"
-      # INTERFACE_INCLUDE_DIRECTORIES accepts generator expressions; split with SEMICOLON
-      INTERFACE_INCLUDE_DIRECTORIES "${_inc_stub}"
+  if(NOT TARGET pylabhub::third_party::${_pkg})
+    add_library(pylabhub::third_party::${_pkg} UNKNOWN IMPORTED GLOBAL)
+    set_target_properties(pylabhub::third_party::${_pkg} PROPERTIES
+      IMPORTED_LOCATION "${_stable_lib_path_no_ext}"
+      INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${_inst}/include>;$<INSTALL_INTERFACE:include>"
     )
   endif()
+  add_dependencies(pylabhub::third_party::${_pkg} ${_pkg}_external)
+
 endfunction()
-
-
-function(pylabhub_ensure_legacy_alias pkg legacy_name)
-  # First consult explicit registrations (highest priority)
-  list(FIND THIRD_PARTY_REGISTERED_HEADER_ONLY "${pkg}" _is_hdr_reg)
-  list(FIND THIRD_PARTY_REGISTERED_IMPORTED_LIBS "${pkg}" _is_imp_reg)
-
-  if(_is_hdr_reg GREATER -1)
-    # registered header-only
-    pylabhub_create_legacy_header_target(${legacy_name})
-  elseif(_is_imp_reg GREATER -1)
-    # registered imported library
-    pylabhub_create_legacy_imported_lib(${legacy_name} ${pkg})
-  else()
-    # fallback: consult the static fallback list
-    list(FIND THIRD_PARTY_FALLBACK_HEADER_ONLY "${pkg}" _is_hdr_fallback)
-    if(NOT _is_hdr_fallback EQUAL -1)
-      pylabhub_create_legacy_header_target(${legacy_name})
-    else()
-      pylabhub_create_legacy_imported_lib(${legacy_name} ${pkg})
-    endif()
-  endif()
-
-  # If canonical target exists, prefer creating an ALIAS to it (keeps single source of truth)
-  if(TARGET pylabhub::third_party::${pkg} AND NOT TARGET ${legacy_name})
-    add_library(${legacy_name} ALIAS pylabhub::third_party::${pkg})
-  endif()
-endfunction()
-
-
-# Default legacy aliases used by wrappers; extend if necessary
-# pylabhub_ensure_legacy_alias("nlohmann_json" "pylabhub_nlohmann_json")
-# pylabhub_ensure_legacy_alias("msgpackc" "pylabhub_msgpackc")
-# pylabhub_ensure_legacy_alias("fmt" "pylabhub_fmt")
-# Add more mappings below when needed:
-# pylabhub_ensure_legacy_alias("libsodium" "pylabhub_libsodium")
-# pylabhub_ensure_legacy_alias("libzmq" "pylabhub_libzmq")
-# pylabhub_ensure_legacy_alias("luajit" "pylabhub_luajit")
 
 # ----------------------------
 # Print brief policy summary (only if configured)

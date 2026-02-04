@@ -1,12 +1,5 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 
-# This package is header-only: register it so the helper creates an INTERFACE target.
-pylabhub_register_header_only(fmt)
-
-# Expose legacy alias and canonical names (this uses the helper)
-# legacy name used by older wrappers
-pylabhub_ensure_legacy_alias("fmt" "pylabhub_fmt")
-
 # ---------------------------------------------------------------------------
 # third_party/cmake/fmt.cmake
 # Wrapper for fmt (third_party/fmt)
