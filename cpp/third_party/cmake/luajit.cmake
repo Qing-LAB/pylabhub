@@ -24,6 +24,7 @@ set(_install_dir "${PREREQ_INSTALL_DIR}")
 
 # Sanitize flags (strip -march etc.)
 pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
+pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
 # Choose make program
 if(DEFINED CMAKE_MAKE_PROGRAM AND CMAKE_MAKE_PROGRAM)
@@ -55,12 +56,12 @@ endif()
 if(NOT _git_result EQUAL 0 OR NOT _luajit_detected_version)
   if(THIRD_PARTY_LUAJIT_RELVER)
     set(_luajit_detected_version "${THIRD_PARTY_LUAJIT_RELVER}")
-    message(STATUS "[pylabhub-third-party][luajit] Using user-provided version: ${_luajit_detected_version}")
+    message(VERBOSE "[pylabhub-third-party][luajit] Using user-provided version: ${_luajit_detected_version}")
   else()
     message(FATAL_ERROR "[pylabhub-third-party][luajit] Could not determine version from git and THIRD_PARTY_LUAJIT_RELVER is not set.")
   endif()
 else()
-    message(STATUS "[pylabhub-third-party][luajit] Detected version from git: ${_luajit_detected_version}")
+    message(VERBOSE "[pylabhub-third-party][luajit] Detected version from git: ${_luajit_detected_version}")
 endif()
 
 # The LuaJIT build script expects a file containing just the rolling version number.
@@ -68,7 +69,7 @@ endif()
 string(REGEX MATCH "-([0-9]+)-g" _match "${_luajit_detected_version}")
 if(_match)
   set(_luajit_rolling_version "${CMAKE_MATCH_1}")
-  message(STATUS "[pylabhub-third-party][luajit] Extracted rolling version number: ${_luajit_rolling_version}")
+  message(VERBOSE "[pylabhub-third-party][luajit] Extracted rolling version number: ${_luajit_rolling_version}")
 else()
   # The build script can handle this gracefully, so we default to 0.
   set(_luajit_rolling_version "0")
@@ -76,36 +77,103 @@ else()
 endif()
 
 
-# --- 3. Define Build Commands for Makefile-based project ---
+# --- 3. Define Build Commands ---
 
 # At CONFIGURE time, create the version file in a temporary location.
 set(_relver_temp_file "${CMAKE_CURRENT_BINARY_DIR}/luajit_relver.txt")
 file(WRITE "${_relver_temp_file}" "${_luajit_rolling_version}\n")
-message(STATUS "[pylabhub-third-party][luajit] Generated rolling version file at: ${_relver_temp_file}")
+message(VERBOSE "[pylabhub-third-party][luajit] Generated rolling version file at: ${_relver_temp_file}")
 
-# At BUILD time, the CONFIGURE_COMMAND will copy the source code.
-set(_configure_command
-  ${CMAKE_COMMAND} -E copy_directory "${_source_dir}" "${_build_dir}"
-)
+# Conditional commands for MSVC (Windows)
+if(MSVC)
+  # CONFIGURE_COMMAND: Copy source.
+  set(_configure_command
+    ${CMAKE_COMMAND} -E copy_directory "${_source_dir}" "${_build_dir}"
+  )
 
-# The BUILD_COMMAND copies the version file, then runs make with a disabled
-# GIT_RELVER rule to prevent it from overwriting our file.
-set(_build_command
-  ${CMAKE_COMMAND} -E copy
+  # BUILD_COMMAND: Run msvcbuild.bat to build LuaJIT.
+  # We assume the environment is already set up with MSVC toolchain.
+  # We 'cd' into the build/src directory, then run the batch file with 'static' option.
+  # Re-introduce the version file copy to ensure CMake's version is used.
+ 
+  set(_build_command
+  # report action
+  COMMAND ${CMAKE_COMMAND} -E echo "Cleaning .git from ${_build_dir} and ${_build_dir}/src (if present)"
+  # try to remove .git if it is a file (gitfile for worktrees) - remove won't fail if it doesn't exist with -f
+  COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/.git"
+  COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/src/.git"
+  # try to remove .git if it is a directory
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/.git"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/src/.git"
+
+  # copy the .relver into place (use your prepared temp file)
+  COMMAND ${CMAKE_COMMAND} -E echo "Copying ${_relver_temp_file} into ${_build_dir}/src/.relver"
+  COMMAND ${CMAKE_COMMAND} -E copy
     "${_relver_temp_file}"
-    "${_build_dir}/src/luajit_relver.txt"
-  COMMAND ${CMAKE_COMMAND} -E env
-    "CC=${CMAKE_C_COMPILER}"
-    "CFLAGS=${_clean_c_flags}"
-    ${_make_prog} -C "${_build_dir}/src" "GIT_RELVER=:" ${_par_args}
+    "${_build_dir}/src/.relver"
+
+  # run msvcbuild.bat in the build/src directory (single cmake -E invocation)
+  COMMAND ${CMAKE_COMMAND} -E echo "Running msvcbuild.bat in ${_build_dir}/src"
+  COMMAND ${CMAKE_COMMAND} -E chdir "${_build_dir}/src" cmd.exe /c msvcbuild.bat static
 )
 
-set(_install_command
-  ${CMAKE_COMMAND} -E env
-    "CC=${CMAKE_C_COMPILER}"
-    "CFLAGS=${_clean_c_flags}"
-    ${_make_prog} -C "${_build_dir}" install "GIT_RELVER=:" PREFIX=${_install_dir}
-)
+  # INSTALL_COMMAND: Copy the built artifacts (static lib, dll, headers) to the install directory.
+  # Place both .lib and .dll into lib/ directory, as the staging helpers will move the DLL to bin/ later.
+  set(_install_command
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua51.lib" "${_install_dir}/lib/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua51.dll" "${_install_dir}/lib/" # Place DLL in lib, staging will move it.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/lua.h" "${_install_dir}/include/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_build_dir}/src/luajit.h" "${_install_dir}/include/"
+  )
+
+  # Update LIB_PATTERNS and BUILD_BYPRODUCTS for MSVC.
+  # Use more flexible patterns for libs and dlls.
+  set(_luajit_lib_patterns "lua*.lib;lua*.dll")
+  # Expect the detection script to create luajit-stable.lib from lua*.lib
+  set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.lib")
+
+else() # POSIX (Linux, macOS)
+  # At BUILD time, the CONFIGURE_COMMAND will copy the source code.
+  set(_configure_command
+    ${CMAKE_COMMAND} -E copy_directory "${_source_dir}" "${_build_dir}"
+  )
+
+  # The BUILD_COMMAND copies the version file, then runs make with a disabled
+  # GIT_RELVER rule to prevent it from overwriting our file.
+  set(_build_command
+    # report action
+    COMMAND ${CMAKE_COMMAND} -E echo "Cleaning .git from ${_build_dir} and ${_build_dir}/src (if present)"
+    # try to remove .git if it is a file (gitfile for worktrees) - remove won't fail if it doesn't exist with -f
+    COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/.git"
+    COMMAND ${CMAKE_COMMAND} -E remove -f "${_build_dir}/src/.git"
+    # try to remove .git if it is a directory
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/.git"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${_build_dir}/src/.git"
+
+    # copy the .relver into place (use your prepared temp file)
+    COMMAND ${CMAKE_COMMAND} -E echo "Copying ${_relver_temp_file} into ${_build_dir}/src/luajit_relver.txt"
+    ${CMAKE_COMMAND} -E copy
+      "${_relver_temp_file}"
+      "${_build_dir}/src/luajit_relver.txt"
+    COMMAND ${CMAKE_COMMAND} -E env
+      "CC=${CMAKE_C_COMPILER}"
+      "CFLAGS=${_clean_c_flags}"
+      ${_make_prog} -C "${_build_dir}/src" "GIT_RELVER=:" ${_par_args}
+  )
+
+  set(_install_command
+    ${CMAKE_COMMAND} -E env
+      "CC=${CMAKE_C_COMPILER}"
+      "CFLAGS=${_clean_c_flags}"
+      ${_make_prog} -C "${_build_dir}" install "GIT_RELVER=:" PREFIX=${_install_dir}
+  )
+
+  # Existing LIB_PATTERNS and BUILD_BYPRODUCTS for POSIX
+  set(_luajit_lib_patterns "libluajit*.a;luajit*.a;libluajit*.so;luajit*.so;libluajit*.dylib;luajit*.dylib")
+  set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.a")
+
+endif()
+
 # --- 4. Call the generic helper function ---
 pylabhub_add_external_prerequisite(
   NAME              luajit
@@ -119,11 +187,11 @@ pylabhub_add_external_prerequisite(
   INSTALL_COMMAND   ${_install_command}
 
   # Pass patterns for the post-build detection script
-  LIB_PATTERNS      "libluajit*.a;luajit*.a;libluajit*.so;luajit*.so;libluajit*.dylib;luajit*.dylib"
+  LIB_PATTERNS      "${_luajit_lib_patterns}"
   HEADER_SOURCE_PATTERNS "include/luajit-*"
 
   # The detection script creates the stable lib, which is our byproduct
-  BUILD_BYPRODUCTS  "${_install_dir}/lib/luajit-stable.a"
+  BUILD_BYPRODUCTS  "${_luajit_build_byproduct}"
 )
 
 message(STATUS "[pylabhub-third-party] luajit configuration complete.")
