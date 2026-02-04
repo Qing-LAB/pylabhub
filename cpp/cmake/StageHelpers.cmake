@@ -155,7 +155,8 @@ function(pylabhub_get_library_staging_commands)
     message(FATAL_ERROR "pylabhub_get_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
 
-  if(${ARG_ABSOLUTE_DIR})
+  # handle ABSOLUTE_DIR safely (keep calling convention the same)
+  if(ARG_ABSOLUTE_DIR)
     set(RUNTIME_DEST_DIR "${ARG_DESTINATION}")
     set(LINKTIME_DEST_DIR "${ARG_DESTINATION}")
   else()
@@ -164,10 +165,36 @@ function(pylabhub_get_library_staging_commands)
   endif()
   
   get_target_property(TGT_TYPE ${ARG_TARGET} TYPE)
+  # detect if the target is imported (handle imported targets robustly while preserving UNKNOWN_LIBRARY branch)
+  get_target_property(_is_imported ${ARG_TARGET} IMPORTED)
 
   set(commands_list "")
 
-  if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
+  if(_is_imported)
+    # Imported target: prefer IMPORTED_LOCATION, fall back to per-config IMPORTED_LOCATION_<CONFIG>
+    get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
+    if(imported_location)
+      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+           "${imported_location}" "${LINKTIME_DEST_DIR}/")
+    else()
+      if(CMAKE_CONFIGURATION_TYPES)
+        foreach(config ${CMAKE_CONFIGURATION_TYPES})
+          string(TOUPPER ${config} config_upper)
+          get_target_property(_imported_loc_cfg ${ARG_TARGET} "IMPORTED_LOCATION_${config_upper}")
+          if(_imported_loc_cfg)
+            list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                 "${_imported_loc_cfg}" "${LINKTIME_DEST_DIR}/")
+          endif()
+        endforeach()
+        if(NOT commands_list)
+          message(WARNING "Imported target ${ARG_TARGET} has no IMPORTED_LOCATION or IMPORTED_LOCATION_<CONFIG>; Skipping staging.")
+        endif()
+      else()
+        message(WARNING "Imported target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
+      endif()
+    endif()
+
+  elseif(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
     if(PYLABHUB_IS_WINDOWS)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
@@ -202,6 +229,16 @@ function(pylabhub_get_library_staging_commands)
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
          "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+  elseif(TGT_TYPE STREQUAL "UNKNOWN_LIBRARY")
+    # Handle UNKNOWN IMPORTED libraries, which are typically pre-built binaries.
+    # We rely on their IMPORTED_LOCATION property to find the actual file.
+    get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
+    if(imported_location)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "${imported_location}" "${LINKTIME_DEST_DIR}/")
+    else()
+        message(WARNING "UNKNOWN_LIBRARY target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
+    endif()
   endif()
 
   set(${ARG_OUT_COMMANDS} ${commands_list} PARENT_SCOPE)
@@ -350,7 +387,8 @@ function(pylabhub_attach_library_staging_commands)
   add_custom_command(
     TARGET ${ARG_ATTACH_TO}
     POST_BUILD
-    COMMAND ${stage_commands_list}
+    COMMAND_EXPAND_LISTS
+    ${stage_commands_list}
     COMMENT "Staging library artifacts for ${ARG_TARGET}"
     VERBATIM
   )
@@ -360,6 +398,9 @@ endfunction()
 #
 # Attaches custom commands to a target to stage header directories. This is
 # used to simplify the staging logic for third-party libraries.
+#
+# This version is hardened to correctly expand list arguments and ensure
+# commands are deferred until post-build using COMMAND_EXPAND_LISTS.
 #
 function(pylabhub_attach_headers_staging_commands)
   set(options "")
@@ -374,46 +415,42 @@ function(pylabhub_attach_headers_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_headers_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
   endif()
 
-  set(copy_commands "")
-  if(ARG_DIRECTORIES OR ARG_FILES)
-    if(ARG_SUBDIR)
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-    else()
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
-    endif()
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
+  if(NOT ARG_DIRECTORIES AND NOT ARG_FILES)
+    return()
   endif()
 
-  if(ARG_DIRECTORIES)
-    foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-      list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
-    endforeach()
+  if(ARG_SUBDIR)
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+  else()
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
   endif()
 
-  if(ARG_FILES)
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy ${ARG_FILES} "${DEST_DIR}/")
-  endif()
+  set(custom_cmds "")
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Preparing staging headers -> ${DEST_DIR}")
+  # Ensure destination directory exists (idempotent — does not remove siblings)
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
 
-  if(copy_commands)
-    set(_comment "Staging headers")
-    if(ARG_DIRECTORIES)
-      string(APPEND _comment " from directories: ${ARG_DIRECTORIES}")
-    endif()
-    if(ARG_FILES)
-      string(APPEND _comment " (specific files)")
-    endif()
+  # Copy directories (use copy_directory_if_different — non-destructive for siblings)
+  foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DEST_DIR}")
+  endforeach()
 
-    add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
-      ${copy_commands}
-      COMMENT "${_comment}"
-      VERBATIM
-    )
-  endif()
+  # Copy individual files (copy_if_different each file)
+  foreach(_file IN LISTS ARG_FILES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying file: ${_file} -> ${DEST_DIR}/")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "${DEST_DIR}/")
+  endforeach()
 
-  # If the headers come from an ExternalProject, ensure the staging target
-  # depends on it, so the headers are downloaded/built before we try to copy them.
+  add_custom_command(
+    TARGET ${ARG_ATTACH_TO}
+    POST_BUILD
+    COMMAND_EXPAND_LISTS
+    ${custom_cmds}
+    COMMENT "Staging headers for ${ARG_ATTACH_TO}"
+    VERBATIM
+  )
+
   if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
     add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
   endif()

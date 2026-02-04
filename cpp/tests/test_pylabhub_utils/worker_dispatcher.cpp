@@ -6,6 +6,7 @@
 #include "jsonconfig_workers.h"
 #include "lifecycle_workers.h"
 #include "logger_workers.h"
+#include "messagehub_workers.h"
 
 #include <string>
 #include <vector>
@@ -184,6 +185,21 @@ static int dispatch_utils_workers(int argc, char **argv)
         if (scenario == "dynamic.persistent_module_finalize")
         {
             return pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize();
+        }
+        if (scenario == "dynamic.unload_timeout")
+        {
+            return pylabhub::tests::worker::lifecycle::dynamic_unload_timeout();
+        }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
+    }
+    else if (module == "messagehub")
+    {
+        fmt::print("Dispatching to messagehub worker scenario: '{}'\n", scenario);
+        if (scenario == "lifecycle_initialized_follows_state")
+        {
+            return pylabhub::tests::worker::messagehub::lifecycle_initialized_follows_state(argc,
+                                                                                            argv);
         }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;

@@ -201,9 +201,14 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * @brief Loads a dynamic module and its dependencies.
      *
      * This function is thread-safe and idempotent. If the module is already
-     * loaded, it will increment its internal reference count and return true.
-     * It recursively loads all dependencies. This function must not be called
-     * from within a startup or shutdown callback.
+     * loaded, it immediately returns true. If not, it recursively loads all
+     * dependencies and then runs the module's startup callback. This function must
+     * not be called from within another module's startup or shutdown callback.
+     *
+     * @note The module's internal reference count is managed automatically. This
+     *       count tracks how many other *loaded dynamic modules* depend on it.
+     *       A direct call to `load_module` does not increment this count; it
+     *       simply ensures the module is in the `LOADED` state.
      *
      * @param name The name of the module to load.
      * @return `true` if the module was loaded successfully, `false` otherwise.
@@ -211,17 +216,23 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
     bool load_module(const char *name, std::source_location loc);
 
     /**
-     * @brief Unloads a dynamic module.
+     * @brief Unloads a dynamic module and de-registers it.
      *
-     * This function is thread-safe and idempotent. It decrements the module's
-     * reference count. The module is only fully shut down if its reference
-     * count reaches zero. Unloading a module will recursively trigger an unload
-     * on its dependencies. This function must not be called from within a
+     * This function is thread-safe and idempotent. It will only succeed if no
+     * other loaded dynamic modules depend on the target module (i.e., its
+     * internal reference count is zero). A successful unload performs these steps:
+     * 1.  Runs the module's `shutdown()` callback.
+     * 2.  Recursively unloads any of its dependencies that are no longer needed.
+     * 3.  **Removes the module and its unreferenced dependencies from the manager.**
+     *
+     * To reload a module that has been unloaded, it must be registered again via
+     * `register_dynamic_module()`. This function must not be called from within a
      * startup or shutdown callback.
      *
      * @param name The name of the module to unload.
-     * @return `true` if the module was considered for unloading, `false` if it
-     *         was not found or not loaded.
+     * @return `true` if the module was considered for unloading (even if it was
+     *         already unloaded). Returns `false` if the module could not be
+     *         unloaded because it is still in use by another loaded module.
      */
     bool unload_module(const char *name, std::source_location loc);
 
@@ -237,8 +248,6 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
     std::unique_ptr<LifecycleManagerImpl> pImpl;
 };
 
-using namespace pylabhub::platform;
-using namespace pylabhub::debug;
 /**
  * The following functions and classes are the actual interface for the users.
  */
@@ -445,7 +454,7 @@ class LifecycleGuard
                 "were ignored.\n[PLH_Lifecycle] Constructor was located in function {}. ({}:{}).",
                 app_name, pid, m_loc.function_name(),
                 pylabhub::format_tools::filename_only(m_loc.file_name()), m_loc.line());
-            print_stack_trace();
+            pylabhub::debug::print_stack_trace();
         }
     }
 

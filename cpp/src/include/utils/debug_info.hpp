@@ -41,21 +41,24 @@ namespace pylabhub::debug
  * @brief Prints the current call stack (stack trace) to `stderr`.
  *
  * This function provides a platform-specific implementation to capture and print
- * the program's call stack. On Windows, it uses `CaptureStackBackTrace` and `DbgHelp`
- * functions to resolve symbols and line numbers. On POSIX systems, it uses
- * `backtrace`, `backtrace_symbols`, `dladdr`, and `addr2line` (if available)
- * to provide detailed stack information. This is implemented as a two-phase process:
- * 1. An immediate, safe print of in-process information (e.g., from `dladdr`).
- * 2. A conditional, secondary print of detailed line numbers from external
- *    tools like `addr2line` or `atos`. This phase can be disabled for safety.
+ * the program's call stack. On Windows, it uses `CaptureStackBackTrace` and `DbgHelp`.
+ * On POSIX systems, it uses `backtrace`, `dladdr`, and optionally external tools
+ * like `addr2line` or `atos` for detailed symbol resolution.
  *
- * @param use_external_tools If `false` (default), only the fast and safe
- *        in-process symbol resolution is performed. If `true`, the function will
- *        also attempt to call external tools for more detailed symbols, which
- *        carries a minor risk of hanging in multithreaded contexts. This
- *        parameter has no effect on Windows.
+ * Errors during stack trace capture are reported to `stderr`.
  *
- * Errors during stack trace capture or symbol resolution are reported to `stderr`.
+ * @param use_external_tools On POSIX, if `true`, the function will also attempt
+ *        to call external tools (`addr2line`, `atos`) for more detailed symbols.
+ *        This carries a minor risk of hanging in some contexts. This parameter has
+ *        no effect on Windows, which always uses in-process `DbgHelp` APIs.
+ *
+ * @warning **Not Async-Signal-Safe**: This function must NOT be called from a
+ *          signal handler. It allocates memory (`new`, `std::string`), performs
+ *          I/O (`popen`, `fmt::print`), and calls other non-reentrant functions,
+ *          which can lead to deadlocks or crashes if used in a signal handler.
+ * @warning **Not Thread-Safe**: This function is not guaranteed to be safe for
+ *          concurrent calls from multiple threads. Prefer calling it from a single
+ *          thread or from crash handlers where concurrency is controlled.
  */
 PYLABHUB_UTILS_EXPORT void print_stack_trace(bool use_external_tools = false) noexcept;
 
