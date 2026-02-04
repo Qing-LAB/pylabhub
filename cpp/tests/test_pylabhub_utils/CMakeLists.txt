@@ -11,12 +11,15 @@ add_executable(test_pylabhub_utils
   test_logger.cpp
   test_lifecycle.cpp
   test_lifecycle_dynamic.cpp
+  test_messagehub.cpp
+  test_datablock.cpp
 
   # Worker implementations
   filelock_workers.cpp
   jsonconfig_workers.cpp
   logger_workers.cpp
   lifecycle_workers.cpp
+  messagehub_workers.cpp
   worker_dispatcher.cpp
 )
 

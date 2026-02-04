@@ -22,8 +22,6 @@ using pylabhub::tests::helper::StringCapture;
 // #include "string_capture.h" // <-- include your project's StringCapture definition if needed
 // #include "debug.h" // <-- include your PLH_DEBUG / debug_msg macros if needed
 
-
-
 // The test checks the three important pieces separately:
 //  - the debug preamble and file path
 //  - the location fragment containing line number and func marker
@@ -156,12 +154,14 @@ TEST(SanitizerCheckNoLifecycle, DetectsDataRace)
     {
         long shared_value = 0;
         std::thread t1(
-            [&] () {
+            [&]()
+            {
                 for (int i = 0; i < 1000; ++i)
                     shared_value++;
             });
         std::thread t2(
-            [&] () {
+            [&]()
+            {
                 for (int i = 0; i < 1000; ++i)
                     shared_value++;
             });
@@ -260,7 +260,8 @@ TEST(SanitizerCheckNoLifecycle, DetectsSignedIntegerOverflow)
 
 // --- Tests from test_debug_platform.cpp ---
 
-TEST(DebugPlatformTest, SRCLOC_TO_STR) {
+TEST(DebugPlatformTest, SRCLOC_TO_STR)
+{
     std::source_location loc = std::source_location::current();
     std::string expected_filename(pylabhub::format_tools::filename_only(loc.file_name()));
     std::string result = SRCLOC_TO_STR(loc);
@@ -271,26 +272,31 @@ TEST(DebugPlatformTest, SRCLOC_TO_STR) {
     EXPECT_THAT(result, EndsWith(std::string(":") + loc.function_name()));
 }
 
-TEST(DebugPlatformTest, GetPID) {
+TEST(DebugPlatformTest, GetPID)
+{
     uint64_t pid = get_pid();
     // On most systems, PID is > 0.
     EXPECT_GT(pid, 0);
 }
 
-TEST(DebugPlatformTest, GetNativeThreadID) {
+TEST(DebugPlatformTest, GetNativeThreadID)
+{
     uint64_t tid = get_native_thread_id();
     // On most systems, TID is > 0.
     EXPECT_GT(tid, 0);
 
     // Verify that different threads get different TIDs (or at least valid ones).
-    std::thread t([&]() {
-        uint64_t new_tid = get_native_thread_id();
-        EXPECT_GT(new_tid, 0);
-    });
+    std::thread t(
+        [&]()
+        {
+            uint64_t new_tid = get_native_thread_id();
+            EXPECT_GT(new_tid, 0);
+        });
     t.join();
 }
 
-TEST(DebugPlatformTest, GetExecutableName) {
+TEST(DebugPlatformTest, GetExecutableName)
+{
     // Test with include_path = true
     std::string full_path = get_executable_name(true);
     EXPECT_FALSE(full_path.empty());
@@ -310,12 +316,13 @@ TEST(DebugPlatformTest, GetExecutableName) {
     // For now, we trust the internal `try-catch` in `get_executable_name`.
 }
 
-TEST(DebugPlatformTest, DebugMsgRtFormatError) {
+TEST(DebugPlatformTest, DebugMsgRtFormatError)
+{
     StringCapture capture(STDERR_FILENO); // Use the shared helper class
 
-    // Trigger fmt::format_error by providing an incorrect number of arguments for a runtime format string.
-    // debug_msg_rt expects (string_view fmt_str, const Args&... args)
-    // If we pass an invalid format specifier, fmt::vprint will throw.
+    // Trigger fmt::format_error by providing an incorrect number of arguments for a runtime format
+    // string. debug_msg_rt expects (string_view fmt_str, const Args&... args) If we pass an invalid
+    // format specifier, fmt::vprint will throw.
     std::string runtime_fmt = "Value: {} {}"; // Expects 2 args, but we'll pass 1.
     debug_msg_rt(runtime_fmt, 123);
 

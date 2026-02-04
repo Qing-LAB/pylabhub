@@ -6,6 +6,7 @@
 # - Excludes paths listed in EXCLUDE_PATH_FRAGMENTS or .formatignore.
 # - Supports --check and --quiet.
 # - Safe handling of filenames via -print0 and read -d ''.
+# - Portable across Linux, macOS and FreeBSD.
 # --------------------------------------------------------------------
 
 set -euo pipefail
@@ -16,13 +17,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # -------------------------
 # Configuration (editable)
 # -------------------------
-# Directories to scan (absolute paths will be constructed using ROOT)
 SCAN_DIRS=( "include" "src" "tests" )
 
-# Built-in exclude fragments (substring matched anywhere in path)
+# Exclude fragments to prune (fast). We want to prune third_party but allow a
+# very small explicit whitelist under it (handled in a separate pass).
 EXCLUDE_PATH_FRAGMENTS=( "third_party" ".git" "_build" "build" )
 
-# Optional: a repo-level ignore file (one path fragment or path per line)
+# Explicit exceptions (precise). We'll run a small second find pass (no pruning)
+# to collect only these paths:
+# - any file exactly matching */third_party/CMakeLists.txt
+# - any file under */third_party/cmake/** (recursive)
+EXPLICIT_EXCEPTIONS=( "third_party/CMakeLists.txt" "third_party/cmake" )
+
 FORMAT_IGNORE_FILE="${ROOT}/.formatignore"
 
 # Behavior flags (can be overridden via env)
@@ -37,8 +43,6 @@ Usage: $(basename "$0") [--check] [--quiet] [-h|--help]
   --check   : verify formatting (no files modified). Exit 1 if any file needs formatting.
   --quiet   : suppress per-file output (still prints summary).
   -h|--help : show this help
-You can also set environment variables:
-  FORCE_TOP_LEVEL=1  # force using ROOT/.clang-format
 EOF
 }
 
@@ -55,125 +59,209 @@ for arg in "$@"; do
 done
 
 # -------------------------
-# Build final exclude list
+# Portable mkdtemp helper
 # -------------------------
-# Start with built-in fragments
-EXCLUDES=("${EXCLUDE_PATH_FRAGMENTS[@]}")
+portable_mkdtemp() {
+  local d
+  if d=$(mktemp -d 2>/dev/null); then
+    printf '%s' "$d"
+    return 0
+  fi
+  if d=$(mktemp -d -t format 2>/dev/null); then
+    printf '%s' "$d"
+    return 0
+  fi
+  d="/tmp/format.$$"
+  mkdir -p "$d"
+  printf '%s' "$d"
+}
 
-# If .formatignore exists, append non-empty, non-comment lines
+# -------------------------
+# Build final exclude list (allow !negation in .formatignore optionally ignored)
+# -------------------------
+EXCLUDES=()
+if [ ${#EXCLUDE_PATH_FRAGMENTS[@]} -gt 0 ]; then
+  for frag in "${EXCLUDE_PATH_FRAGMENTS[@]}"; do
+    EXCLUDES+=("${frag%/}")
+  done
+fi
+
+# If .formatignore exists, append non-empty, non-comment lines (ignore '!' negation lines here
+# to keep explicit exception logic deterministic; you may adapt if you want to support '!' there).
 if [ -f "$FORMAT_IGNORE_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     # strip leading/trailing whitespace
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
-    # skip empty/comment
     [[ -z "$line" ]] && continue
     [[ "$line" =~ ^# ]] && continue
+    # Ignore negation lines in .formatignore for simplicity; keep config in-script.
+    if [[ "$line" == '!'* ]]; then
+      continue
+    fi
     EXCLUDES+=("$line")
   done < "$FORMAT_IGNORE_FILE"
 fi
 
-# Helper: build find-style -path predicates that match a fragment anywhere in the path.
-# Example: fragment "third_party" produces -path "*/third_party" -o -path "*/third_party/*"
-_build_find_exclude_args() {
-  local dir="$1"   # root directory we will scan, used to optionally create anchored patterns (not required)
-  local -n out_arr="$2"
-  out_arr=()
+# -------------------------
+# Build find prune tokens (always prune EXCLUDES)
+# -------------------------
+_build_prune_tokens() {
+  local frag
+  local out=""
   for frag in "${EXCLUDES[@]}"; do
-    # if frag looks like an absolute or relative path (contains /), match that path segment as-is
-    # otherwise match any path component containing this fragment.
-    out_arr+=( -path "*/${frag}" -o -path "*/${frag}/*" -o )
+    out="${out} -path '*/${frag}' -o -path '*/${frag}/*' -o"
   done
-  # remove trailing -o if present
-  if [ ${#out_arr[@]} -gt 0 ]; then
-    unset 'out_arr[${#out_arr[@]}-1]'
+  if [ -n "$out" ]; then
+    out="${out% -o}"
   fi
+  printf '%s' "$out"
 }
+PRUNE_TOKENS="$(_build_prune_tokens)"
 
 # -------------------------
-# Finder helpers
+# Finder helpers (first pass: prune excludes)
+# Each collector prints NUL-separated list of matches
 # -------------------------
-collect_cpp_files() {
+collect_cpp_files_pruned() {
   local root_dir="$1"
-  local -n result="$2"
-  result=()
   [ -d "$root_dir" ] || return 0
 
-  local find_excl=()
-  _build_find_exclude_args "$root_dir" find_excl
-
-  # Use -print0 for safe handling of special characters and spaces
-  if [ ${#find_excl[@]} -gt 0 ]; then
-    while IFS= read -r -d '' f; do result+=("$f"); done < <(
-      find "$root_dir" \( "${find_excl[@]}" \) -prune -o -type f \
-        \( -iname '*.c' -o -iname '*.cc' -o -iname '*.cpp' -o -iname '*.cxx' \
-           -o -iname '*.h' -o -iname '*.hh' -o -iname '*.hpp' -o -iname '*.hxx' \) -print0
-    )
+  if [ -n "$PRUNE_TOKENS" ]; then
+    eval "find \"${root_dir}\" \( ${PRUNE_TOKENS} \) -prune -o -type f \
+      \( -iname '*.c' -o -iname '*.cc' -o -iname '*.cpp' -o -iname '*.cxx' \
+         -o -iname '*.h' -o -iname '*.hh' -o -iname '*.hpp' -o -iname '*.hxx' \) -print0"
   else
-    while IFS= read -r -d '' f; do result+=("$f"); done < <(
-      find "$root_dir" -type f \
-        \( -iname '*.c' -o -iname '*.cc' -o -iname '*.cpp' -o -iname '*.cxx' \
-           -o -iname '*.h' -o -iname '*.hh' -o -iname '*.hpp' -o -iname '*.hxx' \) -print0
-    )
+    find "$root_dir" -type f \
+      \( -iname '*.c' -o -iname '*.cc' -o -iname '*.cpp' -o -iname '*.cxx' \
+         -o -iname '*.h' -o -iname '*.hh' -o -iname '*.hpp' -o -iname '*.hxx' \) -print0
   fi
 }
 
-collect_cmake_files() {
+collect_cmake_files_pruned() {
   local root_dir="$1"
-  local -n result="$2"
-  result=()
   [ -d "$root_dir" ] || return 0
 
-  local find_excl=()
-  _build_find_exclude_args "$root_dir" find_excl
-
-  if [ ${#find_excl[@]} -gt 0 ]; then
-    while IFS= read -r -d '' f; do result+=("$f"); done < <(
-      find "$root_dir" \( "${find_excl[@]}" \) -prune -o -type f \
-        \( -iname 'CMakeLists.txt' -o -iname '*.cmake' \) -print0
-    )
+  if [ -n "$PRUNE_TOKENS" ]; then
+    eval "find \"${root_dir}\" \( ${PRUNE_TOKENS} \) -prune -o -type f \
+      \( -iname 'CMakeLists.txt' -o -iname '*.cmake' \) -print0"
   else
-    while IFS= read -r -d '' f; do result+=("$f"); done < <(
-      find "$root_dir" -type f \( -iname 'CMakeLists.txt' -o -iname '*.cmake' \) -print0
-    )
+    find "$root_dir" -type f \( -iname 'CMakeLists.txt' -o -iname '*.cmake' \) -print0
   fi
 }
 
 # -------------------------
-# Collect files
+# First pass: collect files with pruning (fast)
 # -------------------------
 CXX_FILES=()
 CMAKE_FILES=()
 
 for d in "${SCAN_DIRS[@]}"; do
   full="${ROOT}/${d}"
-  collect_cpp_files "$full" out_cpp
-  # append
-  for f in "${out_cpp[@]}"; do CXX_FILES+=("$f"); done
-
-  collect_cmake_files "$full" out_cmake
-  for f in "${out_cmake[@]}"; do CMAKE_FILES+=("$f"); done
+  if [ -d "$full" ]; then
+    while IFS= read -r -d '' f; do CXX_FILES+=("$f"); done < <(collect_cpp_files_pruned "$full")
+    while IFS= read -r -d '' f; do CMAKE_FILES+=("$f"); done < <(collect_cmake_files_pruned "$full")
+  fi
 done
 
-# Also include top-level CMake files (root) - useful for top-level CMakeLists.txt
-collect_cmake_files "$ROOT" top_cmake
-for f in "${top_cmake[@]}"; do
-  # dedupe: only add if not already present
+# Also include top-level CMake files from ROOT
+while IFS= read -r -d '' f; do
   case " ${CMAKE_FILES[*]} " in
     *" $f "*) : ;; # already present
     *) CMAKE_FILES+=("$f") ;;
   esac
-done
+done < <(collect_cmake_files_pruned "$ROOT")
 
-# Report counts
+# -------------------------
+# Second pass: collect explicit exceptions (no pruning)
+# Only add the precise exception paths we want under third_party.
+# -------------------------
+_collect_exception_files_no_prune() {
+  # This function collects files matching the EXPLICIT_EXCEPTIONS patterns under ROOT.
+  # It prints NUL-delimited matches to stdout.
+  local pat
+  local find_expr=""
+  for pat in "${EXPLICIT_EXCEPTIONS[@]}"; do
+    # normalize pat (strip leading/trailing slashes)
+    pat="${pat#/}"; pat="${pat%/}"
+    if [[ "$pat" == */* ]]; then
+      # If pattern refers to a directory (e.g. third_party/cmake) we want the subtree:
+      # match either the directory itself (rare for files) or any file under it.
+      find_expr="${find_expr} -path '*/${pat}/*' -o -path '*/${pat}' -o"
+    else
+      # Not expected (we keep precise patterns only), but include as a filename fragment
+      find_expr="${find_expr} -path '*/${pat}' -o -path '*/${pat}/*' -o"
+    fi
+  done
+
+  if [ -n "$find_expr" ]; then
+    # remove trailing -o
+    find_expr="${find_expr% -o}"
+    # Use eval to expand the tokenized expression safely.
+    eval "find \"${ROOT}\" -type f \( ${find_expr} \) -print0"
+  fi
+}
+
+# Run exception collector and append to CMAKE_FILES (these are CMake exception paths).
+# We only append matches that look like CMake files (CMakeLists.txt or *.cmake)
+while IFS= read -r -d '' f; do
+  case "$f" in
+    */CMakeLists.txt|*.cmake)
+      CMAKE_FILES+=("$f")
+      ;;
+    *)
+      # ignore non-cmake exceptions (shouldn't occur given our EXPLICIT_EXCEPTIONS)
+      ;;
+  esac
+done < <(_collect_exception_files_no_prune)
+
+# -------------------------
+# Dedupe file lists (simple portable dedupe)
+# -------------------------
+_dedupe_array() {
+  # args: name of source array; will print NUL-delimded unique list
+  local src_name="$1"
+  eval "local -a src=(\"\${${src_name}[@]}\")"
+  local seen_file
+  # Use temporary file to hold seen keys (portable). We'll print NUL-delimited output.
+  # But to keep it simple and portable, we'll use a bash loop with a string-based 'seen' list.
+  local out=()
+  local f
+  for f in "${src[@]}"; do
+    # Use simple dedupe by membership test in out (works for typical repo sizes)
+    local found=0
+    for seen_file in "${out[@]}"; do
+      if [ "$seen_file" = "$f" ]; then found=1; break; fi
+    done
+    if [ "$found" -eq 0 ]; then
+      out+=("$f")
+    fi
+  done
+  # Print as NUL-delimited so callers can read easily
+  for f in "${out[@]}"; do printf '%s\0' "$f"; done
+}
+
+# Replace arrays with deduped versions
+CXX_FILES_NEW=()
+while IFS= read -r -d '' f; do CXX_FILES_NEW+=("$f"); done < <(_dedupe_array CXX_FILES)
+CMAKE_FILES_NEW=()
+while IFS= read -r -d '' f; do CMAKE_FILES_NEW+=("$f"); done < <(_dedupe_array CMAKE_FILES)
+CXX_FILES=("${CXX_FILES_NEW[@]}")
+CMAKE_FILES=("${CMAKE_FILES_NEW[@]}")
+
+# -------------------------
+# Report
+# -------------------------
 echo "---------------------------------------------"
 echo "Format script root: $ROOT"
 echo "Check mode: $CHECK_MODE"
 echo "Show per-file: $SHOW_FILES"
 echo "Total C/C++ files found: ${#CXX_FILES[@]}"
 echo "Total CMake files found:   ${#CMAKE_FILES[@]}"
-echo "Excludes (from builtin + .formatignore):"
+echo "Pruned excludes:"
 for e in "${EXCLUDES[@]}"; do echo "  - $e"; done
+echo "Explicit exceptions added (exact):"
+for e in "${EXPLICIT_EXCEPTIONS[@]}"; do echo "  - $e"; done
 echo "---------------------------------------------"
 
 if [ ${#CXX_FILES[@]} -eq 0 ] && [ ${#CMAKE_FILES[@]} -eq 0 ]; then
@@ -182,10 +270,9 @@ if [ ${#CXX_FILES[@]} -eq 0 ] && [ ${#CMAKE_FILES[@]} -eq 0 ]; then
 fi
 
 # -------------------------
-# clang-format step (replacement to use --assume-filename when FORCE_TOP_LEVEL)
+# clang-format step (unchanged logic)
 # -------------------------
 if command -v clang-format >/dev/null 2>&1; then
-  # default: ask clang-format to use discovery
   STYLE_ARG="-style=file"
 
   # detect support for --dry-run -Werror
@@ -203,7 +290,6 @@ if command -v clang-format >/dev/null 2>&1; then
         for f in "${CXX_FILES[@]}"; do
           [ "$SHOW_FILES" -eq 1 ] && printf "Checking: %s\n" "$f"
           if [ "${FORCE_TOP_LEVEL}" -eq 1 ]; then
-            # force discovery starting at ROOT by assuming filename placed in ROOT
             ASSUME_ARG="--assume-filename=${ROOT}/$(basename "$f")"
           else
             ASSUME_ARG=""
@@ -214,7 +300,7 @@ if command -v clang-format >/dev/null 2>&1; then
           fi
         done
       else
-        TMPDIR="$(mktemp -d)"
+        TMPDIR="$(portable_mkdtemp)"
         for f in "${CXX_FILES[@]}"; do
           [ "$SHOW_FILES" -eq 1 ] && printf "Checking: %s\n" "$f"
           if [ "${FORCE_TOP_LEVEL}" -eq 1 ]; then
@@ -258,13 +344,11 @@ else
   echo "clang-format not found; skipping C/C++ formatting. (install clang-format)"
 fi
 
-
 # -------------------------
-# cmake-format step
+# cmake-format step (unchanged logic)
 # -------------------------
 if command -v cmake-format >/dev/null 2>&1; then
-  # Detect supported CLI option for specifying config
-  CMAKE_FORMAT_CONFIG_OPT="--config-files"   # preferred
+  CMAKE_FORMAT_CONFIG_OPT="--config-files"
   if ! cmake-format --help 2>&1 | grep -q -- '--config-files'; then
     if cmake-format --help 2>&1 | grep -q -- '--config-file'; then
       CMAKE_FORMAT_CONFIG_OPT="--config-file"
@@ -283,10 +367,9 @@ if command -v cmake-format >/dev/null 2>&1; then
     if [ "$CHECK_MODE" -eq 1 ]; then
       echo
       echo "cmake-format: CHECK mode..."
-      TMPDIR="$(mktemp -d)"
+      TMPDIR="$(portable_mkdtemp)"
       STATUS=0
 
-      # show top of dump-config for debugging
       set +e
       if cmake-format "${CMAKE_FORMAT_CONFIG_ARG[@]}" --dump-config >/dev/null 2>&1; then
         cmake-format "${CMAKE_FORMAT_CONFIG_ARG[@]}" --dump-config | sed -n '1,60p'

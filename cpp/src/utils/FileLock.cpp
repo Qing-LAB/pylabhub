@@ -743,6 +743,8 @@ void do_filelock_startup(const char *arg)
 void do_filelock_cleanup(const char *arg)
 {
     bool perform_cleanup = true; // Default to true for safety
+    // The 'arg' is a C-style string used to pass boolean state from ModuleDef.
+    // "false" string explicitly disables cleanup.
     if (arg && strcmp(arg, "false") == 0)
     {
         perform_cleanup = false;
