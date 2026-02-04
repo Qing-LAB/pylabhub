@@ -40,6 +40,38 @@ endmacro()
 if(WIN32)
   message(STATUS "Detected: Windows (MSVC) build")
 
+  # Executable candidates (absolute)
+  file(GLOB _exe_rel "${_src_dir}/luajit*.exe")
+  set(_abs_exes "")
+  foreach(_e IN LISTS _exe_rel)
+    # skip obvious non-executable extensions
+    get_filename_component(_ename "${_e}" NAME)
+    get_filename_component(_epath "${_e}" DIRECTORY)
+    if(_ename MATCHES "\\.(c|h|o|txt|a|so|lib|dll)$")
+      message(VERBOSE "Skipping non-exec by extension: ${_e}")
+      continue()
+    endif()
+
+    if(EXISTS "${_e}" AND NOT IS_DIRECTORY "${_e}")
+      # optional additional check: ensure file is executable on POSIX
+      find_program(_LUAJIT_EXECUTABLE_CHECKER
+             NAMES ${_ename}
+             PATHS ${_epath}
+             NO_DEFAULT_PATH        # Do not search standard system paths (e.g., /usr/bin, /bin)
+             NO_CMAKE_FIND_ROOT_PATH # Do not search within the CMake find root path
+      )
+      if(_LUAJIT_EXECUTABLE_CHECKER)
+        message(STATUS "executable ${_e} found.")
+        list(APPEND _abs_exes "${_e}")
+      else()
+        message(STATUS "${_e} is not an executable, skipping...")
+      endif()
+    endif()
+  endforeach()
+  if(_abs_exes)
+    _copy_abs_files(_abs_exes "${_dest_bin_dir}")
+  endif()
+
   # Find absolute paths to libs and dlls (use GLOB to discover)
   file(GLOB _libs_abs RELATIVE "${_src_dir}" "${_src_dir}/lua*.lib" "${_src_dir}/*luajit*.lib")
   file(GLOB _dlls_abs RELATIVE "${_src_dir}" "${_src_dir}/lua*.dll" "${_src_dir}/*luajit*.dll")
