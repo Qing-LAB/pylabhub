@@ -457,7 +457,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all()
 
 int pylabhub::tests::worker::lifecycle::dynamic_persistent_in_middle()
 {
-    PLH_DEBUG("--> WORKER dynamic_persistent_in_middle STARTED");
+    PLH_DEBUG("-> WORKER dynamic_persistent_in_middle STARTED");
     reset_dynamic_counters();
     LifecycleGuard guard(Logger::GetLifecycleModule());
 
