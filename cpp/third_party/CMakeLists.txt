@@ -30,22 +30,25 @@ file(MAKE_DIRECTORY "${PREREQ_INSTALL_DIR}/lib")
 # can be configured (e.g., libsodium, libzmq).
 #
 # How it works:
-# 1. Each prerequisite's .cmake file (e.g., libsodium.cmake) calls the helper
-#    `pylabhub_add_external_prerequisite`, which defines an ExternalProject target
-#    (e.g., 'sodium_external') and adds it as a dependency to 'build_prerequisites'.
-# 2. The helper also creates the 'pylabhub::third_party::*' IMPORTED library
-#    target and makes it depend on 'build_prerequisites'.
+# 1. Each prerequisite's .cmake file (e.g., `third_party/cmake/libsodium.cmake`)
+#    calls the generic helper function `pylabhub_add_external_prerequisite`.
+# 2. This function defines an `ExternalProject_Add` target (e.g., `libsodium_external`)
+#    and adds it as a dependency to this `build_prerequisites` target. The helper
+#    is generic and handles different build systems (Makefiles, MSBuild, etc.)
+#    by accepting custom command lists.
+# 3. The helper also creates a stable, namespaced `UNKNOWN IMPORTED` library
+#    (e.g., `pylabhub::third_party::libsodium`) that represents the final,
+#    normalized artifact.
 #
 # This ensures that whenever a developer tries to link against a library like
-# 'pylabhub::third_party::libzmq', the entire prerequisite build chain is triggered
+# `pylabhub::third_party::libzmq`, the entire prerequisite build chain is triggered
 # automatically and in the correct order.
 add_custom_target(build_prerequisites)
 
 
 # --- 3. Configure All Third-Party Libraries ---
-# The individual scripts will now call the helper function to define the
-# `_external` targets and add them to the `build_prerequisites` target.
-
+# The individual .cmake scripts will now call the unified helper function
+# to configure their respective external projects.
 include(libsodium)
 include(luajit)
 include(libzmq)

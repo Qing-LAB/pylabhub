@@ -1,15 +1,6 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
 include(StageHelpers)
 
-
-# This package is header-only: register it so the helper creates an INTERFACE target.
-pylabhub_register_header_only(msgpack)
-
-# Expose legacy alias and canonical names (this uses the helper)
-# legacy name used by older wrappers
-pylabhub_ensure_legacy_alias("msgpack" "pylabhub_msgpack")
-
-
 message(STATUS "[pylabhub-third-party] Configuring msgpack-c...")
 
 # This project uses the vendored msgpack-c submodule.
@@ -20,17 +11,17 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/msgpack-c/include/msgpack.hpp")
 endif()
 
 # --- 1. Create the wrapper and alias ---
-_expose_wrapper(pylabhub_msgpackc pylabhub::third_party::msgpackc)
+_expose_wrapper(pylabhub_msgpack pylabhub::third_party::msgpack)
 
 # --- 2. Define usage requirements ---
 # The msgpack-c C++ library is header-only. We just need to add its
 # include directory to the wrapper target.
 set(_msgpack_include_dir "${CMAKE_CURRENT_SOURCE_DIR}/msgpack-c/include")
 
-target_include_directories(pylabhub_msgpackc INTERFACE
+target_include_directories(pylabhub_msgpack INTERFACE
   $<BUILD_INTERFACE:${_msgpack_include_dir}>
 )
-message(STATUS "[pylabhub-third-party] Configured pylabhub_msgpackc with include directory: ${_msgpack_include_dir}")
+message(STATUS "[pylabhub-third-party] Configured pylabhub::third_party::msgpack with include directory: ${_msgpack_include_dir}")
 
 # --- 3. Stage artifacts for installation ---
 if(THIRD_PARTY_INSTALL)
@@ -45,7 +36,7 @@ else()
 endif()
 
 # --- 4. Add to export set for installation ---
-install(TARGETS pylabhub_msgpackc
+install(TARGETS pylabhub_msgpack
   EXPORT pylabhubTargets
 )
 
