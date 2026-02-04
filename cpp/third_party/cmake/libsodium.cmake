@@ -16,9 +16,7 @@
 include(ThirdPartyPolicyAndHelper)
 
 # --- 1. Define Paths ---
-if(NOT PREREQ_INSTALL_DIR)
-  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
-endif()
+
 
 set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libsodium")
 set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libsodium-build")

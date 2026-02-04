@@ -63,13 +63,13 @@ list(APPEND CMAKE_PREFIX_PATH "${PREREQ_INSTALL_DIR}")
 
 # --- libsodium ---
 set(_pkg "libsodium")
-set(_stable_lib_path_no_ext "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable")
+
 
 # 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
 set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
 add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
 set_target_properties(${_internal_imported_target} PROPERTIES
-  IMPORTED_LOCATION "${_stable_lib_path_no_ext}"
+  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
   INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
 )
 # This target relies on the external project completing its build.
@@ -82,16 +82,25 @@ target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
 # 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
 
+if(THIRD_PARTY_INSTALL)
+  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
+  pylabhub_register_headers_for_staging(
+    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/sodium"
+    SUBDIR "libsodium"
+    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
+  )
+endif()
+
 
 # --- luajit ---
 set(_pkg "luajit")
-set(_stable_lib_path_no_ext "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable")
+
 
 # 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
 set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
 add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
 set_target_properties(${_internal_imported_target} PROPERTIES
-  IMPORTED_LOCATION "${_stable_lib_path_no_ext}"
+  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
   INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
 )
 # This target relies on the external project completing its build.
@@ -103,6 +112,15 @@ target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
 
 # 3. Create the public-facing ALIAS (pylabhub::third_party::luajit).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
+
+if(THIRD_PARTY_INSTALL)
+  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
+  pylabhub_register_headers_for_staging(
+    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/luajit"
+    SUBDIR "luajit"
+    EXTERNAL_PROJECT_DEPENDENCY luajit_external
+  )
+endif()
 
 
 

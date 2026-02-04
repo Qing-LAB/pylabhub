@@ -69,6 +69,7 @@ target_include_directories(pylabhub-utils
 # (Do not set PYLABHUB_UTILS_EXPORT_DLL — the generated header uses *_EXPORTS.)
 target_compile_definitions(pylabhub-utils PRIVATE pylabhub_utils_EXPORTS)
 
+add_dependencies(pylabhub-utils build_prerequisites)
 # ------------------------------------------------------------------------------
 
 

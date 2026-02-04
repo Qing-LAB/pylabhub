@@ -21,12 +21,7 @@
 cmake_minimum_required(VERSION 3.29)
 project(IgorXOP LANGUAGES C CXX)
 
-# -------------------------
-# Option to enable/disable building XOP from parent
-# -------------------------
-if(NOT DEFINED BUILD_XOP)
-  option(BUILD_XOP "Attempt to build Igor XOP addon" ON)
-endif()
+
 
 if(NOT BUILD_XOP)
   message(STATUS "IgorXOP: BUILD_XOP=OFF; skipping XOP configuration.")
@@ -247,11 +242,6 @@ endif()
 # macOS: Assembly (POST_BUILD) and Staging (custom target)
 # ==============================================================================
 if(DEFINED PLATFORM_APPLE)
-  # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
-  # On macOS, a post-build command is used to assemble the .xop bundle.
-  # This is handled by a single, consolidated script that performs all necessary
-  # steps: creating the bundle structure, compiling resources, cleaning
-  # attributes, code signing, and verification.
   # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
   # On macOS, a post-build command is used to assemble the .xop bundle.
   # This is handled by a single, consolidated script that performs all necessary
