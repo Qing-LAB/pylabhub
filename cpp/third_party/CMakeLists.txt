@@ -81,22 +81,6 @@ target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
 # 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
 
-if(THIRD_PARTY_INSTALL)
-  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
-  pylabhub_register_headers_for_staging(
-    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/sodium"
-    SUBDIR "sodium"  # Stage directly under include/sodium
-    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
-  )
-
-  # Stage sodium.h directly into include/
-  pylabhub_register_headers_for_staging(
-    FILES "${PREREQ_INSTALL_DIR}/include/sodium.h"
-    SUBDIR ""
-    EXTERNAL_PROJECT_DEPENDENCY libsodium_external
-  )
-endif()
-
 
 # --- luajit ---
 set(_pkg "luajit")
@@ -118,15 +102,6 @@ target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
 # 3. Create the public-facing ALIAS (pylabhub::third_party::luajit).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
 
-if(THIRD_PARTY_INSTALL)
-  pylabhub_register_library_for_staging(TARGET "_pylabhub_prereq_impl_${_pkg}")
-  pylabhub_register_headers_for_staging(
-    DIRECTORIES "${PREREQ_INSTALL_DIR}/include/luajit"
-    SUBDIR "luajit"
-    EXTERNAL_PROJECT_DEPENDENCY luajit_external
-  )
-endif()
-
 
 
 
@@ -143,9 +118,12 @@ include(XOPToolKit)
 include(cmake/googletest.cmake)
 
 # --- 4. Staging ---
-# This section is now much simpler, as the registration for prerequisites is
-# handled inside the `pylabhub_add_external_prerequisite` helper.
-# We only need to process the final registrations.
+# The per-target staging registration below only applies to third-party libraries
+# that are configured as native CMake sub-projects (e.g., fmt, libzmq).
+#
+# Prerequisites built via ExternalProject_Add into the 'prereq' directory (e.g., luajit, libsodium)
+# are now staged via a separate bulk-copy process defined in the top-level build script.
+# We only need to process the final registrations for the remaining targets.
 
 
 # ===========================================================================

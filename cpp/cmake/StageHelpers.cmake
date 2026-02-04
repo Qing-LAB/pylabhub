@@ -455,3 +455,56 @@ function(pylabhub_attach_headers_staging_commands)
     add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
   endif()
 endfunction()
+
+# --- pylabhub_stage_prerequisites_from_directory ---
+#
+# Handles the bulk staging of pre-built external projects from the PREREQ_INSTALL_DIR.
+# This function copies common directories (lib, include, share, package) and then
+# handles platform-specific needs, like moving DLLs on Windows.
+#
+# This is intended to be called as a single command attached to a master
+# staging target.
+#
+function(pylabhub_stage_prerequisites_from_directory)
+  set(options "")
+  set(oneValueArgs "PREREQ_DIR;STAGING_DIR")
+  set(multiValueArgs "")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_PREREQ_DIR OR NOT ARG_STAGING_DIR)
+    message(FATAL_ERROR "pylabhub_stage_prerequisites_from_directory requires PREREQ_DIR and STAGING_DIR arguments.")
+  endif()
+
+  message(STATUS "Bulk staging prerequisites from: ${ARG_PREREQ_DIR}")
+
+  set(subdirs_to_copy lib include share package)
+
+  foreach(subdir ${subdirs_to_copy})
+    set(source_path "${ARG_PREREQ_DIR}/${subdir}")
+    set(dest_path "${ARG_STAGING_DIR}/${subdir}")
+    if(EXISTS "${source_path}")
+      message(STATUS "  - Staging directory: ${source_path} -> ${dest_path}")
+      file(COPY_DIRECTORY "${source_path}/" DESTINATION "${dest_path}/")
+    else()
+      message(STATUS "  - Skipping non-existent prerequisite directory: ${source_path}")
+    endif()
+  endforeach()
+
+  # On Windows, find DLLs in the staged lib directory and copy them to bin/ and tests/
+  if(PYLABHUB_IS_WINDOWS)
+    set(staged_lib_dir "${ARG_STAGING_DIR}/lib")
+    if(EXISTS "${staged_lib_dir}")
+        file(GLOB_RECURSE dlls_to_stage "${staged_lib_dir}/*.dll")
+
+        if(dlls_to_stage)
+            message(STATUS "  - Found DLLs to stage to runtime directories: ${dlls_to_stage}")
+            set(runtime_dest_bin "${ARG_STAGING_DIR}/bin")
+            set(runtime_dest_tests "${ARG_STAGING_DIR}/tests")
+
+            file(COPY ${dlls_to_stage} DESTINATION "${runtime_dest_bin}")
+            file(COPY ${dlls_to_stage} DESTINATION "${runtime_dest_tests}")
+            message(STATUS "  - Copied DLLs to ${runtime_dest_bin} and ${runtime_dest_tests}")
+        endif()
+    endif()
+  endif()
+endfunction()
