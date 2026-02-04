@@ -130,10 +130,5 @@ pylabhub_add_external_prerequisite(
   HEADER_SOURCE_PATTERNS "src/libsodium/include" # Source location of headers
 )
 
-# --- 4. Provide convenience alias ---
-if(NOT TARGET libsodium::pylabhub)
-  add_library(libsodium::pylabhub ALIAS pylabhub::third_party::libsodium)
-endif()
-
 message(STATUS "[pylabhub-third-party] libsodium configuration complete.")
 

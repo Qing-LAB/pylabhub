@@ -1,73 +1,80 @@
 # third_party/cmake/libzmq.cmake
 #
-# This script is a wrapper for building the libzmq library.
+# This script is a wrapper for building the libzmq (ZeroMQ) library.
 #
-# Its strategy is to:
-#  1. Define a set of CMake arguments to pass to the libzmq build system,
-#     configuring it to build as a static library with libsodium support.
-#  2. Since libzmq uses CMake, this script can rely on the default build
-#     behavior of the generic `pylabhub_add_external_prerequisite` function.
-#  3. It calls this helper function, passing only the specific CMAKE_ARGS
-#     and metadata needed for the build and post-build normalization.
+# libzmq is a well-behaved CMake project, so it is built as a native sub-project
+# using `add_subdirectory`. This provides a more robust dependency graph than
+# using ExternalProject_Add, especially for handling its dependency on libsodium.
 #
-# Wrapper for building libzmq using the generic prerequisite helper function.
+# The strategy is to:
+#  1. Isolate the build using `snapshot_cache_var` and `restore_cache_var`.
+#  2. Set libzmq's internal options (`BUILD_STATIC`, etc.).
+#  3. Call `add_subdirectory(libzmq)`. Its internal `find_package(Sodium)` will
+#     succeed because we set `CMAKE_PREFIX_PATH` in the parent scope.
+#  4. Manually create the dependency between the created `libzmq-static` target
+#     and the `libsodium_external` target to ensure correct build order.
+#  5. Register the `libzmq` artifacts for staging.
+
 include(ThirdPartyPolicyAndHelper)
+include(StageHelpers)
 
-# --- 1. Define Paths ---
-if(NOT PREREQ_INSTALL_DIR)
-  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
-endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
+  message(STATUS "[pylabhub-third-party] Configuring libzmq submodule...")
 
-set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libzmq")
-set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libzmq-build")
-set(_install_dir "${PREREQ_INSTALL_DIR}")
+  # --- 1. Snapshot cache variables to isolate the build ---
+  snapshot_cache_var(BUILD_STATIC)
+  snapshot_cache_var(BUILD_SHARED)
+  snapshot_cache_var(ZMQ_BUILD_TESTS)
+  snapshot_cache_var(WITH_PERF_TOOL)
+  snapshot_cache_var(WITH_DOCS)
+  snapshot_cache_var(ENABLE_CURVE)
+  snapshot_cache_var(WITH_LIBSODIUM)
 
-# --- 2. Define CMake Arguments for this specific project ---
-# The libzmq project is CMake-based, so we can rely on the helper function's
-# default command generation and just pass CMake arguments.
-set(_cmake_args
-  "-DBUILD_TESTS=OFF"
-  "-DZMQ_BUILD_TESTS=OFF"
-  "-DBUILD_STATIC=ON"
-  "-DBUILD_SHARED=ON"         # Build both, static is preferred by default.
-  "-DWITH_PERF_TOOL=OFF"
-  "-DWITH_DOCS=OFF"
-  "-DENABLE_CURVE=ON"
-  "-DWITH_LIBSODIUM=ON"
-  "-DSODIUM_INCLUDE_DIRS:PATH=${_install_dir}/include"
-  # Point to the stable, normalized path created by the libsodium prerequisite build.
-  "-DSODIUM_LIBRARY:FILEPATH=${_install_dir}/lib/libsodium-stable"
-)
+  # --- 2. Set options for the isolated build scope ---
+  set(BUILD_STATIC ON CACHE BOOL "pylab: build static libzmq" FORCE)
+  set(BUILD_SHARED ON CACHE BOOL "pylab: build shared libzmq as a workaround" FORCE)
+  set(ZMQ_BUILD_TESTS OFF CACHE BOOL "pylab: disable libzmq tests" FORCE)
+  set(WITH_PERF_TOOL OFF CACHE BOOL "pylab: disable libzmq perf tools" FORCE)
+  set(WITH_DOCS OFF CACHE BOOL "pylab: disable libzmq docs" FORCE)
+  set(ENABLE_CURVE ON CACHE BOOL "pylab: required for security" FORCE)
+  set(WITH_LIBSODIUM ON CACHE BOOL "pylab: required for CurveZMQ" FORCE)
+  
+  # --- 3. Add the subdirectory ---
+  # `find_package(Sodium)` inside this call will now search the `CMAKE_PREFIX_PATH`
+  # which was set in the parent CMakeLists.txt to point to our `prereqs` dir.
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libzmq EXCLUDE_FROM_ALL)
 
-# Determine byproduct and lib patterns based on platform
-if(WIN32)
-    set(_byproduct "${_install_dir}/lib/libzmq-mt-s.lib")
-    set(_lib_patterns "libzmq-mt-s.lib;libzmq-mt.lib")
+  # --- 4. Create the explicit dependency ---
+  # This is the crucial step to fix the build order. It tells make that
+  # libzmq-static cannot be built until libsodium_external is finished.
+  add_dependencies(libzmq-static libsodium_external)
+
+  # --- 5. Create canonical targets ---
+  # Create the canonical INTERFACE wrapper target.
+  add_library(pylabhub_libzmq INTERFACE)
+  # Link the wrapper to the concrete implementation target provided by add_subdirectory.
+  target_link_libraries(pylabhub_libzmq INTERFACE libzmq-static)
+  # Create the final, public-facing ALIAS.
+  add_library(pylabhub::third_party::libzmq ALIAS pylabhub_libzmq)
+
+  if(THIRD_PARTY_INSTALL)
+    pylabhub_register_headers_for_staging(
+      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include"
+      SUBDIR ""
+    )
+    pylabhub_register_library_for_staging(TARGET pylabhub_libzmq)
+  endif()
+
+  # --- 7. Restore cache variables ---
+  restore_cache_var(BUILD_STATIC BOOL)
+  restore_cache_var(BUILD_SHARED BOOL)
+  restore_cache_var(ZMQ_BUILD_TESTS BOOL)
+  restore_cache_var(WITH_PERF_TOOL BOOL)
+  restore_cache_var(WITH_DOCS BOOL)
+  restore_cache_var(ENABLE_CURVE BOOL)
+  restore_cache_var(WITH_LIBSODIUM BOOL)
+
+  message(STATUS "[pylabhub-third-party] libzmq configuration complete.")
 else()
-    set(_byproduct "${_install_dir}/lib/libzmq.a")
-    set(_lib_patterns "libzmq.a;libzmq.so;libzmq.dylib")
+  message(FATAL_ERROR "[pylabhub-third-party] libzmq submodule not found.")
 endif()
-
-
-# --- 3. Call the generic helper function ---
-pylabhub_add_external_prerequisite(
-  NAME            libzmq
-  SOURCE_DIR      "${_source_dir}"
-  BINARY_DIR      "${_build_dir}"
-  INSTALL_DIR     "${_install_dir}"
-  DEPENDS         libsodium
-
-  # Pass the project-specific CMake args
-  CMAKE_ARGS      ${_cmake_args}
-
-  # Define patterns for the post-build detection script
-  LIB_PATTERNS    ${_lib_patterns}
-  BUILD_BYPRODUCTS ${_byproduct}
-)
-
-# --- 4. Provide convenience alias ---
-if(NOT TARGET libzmq::pylabhub)
-  add_library(libzmq::pylabhub ALIAS pylabhub::third_party::libzmq)
-endif()
-
-message(STATUS "[pylabhub-third-party] libzmq configuration complete.")

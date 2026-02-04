@@ -11,7 +11,9 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/msgpack-c/include/msgpack.hpp")
 endif()
 
 # --- 1. Create the wrapper and alias ---
-_expose_wrapper(pylabhub_msgpack pylabhub::third_party::msgpack)
+add_library(pylabhub_msgpack INTERFACE)
+add_library(pylabhub::third_party::msgpack ALIAS pylabhub_msgpack)
+
 
 # --- 2. Define usage requirements ---
 # The msgpack-c C++ library is header-only. We just need to add its
@@ -34,10 +36,5 @@ if(THIRD_PARTY_INSTALL)
 else()
   message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for msgpack-c.")
 endif()
-
-# --- 4. Add to export set for installation ---
-install(TARGETS pylabhub_msgpack
-  EXPORT pylabhubTargets
-)
 
 message(STATUS "[pylabhub-third-party] msgpack-c configuration complete.")
