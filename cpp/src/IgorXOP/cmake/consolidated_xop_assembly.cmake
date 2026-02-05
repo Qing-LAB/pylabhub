@@ -324,7 +324,12 @@ if(EXISTS "${REZ_SOURCE_FILE}")
     set(rez_output_rsrc "${_resources_dir}/${XOP_BUNDLE_NAME}.rsrc")
     # Build the include path arguments for Rez
     # This allows the .r file to `#include` headers from the XOP Toolkit.
-    # --- Robust Rez invocation: build true list, show each arg, run Rez with explicit cmd list ---
+    # The R_INCLUDE_DIRS_LIST variable is passed as a semicolon-separated string
+    # (CMake list format) from src/IgorXOP/CMakeLists.txt. It contains paths
+    # where generator expressions have already been resolved by the parent script.
+    #
+    # This section robustly parses this list, handles potential quoting issues,
+    # and constructs the `-I` arguments for the Rez compiler.
     
     # Initialize as an empty list (NOT a quoted empty string).
     unset(rez_args)         # clears any previous value; creates an empty list variable

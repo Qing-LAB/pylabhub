@@ -404,6 +404,10 @@ add_custom_target(stage_${XOP_TARGET}
 )
 add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)
 
+# Register this XOP's staging target to ensure it is executed as part of the
+# top-level `stage_all` process when BUILD_XOP is ON.
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_${XOP_TARGET})
+
 # -------------------------
 # Publish final state to top-level (cache vars & messages)
 # -------------------------

@@ -63,6 +63,7 @@ Each third-party helper script must (where possible) do the following **inside `
 - The staging rules are now strict based on the integration pattern:
   - **CMake Subprojects**: The wrapper script **must** call `pylabhub_register_headers_for_staging` and `pylabhub_register_library_for_staging`. These registrations are processed to generate `POST_BUILD` copy commands.
   - **External Prerequisites**: The wrapper script **must not** call any registration functions. Staging is handled by a global process that bulk-copies the `prereqs` directory.
+  - **Installation Export Set**: Only the namespaced `pylabhub::third_party::*` alias targets should be added to the `pylabhubTargets` export set in `third_party/CMakeLists.txt`. Concrete internal targets should not be directly exported, as their properties are inherited via the aliases.
 
 ---
 
@@ -222,6 +223,7 @@ The helper function handles all the `ExternalProject_Add` boilerplate, the post-
 - [ ] Create a `pylabhub::third_party::<pkg>` alias target.
 - [ ] **Call `pylabhub_register_library_for_staging()` for the compiled library target.**
 - [ ] **Call `pylabhub_register_headers_for_staging()` for the header files.**
+- [ ] **Do NOT include `install(TARGETS ...)` in the wrapper script.** Instead, add the `pylabhub::third_party::<pkg>` alias target to the central `install(TARGETS ... EXPORT pylabhubTargets)` block in `third_party/CMakeLists.txt`.
 
 #### **NO -> Use the External Prerequisite Pattern**
 - [ ] In your `third_party/cmake/<pkg>.cmake` wrapper:
