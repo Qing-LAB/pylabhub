@@ -190,7 +190,13 @@ pylabhub_add_external_prerequisite(
   BUILD_COMMAND     ${_build_command}
   INSTALL_COMMAND   ${_install_command}
 
-  # # Pass patterns for the post-build detection script
+  # NOTE: LIB_PATTERNS and HEADER_SOURCE_PATTERNS are intentionally *not* passed
+  # to pylabhub_add_external_prerequisite here. The LuaJIT installation is
+  # handled by the custom script 'luajit_install.cmake' (via INSTALL_COMMAND),
+  # which has specific requirements for file placement. Passing these patterns
+  # would cause the generic detection script ('detect_external_project.cmake.in')
+  # to attempt to copy files, which would conflict with the custom installation.
+  # Therefore, this functionality is explicitly bypassed for LuaJIT.
   # LIB_PATTERNS      "${_luajit_lib_patterns}"
   # HEADER_SOURCE_PATTERNS "${_luajit_header_patterns}"
 

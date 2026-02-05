@@ -10,6 +10,11 @@ project(third_party NONE)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ThirdPartyPolicyAndHelper)
 
+# Validate PYLABHUB_STAGING_DIR. This is crucial as all staging relies on it.
+if(NOT DEFINED PYLABHUB_STAGING_DIR OR "${PYLABHUB_STAGING_DIR}" STREQUAL "")
+  message(FATAL_ERROR "third_party/CMakeLists.txt expects PYLABHUB_STAGING_DIR to be defined by the parent project.")
+endif()
+
 # --- Staging Infrastructure ---
 if(THIRD_PARTY_INSTALL)
   add_custom_target(stage_third_party_deps

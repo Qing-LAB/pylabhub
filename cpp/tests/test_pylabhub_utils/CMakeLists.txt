@@ -3,6 +3,8 @@
 # Configures the test executable for the pylabhub-utils shared library.
 # These tests use a custom main() to act as both a test runner and a
 # worker process dispatcher.
+
+include(MsvcHelper)
 message(STATUS "** Configuring test executable for pylabhub-utils...")
 add_executable(test_pylabhub_utils
   # Test suites
@@ -44,9 +46,7 @@ target_compile_features(test_pylabhub_utils PRIVATE cxx_std_20)
 # Set the logger compile level to TRACE for tests.
 target_compile_definitions(test_pylabhub_utils PRIVATE LOGGER_COMPILE_LEVEL=0)
 
-if(MSVC)
-  target_compile_options(test_pylabhub_utils PRIVATE /EHsc /wd5105 /Zc:preprocessor)
-endif()
+pylabhub_apply_standard_msvc_options(test_pylabhub_utils)
 
 # Ensure the main utils library is built and staged before this test executable.
 if (TARGET stage_pylabhub_utils)
@@ -61,10 +61,10 @@ pylabhub_register_test_for_staging(TARGET test_pylabhub_utils)
 # variables, especially on Windows where paths can contain spaces.
 # The `cmake -E env --modify` command correctly handles native path separators.
 set_property(TARGET test_pylabhub_utils PROPERTY
-  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${STAGED_BIN_DIR}"
+  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${PYLABHUB_STAGING_DIR}/bin"
 )
 
 gtest_discover_tests(test_pylabhub_utils
-  WORKING_DIRECTORY "${STAGED_TEST_DIR}"
+  WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
   DISCOVERY_TIMEOUT 60
 )

@@ -11,6 +11,16 @@ The `pylabhub-utils` library is a shared library that provides a collection of c
 
 ---
 
+**⚠️ Thread Safety and Concurrency Considerations:**
+
+- **FileLock**: Process-safe and thread-safe. Uses both OS-level file locks and in-process synchronization.
+- **Logger**: Fully thread-safe. Uses lock-free queue for log message submission.
+- **JsonConfig**: Thread-safe for concurrent reads. Write operations are exclusive and process-safe via FileLock.
+- **Lifecycle**: Module registration is NOT thread-safe and must occur before `initialize()`. Dynamic module loading/unloading IS thread-safe.
+- **RecursionGuard**: Thread-local only. Does NOT prevent cross-thread recursion.
+
+---
+
 ## Core Utility Modules
 
 These modules form the core of the `pylabhub-utils` library and often depend on the Lifecycle manager.
@@ -159,7 +169,7 @@ The `Logger` is a high-performance, asynchronous, thread-safe logging framework 
 *   **Logging Macro Variants**:
     *   **Compile-Time (`LOGGER_INFO(...)`)**: The standard and recommended macros. They provide maximum performance and safety by validating format strings at compile time.
     *   **Runtime (`LOGGER_INFO_RT(...)`)**: These macros accept a `fmt::string_view` and parse it at runtime. They are more flexible but slightly less performant and lack compile-time safety checks.
-    *   **Synchronous (`LOGGER_INFO_SYNC(...)`)**: These macros bypass the queue and block the calling thread to write the log message immediately. They are useful for critical errors or for logging just before an expected crash, but should be used sparingly to avoid performance impact.
+    *   **Synchronous (`LOGGER_INFO_SYNC(...)`)**: These macros bypass the queue and block the calling thread to write the log message immediately. They contend directly for the internal sink mutex, which means they can block if the asynchronous worker thread is currently writing. They are useful for critical errors or for logging just before an expected crash, but should be used sparingly to avoid performance impact.
 
 *   **Usage**:
     The `Logger` module must be registered with the `LifecycleManager`. Configuration and logging can then be performed via the `Logger::instance()` singleton.
@@ -260,38 +270,25 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
 
     **2. Using the Constructor (Detailed Error Reporting)**
 
-    To get detailed error information on a lock failure, you must use the constructor directly and then check the object's state with `valid()` and `error_code()`.
-
     ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/FileLock.hpp"
-    #include "utils/Logger.hpp"
-
     void detailed_lock_attempt(const std::filesystem::path& path) {
-        // Initialization would happen in main()
-        // pylabhub::utils::LifecycleGuard app_lifecycle(pylabhub::utils::MakeModDefList(
-        //     pylabhub::utils::FileLock::GetLifecycleModule(true),
-        //     pylabhub::utils::Logger::GetLifecycleModule()
-        // ));
-
-        // Attempt to acquire a lock with a 2-second timeout.
         pylabhub::utils::FileLock lock(path,
-                                     pylabhub::utils::ResourceType::File,
-                                     std::chrono::seconds(2));
+                                    pylabhub::utils::ResourceType::File,
+                                    std::chrono::seconds(2));
 
-        if (lock.valid())
-        {
-            // Lock successfully acquired.
+        if (lock.valid()) {
             LOGGER_INFO("Acquired lock for resource: {}", lock.get_locked_resource_path()->string());
-            // ... Safely access the resource ...
+        } else {
+            // Specific error codes to handle:
+            auto ec = lock.error_code();
+            if (ec == std::errc::resource_unavailable_try_again) {
+                LOGGER_WARN("Lock busy: {}", path.string());
+            } else if (ec == std::errc::timed_out) {
+                LOGGER_ERROR("Lock timeout after 2s: {}", path.string());
+            } else {
+                LOGGER_ERROR("Lock error: {} - {}", path.string(), ec.message());
+            }
         }
-        else
-        {
-            // Lock could not be acquired. Now we can get the specific error.
-            LOGGER_ERROR("Failed to acquire lock for {}. Error: {}", path.string(),
-                         lock.error_code().message());
-        }
-        // The lock is automatically released here when the `lock` object goes out of scope.
     }
     ```
 
@@ -323,38 +320,19 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
     }
     ```
 
-### `SharedMemoryHub` (C++ Namespace: `pylabhub::hub`)
+### `DataBlock` and `MessageHub` (C++ Namespace: `pylabhub::hub`)
 
-The Data Exchange Hub provides a high-performance inter-process communication (IPC) framework based on a central broker for service discovery.
+**Current Status**: The Data Exchange Hub is under development. The MessageHub provides basic ZeroMQ DEALER socket communication with CurveZMQ encryption. DataBlock infrastructure for shared memory IPC is partially implemented.
 
-*   **Important Notice**: This is a **dynamic lifecycle module**. It must be registered and loaded *after* the `LifecycleManager` has been initialized.
+**Available Components**:
+- `MessageHub`: Provides encrypted communication with a remote broker using ZeroMQ and CurveZMQ.
+- `create_datablock_producer()`: Factory function (not yet functional - returns nullptr)
+- `find_datablock_consumer()`: Factory function (not yet functional - returns nullptr)
 
-*   **Design Principles**:
-    *   **Hub**: The primary entry point, created via `Hub::connect()`, which manages the connection to the broker.
-    *   **Channels**: Supports high-performance shared memory (`SharedMemoryProducer`/`SharedMemoryConsumer`) and general-purpose ZeroMQ messaging (Pub/Sub, Req/Rep).
-
-*   **Usage**:
-    ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/SharedMemoryHub.hpp"
-
-    void use_hub(pylabhub::hub::BrokerConfig& config) {
-        // In main(), register and load the dynamic module.
-        pylabhub::utils::LifecycleManager::instance().register_dynamic_module(
-            pylabhub::hub::GetLifecycleModule());
-        pylabhub::utils::LifecycleManager::instance().load_module("pylabhub::hub::DataExchangeHub");
-
-        auto hub = pylabhub::hub::Hub::connect(config);
-        if (!hub) return;
-
-        auto producer = hub->create_shm_producer("my_channel", 1024 * 1024);
-        if (producer) {
-            void* buffer = producer->begin_publish();
-            // ... write to buffer ...
-            producer->end_publish(512, 0.0, 0, {});
-        }
-    }
-    ```
+**Missing Components**:
+- Actual producer/consumer read/write APIs
+- Broker registration protocol
+- Slot management for structured data buffer
 
 ---
 
@@ -470,6 +448,21 @@ A thread-local, RAII-based guard to detect and prevent unwanted re-entrant funct
     *   **Pointer Lifetime (Dangling Pointers)**: The `key` pointer passed to the guard's constructor **must** remain valid for the entire lifetime of the `RecursionGuard` instance. Passing a pointer to a local variable that goes out of scope before the guard is a serious bug that will lead to undefined behavior. Using `this` or pointers to heap-allocated objects (whose lifetime is managed) is generally safe.
     *   **Not for Cross-Thread Protection**: This guard does **not** prevent race conditions. It only detects recursion *within a single thread*. For protecting shared data from simultaneous access by multiple threads, use `std::mutex`, `AtomicGuard`, or other suitable synchronization primitives.
 
+## Platform-Specific Behaviors and Limitations
+
+### FileLock
+- **POSIX**: Uses `flock()` for advisory locks. Other processes can ignore these locks if not cooperating.
+- **Windows**: Uses `LockFileEx` for mandatory locks with retry logic for sharing violations.
+- **Edge Case**: On Windows, antivirus software may cause temporary `ERROR_SHARING_VIOLATION` during file access.
+
+### JsonConfig - Atomic Writes
+- **POSIX**: Uses `mkstemp` + `rename`. Atomic on local filesystems, may not be atomic on NFS. Now includes retry logic for transient errors (`EBUSY`, `ETXTBSY`, `EINTR`).
+- **Windows**: Uses `ReplaceFileW` with 5 retry attempts. May fail if file is held open by another process for >500ms. Now logs warnings for `ERROR_SHARING_VIOLATION` retries.
+
+### Logger - Event Logging
+- **Windows**: Requires registry configuration for Event Log source name.
+- **POSIX**: Syslog requires daemon to be running; may silently drop messages if daemon is unavailable.
+
 ### Debug Utilities (C++ Namespace: `pylabhub::debug`)
 
 These utilities provide cross-platform support for debugging and handling fatal errors.
@@ -491,3 +484,628 @@ This namespace contains functions that abstract away platform-specific OS calls,
 ### Formatting Tools (C++ Namespace: `pylabhub::format_tools`)
 
 This is a collection of utilities and template specializations that integrate with the `{fmt}` library to provide custom formatting for project-specific types, such as converting `std::filesystem::path` to a string.
+
+---
+
+## Advanced Topics and Implementation Details
+
+### Logger: Detailed Architecture and Queue Management
+
+#### Queue Semantics and Overflow Behavior
+
+The Logger uses a **tiered dropping strategy** to balance performance with reliability:
+
+**Soft Limit (`m_max_queue_size`)**: When the queue reaches this limit, **only LogMessage commands** are dropped. Control commands (SetSinkCommand, FlushCommand) continue to be queued. This ensures that administrative operations like log rotation can complete even under load.
+
+**Hard Limit (`2 * m_max_queue_size`)**: When the queue exceeds this threshold, **all commands** including control operations are dropped. This is a last-resort safety mechanism to prevent unbounded memory growth.
+
+**Drop Recovery**: When dropping ends (queue drains below soft limit), the Logger automatically enqueues a warning message reporting how many messages were dropped and for how long.
+
+```cpp
+// Example: Configuring queue size
+Logger::instance().set_max_queue_size(5000);
+// Soft limit: 5000 messages
+// Hard limit: 10000 messages (automatic)
+
+size_t current_max = Logger::instance().get_max_queue_size();    // Returns 5000
+size_t dropped = Logger::instance().get_dropped_message_count(); // Returns total drops
+```
+
+**Best Practices**:
+- Set `m_max_queue_size` based on your application's peak logging rate × acceptable buffering time
+- Monitor `get_dropped_message_count()` in production to detect undersized queues
+- For burst-heavy applications, increase queue size rather than decreasing log level
+
+#### Synchronous Logging: When and How
+
+The `LOGGER_*_SYNC` macros bypass the queue and write directly to the sink, acquiring the `m_sink_mutex`. This provides two guarantees:
+1. Message is written immediately (not deferred)
+2. Message order is preserved relative to async messages enqueued before the sync call
+
+**When to Use Synchronous Logging**:
+- Immediately before `std::abort()` or other termination
+- In signal handlers (with extreme caution - see warnings)
+- When debugging timing-sensitive race conditions
+- For critical audit events that must not be dropped
+
+**Performance Characteristics**:
+```cpp
+// Async logging (typical case)
+LOGGER_INFO("User {} logged in", user_id);  
+// Time: ~100ns (format + enqueue only)
+
+// Synchronous logging
+LOGGER_INFO_SYNC("Critical error, about to abort!");
+// Time: ~1-10ms (includes disk I/O or console write)
+```
+
+**Warning**: Overuse of synchronous logging defeats the purpose of the async architecture and can cause severe performance degradation.
+
+#### Sink Switching and Lifecycle
+
+When you call a sink-change method like `set_rotating_logfile()`, the command is enqueued and executed by the worker thread. The calling thread **blocks** until the sink switch completes. This provides synchronous error reporting:
+
+```cpp
+std::error_code ec;
+if (!Logger::instance().set_rotating_logfile(path, max_size, max_files, ec)) {
+    // ec contains the specific error (e.g., permission denied)
+    LOGGER_ERROR("Failed to switch to rotating log: {}", ec.message());
+}
+// At this point, if the call succeeded, the new sink is active
+```
+
+**Sink Transition Messages**: The Logger automatically logs "Switching log sink to: [description]" in the *old* sink and "Log sink switched from: [old]" in the *new* sink. These can be disabled with `set_log_sink_messages_enabled(false)`.
+
+---
+
+### FileLock: Implementation Deep Dive
+
+#### Lock File Naming and Canonicalization
+
+`FileLock` generates lock file names using the following algorithm:
+
+1. **Canonicalization**: Convert the target path to canonical form using `std::filesystem::canonical()`. If the file doesn't exist yet, fall back to `std::filesystem::absolute().lexically_normal()`.
+2. **Lock File Generation**:
+   - For files: Append `.lock` to the full path (e.g., `/data/config.json.lock`)
+   - For directories: Append `.dir.lock` to the directory name (e.g., `/data/.dir.lock`)
+3. **Special Case**: If the directory name is empty, `.`, or `..`, use `pylabhub_root.dir.lock` instead
+
+**Example Transformations**:
+```cpp
+FileLock::get_expected_lock_fullname_for("/data/./config.json", ResourceType::File);
+// Returns: /data/config.json.lock
+
+FileLock::get_expected_lock_fullname_for("/data/../data/dir/", ResourceType::Directory);
+// Returns: /data/dir/dir.dir.lock
+
+FileLock::get_expected_lock_fullname_for("C:\\", ResourceType::Directory);
+// Returns: C:\pylabhub_root.dir.lock
+```
+
+#### Intra-Process Lock Registry
+
+The process-local registry (`g_proc_locks`) ensures that multiple threads within the same process serialize their lock attempts. Here's how it works:
+
+```cpp
+struct ProcLockState {
+    int owners = 0;            // Number of threads holding the lock
+    int waiters = 0;           // Number of threads waiting for the lock
+    std::condition_variable cv; // For blocking wait
+};
+```
+
+When a thread attempts to acquire a lock:
+1. It looks up the canonical lock file path in `g_proc_locks`
+2. If `owners > 0`, another thread holds it:
+   - NonBlocking: Fail immediately
+   - Blocking: Wait on the condition variable
+3. When the lock is available, increment `owners` and proceed to OS-level lock
+
+This mechanism prevents the same process from deadlocking itself (which is allowed by some OS file locking APIs).
+
+#### POSIX vs Windows: Behavioral Differences
+
+| Aspect | POSIX (`flock`) | Windows (`LockFileEx`) |
+|--------|-----------------|------------------------|
+| **Lock Type** | Advisory | Mandatory (with sharing) |
+| **Lock Granularity** | Whole file only | Byte-range (we use whole file) |
+| **Inheritance** | Not inherited by child processes | Can be inherited |
+| **NFS Behavior** | Inconsistent across implementations | N/A (Windows doesn't use NFS) |
+| **Upgrade/Downgrade** | Not supported | Not supported by FileLock |
+| **Retry on Sharing Violation** | N/A | Yes (5 retries, 100ms apart) |
+
+**Portability Notes**:
+- Code using `FileLock` will have consistent behavior across platforms
+- Advisory vs mandatory lock distinction is abstracted away (all cooperating processes must use FileLock)
+- NFS: Use local filesystem for critical locks
+
+---
+
+### JsonConfig: Transaction Model and Atomicity
+
+#### The Transaction Proxy Pattern
+
+`JsonConfig` uses a clever rvalue-proxy pattern to enforce proper transaction usage at compile time:
+
+```cpp
+// This compiles - proxy is consumed immediately
+config.transaction(AccessFlags::ReloadFirst).read([](const auto& j) {
+    return j.value("key", "default");
+});
+
+// This does NOT compile - proxy cannot be stored
+auto tx = config.transaction();  // ERROR: rvalue proxy cannot be assigned
+tx.read([](const auto& j) { ... });
+```
+
+The `&&`-qualified methods on `TransactionProxy` ensure it can only be called on temporaries, preventing:
+- Accidentally holding a transaction open for too long
+- Forgetting to call `read()` or `write()`
+- Resource leaks from uncompleted transactions
+
+#### Access Flags in Detail
+
+**`Default` / `UnSynced`**: Operates on the in-memory cache only. Fastest option. Use when:
+- You've already reloaded manually
+- You're the only process accessing the file
+- You'll commit manually later
+
+**`ReloadFirst`**: Acquires a `FileLock`, reads from disk, then releases the lock before executing your lambda. Use when:
+- You need fresh data from disk
+- Another process may have modified the file
+- You want to read atomically with respect to other processes
+
+**`CommitAfter`**: After your write lambda returns `CommitDecision::Commit`, acquires a `FileLock` and atomically writes to disk. Use when:
+- Changes must be immediately persisted
+- You want atomic write-after-modify
+
+**`FullSync` (ReloadFirst | CommitAfter)**: Provides a complete atomic read-modify-write cycle. This is the slowest but safest option. Use when:
+- Multiple processes are actively modifying the config
+- Data integrity is critical
+- Performance is not the primary concern
+
+**Example: Conditional Commit**
+```cpp
+config.transaction(AccessFlags::CommitAfter).write([](nlohmann::json& j) {
+    int counter = j.value("counter", 0);
+    if (counter < 100) {
+        j["counter"] = counter + 1;
+        return CommitDecision::Commit;  // Persist the change
+    }
+    return CommitDecision::SkipCommit;  // Don't write to disk
+});
+```
+
+#### Atomic Write Algorithm
+
+JsonConfig uses a crash-safe atomic write algorithm:
+
+**POSIX**:
+1. Create temporary file with `mkstemp()` in same directory as target
+2. Write JSON to temp file
+3. `fsync()` the temp file
+4. `rename()` temp file to target (atomic operation)
+5. `fsync()` the parent directory (ensures directory entry is persisted)
+
+**Windows**:
+1. Create temporary file with unique name in same directory
+2. Write JSON to temp file
+3. `FlushFileBuffers()` (fsync equivalent)
+4. `ReplaceFileW()` to atomically swap files (retries on `ERROR_SHARING_VIOLATION`)
+5. Fallback to `MoveFileExW()` if target doesn't exist
+
+**Crash Safety**: If the process crashes at any point before step 4/5, the original file is untouched. The temporary file is orphaned but can be cleaned up.
+
+---
+
+### Lifecycle: Reference Counting and Dependency Management
+
+#### How Dynamic Module Reference Counting Works
+
+The `LifecycleManager` maintains a reference count (`ref_count`) for each non-persistent dynamic module. This count represents how many other **currently loaded** dynamic modules depend on it.
+
+**Recalculation Algorithm** (called after every load/unload operation):
+```
+1. Set all dynamic module ref_counts to 0
+2. For each LOADED dynamic module M:
+   3. For each dependency D of M:
+      4. If D is a non-persistent dynamic module:
+         5. Increment D.ref_count
+```
+
+**Example Scenario**:
+```
+Modules:
+- Static: Logger (always loaded)
+- Dynamic: PluginA (depends on Logger, PluginB)
+- Dynamic: PluginB (depends on Logger)
+- Dynamic: PluginC (depends on PluginB)
+
+Initial state: All dynamic modules UNLOADED
+
+After LoadModule("PluginA"):
+- PluginA: LOADED, ref_count=0
+- PluginB: LOADED (auto-loaded), ref_count=1 (referenced by PluginA)
+- PluginC: UNLOADED
+
+After LoadModule("PluginC"):
+- PluginA: LOADED, ref_count=0
+- PluginB: LOADED, ref_count=2 (referenced by PluginA and PluginC)
+- PluginC: LOADED, ref_count=0
+
+Attempt UnloadModule("PluginB"):
+- Fails! ref_count=2, still referenced by PluginA and PluginC
+- Must unload PluginA and PluginC first
+
+After UnloadModule("PluginA"):
+- PluginA: UNLOADED, removed from graph
+- PluginB: ref_count=1 (now only referenced by PluginC)
+- PluginC: LOADED, ref_count=0
+
+After UnloadModule("PluginC"):
+- PluginC: UNLOADED, removed from graph
+- PluginB: ref_count=0 (no longer referenced)
+- PluginB: UNLOADED automatically (cascade unload)
+```
+
+**Key Insight**: The reference counting ensures a dependency is never unloaded while modules depending on it are still loaded.
+
+#### Persistent Modules
+
+Marking a module as persistent (`set_as_persistent(true)`) has two effects:
+1. The module cannot be explicitly unloaded via `UnloadModule()`
+2. The module is excluded from reference counting (it doesn't prevent its dependents from unloading)
+
+Use persistent modules for:
+- Plugins that should remain active once loaded
+- Services that are expensive to restart
+- Components with external state that shouldn't be reset
+
+#### Topological Sort and Dependency Resolution
+
+The `LifecycleManager` uses **Kahn's algorithm** for topological sorting:
+
+```
+Input: Set of modules with dependencies
+Output: Linear ordering such that dependencies come before dependents
+
+Algorithm:
+1. Calculate in-degree (number of dependencies) for each module
+2. Add all modules with in-degree 0 to a queue
+3. While queue is not empty:
+   a. Remove module from queue, add to sorted list
+   b. For each dependent of this module:
+      - Decrement its in-degree
+      - If in-degree becomes 0, add to queue
+4. If sorted list size < total modules:
+   - Circular dependency detected!
+   - Report cycle and abort
+```
+
+**Circular Dependency Detection**: The algorithm detects cycles by checking if all modules were processed. If not, the remaining modules form a cycle. The error message reports all modules involved in the cycle.
+
+---
+
+## Advanced Usage Patterns
+
+### Multi-Process Configuration Management with JsonConfig
+
+When multiple processes need to coordinate via a shared JSON config:
+
+```cpp
+class ConfigCoordinator {
+    pylabhub::utils::JsonConfig config_;
+    
+public:
+    ConfigCoordinator(const std::filesystem::path& config_path) {
+        std::error_code ec;
+        if (!config_.init(config_path, true, &ec)) {
+            throw std::runtime_error("Config init failed: " + ec.message());
+        }
+    }
+    
+    // Acquire a distributed lock on a named resource
+    bool try_acquire_lock(const std::string& lock_name, int process_id) {
+        return config_.transaction(AccessFlags::FullSync).write([&](nlohmann::json& j) {
+            auto& locks = j["distributed_locks"];
+            if (locks.contains(lock_name)) {
+                int current_owner = locks[lock_name]["owner"];
+                if (current_owner != process_id) {
+                    return CommitDecision::SkipCommit;  // Lock held by another process
+                }
+            }
+            locks[lock_name]["owner"] = process_id;
+            locks[lock_name]["timestamp"] = std::time(nullptr);
+            return CommitDecision::Commit;
+        });
+    }
+    
+    bool release_lock(const std::string& lock_name, int process_id) {
+        return config_.transaction(AccessFlags::FullSync).write([&](nlohmann::json& j) {
+            auto& locks = j["distributed_locks"];
+            if (!locks.contains(lock_name)) {
+                return CommitDecision::SkipCommit;  // Lock doesn't exist
+            }
+            int current_owner = locks[lock_name]["owner"];
+            if (current_owner != process_id) {
+                return CommitDecision::SkipCommit;  // Not our lock
+            }
+            locks.erase(lock_name);
+            return CommitDecision::Commit;
+        });
+    }
+};
+```
+
+### Structured Logging with Context
+
+Build a logging wrapper that automatically includes context:
+
+```cpp
+class ContextualLogger {
+    std::string context_;
+    
+public:
+    explicit ContextualLogger(std::string ctx) : context_(std::move(ctx)) {}
+    
+    template<typename... Args>
+    void info(fmt::format_string<Args...> fmt, Args&&... args) {
+        LOGGER_INFO("[{}] {}", context_, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+    
+    template<typename... Args>
+    void error(fmt::format_string<Args...> fmt, Args&&... args) {
+        LOGGER_ERROR("[{}] {}", context_, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+    
+    // Create child logger with extended context
+    ContextualLogger child(const std::string& sub_context) const {
+        return ContextualLogger(context_ + "::" + sub_context);
+    }
+};
+
+// Usage
+void process_user_request(int user_id) {
+    ContextualLogger log(fmt::format("User{}", user_id));
+    log.info("Processing request");
+    
+    try {
+        validate_user(user_id);
+        ContextualLogger db_log = log.child("Database");
+        db_log.info("Fetching user data");
+        // ...
+    } catch (const std::exception& e) {
+        log.error("Request failed: {}", e.what());
+    }
+}
+```
+
+### Dynamic Plugin System with Hot-Reload
+
+Implement a plugin system that can reload plugins without restarting:
+
+```cpp
+class PluginManager {
+    struct PluginInfo {
+        std::string name;
+        std::filesystem::path lib_path;
+        std::time_t last_modified;
+    };
+    
+    std::vector<PluginInfo> plugins_;
+    
+public:
+    void watch_and_reload() {
+        for (auto& plugin : plugins_) {
+            auto current_mod_time = std::filesystem::last_write_time(plugin.lib_path);
+            auto current_time_t = std::chrono::system_clock::to_time_t(
+                std::chrono::file_clock::to_sys(current_mod_time));
+            
+            if (current_time_t > plugin.last_modified) {
+                LOGGER_INFO("Plugin {} changed, reloading", plugin.name);
+                
+                // Unload old version
+                if (!pylabhub::utils::UnloadModule(plugin.name)) {
+                    LOGGER_ERROR("Failed to unload plugin {}", plugin.name);
+                    continue;
+                }
+                
+                // Re-register and load new version
+                // (In real implementation, you'd dlopen the new .so/.dll)
+                auto new_module_def = load_plugin_from_file(plugin.lib_path);
+                if (pylabhub::utils::RegisterDynamicModule(std::move(new_module_def))) {
+                    if (pylabhub::utils::LoadModule(plugin.name)) {
+                        plugin.last_modified = current_time_t;
+                        LOGGER_INFO("Plugin {} reloaded successfully", plugin.name);
+                    }
+                }
+            }
+        }
+    }
+};
+```
+
+---
+
+## Performance Characteristics
+
+### Logger
+
+| Operation | Latency (typical) | Notes |
+|-----------|-------------------|-------|
+| `LOGGER_INFO()` (async) | 50-200 ns | Format + enqueue only |
+| `LOGGER_INFO_SYNC()` | 1-10 ms | Includes I/O wait |
+| `flush()` | 10-500 ms | Waits for queue to drain |
+| `set_rotating_logfile()` | 10-100 ms | Synchronous, includes validation |
+
+**Scalability**: Logger handles up to ~10M messages/sec on modern hardware with default queue size (10,000).
+
+### FileLock
+
+| Operation | Latency (typical) | Notes |
+|-----------|-------------------|-------|
+| Lock acquisition (no contention) | 100-500 µs | File creation + flock/LockFileEx |
+| Lock acquisition (contention, POSIX) | 20ms average | Polling interval |
+| Lock acquisition (contention, Windows) | Immediate | OS-level wait queue |
+| Lock release | 10-50 µs | Close FD + map erase |
+
+**Best Practice**: For high-frequency locking (>100 Hz), consider alternative synchronization (shared memory + atomics).
+
+### JsonConfig
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| `transaction().read()` | 1-10 µs | In-memory, shared lock |
+| `transaction(ReloadFirst).read()` | 1-10 ms | File I/O + JSON parse |
+| `transaction(CommitAfter).write()` | 5-50 ms | JSON serialize + atomic write |
+| `transaction(FullSync).write()` | 10-100 ms | Reload + modify + commit |
+
+**Optimization**: For frequent reads, keep a long-lived `ReadLock` if your data is stable.
+
+---
+
+## Known Issues and Limitations
+
+1. **Lifecycle Dynamic Module Unloading**: Reference counting does not account for static dependencies holding references to dynamic modules. A static module using a dynamic module will prevent unloading.
+
+2. **Logger Queue Overflow**: Unbounded memory growth is prevented by a tiered dropping strategy. Log messages are dropped if the queue exceeds `m_max_queue_size`. If the queue reaches `2 * m_max_queue_size`, *queued control commands* (e.g., `SetSinkCommand`, explicit `FlushCommand`s) are also dropped to prevent memory exhaustion. The logger's main shutdown mechanism is handled out-of-band and is not subject to queue dropping, and it always performs a final flush of remaining messages.
+
+3. **DataBlock Windows Support**: Incomplete - mutex synchronization not implemented for Windows shared memory, currently only zero-initialized as a placeholder. This is a **known critical limitation**. Do not use DataBlock in production on Windows.
+
+4. **FileLock Performance**: On POSIX systems with high contention, polling interval is fixed at 20ms. This may cause delays in lock acquisition. For high-frequency locking scenarios, consider application-level optimizations or alternative synchronization primitives.
+
+5. **RecursionGuard Memory**: First call on each thread allocates thread-local storage via `reserve(16)`. This allocation cannot be freed until thread termination. In thread-pool scenarios, this may accumulate memory over time.
+
+6. **JsonConfig on NFS**: The atomic write guarantee (rename operation) may not hold on some NFS configurations. For critical configuration files, use local filesystem.
+
+7. **Logger Message Ordering**: While messages from a single thread are strictly ordered, relative ordering between threads is based on queue enqueue time. High contention may cause reordering.
+
+---
+
+## Troubleshooting Guide
+
+### Logger Issues
+
+**Problem**: "Logger method called before initialization"
+- **Cause**: You called a configuration method (e.g., `set_level()`) before registering the Logger module with `LifecycleManager`.
+- **Solution**: Ensure `Logger::GetLifecycleModule()` is included in your `LifecycleGuard` constructor.
+
+**Problem**: Messages are being dropped
+- **Diagnosis**: Call `Logger::instance().get_dropped_message_count()` to check.
+- **Solutions**:
+  1. Increase queue size with `set_max_queue_size()`
+  2. Reduce logging volume (filter at source)
+  3. Switch to a faster sink (console → file, or disable flock)
+
+**Problem**: Application hangs on shutdown
+- **Cause**: Worker thread is stuck in a sink's `write()` or `flush()` method.
+- **Solution**: Check if you're using a custom sink implementation with blocking I/O. Reduce shutdown timeout in `ModuleDef` if needed.
+
+### FileLock Issues
+
+**Problem**: Lock acquisition always times out
+- **Diagnosis**: Check `error_code()` - if it's `resource_unavailable_try_again`, another process holds the lock.
+- **Solutions**:
+  1. Verify lock file path with `get_expected_lock_fullname_for()`
+  2. Check for stale lock files (orphaned from crashes)
+  3. Call `FileLock::cleanup()` manually if `cleanup_on_shutdown` was disabled
+
+**Problem**: Different processes aren't seeing the same lock
+- **Cause**: Path canonicalization might be producing different lock file names due to symlinks or relative paths.
+- **Diagnosis**: Print the result of `get_canonical_lock_file_path()` from both processes.
+- **Solution**: Always use absolute paths or ensure all processes resolve symlinks the same way.
+
+### JsonConfig Issues
+
+**Problem**: Changes not visible to other processes
+- **Cause**: You're not using `CommitAfter` or manually calling `overwrite()`.
+- **Solution**: Use `transaction(AccessFlags::CommitAfter).write(...)` or call `overwrite()` after modifications.
+
+**Problem**: "resource_deadlock_would_occur" error
+- **Cause**: You're trying to acquire a nested transaction on the same `JsonConfig` object.
+- **Solution**: Complete the first transaction before starting a second one.
+
+**Problem**: File corruption after crash
+- **Cause**: This shouldn't happen - atomic writes prevent corruption. If it does:
+  - Check filesystem type (e.g., NFS might not support atomic rename)
+  - Verify no other code is directly writing to the file without `JsonConfig`
+  
+### Lifecycle Issues
+
+**Problem**: "Circular dependency detected"
+- **Cause**: Module A depends on B, which depends on A (directly or indirectly).
+- **Solution**: Refactor modules to break the cycle. Often this means extracting a third module containing shared functionality.
+
+**Problem**: Dynamic module won't unload
+- **Diagnosis**: Check if `UnloadModule()` returns `false`. If so, another dynamic module still depends on it.
+- **Solution**: Call `UnloadModule()` on dependents first, or make the module persistent if it should remain loaded.
+
+---
+
+## Migration Guide
+
+### From Manual Initialization to Lifecycle-Managed
+
+**Old code (manual initialization)**:
+```cpp
+int main() {
+    initialize_logger();  // Hypothetical old function
+    
+    // Application logic
+    log_message("Hello");
+    
+    cleanup_logger();
+    return 0;
+}
+```
+
+**New code (lifecycle-managed)**:
+```cpp
+int main() {
+    pylabhub::utils::LifecycleGuard lifecycle(
+        pylabhub::utils::Logger::GetLifecycleModule()
+    );
+    
+    // Application logic
+    LOGGER_INFO("Hello");
+    
+    // Automatic cleanup when lifecycle goes out of scope
+    return 0;
+}
+```
+
+### From Direct File Locking to FileLock
+
+**Old code (POSIX-specific)**:
+```cpp
+int fd = open(file_path, O_RDWR);
+if (flock(fd, LOCK_EX) == 0) {
+    // Critical section
+    flock(fd, LOCK_UN);
+}
+close(fd);
+```
+
+**New code (cross-platform)**:
+```cpp
+if (auto lock = FileLock::try_lock(file_path, ResourceType::File)) {
+    // Critical section
+    // Automatic unlock when lock goes out of scope
+}
+```
+
+---
+
+## API Reference Quick Links
+
+For detailed API documentation, see the header files:
+
+- **Lifecycle**: `cpp/src/include/utils/Lifecycle.hpp`
+- **Logger**: `cpp/src/include/utils/Logger.hpp`
+- **FileLock**: `cpp/src/include/utils/FileLock.hpp`
+- **JsonConfig**: `cpp/src/include/utils/JsonConfig.hpp`
+- **ScopeGuard**: `cpp/src/include/utils/scope_guard.hpp`
+- **RecursionGuard**: `cpp/src/include/utils/recursion_guard.hpp`
+- **AtomicGuard**: `cpp/src/include/utils/atomic_guard.hpp`
+
+Each header contains comprehensive inline documentation with usage examples and design rationale.
