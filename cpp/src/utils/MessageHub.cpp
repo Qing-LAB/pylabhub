@@ -120,6 +120,8 @@ void MessageHub::disconnect()
     {
         try
         {
+            LOGGER_WARN("MessageHub: Disconnecting. Unsent 'fire-and-forget' notifications may be discarded.");
+            pImpl->m_socket.set(zmq::sockopt::linger, 0); // Discard unsent messages immediately
             pImpl->m_socket.close();
             pImpl->m_is_connected.store(false, std::memory_order_release);
             LOGGER_INFO("MessageHub: Disconnected from broker.");
