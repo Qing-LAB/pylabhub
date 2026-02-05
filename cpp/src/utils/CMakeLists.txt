@@ -228,6 +228,8 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
 )
 
 # Register this local staging target with the global build system.
+# This ensures that 'stage_pylabhub_utils' will be executed as part of
+# the overall `stage_core_artifacts` process.
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_utils)
 
 message(STATUS "-- Configured shared library 'pylabhub::utils'.")

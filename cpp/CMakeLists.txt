@@ -227,6 +227,10 @@ message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
 # --- 3.4. Finalize Staging Dependencies ---
+# Sub-projects (like src/utils) register their individual staging targets
+# by appending them to the global property `CORE_STAGE_TARGETS`.
+# This mechanism allows for a decentralized registration of artifacts
+# while centralizing their collection and attachment to the main staging flow.
 # Collect all core staging targets registered by sub-projects via the global property.
 get_property(core_stage_targets GLOBAL PROPERTY CORE_STAGE_TARGETS)
 if(core_stage_targets)
