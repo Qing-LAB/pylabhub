@@ -69,6 +69,7 @@ class MockBroker
 
     const std::string &get_public_key() const { return m_public_key; }
     const std::string &get_endpoint() const { return m_endpoint; }
+    int get_notifications_received() const { return m_notifications_received.load(); }
 
   private:
     void run()
@@ -103,6 +104,7 @@ class MockBroker
                 if (m_response_mode.load() == ResponseMode::Ok &&
                     header_sv.find("NOTIFY") != std::string_view::npos)
                 {
+                    m_notifications_received++; // Increment counter for received notifications
                     continue; // Do not reply to notifications
                 }
 
@@ -145,6 +147,7 @@ class MockBroker
     std::atomic<ResponseMode> m_response_mode{ResponseMode::Ok};
     std::string m_public_key;
     std::string m_secret_key;
+    std::atomic<int> m_notifications_received{0}; // Atomic counter for received notifications
     const std::string m_endpoint = "tcp://127.0.0.1:5557"; // Use a different port
 };
 
@@ -245,6 +248,19 @@ TEST_F(MessageHubConnectionTest, SendNotification_Succeeds)
 
     nlohmann::json payload = {{"notify", "something_happened"}};
     ASSERT_TRUE(hub.send_notification("PYLABHUB_NOTIFY", payload));
+
+    // Wait for the notification to be received by the mock broker
+    bool notification_received = false;
+    for (int i = 0; i < 100; ++i) // Try for up to 100 * 10ms = 1s
+    {
+        if (broker.get_notifications_received() > 0)
+        {
+            notification_received = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(notification_received) << "Notification was not received by the mock broker.";
 }
 
 TEST_F(MessageHubConnectionTest, Send_FailsBeforeConnect)
