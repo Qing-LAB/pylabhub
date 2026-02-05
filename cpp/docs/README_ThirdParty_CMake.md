@@ -20,7 +20,7 @@ There are two primary categories for third-party libraries, each with a correspo
 
 - **Who it's for**: Libraries that use non-CMake build systems (`make`, `msbuild`, etc.) or are otherwise complex to build (e.g., `luajit`, `libsodium`).
 - **How it works**: Integrated via the `pylabhub_add_external_prerequisite` helper function, which wraps `ExternalProject_Add`. This builds the library into an intermediate `${PREREQ_INSTALL_DIR}` directory (`build/prereqs`).
-- **Staging**: Staging is **handled automatically by a global, bulk process**. The wrapper script **must not** call any staging helper functions. The entire `prereqs` directory (including `lib`, `include`, and `share`) is copied to the final staging area.
+- **Staging**: Staging is **handled automatically by a global, bulk process**. The wrapper script **must not** call any staging helper functions. Instead, the `pylabhub_register_directory_for_staging` function, called from the top-level `third_party/CMakeLists.txt`, takes care of copying the entire `prereqs` directory (including specified subdirectories like `bin`, `lib`, `include`, and `share`) to the final staging area.
 
 ---
 
@@ -74,9 +74,9 @@ The top-level `CMakeLists.txt` will:
 1.  Define a global staging directory variable: `set(PYLABHUB_STAGING_DIR ${CMAKE_BINARY_DIR}/stage)`.
 2.  Define a global "hook" target: `add_custom_target(stage_all)`.
 3.  Include `third_party/CMakeLists.txt`, which defines its own `stage_third_party_deps` target and makes `stage_all` depend on it.
-4.  Each `<pkg>.cmake` script calls `pylabhub_stage_*` helpers to attach its staging commands to `stage_third_party_deps`.
+4.  For CMake Subprojects (Type A), each `<pkg>.cmake` script calls `pylabhub_register_library_for_staging` and `pylabhub_register_headers_for_staging` to attach its specific staging commands to `stage_third_party_deps`. For External Prerequisites (Type B), the `pylabhub_register_directory_for_staging` function (called in `third_party/CMakeLists.txt`) attaches bulk staging commands for the `prereqs` directory to `stage_third_party_deps`.
 5.  The top-level project also attaches staging commands for its own targets (`pylabhub-corelib`, `pylabhub-shell`, etc.) to run `POST_BUILD`.
-6.  The final `install()` step is a single command that copies the entire, fully populated `${PYLABHUB_STAGING_DIR}` to the installation prefix: `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")`.
+6.  The final `install()` step involves installing the targets exported to `pylabhubTargets` and copying the contents of `${PYLABHUB_STAGING_DIR}` to the installation prefix via `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")`.
 7.  This entire staging and installation mechanism is controlled by the `THIRD_PARTY_INSTALL` option. If `OFF`, no staging or installation rules are generated.
 
 This approach keeps the installation logic atomic and declarative. The responsibility for populating the staging directory is correctly distributed to the components that know about their own artifacts.
@@ -192,7 +192,7 @@ pylabhub_add_external_prerequisite(
   HEADER_SOURCE_PATTERNS "include"
 )
 ```
-The helper function handles all the `ExternalProject_Add` boilerplate, the post-build detection step, and the creation of the `pylabhub::third_party::libexternal` imported target.
+The helper function handles all the `ExternalProject_Add` boilerplate, the post-build detection step, and the creation of the `pylabhub::third_party::libexternal` imported target. **Crucially, do not call any `pylabhub_register_*` functions for this library.** Its artifacts will be staged automatically by the global bulk-staging process managed by `pylabhub_register_directory_for_staging` in `third_party/CMakeLists.txt`.
 
 ---
 
@@ -232,7 +232,7 @@ The helper function handles all the `ExternalProject_Add` boilerplate, the post-
 - [ ] In `third_party/CMakeLists.txt`:
 - [ ] Add the `include(<pkg>.cmake)` call.
 - [ ] Manually create the `IMPORTED` target and the final `pylabhub::third_party::<pkg>` alias that points to the artifact in the `prereqs` directory.
-- [ ] **Do not** add any calls to `pylabhub_register_*` functions for this library. Staging is automatic.
+- [ ] **Do not** add any calls to `pylabhub_register_*` functions for this library. Staging is handled automatically by the global `pylabhub_register_directory_for_staging` call in `third_party/CMakeLists.txt` for the entire `prereqs` directory.
 
 ---
 

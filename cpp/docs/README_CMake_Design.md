@@ -88,8 +88,8 @@ This pattern provides fine-grained control and is used for all internal librarie
 This pattern is designed to reliably capture all artifacts from External Prerequisites, which CMake cannot introspect directly.
 
 1.  **Build & Install to Prereqs**: The `pylabhub_add_external_prerequisite` function builds the library and installs its *entire output*—including libraries, headers, and any other runtime assets (e.g., Lua scripts)—into the `${PREREQ_INSTALL_DIR}` directory (`build/prereqs`).
-2.  **Bulk Copy**: A single, global command attached to the master staging target calls the `pylabhub_stage_prerequisites_from_directory` function.
-3.  **Execution**: At build time, this function performs a complete, directory-level copy of the `lib/`, `include/`, `share/`, and `package/` subdirectories from the `prereqs` directory to the final staging directory. It then intelligently handles platform-specific needs, such as moving Windows `.dll` files from `lib/` to `bin/` and `tests/`.
+2.  **Bulk Copy**: The `pylabhub_register_directory_for_staging` function is called from the top-level `third_party/CMakeLists.txt`. This registers a request to stage the entire `prereqs` directory.
+3.  **Execution**: At build time, for each build configuration, a custom command is generated and executed via `cmake -P` (using `cmake/BulkStageSingleDirectory.cmake.in` as a template). This custom command performs a complete, directory-level copy of specified subdirectories (e.g., `bin/`, `lib/`, `include/`, `share/`) from the `prereqs` directory to the final staging directory. It then intelligently handles platform-specific needs, such as moving Windows `.dll` files from `lib/` to `bin/` and `tests/`.
 4.  **Result**: This ensures that all required files from complex external builds are staged reliably, even if they are not standard library or header files.
 
 ### 1.3. Modular & Stable Target Interfaces
@@ -172,49 +172,70 @@ graph TD
 
 ### Staging Target Dependencies
 
-This diagram clarifies how the two different staging strategies are orchestrated by the aggregator targets.
+This diagram clarifies how the two different staging strategies are orchestrated by the aggregator targets, detailing their inputs and mechanisms.
+
 
 ```mermaid
 graph TD
     subgraph "Global Master Target"
-        stage_all
+        stage_all[stage_all]
     end
-    
     subgraph "Aggregator Targets"
-        stage_core_artifacts
-        stage_third_party_deps
+        stage_core_artifacts[stage_core_artifacts]
+        stage_third_party_deps[stage_third_party_deps]
     end
-    
     subgraph "Infrastructure Targets"
-      create_staging_dirs
-      build_prerequisites
+        create_staging_dirs[create_staging_dirs]
+        build_prerequisites[build_prerequisites]
     end
 
-    %% Core Dependencies
-    stage_all --> stage_core_artifacts;
-    stage_core_artifacts --> stage_third_party_deps;
-    stage_third_party_deps --> create_staging_dirs;
-    stage_third_party_deps --> build_prerequisites;
+    %% Core Dependencies (Execution Order)
+    stage_all --> stage_core_artifacts
+    stage_core_artifacts --> stage_third_party_deps
+    stage_third_party_deps --> create_staging_dirs
+    stage_third_party_deps --> build_prerequisites %% Ensures prereqs are built first
 
-    subgraph "Strategy 1: Per-Target Staging"
-        style PerTarget fill:#E6F3FF,stroke-width:0
-        subgraph "Via Registration (in CMakeLists.txt)"
-            A[pylabhub-utils]
-            B[pylabhub::third_party::fmt]
-            C[pylabhub::third_party::libzmq]
-        end
-    end
-    
-    subgraph "Strategy 2: Bulk Staging"
-        style BulkStaging fill:#D5F5E3,stroke-width:0
-        D{pylabhub_stage_prerequisites_from_directory}
+    subgraph "Staging Input (Source of Files)"
+        S1_Input[Artifacts from Internal/Type A Projects]
+        S2_Input[Content of PREREQ_INSTALL_DIR (from Type B External Projects)]
+    end    
+
+    subgraph "Staging Mechanism Trigger"
+        M1{Per-Target Registration Calls (Type A)}
+        M2{Bulk Directory Registration Call (Type B)}
     end
 
-    %% Wiring staging strategies to the aggregator
-    stage_third_party_deps -- "Executes Reg. Cmds." --> A & B & C;
-    stage_third_party_deps -- "Executes Function" --> D;
-    
-    D -- "Reads From" --> build_prerequisites;
+    %% Wiring staging mechanisms to the aggregator
+    stage_third_party_deps -- "Adds Cmds. for Type A" --> M1
+    stage_third_party_deps -- "Adds Cmds. for Type B" --> M2
+
+    M1 -- "Stages" --> S1_Input
+    M2 -- "Stages" --> S2_Input   
+
+    S2_Input -- "Populated by" --> build_prerequisites
+    S1_Input -- "Populated by build" --> TYPE_A_BUILD[Type A Project Build Targets]
+
+    %% Final Output (expanded explicitly)
+    M1 --> FINAL_STAGE["\$\{PYLABHUB_STAGING_DIR\}"]
+    M2 --> FINAL_STAGE["\${\PYLABHUB_STAGING_DIR\}"]
+
+    %% Add notes for clarity
+    note left of M1
+      Uses pylabhub_register_library_for_staging and pylabhub_register_headers_for_staging
+    end note
+
+    note right of M2
+      Uses pylabhub_register_directory_for_staging
+    end note
+
+    %% Emphasize configure-time vs build-time action
+    note top of stage_third_party_deps
+      Commands are ATTACHED at Configure-Time
+    end note
+
+    note bottom of stage_third_party_deps
+      Commands EXECUTE at Build-Time
+    end note
 
 ```
 

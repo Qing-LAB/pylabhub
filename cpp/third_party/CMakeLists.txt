@@ -140,30 +140,13 @@ include(cmake/googletest.cmake)
 # to generate the final staging commands.
 # ===========================================================================
 if(THIRD_PARTY_INSTALL)
-  #-----------------------------------------------------------------------------
-  # Bulk Staging of External Prerequisite Artifacts (Strategy 2)
-  #
-  # This step orchestrates the copying of all files installed by ExternalProjects
-  # (Type B dependencies) from PREREQ_INSTALL_DIR to PYLABHUB_STAGING_DIR.  
-  # It is executed as a custom command attached to `stage_third_party_deps`,
-  # ensuring it runs after `build_prerequisites` has completed its install step.
-  message(STATUS "Bulk stage setup starting ...")
-  foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${cfg}" CFGU)
-    set(out "${CMAKE_BINARY_DIR}/BulkStagePrerequisites-${cfg}.cmake")
-    configure_file("${CMAKE_SOURCE_DIR}/cmake/BulkStagePrerequisites.cmake.in"
-                  "${out}"
-                  @ONLY)
-    # attach a custom command that invokes the per-config file for that configuration
-    add_custom_command(
-      TARGET stage_third_party_deps
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -P "${out}"
-      COMMENT "Bulk staging (config ${cfg})"
-      VERBATIM
-      CONFIGURATIONS ${cfg}
-    )
-  endforeach()
+  # Use the new holistic registration for external project prerequisites.
+  # This replaces the old BulkStagePrerequisites.cmake.in approach.
+  pylabhub_register_directory_for_staging(
+    SOURCE_DIR "${PREREQ_INSTALL_DIR}"
+    ATTACH_TO stage_third_party_deps
+    SUBDIRS "bin;lib;include;share" # Stage common directories
+  )
 
   # --- Finalize Third-Party Library Staging ---
   get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
