@@ -1,0 +1,289 @@
+# detect_external_project.cmake.in
+# expects the following variables to be set:
+#   PACKAGE_NAME
+#   PREREQ_INSTALL_DIR
+#   PACKAGE_BINARY_DIR
+#   LIB_PATTERNS
+#   HEADER_SOURCE_PATTERNS
+#   STABLE_BASENAME
+
+message(STATUS "detect: PACKAGE_NAME=${PACKAGE_NAME}")
+message(STATUS "detect: PREREQ_INSTALL_DIR=${PREREQ_INSTALL_DIR}")
+message(STATUS "detect: PACKAGE_BINARY_DIR=${PACKAGE_BINARY_DIR}")
+
+set(_found_lib "")
+
+# --- 1) try patterns under install/lib ---
+if(DEFINED LIB_PATTERNS AND LIB_PATTERNS)
+  foreach(_pat IN LISTS LIB_PATTERNS)
+    # Use glob to expand candidate matches under install/lib
+    file(GLOB _matches RELATIVE "${PREREQ_INSTALL_DIR}/lib" "${PREREQ_INSTALL_DIR}/lib/${_pat}" )
+    foreach(_m IN LISTS _matches)
+      if(NOT _found_lib)
+        set(_found_lib "${PREREQ_INSTALL_DIR}/lib/${_m}")
+      endif()
+    endforeach()
+    if(_found_lib)
+      break()
+    endif()
+  endforeach()
+endif()
+
+# --- 2) fallback: scan binary dir for common libs (first match wins) ---
+if(NOT _found_lib)
+  file(GLOB _bin_libs
+    "${PACKAGE_BINARY_DIR}/*/*.a"
+    "${PACKAGE_BINARY_DIR}/*/*.so"
+    "${PACKAGE_BINARY_DIR}/*/*.dylib"
+    "${PACKAGE_BINARY_DIR}/*/*.lib"
+    "${PACKAGE_BINARY_DIR}/*.a"
+    "${PACKAGE_BINARY_DIR}/*.so"
+    "${PACKAGE_BINARY_DIR}/*.dylib"
+    "${PACKAGE_BINARY_DIR}/*.lib"
+  )
+  if(_bin_libs)
+    list(GET _bin_libs 0 _found_lib)
+  endif()
+endif()
+
+# --- 3) relaxed search under install/lib by name ---
+if(NOT _found_lib)
+  message(WARNING "detect: unable to find library artifact for ${PACKAGE_NAME} using patterns. Attempting relaxed search under install/lib")
+  file(GLOB _relaxed "${PREREQ_INSTALL_DIR}/lib/*${PACKAGE_NAME}*.*")
+  if(_relaxed)
+    list(GET _relaxed 0 _found_lib)
+  endif()
+endif()
+
+if(NOT _found_lib)
+  message(FATAL_ERROR "detect: could not discover built artifact for ${PACKAGE_NAME}. Checked install and binary dirs.")
+endif()
+
+message(STATUS "detect: discovered artifact: ${_found_lib}")
+
+# determine extension and stable path
+get_filename_component(_found_name "${_found_lib}" NAME)
+# Old: get_filename_component(_found_ext "${_found_lib}" EXT)
+# New: Robustly determine extension
+set(_found_ext "")
+string(REGEX MATCH "\\.a$" _match_a "${_found_lib}")
+string(REGEX MATCH "\\.so$" _match_so "${_found_lib}")
+string(REGEX MATCH "\\.dylib$" _match_dylib "${_found_lib}")
+string(REGEX MATCH "\\.lib$" _match_lib "${_found_lib}")
+
+if(_match_a)
+  set(_found_ext ".a")
+elseif(_match_so)
+  set(_found_ext ".so")
+elseif(_match_dylib)
+  set(_found_ext ".dylib")
+elseif(_match_lib)
+  set(_found_ext ".lib")
+else()
+  # Fallback to CMake's default behavior if none match, or error
+  get_filename_component(_found_ext "${_found_lib}" EXT)
+  message(WARNING "detect: Unknown library extension for ${_found_lib}. Falling back to default get_filename_component EXT behavior.")
+endif()
+set(_stable_lib_path "${PREREQ_INSTALL_DIR}/lib/${STABLE_BASENAME}${_found_ext}")
+
+# copy/rename artifact to stable path (overwrite if exists)
+# Use COPY then RENAME as before
+file(COPY "${_found_lib}" DESTINATION "${PREREQ_INSTALL_DIR}/lib")
+file(RENAME "${PREREQ_INSTALL_DIR}/lib/${_found_name}" "${_stable_lib_path}" )
+
+message(STATUS "detect: wrote stable artifact to ${_stable_lib_path}")
+
+# -------------------------------------------------------------------------
+# Headers: copy patterns into include/<PACKAGE_NAME>, but avoid copying a
+# source that already lives inside that destination (prevents self-copying).
+# If the header source is a directory, copy its children (not the directory
+# itself) to avoid adding an extra nesting layer each run.
+# -------------------------------------------------------------------------
+if(DEFINED HEADER_SOURCE_PATTERNS AND HEADER_SOURCE_PATTERNS)
+  set(_hdr_dir "${PREREQ_INSTALL_DIR}/include/${PACKAGE_NAME}")
+  file(MAKE_DIRECTORY "${_hdr_dir}")
+
+  # Compute canonical absolute path of destination for robust checks
+  get_filename_component(_hdr_dir_abs "${_hdr_dir}" ABSOLUTE)
+
+  foreach(_hp_pattern IN LISTS HEADER_SOURCE_PATTERNS)
+    set(_found_header_source FALSE)
+
+    # Try candidate 1: glob for pattern under PACKAGE_BINARY_DIR
+    file(GLOB _header_sources_bin "${PACKAGE_BINARY_DIR}/${_hp_pattern}")
+    if(_header_sources_bin)
+      foreach(_source_path IN LISTS _header_sources_bin)
+        get_filename_component(_source_path_abs "${_source_path}" ABSOLUTE)
+        # Avoid copying into itself
+        if(NOT _source_path_abs STREQUAL "${_hdr_dir_abs}" AND NOT _source_path_abs MATCHES "^${_hdr_dir_abs}/")
+          if(IS_DIRECTORY "${_source_path}")
+            file(GLOB _children RELATIVE "${_source_path}" "${_source_path}/*")
+            foreach(_child IN LISTS _children)
+              file(COPY "${_source_path}/${_child}" DESTINATION "${_hdr_dir}")
+            endforeach()
+          else()
+            file(COPY "${_source_path}" DESTINATION "${_hdr_dir}")
+          endif()
+          message(STATUS "detect: copied headers from ${_source_path} (from bin) -> ${_hdr_dir}")
+          set(_found_header_source TRUE)
+        endif()
+      endforeach()
+      if(_found_header_source)
+        continue() # Move to next _hp_pattern if any were found
+      endif()
+    endif()
+
+    # Try candidate 2: glob for pattern under PREREQ_INSTALL_DIR
+    file(GLOB _header_sources_install "${PREREQ_INSTALL_DIR}/${_hp_pattern}")
+    if(_header_sources_install)
+      foreach(_source_path IN LISTS _header_sources_install)
+        get_filename_component(_source_path_abs "${_source_path}" ABSOLUTE)
+        # Avoid copying into itself
+        if(NOT _source_path_abs STREQUAL "${_hdr_dir_abs}" AND NOT _source_path_abs MATCHES "^${_hdr_dir_abs}/")
+          if(IS_DIRECTORY "${_source_path}")
+            file(GLOB _children2 RELATIVE "${_source_path}" "${_source_path}/*")
+            foreach(_child IN LISTS _children2)
+              file(COPY "${_source_path}/${_child}" DESTINATION "${_hdr_dir}")
+            endforeach()
+          else()
+            file(COPY "${_source_path}" DESTINATION "${_hdr_dir}")
+          endif()
+          message(STATUS "detect: copied headers from ${_source_path} (from install) -> ${_hdr_dir}")
+          set(_found_header_source TRUE)
+        endif()
+      endforeach()
+      if(_found_header_source)
+        continue() # Move to next _hp_pattern if any were found
+      endif()
+    endif()
+
+    if(NOT _found_header_source)
+      message(WARNING "detect: header pattern '${_hp_pattern}' not found for ${PACKAGE_NAME}; skipping.")
+    endif()
+  endforeach()
+else()
+  message(STATUS "detect: no HEADER_SOURCE_PATTERNS provided for ${PACKAGE_NAME}; skipping header copy.")
+endif()
+
+
+# -------------------------------------------------------------------------
+# EXTRA_COPY_DIRECTIVES handling
+# EXTRA_COPY_DIRECTIVES is expected to be a flat list of pairs:
+#   <source> <dest-relative-to-install> ...
+# Source paths are interpreted relative to PACKAGE_BINARY_DIR unless absolute.
+# If a source is a directory, copy its children; if a glob, expand matches.
+# -------------------------------------------------------------------------
+if(DEFINED EXTRA_COPY_DIRECTIVES AND EXTRA_COPY_DIRECTIVES)
+  # create function to perform a single copy directive
+  function(_perform_copy_directive _src_spec _dest_rel)
+    # resolve source(s) relative to PACKAGE_BINARY_DIR if not absolute
+    if(NOT IS_ABSOLUTE "${_src_spec}")
+      set(_candidate_pattern "${PACKAGE_BINARY_DIR}/${_src_spec}")
+    else()
+      set(_candidate_pattern "${_src_spec}")
+    endif()
+
+    # expand globs (if any) otherwise treat literal
+    file(GLOB _matches RELATIVE "${PACKAGE_BINARY_DIR}" "${_candidate_pattern}" "${_candidate_pattern}")
+    if(NOT _matches)
+      # if no glob match, check literal existence
+      if(EXISTS "${_candidate_pattern}")
+        set(_abs_matches "${_candidate_pattern}")
+      else()
+        set(_abs_matches "")
+      endif()
+    else()
+      # convert to absolute paths
+      set(_abs_matches "")
+      foreach(_m IN LISTS _matches)
+        # if match is relative to PACKAGE_BINARY_DIR, get absolute, else keep as-is
+        if(NOT IS_ABSOLUTE "${_m}")
+          list(APPEND _abs_matches "${PACKAGE_BINARY_DIR}/${_m}")
+        else()
+          list(APPEND _abs_matches "${_m}")
+        endif()
+      endforeach()
+    endif()
+
+    if(NOT _abs_matches)
+      message(STATUS "detect: EXTRA_COPY: no matches for '${_src_spec}' (skipping)")
+      return()
+    endif()
+
+    # compute absolute dest dir
+    file(TO_CMAKE_PATH "${PREREQ_INSTALL_DIR}/${_dest_rel}" _dest_dir_abs)
+    file(MAKE_DIRECTORY "${_dest_dir_abs}")
+
+    foreach(_s IN LISTS _abs_matches)
+      if(IS_DIRECTORY "${_s}")
+        # copy children of directory into dest (avoid double-nesting)
+        file(GLOB _children RELATIVE "${_s}" "${_s}/*")
+        foreach(_c IN LISTS _children)
+          file(COPY "${_s}/${_c}" DESTINATION "${_dest_dir_abs}")
+          message(STATUS "detect: EXTRA_COPY dir-child: ${_s}/${_c} -> ${_dest_dir_abs}")
+        endforeach()
+      else()
+        file(COPY "${_s}" DESTINATION "${_dest_dir_abs}")
+        message(STATUS "detect: EXTRA_COPY file: ${_s} -> ${_dest_dir_abs}")
+      endif()
+    endforeach()
+  endfunction()
+
+  # iterate over the flat list in pairs
+  list(LENGTH EXTRA_COPY_DIRECTIVES _len)
+  math(EXPR _pairs_count "${_len} / 2")
+  if(_pairs_count LESS 1)
+    message(WARNING "detect: EXTRA_COPY_DIRECTIVES provided but not as pairs; ignoring.")
+  else()
+    foreach(_idx RANGE 0 ${_pairs_count} -1)
+      math(EXPR _src_index "${_idx} * 2")
+      math(EXPR _dst_index "${_src_index} + 1")
+      list(GET EXTRA_COPY_DIRECTIVES ${_src_index} _src_spec)
+      list(GET EXTRA_COPY_DIRECTIVES ${_dst_index} _dest_rel)
+      # trim whitespace
+      string(STRIP "${_src_spec}" _src_spec)
+      string(STRIP "${_dest_rel}" _dest_rel)
+      if(_src_spec AND _dest_rel)
+        _perform_copy_directive("${_src_spec}" "${_dest_rel}")
+      else()
+        message(WARNING "detect: invalid EXTRA_COPY_DIRECTIVES pair at index ${_idx}; skipping")
+      endif()
+    endforeach()
+  endif()
+endif()
+
+
+# -------------------------------------------------------------------------
+# Generate a basic CMake package config file so that other CMake projects
+# (like libzmq, when built via add_subdirectory) can find this prerequisite.
+# -------------------------------------------------------------------------
+set(_config_dir "${PREREQ_INSTALL_DIR}/lib/cmake/${PACKAGE_NAME}")
+set(_config_file "${_config_dir}/${PACKAGE_NAME}-config.cmake")
+# Use a unique target name in the generated file to avoid conflicts.
+set(_target_name_in_config "${PACKAGE_NAME}::${PACKAGE_NAME}")
+
+file(MAKE_DIRECTORY "${_config_dir}")
+
+# Use relative paths from the config file's location to the include/lib dirs.
+# This makes the generated package relocatable.
+set(_rel_include_dir "\${CMAKE_CURRENT_LIST_DIR}/../../../include")
+set(_rel_lib_path "\${CMAKE_CURRENT_LIST_DIR}/../../../lib/${STABLE_BASENAME}")
+
+set(_config_content "
+# Generated by pylabhub build system
+if(NOT TARGET ${_target_name_in_config})
+  add_library(${_target_name_in_config} UNKNOWN IMPORTED)
+  set_target_properties(${_target_name_in_config} PROPERTIES
+    IMPORTED_LOCATION \"${_rel_lib_path}\"
+    INTERFACE_INCLUDE_DIRECTORIES \"${_rel_include_dir}\"
+  )
+endif()
+")
+
+file(WRITE "${_config_file}" "${_config_content}")
+message(STATUS "detect: wrote CMake package config to ${_config_file}")
+
+
+# write stamp file
+file(WRITE "${PREREQ_INSTALL_DIR}/${PACKAGE_NAME}-stamp.txt" "OK\n")
+message(STATUS "detect: wrote stamp ${PREREQ_INSTALL_DIR}/${PACKAGE_NAME}-stamp.txt")

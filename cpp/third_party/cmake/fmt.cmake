@@ -1,4 +1,5 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
+
 # ---------------------------------------------------------------------------
 # third_party/cmake/fmt.cmake
 # Wrapper for fmt (third_party/fmt)
@@ -69,7 +70,6 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
   snapshot_cache_var(BUILD_SHARED)
   snapshot_cache_var(BUILD_STATIC)
   snapshot_cache_var(BUILD_SHARED_LIBS)
-  snapshot_cache_var(BUILD_TESTS)
   snapshot_cache_var(ENABLE_PRECOMPILED)
 
   snapshot_cache_var(FMT_TEST)
@@ -144,10 +144,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     endif()
   endforeach()
 
-  # --- 5. Create wrapper target and define usage requirements ---
-  # This provides a stable `pylabhub::third_party::fmt` for consumers.
-  # ---------------------------
-  _expose_wrapper(pylabhub_fmt pylabhub::third_party::fmt)
+  # --- 5. Create canonical targets ---
+  # Create the canonical INTERFACE wrapper target.
+  add_library(pylabhub_fmt INTERFACE)
+  # Create the final, public-facing ALIAS.
+  add_library(pylabhub::third_party::fmt ALIAS pylabhub_fmt)
 
   if(_fmt_canonical_target)
     # Binary library case: Link the wrapper to the concrete target.
@@ -169,11 +170,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
   if(THIRD_PARTY_INSTALL)
     message(STATUS "[pylabhub-third-party] Scheduling fmt artifacts for staging...")
 
-    # Stage the header directory
+    # Stage the fmt headers.
     pylabhub_register_headers_for_staging(
-      # Stage the fmt headers. The source directory is '.../fmt/include', and the
-      # SUBDIR "" argument ensures its contents are copied directly into the
-      # staging include directory.
       DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
       SUBDIR ""
     )
@@ -186,30 +184,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fmt/CMakeLists.txt")
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for fmt.")
   endif()
 
-  # --- 7. Add to export set for installation ---
-  # The wrapper target must be exported so downstream projects can find it.
-  install(TARGETS pylabhub_fmt
-    EXPORT pylabhubTargets
-  )
-
-  # If fmt was built as a library, its canonical target must also be exported.
-  if(_fmt_canonical_target)
-    install(TARGETS ${_fmt_canonical_target}
-      EXPORT pylabhubTargets
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}
-    )
-  endif()
-
   # --- 8. Restore cache variables ---
   # Prevent settings from leaking to other sub-projects.
   # ---------------------------
   restore_cache_var(BUILD_SHARED BOOL)
   restore_cache_var(BUILD_STATIC BOOL)
   restore_cache_var(BUILD_SHARED_LIBS BOOL)
-  restore_cache_var(BUILD_TESTS BOOL)
   restore_cache_var(ENABLE_PRECOMPILED BOOL)
 
   restore_cache_var(FMT_TEST BOOL)

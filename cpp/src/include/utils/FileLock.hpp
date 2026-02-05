@@ -61,14 +61,16 @@
  * ```cpp
  * #include "utils/Lifecycle.hpp"
  * #include "utils/FileLock.hpp"
- * #include "logging.hpp" // FileLock depends on Logger
+ * #include "utils/Logger.hpp" // For example error logging (optional)
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
- *     // In main() or test setup, ensure the lifecycle is started:
- *     // pylabhub::utils::LifecycleGuard guard({
- *     //     pylabhub::utils::FileLock::GetLifecycleModule(),
- *     //     pylabhub::utils::Logger::GetLifecycleModule()
- *     // });
+ *     // In main() or test setup, ensure the necessary lifecycle modules are started.
+ *     // Set cleanup_on_shutdown to true if you want the application to attempt to
+ *     // remove lock files from crashed sessions upon a clean exit.
+ *     pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
+ *         pylabhub::utils::FileLock::GetLifecycleModule(true),
+ *         pylabhub::utils::Logger::GetLifecycleModule() // Optional: for logging errors
+ *     ));
  *
  *     // Attempt to acquire a lock with a 5-second timeout.
  *     pylabhub::utils::FileLock lock(resource,
@@ -78,8 +80,9 @@
  *     if (lock.valid()) {
  *         // ... perform work ...
  *     } else {
- *         // Handle failure. Using a logger here is safe because the FileLock
- *         // module depends on the Logger module.
+ *         // Handle failure. If the Logger module is active, you can use
+ *         // LOGGER_ERROR to report the failure. FileLock itself does not
+ *         // log non-fatal acquisition failures.
  *         LOGGER_ERROR("Failed to acquire lock for {}. Error: {}",
  *                      resource.string(), lock.error_code().message());
  *     }
@@ -152,11 +155,12 @@ class PYLABHUB_UTILS_EXPORT FileLock
     /**
      * @brief Returns a ModuleDef for the FileLock to be used with the LifecycleManager.
      *
-     * @param cleanup_on_shutdown If true, a shutdown task will be registered to
-     *                            clean up stale lock files with best effort. By default, this is
-     * set to false to leave .lock files intact after the process/application exits. Under highly
-     * contentioned scenarios, cleaning .lock files may cause competing processes to acquire access
-     * to the same .lock file by mistake, leading to potential data corruption.
+     * @param cleanup_on_shutdown If true, registers a shutdown task that will
+     *        attempt to clean up "stale" lock files (i.e., `.lock` files left
+     *        behind by a process that crashed). This is a best-effort cleanup
+     *        and may not be suitable for all applications, as it could
+     *        interfere with other running processes in high-contention scenarios.
+     *        Defaults to false, leaving lock files untouched on shutdown.
      * @return A configured ModuleDef for the FileLock utility.
      */
     static ModuleDef GetLifecycleModule(bool cleanup_on_shutdown = false);
@@ -264,14 +268,12 @@ class PYLABHUB_UTILS_EXPORT FileLock
     FileLock &operator=(FileLock &&other) noexcept;
 
     /**
-     * @brief [Cleanup] Safely removes leftover lock files created by this process.
+     * @brief [Internal] Performs best-effort cleanup of stale lock files.
      *
-     * This function is registered with the `LifecycleManager` and is automatically
-     * called at program shutdown. It iterates through all locks created by the
-     * current process and attempts to safely remove the associated `.lock` files.
-     * To avoid deleting a lock file still in use by another process, it first
-     * attempts to acquire a non-blocking lock on the file. If successful, the
-     * file is deemed safe to delete.
+     * This function is registered with the `LifecycleManager` to be called during
+     * shutdown *if* `cleanup_on_shutdown` was set to true when the module was
+     * retrieved. It iterates through all locks created by the current process
+     * and attempts to safely remove the associated `.lock` files.
      */
     static void cleanup();
 

@@ -1,0 +1,183 @@
+-- Logger compile-time level set to: 1 (0=Trace, 1=Debug, 2=Info, 3=Warn, 4=Error)
+-- =============================================================================
+--  Setting up sanitization of file and path names for debug information
+-- [Sanitize debug information] canonical CMAKE_SOURCE_DIR = /home/qqing/Work/pylabhub/cpp
+-- [Sanitize debug information] canonical CMAKE_BINARY_DIR = /home/qqing/Work/pylabhub/cpp/build
+-- [Sanitize debug information] canonical TOOLCHAIN = /home/qqing/miniconda3/envs/quantum
+-- [Sanitize debug information] canonical CONDA = /home/qqing/miniconda3/envs/quantum
+--  -- [Sanitize debug information] The following directories will be examined::
+--     -- /home/qqing/Work/pylabhub/cpp/build [as BUILD]
+--     -- /home/qqing/Work/pylabhub/cpp [as SOURCE]
+--     -- /home/qqing/miniconda3/envs/quantum [as TOOLCHAIN]
+--     -- /home/qqing/miniconda3/envs/quantum/include [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++ [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/x86_64-conda-linux-gnu [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/backward [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include-fixed [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/x86_64-conda-linux-gnu/sysroot/usr/include [as IMP_INC]
+--     -- /home/qqing/miniconda3/envs/quantum/lib [as IMP_LIB]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc/x86_64-conda-linux-gnu/14.3.0 [as IMP_LIB]
+--     -- /home/qqing/miniconda3/envs/quantum/lib/gcc [as IMP_LIB]
+--     -- /home/qqing/miniconda3/envs/quantum/x86_64-conda-linux-gnu/lib [as IMP_LIB]
+--     -- /home/qqing/miniconda3/envs/quantum/x86_64-conda-linux-gnu/sysroot/lib64 [as IMP_LIB]
+-- 
+-- [Sanitized debug information] Will pass file/debug prefix map flags:
+--   -ffile-prefix-map=/home/qqing/Work/pylabhub/cpp/build=/{BUILD}
+--   -fdebug-prefix-map=/home/qqing/Work/pylabhub/cpp/build=/{BUILD}
+--   -ffile-prefix-map=/home/qqing/miniconda3/envs/quantum=/{TOOLCHAIN}
+--   -fdebug-prefix-map=/home/qqing/miniconda3/envs/quantum=/{TOOLCHAIN}
+--   -ffile-prefix-map=/home/qqing/Work/pylabhub/cpp=/{SOURCE}
+--   -fdebug-prefix-map=/home/qqing/Work/pylabhub/cpp=/{SOURCE}
+-- ===========================================================================
+-- 
+-- CMake generator information (diagnostics):
+--   CMAKE_GENERATOR...........: Unix Makefiles
+--   CMAKE_GENERATOR_PLATFORM..: 
+--   CMAKE_VS_PLATFORM_NAME....: 
+--   CMAKE_SIZEOF_VOID_P.......: 8
+--   CMAKE_HOST_SYSTEM_PROCESSOR: x86_64
+--   CMAKE_SYSTEM_NAME.........: Linux
+--   CMAKE_BUILD_TYPE..........: Debug
+-- ============================================================
+-- 
+-- Platform compile-time macros summary:
+--   Defined: PLATFORM_LINUX (Linux)
+-- ============================================================
+-- 
+-- ===============================================================
+-- Top-Level Project: pylabhub-cpp 0.1
+-- Build Type:          Debug
+-- Generator:           Unix Makefiles
+-- Compiler:            GNU 14.3.0
+-- Platform:            Linux
+-- Here is the list of global settings:
+-- BUILD_TESTS = ON
+-- BUILD_XOP = OFF
+-- PYLABHUB_USE_SANITIZER = None
+-- THIRD_PARTY_INSTALL = ON
+-- PYLABHUB_CREATE_INSTALL_TARGET = ON
+-- FORCE_USE_CLANG_ON_APPLE = ON
+-- PYLABHUB_LOGGER_DEBUG = OFF
+-- PYLABHUB_STAGE_ON_BUILD = ON
+-- PYLABHUB_ENABLE_CLANG_TIDY = OFF
+-- PYLABHUB_ATOMICGUARD_STRESS_LEVEL = Light
+-- PYLABHUB_LOGGER_COMPILE_LEVEL = 1
+-- PYLABHUB_ENABLE_DEBUG_MESSAGES = ON
+-- CMAKE_INSTALL_PREFIX = /usr/local
+-- ===============================================================
+-- 
+-- Unified staging directory: /home/qqing/Work/pylabhub/cpp/build/stage-debug
+-- --- Configuring Third-Party Dependencies ---
+-- =========================================================
+-- [pylabhub-third-party] Global Policies:
+--   - Create Install Target:ON
+--   - Stage 3rd-Party:      ON
+--   - Disable tests:        ON
+--   - Allow upstream PCH:   OFF
+-- [pylabhub-third-party] Per-Library Policies:
+--   - fmt variant:          static
+--   - libzmq variant:       static
+--   - libzmq with OpenPGM:  OFF
+--   - libzmq with NORM:     OFF
+--   - libzmq with VMCI:     OFF
+-- =========================================================
+-- 
+-- [pylabhub] Configured external prerequisite: sodium
+-- [pylabhub-third-party] libsodium prerequisite configured.
+-- [pylabhub-third-party] Sanitized CFLAGS for LuaJIT: '-ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/qqing/miniconda3/envs/quantum/include'
+-- [pylabhub] Configured external prerequisite: luajit
+-- [pylabhub-third-party] luajit prerequisite configured.
+-- [pylabhub] Configured external prerequisite: libzmq
+-- [pylabhub-third-party] libzmq prerequisite configured.
+-- [pylabhub-third-party] Configuring nlohmann/json...
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_nlohmann_json
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::nlohmann_json -> pylabhub_nlohmann_json
+-- [pylabhub-third-party] Using vendored nlohmann/json (USE_VENDOR_NLOHMANN_ONLY=ON).
+-- [pylabhub-third-party] Found vendored nlohmann/json (namespaced layout).
+-- [pylabhub-third-party] Configured pylabhub_nlohmann_json with vendored include directory: /home/qqing/Work/pylabhub/cpp/third_party/include
+-- [pylabhub-third-party] Staging nlohmann/json headers.
+-- [pylabhub-third-party] nlohmann/json configuration complete.
+-- [pylabhub-third-party] Configuring msgpack-c...
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_msgpackc
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::msgpackc -> pylabhub_msgpackc
+-- [pylabhub-third-party] Configured pylabhub_msgpackc with include directory: /home/qqing/Work/pylabhub/cpp/third_party/msgpack-c/include
+-- [pylabhub-third-party] Staging msgpack-c headers.
+-- [pylabhub-third-party] msgpack-c configuration complete.
+-- [pylabhub-third-party] Configuring fmt submodule...
+-- [pylabhub-third-party] Forcing fmt variant = static
+-- [pylabhub-third-party] Disabling fmt tests (FMT_TEST=OFF)
+-- [pylabhub-third-party] Disabling fmt PCH
+-- {fmt} version: 12.1.0
+-- Build type: Debug
+-- [pylabhub-third-party] Found canonical fmt target: fmt (from candidate 'fmt')
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_fmt
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::fmt -> pylabhub_fmt
+-- [pylabhub-third-party] Linking pylabhub_fmt -> fmt
+-- [pylabhub-third-party] Scheduling fmt artifacts for staging...
+-- [pylabhub-third-party] Configuring cppzmq...
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_cppzmq
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::cppzmq -> pylabhub_cppzmq
+-- [pylabhub-third-party] Configured pylabhub_cppzmq with include directory: /home/qqing/Work/pylabhub/cpp/third_party
+-- [pylabhub-third-party] Linking pylabhub_cppzmq -> pylabhub::third_party::libzmq
+-- [pylabhub-third-party] Staging cppzmq headers (zmq.hpp, zmq_addon.hpp).
+-- [pylabhub-third-party] cppzmq configuration complete.
+-- [pylabhub-third-party] BUILD_XOP is OFF. Skipping XOPToolKit discovery.
+-- [pylabhub-third-party] Configuring GoogleTest submodule...
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_gtest
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::gtest -> pylabhub_gtest
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_gtest_main
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::gtest_main -> pylabhub_gtest_main
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_gmock
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::gmock -> pylabhub_gmock
+-- [pylabhub-third-party] Created INTERFACE wrapper target: pylabhub_gmock_main
+-- [pylabhub-third-party] Created ALIAS target: pylabhub::third_party::gmock_main -> pylabhub_gmock_main
+-- [pylabhub-third-party] GoogleTest configuration complete.
+-- Processing registered third-party libraries for staging: pylabhub::third_party::sodium;pylabhub::third_party::luajit;pylabhub::third_party::libzmq;fmt
+-- Processing registered third-party headers for staging...
+-- --- Third-Party Configuration Complete ---
+-- 
+-- --- Configuring Main Project Targets ---
+-- -- start configuring pylabhub::utils dynamic lib...
+-- Performing test: probing fmt chrono subseconds support...
+--     ** fmt chrono: probe results found in cache. Skipping re-run.
+--     ** HAVE_FMT_CHRONO_SUBSECONDS = 1
+--     ** FMT_CHRONO_FMT_STYLE = 2
+-- Configuring staging for pylabhub-utils library.
+-- -- Configured shared library 'pylabhub::utils'.
+-- Configured executable 'pylabhub::hubshell'.
+-- --- Main Project Configuration Complete ---
+-- 
+-- --- Configuring Optional Sub-Projects ---
+-- Skipping IgorXOP sub-project (BUILD_XOP is OFF).
+-- -- BUILD_TESTS is enabled, configuring test sub-projects...
+-- -- start configuring pylabhub::test_framework static lib...
+-- ** Configuring test executable for pylabhub-corelib...
+-- ** Configuring test executable for pylabhub-utils...
+-- ** Configuring test executable for misc tests...
+-- Found test executables to stage: test_pylabhub_corelib;test_pylabhub_utils;test_debug_output
+-- -- Configured test sub-projects.
+-- 
+-- --- Optional Sub-Projects Configuration Complete ---
+-- 
+-- Adding core stage targets to 'stage_core_artifacts': stage_pylabhub_utils;pylabhub-hubshell
+-- Installation target enabled. Run 'cmake --install' to create a package.
+-- ==============================================
+-- pyLabHub Configuration Summary
+-- ----------------------------------------------
+--   Install Prefix:      /usr/local
+--   Build Type:          Debug
+--   Utility Library:     pylabhub-utils (SHARED)
+--   Build Tests:         ON
+--   Build IgorXOP:       OFF
+--   3rd-Party Staging:   ON
+--   Create Install Target: ON (from /home/qqing/Work/pylabhub/cpp/build/stage-debug)
+-- ==============================================
+-- 
+-- Build configuration is complete.
+-- 1. To build all targets, run: cmake --build <your_build_directory>
+-- 2. To stage all artifacts to '/home/qqing/Work/pylabhub/cpp/build/stage-debug', run: cmake --build <your_build_directory> --target stage_all
+-- 
+-- Configuring done (0.2s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/qqing/Work/pylabhub/cpp/build
