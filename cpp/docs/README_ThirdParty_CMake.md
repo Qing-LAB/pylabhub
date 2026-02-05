@@ -1,21 +1,26 @@
-# THIRD_PARTY_CMAKESCRIPT.md
+# Third-Party CMake Integration Guide
 
-A design and style guide for `third_party/cmake/*.cmake` wrapper scripts and their integration into the top-level `CMakeLists.txt`.
+This document is a design and style guide for integrating third-party dependencies via the wrapper scripts in `third_party/cmake/`. It describes the required structure, best practices, and the two distinct patterns for managing libraries.
 
-This document describes the recommended structure and required behaviors for CMake wrapper scripts under `third_party/cmake/`.
-
-Each script manages a specific third-party library. Because each script has the most accurate knowledge of its package, it is responsible for two primary tasks:
-
-- Exposing clean and consistent CMake targets for the main project to link against.
-- Staging all necessary artifacts (headers, libraries) into the unified project staging directory (e.g., `${CMAKE_BINARY_DIR}/stage`) provided by the main project. This ensures that each package's specific layout and installation needs are handled correctly.
+Each wrapper script is responsible for building its dependency and exposing a clean, namespaced CMake target for the main project to link against (e.g., `pylabhub::third_party::fmt`).
 
 ---
 
-## Goals (high level)
+## Core Concept: Two Integration Patterns
 
-1.  **Canonical Targets**: Each third-party script builds its project (or finds a system-installed version) and exposes a canonical CMake target for the main project to use.
-3.  **Encapsulated Staging**: Each wrapper script is responsible for staging its artifacts by using the provided `pylabhub_stage_*` helper functions. This encapsulates package-specific logic while ensuring a consistent staging process.
-4.  **Fail-Fast**: Collisions, such as duplicate header paths or library names within the staging directory, are detected early.
+There are two primary categories for third-party libraries, each with a corresponding integration pattern and staging strategy. The developer must first decide which category a new library falls into.
+
+### Pattern 1: CMake Subprojects (Type A)
+
+- **Who it's for**: Libraries that have a modern, well-behaved CMake build system (e.g., `fmt`, `libzmq`).
+- **How it works**: Integrated via `add_subdirectory()`. The wrapper script uses `snapshot_cache_var` and `restore_cache_var` to isolate the subproject's build configuration.
+- **Staging**: The wrapper script is **responsible for staging** the library's artifacts by calling the `pylabhub_register_library_for_staging` and `pylabhub_register_headers_for_staging` helper functions.
+
+### Pattern 2: External Prerequisites (Type B)
+
+- **Who it's for**: Libraries that use non-CMake build systems (`make`, `msbuild`, etc.) or are otherwise complex to build (e.g., `luajit`, `libsodium`).
+- **How it works**: Integrated via the `pylabhub_add_external_prerequisite` helper function, which wraps `ExternalProject_Add`. This builds the library into an intermediate `${PREREQ_INSTALL_DIR}` directory (`build/prereqs`).
+- **Staging**: Staging is **handled automatically by a global, bulk process**. The wrapper script **must not** call any staging helper functions. The entire `prereqs` directory (including `lib`, `include`, and `share`) is copied to the final staging area.
 
 ---
 
@@ -54,11 +59,11 @@ Each third-party helper script must (where possible) do the following **inside `
 - Always set `INTERFACE_INCLUDE_DIRECTORIES` on the wrapper so top level and consumers can detect header locations (via `get_target_property(... INTERFACE_INCLUDE_DIRECTORIES)`).
 
 ### 3. Stage Artifacts for Installation
-- The top-level project defines a global staging directory (`PYLABHUB_STAGING_DIR`) and two custom targets: `stage_third_party_deps` (for third-party only) and `stage_all` (for the entire project).
-- Each wrapper script must use the `pylabhub_register_headers_for_staging` and `pylabhub_register_library_for_staging` helper functions. These functions register the artifacts to a global property list. A centralized loop in `third_party/CMakeLists.txt` then processes this list and attaches the necessary `add_custom_command` calls to the `stage_third_party_deps` target.
-  - **Headers**: `pylabhub_stage_headers(DIRECTORIES <path-to-headers> SUBDIR <pkg-name>)`
-  - **Libraries**: `pylabhub_stage_libraries(TARGETS <concrete-target>)`
-- This approach ensures that the logic for finding and copying artifacts is consistent, while knowledge of *what* to copy remains encapsulated within the script that knows the most about the package.
+- The top-level project defines a global staging directory (`PYLABHUB_STAGING_DIR`).
+- The staging rules are now strict based on the integration pattern:
+  - **CMake Subprojects**: The wrapper script **must** call `pylabhub_register_headers_for_staging` and `pylabhub_register_library_for_staging`. These registrations are processed to generate `POST_BUILD` copy commands.
+  - **External Prerequisites**: The wrapper script **must not** call any registration functions. Staging is handled by a global process that bulk-copies the `prereqs` directory.
+  - **Installation Export Set**: Only the namespaced `pylabhub::third_party::*` alias targets should be added to the `pylabhubTargets` export set in `third_party/CMakeLists.txt`. Concrete internal targets should not be directly exported, as their properties are inherited via the aliases.
 
 ---
 
@@ -78,31 +83,18 @@ This approach keeps the installation logic atomic and declarative. The responsib
 
 ---
 
-## Header-only vs Binary libraries — how to treat them
-
-- **Header-only libraries**
-  - No binary artifacts to stage.
-  - The wrapper script must call `pylabhub_stage_headers` to copy the header directory into `${PYLABHUB_STAGING_DIR}/include/`.
-
-- **Libraries producing binaries**
-  - Must expose a **concrete target** (static/shared) discovered by the wrapper script.
-  - The wrapper script must call `pylabhub_stage_libraries` to copy the library artifact (`$<TARGET_FILE:concrete_target>`) into `${PYLABHUB_STAGING_DIR}/lib/`.
-  - The script must also call `pylabhub_stage_headers` to copy the associated header directory into `${PYLABHUB_STAGING_DIR}/include/`.
-
-- **If only an alias or INTERFACE wrapper exists for a library**:
-  - The wrapper script is responsible for resolving the alias to its underlying concrete target before calling `pylabhub_stage_libraries`.
-
----
-
-## Provided Helper Functions in `ThirdPartyPolicyAndHelper.cmake`
+## Provided Helper Functions in `cmake/ThirdPartyPolicyAndHelper.cmake`
 
 The following helper functions are provided as part of the framework for third-party integration. Each package script should use them to ensure consistency and proper behavior.
 
-1. `_resolve_alias_to_concrete(TARGET_NAME OUTVAR)`  
-   - If `TARGET_NAME` is an alias, use `get_target_property(ALIASED_TARGET ${TARGET_NAME} ALIASED_TARGET)` and return that; else return original.
+1. `pylabhub_add_external_prerequisite(...)`
+   - The primary function for building and integrating prerequisites that use **non-CMake** build systems (or require special `ExternalProject_Add` handling).
+   - It wraps `ExternalProject_Add` and automates the creation of a stable `IMPORTED` target and the post-build detection/normalization step.
+   - The caller provides platform-specific `CONFIGURE_COMMAND`, `BUILD_COMMAND`, and `INSTALL_COMMAND` lists.
+   - See the example below for detailed usage.
 
-2. `_expose_wrapper(WRAPPER_NAME NAMESPACE_ALIAS)`  
-   - Creates an `INTERFACE` library named `WRAPPER_NAME` and an `ALIAS` library named `NAMESPACE_ALIAS` that points to it. This provides the standard two-layer abstraction for all dependencies.
+2. `_resolve_alias_to_concrete(TARGET_NAME OUTVAR)`  
+   - If `TARGET_NAME` is an alias, use `get_target_property(ALIASED_TARGET ${TARGET_NAME} ALIASED_TARGET)` and return that; else return original.
 
 3. `snapshot_cache_var(VAR_NAME)`
    - Saves the current state (both its normal and cached value) of `VAR_NAME`. This should be called before `add_subdirectory` for any variable that the sub-project might modify (e.g., `BUILD_SHARED_LIBS`).
@@ -114,47 +106,93 @@ Using these provided functions helps keep package scripts concise, consistent, a
 
 ---
 
-## Example — `third_party/cmake/fmt.cmake` (recommended implementation sketch)
+## Example — `third_party/cmake/fmt.cmake` (CMake subproject)
+
+This implementation is for a library that uses CMake and can be added via `add_subdirectory`.
 
 ```cmake
 # inside third_party/cmake/fmt.cmake
 include(ThirdPartyPolicyAndHelper) # provides core helpers
 include(StageHelpers)              # provides staging helpers
 
-# candidate list (preference order)
-set(_fmt_candidates fmt fmt::fmt)
+# Use snapshot/restore to isolate the subproject's build settings
+snapshot_cache_var(BUILD_SHARED_LIBS)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build fmt as a static lib" FORCE)
 
-set(_fmt_canonical "")
-foreach(_cand IN LISTS _fmt_candidates)
-  if(TARGET "${_cand}" AND NOT TARGET "${_cand}" STREQUAL "INTERFACE")
-    _resolve_alias_to_concrete("${_cand}" _real)
-    set(_fmt_canonical "${_real}")
-    break()
-  endif()
-endforeach()
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/fmt EXCLUDE_FROM_ALL)
 
-# create stable wrapper + alias
-_expose_wrapper(pylabhub_fmt pylabhub::third_party::fmt)
+restore_cache_var(BUILD_SHARED_LIBS BOOL)
 
-if(_fmt_canonical)
-  # Found a binary library, link the wrapper to it and register it for staging.
-  target_link_libraries(pylabhub_fmt INTERFACE "${_fmt_canonical}")
-  pylabhub_register_library_for_staging(TARGET ${_fmt_canonical})
-else()
-  # Header-only fallback: expose include directory directly.
-  target_include_directories(pylabhub_fmt INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/fmt/include>
+# Find the real library target created by the subproject
+_resolve_alias_to_concrete("fmt::fmt" _canonical_target)
+
+# Create our stable wrapper and alias
+add_library(pylabhub_fmt INTERFACE)
+add_library(pylabhub::third_party::fmt ALIAS pylabhub_fmt)
+target_link_libraries(pylabhub_fmt INTERFACE "${_canonical_target}")
+
+# Register the library and its headers for staging
+if(THIRD_PARTY_INSTALL)
+  pylabhub_register_library_for_staging(TARGET ${_canonical_target})
+  pylabhub_register_headers_for_staging(
+    DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
+    SUBDIR "fmt" # Stage into include/fmt
   )
 endif()
-
-# Always register the header directory for staging.
-pylabhub_register_headers_for_staging(
-  DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
-  SUBDIR "fmt" # Stage into include/fmt
-)
 ```
 
-`libzmq.cmake` would follow the same pattern, preferring to resolve a concrete `libzmq-static` target and registering that for `THIRD_PARTY_POST_BUILD_LIBS`, while also registering `/third_party/libzmq/include` into `THIRD_PARTY_POST_BUILD_HEADERS`.
+---
+
+## Example — `third_party/cmake/libexternal.cmake` (External Build)
+
+This is the standard pattern for libraries like `libsodium` and `luajit` that require `ExternalProject_Add`.
+
+**The goal is to define platform-specific build commands and pass them to the generic `pylabhub_add_external_prerequisite` function.**
+
+```cmake
+# inside third_party/cmake/libexternal.cmake
+include(ThirdPartyPolicyAndHelper)
+
+# 1. Define paths
+set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libexternal")
+set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libexternal-build")
+set(_install_dir "${PREREQ_INSTALL_DIR}")
+
+# 2. Define platform-specific build commands
+if(MSVC)
+    # MSVC uses msbuild
+    find_program(_MSBUILD_EXE msbuild REQUIRED)
+    set(_build_command ${_MSBUILD_EXE} libexternal.sln /p:Configuration=Release)
+    set(_install_command "") # Let post-build detection handle copying
+    set(_byproducts "${_install_dir}/lib/libexternal.lib")
+else()
+    # POSIX systems use Makefiles
+    find_program(_MAKE_PROG make REQUIRED)
+    set(_configure_command ${_source_dir}/configure --prefix=${_install_dir})
+    set(_build_command ${_MAKE_PROG})
+    set(_install_command ${_MAKE_PROG} install)
+    set(_byproducts "${_install_dir}/lib/libexternal.a")
+endif()
+
+# 3. Call the generic helper function
+pylabhub_add_external_prerequisite(
+  NAME              libexternal
+  SOURCE_DIR        "${_source_dir}"
+  BINARY_DIR        "${_build_dir}"
+  INSTALL_DIR       "${_install_dir}"
+
+  # Pass the platform-specific commands
+  CONFIGURE_COMMAND ${_configure_command}
+  BUILD_COMMAND     ${_build_command}
+  INSTALL_COMMAND   ${_install_command}
+  BUILD_BYPRODUCTS  ${_byproducts}
+
+  # Pass patterns for the post-build detection script
+  LIB_PATTERNS      "libexternal.lib;libexternal.a"
+  HEADER_SOURCE_PATTERNS "include"
+)
+```
+The helper function handles all the `ExternalProject_Add` boilerplate, the post-build detection step, and the creation of the `pylabhub::third_party::libexternal` imported target.
 
 ---
 
@@ -176,14 +214,25 @@ pylabhub_register_headers_for_staging(
 
 ## Checklist for implementers of `third_party/cmake/<pkg>.cmake`
 
-- [ ] Provide a candidate list of plausible concrete targets (in likely order).
-- [ ] Resolve aliases to their aliased concrete target(s) and prefer concrete/installable targets.
-- [ ] Create a `pylabhub_<pkg>` wrapper target and `pylabhub::third_party::<pkg>` namespaced alias.
-- [ ] Ensure `INTERFACE_INCLUDE_DIRECTORIES` is set on the wrapper target (use `$<BUILD_INTERFACE:...>` and `$<INSTALL_INTERFACE:...>`).
-- [ ] If a concrete library target is found, call `pylabhub_stage_libraries` to stage it to `${PYLABHUB_STAGING_DIR}/lib`.
-- [ ] If a header directory exists, call `pylabhub_stage_headers` to stage it to `${PYLABHUB_STAGING_DIR}/include`.
-- [ ] Emit clear `message(STATUS ...)` lines describing actions taken & fallbacks used.
-- [ ] Use helper functions from `ThirdPartyPolicyAndHelper.cmake` to keep scripts concise and consistent.
+### Is your library a well-behaved CMake project?
+
+#### **YES -> Use the CMake Subproject Pattern**
+- [ ] In your `third_party/cmake/<pkg>.cmake` wrapper:
+- [ ] Use `snapshot_cache_var`/`restore_cache_var` to isolate the build environment.
+- [ ] Call `add_subdirectory()` to integrate the library.
+- [ ] Create a `pylabhub::third_party::<pkg>` alias target.
+- [ ] **Call `pylabhub_register_library_for_staging()` for the compiled library target.**
+- [ ] **Call `pylabhub_register_headers_for_staging()` for the header files.**
+- [ ] **Do NOT include `install(TARGETS ...)` in the wrapper script.** Instead, add the `pylabhub::third_party::<pkg>` alias target to the central `install(TARGETS ... EXPORT pylabhubTargets)` block in `third_party/CMakeLists.txt`.
+
+#### **NO -> Use the External Prerequisite Pattern**
+- [ ] In your `third_party/cmake/<pkg>.cmake` wrapper:
+- [ ] Define platform-specific command lists for `CONFIGURE`, `BUILD`, and `INSTALL`.
+- [ ] Call `pylabhub_add_external_prerequisite`, passing the commands and detection patterns.
+- [ ] In `third_party/CMakeLists.txt`:
+- [ ] Add the `include(<pkg>.cmake)` call.
+- [ ] Manually create the `IMPORTED` target and the final `pylabhub::third_party::<pkg>` alias that points to the artifact in the `prereqs` directory.
+- [ ] **Do not** add any calls to `pylabhub_register_*` functions for this library. Staging is automatic.
 
 ---
 

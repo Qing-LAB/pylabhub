@@ -1,3 +1,13 @@
+/**
+ * @file platform.cpp
+ * @brief Provides cross-platform implementations for core OS-specific utilities.
+ *
+ * This file contains the platform-specific logic for functions declared in the
+ * `pylabhub::platform` namespace, such as retrieving process and thread IDs,
+ * and getting the current executable's path. It uses preprocessor directives
+ * to select the correct implementation for Windows, macOS, Linux, and other
+ * POSIX-compliant systems.
+ */
 #include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -45,7 +55,10 @@ namespace pylabhub::platform
 {
 // Anonymous namespace for helpers local to this translation unit.
 
-// Helper to get the current process ID in a cross-platform way.
+/**
+ * @brief Gets the current process ID in a cross-platform way.
+ * @return The process ID (PID) of the calling process.
+ */
 uint64_t get_pid()
 {
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -55,7 +68,13 @@ uint64_t get_pid()
 #endif
 }
 
-// Gets a platform-native thread ID for logging.
+/**
+ * @brief Gets a platform-native thread ID.
+ * @details This is suitable for logging and debugging, providing a unique
+ *          identifier for the current thread. It uses the most efficient OS-specific
+ *          API available (`GetCurrentThreadId`, `pthread_threadid_np`, `syscall(SYS_gettid)`).
+ * @return A unique 64-bit integer representing the native thread ID.
+ */
 uint64_t get_native_thread_id() noexcept
 {
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -72,7 +91,18 @@ uint64_t get_native_thread_id() noexcept
 #endif
 }
 
-// Helper to automatically discover the current executable's name for logging.
+/**
+ * @brief Discovers the name and optionally the full path of the current executable.
+ * @details This function is useful for logging, configuration, and finding resources
+ *          relative to the application binary. It uses OS-specific APIs like
+ *          `GetModuleFileNameW` (Windows), `readlink` on `/proc/self/exe` (Linux),
+ *          `_NSGetExecutablePath` (macOS), and `sysctl` (FreeBSD).
+ *
+ * @param include_path If `true`, returns the full, absolute path to the executable.
+ *                     If `false` (default), returns only the filename.
+ * @return The name or path of the executable. Returns a platform-specific
+ *         "unknown" string on failure.
+ */
 std::string get_executable_name(bool include_path) noexcept
 {
     try

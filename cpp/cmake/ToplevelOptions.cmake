@@ -15,7 +15,7 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 # Note: AddressSanitizer is supported on MSVC; Thread and UndefinedBehavior sanitizers are not currently supported on MSVC in this build script.
 set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). AddressSanitizer supported on MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
-option(PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB "FORCE utils dynamic lib to link with sanitizer static lib" OFF)
+option(PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS "When using a static sanitizer library (e.g., libasan.a), force it to be linked into the project's shared libraries (like pylabhub-utils). Default is OFF, as it's often better to link the sanitizer into the final executable." OFF)
 
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
@@ -37,7 +37,7 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
 # Option to control the intensity of the atomic_guard stress tests
-set(VALID_STRESS_LEVELS "None;Light;Heavy")
+set(VALID_STRESS_LEVELS "None" "Light" "Heavy")
 set(PYLABHUB_ATOMICGUARD_STRESS_LEVEL "Light" CACHE STRING "Set the stress level for atomic_guard tests. Valid values are: ${VALID_STRESS_LEVELS}")
 set_property(CACHE PYLABHUB_ATOMICGUARD_STRESS_LEVEL PROPERTY STRINGS ${VALID_STRESS_LEVELS})
 

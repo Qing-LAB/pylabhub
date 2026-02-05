@@ -21,12 +21,7 @@
 cmake_minimum_required(VERSION 3.29)
 project(IgorXOP LANGUAGES C CXX)
 
-# -------------------------
-# Option to enable/disable building XOP from parent
-# -------------------------
-if(NOT DEFINED BUILD_XOP)
-  option(BUILD_XOP "Attempt to build Igor XOP addon" ON)
-endif()
+
 
 if(NOT BUILD_XOP)
   message(STATUS "IgorXOP: BUILD_XOP=OFF; skipping XOP configuration.")
@@ -180,8 +175,8 @@ if(PYLABHUB_SANITIZER_FLAGS_SET)
       message(STATUS "** The sanitizer is a dynamic lib, we will link ${XOP_TARGET} to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
       target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
     else()
-      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
-        message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with ${XOP_TARGET} to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS)
+        message(STATUS "** Static sanitizer: PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS is ON. Force linking into ${XOP_TARGET}.")
         target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
       else()
         message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to ${XOP_TARGET}. Please make sure your final executive that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
@@ -247,11 +242,6 @@ endif()
 # macOS: Assembly (POST_BUILD) and Staging (custom target)
 # ==============================================================================
 if(DEFINED PLATFORM_APPLE)
-  # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
-  # On macOS, a post-build command is used to assemble the .xop bundle.
-  # This is handled by a single, consolidated script that performs all necessary
-  # steps: creating the bundle structure, compiling resources, cleaning
-  # attributes, code signing, and verification.
   # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
   # On macOS, a post-build command is used to assemble the .xop bundle.
   # This is handled by a single, consolidated script that performs all necessary
@@ -413,6 +403,10 @@ add_custom_target(stage_${XOP_TARGET}
   VERBATIM
 )
 add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)
+
+# Register this XOP's staging target to ensure it is executed as part of the
+# top-level `stage_all` process when BUILD_XOP is ON.
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_${XOP_TARGET})
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)

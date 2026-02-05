@@ -25,8 +25,9 @@ set(UTILS_SOURCES
   logger_sinks/SyslogSink.cpp
   logger_sinks/EventLogSink.cpp
   Logger.cpp
-  JsonConfig.cpp  
-  SharedMemoryHub.cpp
+  JsonConfig.cpp
+  MessageHub.cpp
+  DataBlock.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
@@ -68,6 +69,7 @@ target_include_directories(pylabhub-utils
 # (Do not set PYLABHUB_UTILS_EXPORT_DLL — the generated header uses *_EXPORTS.)
 target_compile_definitions(pylabhub-utils PRIVATE pylabhub_utils_EXPORTS)
 
+add_dependencies(pylabhub-utils build_prerequisites)
 # ------------------------------------------------------------------------------
 
 
@@ -86,8 +88,8 @@ if(PYLABHUB_SANITIZER_FLAGS_SET)
       message(STATUS "** The sanitizer is a dynamic lib, we will link pylabhub-utils to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
       target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
     else()
-      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
-        message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with pylabhub-utils to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
+      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS)
+        message(STATUS "** Static sanitizer: PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS is ON. Force linking into pylabhub-utils.")
         target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
       else()
         message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to pylabhub-utils. Please make sure your final executable that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
@@ -118,6 +120,7 @@ endif()
 target_include_directories(pylabhub-utils
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+    $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -126,8 +129,9 @@ target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
     pylabhub::third_party::nlohmann_json
-    pylabhub::third_party::libzmq
-    pylabhub::third_party::sodium
+    pylabhub::third_party::cppzmq
+    pylabhub::third_party::libsodium
+    pylabhub::third_party::luajit
     Threads::Threads
 )
 
@@ -135,8 +139,7 @@ if(PYLABHUB_EXECINFO_LIB)
   target_link_libraries(pylabhub-utils PRIVATE ${PYLABHUB_EXECINFO_LIB})
 endif()
 
-# Ensure libsodium is built before pylabhub-utils (following libzmq pattern)
-add_dependencies(pylabhub-utils libsodium_external)
+
 
 # Probe for fmt::chrono subsecond support
 include(FmtChronoProbe)
@@ -225,6 +228,8 @@ add_custom_command(TARGET stage_pylabhub_utils POST_BUILD
 )
 
 # Register this local staging target with the global build system.
+# This ensures that 'stage_pylabhub_utils' will be executed as part of
+# the overall `stage_core_artifacts` process.
 set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_utils)
 
 message(STATUS "-- Configured shared library 'pylabhub::utils'.")

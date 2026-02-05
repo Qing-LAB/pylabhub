@@ -1,86 +1,3 @@
-# ===========================================================================
-# Top-Level CMakeLists.txt for the pyLabHub C++ Project
-#
-# This file is the main entry point for the C++ build system. It orchestrates the
-# entire process, from dependency management to final installation, based on a
-# unified staging architecture.
-#
-# ---------------------------------------------------------------------------
-# HOW TO USE THIS BUILD SYSTEM
-# ---------------------------------------------------------------------------
-#
-# This system is designed around a "staging" directory (`build/stage/`). All
-# artifacts are first copied here, creating a complete, runnable package. The
-# final `install` step is just a simple copy of this directory.
-#
-# --- Exposed User Options ---
-#   -DBUILD_TESTS=ON/OFF              (Default: ON)   Build the test suite.
-#   -DBUILD_XOP=ON/OFF                (Default: ON)   Build the IgorXOP module.
-#   -DTHIRD_PARTY_INSTALL=ON/OFF      (Default: ON)   Stage third-party libraries.
-#   -DPYLABHUB_CREATE_INSTALL_TARGET=ON/OFF (Default: ON)   Enable the `install` target.
-#   -DFORCE_USE_CLANG_ON_APPLE=ON/OFF (Default: ON)   Ensure Apple toolchain is used on macOS.
-#   -DCMAKE_INSTALL_PREFIX=<path>     (Default: /usr/local or C:/Program Files)
-#
-# --- Common Scenarios (from the `cpp` directory) ---
-#
-# 1.  Standard Development Build (Makefile or Ninja):
-#     Generates build files for a command-line build system like Make or Ninja.
-#     This is the most common workflow for day-to-day development.
-#
-#     $ cmake -S . -B build
-#     $ cmake --build build
-#
-#     After this, you can run executables directly from `build/stage/bin/`.
-#
-# 2.  Xcode Project Generation and Build:
-#     Generates an `.xcodeproj` file for use with Xcode or `xcodebuild`.
-#     NOTE: This requires a clean environment to ensure the correct Apple toolchain
-#     is used, especially if you have other compilers (like from Homebrew) installed.
-#
-#     a. Generate the Xcode project:
-#        $ cmake -S . -B build_xcode -G Xcode
-#
-#     b. Build from the command line (recommended):
-#        The `CC=` and `CXX=` prefixes ensure any conflicting environment variables are ignored.
-#        $ CC= CXX= xcodebuild -project build_xcode/pylabhub-cpp.xcodeproj
-#
-#     c. Alternatively, open `build_xcode/pylabhub-cpp.xcodeproj` in the Xcode IDE and build from there.
-#
-# 3.  Create a Full Distributable Package:
-#     This performs a full staging and then copies the result to the final installation directory.
-#
-#     $ cmake -S . -B build -DTHIRD_PARTY_INSTALL=ON \
-#           -DPYLABHUB_CREATE_INSTALL_TARGET=ON \
-#           -DCMAKE_INSTALL_PREFIX=../install
-#     $ cmake --build build --target stage_all
-#     $ cmake --install build
-#
-# ---------------------------------------------------------------------------
-# Core Design Principles:
-#
-# Our architecture is built on a foundation of modern CMake practices,
-# emphasizing clarity, robustness, and maintainability.
-#
-# 1.  **Unified Staging**: The cornerstone of the design is the unified
-#     staging directory (`${PYLABHUB_STAGING_DIR}`). All build
-#     artifacts—executables, libraries, headers, and bundles—are copied into
-#     this single location within the build tree. This creates a self-contained,
-#     runnable version of the project that mirrors the final installation
-#     layout, making local development and testing simple and reliable.
-# 2.  **Isolation & Abstraction**: Third-party dependencies are configured
-#     in isolated "sandboxes" to prevent build settings from "leaking."
-#     Consumers link against stable, namespaced `ALIAS` targets, abstracting
-#     away underlying build details.
-# 3.  **Top-Down Control & Modularity**: The build system is broken into
-#     logical, single-responsibility modules. High-level build policies are
-#     defined as user-facing `CACHE` options.
-# 4.  **Clear Separation of Concerns**: Core components are always staged.
-#     Third-party libraries and optional components (`tests`) have their staging
-#     and building controlled by dedicated options.
-# 5.  **Installation**: The final `install` target performs a direct copy
-#     of the fully-populated staged directory, providing a clean separation
-#     between development builds and distributable packages.
-# ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.29)
 
 # ===========================================================================
@@ -225,6 +142,8 @@ add_custom_target(create_staging_dirs
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tools"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/config"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/package"
     COMMENT "Initializing staging directories"
 )
 
@@ -270,10 +189,6 @@ add_custom_target(stage_core_artifacts)
 # wait for the directories to be created first.
 add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
 
-
-
-
-
 # --- 3.3. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")
 add_subdirectory(third_party)
@@ -293,11 +208,15 @@ if(BUILD_XOP)
 else()
   message(STATUS "Skipping IgorXOP sub-project (BUILD_XOP is OFF).")
 endif()
+
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+  message(STATUS "--- Tests Sub-Project Configuration Complete ---")
+  message(STATUS "")
 else()
   message(STATUS "Skipping tests sub-project (BUILD_TESTS is OFF).")
+  message(STATUS "")
 endif()
 
 # Configure add-ons, if the directory exists.
@@ -308,6 +227,10 @@ message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
 # --- 3.4. Finalize Staging Dependencies ---
+# Sub-projects (like src/utils) register their individual staging targets
+# by appending them to the global property `CORE_STAGE_TARGETS`.
+# This mechanism allows for a decentralized registration of artifacts
+# while centralizing their collection and attachment to the main staging flow.
 # Collect all core staging targets registered by sub-projects via the global property.
 get_property(core_stage_targets GLOBAL PROPERTY CORE_STAGE_TARGETS)
 if(core_stage_targets)
