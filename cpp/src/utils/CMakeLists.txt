@@ -5,6 +5,9 @@
 #
 cmake_minimum_required(VERSION 3.29)
 
+include(MsvcHelper)
+include(SanitizerHelper)
+
 message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 # Define the source files for the utility library explicitly.
 # This is more robust than using file(GLOB), as it ensures that adding or
@@ -59,6 +62,8 @@ target_include_directories(pylabhub-utils
   PUBLIC
     ${PYLABHUB_INCLUDE_DIR}
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+    $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -77,38 +82,11 @@ add_dependencies(pylabhub-utils build_prerequisites)
 pylabhub_enable_clang_tidy_for_target(pylabhub-utils)
 #=================================================================================
 
-if(PYLABHUB_SANITIZER_FLAGS_SET)
-  message(STATUS "** Sanitizer detected, adding to pylabhub-utils with compilation flags.")
-  target_compile_options(pylabhub-utils PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
-  # If sanitizer is enabled, and a runtime path is found, explicitly link to it.
-  # This is necessary when a shared library's objects are compiled with sanitizer
-  # instrumentation, as the shared library itself needs to resolve these symbols.
-  if(PYLABHUB_SANITIZER_RUNTIME_PATH)
-    if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
-      message(STATUS "** The sanitizer is a dynamic lib, we will link pylabhub-utils to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-      target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
-    else()
-      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS)
-        message(STATUS "** Static sanitizer: PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS is ON. Force linking into pylabhub-utils.")
-        target_link_libraries(pylabhub-utils PRIVATE pylabhub::sanitizer_flags)
-      else()
-        message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to pylabhub-utils. Please make sure your final executable that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-        message(STATUS "")
-      endif()
-    endif()
-  endif()
-endif()
+pylabhub_apply_sanitizer_to_target(pylabhub-utils)
 
 # ==============================================================================
 
-  # Check if we are using MSVC
-if(MSVC)
-    # Enable synchronous exception handling and disable warning C5105.
-    target_compile_options(pylabhub-utils PRIVATE /EHsc /wd5105)
-
-    # Enable the standards-conforming preprocessor
-    target_compile_options(pylabhub-utils PRIVATE /Zc:preprocessor)
-endif()
+pylabhub_apply_standard_msvc_options(pylabhub-utils)
 
 if (PYLABHUB_LOGGER_DEBUG)
     target_compile_definitions(pylabhub-utils PRIVATE _LOGGER_DEBUG_ENABLED=1)
@@ -117,12 +95,7 @@ endif()
 
 # Define the public include directory for consumers of this library.
 # This makes `include/` available via `target_include_directories`.
-target_include_directories(pylabhub-utils
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
-    $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
+
 
 # Link against necessary third-party libraries and system libraries.
 target_link_libraries(pylabhub-utils
@@ -149,32 +122,7 @@ target_compile_definitions(pylabhub-utils
     FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE}
 )
 
-# Header-only INTERFACE target for consumers that should not link to the shared library.
-# It only propagates include dirs, compile definitions and compile options — no linking.
-add_library(pylabhub-utils_headers INTERFACE)
-add_library(pylabhub::utils_headers ALIAS pylabhub-utils_headers)
 
-# Propagate the same usage requirements that pylabhub-utils publishes for headers.
-target_include_directories(pylabhub-utils_headers
-  INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-# Propagate any compile definitions the consumers need (but not pylabhub_utils_EXPORTS).
-# For consumers we *do not* define pylabhub_utils_EXPORTS (that is only for the library build).
-target_compile_definitions(pylabhub-utils_headers
-  INTERFACE
-    HAVE_FMT_CHRONO_SUBSECONDS=${HAVE_FMT_CHRONO_SUBSECONDS}
-    FMT_CHRONO_FMT_STYLE=${FMT_CHRONO_FMT_STYLE}
-)
-
-# If you have target_compile_options or features to propagate, add them too:
-target_compile_features(pylabhub-utils_headers INTERFACE cxx_std_20)
-if(NOT MSVC)
-  target_compile_options(pylabhub-utils_headers INTERFACE -fvisibility=hidden)
-endif()
 
 # ==============================================================================
 # Installation
@@ -213,7 +161,7 @@ elseif(PYLABHUB_IS_POSIX)
   # On POSIX platforms, stage the shared library to the 'lib' directory.
   pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION lib OUT_COMMANDS stage_commands)
 else()
-  message(ERROR, "Unknown platform for staging...")
+  message(FATAL_ERROR "Unknown platform for staging...")
 endif()
 
 add_custom_target(stage_pylabhub_utils ${stage_commands} COMMENT "Staging pylabhub-utils library")

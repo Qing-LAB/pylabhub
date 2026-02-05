@@ -110,6 +110,15 @@ class DataBlock
         // Initialize the mutex in the shared memory
         pthread_mutex_init(reinterpret_cast<pthread_mutex_t *>(m_header->mutex_storage), &mattr);
         pthread_mutexattr_destroy(&mattr);
+#else
+        // CRITICAL: On Windows, process-shared mutexes are typically named kernel objects.
+        // m_header->mutex_storage (a byte array) cannot directly hold a Windows kernel mutex object.
+        // It is left uninitialized here.
+        // TODO: Implement proper cross-process synchronization for Windows, possibly using a named
+        // kernel mutex referenced externally by name, rather than attempting to embed a mutex object
+        // directly in shared memory. For now, ensure no code attempts to use this storage as a mutex.
+        // As a temporary measure to ensure the memory is initialized, zero out the storage.
+        std::memset(m_header->mutex_storage, 0, sizeof(m_header->mutex_storage));
 #endif
         // Get pointers to the flexible data zone and structured buffer
         m_flexible_data_zone =
