@@ -25,5 +25,6 @@ int dynamic_reentrant_load_fail();
 int dynamic_persistent_module();
 int dynamic_persistent_module_finalize();
 int dynamic_persistent_in_middle();
+int dynamic_unload_timeout();
 
 } // namespace pylabhub::tests::worker::lifecycle

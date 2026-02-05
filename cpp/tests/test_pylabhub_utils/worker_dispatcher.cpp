@@ -185,6 +185,10 @@ static int dispatch_utils_workers(int argc, char **argv)
         {
             return pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize();
         }
+        if (scenario == "dynamic.unload_timeout")
+        {
+            return pylabhub::tests::worker::lifecycle::dynamic_unload_timeout();
+        }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;
     }
