@@ -2,6 +2,55 @@
 
 This document provides a definitive overview of the CMake build system for the pyLabHub C++ project. It outlines the core design principles and includes a practical guide for developers to perform common tasks.
 
+## Table of Contents
+1. [Quick Start](#quick-start)
+2. [Core Design Principles](#core-design-principles)
+3. [System Diagrams](#system-diagrams)
+4. [Build and Staging Flow](#build-and-staging-execution-flow)
+5. [Developer's Cookbook](#developers-cookbook-common-tasks)
+6. [Troubleshooting](#troubleshooting-common-issues)
+7. [Function Reference](#cmake-function-quick-reference)
+
+## Quick Start
+
+### Building the Project
+
+```bash
+# Configure (from project root)
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Debug
+
+# Build everything
+cmake --build cpp/build
+
+# Stage all artifacts (creates runnable layout)
+cmake --build cpp/build --target stage_all
+
+# Run tests
+cd cpp/build
+ctest
+
+# Install (optional)
+cmake --install cpp/build --prefix /path/to/install
+```
+
+### Key Build Options
+
+Configure with `-D<OPTION>=<VALUE>`:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `BUILD_TESTS` | `ON` | Build the test suite |
+| `BUILD_XOP` | `ON` | Build Igor Pro XOP module |
+| `THIRD_PARTY_INSTALL` | `ON` | Stage third-party dependencies |
+| `PYLABHUB_STAGE_ON_BUILD` | `ON` | Run staging automatically on build |
+| `PYLABHUB_USE_SANITIZER` | `"None"` | Enable sanitizers (Address, Thread, etc.) |
+| `CMAKE_BUILD_TYPE` | `Debug` | Build configuration (Debug, Release, etc.) |
+
+Example:
+```bash
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
+```
+
 ## 1. Core Design Principles
 
 Our architecture is built on modern CMake practices, emphasizing **clarity, robustness, and maintainability**. The key pillars of the design are detailed below.
@@ -132,42 +181,41 @@ This diagram illustrates how the main application and internal libraries depend 
 
 ```mermaid
 graph TD
-    subgraph "Executable Target"
-        A[pylabhub::hubshell]
-    end
-
-    subgraph "Internal Shared Library"
-        B(pylabhub::utils)
-    end
-
-    subgraph "Third-Party Libraries"
-        subgraph "Type A: Native CMake Projects"
-            C(pylabhub::third_party::fmt)
-            D(pylabhub::third_party::cppzmq)
-            E(pylabhub::third_party::nlohmann_json)
-            F(pylabhub::third_party::libzmq)
-        end
-        subgraph "Type B: External Prerequisites"
-            G(pylabhub::third_party::libsodium)
-            H(pylabhub::third_party::luajit)
-        end
-    end
-
-    A --> B;
-    B --> C;
-    B --> D;
-    B --> E;
-    D --> F;
-    F --> G;
-
-    style A fill:#D5F5E3,stroke:#2ECC71
-    style B fill:#E6F3FF,stroke:#66a3ff,stroke-width:2px
-    style C fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
-    style D fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
-    style E fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
-    style F fill:#FFF5E6,stroke:#FFC300,stroke-width:2px
-    style G fill:#FFE0B3,stroke:#FF9A00,stroke-width:2px
-    style H fill:#FFE0B3,stroke:#FF9A00,stroke-width:2px
+    %% Main Application
+    A[pylabhub::hubshell<br/><i>Main Application</i>]
+    
+    %% Internal Library
+    B[pylabhub::utils<br/><i>Core Utilities Library</i>]
+    
+    %% Type A: Native CMake Third-Party
+    C[pylabhub::third_party::fmt<br/><i>Formatting Library</i>]
+    D[pylabhub::third_party::cppzmq<br/><i>ZeroMQ C++ Bindings</i>]
+    E[pylabhub::third_party::nlohmann_json<br/><i>JSON Library</i>]
+    F[pylabhub::third_party::libzmq<br/><i>ZeroMQ Core</i>]
+    
+    %% Type B: External Prerequisites
+    G[pylabhub::third_party::libsodium<br/><i>Crypto Library</i>]
+    H[pylabhub::third_party::luajit<br/><i>Lua JIT Compiler</i>]
+    
+    %% Dependencies
+    A -->|links to| B
+    B -->|links to| C
+    B -->|links to| D
+    B -->|links to| E
+    B -->|links to| H
+    D -->|depends on| F
+    F -->|depends on| G
+    
+    %% Styling
+    classDef executable fill:#D5F5E3,stroke:#27AE60,stroke-width:3px,color:#000
+    classDef internal fill:#E8F4FD,stroke:#3498DB,stroke-width:3px,color:#000
+    classDef typeA fill:#FFF9E6,stroke:#F39C12,stroke-width:2px,color:#000
+    classDef typeB fill:#FFE6E6,stroke:#E74C3C,stroke-width:2px,color:#000
+    
+    class A executable
+    class B internal
+    class C,D,E,F typeA
+    class G,H typeB
 ```
 
 ### Staging Target Dependencies
@@ -177,69 +225,101 @@ This diagram clarifies how the two different staging strategies are orchestrated
 
 ```mermaid
 graph TD
-    subgraph "Global Master Target"
-        stage_all[stage_all]
-    end
-    subgraph "Aggregator Targets"
-        stage_core_artifacts[stage_core_artifacts]
-        stage_third_party_deps[stage_third_party_deps]
-    end
-    subgraph "Infrastructure Targets"
-        create_staging_dirs[create_staging_dirs]
-        build_prerequisites[build_prerequisites]
-    end
-
-    %% Core Dependencies (Execution Order)
+    stage_all[stage_all<br/><i>Master Orchestrator</i>]
+    
+    stage_core_artifacts[stage_core_artifacts<br/><i>Aggregates Core Project Staging</i>]
+    stage_third_party_deps[stage_third_party_deps<br/><i>Aggregates Third-Party Staging</i>]
+    
+    create_staging_dirs[create_staging_dirs<br/><i>Creates directory structure</i>]
+    build_prerequisites[build_prerequisites<br/><i>Builds External Projects</i>]
+    stage_project_source_headers[stage_project_source_headers<br/><i>Stages src/include early</i>]
+    
+    %% Core flow
     stage_all --> stage_core_artifacts
     stage_core_artifacts --> stage_third_party_deps
+    stage_core_artifacts --> stage_project_source_headers
     stage_third_party_deps --> create_staging_dirs
-    stage_third_party_deps --> build_prerequisites %% Ensures prereqs are built first
-
-    subgraph "Staging Input (Source of Files)"
-        S1_Input[Artifacts from Internal/Type A Projects]
-        S2_Input[Content of PREREQ_INSTALL_DIR (from Type B External Projects)]
-    end    
-
-    subgraph "Staging Mechanism Trigger"
-        M1{Per-Target Registration Calls (Type A)}
-        M2{Bulk Directory Registration Call (Type B)}
-    end
-
-    %% Wiring staging mechanisms to the aggregator
-    stage_third_party_deps -- "Adds Cmds. for Type A" --> M1
-    stage_third_party_deps -- "Adds Cmds. for Type B" --> M2
-
-    M1 -- "Stages" --> S1_Input
-    M2 -- "Stages" --> S2_Input   
-
-    S2_Input -- "Populated by" --> build_prerequisites
-    S1_Input -- "Populated by build" --> TYPE_A_BUILD[Type A Project Build Targets]
-
-    %% Final Output (expanded explicitly)
-    M1 --> FINAL_STAGE["\$\{PYLABHUB_STAGING_DIR\}"]
-    M2 --> FINAL_STAGE["\${\PYLABHUB_STAGING_DIR\}"]
-
-    %% Add notes for clarity
-    note left of M1
-      Uses pylabhub_register_library_for_staging and pylabhub_register_headers_for_staging
-    end note
-
-    note right of M2
-      Uses pylabhub_register_directory_for_staging
-    end note
-
-    %% Emphasize configure-time vs build-time action
-    note top of stage_third_party_deps
-      Commands are ATTACHED at Configure-Time
-    end note
-
-    note bottom of stage_third_party_deps
-      Commands EXECUTE at Build-Time
-    end note
-
+    stage_third_party_deps --> build_prerequisites
+    stage_project_source_headers --> create_staging_dirs
+    
+    %% External projects feed into build_prerequisites
+    libsodium_external[libsodium_external] --> build_prerequisites
+    luajit_external[luajit_external] --> build_prerequisites
+    
+    %% Type A registration (configure-time)
+    fmt_reg["pylabhub_register_library_for_staging<br/>pylabhub_register_headers_for_staging<br/><i>Called by fmt.cmake</i>"]
+    fmt_reg -.->|"POST_BUILD commands<br/>attached to"| stage_third_party_deps
+    
+    %% Type B bulk staging (configure-time)
+    bulk_reg["pylabhub_register_directory_for_staging<br/><i>Called for prereqs/</i>"]
+    bulk_reg -.->|"POST_BUILD commands<br/>attached to"| stage_third_party_deps
+    
+    %% Final output
+    stage_all --> FINAL["${PYLABHUB_STAGING_DIR}<br/>📁 Complete staged layout"]
+    
+    %% Styling
+    classDef master fill:#E8F4FD,stroke:#3498DB,stroke-width:3px
+    classDef aggregator fill:#FFF9E6,stroke:#F39C12,stroke-width:2px
+    classDef infra fill:#E6F3E6,stroke:#27AE60,stroke-width:2px
+    classDef external fill:#FFE6E6,stroke:#E74C3C,stroke-width:2px
+    classDef register fill:#F0E6FF,stroke:#9B59B6,stroke-width:2px,stroke-dasharray: 5 5
+    classDef output fill:#D5F5E3,stroke:#2ECC71,stroke-width:3px
+    
+    class stage_all master
+    class stage_core_artifacts,stage_third_party_deps aggregator
+    class create_staging_dirs,build_prerequisites,stage_project_source_headers infra
+    class libsodium_external,luajit_external external
+    class fmt_reg,bulk_reg register
+    class FINAL output
 ```
 
-## 3. Developer's Cookbook: Common Tasks
+## 3. Build and Staging Execution Flow
+
+Understanding when things happen during the build is crucial for debugging CMake issues.
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant CMake as CMake Configure
+    participant Build as Build System
+    participant Stage as Staging System
+    
+    Dev->>CMake: cmake -S . -B build
+    Note over CMake: CONFIGURE TIME
+    CMake->>CMake: Load ToplevelOptions.cmake
+    CMake->>CMake: Run project() command
+    CMake->>CMake: Include third_party/CMakeLists.txt
+    CMake->>CMake: Execute include(fmt), include(libsodium), etc.
+    Note over CMake: Registration happens here!
+    CMake->>CMake: fmt.cmake calls pylabhub_register_*()
+    CMake->>CMake: Append to global properties
+    CMake->>CMake: Process registrations (attach POST_BUILD commands)
+    CMake->>CMake: Configure src/, tests/, etc.
+    
+    Dev->>Build: cmake --build . --target stage_all
+    Note over Build: BUILD TIME
+    Build->>Build: Build build_prerequisites
+    Build->>Build: Build libsodium_external, luajit_external
+    Build->>Build: Detect and normalize artifacts to prereqs/
+    Build->>Build: Build fmt, libzmq (Type A deps)
+    Build->>Build: Build pylabhub-utils
+    Build->>Build: Build pylabhub-hubshell
+    Build->>Build: Build test executables
+    Build->>Stage: Execute stage_third_party_deps
+    Stage->>Stage: POST_BUILD: Copy fmt headers/libs
+    Stage->>Stage: POST_BUILD: Run BulkStageSingleDirectory.cmake
+    Stage->>Stage: Copy prereqs/{bin,lib,include,share}
+    Stage->>Stage: Windows: Move DLLs to bin/ and tests/
+    Build->>Stage: Execute stage_core_artifacts
+    Stage->>Stage: Run stage_pylabhub_utils commands
+    Stage->>Stage: Copy library and export header
+    Build->>Stage: Execute stage_all
+    Stage->>Dev: ✅ .stage_complete marker created
+```
+
+**Key Insight**: Registration functions (like `pylabhub_register_library_for_staging`) are called at **configure time** but attach commands that execute at **build time**.
+
+## 4. Developer's Cookbook: Common Tasks
 
 This section provides practical recipes for common development tasks.
 
@@ -264,37 +344,151 @@ This recipe uses the **Direct Staging** pattern, suitable for simple, native exe
     add_subdirectory(my-tool)
     ```
 
-### Recipe 2: How to Add a New Internal Library
+### Recipe 2: How to Add a New Internal Shared Library
 
-This recipe shows the general structure for an internal library, which must use the **Registration-Based Staging** pattern. This example is for a shared library.
+This recipe shows the actual pattern used in the project (based on `src/utils/CMakeLists.txt`). This creates a proper shared library with export headers and platform-aware staging.
 
-1.  **Create directory and files in `src/`.** Ensure source headers (e.g., `my-lib.h`) are placed in `src/include/my-lib/` if they are intended for global staging by the `stage_project_source_headers` target.
-2.  **Edit `src/my-lib/CMakeLists.txt`:**
+1.  **Create directory structure:**
+    ```
+    src/networking/
+    ├── CMakeLists.txt
+    ├── NetworkManager.cpp
+    └── HttpClient.cpp
+    src/include/networking/
+    ├── NetworkManager.hpp
+    └── HttpClient.hpp
+    ```
+
+2.  **Edit `src/networking/CMakeLists.txt`:**
     ```cmake
-    add_library(my-lib SHARED my-lib.cpp)
-    add_library(pylabhub::my-lib ALIAS my-lib)
+    # Define source files explicitly (avoid GLOB for maintainability)
+    set(NETWORKING_SOURCES
+      NetworkManager.cpp
+      HttpClient.cpp
+    )
+
+    # Create the shared library
+    add_library(pylabhub-networking SHARED ${NETWORKING_SOURCES})
+    add_library(pylabhub::networking ALIAS pylabhub-networking)
     
-    # Use CMake's feature for handling DLL exports/imports (important for shared libs)
+    # Modern C++ standard
+    target_compile_features(pylabhub-networking PUBLIC cxx_std_20)
+    
+    # Platform-specific visibility
+    if(NOT MSVC)
+      target_compile_options(pylabhub-networking PRIVATE -fvisibility=hidden)
+    endif()
+
+    # Generate export header for DLL/shared library symbols
     include(GenerateExportHeader)
-    generate_export_header(my-lib BASE_NAME "my_lib" EXPORT_MACRO_NAME "MY_LIB_EXPORT")
+    generate_export_header(pylabhub-networking
+      BASE_NAME "pylabhub_networking"
+      EXPORT_MACRO_NAME "PYLABHUB_NETWORKING_EXPORT"
+      EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_networking_export.h"
+    )
+
+    # Set up include directories
+    target_include_directories(pylabhub-networking
+      PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+        $<INSTALL_INTERFACE:include>
+    )
+
+    # Link dependencies
+    target_link_libraries(pylabhub-networking
+      PUBLIC
+        pylabhub::third_party::fmt
+        Threads::Threads
+    )
+
+    # Define export symbol when building this library
+    target_compile_definitions(pylabhub-networking PRIVATE pylabhub_networking_EXPORTS)
+
+    # MSVC-specific options
+    if(MSVC)
+      target_compile_options(pylabhub-networking PRIVATE /EHsc /wd5105 /Zc:preprocessor)
+    endif()
+
+    # --- Staging (Platform-Aware Pattern) ---
+    include(StageHelpers)
     
-    # Make the generated export header discoverable for build
-    target_include_directories(my-lib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+    if(PYLABHUB_IS_WINDOWS)
+      # Windows: DLLs go to bin/ and tests/ directories
+      pylabhub_get_library_staging_commands(
+        TARGET pylabhub-networking 
+        DESTINATION bin 
+        OUT_COMMANDS stage_commands
+      )
+      pylabhub_get_library_staging_commands(
+        TARGET pylabhub-networking 
+        DESTINATION tests 
+        OUT_COMMANDS stage_commands_tests
+      )
+      list(APPEND stage_commands ${stage_commands_tests})
+    else()
+      # POSIX: shared libraries go to lib/ directory
+      pylabhub_get_library_staging_commands(
+        TARGET pylabhub-networking 
+        DESTINATION lib 
+        OUT_COMMANDS stage_commands
+      )
+    endif()
 
-    # --- Staging (Pattern: Registration-Based) ---
-    # Register this library for staging. The actual commands to copy artifacts
-    # will be attached to a global aggregator target (stage_core_artifacts)
-    # by the top-level CMakeLists.txt after all components have been configured.
-    pylabhub_register_library_for_staging(TARGET my-lib)
+    # Create local staging target
+    add_custom_target(stage_pylabhub_networking ${stage_commands}
+      COMMENT "Staging pylabhub-networking library"
+    )
+    add_dependencies(stage_pylabhub_networking pylabhub-networking create_staging_dirs)
 
-    # Register generated header files for staging. The generated export header
-    # needs to be staged to the include directory.
-    pylabhub_register_headers_for_staging(
-      FILES "${CMAKE_CURRENT_BINARY_DIR}/my_lib_export.h"
-      SUBDIR "" # Stage directly into ${PYLABHUB_STAGING_DIR}/include/
+    # Stage the generated export header
+    add_custom_command(TARGET stage_pylabhub_networking POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_networking_export.h"
+              "${PYLABHUB_STAGING_DIR}/include/"
+      COMMENT "Staging export header for pylabhub-networking"
+    )
+
+    # Register with global staging system
+    set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_networking)
+
+    # --- Installation ---
+    install(TARGETS pylabhub-networking
+      EXPORT pylabhubTargets
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    install(FILES
+      "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_networking_export.h"
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/networking/
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/networking
     )
     ```
-3.  **Include the subdirectory in `src/CMakeLists.txt`:** `add_subdirectory(my-lib)`
+
+3.  **Add to `src/CMakeLists.txt`:**
+    ```cmake
+    add_subdirectory(networking)
+    ```
+
+4.  **Use in other targets:**
+    ```cmake
+    target_link_libraries(my-target PRIVATE pylabhub::networking)
+    ```
+
+5.  **Use in your code:**
+    ```cpp
+    #include "networking/NetworkManager.hpp"
+    #include "pylabhub_networking_export.h"  // For PYLABHUB_NETWORKING_EXPORT macro
+    
+    class PYLABHUB_NETWORKING_EXPORT MyClass {
+        // ...
+    };
+    ```
 
 ### Recipe 3: How to Add a New Third-Party Library (CMake Subproject)
 
@@ -446,3 +640,176 @@ On Windows, an executable needs to be able to find its dependent DLLs at runtime
 2.  **Staging External DLLs**: With the new bulk-staging system, this is now even simpler for external prerequisites. **Any `.dll` files from libraries like `libsodium` or `luajit` are now automatically found in the staged `lib/` directory and copied to `tests/`**, requiring no extra configuration for the test target.
 
 3.  **Result**: Test executables will find all their required DLLs—both internal and external—in the same directory, allowing them to run "out of the box" without needing to modify the system `PATH`.
+
+## 5. Troubleshooting Common Issues
+
+### Issue: "error while loading shared libraries" (Linux/macOS)
+
+**Symptom:** `error while loading shared libraries: libpylabhub-utils.so: cannot open shared object file`
+
+**Cause:** RPATH not set correctly or library not staged properly.
+
+**Solution:**
+1. Verify RPATH is set:
+   ```bash
+   readelf -d build/stage-debug/bin/pylabhub-hubshell | grep RPATH
+   # Should show: (RUNPATH)  Library runpath: [$ORIGIN/../lib]
+   ```
+
+2. Verify library exists:
+   ```bash
+   ls -la build/stage-debug/lib/libpylabhub-utils.so
+   ```
+
+3. Check that `CMAKE_BUILD_WITH_INSTALL_RPATH` is `ON` in top-level `CMakeLists.txt` (line 55).
+
+### Issue: Missing DLL on Windows
+
+**Symptom:** Application fails to start with "The code execution cannot proceed because X.dll was not found"
+
+**Cause:** DLL not copied to executable directory.
+
+**For internal shared libraries:** Verify `pylabhub_get_library_staging_commands()` is called with `DESTINATION bin` for Windows.
+
+**For external prerequisites:** Check that bulk staging copied DLLs:
+```powershell
+ls build\stage-debug\bin\*.dll
+ls build\stage-debug\tests\*.dll
+```
+
+The `BulkStageSingleDirectory.cmake` script should automatically move DLLs from `lib/` to `bin/` and `tests/` on Windows.
+
+### Issue: Headers not found during compilation
+
+**Symptom:** `fatal error: 'fmt/format.h' file not found`
+
+**Cause:** Headers not staged or include directories not set correctly.
+
+**Solution:**
+1. Check if headers were staged:
+   ```bash
+   ls build/stage-debug/include/fmt/
+   ```
+
+2. For source headers: Verify `stage_project_source_headers` ran (check `build/stage-debug/include/utils/`)
+
+3. For third-party headers: Check the wrapper's `pylabhub_register_headers_for_staging()` call
+
+4. Verify target includes staging directory:
+   ```cmake
+   target_include_directories(my-target PRIVATE
+     $<BUILD_INTERFACE:${PYLABHUB_STAGING_DIR}/include>
+   )
+   ```
+
+### Issue: "Cannot specify link libraries for target X which is not built by this project"
+
+**Symptom:** CMake error when trying to `install(TARGETS ...)` an ALIAS target.
+
+**Cause:** Attempting to export an ALIAS target directly.
+
+**Solution:** In `third_party/CMakeLists.txt` or wherever you're exporting, include BOTH the wrapper and canonical targets:
+```cmake
+install(TARGETS
+  pylabhub_mylib      # The INTERFACE wrapper
+  mylib               # The concrete target (if applicable)
+  EXPORT pylabhubTargets
+)
+```
+
+### Issue: Staging commands not executing
+
+**Symptom:** Build succeeds but `build/stage-debug/` is empty or missing files.
+
+**Possible causes:**
+
+1. **Forgot to run staging target:**
+   ```bash
+   # Don't just build:
+   cmake --build build
+   
+   # Run staging explicitly:
+   cmake --build build --target stage_all
+   ```
+   Or enable automatic staging with `-DPYLABHUB_STAGE_ON_BUILD=ON`.
+
+2. **Registration after finalization:** Ensure `pylabhub_register_*()` functions are called BEFORE the global property processing in `third_party/CMakeLists.txt` (lines 142-186).
+
+3. **Target doesn't exist:** If you registered a target name that doesn't exist, staging will be skipped with a warning.
+
+### Issue: "Circular dependency" during build
+
+**Symptom:** CMake configuration fails with "Circular dependency detected involving: X, Y, Z"
+
+**Cause:** Module dependencies form a cycle in the dependency graph.
+
+**Solution:** Review your `target_link_libraries()` calls and `add_dependencies()` statements. Draw out the dependency graph to identify the cycle. You may need to:
+- Use forward declarations instead of including headers
+- Split a large module into smaller, more focused ones
+- Use dependency inversion (interfaces/abstract classes)
+
+### Issue: Tests pass individually but fail when run together
+
+**Symptom:** `ctest -R MyTest.Specific` passes, but `ctest` fails.
+
+**Cause:** Test order dependency or shared state pollution.
+
+**Solution:**
+1. Use GoogleTest fixtures with proper setup/teardown:
+   ```cpp
+   class MyTestFixture : public ::testing::Test {
+   protected:
+       void SetUp() override { /* clean state */ }
+       void TearDown() override { /* cleanup */ }
+   };
+   ```
+
+2. Avoid static/global state in tests
+
+3. For multi-process tests, ensure child processes clean up resources (locks, temp files)
+
+## 6. CMake Function Quick Reference
+
+### Staging Functions
+
+| Function | Purpose | Where to Call | Example |
+|----------|---------|---------------|---------|
+| `pylabhub_register_headers_for_staging()` | Register headers to stage | Third-party wrapper or library CMakeLists | `pylabhub_register_headers_for_staging(DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include" SUBDIR "")` |
+| `pylabhub_register_library_for_staging()` | Register library to stage | Third-party wrapper | `pylabhub_register_library_for_staging(TARGET fmt)` |
+| `pylabhub_stage_executable()` | Stage executable directly to output dir | Executable's CMakeLists.txt | `pylabhub_stage_executable(TARGET my-tool DESTINATION bin)` |
+| `pylabhub_register_test_for_staging()` | Register test executable | Test's CMakeLists.txt | `pylabhub_register_test_for_staging(TARGET my_test)` |
+| `pylabhub_get_library_staging_commands()` | Generate staging commands for library | Internal library CMakeLists.txt | `pylabhub_get_library_staging_commands(TARGET mylib DESTINATION lib OUT_COMMANDS cmds)` |
+| `pylabhub_register_directory_for_staging()` | Bulk-stage directory tree | third_party/CMakeLists.txt | `pylabhub_register_directory_for_staging(SOURCE_DIR "${PREREQ_INSTALL_DIR}" ATTACH_TO stage_third_party_deps SUBDIRS "bin;lib;include")` |
+
+### Platform Detection Variables
+
+Set by `cmake/PlatformAndCompiler.cmake`:
+
+| Variable | When Set | Usage |
+|----------|----------|-------|
+| `PYLABHUB_IS_WINDOWS` | Windows platform | `if(PYLABHUB_IS_WINDOWS) ... endif()` |
+| `PYLABHUB_IS_POSIX` | Linux, macOS, FreeBSD | `if(PYLABHUB_IS_POSIX) ... endif()` |
+| `PLATFORM_WIN64` | 64-bit Windows | Compile-time macro |
+| `PLATFORM_LINUX` | Linux | Compile-time macro |
+| `PLATFORM_APPLE` | macOS | Compile-time macro |
+| `PLATFORM_FREEBSD` | FreeBSD | Compile-time macro |
+
+### Global Properties
+
+| Property | Purpose | Set By | Read By |
+|----------|---------|--------|---------|
+| `PYLABHUB_LIBRARIES_TO_STAGE` | List of library targets to stage | `pylabhub_register_library_for_staging()` | `third_party/CMakeLists.txt` (line 152) |
+| `PYLABHUB_HEADERS_TO_STAGE` | Serialized header staging requests | `pylabhub_register_headers_for_staging()` | `third_party/CMakeLists.txt` (line 168) |
+| `CORE_STAGE_TARGETS` | Local staging targets from src/ | Individual CMakeLists.txt | Top-level CMakeLists.txt (line 235) |
+| `PYLABHUB_TEST_EXECUTABLES_TO_STAGE` | Test executables | `pylabhub_register_test_for_staging()` | `tests/CMakeLists.txt` (line 37) |
+
+### Common CMake Variables
+
+| Variable | Set By | Purpose |
+|----------|--------|---------|
+| `PYLABHUB_STAGING_DIR` | Top-level CMakeLists.txt | Path to unified staging directory |
+| `PREREQ_INSTALL_DIR` | third_party/CMakeLists.txt | Path to external prerequisites install dir |
+| `CMAKE_SOURCE_DIR` | CMake | Project root directory |
+| `CMAKE_BINARY_DIR` | CMake | Build directory |
+| `CMAKE_CURRENT_SOURCE_DIR` | CMake | Current CMakeLists.txt directory |
+| `CMAKE_BUILD_TYPE` | User/CMake | Debug, Release, RelWithDebInfo, MinSizeRel |
