@@ -69,7 +69,7 @@ if(PYLABHUB_ENABLE_DEBUG_MESSAGES)
   add_compile_definitions(PYLABHUB_ENABLE_DEBUG_MESSAGES)
 endif()
 
-# --- 3.1. Global Setup and Helper Modules ---
+# --- 3.2. Global Setup and Helper Modules ---
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.
 find_package(Threads REQUIRED)
@@ -111,7 +111,7 @@ message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")
 
-# --- 3.2. Staging Infrastructure ---
+# --- 3.3. Staging Infrastructure ---
 # This section defines the unified staging directory and the master target
 # that drives the entire artifact collection process.
 
@@ -151,8 +151,6 @@ add_custom_target(create_staging_dirs
 # This target stages all static source headers that are part of our project,
 # before any compilation or library building begins, but after directories are created.
 add_custom_target(stage_project_source_headers
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/.staging_markers"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include" # Ensure destination dir exists
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/src/include" "${PYLABHUB_STAGING_DIR}/include"
     COMMENT "Staging project source headers early"
 )
@@ -189,7 +187,7 @@ add_custom_target(stage_core_artifacts)
 # wait for the directories to be created first.
 add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
 
-# --- 3.3. Configure All Sub-Projects ---
+# --- 3.4. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")
 add_subdirectory(third_party)
 message(STATUS "--- Third-Party Configuration Complete ---")
@@ -226,7 +224,7 @@ endif()
 message(STATUS "--- Optional Sub-Projects Configuration Complete ---")
 message(STATUS "")
 
-# --- 3.4. Finalize Staging Dependencies ---
+# --- 3.5. Finalize Staging Dependencies ---
 # Sub-projects (like src/utils) register their individual staging targets
 # by appending them to the global property `CORE_STAGE_TARGETS`.
 # This mechanism allows for a decentralized registration of artifacts
@@ -255,15 +253,15 @@ if(THIRD_PARTY_INSTALL)
 endif()
 
 # If the XOP is being built, make sure its staging target is part of the global `stage_all`.
-if(BUILD_XOP)
-  add_dependencies(stage_all stage_pylabhubxop)
+if(BUILD_XOP AND TARGET stage_pylabhub-xop)
+  add_dependencies(stage_all stage_pylabhub-xop)
 endif()
 
 if(BUILD_TESTS)
   add_dependencies(stage_all stage_tests)
 endif()
 
-# --- 3.5. Final Installation and Packaging ---
+# --- 3.6. Final Installation and Packaging ---
 if(PYLABHUB_CREATE_INSTALL_TARGET)
   # First, run a pre-install check to ensure staging was completed.
   install(SCRIPT cmake/PreInstallCheck.cmake)
@@ -315,7 +313,7 @@ else()
   message(STATUS "Installation target disabled.")
 endif()
 
-# --- 3.6. Final Configuration Summary ---
+# --- 3.7. Final Configuration Summary ---
 message(STATUS "==============================================")
 message(STATUS "pyLabHub Configuration Summary")
 message(STATUS "----------------------------------------------")

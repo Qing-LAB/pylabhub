@@ -45,7 +45,7 @@ cmake_minimum_required(VERSION 3.29)
 #
 # For a detailed explanation of how `DIRECTORIES`, `FILES`, and `SUBDIR`
 # interact to control the resulting include path structure, refer to:
-# `docs/README_CMake_Design.md#header-staging-mechanics`
+# `docs/README_CMake_Design.md#111-header-staging-mechanics`
 #
 function(pylabhub_register_headers_for_staging)
   set(options "")
@@ -354,8 +354,7 @@ function(pylabhub_attach_library_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands requires TARGET and ATTACH_TO arguments.")
   endif()
   if(NOT TARGET ${ARG_TARGET})
-    message(WARNING "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist, skipping.")
-    return()
+    message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
   if(NOT TARGET ${ARG_ATTACH_TO})
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
@@ -439,19 +438,19 @@ function(pylabhub_attach_headers_staging_commands)
   endif()
 
   set(custom_cmds "")
-  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Preparing staging headers -> ${DEST_DIR}")
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Preparing staging headers -> ${DEST_DIR}")
   # Ensure destination directory exists (idempotent — does not remove siblings)
   list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
 
   # Copy directories (use copy_directory_if_different — non-destructive for siblings)
   foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
     list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DEST_DIR}")
   endforeach()
 
   # Copy individual files (copy_if_different each file)
   foreach(_file IN LISTS ARG_FILES)
-    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying file: ${_file} -> ${DEST_DIR}/")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying file: ${_file} -> ${DEST_DIR}/")
     list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "${DEST_DIR}/")
   endforeach()
 

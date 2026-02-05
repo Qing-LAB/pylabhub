@@ -7,10 +7,10 @@ include(ExternalProject)
 include(CMakeParseArguments)
 
 # --- Include guard ---
-if(DEFINED THIRD_PARTY_POLICY_AND_HELPER_INCLUDED)
+if(DEFINED THIRDPARTYPOLICYANDHELPER_CMAKE_INCLUDED)
   return()
 endif()
-set(THIRD_PARTY_POLICY_AND_HELPER_INCLUDED TRUE)
+set(THIRDPARTYPOLICYANDHELPER_CMAKE_INCLUDED TRUE)
 
 # ----------------------------
 # Policy options and defaults
@@ -169,7 +169,7 @@ endfunction()
 # Resolve alias targets recursively to find the concrete target
 # _resolve_alias_to_concrete(CANDIDATE OUTVAR)
 # ----------------------------
-function(_resolve_alias_to_concrete)
+function(_pylabhub_resolve_alias_to_concrete)
   if(ARGC LESS 1)
     message(FATAL_ERROR "_resolve_alias_to_concrete requires at least 1 argument")
   endif()
@@ -200,13 +200,13 @@ endfunction()
 # ----------------------------
 # Helper for printing command lists for debugging ExternalProject calls.
 # ----------------------------
-function(_pylab_prereq_print_command name command_list_var)
+function(_pylabhub_prereq_print_command name command_list_var)
   # command_list_var is the NAME of the list variable, not its content
   set(command_list ${${command_list_var}}) # Dereference the variable name
   list(LENGTH command_list len)
   if(len GREATER 0)
     message(VERBOSE "----------------------------------------------------------------------")
-    message(VERBOSE "[pylab_prereq]   - ${name}:")
+    message(VERBOSE "[pylabhub-third-party-prereq]   - ${name}:")
     foreach(arg IN LISTS command_list)
       # Quote the argument to make spaces visible.
       message(VERBOSE "      - \"${arg}\"")
@@ -274,8 +274,8 @@ function(pylabhub_add_external_prerequisite)
 
   # --- Debugging Output ---
   message(STATUS "")
-  message(STATUS "======================================================================")
-  message(STATUS "[pylab_prereq] Configuring external project: ${_pkg}")
+  message(STATUS "[pylabhub-third-party-prereq] ======================================================================")
+  message(STATUS "[pylabhub-third-party-prereq] Configuring external project: ${_pkg}")
   message(VERBOSE "SOURCE_DIR: ${_src}")
   message(VERBOSE "BINARY_DIR: ${_bin}")
   message(VERBOSE "INSTALL_DIR: ${_inst}")
@@ -283,14 +283,14 @@ function(pylabhub_add_external_prerequisite)
   message(VERBOSE "LIB_PATTERNS: ${pylab_LIB_PATTERNS}")
   message(VERBOSE "HEADER_SOURCE_PATTERNS: ${pylab_HEADER_SOURCE_PATTERNS}")
   message(VERBOSE "DEPENDS: ${pylab_DEPENDS}")
-  _pylab_prereq_print_command("Configure Command" pylab_CONFIGURE_COMMAND)
-  _pylab_prereq_print_command("Build Command"     pylab_BUILD_COMMAND)
-  _pylab_prereq_print_command("Install Command"   pylab_INSTALL_COMMAND)
-  _pylab_prereq_print_command("Build Byproducts"  pylab_BUILD_BYPRODUCTS)
-  _pylab_prereq_print_command("Lib Patterns"      pylab_LIB_PATTERNS)
-  _pylab_prereq_print_command("Header Patterns"   pylab_HEADER_SOURCE_PATTERNS)
-  _pylab_prereq_print_command("Dependencies"      pylab_DEPENDS)
-  message(STATUS "======================================================================")
+  _pylabhub_prereq_print_command("Configure Command" pylab_CONFIGURE_COMMAND)
+  _pylabhub_prereq_print_command("Build Command"     pylab_BUILD_COMMAND)
+  _pylabhub_prereq_print_command("Install Command"   pylab_INSTALL_COMMAND)
+  _pylabhub_prereq_print_command("Build Byproducts"  pylab_BUILD_BYPRODUCTS)
+  _pylabhub_prereq_print_command("Lib Patterns"      pylab_LIB_PATTERNS)
+  _pylabhub_prereq_print_command("Header Patterns"   pylab_HEADER_SOURCE_PATTERNS)
+  _pylabhub_prereq_print_command("Dependencies"      pylab_DEPENDS)
+  message(STATUS "[pylabhub-third-party-prereq] ======================================================================")
   message(STATUS "")
 
 
