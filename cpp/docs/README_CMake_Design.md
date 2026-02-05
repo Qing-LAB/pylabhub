@@ -16,6 +16,50 @@ The cornerstone of the design is the **unified staging directory**. All build ar
 
 *   **Orchestrated Staging Targets**: The staging process is controlled by a hierarchy of custom targets. The master `stage_all` target depends on aggregator targets like `stage_core_artifacts` and `stage_third_party_deps`. A foundational target, `create_staging_dirs`, ensures the directory structure is created before any files are copied, preventing race conditions in parallel builds.
 
+### 1.1.1. Header Staging Mechanics
+
+The `pylabhub_register_headers_for_staging` function provides a flexible way to stage header files into the unified staging directory. Understanding how the `DIRECTORIES` and `SUBDIR` arguments interact is crucial:
+
+*   **`DIRECTORIES <path_to_source_headers>`**: This argument specifies one or more source directories containing headers. When copied, the *contents* of each specified source directory are copied into the destination, preserving their internal subdirectory structure.
+*   **`SUBDIR <relative_path>`**: This argument specifies a subdirectory *within* `${PYLABHUB_STAGING_DIR}/include/` where the headers will be placed.
+
+**How it works:**
+The staging process creates a destination path: `${PYLABHUB_STAGING_DIR}/include/<SUBDIR_value>`.
+Then, for each `DIRECTORIES` argument, it recursively copies the *contents* of that directory into the calculated destination path.
+
+**Examples:**
+
+1.  **Staging `src/include` to `include/` (no extra subdirectory):**
+    ```cmake
+    pylabhub_register_headers_for_staging(
+      DIRECTORIES "${CMAKE_SOURCE_DIR}/src/include"
+      SUBDIR "" # Headers go directly into ${PYLABHUB_STAGING_DIR}/include/
+    )
+    # If src/include/my_lib/header.h, it becomes ${PYLABHUB_STAGING_DIR}/include/my_lib/header.h
+    ```
+
+2.  **Staging a third-party library's namespaced headers:**
+    ```cmake
+    # Assume the library's headers are located at `${CMAKE_CURRENT_SOURCE_DIR}/fmt/include/fmt/format.h`.
+    # To make them available as `${PYLABHUB_STAGING_DIR}/include/fmt/format.h` for consumers,
+    # you would point DIRECTORIES to the root that *contains* the 'fmt' subdirectory.
+    pylabhub_register_headers_for_staging(
+      DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fmt/include"
+      SUBDIR "" # Headers go directly into ${PYLABHUB_STAGING_DIR}/include/
+    )
+    # This results in: ${PYLABHUB_STAGING_DIR}/include/fmt/format.h
+    ```
+    **Clarification:** If the source directory already contains the desired top-level namespace, then `SUBDIR ""` is usually appropriate. If the source directory *itself* needs to become a new namespace, then `SUBDIR "my_namespace"` is suitable.
+
+3.  **Staging individual files:**
+    ```cmake
+    pylabhub_register_headers_for_staging(
+      FILES "${CMAKE_CURRENT_BINARY_DIR}/my_lib_export.h"
+      SUBDIR "" # Stages directly into ${PYLABHUB_STAGING_DIR}/include/
+    )
+    # This results in ${PYLABHUB_STAGING_DIR}/include/my_lib_export.h
+    ```
+
 ### 1.2. Staging Architecture: A Dual-Strategy Approach
 
 To robustly handle both our internal code and the varied build systems of external dependencies, the project uses a dual-strategy staging architecture. The strategy used depends on the type of dependency.
@@ -167,10 +211,10 @@ graph TD
     end
 
     %% Wiring staging strategies to the aggregator
-    stage_third_party_deps -- "Executes registered commands for" --> A & B & C;
-    stage_third_party_deps -- "Executes function" --> D;
+    stage_third_party_deps -- "Executes Reg. Cmds." --> A & B & C;
+    stage_third_party_deps -- "Executes Function" --> D;
     
-    D -- "Reads from" --> build_prerequisites;
+    D -- "Reads From" --> build_prerequisites;
 
 ```
 
@@ -216,31 +260,18 @@ This recipe shows the general structure for an internal library, which must use 
     # Make the generated export header discoverable for build
     target_include_directories(my-lib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 
-    # --- Staging (Pattern B: Registration) ---
-    # 1. Create a local custom target that aggregates all staging commands for this library.
-    add_custom_target(stage_my-lib COMMENT "Staging my-lib artifacts")
-    add_dependencies(stage_my-lib my-lib) # Ensure the library itself is built first
+    # --- Staging (Pattern: Registration-Based) ---
+    # Register this library for staging. The actual commands to copy artifacts
+    # will be attached to a global aggregator target (stage_core_artifacts)
+    # by the top-level CMakeLists.txt after all components have been configured.
+    pylabhub_register_library_for_staging(TARGET my-lib)
 
-    # 2. Add commands to stage the generated export header.
-    # Note: Primary source headers in src/include are staged globally by the root CMakeLists.txt.
-    # This section is for generated headers or other files not covered by global staging.
-    add_custom_command(TARGET stage_my-lib POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different # Use copy_if_different for robustness
-                "${CMAKE_CURRENT_BINARY_DIR}/my_lib_export.h"
-                "${PYLABHUB_STAGING_DIR}/include/"
+    # Register generated header files for staging. The generated export header
+    # needs to be staged to the include directory.
+    pylabhub_register_headers_for_staging(
+      FILES "${CMAKE_CURRENT_BINARY_DIR}/my_lib_export.h"
+      SUBDIR "" # Stage directly into ${PYLABHUB_STAGING_DIR}/include/
     )
-    
-    # 3. Add commands to stage the library artifacts (.dll, .lib, .so, .a).
-    pylabhub_get_library_staging_commands(
-      TARGET my-lib
-      # Use 'bin' for Windows runtime DLLs; 'lib' for POSIX shared libraries
-      DESTINATION bin 
-      OUT_COMMANDS stage_lib_commands
-    )
-    add_custom_command(TARGET stage_my-lib POST_BUILD COMMAND ${stage_lib_commands})
-
-    # 4. Register the local staging target with the global core artifacts aggregator.
-    set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_my-lib)
     ```
 3.  **Include the subdirectory in `src/CMakeLists.txt`:** `add_subdirectory(my-lib)`
 
@@ -291,10 +322,8 @@ This recipe is for libraries that have a CMake build system and can be integrate
       pylabhub_register_library_for_staging(TARGET ${_canonical_target})
     endif()
     
-    # 7. Add to the install export set for packaging.
-    install(TARGETS pylabhub_new-lib ${_canonical_target} EXPORT pylabhubTargets
-      ARCHIVE DESTINATION lib
-    )
+    # 7. Add these targets to the install export set for packaging in `third_party/CMakeLists.txt`.
+    #    (e.g., in `third_party/CMakeLists.txt`: `install(TARGETS pylabhub_new-lib EXPORT pylabhubTargets)`)
 
     # 8. Restore the cache variables to prevent leakage.
     restore_cache_var(BUILD_SHARED_LIBS BOOL)
@@ -332,9 +361,14 @@ This is the pattern for "Type B" libraries (e.g., `luajit`, `libsodium`) that re
     else()
         # POSIX systems use Makefiles
         find_program(_MAKE_PROG make REQUIRED)
-        set(_configure_command ${_source_dir}/configure --prefix=${_install_dir})
-        set(_build_command ${_MAKE_PROG})
-        set(_install_command ${_MAKE_PROG} install)
+        
+        # CONFIGURE_COMMAND: Copy source to build directory then run configure from there.
+        set(_configure_command
+          COMMAND ${CMAKE_COMMAND} -E copy_directory "${_source_dir}" "${_build_dir}"
+          COMMAND ${CMAKE_COMMAND} -E chdir "${_build_dir}" "./configure" --prefix="${_install_dir}" --disable-shared --enable-static --disable-tests
+        )
+        set(_build_command ${CMAKE_COMMAND} -E chdir "${_build_dir}" ${_MAKE_PROG})
+        set(_install_command ${CMAKE_COMMAND} -E chdir "${_build_dir}" ${_MAKE_PROG} install)
         set(_byproducts "${_install_dir}/lib/libexternal.a")
     endif()
 

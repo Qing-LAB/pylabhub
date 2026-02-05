@@ -16,6 +16,8 @@ if(THIRD_PARTY_INSTALL)
     COMMENT "Staging third-party dependencies"
   )
   add_dependencies(stage_third_party_deps create_staging_dirs)
+  # Ensure all External Projects are built before any staging dependent on them begins.
+  add_dependencies(stage_third_party_deps build_prerequisites)
 endif()
 
 # --- 1. Define Prerequisite Staging Area ---
@@ -117,6 +119,27 @@ include(cppzmq)
 include(XOPToolKit)
 include(cmake/googletest.cmake)
 
+# ===========================================================================
+# Bulk Staging of External Prerequisite Artifacts (Strategy 2)
+#
+# This step orchestrates the copying of all files installed by ExternalProjects
+# (Type B dependencies) from PREREQ_INSTALL_DIR to PYLABHUB_STAGING_DIR.
+# It is executed as a custom command attached to `stage_third_party_deps`,
+# ensuring it runs after `build_prerequisites` has completed its install step.
+# ===========================================================================
+if(THIRD_PARTY_INSTALL)
+  # Add a custom command to execute the dedicated bulk staging script.
+  add_custom_command(
+    TARGET stage_third_party_deps
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/BulkStagePrerequisites.cmake"
+      -DPREREQ_DIR="${PREREQ_INSTALL_DIR}"
+      -DSTAGING_DIR="${PYLABHUB_STAGING_DIR}"
+    COMMENT "Bulk staging external prerequisites from ${PREREQ_INSTALL_DIR} to ${PYLABHUB_STAGING_DIR}"
+    VERBATIM
+  )
+endif()
+
 # --- 4. Staging ---
 # The per-target staging registration below only applies to third-party libraries
 # that are configured as native CMake sub-projects (e.g., fmt, libzmq).
@@ -131,7 +154,10 @@ include(cmake/googletest.cmake)
 #
 # This must be the very last thing in this file. By this point, all third-party
 # libraries have been configured and have registered themselves for staging
-# using the helper functions. Now, we process those global registration lists
+# using the helper functions (`pylabhub_register_library_for_staging`,
+# `pylabhub_register_headers_for_staging`). These functions append information
+# to the global properties `PYLABHUB_LIBRARIES_TO_STAGE` and
+# `PYLABHUB_HEADERS_TO_STAGE`. Now, we iterate through those global properties
 # to generate the final staging commands.
 # ===========================================================================
 if(THIRD_PARTY_INSTALL)
@@ -182,9 +208,9 @@ install(TARGETS
   pylabhub_libsodium
   pylabhub_luajit
   pylabhub_libzmq # This is the INTERFACE target for libzmq
-  libzmq-static # Concrete target linked by pylabhub_libzmq
+  libzmq-static # Concrete target linked by pylabhub_libzmq, must be exported too.
   pylabhub_fmt # This is the INTERFACE target for fmt
-  fmt # Concrete target linked by pylabhub_fmt
+  fmt # Concrete target linked by pylabhub_fmt, must be exported too.
   pylabhub_nlohmann_json # Canonical INTERFACE target for nlohmann_json
   pylabhub_msgpack # Canonical INTERFACE target for msgpack
   pylabhub_cppzmq # Canonical INTERFACE target for cppzmq
