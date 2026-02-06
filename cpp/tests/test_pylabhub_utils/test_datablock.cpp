@@ -13,7 +13,7 @@ class DataBlockTest : public ::testing::Test
 {
 };
 
-TEST_F(DataBlockTest, FactoryFunctionsReturnNullptrAsNotImplemented)
+TEST_F(DataBlockTest, FactoryFunctionsCreateValidObjects)
 {
     // A disconnected hub is sufficient for this test since the functions are placeholders.
     pylabhub::hub::MessageHub hub;
@@ -23,9 +23,16 @@ TEST_F(DataBlockTest, FactoryFunctionsReturnNullptrAsNotImplemented)
     config.flexible_zone_size = 512;
     config.ring_buffer_capacity = 0;
 
-    // These tests confirm the current skeleton implementation returns nullptr.
-    // This serves as a baseline and will be updated when the feature is implemented.
-    ASSERT_EQ(nullptr, pylabhub::hub::create_datablock_producer(
-                           hub, "test_channel", pylabhub::hub::DataBlockPolicy::Single, config));
-    ASSERT_EQ(nullptr, pylabhub::hub::find_datablock_consumer(hub, "test_channel", 12345));
+    // These tests now confirm that valid objects are returned when creation succeeds.
+    // Error conditions (e.g., shm_open failure) should be tested in separate tests.
+    std::unique_ptr<pylabhub::hub::IDataBlockProducer> producer =
+        pylabhub::hub::create_datablock_producer(hub, "test_channel_producer",
+                                                 pylabhub::hub::DataBlockPolicy::Single, config);
+    ASSERT_NE(nullptr, producer);
+
+    // To successfully find a consumer, a producer must have already created the shared memory.
+    // The shared secret must match.
+    std::unique_ptr<pylabhub::hub::IDataBlockConsumer> consumer =
+        pylabhub::hub::find_datablock_consumer(hub, "test_channel_producer", 123);
+    ASSERT_NE(nullptr, consumer);
 }

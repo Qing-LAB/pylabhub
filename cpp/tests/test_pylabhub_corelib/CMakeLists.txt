@@ -83,7 +83,7 @@ endif()
 set_property(TARGET test_pylabhub_corelib PROPERTY TEST_LAUNCHER ${LAUNCHER_COMMAND})
 
 gtest_discover_tests(test_pylabhub_corelib
-  WORKING_DIRECTORY "${STAGED_TEST_DIR}"
+  WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
   DISCOVERY_TIMEOUT 60
 )
 

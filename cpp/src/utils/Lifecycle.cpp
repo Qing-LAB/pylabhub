@@ -683,6 +683,7 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
     recalculateReferenceCounts();
 
     // 3. Recurse on dependencies that may now be unreferenced.
+    std::vector<std::string> dependencies_to_unload;
     for (const auto &dep_name : deps_copy)
     {
         PLH_DEBUG("unloadModuleInternal: checking dependency '{}' of unloaded module '{}'.",
@@ -695,13 +696,24 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
                       dep_name, dep_it->second.ref_count.load(std::memory_order_acquire));
             if (dep_it->second.ref_count.load(std::memory_order_acquire) == 0)
             {
-                PLH_DEBUG("unloadModuleInternal: recursing on dependency '{}'.", dep_name);
-                unloadModuleInternal(dep_it->second);
+                dependencies_to_unload.push_back(dep_name);
             }
         }
         else
         {
             PLH_DEBUG("unloadModuleInternal: dependency '{}' not found or not dynamic.", dep_name);
+        }
+    }
+
+    // Now unload the collected dependencies
+    for (const auto &dep_name : dependencies_to_unload)
+    {
+        PLH_DEBUG("unloadModuleInternal: recursing on dependency '{}'.", dep_name);
+        auto dep_it =
+            m_module_graph.find(dep_name); // Re-find the iterator, it might have been invalidated
+        if (dep_it != m_module_graph.end())
+        { // Check if it still exists
+            unloadModuleInternal(dep_it->second);
         }
     }
 
@@ -731,7 +743,7 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
     {
         if (pair.second.is_dynamic)
         {
-            pair.second.ref_count.store(0);
+            pair.second.ref_count.store(0, std::memory_order_release);
         }
     }
 
@@ -753,7 +765,7 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
                     // ref_count.
                     if (dep_node.is_dynamic && !dep_node.is_persistent)
                     {
-                        dep_node.ref_count++;
+                        dep_node.ref_count.fetch_add(1, std::memory_order_acq_rel);
                     }
                 }
             }

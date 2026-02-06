@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "plh_sync_primitives.hpp" // Consolidated sync primitives
+
 namespace pylabhub::hub
 {
 
@@ -46,10 +48,14 @@ struct DataBlockConfig
 struct SharedMemoryHeader
 {
     // Safety & Identification
-    uint64_t magic_number;  // Magic constant to validate memory
+    uint64_t magic_number;  // Magic constant to validate memory (SET LAST during init)
     uint64_t shared_secret; // Key to prevent unauthorized access
     uint32_t version;       // Version of the header layout
     uint32_t header_size;   // sizeof(SharedMemoryHeader)
+
+    // Initialization flag - protects against race conditions during DataBlock creation
+    // 0 = uninitialized, 1 = mutex ready, 2 = fully initialized
+    std::atomic<uint32_t> init_state;
 
     // Consumer Management
     std::atomic<uint32_t> active_consumer_count;
@@ -60,12 +66,21 @@ struct SharedMemoryHeader
     std::atomic<uint64_t> read_index;
     std::atomic<uint64_t> current_slot_id; // For unique identification of data slots
 
-    // Process-Shared Mutex storage
+    // Internal management mutex (OS-specific, protects the allocation map)
 #if defined(PYLABHUB_PLATFORM_WIN64)
-    // Windows doesn't store mutex handles in shared memory. Named objects are used.
+    // No direct in-memory storage for Windows named kernel mutex. Its name is derived.
 #else
-    char mutex_storage[64]; // Storage for pthread_mutex_t
+    char management_mutex_storage[64]; // Storage for pthread_mutex_t for internal management
 #endif
+
+    // Array of atomic-based spin-locks for user-facing data coordination
+    // Each entry represents a mutex unit available for users.
+    static constexpr size_t MAX_SHARED_SPINLOCKS = 8; // Example: up to 8 spinlocks available
+    SharedSpinLockState
+        shared_spinlocks[MAX_SHARED_SPINLOCKS]; // Uses the standalone SharedSpinLockState
+
+    // Map to track the allocation status of the shared spinlocks
+    std::atomic_flag spinlock_allocated[MAX_SHARED_SPINLOCKS]; // True if allocated, false if free
 };
 
 /**
@@ -77,6 +92,21 @@ class IDataBlockProducer
   public:
     virtual ~IDataBlockProducer() = default;
     // Pure virtual methods for producing data will be defined here.
+
+    /**
+     * @brief Acquires a user-facing SharedSpinLock instance from the DataBlock.
+     * @param debug_name A name for logging/debugging purposes.
+     * @return A unique_ptr to a SharedSpinLockGuard for the acquired lock.
+     * @throws std::runtime_error if no free spinlocks are available.
+     */
+    virtual std::unique_ptr<SharedSpinLockGuard>
+    acquire_user_spinlock(const std::string &debug_name) = 0;
+
+    /**
+     * @brief Releases a user-facing SharedSpinLock instance by its index.
+     * @param index The index of the spinlock to release.
+     */
+    virtual void release_user_spinlock(size_t index) = 0;
 };
 
 /**
@@ -88,27 +118,21 @@ class IDataBlockConsumer
   public:
     virtual ~IDataBlockConsumer() = default;
     // Pure virtual methods for consuming data will be defined here.
+
+    /**
+     * @brief Gets a SharedSpinLock instance by its index from the DataBlock for direct use.
+     * @param index The index of the spinlock to retrieve.
+     * @return A SharedSpinLock object.
+     * @throws std::out_of_range if the index is invalid.
+     */
+    virtual SharedSpinLock get_user_spinlock(size_t index) = 0;
 };
 
-/**
- * @brief Factory function to create a DataBlock producer.
- * @param hub A connected MessageHub instance for broker communication.
- * @param name The unique name for the DataBlock channel.
- * @param policy The buffer management policy to use.
- * @param config The configuration for the DataBlock.
- * @return A unique_ptr to the producer, or nullptr on failure.
- */
+// Factory Functions
 PYLABHUB_UTILS_EXPORT std::unique_ptr<IDataBlockProducer>
 create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const DataBlockConfig &config);
+                          const pylabhub::hub::DataBlockConfig &config);
 
-/**
- * @brief Factory function to find and connect to a DataBlock as a consumer.
- * @param hub A connected MessageHub instance for broker communication.
- * @param name The name of the DataBlock channel to find.
- * @param shared_secret The secret required to access the channel.
- * @return A unique_ptr to the consumer, or nullptr on failure.
- */
 PYLABHUB_UTILS_EXPORT std::unique_ptr<IDataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret);
 
