@@ -4,7 +4,7 @@
 
 The `IDataBlockProducer::acquire_user_spinlock` interface is defined to return a `std::unique_ptr<SharedSpinLockGuard>`. This return type implies that the caller receives ownership of a dynamically allocated `SharedSpinLockGuard` object, which is expected to manage the lifetime of the underlying resource (in this case, the acquired lock).
 
-However, the current design of `SharedSpinLockGuard` (defined in `plh_sync_primitives.hpp`) holds a `SharedSpinLock& m_lock;` member. This means `SharedSpinLockGuard` itself does *not own* the `SharedSpinLock` object it refers to; it only holds a reference to it.
+However, the current design of `SharedSpinLockGuard` (defined in `data_header_sync_primitives.hpp`) holds a `SharedSpinLock& m_lock;` member. This means `SharedSpinLockGuard` itself does *not own* the `SharedSpinLock` object it refers to; it only holds a reference to it.
 
 ## Design Conflict
 
@@ -25,7 +25,7 @@ To resolve this fundamental design flaw, `SharedSpinLockGuard` must own the `Sha
 Change the internal member of `SharedSpinLockGuard` from `SharedSpinLock &m_lock;` to `SharedSpinLock m_lock;`.
 
 This would require:
-- Modifying `plh_sync_primitives.hpp`.
+- Modifying `data_header_sync_primitives.hpp`.
 - Modifying `SharedSpinLockGuard`'s constructor to take `SharedSpinLockState*` and `const std::string&` directly, so it can internally construct its `m_lock` member.
 - This is an API-breaking change for `SharedSpinLockGuard`'s constructor.
 
@@ -35,6 +35,6 @@ Change the return type of `IDataBlockProducer::acquire_user_spinlock` to somethi
 
 ## Recommendation
 
-Option 1 is generally preferred if the intent is for the guard to be a self-contained, owning entity. This aligns with the `std::unique_ptr` return type. This design should be implemented, requiring modifications to `plh_sync_primitives.hpp`.
+Option 1 is generally preferred if the intent is for the guard to be a self-contained, owning entity. This aligns with the `std::unique_ptr` return type. This design should be implemented, requiring modifications to `data_header_sync_primitives.hpp`.
 
 **Status for current task:** For the purpose of enabling compilation, a temporary implementation will be provided for `acquire_user_spinlock` that explicitly notes this design flaw and the potential for runtime issues due to dangling references if the underlying `SharedSpinLock` is temporary. This document serves as a reminder for a future design iteration and code refactoring.

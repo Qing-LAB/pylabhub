@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-#include "plh_sync_primitives.hpp" // Consolidated sync primitives
+#include "data_header_sync_primitives.hpp" // Consolidated sync primitives
 
 namespace pylabhub::hub
 {

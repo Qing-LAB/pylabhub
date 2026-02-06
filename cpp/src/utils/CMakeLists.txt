@@ -31,8 +31,8 @@ set(UTILS_SOURCES
   json_config.cpp
   message_hub.cpp
   data_block.cpp
-  shared_memory_mutex.cpp
-  plh_sync_primitives.cpp
+  data_block_mutex.cpp
+  data_header_sync_primitives.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
