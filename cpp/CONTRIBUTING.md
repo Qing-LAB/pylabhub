@@ -112,9 +112,9 @@ To prevent this, we strictly adhere to the **Pointer to Implementation (Pimpl) i
 *   **What it is:** The public class (e.g., `FileLock`) holds only a `std::unique_ptr` to a private, forward-declared `Impl` struct. All data members and private methods are placed in the `Impl` class, which is defined only in the `.cpp` file.
 *   **Why?** This hides implementation details from the public header. You can add/remove private members and methods without changing the size or layout of the public class, thus preserving the ABI.
 
-**Example: `FileLock.hpp`**
+**Example: `file_lock.hpp`**
 ```cpp
-// Public Header (FileLock.hpp)
+// Public Header (file_lock.hpp)
 class PYLABHUB_UTILS_EXPORT FileLock {
 public:
     FileLock(const std::filesystem::path& path, ...);

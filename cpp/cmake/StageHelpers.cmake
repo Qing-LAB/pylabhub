@@ -528,11 +528,19 @@ function(pylabhub_register_directory_for_staging)
         @ONLY
       )
 
+      # CMP0175: COMMENT requires exactly one argument; use variable to avoid
+      # expansion into multiple arguments when path contains semicolons
+      set(_bulk_stage_comment "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})")
+      # Escape semicolons so the variable expands to a single argument
+      string(REPLACE ";" "\\;" _bulk_stage_comment_escaped "${_bulk_stage_comment}")
+      message(VERBOSE "[pylabhub-staging] ATTACH_TO: ${ARG_ATTACH_TO}")
+      message(VERBOSE "[pylabhub-staging] ${_bulk_stage_comment_escaped}")
+
       add_custom_command(
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-        COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})"
+        COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
         VERBATIM
         CONFIGURATIONS ${cfg}
       )
@@ -551,11 +559,18 @@ function(pylabhub_register_directory_for_staging)
       @ONLY
     )
 
+    # CMP0175: COMMENT requires exactly one argument; use variable to avoid
+    # expansion into multiple arguments when path contains semicolons
+    set(_bulk_stage_comment "Bulk staging directory '${ARG_SOURCE_DIR}'")
+    string(REPLACE ";" "\\;" _bulk_stage_comment_escaped "${_bulk_stage_comment}")
+    message(VERBOSE "[pylabhub-staging] ATTACH_TO: ${ARG_ATTACH_TO}")
+    message(VERBOSE "[pylabhub-staging] ${_bulk_stage_comment_escaped}")
+
     add_custom_command(
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-      COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}'"
+      COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
       VERBATIM
     )
   endif()

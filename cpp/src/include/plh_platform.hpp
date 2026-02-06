@@ -1,7 +1,16 @@
 #pragma once
-// Prefer the build-system provided macros (PLATFORM_WIN64, PLATFORM_APPLE, PLATFORM_FREEBSD,
-// PLATFORM_LINUX, PLATFORM_UNKNOWN). If they are not defined by the build system, fall back to
-// compiler predefined macros.
+/**
+ * @file plh_platform.hpp
+ * @brief Layer 0: Platform detection, Windows headers, and platform utility declarations.
+ *
+ * This is the foundational umbrella for all platform-specific support. Every file that
+ * needs platform macros (PYLABHUB_PLATFORM_WIN64, PYLABHUB_IS_POSIX, etc.) or Windows
+ * headers should include this. It is self-contained and can be included at any point.
+ *
+ * Prefer build-system macros (PLATFORM_WIN64, etc.); fall back to compiler predefined macros.
+ */
+#include <cstdint>
+#include <string>
 
 #if defined(PLATFORM_WIN64)
 

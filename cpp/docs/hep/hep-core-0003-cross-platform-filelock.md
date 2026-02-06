@@ -2,10 +2,11 @@
 | -------------- | -------------------------------------------- |
 | **HEP**        | `core-0003`                                  |
 | **Title**      | Cross-Platform RAII File Locking (FileLock)  |
-| **Author**     | Gemini AI                                    |
+| **Author**     | Quan Qing, AI assistant                      |
 | **Status**     | Draft                                        |
 | **Category**   | Core                                         |
 | **Created**    | 2026-01-30                                   |
+| **Updated**    | 2026-02-06                                   |
 | **C++-Standard** | C++20                                        |
 
 ## Abstract
@@ -14,106 +15,245 @@ This Hub Enhancement Proposal (HEP) outlines the design and implementation of th
 
 ## Motivation
 
-In complex applications, multiple processes or threads often need to access and modify shared files (e.g., configuration files, data caches). Without proper synchronization, concurrent access can lead to data corruption, inconsistent states, and application crashes. Existing platform-specific locking primitives can be cumbersome to use correctly and portably.
+Multiple processes or threads often need to access and modify shared files (e.g., configuration files, data caches). Without proper synchronization, concurrent access can lead to data corruption. Platform-specific locking primitives are cumbersome to use correctly and portably.
 
-The `FileLock` module aims to address these challenges by providing:
-- A simple, RAII-based API that guarantees lock release.
-- Consistent cross-platform behavior for both inter-process and intra-process synchronization.
-- Support for blocking, non-blocking, and timed lock acquisition.
-- Integration with the `LifecycleManager` for controlled startup and shutdown, including optional cleanup of stale lock files.
+| Need | FileLock Solution |
+|------|-------------------|
+| Simple, safe API | RAII: lock acquired in constructor, released in destructor |
+| Cross-platform | `flock` (POSIX) / `LockFileEx` (Windows) |
+| Inter- and intra-process | Two-layer model: OS lock + process-local registry |
+| Blocking, non-blocking, timed | `LockMode::Blocking`, `NonBlocking`, timeout constructor |
 
-## Rationale and Design
+---
 
-The `FileLock` module is designed for reliability, ease of use, and portability, adhering to modern C++ best practices.
+## Design Philosophy
 
-### Core Principles
+### Design Goals
 
--   **RAII (Resource Acquisition Is Initialization)**: The lock is acquired in the constructor and automatically released in the destructor. This idiom is central to `FileLock`'s safety, preventing deadlocks by ensuring locks are always released, even during exception propagation.
+| Goal | Description |
+|------|-------------|
+| **RAII** | Lock acquired in constructor, released in destructor; exception-safe |
+| **Two-layer locking** | OS-level for inter-process; process registry for intra-process consistency |
+| **Advisory lock** | Cooperating processes must use FileLock; non-cooperating processes can ignore |
+| **Separate lock file** | Target `data.json` → lock file `data.json.lock`; avoids content interference |
+| **Path canonicalization** | `/a/./b` and `/a/b` contend for same lock |
+| **ABI stability** | Pimpl idiom; `FileLockImpl` hides platform details |
 
--   **Two-Layer Locking Model**: To provide consistent semantics across different operating systems for both inter-process and intra-process synchronization, `FileLock` employs a dual-layer approach:
-    -   **Inter-Process (OS-Level)**: Utilizes native OS advisory file locking primitives (`flock` on POSIX systems, `LockFileEx` on Windows) on a dedicated `.lock` file. This layer guarantees that only one process can hold the exclusive lock at any given time.
-    -   **Intra-Process (Application-Level)**: A process-local registry (a `std::unordered_map` mapping canonical lock paths to `ProcLockState` objects) manages contention between threads within the same application process. This registry, protected by a `std::mutex` and `std::condition_variable`, ensures that threads within the same process respect the blocking/non-blocking semantics consistently, as OS-level file locks can behave inconsistently for threads of the same process.
+### Design Considerations
 
--   **Advisory Lock**: `FileLock` implements an *advisory* locking mechanism. This means that all cooperating processes and threads must explicitly use `FileLock` to respect the lock. It does not prevent non-cooperating applications from directly accessing the locked resource and potentially corrupting data.
+- **Why separate lock file?** Avoids conflicts with read/write on the data file; simplifies cleanup of stale locks.
+- **Why process-local registry?** OS file locks can behave inconsistently for threads in the same process (e.g., POSIX `flock`); the registry ensures Blocking/NonBlocking semantics work identically.
+- **Why advisory?** Mandatory locking is OS-specific and less portable; FileLock assumes cooperative use.
+- **NFS warning:** `flock` may be unreliable over NFS; use local filesystem for critical locks.
 
--   **Separate Lock File**: Instead of directly locking the target resource (e.g., `data.json`), `FileLock` operates on a separate, dedicated lock file (e.g., `data.json.lock`). This design choice simplifies implementation by avoiding potential conflicts with read/write operations on the actual data file and allows for more flexible cleanup strategies.
+### Highlights
 
--   **Path Canonicalization**: To ensure that logically identical but syntactically different paths (e.g., `/a/./b` vs `/a/b`, or paths involving symlinks) contend for the same lock, `FileLock` canonicalizes the resource path. It uses `std::filesystem::canonical` if the path exists, falling back to `std::filesystem::absolute` for non-existent paths (enabling locking of resources before creation). This prevents "phantom locks" or multiple locks for the same resource.
+- **Custom deleter on `unique_ptr<FileLockImpl>`** — Ensures lock release logic runs when the Pimpl is destroyed, even on move.
+- **`try_lock` returns `std::optional<FileLock>`** — Modern C++ idiom for optional acquisition.
+- **`LOCK_POLLING_INTERVAL` (20ms)** — Balance between responsiveness and CPU usage for timed/NonBlocking on POSIX.
 
--   **Lifecycle Integration**: `FileLock` is designed as a module for the `LifecycleManager`. This integration ensures:
-    -   **Controlled Initialization**: `FileLock`'s internal data structures are properly set up via a startup callback before any `FileLock` objects are constructed.
-    -   **Optional Cleanup**: A configurable shutdown callback (`cleanup_on_shutdown` flag in `GetLifecycleModule`) allows the application to attempt removal of stale `.lock` files (left by crashed processes) during graceful shutdown.
+---
 
--   **ABI Stability (Pimpl Idiom)**: The public `FileLock` class uses the Pimpl (Pointer to Implementation) idiom. All platform-specific details, internal data members, and complex types are hidden within a private `FileLockImpl` struct, ensuring a stable Application Binary Interface (ABI) for the shared library.
+## Architecture Overview
 
-### API Specification
+### Lock Acquisition Flow
 
-#### `FileLock` Class
+```mermaid
+flowchart TB
+    subgraph Client["Client Thread"]
+        direction TB
+        A[FileLock constructor / try_lock]
+        B{LockMode?}
+    end
 
-```cpp
-class PYLABHUB_UTILS_EXPORT FileLock {
-public:
-    enum class LockMode { Blocking, NonBlocking };
-    enum class ResourceType { File, Directory };
+    subgraph Intra["Intra-Process Layer"]
+        direction TB
+        C[Check g_proc_locks registry]
+        D{Owners == 0?}
+        E[Wait on cv / fail]
+        F[Increment owners]
+    end
 
-    static ModuleDef GetLifecycleModule(bool cleanup_on_shutdown = false);
-    static bool lifecycle_initialized() noexcept;
-    static std::filesystem::path get_expected_lock_fullname_for(const std::filesystem::path &path, ResourceType type) noexcept;
+    subgraph Inter["Inter-Process Layer"]
+        direction TB
+        G[flock / LockFileEx]
+        H{Acquired?}
+        I[Create FileLockImpl]
+    end
 
-    // Constructors for direct lock acquisition
-    explicit FileLock(const std::filesystem::path &path, ResourceType type, LockMode mode = LockMode::Blocking) noexcept;
-    explicit FileLock(const std::filesystem::path &path, ResourceType type, std::chrono::milliseconds timeout) noexcept;
-
-    // Factory methods for optional lock acquisition (modern C++ idiom)
-    [[nodiscard]] static std::optional<FileLock> try_lock(const std::filesystem::path &path, ResourceType type, LockMode mode = LockMode::Blocking) noexcept;
-    [[nodiscard]] static std::optional<FileLock> try_lock(const std::filesystem::path &path, ResourceType type, std::chrono::milliseconds timeout) noexcept;
-
-    // Move semantics (non-copyable)
-    FileLock(FileLock &&other) noexcept;
-    FileLock &operator=(FileLock &&other) noexcept;
-    FileLock(const FileLock &) = delete;
-    FileLock &operator=(const FileLock &) = delete;
-
-    // Destructor (releases lock)
-    ~FileLock();
-
-    // State and Error Accessors
-    bool valid() const noexcept;
-    std::error_code error_code() const noexcept;
-    std::optional<std::filesystem::path> get_locked_resource_path() const noexcept;
-    std::optional<std::filesystem::path> get_canonical_lock_file_path() const noexcept;
-
-    // Internal cleanup function (called by LifecycleManager if configured)
-    static void cleanup();
-};
+    A --> B
+    B --> C
+    C --> D
+    D -->|No| E
+    D -->|Yes| F
+    F --> G
+    G --> H
+    H -->|Yes| I
 ```
 
-#### Enums
+### Class and API Relationships
 
--   `LockMode`:
-    -   `Blocking`: The constructor/`try_lock` call will wait indefinitely until the lock is acquired.
-    -   `NonBlocking`: The constructor/`try_lock` call will return immediately if the lock cannot be acquired.
--   `ResourceType`: Used to generate unique lock file names for different resource types.
-    -   `File`: The target resource is a file (e.g., `resource.txt.lock`).
-    -   `Directory`: The target resource is a directory (e.g., `resource.dir.lock`).
+```mermaid
+classDiagram
+    class FileLock {
+        +GetLifecycleModule(cleanup_on_shutdown)
+        +lifecycle_initialized()
+        +get_expected_lock_fullname_for(path, type)
+        +FileLock(path, type, mode)
+        +FileLock(path, type, timeout)
+        +try_lock(path, type, mode)
+        +try_lock(path, type, timeout)
+        +valid()
+        +error_code()
+        +get_locked_resource_path()
+        +get_canonical_lock_file_path()
+        +cleanup()
+    }
+    class LifecycleManager {
+        manages
+    }
 
-### Lifecycle Integration
+    FileLock ..> LifecycleManager : GetLifecycleModule
+```
 
--   **Startup**: The `FileLock` module's startup callback initializes internal data structures and sets an atomic flag (`g_filelock_initialized`) to `true`. Attempts to construct `FileLock` objects before this flag is set will result in a `PLH_PANIC`.
--   **Shutdown (`cleanup_on_shutdown`)**: The `GetLifecycleModule` static factory function accepts a `cleanup_on_shutdown` boolean. If `true`, the `FileLock::cleanup()` static method is registered as a shutdown callback. `cleanup()` attempts a best-effort removal of `.lock` files that *might* have been left by a previous, crashed instance of the application. It acquires a non-blocking lock on each candidate `.lock` file; if successful, it means no other process holds the lock, and the file is safely deleted.
+### Lock File Naming
+
+| Resource Type | Example Path | Lock File |
+|---------------|--------------|-----------|
+| File | `/data/config.json` | `/data/config.json.lock` |
+| Directory | `/data/cache/` | `/data/cache.dir.lock` |
+
+---
+
+## Public API Reference
+
+### Enums
+
+| Enum | Values | Description |
+|------|--------|-------------|
+| `LockMode` | `Blocking`, `NonBlocking` | Wait indefinitely vs return immediately |
+| `ResourceType` | `File`, `Directory` | Determines lock file suffix (`.lock` vs `.dir.lock`) |
+
+### FileLock Class
+
+| Method | Description |
+|--------|-------------|
+| `GetLifecycleModule(cleanup_on_shutdown)` | ModuleDef for LifecycleManager; `cleanup_on_shutdown` enables stale lock removal on exit |
+| `lifecycle_initialized()` | Check if module is initialized |
+| `get_expected_lock_fullname_for(path, type)` | Predict canonical lock file path |
+| `FileLock(path, type, mode)` | Construct and acquire; Blocking or NonBlocking |
+| `FileLock(path, type, timeout)` | Construct and acquire with timeout |
+| `try_lock(path, type, mode)` | Factory; returns `optional<FileLock>` |
+| `try_lock(path, type, timeout)` | Factory with timeout |
+| `valid()` | True if lock is held |
+| `error_code()` | Error from failed acquisition |
+| `get_locked_resource_path()` | Path of protected resource |
+| `get_canonical_lock_file_path()` | Canonical path of `.lock` file |
+| `cleanup()` | Best-effort removal of stale locks (if configured) |
+
+---
+
+## Sequence of Operations
+
+### Blocking Lock Acquisition
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant FileLock
+    participant ProcRegistry
+    participant OS
+
+    Client->>FileLock: FileLock(path, File, Blocking)
+    FileLock->>ProcRegistry: Lock mutex, lookup path
+    alt Another thread holds lock
+        ProcRegistry->>ProcRegistry: Wait on condition_variable
+    end
+    ProcRegistry->>ProcRegistry: owners++
+    FileLock->>OS: flock / LockFileEx
+    OS-->>FileLock: acquired
+    FileLock-->>Client: valid() == true
+```
+
+### Try-Lock (NonBlocking)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant FileLock
+    participant ProcRegistry
+    participant OS
+
+    Client->>FileLock: try_lock(path, File, NonBlocking)
+    FileLock->>ProcRegistry: Lock mutex, lookup path
+    alt owners > 0
+        ProcRegistry-->>FileLock: fail
+        FileLock-->>Client: nullopt
+    else owners == 0
+        ProcRegistry->>OS: flock(LOCK_EX | LOCK_NB)
+        alt OS lock held by other process
+            OS-->>FileLock: fail
+            FileLock-->>Client: nullopt
+        else acquired
+            OS-->>FileLock: success
+            FileLock-->>Client: optional with valid FileLock
+        end
+    end
+```
+
+---
+
+## Example: Blocking Lock with Timeout
+
+```cpp
+#include "utils/lifecycle.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/logger.hpp"
+
+void perform_exclusive_work(const std::filesystem::path& resource) {
+    pylabhub::utils::LifecycleGuard guard(
+        pylabhub::utils::FileLock::GetLifecycleModule(true),
+        pylabhub::utils::Logger::GetLifecycleModule()
+    );
+
+    pylabhub::utils::FileLock lock(resource,
+        pylabhub::utils::ResourceType::File,
+        std::chrono::seconds(5));
+
+    if (lock.valid()) {
+        // ... safely modify resource ...
+    } else {
+        LOGGER_ERROR("Failed to acquire lock: {}", lock.error_code().message());
+    }
+}
+```
+
+## Example: Try-Lock (Optional)
+
+```cpp
+if (auto lock = pylabhub::utils::FileLock::try_lock(
+        path, pylabhub::utils::ResourceType::File,
+        pylabhub::utils::LockMode::NonBlocking)) {
+    LOGGER_INFO("Lock acquired for {}", lock->get_locked_resource_path()->string());
+    // ... use resource ...
+} else {
+    LOGGER_WARN("Lock busy: {}", path.string());
+}
+```
+
+---
 
 ## Risk Analysis and Mitigations
 
--   **Risk**: `FileLock` relies on *advisory* locking, which can be ignored by non-cooperating processes.
-    -   **Mitigation**: This is an inherent limitation of advisory locks. The `FileLock` design assumes all interacting components are cooperative. For mandatory locking, OS-specific mechanisms would be required, sacrificing portability.
--   **Risk**: Performance overhead due to polling in `Timed` or `NonBlocking` modes (especially on POSIX systems without direct timed `flock`).
-    -   **Mitigation**: The `LOCK_POLLING_INTERVAL` (20ms) is chosen as a reasonable balance between responsiveness and CPU usage. Applications with extremely high contention might observe higher CPU usage during lock waiting periods.
--   **Risk**: Stale lock files can be left behind if a process crashes without `cleanup_on_shutdown` enabled.
-    -   **Mitigation**: The `cleanup_on_shutdown` option mitigates this during graceful application exits. However, for hard crashes, manual cleanup or a dedicated watchdog process might be necessary. The trade-off (potential for interfering with other processes) is explicitly documented for `cleanup_on_shutdown`.
--   **Risk**: Unreliable behavior on network filesystems (e.g., NFS).
-    -   **Mitigation**: A `WARNING` is explicitly included in the `FileLock.hpp` documentation. `FileLock` is designed primarily for local filesystem synchronization.
--   **Risk**: Deadlocks if client code attempts to acquire a lock twice within the same process/thread.
-    -   **Mitigation**: The two-layer locking model (specifically the intra-process registry) handles this. A thread attempting to re-acquire an already held lock for the same path will either block (in `Blocking` mode) or fail immediately (in `NonBlocking` mode), preventing self-deadlock. It won't cause an actual system deadlock, but rather a programmatic one or an acquisition failure.
+| Risk | Mitigation |
+|------|-------------|
+| Advisory lock ignored by non-cooperating process | Inherent limitation; document cooperative use |
+| Polling overhead (POSIX timed/NonBlocking) | 20ms interval; configurable in source |
+| Stale lock files after crash | `cleanup_on_shutdown` for graceful exit; manual cleanup for hard crash |
+| Unreliable on NFS | Documented warning; recommend local filesystem |
+| Self-deadlock (re-acquire same path) | Intra-process registry blocks or fails; no system deadlock |
+
+---
 
 ## Copyright
 
