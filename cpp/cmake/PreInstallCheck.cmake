@@ -13,6 +13,6 @@ if(NOT EXISTS "${PYLABHUB_STAGING_DIR}/.stage_complete")
     "  cmake --build . --target stage_all\n"
   )
 else()
-  message(STATUS "Pre-install check passed: Staging directory is complete.")
+  message(STATUS "[pylabhub-install] Pre-install check passed: Staging directory is complete.")
 endif()
 

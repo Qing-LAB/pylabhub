@@ -8,6 +8,8 @@
 # against it should NOT link against gtest_main.
 cmake_minimum_required(VERSION 3.29)
 
+include(MsvcHelper)
+
 message(STATUS "-- start configuring pylabhub::test_framework static lib...")
 
 add_library(pylabhub-test-framework STATIC
@@ -39,6 +41,4 @@ target_include_directories(pylabhub-test-framework PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
 
-if(MSVC)
-  target_compile_options(pylabhub-test-framework PRIVATE /Zc:preprocessor)
-endif()
+pylabhub_apply_standard_msvc_options(pylabhub-test-framework)
