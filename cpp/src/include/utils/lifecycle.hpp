@@ -73,7 +73,6 @@
  ******************************************************************************/
 #include "plh_base.hpp"
 #include "pylabhub_utils_export.h"
-#include "utils/module_def.hpp"
 
 #include <memory>
 #include <type_traits>

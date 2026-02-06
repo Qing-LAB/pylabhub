@@ -1,11 +1,16 @@
 #pragma once
-
+/**
+ * @file message_hub.hpp
+ * @brief ZeroMQ-based messaging with the central broker.
+ */
 #include "pylabhub_utils_export.h"
-#include "nlohmann/json.hpp" // Direct include for nlohmann::json
+
 #include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "nlohmann/json.hpp"
 
 namespace pylabhub::hub
 {
