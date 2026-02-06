@@ -26,8 +26,8 @@ TEST_F(DataBlockTest, FactoryFunctionsCreateValidObjects)
     // These tests now confirm that valid objects are returned when creation succeeds.
     // Error conditions (e.g., shm_open failure) should be tested in separate tests.
     std::unique_ptr<pylabhub::hub::IDataBlockProducer> producer =
-        pylabhub::hub::create_datablock_producer(
-            hub, "test_channel_producer", pylabhub::hub::DataBlockPolicy::Single, config);
+        pylabhub::hub::create_datablock_producer(hub, "test_channel_producer",
+                                                 pylabhub::hub::DataBlockPolicy::Single, config);
     ASSERT_NE(nullptr, producer);
 
     // To successfully find a consumer, a producer must have already created the shared memory.

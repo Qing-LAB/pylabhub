@@ -31,6 +31,8 @@ set(UTILS_SOURCES
   JsonConfig.cpp
   MessageHub.cpp
   DataBlock.cpp
+  shared_memory_mutex.cpp
+  shared_spin_lock.cpp
   # Add any new .cpp files for this library to the list above.
 )
 

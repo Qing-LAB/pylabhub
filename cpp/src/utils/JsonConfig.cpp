@@ -718,7 +718,9 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
             // If another process (e.g., antivirus) has the file open, wait and retry.
             if (last_error != ERROR_SHARING_VIOLATION)
                 break;
-            LOGGER_WARN("atomic_write_json: ReplaceFileW encountered sharing violation for '{}', retrying...", target.string());
+            LOGGER_WARN("atomic_write_json: ReplaceFileW encountered sharing violation for '{}', "
+                        "retrying...",
+                        target.string());
             Sleep(REPLACE_DELAY_MS);
         }
 
@@ -911,12 +913,15 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
                     break;
                 }
                 last_errnum = errno;
-                // Retry for transient errors: EBUSY (resource busy), ETXTBSY (text file busy), EINTR (interrupted syscall)
+                // Retry for transient errors: EBUSY (resource busy), ETXTBSY (text file busy),
+                // EINTR (interrupted syscall)
                 if (last_errnum != EBUSY && last_errnum != ETXTBSY && last_errnum != EINTR)
                 {
                     break; // Non-transient error, break immediately
                 }
-                LOGGER_WARN("atomic_write_json: rename encountered transient error {} for '{}', retrying...", std::strerror(last_errnum), target.string());
+                LOGGER_WARN("atomic_write_json: rename encountered transient error {} for '{}', "
+                            "retrying...",
+                            std::strerror(last_errnum), target.string());
                 std::this_thread::sleep_for(std::chrono::milliseconds(RENAME_DELAY_MS));
             }
 
@@ -931,7 +936,6 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
             }
 
             // ... (rest of the POSIX code for fsync(dir) and return) ...
-
 
             int dfd = ::open(dir.c_str(), O_DIRECTORY | O_RDONLY);
             if (dfd >= 0)

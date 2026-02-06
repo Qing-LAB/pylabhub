@@ -709,9 +709,11 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
     for (const auto &dep_name : dependencies_to_unload)
     {
         PLH_DEBUG("unloadModuleInternal: recursing on dependency '{}'.", dep_name);
-        auto dep_it = m_module_graph.find(dep_name); // Re-find the iterator, it might have been invalidated
-        if (dep_it != m_module_graph.end()) { // Check if it still exists
-             unloadModuleInternal(dep_it->second);
+        auto dep_it =
+            m_module_graph.find(dep_name); // Re-find the iterator, it might have been invalidated
+        if (dep_it != m_module_graph.end())
+        { // Check if it still exists
+            unloadModuleInternal(dep_it->second);
         }
     }
 
