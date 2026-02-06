@@ -214,4 +214,16 @@ SharedSpinLockGuard::~SharedSpinLockGuard()
     m_lock.unlock();
 }
 
+// ============================================================================
+// SharedSpinLockGuardOwning Implementation
+// ============================================================================
+
+SharedSpinLockGuardOwning::SharedSpinLockGuardOwning(SharedSpinLockState *state,
+                                                     const std::string &name)
+    : m_lock(state, name), m_guard(m_lock)
+{
+}
+
+SharedSpinLockGuardOwning::~SharedSpinLockGuardOwning() = default;
+
 } // namespace pylabhub::hub

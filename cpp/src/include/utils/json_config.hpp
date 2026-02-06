@@ -40,7 +40,10 @@
  */
 #include "plh_service.hpp"
 
+#include <nlohmann/json.hpp>
 #include <list>
+#include <mutex>
+#include <unordered_map>
 
 namespace pylabhub::utils
 {

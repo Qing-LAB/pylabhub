@@ -1,13 +1,22 @@
 # `pylabhub-utils` Library
 
-The `pylabhub-utils` library is a shared library that provides a collection of common, robust utilities for C++ applications. These modules are designed to be thread-safe, process-safe, and integrated into a common lifecycle management system.
+The `pylabhub-utils` library provides common, robust utilities for C++ applications in scientific and laboratory environments. Modules are thread-safe, process-safe, and integrated into a unified lifecycle management system.
 
-**Core Design Principles:**
+## Goals
 
-*   **Lifecycle Management**: All major utilities are managed as lifecycle modules. They must be registered and initialized at application startup to ensure proper functioning and cleanup.
-*   **ABI Stability**: The library is built as a shared library with a stable Application Binary Interface (ABI), enforced through the Pimpl idiom and explicit symbol visibility control.
-*   **Safety**: Utilities are designed with thread and process safety as a primary concern, using native OS primitives for robust locking.
-*   **Modern C++**: The library is written in C++20.
+- **Decouple components** via lifecycle management and standardized interfaces
+- **Enable high-performance IPC** for data pipelines (Data Exchange Hub)
+- **Ensure reliability** through defensive design and crash recovery
+- **Maintain ABI stability** for shared library evolution
+
+## Core Design Principles
+
+| Principle | Description |
+|-----------|-------------|
+| **Lifecycle Management** | All major utilities are lifecycle modules; registered and initialized at startup |
+| **ABI Stability** | Pimpl idiom and explicit symbol visibility for stable shared library interface |
+| **Safety** | Thread and process safety using native OS primitives |
+| **Modern C++** | C++20 |
 
 ---
 
@@ -322,363 +331,161 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
 
 ### `Data Exchange Hub` (C++ Namespace: `pylabhub::hub`)
 
-The `Data Exchange Hub` is a **high-performance, cross-process communication framework** combining shared memory (`DataBlock`) with message-based coordination (`MessageHub`) for efficient data streaming and collaboration between independent processes.
+The **Data Exchange Hub** is a high-performance, cross-process communication framework combining shared memory (`DataBlock`) with message-based coordination (`MessageHub`). It enables zero-copy data transfer at GiB/s throughput between independent processes.
 
-**📖 Comprehensive Documentation:** See [DataExchangeHub_TechnicalDesign.md](./DataExchangeHub_TechnicalDesign.md) for detailed design, protocols, and usage patterns.
-
-**🎯 Primary Use Cases:**
-- Inter-process data pipelines (GiB/s throughput)
-- Real-time sensor data distribution
-- High-frequency data feeds (finance, telemetry)
-- Video/audio stream processing
-
-**⚠️ Current Status:** **Implementation In Progress** (Phase 1 complete: synchronization primitives)
+**📖 Technical Design:** See [HEP core-0002](./hep/hep-core-0002-data-exchange-hub-framework.md) for full specification, memory layout, and implementation details.
 
 ---
 
-#### Quick Start
+#### Design Principles
 
-```cpp
-// Producer: Create and write data
-DataBlockConfig config{
-    .shared_secret = generate_random_secret(),
-    .structured_buffer_size = 1024 * 1024,  // 1 MB
-    .flexible_zone_size = 4096,
-    .ring_buffer_capacity = 16
-};
-auto producer = create_datablock_producer("sensor_data", config);
+| Principle | Description |
+|-----------|-------------|
+| **Zero-Copy** | Data resides in shared memory; processes access directly |
+| **Control/Data Separation** | MessageHub (control) vs DataBlock (data) for independent optimization |
+| **Defensive Design** | Assumes process crashes; automatic detection and recovery |
+| **Two-Tiered Locking** | OS mutex for metadata + atomic spinlocks for hot-path data |
 
-// Write with automatic synchronization
-auto lock = producer->acquire_user_spinlock("metadata");
-memcpy(producer->get_flexible_zone(), &metadata, sizeof(metadata));
-lock.reset();  // RAII release
+---
 
-// Consumer: Attach and read data
-auto consumer = find_datablock_consumer("sensor_data", secret);
-auto lock = consumer->get_user_spinlock(0);
-SharedSpinLockGuard guard(lock);
-auto* data = consumer->get_flexible_zone();
-process(data);
-```
+#### Use Cases
+
+| Use Case | Description |
+|----------|-------------|
+| **Inter-process pipelines** | Producer → multiple consumers at GiB/s |
+| **Real-time sensor data** | Low-latency streaming from instruments |
+| **High-frequency feeds** | Finance, telemetry, scientific computing |
+| **Video/audio streams** | Zero-copy frame transfer |
+
+**Not suitable for:** Small infrequent messages (use MessageHub directly), transactional ACID workloads.
 
 ---
 
 #### Architecture Overview
 
-**Design Principles:**
-
-1. **Shared Memory Centric**: Zero-copy data transfer via `DataBlock` shared memory segments
-2. **Broker-Mediated Coordination**: `MessageHub` handles discovery, registration, and signaling
-3. **Two-Tiered Synchronization**: Robust OS mutexes for metadata + fast atomic spinlocks for data
-4. **Defensive Design**: Automatic detection and recovery from process crashes
-
-**Components:**
-
-| Component | Purpose | Technology |
-|-----------|---------|------------|
-| **MessageHub** | Control plane: discovery, registration, notifications | ZeroMQ + CurveZMQ encryption |
-| **DataBlock** | Data plane: bulk data transfer via shared memory | POSIX shm / Windows File Mapping |
-| **DataBlockMutex** | Internal metadata protection | pthread_mutex_t (POSIX) / Named Mutex (Windows) |
-| **SharedSpinLock** | User-facing data coordination | Pure C++ atomics (lock-free) |
+```mermaid
+flowchart TB
+    subgraph Hub["Data Exchange Hub"]
+        MH[MessageHub - Control Plane]
+        DB[DataBlock - Data Plane]
+    end
+    P[Producer] --> DB
+    C1[Consumer A] --> DB
+    C2[Consumer B] --> DB
+    MH <-->|ZeroMQ| Broker[Broker]
+    MH -->|Coordinates| DB
+```
 
 ---
 
-#### Memory Model
+#### Memory Layout (Per DataBlock Segment)
 
-Each `DataBlock` consists of three regions:
-
-```
-┌─────────────────────────────────────────────────┐
-│ SharedMemoryHeader (256 bytes, fixed)          │  ← Control Plane
-│  • Identity: magic_number, version, secret     │
-│  • Management Mutex (robust, OS-level)         │
-│  • User Spinlocks × 8 (atomic-based)          │
-│  • Indices: write/commit/read, slot_id         │
-│  • init_state: initialization guard            │
-└─────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────┐
-│ Flexible Data Zone (configurable size)         │  ← Metadata / Control
-│  • Variable-length messages                     │
-│  • Descriptors, control structures             │
-└─────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────┐
-│ Structured Data Buffer (configurable size)     │  ← Bulk Data
-│  • Ring buffer slots for streaming             │
-│  • Fixed or variable-length records            │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Block["DataBlock Segment"]
+        H[SharedMemoryHeader<br/>Identity, chain links, mutex, spinlocks, indices]
+        F[Flexible Data Zone<br/>Metadata, descriptors]
+        S[Structured Data Buffer<br/>Ring buffer slots]
+    end
+    H --> F --> S
 ```
 
-**Key Innovation: Initialization Safety**
+---
 
-The `init_state` field prevents race conditions during DataBlock creation:
+#### Public API Summary
+
+| Interface | Key Methods |
+|-----------|-------------|
+| **IDataBlockProducer** | `begin_write()`, `end_write()`, `flexible_zone()` |
+| **IDataBlockConsumer** | `begin_consume()`, `end_consume()`, `flexible_zone()` |
+| **Factory** | `create_datablock_producer()`, `find_datablock_consumer()` |
+
+---
+
+#### Example: Producer
 
 ```cpp
-// Producer initialization order:
-init_state = 0;              // UNINITIALIZED
-create_management_mutex();
-init_state = 1;              // MUTEX_READY
-initialize_all_fields();
-std::atomic_thread_fence(std::memory_order_release);
-magic_number = VALID;
-init_state = 2;              // FULLY_INITIALIZED
+#include "utils/data_block.hpp"
+#include "utils/message_hub.hpp"
 
-// Consumer validates:
-wait_for(init_state == 2);   // Timeout after 5s
-validate_magic_number();
-validate_version();
-attach_to_mutex();
-```
+void producer_example(const std::string& name, uint64_t secret) {
+    pylabhub::hub::MessageHub hub;
+    hub.connect("tcp://localhost:5555", "SERVER_KEY");
 
-This ensures consumers never attach to a partially-initialized DataBlock, preventing crashes and corruption.
+    pylabhub::hub::DataBlockConfig config{
+        .shared_secret = secret,
+        .structured_buffer_size = 1024 * 1024,
+        .flexible_zone_size = 4096,
+        .ring_buffer_capacity = 16
+    };
 
----
+    auto producer = pylabhub::hub::create_datablock_producer(
+        hub, name, pylabhub::hub::DataBlockPolicy::RingBuffer, config);
 
-#### Synchronization Strategy
-
-**Tier 1: Internal Management Mutex (`DataBlockMutex`)**
-
-- **Purpose**: Protect spinlock allocation/deallocation
-- **Type**: OS-level robust mutex (survives process crashes)
-- **Performance**: 1-10μs (infrequent operations)
-- **Implementation**:
-  - POSIX: `pthread_mutex_t` with `PTHREAD_PROCESS_SHARED` + `PTHREAD_MUTEX_ROBUST`
-  - Windows: Named kernel mutex via `CreateMutex`
-
-**Tier 2: User-Facing Spinlocks (`SharedSpinLock`)**
-
-- **Purpose**: Coordinate user data access (hot path)
-- **Type**: Atomic-based spin-wait in shared memory
-- **Performance**: 10-50ns uncontended, 100-500ns contended
-- **Features**:
-  - Dead PID detection (automatic recovery from crashes)
-  - Generation counters (mitigate PID reuse)
-  - Recursive locking (same thread can relock)
-  - Language-agnostic (16-byte fixed structure)
-
-**Why Two Tiers?**
-
-| Aspect | Management Mutex | User Spinlocks |
-|--------|------------------|----------------|
-| Frequency | Rare (init/cleanup) | Very frequent (every access) |
-| Latency | Tolerable (μs) | Critical (ns) |
-| Robustness | OS-guaranteed | Best-effort |
-| Users | Internal only | Public API |
-
----
-
-#### Current Implementation Status
-
-**✅ Completed (Phase 1: Synchronization Primitives)**
-
-1. ✅ `SharedSpinLockState` structure definition
-2. ✅ `SharedSpinLock` class (lock/unlock/try_lock_for)
-3. ✅ `SharedSpinLockGuard` (RAII wrapper)
-4. ✅ `DataBlockMutex` & `DataBlockLockGuard` (OS-specific robust mutex)
-5. ✅ Integration into `DataBlock` helper class
-6. ✅ Initialization race condition fix (init_state field)
-7. ✅ Consumer validation (magic_number, version, timeout)
-
-**🚧 In Progress (Phase 2: Data Transfer APIs)**
-
-- [ ] Tests for cross-process mutex (Task 1.6)
-- [ ] Tests for `SharedSpinLock` robustness (Task 1.7)
-- [ ] `IDataBlockProducer` methods: `acquire_write_slot()`, `commit_write_slot()`
-- [ ] `IDataBlockConsumer` methods: `begin_read()`, `end_read()`
-- [ ] Ring buffer slot management
-
-**📋 Planned (Phase 3: Integration & Advanced Features)**
-
-- [ ] Broker registration protocol
-- [ ] MessageHub notification integration
-- [ ] Per-consumer read indices
-- [ ] Watermark/backpressure mechanisms
-- [ ] Integrity checking (checksums, sequence numbers)
-- [ ] Telemetry and monitoring APIs
-
----
-
-#### Critical Design Decisions & Trade-offs
-
-**✅ What Works Well:**
-
-- **Two-tiered locking**: Excellent balance between robustness and performance
-- **PID + generation counter**: Effectively handles process crash recovery
-- **Fixed header layout**: Enables cross-language compatibility
-- **Initialization guard**: Eliminates race conditions during setup
-
-**⚠️ Known Limitations:**
-
-1. **Single Producer Only**: Current design assumes one writer
-   - *Mitigation*: Phase 3 will add multi-producer support
-   
-2. **Stale Consumer Count**: Crashed consumers don't decrement `active_consumer_count`
-   - *Mitigation*: Implement heartbeat mechanism via MessageHub
-
-3. **No Data Integrity Checks**: Silent corruption if process crashes mid-write
-   - *Mitigation*: Add checksums and sequence numbers (Phase 3)
-
-4. **POSIX Mutex Destruction**: Unsafe to destroy if other processes are using it
-   - *Current approach*: Only creator destroys, and only if trylock succeeds
-   - *Better approach*: Never destroy; let it die with shared memory segment
-
-5. **SharedSpinLock PID Checks**: Expensive under high contention
-   - *Optimization*: Only check every Nth spin iteration (e.g., every 1000 spins)
-
-**🔍 Design Alternatives Considered:**
-
-| Alternative | Why Not Chosen |
-|-------------|----------------|
-| **Message Queue (POSIX mq)** | Limited size, no zero-copy |
-| **Unix Domain Sockets** | Requires serialization, lower throughput |
-| **Single Mutex (no spinlocks)** | Too slow for data access hot path |
-| **Lock-Free Everything** | Complex, hard to debug, limited recoverability |
-| **RDMA** | Requires specialized hardware |
-
----
-
-#### Performance Characteristics
-
-**Throughput Benchmarks (Estimated on Modern Hardware):**
-
-| Operation | Latency | Throughput |
-|-----------|---------|------------|
-| Spinlock acquire (uncontended) | 10-50ns | N/A |
-| Spinlock acquire (contended) | 100-500ns | N/A |
-| Management mutex acquire | 1-10μs | N/A |
-| Write to flexible zone (1KB) | 50-200ns | 5-20 GB/s |
-| Write to buffer slot (4KB) | 200-800ns | 5-20 GB/s |
-| MessageHub notify | 10-50μs | N/A |
-
-**Scalability Limits:**
-
-- **Max Consumers**: ~100 (cache line contention on shared indices)
-- **Max Data Rate**: 10-20 GB/s (memory bandwidth)
-- **Max DataBlock Size**: 2 GB (POSIX shm_open limit)
-
-**Optimization Tips:**
-
-- Use large buffer slots to reduce per-item overhead
-- Batch writes before committing
-- Pin threads to cores for consistent latency
-- Minimize spinlock hold time
-
----
-
-#### Error Handling & Robustness
-
-**Automatic Recovery Scenarios:**
-
-1. **Producer Crash During Init**
-   - Consumer timeout → exception → clean exit
-   - Next producer `shm_unlink()` removes orphaned segment
-
-2. **Process Crash Holding Management Mutex**
-   - POSIX: `EOWNERDEAD` detected → `pthread_mutex_consistent()` → continue
-   - Windows: `WAIT_ABANDONED` → mutex acquired → validate state
-
-3. **Process Crash Holding Spinlock**
-   - PID liveness check fails → automatic reclaim + generation bump
-   - Protected data may be corrupt → validate checksums
-
-**Validation Best Practices:**
-
-```cpp
-struct DataSlot {
-    uint64_t seq_num;
-    uint32_t checksum;  // CRC32 or xxHash
-    uint32_t size;
-    char data[...];
-};
-
-// Producer
-slot.checksum = compute_crc32(data, size);
-write(slot);
-
-// Consumer
-auto slot = read();
-if (compute_crc32(slot.data, slot.size) != slot.checksum) {
-    throw data_corruption_error();
+    for (int i = 0; i < 10; ++i) {
+        char* buffer = producer->begin_write(100);
+        if (buffer) {
+            memcpy(buffer, data, size);
+            producer->end_write(size, &flexible_json);
+        }
+    }
 }
 ```
 
 ---
 
-#### Common Pitfalls (See Technical Design Doc for Full List)
+#### Example: Consumer
 
-**❌ Pitfall: Forgetting Memory Barriers**
 ```cpp
-// BAD: Consumer may see stale data
-producer_data = new_value;
-producer_ready = true;  // Plain store
+void consumer_example(const std::string& name, uint64_t secret) {
+    pylabhub::hub::MessageHub hub;
+    hub.connect("tcp://localhost:5555", "SERVER_KEY");
 
-// GOOD: Use atomics + fences
-producer_data = new_value;
-std::atomic_thread_fence(std::memory_order_release);
-producer_ready.store(true, std::memory_order_release);
-```
+    auto consumer = pylabhub::hub::find_datablock_consumer(hub, name, secret);
 
-**❌ Pitfall: Holding Locks During Heavy Computation**
-```cpp
-// BAD: Blocks all consumers
-lock();
-expensive_computation();  // 100ms
-write_result();
-unlock();
-
-// GOOD: Minimize critical section
-auto result = expensive_computation();
-lock();
-write_result();
-unlock();
-```
-
-**❌ Pitfall: Ignoring Version Mismatches**
-```cpp
-// BAD: No validation
-auto consumer = find_datablock_consumer(name, secret);
-
-// GOOD: Validate version
-if (header->version != DATABLOCK_VERSION) {
-    throw version_mismatch_error();
+    while (running) {
+        const char* buffer = consumer->begin_consume(500);
+        if (buffer) {
+            process_data(buffer);
+            consumer->end_consume();
+        }
+    }
 }
 ```
 
 ---
 
-#### Next Steps & Roadmap
+#### Expected Sequence of Operations
 
-**Immediate (Complete Phase 1):**
-1. Fix remaining test issues (namespace, includes)
-2. Add comprehensive tests for tasks 1.6-1.7
-3. Validate initialization race condition fix
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant DB as DataBlock
+    participant C as Consumer
 
-**Short-term (Phase 2: Q1 2026):**
-1. Implement data transfer APIs
-2. Ring buffer slot management
-3. Benchmark performance
+    P->>DB: begin_write(timeout)
+    DB-->>P: buffer pointer
+    P->>DB: Write data
+    P->>DB: end_write(bytes, flex_data)
+    P->>C: Notify via MessageHub
 
-**Medium-term (Phase 3: Q2 2026):**
-1. Broker integration for discovery
-2. Multi-producer support
-3. Integrity checking
-
-**Long-term (Research):**
-1. RDMA support for network transparency
-2. Persistent memory (survive reboots)
-3. Formal verification of locking protocols
+    C->>DB: begin_consume(timeout)
+    DB-->>C: buffer pointer
+    C->>C: Process data
+    C->>DB: end_consume()
+```
 
 ---
 
-#### References & Related Documentation
+#### Implementation Status
 
-- **Detailed Design:** [DataExchangeHub_TechnicalDesign.md](./DataExchangeHub_TechnicalDesign.md)
-- **Development Roadmap:** [TODO_DataExchangeHub_Development.md](./TODO_DataExchangeHub_Development.md)
-- **Test Coverage:** See `cpp/tests/test_pylabhub_utils/test_datablock*.cpp`
+| Phase | Status |
+|-------|--------|
+| Phase 1 | ✅ Complete – SharedSpinLock, DataBlockMutex, init_state |
+| Phase 2 | 🚧 In Progress – Data transfer APIs, ring buffer |
+| Phase 3 | 📋 Planned – Broker integration, multi-producer |
 
-**External Resources:**
-- POSIX Shared Memory: `man 7 shm_overview`
-- Robust Mutexes: `man 3 pthread_mutexattr_setrobust`
-- Memory Ordering: [C++ atomics tutorial](https://en.cppreference.com/w/cpp/atomic/memory_order)
+**⚠️ Windows:** DataBlock mutex support is incomplete; do not use in production on Windows.
 
 ---
 
@@ -1446,12 +1253,15 @@ if (auto lock = FileLock::try_lock(file_path, ResourceType::File)) {
 
 For detailed API documentation, see the header files:
 
-- **Lifecycle**: `cpp/src/include/utils/lifecycle.hpp`
-- **Logger**: `cpp/src/include/utils/logger.hpp`
-- **FileLock**: `cpp/src/include/utils/file_lock.hpp`
-- **JsonConfig**: `cpp/src/include/utils/json_config.hpp`
-- **ScopeGuard**: `cpp/src/include/utils/scope_guard.hpp`
-- **RecursionGuard**: `cpp/src/include/utils/recursion_guard.hpp`
-- **AtomicGuard**: `cpp/src/include/utils/atomic_guard.hpp`
+| Module | Header | Technical Spec |
+|--------|--------|----------------|
+| **Lifecycle** | `cpp/src/include/utils/lifecycle.hpp` | [HEP core-0001](./hep/hep-core-0001-hybrid-lifecycle-model.md) |
+| **Logger** | `cpp/src/include/utils/logger.hpp` | [HEP core-0004](./hep/hep-core-0004-async-logger.md) |
+| **FileLock** | `cpp/src/include/utils/file_lock.hpp` | [HEP core-0003](./hep/hep-core-0003-cross-platform-filelock.md) |
+| **JsonConfig** | `cpp/src/include/utils/json_config.hpp` | — |
+| **DataBlock** | `cpp/src/include/utils/data_block.hpp` | [HEP core-0002](./hep/hep-core-0002-data-exchange-hub-framework.md) |
+| **ScopeGuard** | `cpp/src/include/utils/scope_guard.hpp` | — |
+| **RecursionGuard** | `cpp/src/include/utils/recursion_guard.hpp` | — |
+| **AtomicGuard** | `cpp/src/include/utils/atomic_guard.hpp` | — |
 
 Each header contains comprehensive inline documentation with usage examples and design rationale.
