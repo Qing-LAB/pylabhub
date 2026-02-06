@@ -90,6 +90,17 @@ configure_file(
   @ONLY
 )
 
+# Windows: embed VERSIONINFO resource in the DLL (Properties > Details).
+# This is the only way to expose version metadata to Windows programs.
+if(MSVC)
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/pylabhub_utils_version.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_version.rc"
+    @ONLY
+  )
+  target_sources(pylabhub-utils PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_version.rc")
+endif()
+
 # When building the library itself, the generated header expects a symbol like
 # pylabhub_utils_EXPORTS to be defined so the header emits dllexport on Windows.
 # GenerateExportHeader creates conditionals based on BASE_NAME/_EXPORTS, so
