@@ -1,14 +1,17 @@
 #pragma once
-
+/**
+ * @file data_header_sync_primitives.hpp
+ * @brief Shared memory spin-lock for DataBlock coordination.
+ */
 #include "pylabhub_utils_export.h"
+#include "plh_platform.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <string>
 #include <stdexcept>
 #include <chrono>
 #include <thread>
-
-#include "plh_platform.hpp" // For platform-specific definitions and headers
 
 #if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>    // For shm_open, O_CREAT, O_RDWR

@@ -1,4 +1,9 @@
 #pragma once
+/**
+ * @file base_file_sink.hpp
+ * @brief Base class for file-based logger sinks.
+ */
+#include "plh_platform.hpp"
 
 #include <filesystem>
 

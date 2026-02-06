@@ -98,9 +98,12 @@
  ******************************************************************************/
 
 #pragma once
-
-#include "lifecycle.hpp"
+/**
+ * @file logger.hpp
+ * @brief Asynchronous, thread-safe logging utility.
+ */
 #include "plh_base.hpp"
+#include "lifecycle.hpp"
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
 #ifndef LOGGER_FMT_BUFFER_RESERVE

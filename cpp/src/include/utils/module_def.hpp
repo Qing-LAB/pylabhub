@@ -1,6 +1,8 @@
 #pragma once
-
-#include "plh_base.hpp"
+/**
+ * @file module_def.hpp
+ * @brief ABI-safe module definition for LifecycleManager registration.
+ */
 #include "pylabhub_utils_export.h"
 
 #include <memory>

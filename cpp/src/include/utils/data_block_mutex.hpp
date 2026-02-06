@@ -1,9 +1,14 @@
 #pragma once
-
+/**
+ * @file data_block_mutex.hpp
+ * @brief Cross-process mutex for DataBlock management structures.
+ */
 #include "pylabhub_utils_export.h"
+#include "plh_platform.hpp"
+
 #include <string>
-#include <stdexcept> // For std::runtime_error
-#include <mutex>     // For std::unique_lock
+#include <stdexcept>
+#include <mutex>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <windows.h>
