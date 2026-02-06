@@ -1,22 +1,39 @@
 #pragma once
 
 #include "pylabhub_utils_export.h"
-#include "DataBlock.hpp" // For SharedMemoryHeader::SharedSpinLockState
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <stdexcept>
 #include <chrono>
 #include <thread>
 
-#if defined(PYLABHUB_PLATFORM_WIN64)
-#include <windows.h>
-#else
-#include <unistd.h>    // For getpid()
-#include <sys/types.h> // For pid_t
-#include <cerrno>      // For errno
+#include "plh_platform.hpp" // For platform-specific definitions and headers
+
+#if defined(PYLABHUB_IS_POSIX)
+#include <fcntl.h>    // For shm_open, O_CREAT, O_RDWR
+#include <pthread.h>  // For pthread_mutex_t (if used in future in SharedSpinLock)
+#include <sys/mman.h> // For mmap, munmap
+#include <sys/stat.h> // For mode constants (S_IRUSR, S_IWUSR)
+#include <unistd.h>   // For ftruncate, close, getpid
+#include <errno.h>    // For ESRCH
+#include <signal.h>   // For kill
 #endif
 
 namespace pylabhub::hub
 {
+
+/**
+ * @struct SharedSpinLockState
+ * @brief Represents the atomic state of a shared spin-lock residing in shared memory.
+ */
+struct SharedSpinLockState
+{
+    std::atomic<uint64_t> owner_pid{0};       // 0 means unlocked
+    std::atomic<uint64_t> generation{0};      // Incremented on release, to mitigate PID reuse
+    std::atomic<uint32_t> recursion_count{0}; // For recursive locking by same thread
+    uint64_t owner_thread_id{0}; // Thread ID of lock holder (only valid if owner_pid != 0)
+};
 
 /**
  * @class SharedSpinLock
@@ -27,7 +44,7 @@ namespace pylabhub::hub
  * mitigate issues with process termination and PID reuse. It also supports
  * recursive locking by the same thread.
  *
- * The `SharedSpinLock` operates on a `SharedMemoryHeader::SharedSpinLockState`
+ * The `SharedSpinLock` operates on a `SharedSpinLockState`
  * struct residing in shared memory.
  */
 class PYLABHUB_UTILS_EXPORT SharedSpinLock
@@ -38,7 +55,7 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
      * @param state A pointer to the SharedSpinLockState struct in shared memory.
      * @param name A name for logging/error reporting (typically the DataBlock name + lock index).
      */
-    SharedSpinLock(SharedMemoryHeader::SharedSpinLockState *state, const std::string &name);
+    SharedSpinLock(SharedSpinLockState *state, const std::string &name);
 
     /**
      * @brief Acquires the spin-lock, blocking if necessary.
@@ -79,7 +96,7 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
     // Helper to check if a process is alive (cross-platform)
     bool is_process_alive(uint64_t pid) const;
 
-    SharedMemoryHeader::SharedSpinLockState *m_state;
+    SharedSpinLockState *m_state;
     std::string m_name; // For logging/error reporting
 };
 
