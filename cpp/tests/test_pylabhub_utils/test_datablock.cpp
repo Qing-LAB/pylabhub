@@ -1,7 +1,7 @@
 #include "gtest/gtest.h"
 #include "plh_service.hpp"
-#include "utils/DataBlock.hpp"
-#include "utils/MessageHub.hpp"
+#include "utils/data_block.hpp"
+#include "utils/message_hub.hpp"
 
 /**
  * @brief Tests for the DataBlock factory functions.

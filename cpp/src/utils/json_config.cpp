@@ -1,5 +1,5 @@
 /**
- * @file JsonConfig.cpp
+ * @file json_config.cpp
  * @brief Implements the thread-safe and process-safe JSON configuration manager.
  */
 #include "plh_base.hpp"
@@ -17,10 +17,10 @@
 #endif
 #include "nlohmann/json.hpp"
 
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
-#include "utils/FileLock.hpp"
-#include "utils/JsonConfig.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/logger.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/json_config.hpp"
 
 namespace pylabhub::utils
 {

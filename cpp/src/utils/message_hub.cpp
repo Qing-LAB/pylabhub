@@ -1,5 +1,5 @@
 #include "plh_service.hpp"
-#include "utils/MessageHub.hpp"
+#include "utils/message_hub.hpp"
 
 #include "sodium.h"
 #include "cppzmq/zmq.hpp"

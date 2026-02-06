@@ -1,5 +1,5 @@
-#include "utils/logger_sinks/FileSink.hpp"
-#include "utils/logger_sinks/Sink.hpp"
+#include "utils/logger_sinks/file_sink.hpp"
+#include "utils/logger_sinks/sink.hpp"
 #include <stdexcept>
 #include <fmt/format.h>
 

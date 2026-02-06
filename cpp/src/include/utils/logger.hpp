@@ -1,8 +1,8 @@
 /*******************************************************************************
- * @file Logger.hpp
+ * @file logger.hpp
  * @brief High-performance, asynchronous, thread-safe logging utility.
  *
- * @see src/utils/Logger.cpp
+ * @see src/utils/logger.cpp
  * @see tests/logger/test_basic_logging.cpp
  *
  * **Design Philosophy: Decoupled Command-Queue**
@@ -61,9 +61,9 @@
  * `LifecycleManager` before use.
  *
  * ```cpp
- * #include "utils/Lifecycle.hpp"
- * #include "utils/Logger.hpp"
- * #include "utils/FileLock.hpp" // Other modules may be needed
+ * #include "utils/lifecycle.hpp"
+ * #include "utils/logger.hpp"
+ * #include "utils/file_lock.hpp" // Other modules may be needed
  *
  * void my_application_logic() {
  *     int user_id = 123;
@@ -99,7 +99,7 @@
 
 #pragma once
 
-#include "Lifecycle.hpp"
+#include "lifecycle.hpp"
 #include "plh_base.hpp"
 
 // The default initial reserve size for the fmt::memory_buffer used for formatting
@@ -392,7 +392,7 @@ class PYLABHUB_UTILS_EXPORT Logger
 };
 
 // --- Compile-Time Log Level Filtering ---
-// By defining this macro before including Logger.hpp, users can strip log
+// By defining this macro before including logger.hpp, users can strip log
 // messages of a certain severity and below at compile time, resulting in zero
 // runtime overhead for those logs.
 #ifndef LOGGER_COMPILE_LEVEL

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Sink.hpp"
+#include "sink.hpp"
 
 namespace pylabhub::utils
 {

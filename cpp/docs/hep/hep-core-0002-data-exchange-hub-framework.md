@@ -217,7 +217,7 @@ std::unique_ptr<IDataBlockConsumer> find_datablock_consumer(
 
 #### 4.1. Internal DataBlock Management
 
-The core shared memory segment management is handled by an internal `DataBlock` helper class (defined in `src/utils/DataBlock.cpp`). This class encapsulates the Boost.Interprocess `managed_shared_memory` and provides direct access to the `SharedMemoryHeader`, `FlexibleDataZone`, and `StructuredDataBuffer`. It handles the creation and destruction of the named shared memory object, ensuring proper lifecycle management.
+The core shared memory segment management is handled by an internal `DataBlock` helper class (defined in `src/utils/data_block.cpp`). This class encapsulates the Boost.Interprocess `managed_shared_memory` and provides direct access to the `SharedMemoryHeader`, `FlexibleDataZone`, and `StructuredDataBuffer`. It handles the creation and destruction of the named shared memory object, ensuring proper lifecycle management.
 
 #### 4.2. Synchronization Primitives
 
@@ -240,8 +240,8 @@ Here are conceptual examples demonstrating how a producer and consumer might int
 
 ```cpp
 #include "plh_service.hpp" // For LOGGER_INFO etc.
-#include "utils/DataBlock.hpp"
-#include "utils/MessageHub.hpp"
+#include "utils/data_block.hpp"
+#include "utils/message_hub.hpp"
 #include <iostream>
 #include <vector>
 #include <thread>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Sink.hpp"
+#include "sink.hpp"
 
 #ifdef PYLABHUB_PLATFORM_WIN64
 #include <windows.h>

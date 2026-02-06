@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file JsonConfig.hpp
+ * @file json_config.hpp
  * @brief Thread-safe and process-safe JSON configuration manager.
  *
  * Provides a robust class for managing JSON configuration files with guarantees
@@ -434,7 +434,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                                   std::error_code *ec) noexcept;
 
     // NEW: private helper to clear/set dirty without exposing Impl.
-    // Must be implemented in JsonConfig.cpp (it will touch pImpl->dirty).
+    // Must be implemented in json_config.cpp (it will touch pImpl->dirty).
     void private_set_dirty_unsafe_(bool v) noexcept;
 
     // Transaction bookkeeping record (internal only)

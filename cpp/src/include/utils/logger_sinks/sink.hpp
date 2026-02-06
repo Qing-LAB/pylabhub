@@ -16,7 +16,7 @@ struct LogMessage
     std::chrono::system_clock::time_point timestamp;
     uint64_t process_id;
     uint64_t thread_id;
-    int level; // Use int to avoid including all of Logger.hpp for the enum.
+    int level; // Use int to avoid including all of logger.hpp for the enum.
     fmt::memory_buffer body;
 };
 

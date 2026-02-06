@@ -1,5 +1,5 @@
 #include "plh_base.hpp"
-#include "utils/logger_sinks/Sink.hpp"
+#include "utils/logger_sinks/sink.hpp"
 
 namespace pylabhub::utils
 {
@@ -7,7 +7,7 @@ namespace pylabhub::utils
 // Returns a string representation for a given log level.
 const char *Sink::level_to_string_internal(int lvl)
 {
-    // A C-style switch on int is used here to avoid a hard dependency on Logger.hpp
+    // A C-style switch on int is used here to avoid a hard dependency on logger.hpp
     // for the Logger::Level enum, keeping this header self-contained.
     switch (lvl)
     {
