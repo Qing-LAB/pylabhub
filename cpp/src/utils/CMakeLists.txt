@@ -32,7 +32,7 @@ set(UTILS_SOURCES
   MessageHub.cpp
   DataBlock.cpp
   shared_memory_mutex.cpp
-  shared_spin_lock.cpp
+  plh_sync_primitives.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
