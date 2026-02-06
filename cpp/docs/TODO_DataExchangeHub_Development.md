@@ -79,7 +79,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 1.4 Implement `DataBlockMutex` & `DataBlockLockGuard` (Internal Management Mutex)
 *   **Description**: Design and implement the `DataBlockMutex` class (OS-specific, robust cross-process mutex) and its RAII `DataBlockLockGuard`. This mutex protects the allocation map (`SharedMemoryHeader::spinlock_allocated`) and other metadata manipulation within the shared memory.
 *   **Status**: COMPLETED.
-*   **Procedure**: See `src/include/utils/shared_memory_mutex.hpp` and `src/utils/shared_memory_mutex.cpp`.
+*   **Procedure**: See `src/include/utils/data_block_mutex.hpp` and `src/utils/data_block_mutex.cpp`.
 
 ### 1.5 Integrate `DataBlockMutex` into `DataBlock`
 *   **Description**: Integrate the `DataBlockMutex` into the `DataBlock` internal helper class. This involves:
