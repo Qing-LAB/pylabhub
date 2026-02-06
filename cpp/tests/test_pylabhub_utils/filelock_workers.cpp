@@ -6,6 +6,9 @@
  * These functions are executed in separate processes to test the cross-process
  * functionality of the FileLock utility. Each function encapsulates a specific
  * test scenario and is invoked by the main test runner.
+ *
+ * FileLock::GetLifecycleModule() is used without a cleanup parameter; the library
+ * does not remove .lock files on shutdown (they are harmless if left on disk).
  */
 #include <barrier>
 #include <fstream>
@@ -327,7 +330,7 @@ int contention_log_access(const std::string &resource_path_str, const std::strin
             } // Lock is released here by FileLock destructor
         },
         "filelock::contention_log_access",
-        FileLock::GetLifecycleModule(), // do not clean up the lock file when process ends
+        FileLock::GetLifecycleModule(),
         Logger::GetLifecycleModule());
 }
 

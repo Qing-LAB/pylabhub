@@ -99,7 +99,7 @@ int main() {
 int main() {
     pylabhub::utils::LifecycleGuard app(
         pylabhub::utils::MakeModDefList(
-            pylabhub::utils::FileLock::GetLifecycleModule(true),  // cleanup stale locks
+            pylabhub::utils::FileLock::GetLifecycleModule(),
             pylabhub::utils::Logger::GetLifecycleModule()
         )
     );
@@ -380,6 +380,7 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 |---------|----------|
 | Lock always times out | Another process holds it; check `get_expected_lock_fullname_for()` |
 | Different processes, different locks | Use absolute paths; symlinks can cause different canonical paths |
+| Stale `.lock` files after crash | `.lock` files are harmless; if cleanup is desired, use an external script when nothing is running |
 
 ### JsonConfig
 

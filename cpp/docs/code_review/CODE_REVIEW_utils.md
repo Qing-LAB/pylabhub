@@ -239,26 +239,6 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
 
 ---
 
-### 3.3 FileLock: Directory Lock Naming Edge Case
-
-**File**: `cpp/src/utils/file_lock.cpp`  
-**Lines**: 194-211  
-**Severity**: MEDIUM
-
-**Issue**: Directory lock naming fallback to "pylabhub_root" may not handle all Windows edge cases.
-
-```cpp
-if (fname.empty() || fname == "." || fname == "..") {
-    fname = "pylabhub_root";
-}
-```
-
-**Impact**: On Windows with UNC paths (`\\?\C:\`), drive roots, or other special paths, the behavior is untested.
-
-**Recommendation**: Add unit tests for:
-- Windows drive roots: `C:\`, `D:\`
-- UNC paths: `\\server\share\`
-- Network paths with dots
 
 ---
 
@@ -358,7 +338,7 @@ After the initial allocation, the guard is allocation-free for depths ≤16.
 ### 4.3 Magic Numbers Without Named Constants
 
 **File**: `cpp/src/utils/file_lock.cpp`  
-**Line**: 80  
+**Line**: 81  
 **Severity**: LOW
 
 **Issue**: POSIX lock polling interval is hardcoded.
