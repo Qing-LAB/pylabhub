@@ -105,7 +105,7 @@ class MockBroker
                     header_sv.find("NOTIFY") != std::string_view::npos)
                 {
                     m_notifications_received++; // Increment counter for received notifications
-                    continue; // Do not reply to notifications
+                    continue;                   // Do not reply to notifications
                 }
 
                 switch (m_response_mode.load())

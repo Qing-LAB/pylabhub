@@ -1,6 +1,8 @@
 #include "plh_service.hpp"
 #include "utils/DataBlock.hpp"
 #include "utils/MessageHub.hpp"
+#include "utils/shared_memory_mutex.hpp" // Include the new DataBlockMutex header
+#include <cstddef>                       // For offsetof
 #include <stdexcept>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -102,24 +104,35 @@ class DataBlock
         m_header->read_index.store(0, std::memory_order_release);
         m_header->current_slot_id.store(0, std::memory_order_release);
 
-#if !defined(PYLABHUB_PLATFORM_WIN64)
-        // Initialize pthread mutex attributes for process sharing
-        pthread_mutexattr_t mattr;
-        pthread_mutexattr_init(&mattr);
-        pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
-        // Initialize the mutex in the shared memory
-        pthread_mutex_init(reinterpret_cast<pthread_mutex_t *>(m_header->mutex_storage), &mattr);
-        pthread_mutexattr_destroy(&mattr);
+        // Initialize atomic flags for spinlock allocation
+        for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
+        {
+            m_header->spinlock_allocated[i].clear(std::memory_order_release);
+        }
+
+        // Initialize the management mutex that protects the spinlock allocation map
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+
+        PLH_DEBUG("DataBlock '{}': Initializing Windows management mutex.", m_name);
+
+        m_management_mutex = std::make_unique<DataBlockMutex>(
+            m_name, nullptr, 0, m_is_creator); // Offset is ignored for Windows
+
 #else
-        // CRITICAL: On Windows, process-shared mutexes are typically named kernel objects.
-        // m_header->mutex_storage (a byte array) cannot directly hold a Windows kernel mutex object.
-        // It is left uninitialized here.
-        // TODO: Implement proper cross-process synchronization for Windows, possibly using a named
-        // kernel mutex referenced externally by name, rather than attempting to embed a mutex object
-        // directly in shared memory. For now, ensure no code attempts to use this storage as a mutex.
-        // As a temporary measure to ensure the memory is initialized, zero out the storage.
-        std::memset(m_header->mutex_storage, 0, sizeof(m_header->mutex_storage));
+
+        PLH_DEBUG("DataBlock '{}': Initializing POSIX management mutex at {}.", m_name,
+                  (void *)((char *)m_mapped_address +
+                           offsetof(SharedMemoryHeader, management_mutex_storage)));
+
+        m_management_mutex = std::make_unique<DataBlockMutex>(
+            m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
+            m_is_creator);
+
 #endif
+
+        PLH_DEBUG("DataBlock '{}': Management mutex initialized.", m_name);
+
         // Get pointers to the flexible data zone and structured buffer
         m_flexible_data_zone =
             reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
@@ -169,6 +182,29 @@ class DataBlock
 
         m_header = reinterpret_cast<pylabhub::hub::SharedMemoryHeader *>(m_mapped_address);
 
+        // Attach to the management mutex
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+
+        PLH_DEBUG("DataBlock '{}': Attaching to Windows management mutex.", m_name);
+
+        m_management_mutex = std::make_unique<DataBlockMutex>(
+            m_name, nullptr, 0, m_is_creator); // Offset is ignored for Windows
+
+#else
+
+        PLH_DEBUG("DataBlock '{}': Attaching to POSIX management mutex at {}.", m_name,
+                  (void *)((char *)m_mapped_address +
+                           offsetof(SharedMemoryHeader, management_mutex_storage)));
+
+        m_management_mutex = std::make_unique<DataBlockMutex>(
+            m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
+            m_is_creator);
+
+#endif
+
+        PLH_DEBUG("DataBlock '{}': Management mutex attached.", m_name);
+
         // Get pointers to the flexible data zone and structured buffer
         m_flexible_data_zone =
             reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
@@ -177,27 +213,18 @@ class DataBlock
         LOGGER_INFO("DataBlock '{}' opened.", m_name);
     }
 
-    ~DataBlock()
-    {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-        UnmapViewOfFile(m_mapped_address);
-        CloseHandle(m_shm_handle);
-#else
-        munmap(m_mapped_address, m_size);
-        close(m_shm_fd);
-        if (m_is_creator)
-        {
-            shm_unlink(m_name.c_str());
-            LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
-        }
-#endif
-    }
+    ~DataBlock();
 
-    // Accessors
-    pylabhub::hub::SharedMemoryHeader *header() const { return m_header; }
-    char *flexible_data_zone() const { return m_flexible_data_zone; }
-    char *structured_data_buffer() const { return m_structured_data_buffer; }
-    void *segment() const { return m_mapped_address; }
+    // Accessors declarations
+    pylabhub::hub::SharedMemoryHeader *header() const;
+    char *flexible_data_zone() const;
+    char *structured_data_buffer() const;
+    void *segment() const;
+
+    // Methods to manage shared spinlocks declarations
+    size_t acquire_shared_spinlock(const std::string &debug_name);
+    void release_shared_spinlock(size_t index);
+    SharedMemoryHeader::SharedSpinLockState *get_shared_spinlock_state(size_t index);
 
   private:
     std::string m_name;
@@ -215,7 +242,132 @@ class DataBlock
     pylabhub::hub::SharedMemoryHeader *m_header{nullptr};
     char *m_flexible_data_zone{nullptr};
     char *m_structured_data_buffer{nullptr};
-};
+    std::unique_ptr<DataBlockMutex> m_management_mutex; // Internal OS-specific mutex for management
+}; // End of class DataBlock
+
+// ============================================================================
+// DataBlock Method Implementations (outside class definition)
+// ============================================================================
+
+// Constructors (already defined)
+
+// Destructor (already defined)
+DataBlock::~DataBlock()
+{
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    UnmapViewOfFile(m_mapped_address);
+    CloseHandle(m_shm_handle);
+#else
+    // For creator, explicitly destroy the management mutex while memory is still mapped.
+    // This calls ~DataBlockMutex() which attempts pthread_mutex_destroy.
+    if (m_is_creator && m_management_mutex)
+    {
+        m_management_mutex.reset(); // Calls ~DataBlockMutex()
+    }
+
+    munmap(m_mapped_address, m_size);
+    close(m_shm_fd);
+    if (m_is_creator)
+    {
+        shm_unlink(m_name.c_str());
+        LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
+    }
+#endif
+}
+
+// Accessors implementations
+pylabhub::hub::SharedMemoryHeader *DataBlock::header() const
+{
+    return m_header;
+}
+char *DataBlock::flexible_data_zone() const
+{
+    return m_flexible_data_zone;
+}
+char *DataBlock::structured_data_buffer() const
+{
+    return m_structured_data_buffer;
+}
+void *DataBlock::segment() const
+{
+    return m_mapped_address;
+}
+
+// Methods to manage shared spinlocks implementations
+SharedMemoryHeader::SharedSpinLockState *DataBlock::get_shared_spinlock_state(size_t index)
+{
+    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+    {
+        LOGGER_ERROR(
+            "DataBlock '{}': Attempted to access shared spinlock at invalid index {}. Max is {}.",
+            m_name, index, SharedMemoryHeader::MAX_SHARED_SPINLOCKS - 1);
+        throw std::out_of_range("Shared spinlock index out of range.");
+    }
+    return &m_header->shared_spinlocks[index];
+}
+
+size_t DataBlock::acquire_shared_spinlock(const std::string &debug_name)
+{
+    DataBlockLockGuard lock(*m_management_mutex); // Protect allocation map
+
+    for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
+    {
+        // test_and_set returns true if the flag was ALREADY set, false if it was clear and is now
+        // set. We want to acquire a slot that is currently CLEAR (false).
+        if (!m_header->spinlock_allocated[i].test_and_set(std::memory_order_acq_rel))
+        {
+            // Found a free slot, marked it as allocated.
+            // Initialize the spinlock state for this slot.
+            m_header->shared_spinlocks[i].owner_pid.store(0, std::memory_order_release);
+            m_header->shared_spinlocks[i].generation.store(0, std::memory_order_release);
+            m_header->shared_spinlocks[i].recursion_count.store(0, std::memory_order_release);
+            m_header->shared_spinlocks[i].owner_thread_id =
+                0; // Not atomic, written by owner process
+
+            LOGGER_INFO("DataBlock '{}': Acquired shared spinlock slot {} for '{}'.", m_name, i,
+                        debug_name);
+            return i;
+        }
+    }
+    throw std::runtime_error("DataBlock '" + m_name +
+                             "': No free shared spinlock slots available.");
+}
+
+void DataBlock::release_shared_spinlock(size_t index)
+{
+    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+    {
+        LOGGER_ERROR(
+            "DataBlock '{}': Attempted to release shared spinlock at invalid index {}. Max is {}.",
+            m_name, index, SharedMemoryHeader::MAX_SHARED_SPINLOCKS - 1);
+        throw std::out_of_range("Shared spinlock index out of range.");
+    }
+
+    DataBlockLockGuard lock(*m_management_mutex); // Protect allocation map
+
+    // Ensure the spinlock is not currently held by any process before marking it free.
+    // A robust check would also involve checking generation counts, but for simple release,
+    // confirming owner_pid == 0 is typically sufficient as a safety measure.
+    if (m_header->shared_spinlocks[index].owner_pid.load(std::memory_order_acquire) != 0)
+    {
+        LOGGER_WARN("DataBlock '{}': Releasing allocated shared spinlock slot {} which is still "
+                    "held by PID {}. Force releasing.",
+                    m_name, index, m_header->shared_spinlocks[index].owner_pid.load());
+        // Force clear for robustness, but log warning.
+    }
+
+    // Clear the allocated flag. This makes the slot available for re-acquisition.
+    m_header->spinlock_allocated[index].clear(std::memory_order_release);
+
+    // Reset state to ensure clean start for next acquirer (though acquire_shared_spinlock also does
+    // this).
+    m_header->shared_spinlocks[index].owner_pid.store(0, std::memory_order_release);
+    m_header->shared_spinlocks[index].generation.store(0, std::memory_order_release);
+    m_header->shared_spinlocks[index].recursion_count.store(0, std::memory_order_release);
+    m_header->shared_spinlocks[index].owner_thread_id = 0;
+
+    LOGGER_INFO("DataBlock '{}': Released shared spinlock slot {}.", m_name, index);
+}
 
 class DataBlockProducerImpl : public IDataBlockProducer
 {
