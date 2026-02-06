@@ -1,5 +1,8 @@
 #pragma once
-
+/**
+ * @file sink.hpp
+ * @brief Abstract interface for log message destinations.
+ */
 #include "plh_base.hpp"
 
 namespace pylabhub::utils

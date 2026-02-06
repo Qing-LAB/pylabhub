@@ -1,13 +1,16 @@
 #pragma once
-
+/**
+ * @file data_block.hpp
+ * @brief Shared memory data block with producer/consumer coordination.
+ */
 #include "pylabhub_utils_export.h"
+#include "data_header_sync_primitives.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
-
-#include "data_header_sync_primitives.hpp" // Consolidated sync primitives
 
 namespace pylabhub::hub
 {

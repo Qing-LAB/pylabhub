@@ -38,7 +38,8 @@
  * exposed. All methods that require access to internal state are defined in
  * the corresponding `.cpp` file.
  */
-#include "plh_base.hpp"
+#include "plh_service.hpp"
+
 #include <list>
 
 namespace pylabhub::utils
