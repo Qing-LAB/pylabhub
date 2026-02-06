@@ -41,10 +41,11 @@ Multiple processes or threads often need to access and modify shared files (e.g.
 
 ### Design Considerations
 
-- **Why separate lock file?** Avoids conflicts with read/write on the data file; simplifies cleanup of stale locks.
+- **Why separate lock file?** Avoids conflicts with read/write on the data file. `.lock` files are harmless if left on disk; do not remove them while any process may be running. If cleanup is desired (e.g., after a crash), use an external script when nothing is running.
 - **Why process-local registry?** OS file locks can behave inconsistently for threads in the same process (e.g., POSIX `flock`); the registry ensures Blocking/NonBlocking semantics work identically.
 - **Why advisory?** Mandatory locking is OS-specific and less portable; FileLock assumes cooperative use.
 - **NFS warning:** `flock` may be unreliable over NFS; use local filesystem for critical locks.
+- **Lock file cleanup:** `.lock` files are harmless if left on disk; they do not affect correctness. Do not remove them while any process may be running, as that could break cross-process lock semantics. If cleanup is desired (e.g., after a crash), use an external script when nothing is running.
 
 ### Highlights
 
@@ -96,7 +97,7 @@ flowchart TB
 ```mermaid
 classDiagram
     class FileLock {
-        +GetLifecycleModule(cleanup_on_shutdown)
+        +GetLifecycleModule()
         +lifecycle_initialized()
         +get_expected_lock_fullname_for(path, type)
         +FileLock(path, type, mode)
@@ -107,7 +108,6 @@ classDiagram
         +error_code()
         +get_locked_resource_path()
         +get_canonical_lock_file_path()
-        +cleanup()
     }
     class LifecycleManager {
         manages
@@ -138,7 +138,7 @@ classDiagram
 
 | Method | Description |
 |--------|-------------|
-| `GetLifecycleModule(cleanup_on_shutdown)` | ModuleDef for LifecycleManager; `cleanup_on_shutdown` enables stale lock removal on exit |
+| `GetLifecycleModule()` | ModuleDef for LifecycleManager |
 | `lifecycle_initialized()` | Check if module is initialized |
 | `get_expected_lock_fullname_for(path, type)` | Predict canonical lock file path |
 | `FileLock(path, type, mode)` | Construct and acquire; Blocking or NonBlocking |
@@ -149,7 +149,6 @@ classDiagram
 | `error_code()` | Error from failed acquisition |
 | `get_locked_resource_path()` | Path of protected resource |
 | `get_canonical_lock_file_path()` | Canonical path of `.lock` file |
-| `cleanup()` | Best-effort removal of stale locks (if configured) |
 
 ---
 
@@ -212,7 +211,7 @@ sequenceDiagram
 
 void perform_exclusive_work(const std::filesystem::path& resource) {
     pylabhub::utils::LifecycleGuard guard(
-        pylabhub::utils::FileLock::GetLifecycleModule(true),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::utils::Logger::GetLifecycleModule()
     );
 
@@ -249,7 +248,7 @@ if (auto lock = pylabhub::utils::FileLock::try_lock(
 |------|-------------|
 | Advisory lock ignored by non-cooperating process | Inherent limitation; document cooperative use |
 | Polling overhead (POSIX timed/NonBlocking) | 20ms interval; configurable in source |
-| Stale lock files after crash | `cleanup_on_shutdown` for graceful exit; manual cleanup for hard crash |
+| Stale lock files after crash | `.lock` files are harmless; use an external script to remove when nothing is running |
 | Unreliable on NFS | Documented warning; recommend local filesystem |
 | Self-deadlock (re-acquire same path) | Intra-process registry blocks or fails; no system deadlock |
 

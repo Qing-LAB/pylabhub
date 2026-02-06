@@ -3,6 +3,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/file_lock.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -78,10 +79,6 @@ namespace pylabhub::utils
 {
 
 static constexpr std::chrono::milliseconds LOCK_POLLING_INTERVAL = std::chrono::milliseconds(20);
-
-// Global Registries for Lock Management
-static std::mutex g_lockfile_registry_mtx;
-static std::unordered_map<std::string, std::string> g_lockfile_registry;
 
 static std::mutex g_proc_registry_mtx;
 struct ProcLockState
@@ -546,10 +543,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         OVERLAPPED ov = {};
         if (LockFileEx(h, flags, 0, 1, 0, &ov))
         {
-            auto reg_key = make_lock_key(lockpath);
-            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, pylabhub::format_tools::ws2s(wpath));
-
             pImpl->handle = reinterpret_cast<void *>(h);
             pImpl->valid = true;
             return true;
@@ -617,10 +610,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             PLH_DEBUG("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(), fd,
                       os_path.string());
-            auto reg_key = make_lock_key(lockpath);
-            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, os_path.string());
-
             pImpl->fd = fd;
             pImpl->valid = true;
             return true;
@@ -651,10 +640,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             PLH_DEBUG("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(),
                       fd, os_path.string());
-            auto reg_key = make_lock_key(lockpath);
-            std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-            g_lockfile_registry.emplace(reg_key, os_path.string());
-
             pImpl->fd = fd;
             pImpl->valid = true;
             return true;
@@ -690,44 +675,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 #endif
 }
 
-void FileLock::cleanup()
-{
-    /* Cleanup stale lock files */
-    std::vector<std::pair<std::string, std::string>> candidates;
-    {
-        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-        candidates.reserve(g_lockfile_registry.size());
-        for (auto &kv : g_lockfile_registry)
-            candidates.emplace_back(kv.first, kv.second);
-    }
-
-    std::vector<std::string> removed_keys;
-    for (const auto &kv : candidates)
-    {
-        const std::string &reg_key = kv.first;
-        const std::string &path_str = kv.second;
-        std::filesystem::path p = canonical_lock_path_for_os(path_str);
-
-        FileLock maybe_stale_lock(p, ResourceType::File, LockMode::NonBlocking);
-        if (maybe_stale_lock.valid())
-        {
-            std::error_code ec;
-            std::filesystem::remove(p, ec);
-            if (!ec)
-            {
-                removed_keys.push_back(reg_key);
-            }
-        }
-    }
-
-    if (!removed_keys.empty())
-    {
-        std::lock_guard<std::mutex> lg(g_lockfile_registry_mtx);
-        for (const auto &k : removed_keys)
-            g_lockfile_registry.erase(k);
-    }
-}
-
 // Lifecycle Integration
 bool FileLock::lifecycle_initialized() noexcept
 {
@@ -741,39 +688,18 @@ void do_filelock_startup(const char *arg)
     (void)arg;
     g_filelock_initialized.store(true, std::memory_order_release);
 }
-void do_filelock_cleanup(const char *arg)
+void do_filelock_shutdown(const char *arg)
 {
-    bool perform_cleanup = true; // Default to true for safety
-    // The 'arg' is a C-style string used to pass boolean state from ModuleDef.
-    // "false" string explicitly disables cleanup.
-    if (arg && strcmp(arg, "false") == 0)
-    {
-        perform_cleanup = false;
-    }
-
-    if (FileLock::lifecycle_initialized() && perform_cleanup)
-    {
-        FileLock::cleanup();
-    }
+    (void)arg;
     g_filelock_initialized.store(false, std::memory_order_release);
 }
 } // namespace
 
-ModuleDef FileLock::GetLifecycleModule(bool cleanup_on_shutdown)
+ModuleDef FileLock::GetLifecycleModule()
 {
     ModuleDef module("pylabhub::utils::FileLock");
     module.set_startup(&do_filelock_startup);
-
-    if (cleanup_on_shutdown)
-    {
-        module.set_shutdown(&do_filelock_cleanup, 2000);
-    }
-    else
-    {
-        const char *arg = "false";
-        module.set_shutdown(&do_filelock_cleanup, 2000, arg, strlen(arg));
-    }
-
+    module.set_shutdown(&do_filelock_shutdown, 2000);
     return module;
 }
 
