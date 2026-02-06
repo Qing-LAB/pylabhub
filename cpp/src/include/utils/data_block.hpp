@@ -41,6 +41,20 @@ enum class FlexibleZoneFormat : uint8_t
     Json = 2
 };
 
+/** Unit block size for structured data buffer. Simplifies bookkeeping; may waste memory. */
+enum class DataBlockUnitSize : uint32_t
+{
+    Size4K = 4096u,
+    Size4M = 4194304u,
+    Size16M = 16777216u
+};
+
+/** Return byte size for DataBlockUnitSize */
+inline size_t to_bytes(DataBlockUnitSize u)
+{
+    return static_cast<size_t>(u);
+}
+
 /**
  * @enum DataBlockPolicy
  * @brief Defines the buffer management strategy for a DataBlock.
@@ -59,10 +73,18 @@ enum class DataBlockPolicy
 struct DataBlockConfig
 {
     uint64_t shared_secret;
-    size_t structured_buffer_size;
     size_t flexible_zone_size;
-    int ring_buffer_capacity; // Only used for RingBuffer policy
+    DataBlockUnitSize unit_block_size = DataBlockUnitSize::Size4K;
+    int ring_buffer_capacity; // Slot count: 1=Single, 2=Double, N=RingBuffer
     FlexibleZoneFormat flexible_zone_format = FlexibleZoneFormat::Raw;
+    bool enable_checksum = false; // BLAKE2b checksums in control zone (flexible zone + slots)
+
+    /** Computed: slot_count * unit_block_size. slot_count = max(1, ring_buffer_capacity). */
+    size_t structured_buffer_size() const
+    {
+        size_t slots = (ring_buffer_capacity > 0) ? static_cast<size_t>(ring_buffer_capacity) : 1u;
+        return slots * to_bytes(unit_block_size);
+    }
 };
 
 /**
@@ -128,11 +150,35 @@ struct SharedMemoryHeader
     std::atomic<uint64_t> counters_64[NUM_COUNTERS_64];
 
     // ──────────────────────────────────────────────────
-    // Section 7: Flexible Zone Metadata (16 bytes)
+    // Section 7: Flexible Zone & Buffer Metadata (28 bytes)
     // ──────────────────────────────────────────────────
     FlexibleZoneFormat flexible_zone_format; // Raw, MessagePack, or Json
     uint8_t _reserved_format[3];
-    uint32_t flexible_zone_size; // Size in bytes (for consumer discovery)
+    uint32_t flexible_zone_size;      // Size in bytes (for consumer discovery)
+    uint32_t ring_buffer_capacity;    // Slot count (1=Single, 2=Double, N=Ring)
+    uint32_t structured_buffer_size;  // Total structured buffer = slot_count * unit_block_size
+    uint32_t unit_block_size;         // Bytes per slot: 4096, 4194304, or 16777216
+    uint8_t checksum_enabled;         // 1 if BLAKE2b checksums are in use
+    uint8_t _reserved_buffer[3];
+
+    // ──────────────────────────────────────────────────
+    // Section 8: Integrity Checksums (BLAKE2b via libsodium)
+    // Flexible zone checksum in fixed header; slot checksums in variable region.
+    // ──────────────────────────────────────────────────
+    static constexpr size_t CHECKSUM_BYTES = 32; // crypto_generichash_BYTES (BLAKE2b-256)
+    uint8_t flexible_zone_checksum[CHECKSUM_BYTES];
+    std::atomic<uint8_t> flexible_zone_checksum_valid; // 0=not set, 1=valid
+    uint8_t _checksum_pad[7];
+
+    /** Bytes per slot in checksum region: CHECKSUM_BYTES + 1 (valid flag). */
+    static constexpr size_t SLOT_CHECKSUM_ENTRY_SIZE = CHECKSUM_BYTES + 1;
+    /** Size of variable slot checksum region when enabled. */
+    size_t slot_checksum_region_size() const
+    {
+        return (checksum_enabled && ring_buffer_capacity > 0)
+                   ? (static_cast<size_t>(ring_buffer_capacity) * SLOT_CHECKSUM_ENTRY_SIZE)
+                   : 0;
+    }
 };
 
 /**
@@ -238,6 +284,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     /** Total counter slots in the chain. */
     uint32_t counter_count() const;
 
+    // ─── Checksum API (BLAKE2b via libsodium; stored in control zone) ───
+    /** Compute BLAKE2b of flexible zone, store in header. Returns true on success. */
+    bool update_checksum_flexible_zone();
+    /** Compute BLAKE2b of data slot at index, store in header. Slot layout: structured_buffer_size/ring_capacity. */
+    bool update_checksum_slot(size_t slot_index);
+
     // ─── Iterator API ───
     DataBlockIterator begin();
     DataBlockIterator end();
@@ -275,6 +327,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     void set_counter_64(size_t index, uint64_t value);
     uint32_t counter_count() const;
 
+    // ─── Checksum API (BLAKE2b; verify stored checksum matches computed) ───
+    /** Returns true if stored checksum matches computed BLAKE2b of flexible zone. */
+    bool verify_checksum_flexible_zone() const;
+    /** Returns true if stored checksum matches computed BLAKE2b of data slot. */
+    bool verify_checksum_slot(size_t slot_index) const;
+
     // ─── Iterator API ───
     DataBlockIterator begin();
     DataBlockIterator end();
@@ -293,6 +351,11 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
 
 PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret);
+
+/** Overload: validate version and config on attach. Returns nullptr if inconsistent. */
+PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
+                        const DataBlockConfig &expected_config);
 
 /** @deprecated Use DataBlockProducer. Kept for compatibility. */
 using IDataBlockProducer = DataBlockProducer;

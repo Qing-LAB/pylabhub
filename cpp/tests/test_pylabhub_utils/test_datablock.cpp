@@ -19,9 +19,9 @@ TEST_F(DataBlockTest, FactoryFunctionsCreateValidObjects)
     pylabhub::hub::MessageHub hub;
     pylabhub::hub::DataBlockConfig config{};
     config.shared_secret = 123;
-    config.structured_buffer_size = 1024;
     config.flexible_zone_size = 512;
-    config.ring_buffer_capacity = 0;
+    config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
+    config.ring_buffer_capacity = 1; // Single policy
 
     // These tests now confirm that valid objects are returned when creation succeeds.
     // Error conditions (e.g., shm_open failure) should be tested in separate tests.
