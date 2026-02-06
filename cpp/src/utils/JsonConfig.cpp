@@ -718,6 +718,9 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
             // If another process (e.g., antivirus) has the file open, wait and retry.
             if (last_error != ERROR_SHARING_VIOLATION)
                 break;
+            LOGGER_WARN("atomic_write_json: ReplaceFileW encountered sharing violation for '{}', "
+                        "retrying...",
+                        target.string());
             Sleep(REPLACE_DELAY_MS);
         }
 
@@ -894,16 +897,45 @@ void JsonConfig::atomic_write_json(const std::filesystem::path &target, const nl
             }
             fd = -1;
 
-            if (std::rename(tmp_path.c_str(), target.c_str()) != 0)
+            // POSIX implementation (with retry logic for transient errors)
+            // ... (previous code for fsync and fchmod) ...
+
+            const int RENAME_RETRIES = 5;
+            const int RENAME_DELAY_MS = 100; // Same as Windows for consistency
+            bool renamed = false;
+            int last_errnum = 0;
+
+            for (int i = 0; i < RENAME_RETRIES; ++i)
             {
-                int errnum = errno;
+                if (std::rename(tmp_path.c_str(), target.c_str()) == 0)
+                {
+                    renamed = true;
+                    break;
+                }
+                last_errnum = errno;
+                // Retry for transient errors: EBUSY (resource busy), ETXTBSY (text file busy),
+                // EINTR (interrupted syscall)
+                if (last_errnum != EBUSY && last_errnum != ETXTBSY && last_errnum != EINTR)
+                {
+                    break; // Non-transient error, break immediately
+                }
+                LOGGER_WARN("atomic_write_json: rename encountered transient error {} for '{}', "
+                            "retrying...",
+                            std::strerror(last_errnum), target.string());
+                std::this_thread::sleep_for(std::chrono::milliseconds(RENAME_DELAY_MS));
+            }
+
+            if (!renamed)
+            {
                 ::unlink(tmp_path.c_str());
                 if (ec)
-                    *ec = std::make_error_code(static_cast<std::errc>(errnum));
-                LOGGER_ERROR("atomic_write_json: rename failed for '{}'. Error: {}",
-                             target.string(), std::strerror(errnum));
+                    *ec = std::make_error_code(static_cast<std::errc>(last_errnum));
+                LOGGER_ERROR("atomic_write_json: rename failed for '{}' after retries. Error: {}",
+                             target.string(), std::strerror(last_errnum));
                 return;
             }
+
+            // ... (rest of the POSIX code for fsync(dir) and return) ...
 
             int dfd = ::open(dir.c_str(), O_DIRECTORY | O_RDONLY);
             if (dfd >= 0)

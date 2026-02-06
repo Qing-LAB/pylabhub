@@ -126,10 +126,7 @@ TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
     proc.wait_for_exit();
 
     expect_worker_ok(proc);
-
 }
-
-
 
 TEST_F(LifecycleDynamicTest, UnloadTimeout)
 
@@ -142,5 +139,4 @@ TEST_F(LifecycleDynamicTest, UnloadTimeout)
     proc.wait_for_exit();
 
     expect_worker_ok(proc, {"TIMEOUT!"});
-
 }

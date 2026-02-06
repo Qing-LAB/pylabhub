@@ -1,7 +1,7 @@
 ### Code Review Task Summary
 
 **Overall Goal:**
-To conduct a critical and thorough review of the entire `@src/**` codebase to identify and correct issues related to correctness, code quality, and maintainability.
+To conduct a critical and thorough review of the entire `@src/**` codebase and `@tests/**` which are the tests designed to test these modules to identify and correct issues related to correctness, code quality, and maintainability.
 
 **Key Review Criteria:**
 1.  **Platform-Specific Errors**: Finding bugs in code paths specific to different operating systems (Windows, macOS, Linux).
@@ -22,8 +22,9 @@ To ensure we proceed from a reliable foundation, we will restart the review proc
 
 **Step 2: Conduct a Fresh, In-Depth Review**
 *   With the complete codebase loaded, I will perform a new, comprehensive analysis based on all the core criteria listed above.
-*   I will pay special attention to the files that were recently subject to edits (`Lifecycle.cpp`, `Logger.cpp`, `FileLock.cpp`, `WaveAccess.cpp`) to meticulously check for any "duplicated definitions" or other errors that might have been introduced.
-*   I will also verify the correctness and completeness of the recently added "persistent" dynamic module feature in the `LifecycleManager`.
+*   I will pay special attention to meticulously check for any "duplicated definitions" or other errors that might have been introduced during multiple rounds of code refactoring. We will also identify any obsolete designs/code that may still be present.
+*   These modules have dependency on each other. Based on the logic of the dependency, we should start from the Lifecycle module, followeed by the FileLock module, then the Logger module, then the JsonConfig module.
+*   We also want to make sure that all comments in these files are consistent with the design goal, and with the current version of the code. We should provide detailed comments with Doxygen style and provide developer friendly information.
 
 **Step 3: Report Findings and Propose Corrections**
 *   After the analysis, I will provide you with a clear, structured report of my findings.

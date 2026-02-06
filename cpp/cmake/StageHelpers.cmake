@@ -36,12 +36,16 @@
 #
 cmake_minimum_required(VERSION 3.29)
 
-# --- pylabhub_register_headers_for_staging ---
+# - pylabhub_register_headers_for_staging ---
 #
 # Registers a request to stage header files from a given directory.
 # This function serializes the arguments into a string and appends it to the
 # PYLABHUB_HEADERS_TO_STAGE global property list. A centralized loop later
 # processes this property to generate the staging commands.
+#
+# For a detailed explanation of how `DIRECTORIES`, `FILES`, and `SUBDIR`
+# interact to control the resulting include path structure, refer to:
+# `docs/README_CMake_Design.md#111-header-staging-mechanics`
 #
 function(pylabhub_register_headers_for_staging)
   set(options "")
@@ -155,7 +159,8 @@ function(pylabhub_get_library_staging_commands)
     message(FATAL_ERROR "pylabhub_get_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
 
-  if(${ARG_ABSOLUTE_DIR})
+  # handle ABSOLUTE_DIR safely (keep calling convention the same)
+  if(ARG_ABSOLUTE_DIR)
     set(RUNTIME_DEST_DIR "${ARG_DESTINATION}")
     set(LINKTIME_DEST_DIR "${ARG_DESTINATION}")
   else()
@@ -164,10 +169,36 @@ function(pylabhub_get_library_staging_commands)
   endif()
   
   get_target_property(TGT_TYPE ${ARG_TARGET} TYPE)
+  # detect if the target is imported (handle imported targets robustly while preserving UNKNOWN_LIBRARY branch)
+  get_target_property(_is_imported ${ARG_TARGET} IMPORTED)
 
   set(commands_list "")
 
-  if(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
+  if(_is_imported)
+    # Imported target: prefer IMPORTED_LOCATION, fall back to per-config IMPORTED_LOCATION_<CONFIG>
+    get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
+    if(imported_location)
+      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+           "${imported_location}" "${LINKTIME_DEST_DIR}/")
+    else()
+      if(CMAKE_CONFIGURATION_TYPES)
+        foreach(config ${CMAKE_CONFIGURATION_TYPES})
+          string(TOUPPER ${config} config_upper)
+          get_target_property(_imported_loc_cfg ${ARG_TARGET} "IMPORTED_LOCATION_${config_upper}")
+          if(_imported_loc_cfg)
+            list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                 "${_imported_loc_cfg}" "${LINKTIME_DEST_DIR}/")
+          endif()
+        endforeach()
+        if(NOT commands_list)
+          message(WARNING "Imported target ${ARG_TARGET} has no IMPORTED_LOCATION or IMPORTED_LOCATION_<CONFIG>; Skipping staging.")
+        endif()
+      else()
+        message(WARNING "Imported target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
+      endif()
+    endif()
+
+  elseif(TGT_TYPE STREQUAL "SHARED_LIBRARY" OR TGT_TYPE STREQUAL "MODULE_LIBRARY")
     if(PYLABHUB_IS_WINDOWS)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
@@ -202,6 +233,16 @@ function(pylabhub_get_library_staging_commands)
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
     list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
          "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+  elseif(TGT_TYPE STREQUAL "UNKNOWN_LIBRARY")
+    # Handle UNKNOWN IMPORTED libraries, which are typically pre-built binaries.
+    # We rely on their IMPORTED_LOCATION property to find the actual file.
+    get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
+    if(imported_location)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "${imported_location}" "${LINKTIME_DEST_DIR}/")
+    else()
+        message(WARNING "UNKNOWN_LIBRARY target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
+    endif()
   endif()
 
   set(${ARG_OUT_COMMANDS} ${commands_list} PARENT_SCOPE)
@@ -313,8 +354,7 @@ function(pylabhub_attach_library_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands requires TARGET and ATTACH_TO arguments.")
   endif()
   if(NOT TARGET ${ARG_TARGET})
-    message(WARNING "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist, skipping.")
-    return()
+    message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
   if(NOT TARGET ${ARG_ATTACH_TO})
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
@@ -350,7 +390,8 @@ function(pylabhub_attach_library_staging_commands)
   add_custom_command(
     TARGET ${ARG_ATTACH_TO}
     POST_BUILD
-    COMMAND ${stage_commands_list}
+    COMMAND_EXPAND_LISTS
+    ${stage_commands_list}
     COMMENT "Staging library artifacts for ${ARG_TARGET}"
     VERBATIM
   )
@@ -360,6 +401,18 @@ endfunction()
 #
 # Attaches custom commands to a target to stage header directories. This is
 # used to simplify the staging logic for third-party libraries.
+#
+# This version is hardened to correctly expand list arguments and ensure
+# commands are deferred until post-build using COMMAND_EXPAND_LISTS.
+#
+
+# --- pylabhub_attach_headers_staging_commands ---
+#
+# Attaches custom commands to a target to stage header directories. This is
+# used to simplify the staging logic for third-party libraries.
+#
+# This version is hardened to correctly expand list arguments and ensure
+# commands are deferred until post-build using COMMAND_EXPAND_LISTS.
 #
 function(pylabhub_attach_headers_staging_commands)
   set(options "")
@@ -374,47 +427,139 @@ function(pylabhub_attach_headers_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_headers_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
   endif()
 
-  set(copy_commands "")
-  if(ARG_DIRECTORIES OR ARG_FILES)
-    if(ARG_SUBDIR)
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
-    else()
-      set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
-    endif()
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
+  if(NOT ARG_DIRECTORIES AND NOT ARG_FILES)
+    return()
   endif()
 
-  if(ARG_DIRECTORIES)
-    foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-      list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DEST_DIR}")
-    endforeach()
+  if(ARG_SUBDIR)
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include/${ARG_SUBDIR}")
+  else()
+    set(DEST_DIR "${PYLABHUB_STAGING_DIR}/include")
   endif()
 
-  if(ARG_FILES)
-    list(APPEND copy_commands COMMAND ${CMAKE_COMMAND} -E copy ${ARG_FILES} "${DEST_DIR}/")
-  endif()
+  set(custom_cmds "")
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Preparing staging headers -> ${DEST_DIR}")
+  # Ensure destination directory exists (idempotent — does not remove siblings)
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
 
-  if(copy_commands)
-    set(_comment "Staging headers")
-    if(ARG_DIRECTORIES)
-      string(APPEND _comment " from directories: ${ARG_DIRECTORIES}")
-    endif()
-    if(ARG_FILES)
-      string(APPEND _comment " (specific files)")
-    endif()
+  # Copy directories (use copy_directory_if_different — non-destructive for siblings)
+  foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DEST_DIR}")
+  endforeach()
 
-    add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
-      ${copy_commands}
-      COMMENT "${_comment}"
-      VERBATIM
-    )
-  endif()
+  # Copy individual files (copy_if_different each file)
+  foreach(_file IN LISTS ARG_FILES)
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying file: ${_file} -> ${DEST_DIR}/")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "${DEST_DIR}/")
+  endforeach()
 
-  # If the headers come from an ExternalProject, ensure the staging target
-  # depends on it, so the headers are downloaded/built before we try to copy them.
+  add_custom_command(
+    TARGET ${ARG_ATTACH_TO}
+    POST_BUILD
+    COMMAND_EXPAND_LISTS
+    ${custom_cmds}
+    COMMENT "Staging headers for ${ARG_ATTACH_TO}"
+    VERBATIM
+  )
+
   if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
     add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
   endif()
 endfunction()
+
+
+# --- pylabhub_register_directory_for_staging ---
+#
+# Registers a full directory structure (e.g., an install prefix) to be staged.
+# This is useful for external projects that install multiple subdirectories
+# (bin, lib, include, share) into a single prefix. It leverages a template
+# script to handle the actual file operations and platform-specific logic
+# like Windows DLL staging.
+#
+# Usage:
+#   pylabhub_register_directory_for_staging(
+#     SOURCE_DIR <path_to_source_directory> # The root directory to copy from.
+#     ATTACH_TO <target_name>               # The custom target to attach the commands to.
+#     [SUBDIRS <list_of_subdirs>]           # Optional: List of subdirectories to copy (e.g., "bin;lib;include").
+#                                           # If not provided, common subdirs ("bin;lib;include;share") are used.
+#   )
+#
+function(pylabhub_register_directory_for_staging)
+  set(options "")
+  set(oneValueArgs "SOURCE_DIR;ATTACH_TO")
+  set(multiValueArgs "SUBDIRS")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_SOURCE_DIR OR NOT ARG_ATTACH_TO)
+    message(FATAL_ERROR "pylabhub_register_directory_for_staging requires SOURCE_DIR and ATTACH_TO arguments.")
+  endif()
+  if(NOT TARGET ${ARG_ATTACH_TO})
+    message(FATAL_ERROR "pylabhub_register_directory_for_staging: Target '${ARG_ATTACH_TO}' does not exist.")
+  endif()
+
+  set(_subdirs_to_copy "")
+  if(ARG_SUBDIRS)
+    set(_subdirs_to_copy "${ARG_SUBDIRS}")
+  else()
+    set(_subdirs_to_copy "bin;lib;include;share") # Default common subdirectories
+  endif()
+
+  set(_bulk_stage_template "${CMAKE_SOURCE_DIR}/cmake/BulkStageSingleDirectory.cmake.in")
+
+  # Derive a unique name for the configured script for better readability.
+  get_filename_component(_source_dir_name "${ARG_SOURCE_DIR}" NAME)
+  string(REPLACE "/" "-" _source_dir_name "${_source_dir_name}") # Replace slashes in name for path safety
+
+  # Generate and attach custom commands for each configuration type.
+  if(CMAKE_CONFIGURATION_TYPES)
+    foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+      string(TOUPPER "${cfg}" CFGU)
+      set(output_script "${CMAKE_BINARY_DIR}/BulkStage-${ARG_ATTACH_TO}-${cfg}-${_source_dir_name}.cmake")
+
+      # Define variables that will be substituted in the template
+      set(SOURCE_DIR "${ARG_SOURCE_DIR}")
+      set(STAGING_ROOT_DIR "${PYLABHUB_STAGING_DIR}")
+      set(SUBDIRS_TO_COPY "${_subdirs_to_copy}")
+
+      configure_file(
+        "${_bulk_stage_template}"
+        "${output_script}"
+        @ONLY
+      )
+
+      add_custom_command(
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+        COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})"
+        VERBATIM
+        CONFIGURATIONS ${cfg}
+      )
+    endforeach()
+  else() # Single-configuration generator
+    set(output_script "${CMAKE_BINARY_DIR}/BulkStage-${ARG_ATTACH_TO}-${_source_dir_name}.cmake")
+
+    # Define variables that will be substituted in the template
+    set(SOURCE_DIR "${ARG_SOURCE_DIR}")
+    set(STAGING_ROOT_DIR "${PYLABHUB_STAGING_DIR}")
+    set(SUBDIRS_TO_COPY "${_subdirs_to_copy}")
+
+    configure_file(
+      "${_bulk_stage_template}"
+      "${output_script}"
+      @ONLY
+    )
+
+    add_custom_command(
+      TARGET ${ARG_ATTACH_TO}
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+      COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}'"
+      VERBATIM
+    )
+  endif()
+
+endfunction()
+
+
