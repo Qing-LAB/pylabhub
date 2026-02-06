@@ -1,5 +1,5 @@
 #include "gtest/gtest.h"
-#include "utils/shared_memory_mutex.hpp"
+#include "utils/data_block_mutex.hpp"
 #include "test_process_utils.h" // For multi-process testing utilities
 #include "test_framework/test_entrypoint.h" // For g_self_exe_path
 
