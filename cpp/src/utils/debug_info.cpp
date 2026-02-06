@@ -463,8 +463,9 @@ void print_stack_trace(bool use_external_tools) noexcept
             return;
         }
 
-        // --- Phase 2: Attempt to resolve symbols with external tools (Verbose Windows Output) ---
-        safe_format_to_stderr("\n--- External Symbol Resolution (Verbose Windows Output) ---\n");
+        // --- Phase 2: Print verbose, detailed information (Windows DbgHelp) ---
+        // This is a more detailed view of the same data collected in Phase 1.
+        safe_format_to_stderr("\n--- DbgHelp Detailed Output ---\n");
         for (const auto &m : metas)
         {
             safe_format_to_stderr("  #{:02} -> {:#018x} ", m.idx,
@@ -606,7 +607,7 @@ void print_stack_trace(bool use_external_tools) noexcept
             return;
         }
 
-        // --- Phase 2: Attempt to resolve symbols with external tools ---
+        // --- Phase 2: Attempt to resolve symbols with external tools (e.g., addr2line) ---
         safe_format_to_stderr("\n--- External Symbol Resolution ---\n");
 
         // We need a map from actual frame index to the resolved string.

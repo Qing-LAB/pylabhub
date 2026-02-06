@@ -1,7 +1,26 @@
-# /cpp/src/CMakeLists.txt
+# ------------------------------------------------------------------------------
+# src/CMakeLists.txt
 #
-# Configures the main project libraries and executables.
+# Purpose:
+#   Configures the primary executable (`pylabhub-hubshell`) and orchestrates
+#   the inclusion of core subdirectories like `src/utils`. It establishes
+#   build properties, links dependencies, and defines installation and staging
+#   rules for the main application components.
 #
+# Responsibilities:
+#   - Defines the `pylabhub-hubshell` executable.
+#   - Includes the `utils` subdirectory.
+#   - Applies common build settings (C++ standard, Clang-Tidy, sanitizers).
+#   - Defines installation rules for the executable.
+#   - Configures staging for the executable.
+#
+# Expected Parent Behavior (from top-level CMakeLists.txt):
+#   - Should be included via `add_subdirectory(src)`.
+#   - Assumes `PYLABHUB_LOGGER_COMPILE_LEVEL` and `PYLABHUB_LOGGER_DEBUG`
+#     are defined.
+#   - Assumes `pylabhub_enable_clang_tidy_for_target` and
+#     `pylabhub_apply_sanitizer_to_target` functions are available.
+# ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.29)
 
 # Add the utils subdirectory, which defines the pylabhub::utils library.
@@ -28,11 +47,7 @@ endif()
 # The app links against the utils library.
 target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::utils)
 
-if(PYLABHUB_SANITIZER_FLAGS_SET)
-  message(STATUS "** Sanitizer detected, adding to linker flags.")
-  target_compile_options(pylabhub-hubshell PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
-  target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::sanitizer_flags)
-endif()
+pylabhub_apply_sanitizer_to_target(pylabhub-hubshell)
 
 # ==============================================================================
 # Installation

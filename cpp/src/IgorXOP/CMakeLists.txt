@@ -21,12 +21,7 @@
 cmake_minimum_required(VERSION 3.29)
 project(IgorXOP LANGUAGES C CXX)
 
-# -------------------------
-# Option to enable/disable building XOP from parent
-# -------------------------
-if(NOT DEFINED BUILD_XOP)
-  option(BUILD_XOP "Attempt to build Igor XOP addon" ON)
-endif()
+include(SanitizerHelper)
 
 if(NOT BUILD_XOP)
   message(STATUS "IgorXOP: BUILD_XOP=OFF; skipping XOP configuration.")
@@ -48,7 +43,7 @@ endif()
 # -------------------------
 # Canonical naming
 # -------------------------
-set(XOP_TARGET "pylabhubxop") # The logical name for the CMake target.
+set(XOP_TARGET "pylabhub-xop") # The logical name for the CMake target.
 set(XOP_BUNDLE_NAME "${XOP_TARGET}64") # The final on-disk name, e.g., pylabhubxop64.xop
 
 # The post-build staging root is now inherited from the top-level project.
@@ -140,17 +135,7 @@ if(MSVC)
   target_compile_options(${XOP_TARGET} PRIVATE /Zc:preprocessor)
 endif()
 
-# The following compile definitions are provided by XOPStandardHeaders.h and were causing macro redefinition warnings.
-# They are commented out to avoid redundancy and rely on the toolkit's intended mechanism for platform detection.
-# In case of future issues with XOPStandardHeaders.h changes, these can be uncommented for testing.
-#if(DEFINED PLATFORM_APPLE)
-#  target_compile_definitions(${XOP_TARGET} PRIVATE MACIGOR IGOR64)
-#  message(STATUS "IgorXOP: adding compile definitions for macOS: MACIGOR IGOR64")
-#endif()
-#if(DEFINED PLATFORM_WIN64)
-#  target_compile_definitions(${XOP_TARGET} PRIVATE WINIGOR IGOR64)
-#  message(STATUS "IgorXOP: adding compile definitions for Windows: WINIGOR IGOR64")
-#endif()
+
 
 # -------------------------
 # Consume top-level provided helper/core targets if available
@@ -169,27 +154,7 @@ if(TARGET pylabhub::utils)
   message(STATUS "IgorXOP: linked to pylabhub::utils")
 endif()
 
-if(PYLABHUB_SANITIZER_FLAGS_SET)
-  message(STATUS "** Sanitizer detected, adding to ${XOP_TARGET} with compilation flags.")
-  target_compile_options(${XOP_TARGET} PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
-  # If sanitizer is enabled, and a runtime path is found, explicitly link to it.
-  # This is necessary when a shared library's objects are compiled with sanitizer
-  # instrumentation, as the shared library itself needs to resolve these symbols.
-  if(PYLABHUB_SANITIZER_RUNTIME_PATH)
-    if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
-      message(STATUS "** The sanitizer is a dynamic lib, we will link ${XOP_TARGET} to the runtime: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-      target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
-    else()
-      if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "static" AND PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB)
-        message(STATUS "** The sanitizer is a static lib, with PYLABHUB_SANITIZER_LINK_WITH_DYNAMIC_LIB=ON, we will force link with ${XOP_TARGET} to: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-        target_link_libraries(${XOP_TARGET} PRIVATE pylabhub::sanitizer_flags)
-      else()
-        message(STATUS "** The sanitizer is not a dynamic lib, we will not link by default to ${XOP_TARGET}. Please make sure your final executive that uses pylabhub-utils will be linked to the sanitizer lib: ${PYLABHUB_SANITIZER_RUNTIME_PATH}")
-        message(STATUS "")
-      endif()
-    endif()
-  endif()
-endif()
+pylabhub_apply_sanitizer_to_target(${XOP_TARGET})
 
 # -------------------------
 # Linker/export flags
@@ -247,11 +212,7 @@ endif()
 # macOS: Assembly (POST_BUILD) and Staging (custom target)
 # ==============================================================================
 if(DEFINED PLATFORM_APPLE)
-  # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
-  # On macOS, a post-build command is used to assemble the .xop bundle.
-  # This is handled by a single, consolidated script that performs all necessary
-  # steps: creating the bundle structure, compiling resources, cleaning
-  # attributes, code signing, and verification.
+  set(_generated_include_files "") # Initialize list for cleanup
   # --- macOS Post-Build: Bundle Assembly, Processing, and Verification ---
   # On macOS, a post-build command is used to assemble the .xop bundle.
   # This is handled by a single, consolidated script that performs all necessary
@@ -317,6 +278,7 @@ foreach(item IN LISTS _r_include_dirs_list)
     # Create a unique output file per-item.
     math(EXPR _genex_idx "${_genex_idx} + 1")
     set(_genex_out "${CMAKE_CURRENT_BINARY_DIR}/_resolved_r_include_${_genex_idx}.txt")
+    list(APPEND _generated_include_files "${_genex_out}") # Track for cleanup
 
     # CONTENT uses the original item (not item_stripped) so generator expressions are preserved.
     # file(GENERATE) will evaluate generator expressions when CMake generates the buildsystem.
@@ -363,6 +325,10 @@ message(STATUS "IgorXOP: Resolved Rez include dirs for bundle assembly script: $
     COMMENT "Assembling, processing, and verifying ${XOP_BUNDLE_NAME}.xop"
     VERBATIM
   )
+  # Clean up temporary generated files
+  if(_generated_include_files)
+    file(REMOVE_REGULAR ${_generated_include_files})
+  endif()
 endif() # End of PLATFORM_APPLE specific assembly
 
 # ==============================================================================
@@ -413,6 +379,10 @@ add_custom_target(stage_${XOP_TARGET}
   VERBATIM
 )
 add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)
+
+# Register this XOP's staging target to ensure it is executed as part of the
+# top-level `stage_all` process when BUILD_XOP is ON.
+set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_${XOP_TARGET})
 
 # -------------------------
 # Publish final state to top-level (cache vars & messages)
