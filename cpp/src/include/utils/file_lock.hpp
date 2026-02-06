@@ -39,7 +39,10 @@
  * 4.  **Separate Lock File**: Instead of locking the target resource directly, a
  *     separate lock file is used (e.g., `/path/to/file.txt.lock`). This avoids
  *     potential interference with file content operations and simplifies the
- *     implementation.
+ *     implementation. **`.lock` files are harmless** if left on disk; they do not
+ *     affect correctness. Do not remove them while any process may be running.
+ *     If cleanup is desired (e.g., after a crash), use an external script when nothing
+ *     is running.
  *
  * 5.  **Path Canonicalization**: To ensure that different path representations
  *     (e.g., `/path/./file` vs `/path/file`, or symlinks) all contend for the
@@ -65,10 +68,8 @@
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
  *     // In main() or test setup, ensure the necessary lifecycle modules are started.
- *     // Set cleanup_on_shutdown to true if you want the application to attempt to
- *     // remove lock files from crashed sessions upon a clean exit.
  *     pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
- *         pylabhub::utils::FileLock::GetLifecycleModule(true),
+ *         pylabhub::utils::FileLock::GetLifecycleModule(),
  *         pylabhub::utils::Logger::GetLifecycleModule() // Optional: for logging errors
  *     ));
  *
@@ -154,16 +155,9 @@ class PYLABHUB_UTILS_EXPORT FileLock
   public:
     /**
      * @brief Returns a ModuleDef for the FileLock to be used with the LifecycleManager.
-     *
-     * @param cleanup_on_shutdown If true, registers a shutdown task that will
-     *        attempt to clean up "stale" lock files (i.e., `.lock` files left
-     *        behind by a process that crashed). This is a best-effort cleanup
-     *        and may not be suitable for all applications, as it could
-     *        interfere with other running processes in high-contention scenarios.
-     *        Defaults to false, leaving lock files untouched on shutdown.
      * @return A configured ModuleDef for the FileLock utility.
      */
-    static ModuleDef GetLifecycleModule(bool cleanup_on_shutdown = false);
+    static ModuleDef GetLifecycleModule();
 
     /**
      * @brief Checks if the FileLock module has been initialized by the LifecycleManager.
@@ -266,16 +260,6 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * @return A reference to this `FileLock`.
      */
     FileLock &operator=(FileLock &&other) noexcept;
-
-    /**
-     * @brief [Internal] Performs best-effort cleanup of stale lock files.
-     *
-     * This function is registered with the `LifecycleManager` to be called during
-     * shutdown *if* `cleanup_on_shutdown` was set to true when the module was
-     * retrieved. It iterates through all locks created by the current process
-     * and attempts to safely remove the associated `.lock` files.
-     */
-    static void cleanup();
 
     // The class is non-copyable to prevent accidental duplication of lock ownership.
     FileLock(const FileLock &) = delete;
