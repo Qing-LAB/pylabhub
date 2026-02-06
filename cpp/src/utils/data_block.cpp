@@ -268,7 +268,13 @@ class DataBlock
 
         size_t expected_size = sizeof(SharedMemoryHeader) + m_header->slot_checksum_region_size() +
                               m_header->flexible_zone_size + m_header->structured_buffer_size;
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        // On Windows, MapViewOfFile(..., 0) maps the whole mapping; VirtualQuery returns
+        // region size which may be page-rounded (e.g. 8192) and thus >= expected_size.
+        if (m_size < expected_size)
+#else
         if (m_size != expected_size)
+#endif
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
             UnmapViewOfFile(m_mapped_address);

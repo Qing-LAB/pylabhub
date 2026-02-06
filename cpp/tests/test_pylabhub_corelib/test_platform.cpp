@@ -344,9 +344,14 @@ TEST(DebugPlatformTest, GetVersionString)
     ASSERT_NE(ver, nullptr) << "Version string should not be null";
     EXPECT_GT(std::strlen(ver), 0u) << "Version string should not be empty";
     // Expected format: major.minor.rolling (e.g. "0.1.42")
-    // Use [0-9] instead of \d for POSIX Extended regex compatibility
+    // Windows: GTest uses simple regex (supports \d, not [0-9]). POSIX: supports [0-9], not \d.
+#if defined(_WIN32)
+    EXPECT_THAT(ver, ::testing::MatchesRegex(R"(^\d+\.\d+\.\d+$)"))
+        << "Version string should match major.minor.rolling format, got: " << ver;
+#else
     EXPECT_THAT(ver, ::testing::MatchesRegex(R"(^[0-9]+\.[0-9]+\.[0-9]+$)"))
         << "Version string should match major.minor.rolling format, got: " << ver;
+#endif
 }
 
 TEST(DebugPlatformTest, VersionComponentsMatchString)
