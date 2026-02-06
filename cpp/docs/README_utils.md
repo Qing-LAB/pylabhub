@@ -320,19 +320,66 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
     }
     ```
 
-### `DataBlock` and `MessageHub` (C++ Namespace: `pylabhub::hub`)
+### `Data Exchange Hub` (C++ Namespace: `pylabhub::hub`)
 
-**Current Status**: The Data Exchange Hub is under development. The MessageHub provides basic ZeroMQ DEALER socket communication with CurveZMQ encryption. DataBlock infrastructure for shared memory IPC is partially implemented.
+The `Data Exchange Hub` is designed as a high-performance, cross-process, and cross-language communication framework based on shared memory (`DataBlock`) and a central message broker (`MessageHub`). It aims to provide efficient data streaming and coordination between independent processes.
 
-**Available Components**:
-- `MessageHub`: Provides encrypted communication with a remote broker using ZeroMQ and CurveZMQ.
-- `create_datablock_producer()`: Factory function (not yet functional - returns nullptr)
-- `find_datablock_consumer()`: Factory function (not yet functional - returns nullptr)
+**Design Principles:**
 
-**Missing Components**:
-- Actual producer/consumer read/write APIs
-- Broker registration protocol
-- Slot management for structured data buffer
+*   **Shared Memory Centric**: Primary data transfer occurs via `DataBlock` shared memory segments, minimizing data copying and maximizing throughput.
+*   **Broker-Mediated Coordination**: `MessageHub` facilitates discovery, registration, and signaling between `DataBlock` producers and consumers, acting as a control plane.
+*   **Two-Tiered Synchronization**: A sophisticated locking mechanism ensures both robust internal management and efficient user-facing data access.
+*   **Fixed and Flexible Memory Areas**: Each `DataBlock` is structured to provide predictable control regions and adaptable data buffering zones.
+
+#### Memory Model (`DataBlock` Structure)
+
+Each `DataBlock` shared memory segment is organized into distinct, fixed-size, and flexible areas to ensure efficient and predictable access:
+
+1.  **`SharedMemoryHeader` (Fixed Area - Control Plane)**:
+    *   Located at the very beginning of the shared memory segment.
+    *   Contains essential metadata for identification, security, and synchronization:
+        *   `magic_number`, `version`, `shared_secret`: For validation and compatibility.
+        *   `active_consumer_count`: Atomic counter for tracking active consumers.
+        *   `write_index`, `commit_index`, `read_index`, `current_slot_id`: Atomic indices for managing data flow within flexible buffers (e.g., ring buffers).
+        *   **Internal Management Mutex (`management_mutex_storage`)**: A single, OS-specific, robust mutex (PTHREAD_PROCESS_SHARED on POSIX, named kernel mutex on Windows) dedicated to protecting critical operations on the `SharedMemoryHeader` itself, especially the allocation/deallocation of user-facing spinlocks.
+        *   **User-facing Spinlock Pool (`shared_spinlocks`)**: An array of `SharedSpinLockState` structs (up to `MAX_SHARED_SPINLOCKS`) used by application logic to coordinate access to data within the flexible areas. These are simple, atomic-based spin-locks implemented directly within the shared memory.
+        *   **Spinlock Allocation Map (`spinlock_allocated`)**: An array of `std::atomic_flag`s to track which `SharedSpinLockState` units are currently allocated or free. This map is protected by the Internal Management Mutex.
+
+2.  **Flexible Data Zone**:
+    *   Immediately follows the `SharedMemoryHeader`.
+    *   A variable-sized region for flexible data storage, typically used for variable-length messages or metadata. Its size is configurable during `DataBlock` creation.
+
+3.  **Structured Data Buffer Area**:
+    *   Follows the Flexible Data Zone.
+    *   A variable-sized region for structured data buffering, intended for high-throughput data streams, often implemented as queues or ring-buffers. Its size is configurable. This area will expose mechanisms for predefined structures such as queues, and ring buffers.
+
+#### Mutex Management (`DataBlock` Synchronization)
+
+The `Data Exchange Hub` employs a two-tiered synchronization strategy tailored for its shared memory model:
+
+1.  **Internal Management Mutex (`DataBlockMutex`)**:
+    *   **Purpose**: Protects access to the `SharedMemoryHeader`'s metadata, particularly the `spinlock_allocated` map and the initialization/destruction of `SharedSpinLockState` units.
+    *   **Implementation**:
+        *   **POSIX**: Uses `pthread_mutex_t` initialized with `PTHREAD_PROCESS_SHARED` and `PTHREAD_MUTEX_ROBUST` attributes, residing directly within the `management_mutex_storage` in the `SharedMemoryHeader`. Access is managed via dynamic address calculation from the current process's mapped shared memory base address.
+        *   **Windows**: Uses a named kernel mutex (`CreateMutex`/`OpenMutex`), with the name derived from the `DataBlock`'s unique identifier. It is a robust, OS-managed object.
+    *   **Usage**: Accessed internally by `DataBlock` helper functions (e.g., `acquire_shared_spinlock`, `release_shared_spinlock`) via RAII `DataBlockLockGuard`.
+
+2.  **User-Facing Spinlock Pool (`SharedSpinLock`)**:
+    *   **Purpose**: Provides simple, efficient, cross-process synchronization for application-level data access within the `DataBlock`'s flexible memory areas.
+    *   **Implementation**: An array of `SharedMemoryHeader::SharedSpinLockState` structs directly embedded in the `SharedMemoryHeader`. Each `SharedSpinLockState` uses atomic variables (`owner_pid`, `generation`, `recursion_count`, `owner_thread_id`) to manage lock ownership.
+    *   **Robustness**: Features dead PID detection and generation counters to handle process crashes and PID reuse, ensuring the spin-lock can be reclaimed if the owning process dies. Supports recursive locking by the same thread.
+    *   **Usage**: Acquired by `IDataBlockProducer` methods (returning a `SharedSpinLockGuard`) and accessed by `IDataBlockConsumer` methods (returning a `SharedSpinLock` object). These provide a fixed, interpretable memory footprint for simple coordination.
+
+#### Components
+
+-   **`MessageHub`**: Provides encrypted communication with a remote broker using ZeroMQ and CurveZMQ. This serves as the control plane for discovery and registration of `DataBlock` channels.
+-   **`DataBlock`**: The core shared memory segment manager. Exposes factory functions `create_datablock_producer()` and `find_datablock_consumer()` to obtain interfaces for interacting with the shared memory.
+
+**Missing Components (Current Development Focus)**:
+
+-   Actual producer/consumer read/write APIs (`IDataBlockProducer`/`IDataBlockConsumer` methods).
+-   Broker registration protocol (how `DataBlock` channels are advertised and discovered via `MessageHub`).
+-   Slot management implementations for structured data buffers (e.g., queues, ring buffers) using the `write_index`, `commit_index`, `read_index`, and `current_slot_id` in the `SharedMemoryHeader` and leveraging `SharedSpinLock` for fine-grained access.
 
 ---
 
