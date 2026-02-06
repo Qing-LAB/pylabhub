@@ -6,6 +6,7 @@
 #include "jsonconfig_workers.h"
 #include "lifecycle_workers.h"
 #include "logger_workers.h"
+#include "datablock_management_mutex_workers.h"
 #include "messagehub_workers.h"
 
 #include <string>
@@ -270,6 +271,22 @@ static int dispatch_utils_workers(int argc, char **argv)
         if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
         {
             return pylabhub::tests::worker::logger::test_queue_full_and_message_dropping(argv[2]);
+        }
+        fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
+        return 1;
+    }
+    else if (module == "datablock_management_mutex")
+    {
+        fmt::print("Dispatching to datablock_management_mutex worker scenario: '{}'\n", scenario);
+        if (scenario == "acquire_and_release" && argc > 2)
+        {
+            return pylabhub::tests::worker::datablock_management_mutex::acquire_and_release(
+                argv[2]);
+        }
+        if (scenario == "try_acquire_non_blocking" && argc > 2)
+        {
+            return pylabhub::tests::worker::datablock_management_mutex::try_acquire_non_blocking(
+                argv[2]);
         }
         fmt::print(stderr, "ERROR: Unknown scenario '{}' for module '{}'\n", scenario, module);
         return 1;

@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-#include "shared_spin_lock.hpp" // Include for SharedSpinLock and SharedSpinLockGuard
+#include "plh_sync_primitives.hpp" // Consolidated sync primitives
 
 namespace pylabhub::hub
 {
@@ -52,7 +52,7 @@ struct SharedMemoryHeader
     uint64_t shared_secret; // Key to prevent unauthorized access
     uint32_t version;       // Version of the header layout
     uint32_t header_size;   // sizeof(SharedMemoryHeader)
-    
+
     // Initialization flag - protects against race conditions during DataBlock creation
     // 0 = uninitialized, 1 = mutex ready, 2 = fully initialized
     std::atomic<uint32_t> init_state;
@@ -76,13 +76,8 @@ struct SharedMemoryHeader
     // Array of atomic-based spin-locks for user-facing data coordination
     // Each entry represents a mutex unit available for users.
     static constexpr size_t MAX_SHARED_SPINLOCKS = 8; // Example: up to 8 spinlocks available
-    struct SharedSpinLockState
-    {
-        std::atomic<uint64_t> owner_pid{0};       // 0 means unlocked
-        std::atomic<uint64_t> generation{0};      // Incremented on release, to mitigate PID reuse
-        std::atomic<uint32_t> recursion_count{0}; // For recursive locking by same thread
-        uint64_t owner_thread_id{0}; // Thread ID of lock holder (only valid if owner_pid != 0)
-    } shared_spinlocks[MAX_SHARED_SPINLOCKS];
+    SharedSpinLockState
+        shared_spinlocks[MAX_SHARED_SPINLOCKS]; // Uses the standalone SharedSpinLockState
 
     // Map to track the allocation status of the shared spinlocks
     std::atomic_flag spinlock_allocated[MAX_SHARED_SPINLOCKS]; // True if allocated, false if free
@@ -132,3 +127,13 @@ class IDataBlockConsumer
      */
     virtual SharedSpinLock get_user_spinlock(size_t index) = 0;
 };
+
+// Factory Functions
+PYLABHUB_UTILS_EXPORT std::unique_ptr<IDataBlockProducer>
+create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+                          const pylabhub::hub::DataBlockConfig &config);
+
+PYLABHUB_UTILS_EXPORT std::unique_ptr<IDataBlockConsumer>
+find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret);
+
+} // namespace pylabhub::hub

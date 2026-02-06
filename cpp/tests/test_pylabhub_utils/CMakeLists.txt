@@ -15,6 +15,7 @@ add_executable(test_pylabhub_utils
   test_lifecycle_dynamic.cpp
   test_messagehub.cpp
   test_datablock.cpp
+  test_datablock_management_mutex.cpp
 
   # Worker implementations
   filelock_workers.cpp
@@ -22,6 +23,7 @@ add_executable(test_pylabhub_utils
   logger_workers.cpp
   lifecycle_workers.cpp
   messagehub_workers.cpp
+  datablock_management_mutex_workers.cpp
   worker_dispatcher.cpp
 )
 
