@@ -48,10 +48,14 @@ struct DataBlockConfig
 struct SharedMemoryHeader
 {
     // Safety & Identification
-    uint64_t magic_number;  // Magic constant to validate memory
+    uint64_t magic_number;  // Magic constant to validate memory (SET LAST during init)
     uint64_t shared_secret; // Key to prevent unauthorized access
     uint32_t version;       // Version of the header layout
     uint32_t header_size;   // sizeof(SharedMemoryHeader)
+    
+    // Initialization flag - protects against race conditions during DataBlock creation
+    // 0 = uninitialized, 1 = mutex ready, 2 = fully initialized
+    std::atomic<uint32_t> init_state;
 
     // Consumer Management
     std::atomic<uint32_t> active_consumer_count;

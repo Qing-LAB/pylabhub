@@ -1,13 +1,12 @@
 #include "utils/shared_spin_lock.hpp"
 #include "plh_service.hpp" // For LOGGER_ERROR, LOGGER_INFO
+#include "plh_base.hpp"    // For pylabhub::platform::get_pid(), get_native_thread_id()
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <windows.h>
-#include <processthreadsapi.h> // For GetCurrentProcessId, GetCurrentThreadId
 #else
-#include <unistd.h>      // For getpid()
-#include <sys/syscall.h> // For SYS_gettid
 #include <signal.h>      // For kill()
+#include <cerrno>        // For errno
 #endif
 
 namespace pylabhub::hub
@@ -18,25 +17,17 @@ namespace pylabhub::hub
 // ============================================================================
 
 // Helper to get current PID (cross-platform)
+// Delegate to the centralized platform utility
 uint64_t SharedSpinLock::get_current_pid()
 {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    return GetCurrentProcessId();
-#else
-    return getpid();
-#endif
+    return pylabhub::platform::get_pid();
 }
 
 // Helper to get current thread ID (cross-platform)
+// Delegate to the centralized platform utility
 uint64_t SharedSpinLock::get_current_thread_id()
 {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    return GetCurrentThreadId();
-#else
-    // On Linux, gettid() is the most reliable way to get a unique thread ID across processes.
-    // It's a syscall, so often needs to be invoked directly.
-    return syscall(SYS_gettid);
-#endif
+    return pylabhub::platform::get_native_thread_id();
 }
 
 // Helper to check if a process is alive (cross-platform)
