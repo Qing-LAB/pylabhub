@@ -2,7 +2,9 @@
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
 #include "utils/data_block_mutex.hpp"
+#include <sodium.h>
 #include <cstddef>
+#include <cstring>
 #include <stdexcept>
 #include <thread>
 #include <chrono>
@@ -16,7 +18,24 @@ namespace pylabhub::hub
 namespace
 {
 static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
-static constexpr uint32_t DATABLOCK_VERSION = 2; // Bumped for new header layout
+static constexpr uint32_t DATABLOCK_VERSION = 4; // Bumped for variable slot checksum region
+
+// BLAKE2b checksum via libsodium (crypto_generichash)
+inline bool compute_blake2b(uint8_t *out, const void *data, size_t len)
+{
+    if (sodium_init() < 0)
+        return false;
+    return crypto_generichash(out, SharedMemoryHeader::CHECKSUM_BYTES,
+                             static_cast<const unsigned char *>(data), len, nullptr, 0) == 0;
+}
+
+inline bool verify_blake2b(const uint8_t *stored, const void *data, size_t len)
+{
+    uint8_t computed[SharedMemoryHeader::CHECKSUM_BYTES];
+    if (!compute_blake2b(computed, data, len))
+        return false;
+    return std::memcmp(stored, computed, SharedMemoryHeader::CHECKSUM_BYTES) == 0;
+}
 } // namespace
 
 // ============================================================================
@@ -42,8 +61,14 @@ class DataBlock
     DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_is_creator(true)
     {
-        m_size = sizeof(SharedMemoryHeader) + config.flexible_zone_size +
-                 config.structured_buffer_size;
+        size_t slot_count = (config.ring_buffer_capacity > 0)
+                                ? static_cast<size_t>(config.ring_buffer_capacity)
+                                : 1u;
+        size_t struct_size = slot_count * to_bytes(config.unit_block_size);
+        size_t slot_checksum_size =
+            config.enable_checksum ? slot_count * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE : 0;
+        m_size = sizeof(SharedMemoryHeader) + slot_checksum_size + config.flexible_zone_size +
+                 struct_size;
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
         m_shm_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
@@ -115,6 +140,20 @@ class DataBlock
                                             std::memory_order_release);
         m_header->flexible_zone_format = config.flexible_zone_format;
         m_header->flexible_zone_size = static_cast<uint32_t>(config.flexible_zone_size);
+        m_header->ring_buffer_capacity =
+            (config.ring_buffer_capacity > 0) ? static_cast<uint32_t>(config.ring_buffer_capacity) : 1u;
+        m_header->structured_buffer_size = static_cast<uint32_t>(struct_size);
+        m_header->unit_block_size = static_cast<uint32_t>(config.unit_block_size);
+        m_header->checksum_enabled = config.enable_checksum ? 1u : 0u;
+
+        std::memset(m_header->flexible_zone_checksum, 0, SharedMemoryHeader::CHECKSUM_BYTES);
+        m_header->flexible_zone_checksum_valid.store(0, std::memory_order_release);
+        if (slot_checksum_size > 0)
+        {
+            char *slot_checksum_base =
+                reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
+            std::memset(slot_checksum_base, 0, slot_checksum_size);
+        }
 
         for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
         {
@@ -125,7 +164,8 @@ class DataBlock
             m_header->counters_64[i].store(0, std::memory_order_release);
         }
 
-        m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
+        m_flexible_data_zone =
+            reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader) + slot_checksum_size;
         m_structured_data_buffer = m_flexible_data_zone + config.flexible_zone_size;
 
         std::atomic_thread_fence(std::memory_order_release);
@@ -226,6 +266,22 @@ class DataBlock
                                      std::to_string(m_header->version));
         }
 
+        size_t expected_size = sizeof(SharedMemoryHeader) + m_header->slot_checksum_region_size() +
+                              m_header->flexible_zone_size + m_header->structured_buffer_size;
+        if (m_size != expected_size)
+        {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+            UnmapViewOfFile(m_mapped_address);
+            CloseHandle(m_shm_handle);
+#else
+            munmap(m_mapped_address, m_size);
+            close(m_shm_fd);
+#endif
+            throw std::runtime_error("DataBlock '" + m_name +
+                                    "' size mismatch. Expected " + std::to_string(expected_size) +
+                                    ", got " + std::to_string(m_size));
+        }
+
 #if defined(PYLABHUB_PLATFORM_WIN64)
         m_management_mutex = std::make_unique<DataBlockMutex>(m_name, nullptr, 0, m_is_creator);
 #else
@@ -234,8 +290,10 @@ class DataBlock
             m_is_creator);
 #endif
 
-        m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
-        m_structured_data_buffer = nullptr;
+        size_t slot_checksum_sz = m_header->slot_checksum_region_size();
+        m_flexible_data_zone =
+            reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader) + slot_checksum_sz;
+        m_structured_data_buffer = m_flexible_data_zone + m_header->flexible_zone_size;
 
         LOGGER_INFO("DataBlock '{}' opened by consumer.", m_name);
     }
@@ -538,6 +596,53 @@ void DataBlockProducer::release_user_spinlock(size_t index)
     release_spinlock(index);
 }
 
+bool DataBlockProducer::update_checksum_flexible_zone()
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+        return false;
+    auto *h = pImpl->dataBlock->header();
+    if (!h->checksum_enabled)
+        return false;
+    char *flex = pImpl->dataBlock->flexible_data_zone();
+    size_t len = h->flexible_zone_size;
+    if (!flex || len == 0)
+        return false;
+    if (!compute_blake2b(h->flexible_zone_checksum, flex, len))
+        return false;
+    h->flexible_zone_checksum_valid.store(1, std::memory_order_release);
+    return true;
+}
+
+bool DataBlockProducer::update_checksum_slot(size_t slot_index)
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+        return false;
+    auto *h = pImpl->dataBlock->header();
+    if (!h->checksum_enabled)
+        return false;
+    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
+    if (slot_index >= slot_count)
+        return false;
+    size_t slot_size = h->unit_block_size;
+    if (slot_size == 0)
+        return false;
+    char *buf = pImpl->dataBlock->structured_data_buffer();
+    if (!buf)
+        return false;
+    char *slot_checksum_base =
+        reinterpret_cast<char *>(h) + sizeof(SharedMemoryHeader);
+    uint8_t *slot_checksum =
+        reinterpret_cast<uint8_t *>(slot_checksum_base +
+                                    slot_index * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE);
+    std::atomic<uint8_t> *slot_valid =
+        reinterpret_cast<std::atomic<uint8_t> *>(slot_checksum + SharedMemoryHeader::CHECKSUM_BYTES);
+    const void *slot_data = buf + slot_index * slot_size;
+    if (!compute_blake2b(slot_checksum, slot_data, slot_size))
+        return false;
+    slot_valid->store(1, std::memory_order_release);
+    return true;
+}
+
 void DataBlockProducer::set_counter_64(size_t index, uint64_t value)
 {
     if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
@@ -657,6 +762,52 @@ SharedSpinLock DataBlockConsumer::get_user_spinlock(size_t index)
     return get_spinlock(index);
 }
 
+bool DataBlockConsumer::verify_checksum_flexible_zone() const
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+        return false;
+    auto *h = pImpl->dataBlock->header();
+    if (!h->checksum_enabled)
+        return false;
+    if (h->flexible_zone_checksum_valid.load(std::memory_order_acquire) != 1)
+        return false;
+    const char *flex = pImpl->dataBlock->flexible_data_zone();
+    size_t len = h->flexible_zone_size;
+    if (!flex || len == 0)
+        return false;
+    return verify_blake2b(h->flexible_zone_checksum, flex, len);
+}
+
+bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+        return false;
+    auto *h = pImpl->dataBlock->header();
+    if (!h->checksum_enabled)
+        return false;
+    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
+    if (slot_index >= slot_count)
+        return false;
+    const char *slot_checksum_base =
+        reinterpret_cast<const char *>(h) + sizeof(SharedMemoryHeader);
+    const uint8_t *slot_checksum =
+        reinterpret_cast<const uint8_t *>(slot_checksum_base +
+                                          slot_index * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE);
+    const std::atomic<uint8_t> *slot_valid =
+        reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum +
+                                                       SharedMemoryHeader::CHECKSUM_BYTES);
+    if (slot_valid->load(std::memory_order_acquire) != 1)
+        return false;
+    size_t slot_size = h->unit_block_size;
+    if (slot_size == 0)
+        return false;
+    const char *buf = pImpl->dataBlock->structured_data_buffer();
+    if (!buf)
+        return false;
+    const void *slot_data = buf + slot_index * slot_size;
+    return verify_blake2b(slot_checksum, slot_data, slot_size);
+}
+
 uint64_t DataBlockConsumer::get_counter_64(size_t index) const
 {
     if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
@@ -723,12 +874,20 @@ std::unique_ptr<DataBlockProducer> create_datablock_producer(MessageHub &hub,
                                                              const DataBlockConfig &config)
 {
     (void)hub;
-    (void)policy;
     try
     {
+        DataBlockConfig config_copy = config;
+        if (config_copy.ring_buffer_capacity <= 0)
+        {
+            config_copy.ring_buffer_capacity =
+                (policy == DataBlockPolicy::Single) ? 1
+                : (policy == DataBlockPolicy::DoubleBuffer)
+                    ? 2
+                    : 8; // RingBuffer default
+        }
         auto impl = std::make_unique<DataBlockProducerImpl>();
         impl->name = name;
-        impl->dataBlock = std::make_unique<DataBlock>(name, config);
+        impl->dataBlock = std::make_unique<DataBlock>(name, config_copy);
         return std::make_unique<DataBlockProducer>(std::move(impl));
     }
     catch (const std::runtime_error &ex)
@@ -743,6 +902,27 @@ std::unique_ptr<DataBlockProducer> create_datablock_producer(MessageHub &hub,
     }
 }
 
+namespace
+{
+bool validate_config_against_header(const SharedMemoryHeader *h, const DataBlockConfig &expected)
+{
+    if (h->flexible_zone_size != expected.flexible_zone_size)
+        return false;
+    if (static_cast<DataBlockUnitSize>(h->unit_block_size) != expected.unit_block_size)
+        return false;
+    size_t exp_slots = (expected.ring_buffer_capacity > 0)
+                           ? static_cast<size_t>(expected.ring_buffer_capacity)
+                           : 1u;
+    if (h->ring_buffer_capacity != exp_slots)
+        return false;
+    if (h->structured_buffer_size != expected.structured_buffer_size())
+        return false;
+    if ((h->checksum_enabled != 0) != expected.enable_checksum)
+        return false;
+    return true;
+}
+} // namespace
+
 std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
                                                             const std::string &name,
                                                             uint64_t shared_secret)
@@ -753,15 +933,57 @@ std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
         auto impl = std::make_unique<DataBlockConsumerImpl>();
         impl->name = name;
         impl->dataBlock = std::make_unique<DataBlock>(name);
-        if (impl->dataBlock->header()->magic_number != DATABLOCK_MAGIC_NUMBER)
+        auto *h = impl->dataBlock->header();
+        if (h->magic_number != DATABLOCK_MAGIC_NUMBER)
         {
             throw std::runtime_error("Invalid magic number");
         }
-        if (impl->dataBlock->header()->shared_secret != shared_secret)
+        if (h->shared_secret != shared_secret)
         {
             throw std::runtime_error("Invalid shared secret");
         }
-        impl->dataBlock->header()->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
+        h->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
+        return std::make_unique<DataBlockConsumer>(std::move(impl));
+    }
+    catch (const std::runtime_error &ex)
+    {
+        LOGGER_ERROR("find_datablock_consumer: Failed for '{}': {}", name, ex.what());
+        return nullptr;
+    }
+    catch (const std::bad_alloc &ex)
+    {
+        LOGGER_ERROR("find_datablock_consumer: Memory failed for '{}': {}", name, ex.what());
+        return nullptr;
+    }
+}
+
+std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
+                                                            const std::string &name,
+                                                            uint64_t shared_secret,
+                                                            const DataBlockConfig &expected_config)
+{
+    (void)hub;
+    try
+    {
+        auto impl = std::make_unique<DataBlockConsumerImpl>();
+        impl->name = name;
+        impl->dataBlock = std::make_unique<DataBlock>(name);
+        auto *h = impl->dataBlock->header();
+        if (h->magic_number != DATABLOCK_MAGIC_NUMBER)
+        {
+            throw std::runtime_error("Invalid magic number");
+        }
+        if (h->shared_secret != shared_secret)
+        {
+            throw std::runtime_error("Invalid shared secret");
+        }
+        if (!validate_config_against_header(h, expected_config))
+        {
+            throw std::runtime_error(
+                "DataBlock config mismatch: unit_block_size, flexible_zone_size, "
+                "ring_buffer_capacity, or checksum_enabled inconsistent with expected");
+        }
+        h->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
         return std::make_unique<DataBlockConsumer>(std::move(impl));
     }
     catch (const std::runtime_error &ex)
