@@ -145,10 +145,11 @@ endfunction()
 #     TARGET <target_name>          # The library target to stage.
 #     DESTINATION <subdir>          # The subdirectory within `${PYLABHUB_STAGING_DIR}` for RUNTIME artifacts (e.g., 'bin').
 #     OUT_COMMANDS <var_name>       # The variable to store the generated list of commands in.
+#     [STABLE_NAME <base_name>]     # Optional: normalize output filename (e.g., libzmq-stable).
 #   )
 #
 function(pylabhub_get_library_staging_commands)
-  cmake_parse_arguments(ARG "" "TARGET;DESTINATION;OUT_COMMANDS;ABSOLUTE_DIR" "" ${ARGN})
+  cmake_parse_arguments(ARG "" "TARGET;DESTINATION;OUT_COMMANDS;ABSOLUTE_DIR;STABLE_NAME" "" ${ARGN})
 
   if(NOT ARG_TARGET OR NOT ARG_DESTINATION OR NOT ARG_OUT_COMMANDS)
     message(FATAL_ERROR "pylabhub_get_library_staging_commands requires TARGET, "
@@ -172,22 +173,49 @@ function(pylabhub_get_library_staging_commands)
   # detect if the target is imported (handle imported targets robustly while preserving UNKNOWN_LIBRARY branch)
   get_target_property(_is_imported ${ARG_TARGET} IMPORTED)
 
+  # When STABLE_NAME is set, copy to dir/stable_name.ext; otherwise copy to dir/ (preserve filename)
+  set(_use_stable 0)
+  if(ARG_STABLE_NAME)
+    set(_use_stable 1)
+    if(WIN32)
+      set(_static_suffix "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      set(_shared_runtime_suffix ".dll")
+      set(_shared_link_suffix ".lib")
+    else()
+      set(_static_suffix "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      set(_shared_runtime_suffix "${CMAKE_SHARED_LIBRARY_SUFFIX}")
+      set(_shared_link_suffix "${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    endif()
+  endif()
+
   set(commands_list "")
 
   if(_is_imported)
     # Imported target: prefer IMPORTED_LOCATION, fall back to per-config IMPORTED_LOCATION_<CONFIG>
     get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
     if(imported_location)
-      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "${imported_location}" "${LINKTIME_DEST_DIR}/")
+      if(_use_stable)
+        get_filename_component(_imp_ext "${imported_location}" EXT)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "${imported_location}" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_imp_ext}")
+      else()
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "${imported_location}" "${LINKTIME_DEST_DIR}/")
+      endif()
     else()
       if(CMAKE_CONFIGURATION_TYPES)
         foreach(config ${CMAKE_CONFIGURATION_TYPES})
           string(TOUPPER ${config} config_upper)
           get_target_property(_imported_loc_cfg ${ARG_TARGET} "IMPORTED_LOCATION_${config_upper}")
           if(_imported_loc_cfg)
-            list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                 "${_imported_loc_cfg}" "${LINKTIME_DEST_DIR}/")
+            if(_use_stable)
+              get_filename_component(_imp_ext "${_imported_loc_cfg}" EXT)
+              list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                   "${_imported_loc_cfg}" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_imp_ext}")
+            else()
+              list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                   "${_imported_loc_cfg}" "${LINKTIME_DEST_DIR}/")
+            endif()
           endif()
         endforeach()
         if(NOT commands_list)
@@ -202,44 +230,82 @@ function(pylabhub_get_library_staging_commands)
     if(PYLABHUB_IS_WINDOWS)
       # On Windows, a shared library has a runtime part (.dll) and an import library part (.lib).
       # Stage the runtime to the destination (e.g., 'bin') and the link-time lib to 'lib'.
-      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      if(_use_stable)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/${ARG_STABLE_NAME}${_shared_runtime_suffix}")
+      else()
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      endif()
       if(MSVC)
         list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
               "$<TARGET_PDB_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
       endif()
       # Only Shared Libraries have import libs (.lib); Module Libraries (plugins) generally do not.
       if(TGT_TYPE STREQUAL "SHARED_LIBRARY")
-        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+        if(_use_stable)
+          list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+               "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_shared_link_suffix}")
+        else()
+          list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+               "$<TARGET_LINKER_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+        endif()
       endif()
     else() # Non-Windows platforms (Linux, macOS)
       # On non-Windows platforms (Linux, macOS), the shared library file is used for both
-      # runtime and linking. Stage it to the specified destination.
-      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
-      
-      # On Linux and macOS, also place a copy/symlink in the 'lib' directory
-      # if the runtime destination is not already 'lib'. This ensures the library
-      # is discoverable for linking and also at runtime if needed via default search paths.
+      # runtime and linking. For STABLE_NAME: on POSIX we must preserve the full filename
+      # (e.g., libpylabhub-utils-stable.so.0.1.42) because the loader looks for the soname
+      # (libpylabhub-utils-stable.so.0). The target's OUTPUT_NAME already provides the
+      # stable base; we copy the versioned file as-is.
+      if(_use_stable AND WIN32)
+        # Windows: STABLE_NAME renames to base.dll (normalizes Debug postfix)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/${ARG_STABLE_NAME}${_shared_runtime_suffix}")
+      else()
+        # POSIX or no STABLE_NAME: copy with original filename (preserves version)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+             "$<TARGET_FILE:${ARG_TARGET}>" "${RUNTIME_DEST_DIR}/")
+      endif()
+      # On Linux and macOS, also place a copy in the 'lib' directory if different.
+      # Create soname symlink (e.g., libpylabhub-utils-stable.so.0 -> libpylabhub-utils-stable.so.0.1.42)
+      # so the loader can find the library.
       if(PYLABHUB_IS_POSIX) # Handle POSIX systems (Linux and macOS)
         if(NOT "${RUNTIME_DEST_DIR}" STREQUAL "${LINKTIME_DEST_DIR}")
-          list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-               "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+          if(_use_stable AND WIN32)
+            list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                 "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_shared_link_suffix}")
+          else()
+            list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                 "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+          endif()
         endif()
+        # Create soname symlink for versioned shared libs (loader looks for .so.0, not .so.0.1.42)
+        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E create_symlink
+             "$<TARGET_FILE_NAME:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/$<TARGET_SONAME_FILE_NAME:${ARG_TARGET}>")
       endif()
     endif()
   elseif(TGT_TYPE STREQUAL "STATIC_LIBRARY")
     # Static libraries are link-time only. Stage the archive (.a, .lib) to the link-time directory.
-    list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-         "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+    if(_use_stable)
+      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+           "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_static_suffix}")
+    else()
+      list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+           "$<TARGET_FILE:${ARG_TARGET}>" "${LINKTIME_DEST_DIR}/")
+    endif()
   elseif(TGT_TYPE STREQUAL "UNKNOWN_LIBRARY")
     # Handle UNKNOWN IMPORTED libraries, which are typically pre-built binaries.
     # We rely on their IMPORTED_LOCATION property to find the actual file.
     get_target_property(imported_location ${ARG_TARGET} IMPORTED_LOCATION)
     if(imported_location)
-        list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
-             "${imported_location}" "${LINKTIME_DEST_DIR}/")
+        if(_use_stable)
+          get_filename_component(_unk_ext "${imported_location}" EXT)
+          list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+               "${imported_location}" "${LINKTIME_DEST_DIR}/${ARG_STABLE_NAME}${_unk_ext}")
+        else()
+          list(APPEND commands_list COMMAND ${CMAKE_COMMAND} -E copy_if_different
+               "${imported_location}" "${LINKTIME_DEST_DIR}/")
+        endif()
     else()
         message(WARNING "UNKNOWN_LIBRARY target ${ARG_TARGET} has no IMPORTED_LOCATION property. Skipping staging.")
     endif()
@@ -252,17 +318,23 @@ endfunction()
 #
 # Registers a library target to be staged.
 #
-# This function simply appends the target name to a global property. A separate,
-# centralized process will collect all targets from this property and generate
-# the necessary staging commands. This decouples the declaration from the
-# implementation.
+# This function simply appends the target name (and optional stable name) to a
+# global property. A separate, centralized process will collect all targets and
+# generate the necessary staging commands. This decouples the declaration from
+# the implementation.
+#
+# When STABLE_NAME is provided, the staged library is copied with that base name
+# and the platform-appropriate extension (e.g., libzmq-stable.a, libzmq-stable.lib).
+# This normalizes versioned or platform-specific output names (e.g., libzmq-vc142-mt-s-4_3_6.lib)
+# to a consistent cross-platform name.
 #
 # Usage:
 #   pylabhub_register_library_for_staging(TARGET <target_name>)
+#   pylabhub_register_library_for_staging(TARGET <target_name> STABLE_NAME <base_name>)
 #
 function(pylabhub_register_library_for_staging)
   set(options "")
-  set(oneValueArgs "TARGET")
+  set(oneValueArgs "TARGET;STABLE_NAME")
   set(multiValueArgs "")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -274,7 +346,11 @@ function(pylabhub_register_library_for_staging)
     message(FATAL_ERROR "pylabhub_register_library_for_staging: Target '${ARG_TARGET}' does not exist.")
   endif()
   
-  set_property(GLOBAL APPEND PROPERTY PYLABHUB_LIBRARIES_TO_STAGE ${ARG_TARGET})
+  if(ARG_STABLE_NAME)
+    set_property(GLOBAL APPEND PROPERTY PYLABHUB_LIBRARIES_TO_STAGE "${ARG_TARGET}@@${ARG_STABLE_NAME}")
+  else()
+    set_property(GLOBAL APPEND PROPERTY PYLABHUB_LIBRARIES_TO_STAGE ${ARG_TARGET})
+  endif()
 endfunction()
 
 
@@ -342,11 +418,12 @@ endfunction()
 #   pylabhub_attach_library_staging_commands(
 #     TARGET <target_name>      # The library target to stage.
 #     ATTACH_TO <target_name>   # The custom target to attach the commands to.
+#     [STABLE_NAME <base_name>] # Optional: normalize output filename (e.g., libzmq-stable).
 #   )
 #
 function(pylabhub_attach_library_staging_commands)
   set(options "")
-  set(oneValueArgs "TARGET;ATTACH_TO")
+  set(oneValueArgs "TARGET;ATTACH_TO;STABLE_NAME")
   set(multiValueArgs "")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -370,11 +447,11 @@ function(pylabhub_attach_library_staging_commands)
   endif()
 
   # Generate the list of staging commands for the given library target.
-  pylabhub_get_library_staging_commands(
-    TARGET ${ARG_TARGET}
-    DESTINATION ${runtime_dest}
-    OUT_COMMANDS stage_commands_list
-  )
+  set(_get_cmd_args TARGET ${ARG_TARGET} DESTINATION ${runtime_dest} OUT_COMMANDS stage_commands_list)
+  if(ARG_STABLE_NAME)
+    list(APPEND _get_cmd_args STABLE_NAME ${ARG_STABLE_NAME})
+  endif()
+  pylabhub_get_library_staging_commands(${_get_cmd_args})
 
   if(NOT stage_commands_list)
     # This can happen for INTERFACE libraries or other non-artifact targets.
@@ -483,10 +560,11 @@ endfunction()
 #     ATTACH_TO <target_name>               # The custom target to attach the commands to.
 #     [SUBDIRS <list_of_subdirs>]           # Optional: List of subdirectories to copy (e.g., "bin;lib;include").
 #                                           # If not provided, common subdirs ("bin;lib;include;share") are used.
+#     [CLEAN_RESIDUE]                       # Optional: Remove autotools residue (Makefile.in, etc.) before copying.
 #   )
 #
 function(pylabhub_register_directory_for_staging)
-  set(options "")
+  set(options "CLEAN_RESIDUE")
   set(oneValueArgs "SOURCE_DIR;ATTACH_TO")
   set(multiValueArgs "SUBDIRS")
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -510,6 +588,16 @@ function(pylabhub_register_directory_for_staging)
   # Derive a unique name for the configured script for better readability.
   get_filename_component(_source_dir_name "${ARG_SOURCE_DIR}" NAME)
   string(REPLACE "/" "-" _source_dir_name "${_source_dir_name}") # Replace slashes in name for path safety
+
+  # Optional: Configure cleanup script to remove autotools residue before staging.
+  set(_clean_residue_script "")
+  if(ARG_CLEAN_RESIDUE)
+    set(_clean_template "${CMAKE_SOURCE_DIR}/cmake/CleanPrereqResidue.cmake.in")
+    set(_clean_script "${CMAKE_BINARY_DIR}/CleanPrereqResidue-${ARG_ATTACH_TO}-${_source_dir_name}.cmake")
+    set(CLEAN_DIR "${ARG_SOURCE_DIR}")
+    configure_file("${_clean_template}" "${_clean_script}" @ONLY)
+    set(_clean_residue_script "${_clean_script}")
+  endif()
 
   # Generate and attach custom commands for each configuration type.
   if(CMAKE_CONFIGURATION_TYPES)
@@ -536,14 +624,26 @@ function(pylabhub_register_directory_for_staging)
       message(VERBOSE "[pylabhub-staging] ATTACH_TO: ${ARG_ATTACH_TO}")
       message(VERBOSE "[pylabhub-staging] ${_bulk_stage_comment_escaped}")
 
-      add_custom_command(
-        TARGET ${ARG_ATTACH_TO}
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-        COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
-        VERBATIM
-        CONFIGURATIONS ${cfg}
-      )
+      if(_clean_residue_script)
+        add_custom_command(
+          TARGET ${ARG_ATTACH_TO}
+          POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -P "${_clean_residue_script}"
+          COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+          COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
+          VERBATIM
+          CONFIGURATIONS ${cfg}
+        )
+      else()
+        add_custom_command(
+          TARGET ${ARG_ATTACH_TO}
+          POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+          COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
+          VERBATIM
+          CONFIGURATIONS ${cfg}
+        )
+      endif()
     endforeach()
   else() # Single-configuration generator
     set(output_script "${CMAKE_BINARY_DIR}/BulkStage-${ARG_ATTACH_TO}-${_source_dir_name}.cmake")
@@ -566,13 +666,24 @@ function(pylabhub_register_directory_for_staging)
     message(VERBOSE "[pylabhub-staging] ATTACH_TO: ${ARG_ATTACH_TO}")
     message(VERBOSE "[pylabhub-staging] ${_bulk_stage_comment_escaped}")
 
-    add_custom_command(
-      TARGET ${ARG_ATTACH_TO}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-      COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
-      VERBATIM
-    )
+    if(_clean_residue_script)
+      add_custom_command(
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -P "${_clean_residue_script}"
+        COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+        COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
+        VERBATIM
+      )
+    else()
+      add_custom_command(
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+        COMMAND ${CMAKE_COMMAND} -E cmake_echo_color -- "${_bulk_stage_comment_escaped}" # avoids CMAKE WARNINGS about multiple arguments for COMMENT
+        VERBATIM
+      )
+    endif()
   endif()
 
 endfunction()

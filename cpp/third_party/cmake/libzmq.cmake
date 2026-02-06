@@ -64,7 +64,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
       DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/include"
       SUBDIR ""
     )
-    pylabhub_register_library_for_staging(TARGET libzmq-static)
+    # STABLE_NAME normalizes libzmq's versioned output (e.g., libzmq-vc142-mt-s-4_3_6.lib
+    # on Windows) to libzmq-stable.a / libzmq-stable.lib for cross-platform consistency.
+    pylabhub_register_library_for_staging(TARGET libzmq-static STABLE_NAME libzmq-stable)
   endif()
 
   # --- 7. Restore cache variables ---

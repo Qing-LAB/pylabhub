@@ -39,6 +39,20 @@ set(UTILS_SOURCES
 # Define the shared library target.
 add_library(pylabhub-utils SHARED ${UTILS_SOURCES})
 add_library(pylabhub::utils ALIAS pylabhub-utils)
+
+# OUTPUT_NAME, VERSION and SOVERSION for stable, versioned library naming:
+# - POSIX: libpylabhub-utils-stable.so.0.1.42 (soname libpylabhub-utils-stable.so.0)
+# - Windows: pylabhub-utils-stable.dll
+# SOVERSION=0 for ABI compatibility. Override Debug postfix on Windows for consistent staging.
+set_target_properties(pylabhub-utils PROPERTIES
+  OUTPUT_NAME pylabhub-utils-stable
+  VERSION ${PYLABHUB_VERSION_STRING}
+  SOVERSION ${PYLABHUB_VERSION_MAJOR}
+)
+if(MSVC)
+  set_target_properties(pylabhub-utils PROPERTIES DEBUG_POSTFIX "" PDB_NAME pylabhub-utils-stable)
+endif()
+
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
 if(NOT MSVC)
@@ -67,6 +81,13 @@ target_include_directories(pylabhub-utils
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
     $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
     $<INSTALL_INTERFACE:include>
+)
+
+# Generate version header for C++ access (pylabhub::platform::get_version_*).
+configure_file(
+  "${CMAKE_SOURCE_DIR}/cmake/pylabhub_version.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_version.h"
+  @ONLY
 )
 
 # When building the library itself, the generated header expects a symbol like
@@ -140,9 +161,10 @@ install(TARGETS pylabhub-utils
 )
 
 # Install the public headers for this library.
-# The `pylabhub_utils_export.h` header is essential for consumers.
+# The `pylabhub_utils_export.h` and `pylabhub_version.h` headers are essential for consumers.
 install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
+  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_version.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
@@ -152,16 +174,18 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/utils/
 
 # --- Staging ---
 # Define a local custom target to handle staging for this component.
+# STABLE_NAME normalizes the output to pylabhub-utils-stable.so / pylabhub-utils-stable.dll
+# for cross-platform consistency (avoids versioned names like libpylabhub-utils.so.0.1.42).
 message(STATUS "Configuring staging for pylabhub-utils library.")
 
 if(PYLABHUB_IS_WINDOWS)
   # On Windows, stage the DLL next to the executables and tests
-  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION bin OUT_COMMANDS stage_commands)
-  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION tests OUT_COMMANDS stage_commands_for_tests)
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION bin OUT_COMMANDS stage_commands STABLE_NAME pylabhub-utils-stable)
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION tests OUT_COMMANDS stage_commands_for_tests STABLE_NAME pylabhub-utils-stable)
   list(APPEND stage_commands ${stage_commands_for_tests})
 elseif(PYLABHUB_IS_POSIX)
   # On POSIX platforms, stage the shared library to the 'lib' directory.
-  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION lib OUT_COMMANDS stage_commands)
+  pylabhub_get_library_staging_commands(TARGET pylabhub-utils DESTINATION lib OUT_COMMANDS stage_commands STABLE_NAME pylabhub-utils-stable)
 else()
   message(FATAL_ERROR "Unknown platform for staging...")
 endif()

@@ -127,7 +127,11 @@ pylabhub_add_external_prerequisite(
 
   # Define patterns for the post-build detection script
   LIB_PATTERNS      "libsodium.lib;libsodium.a"
-  HEADER_SOURCE_PATTERNS "src/libsodium/include" # Source location of headers
+  # NOTE: Do NOT pass HEADER_SOURCE_PATTERNS. Libsodium handles its own header
+  # installation (MSVC: copy_directory; POSIX: make install). Passing it would
+  # cause detect_external_project.cmake.in to create an empty include/libsodium
+  # directory, which would be staged as residue. Headers end up in include/ and
+  # include/sodium/ from the install step.
 )
 
 message(STATUS "[pylabhub-third-party] libsodium configuration complete.")
