@@ -23,16 +23,16 @@ namespace pylabhub::hub
 
 /**
  * @class DataBlockMutex
- * @brief Provides cross-process, cross-platform mutex synchronization for DataBlock's *internal
- * management structures*.
+ * @brief Cross-process mutex that protects the DataBlock control zone (SharedMemoryHeader).
  *
- * This mutex is intended to protect operations on the `SharedMemoryHeader` itself,
- * such as allocating/freeing `SharedSpinLockState` units. It relies on OS-specific,
- * robust primitives.
- * On POSIX, this uses `pthread_mutex_t` with `PTHREAD_PROCESS_SHARED` stored directly
- * in the shared memory segment.
- * On Windows, this uses a named kernel mutex, with the name derived from the DataBlock's unique
- * name.
+ * This mutex coordinates access to critical metadata in the SharedMemoryHeader: chain links,
+ * spinlock allocation state, counters, indices, etc. It is the internal management mutex
+ * for DataBlock operations—not a general-purpose mutex.
+ *
+ * On POSIX: pthread_mutex_t with PTHREAD_PROCESS_SHARED, stored either inside the DataBlock's
+ * shared memory (SharedMemoryHeader::management_mutex_storage) or in a dedicated shm segment
+ * when base_shared_memory_address is null (e.g. unit tests).
+ * On Windows: named kernel mutex; base_shared_memory_address is ignored.
  */
 class PYLABHUB_UTILS_EXPORT DataBlockMutex
 {
@@ -40,10 +40,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
     /**
      * @brief Constructs a DataBlockMutex.
      * @param name The unique name of the DataBlock, used to derive the mutex name on Windows.
-     * @param base_shared_memory_address A pointer to the base address of the shared memory segment.
-     * @param offset_to_mutex_storage The offset from `base_shared_memory_address` where
-     * `management_mutex_storage` is located.
-     * @param is_creator True if this process is creating the DataBlock (and thus the mutex).
+     * @param base_shared_memory_address Base of the shared memory containing the mutex storage.
+     *        For a DataBlock, this is the mapped SharedMemoryHeader; offset_to_mutex_storage
+     *        points to management_mutex_storage. May be null: Windows ignores it; on POSIX,
+     *        a dedicated shm segment is created (e.g. for unit tests).
+     * @param offset_to_mutex_storage Offset from base to the mutex storage.
+     * @param is_creator True if this process is creating the mutex.
      * @throws std::runtime_error on mutex creation/opening failure.
      */
     DataBlockMutex(const std::string &name, void *base_shared_memory_address,
@@ -80,6 +82,9 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
 #else
     void *m_base_shared_memory_address{nullptr};
     size_t m_offset_to_mutex_storage{0};
+    int m_dedicated_shm_fd{-1};       // When base is null: fd of dedicated shm for mutex storage
+    void *m_dedicated_shm_mapped{nullptr}; // When base is null: mapped address (for munmap)
+    size_t m_dedicated_shm_size{0};   // When base is null: mapping size
     pthread_mutex_t *get_pthread_mutex() const
     {
         return reinterpret_cast<pthread_mutex_t *>(

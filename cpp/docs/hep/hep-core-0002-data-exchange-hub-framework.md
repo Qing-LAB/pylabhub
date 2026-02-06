@@ -116,7 +116,7 @@ flowchart TB
 |-----------|---------|------------|
 | **MessageHub** | Control plane: discovery, registration, notifications | ZeroMQ + CurveZMQ encryption |
 | **DataBlock** | Data plane: bulk data transfer via shared memory | POSIX shm / Windows File Mapping |
-| **DataBlockMutex** | Internal metadata protection | pthread_mutex_t (POSIX) / Named Mutex (Windows) |
+| **DataBlockMutex** | Protects SharedMemoryHeader (control zone: chain links, spinlock allocation, indices) | pthread_mutex_t (POSIX) / Named Mutex (Windows) |
 | **SharedSpinLock** | User-facing data coordination | Pure C++ atomics (lock-free) |
 
 ### 1.3 Class and Interface Relationships

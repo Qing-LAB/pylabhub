@@ -11,6 +11,12 @@ This document outlines the architecture of the pyLabHub C++ test suite. Its goal
 6. [Test Staging and Dependencies](#test-staging-and-dependencies)
 7. [Platform-Specific Behavior](#platform-specific-behavior-and-gotchas)
 
+## Related Documents
+
+- [README_Versioning.md](README_Versioning.md) — Version scheme; version API tests live in `test_platform.cpp`
+
+---
+
 ## 1. High-Level Philosophy
 
 Our test suite is built on three core principles:
@@ -28,7 +34,7 @@ The test suite is composed of several distinct **CMake targets** located in the 
 | Target | Type | Contents | Purpose |
 |--------|------|----------|---------|
 | `pylabhub-test-framework` | Static Library | Shared test infrastructure (`test_entrypoint.cpp`, `test_process_utils.cpp`, `shared_test_helpers.cpp`) | Provides common functionality for all test executables |
-| `test_pylabhub_corelib` | Executable | Tests for basic utilities (`test_atomicguard.cpp`, `test_recursionguard.cpp`, `test_scopeguard.cpp`, `test_platform.cpp`) | Tests that don't require `pylabhub-utils` |
+| `test_pylabhub_corelib` | Executable | Tests for basic utilities (`test_atomicguard.cpp`, `test_recursionguard.cpp`, `test_scopeguard.cpp`, `test_platform.cpp` — includes version API tests) | Tests that don't require `pylabhub-utils` |
 | `test_pylabhub_utils` | Executable | Tests for main utilities (`test_lifecycle.cpp`, `test_filelock.cpp`, `test_logger.cpp`, `test_messagehub.cpp`, `test_datablock.cpp`) | Tests for the full utility library; also acts as worker process for multi-process tests |
 | `test_misc` | Executable(s) | Miscellaneous test programs (`test_debug_output.cpp`) | Small standalone programs for debugging or isolated testing |
 

@@ -4,11 +4,12 @@
  *
  * This file contains the platform-specific logic for functions declared in the
  * `pylabhub::platform` namespace, such as retrieving process and thread IDs,
- * and getting the current executable's path. It uses preprocessor directives
- * to select the correct implementation for Windows, macOS, Linux, and other
- * POSIX-compliant systems.
+ * getting the current executable's path, and package version information. It uses
+ * preprocessor directives to select the correct implementation for Windows, macOS,
+ * Linux, and other POSIX-compliant systems.
  */
 #include "plh_base.hpp"
+#include "pylabhub_version.h"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -228,6 +229,28 @@ std::string get_executable_name(bool include_path) noexcept
         fmt::print(stderr, "Warning: get_executable_name failed with unknown exception.\n");
     }
     return "unknown";
+}
+
+// --- Version information (from pylabhub_version.h, generated at configure time) ---
+
+int get_version_major() noexcept
+{
+    return PYLABHUB_VERSION_MAJOR;
+}
+
+int get_version_minor() noexcept
+{
+    return PYLABHUB_VERSION_MINOR;
+}
+
+int get_version_rolling() noexcept
+{
+    return PYLABHUB_VERSION_ROLLING;
+}
+
+const char* get_version_string() noexcept
+{
+    return PYLABHUB_VERSION_STRING;
 }
 
 } // namespace pylabhub::platform

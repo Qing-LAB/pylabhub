@@ -7,7 +7,9 @@
 #include <sys/mman.h> // For shm_unlink
 #endif
 
-// Define a unique shared memory name for these tests
+// Define a unique shared memory name for these tests.
+// These tests exercise DataBlockMutex in isolation (without a full DataBlock).
+// Passing nullptr for base is valid: Windows ignores it; POSIX creates a dedicated shm segment.
 #define TEST_SHM_NAME "test_management_mutex_shm"
 
 class DataBlockManagementMutexTest : public ::testing::Test

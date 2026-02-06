@@ -26,6 +26,8 @@ include(ProjectToolChainSetup)
 # ===========================================================================
 project(pylabhub-cpp VERSION 0.1 LANGUAGES C CXX)
 
+include(Version)
+
 # Set the default visibility for symbols to 'hidden'. This is a best practice
 # that enables the PYLABHUB_UTILS_EXPORT macro to work correctly on Linux/macOS,
 # preventing symbol clashes between shared libraries and the executable.

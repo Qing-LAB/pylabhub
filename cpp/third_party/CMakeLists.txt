@@ -151,18 +151,28 @@ if(THIRD_PARTY_INSTALL)
     SOURCE_DIR "${PREREQ_INSTALL_DIR}"
     ATTACH_TO stage_third_party_deps
     SUBDIRS "bin;lib;include;share" # Stage common directories
+    CLEAN_RESIDUE # Remove autotools residue (Makefile.in, etc.) before copying
   )
 
   # --- Finalize Third-Party Library Staging ---
   get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
   if(third_party_libs_to_stage)
       message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
-      foreach(TGT ${third_party_libs_to_stage})
+      foreach(ENTRY ${third_party_libs_to_stage})
+          string(REPLACE "@@" ";" _parts "${ENTRY}")
+          list(GET _parts 0 TGT)
+          list(LENGTH _parts _len)
+          if(_len GREATER 1)
+            list(GET _parts 1 _stable_name)
+          else()
+            set(_stable_name "")
+          endif()
           if(TARGET ${TGT})
-              pylabhub_attach_library_staging_commands(
-                  TARGET ${TGT}
-                  ATTACH_TO stage_third_party_deps
-              )
+              set(_attach_args TARGET ${TGT} ATTACH_TO stage_third_party_deps)
+              if(_stable_name)
+                list(APPEND _attach_args STABLE_NAME ${_stable_name})
+              endif()
+              pylabhub_attach_library_staging_commands(${_attach_args})
           else()
               message(WARNING "A registered library target for staging does not exist: ${TGT}")
           endif()
