@@ -5,8 +5,12 @@
 #include <windows.h>
 #include <string> // For std::to_string
 #else
-#include <cerrno> // For errno
-#include <string> // For std::to_string
+#include <cerrno>   // For errno
+#include <fcntl.h> // For O_CREAT, O_RDWR, O_EXCL
+#include <sys/mman.h>
+#include <sys/stat.h> // For fstat, S_IRUSR, S_IWUSR
+#include <unistd.h>  // For ftruncate, close
+#include <string>   // For std::to_string
 #endif
 
 namespace pylabhub::hub
@@ -128,11 +132,70 @@ DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory
       m_base_shared_memory_address(base_shared_memory_address),
       m_offset_to_mutex_storage(offset_to_mutex_storage)
 {
+    // When base is null: create/attach to a dedicated shm segment for mutex storage.
+    // Used by unit tests; Windows always ignores base and uses a named kernel mutex.
     if (!m_base_shared_memory_address)
     {
-        throw std::runtime_error(
-            "POSIX DataBlockMutex: base_shared_memory_address cannot be null.");
+        std::string shm_name = m_name + "_DataBlockManagementMutex";
+        const size_t mutex_size = sizeof(pthread_mutex_t);
+
+        if (m_is_creator)
+        {
+            m_dedicated_shm_fd =
+                shm_open(shm_name.c_str(), O_CREAT | O_RDWR | O_EXCL, S_IRUSR | S_IWUSR);
+            if (m_dedicated_shm_fd == -1 && errno == EEXIST)
+            {
+                shm_unlink(shm_name.c_str());
+                m_dedicated_shm_fd =
+                    shm_open(shm_name.c_str(), O_CREAT | O_RDWR | O_EXCL, S_IRUSR | S_IWUSR);
+            }
+            if (m_dedicated_shm_fd == -1)
+            {
+                throw std::runtime_error("POSIX DataBlockMutex: shm_open failed for '" + m_name +
+                                         "'. Error: " + std::to_string(errno));
+            }
+            if (ftruncate(m_dedicated_shm_fd, static_cast<off_t>(mutex_size)) != 0)
+            {
+                close(m_dedicated_shm_fd);
+                shm_unlink(shm_name.c_str());
+                throw std::runtime_error("POSIX DataBlockMutex: ftruncate failed for '" + m_name +
+                                         "'.");
+            }
+            m_dedicated_shm_size = mutex_size;
+        }
+        else
+        {
+            m_dedicated_shm_fd = shm_open(shm_name.c_str(), O_RDWR, 0);
+            if (m_dedicated_shm_fd == -1)
+            {
+                throw std::runtime_error("POSIX DataBlockMutex: shm_open failed for '" + m_name +
+                                         "'. Error: " + std::to_string(errno));
+            }
+            struct stat st;
+            if (fstat(m_dedicated_shm_fd, &st) != 0)
+            {
+                close(m_dedicated_shm_fd);
+                throw std::runtime_error("POSIX DataBlockMutex: fstat failed for '" + m_name +
+                                         "'.");
+            }
+            m_dedicated_shm_size = static_cast<size_t>(st.st_size);
+        }
+        m_dedicated_shm_mapped =
+            mmap(nullptr, m_dedicated_shm_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                 m_dedicated_shm_fd, 0);
+        if (m_dedicated_shm_mapped == MAP_FAILED)
+        {
+            close(m_dedicated_shm_fd);
+            if (m_is_creator)
+            {
+                shm_unlink(shm_name.c_str());
+            }
+            throw std::runtime_error("POSIX DataBlockMutex: mmap failed for '" + m_name + "'.");
+        }
+        m_base_shared_memory_address = m_dedicated_shm_mapped;
+        m_offset_to_mutex_storage = 0;
     }
+
     // m_pthread_mutex is now calculated dynamically via get_pthread_mutex()
     pthread_mutex_t *mutex_ptr = get_pthread_mutex();
 
@@ -257,6 +320,22 @@ DataBlockMutex::~DataBlockMutex()
             LOGGER_ERROR("POSIX DataBlockMutex: pthread_mutex_trylock failed unexpectedly for "
                          "'{}'. Error: {} ({})",
                          m_name, std::strerror(res), res);
+        }
+    }
+
+    // Dedicated-shm cleanup: when mutex used its own segment (base was null)
+    if (m_dedicated_shm_mapped != nullptr)
+    {
+        munmap(m_dedicated_shm_mapped, m_dedicated_shm_size);
+        m_dedicated_shm_mapped = nullptr;
+        if (m_dedicated_shm_fd >= 0)
+        {
+            close(m_dedicated_shm_fd);
+            m_dedicated_shm_fd = -1;
+        }
+        if (m_is_creator)
+        {
+            shm_unlink((m_name + "_DataBlockManagementMutex").c_str());
         }
     }
 }

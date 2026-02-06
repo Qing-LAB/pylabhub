@@ -21,7 +21,7 @@ Common, robust utilities for C++ applications in scientific and laboratory envir
 
 | Layer | Header | Provides |
 |-------|--------|----------|
-| **0** | `plh_platform.hpp` | Platform detection (`PYLABHUB_PLATFORM_WIN64`, etc.), Windows headers |
+| **0** | `plh_platform.hpp` | Platform detection (`PYLABHUB_PLATFORM_WIN64`, etc.), Windows headers, version API (`get_version_*`) |
 | **1** | `plh_base.hpp` | `format_tools`, `debug_info`, `atomic_guard`, `recursion_guard`, `scope_guard`, `module_def` |
 | **2** | `plh_service.hpp` | `lifecycle`, `file_lock`, `logger` |
 | **3** | `plh_datahub.hpp` | `json_config`, `message_hub`, `data_block` |
@@ -433,3 +433,9 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 | AtomicGuard | `utils/atomic_guard.hpp` |
 
 Each header contains inline documentation. For design rationale, sequence diagrams, and detailed API, see the [HEPs](./hep/).
+
+---
+
+## See Also
+
+- [README_Versioning.md](README_Versioning.md) — Package version scheme and C++ `get_version_*` API

@@ -1,6 +1,8 @@
 #include "plh_base.hpp"
 #include "plh_service.hpp"
 
+#include <cstring>
+
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -314,6 +316,46 @@ TEST(DebugPlatformTest, GetExecutableName)
 
     // Test error path (difficult to simulate, relies on internal exception handling)
     // For now, we trust the internal `try-catch` in `get_executable_name`.
+}
+
+// --- Version API tests ---
+
+TEST(DebugPlatformTest, GetVersionMajor)
+{
+    int major = get_version_major();
+    EXPECT_GE(major, 0) << "Version major should be non-negative";
+}
+
+TEST(DebugPlatformTest, GetVersionMinor)
+{
+    int minor = get_version_minor();
+    EXPECT_GE(minor, 0) << "Version minor should be non-negative";
+}
+
+TEST(DebugPlatformTest, GetVersionRolling)
+{
+    int rolling = get_version_rolling();
+    EXPECT_GE(rolling, 0) << "Version rolling (e.g. git commit count) should be non-negative";
+}
+
+TEST(DebugPlatformTest, GetVersionString)
+{
+    const char* ver = get_version_string();
+    ASSERT_NE(ver, nullptr) << "Version string should not be null";
+    EXPECT_GT(std::strlen(ver), 0u) << "Version string should not be empty";
+    // Expected format: major.minor.rolling (e.g. "0.1.42")
+    // Use [0-9] instead of \d for POSIX Extended regex compatibility
+    EXPECT_THAT(ver, ::testing::MatchesRegex(R"(^[0-9]+\.[0-9]+\.[0-9]+$)"))
+        << "Version string should match major.minor.rolling format, got: " << ver;
+}
+
+TEST(DebugPlatformTest, VersionComponentsMatchString)
+{
+    // Verify get_version_string() equals get_version_major().get_version_minor().get_version_rolling()
+    std::string expected =
+        std::to_string(get_version_major()) + "." + std::to_string(get_version_minor()) + "." +
+        std::to_string(get_version_rolling());
+    EXPECT_EQ(get_version_string(), expected) << "Version string should match components";
 }
 
 TEST(DebugPlatformTest, DebugMsgRtFormatError)

@@ -813,3 +813,22 @@ Set by `cmake/PlatformAndCompiler.cmake`:
 | `CMAKE_BINARY_DIR` | CMake | Build directory |
 | `CMAKE_CURRENT_SOURCE_DIR` | CMake | Current CMakeLists.txt directory |
 | `CMAKE_BUILD_TYPE` | User/CMake | Debug, Release, RelWithDebInfo, MinSizeRel |
+
+### Version Variables
+
+Set by `cmake/Version.cmake` (see [README_Versioning.md](README_Versioning.md)):
+
+| Variable | Description |
+|----------|-------------|
+| `PYLABHUB_VERSION_MAJOR` | Major version from `project()` |
+| `PYLABHUB_VERSION_MINOR` | Minor version from `project()` |
+| `PYLABHUB_VERSION_ROLLING` | Rolling version from git or override |
+| `PYLABHUB_VERSION_STRING` | Full string `major.minor.rolling` |
+
+---
+
+## Related Documents
+
+- [README_Versioning.md](README_Versioning.md) — Version scheme, C++ API, and library naming
+- [README_ThirdParty_CMake.md](README_ThirdParty_CMake.md) — Third-party dependency management
+- [README_testing.md](README_testing.md) — Test suite architecture

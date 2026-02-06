@@ -150,4 +150,25 @@ PYLABHUB_UTILS_EXPORT uint64_t get_pid();
  */
 PYLABHUB_UTILS_EXPORT std::string get_executable_name(bool include_path = false) noexcept;
 
+/**
+ * @brief Gets the major version number of the pylabhub package.
+ * @return The major version (e.g., 0 from 0.1.42).
+ */
+PYLABHUB_UTILS_EXPORT int get_version_major() noexcept;
+/**
+ * @brief Gets the minor version number of the pylabhub package.
+ * @return The minor version (e.g., 1 from 0.1.42).
+ */
+PYLABHUB_UTILS_EXPORT int get_version_minor() noexcept;
+/**
+ * @brief Gets the rolling version number (e.g., from git commit count).
+ * @return The rolling version (e.g., 42 from 0.1.42).
+ */
+PYLABHUB_UTILS_EXPORT int get_version_rolling() noexcept;
+/**
+ * @brief Gets the full version string (major.minor.rolling).
+ * @return A string such as "0.1.42".
+ */
+PYLABHUB_UTILS_EXPORT const char* get_version_string() noexcept;
+
 } // namespace pylabhub::platform
