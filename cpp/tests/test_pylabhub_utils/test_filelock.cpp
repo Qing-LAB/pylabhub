@@ -54,6 +54,8 @@ class FileLockTest : public ::testing::Test
     fs::path temp_dir() const { return g_temp_dir_; }
 
     /// Helper to remove a lock file for a given resource to ensure a clean state.
+    /// Tests clear lock files before each run for isolation (no process holds the lock).
+    /// In production, .lock files are harmless; the library does not remove them on shutdown.
     void clear_lock_file(const fs::path &resource_path, pylabhub::utils::ResourceType type)
     {
         try
