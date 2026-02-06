@@ -1,6 +1,7 @@
 // format_tools.cpp
 #include "plh_platform.hpp"
 #include "utils/format_tools.hpp"
+#include <fmt/chrono.h>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <chrono>

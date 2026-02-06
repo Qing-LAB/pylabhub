@@ -125,4 +125,25 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLockGuard
     SharedSpinLock &m_lock;
 };
 
+/**
+ * @class SharedSpinLockGuardOwning
+ * @brief RAII guard that owns the SharedSpinLock. Use when returning from APIs.
+ * Holds lock and guard; lock is constructed first so guard can reference it.
+ */
+class PYLABHUB_UTILS_EXPORT SharedSpinLockGuardOwning
+{
+  public:
+    SharedSpinLockGuardOwning(SharedSpinLockState *state, const std::string &name);
+    ~SharedSpinLockGuardOwning();
+
+    SharedSpinLockGuardOwning(const SharedSpinLockGuardOwning &) = delete;
+    SharedSpinLockGuardOwning &operator=(const SharedSpinLockGuardOwning &) = delete;
+    SharedSpinLockGuardOwning(SharedSpinLockGuardOwning &&) noexcept = delete;
+    SharedSpinLockGuardOwning &operator=(SharedSpinLockGuardOwning &&) noexcept = delete;
+
+  private:
+    SharedSpinLock m_lock;
+    SharedSpinLockGuard m_guard;
+};
+
 } // namespace pylabhub::hub

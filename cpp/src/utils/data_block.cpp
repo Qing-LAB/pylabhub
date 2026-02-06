@@ -1,11 +1,11 @@
 #include "plh_service.hpp"
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
-#include "utils/data_block_mutex.hpp" // Include the DataBlockMutex header
-#include <cstddef>                       // For offsetof
+#include "utils/data_block_mutex.hpp"
+#include <cstddef>
 #include <stdexcept>
-#include <thread> // For std::this_thread::sleep_for
-#include <chrono> // For std::chrono::milliseconds
+#include <thread>
+#include <chrono>
 
 namespace pylabhub::hub
 {
@@ -16,30 +16,33 @@ namespace pylabhub::hub
 namespace
 {
 static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEL;
-static constexpr uint32_t DATABLOCK_VERSION = 1;
+static constexpr uint32_t DATABLOCK_VERSION = 2; // Bumped for new header layout
 } // namespace
 
 // ============================================================================
-// Internal DataBlock Helper Class
+// DataBlockIteratorImpl
 // ============================================================================
+struct DataBlockIteratorImpl
+{
+    void *segment_base = nullptr;
+    size_t segment_size = 0;
+    SharedMemoryHeader *header = nullptr;
+    void *flexible_zone_base = nullptr;
+    size_t flexible_zone_size = 0;
+    size_t block_index = 0;
+    bool is_end = false;
+};
 
-/**
- * @class DataBlock
- * @brief Internal helper class to manage the shared memory segment for a DataBlock.
- *
- * This class encapsulates the creation, mapping, and destruction of the underlying
- * shared memory, providing access to the pylabhub::hub::SharedMemoryHeader and data regions.
- */
+// ============================================================================
+// DataBlock - Internal helper
+// ============================================================================
 class DataBlock
 {
   public:
-    // For producer: create and initialize shared memory
-    DataBlock(const std::string &name, const pylabhub::hub::DataBlockConfig &config)
+    DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_is_creator(true)
     {
-        // Calculate total size needed for shared memory
-        // Header + Flexible Data Zone + Structured Data Buffer
-        m_size = sizeof(pylabhub::hub::SharedMemoryHeader) + config.flexible_zone_size +
+        m_size = sizeof(SharedMemoryHeader) + config.flexible_zone_size +
                  config.structured_buffer_size;
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -57,22 +60,18 @@ class DataBlock
             throw std::runtime_error("Failed to map view of file.");
         }
 #else
-        // Remove any previous shared memory with the same name
         shm_unlink(m_name.c_str());
-
         m_shm_fd = shm_open(m_name.c_str(), O_CREAT | O_RDWR, 0666);
         if (m_shm_fd == -1)
         {
             throw std::runtime_error("shm_open failed.");
         }
-
         if (ftruncate(m_shm_fd, m_size) == -1)
         {
             close(m_shm_fd);
             shm_unlink(m_name.c_str());
             throw std::runtime_error("ftruncate failed.");
         }
-
         m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
         if (m_mapped_address == MAP_FAILED)
         {
@@ -82,59 +81,53 @@ class DataBlock
         }
 #endif
 
-        // Construct the pylabhub::hub::SharedMemoryHeader in-place
-        m_header = new (m_mapped_address) pylabhub::hub::SharedMemoryHeader();
-
-        // CRITICAL INITIALIZATION ORDER:
-        // 1. Zero-initialize all fields (done by placement new above)
-        // 2. Initialize management mutex FIRST
-        // 3. Initialize other fields while mutex exists
-        // 4. Set magic_number LAST as the "ready" flag
-
-        // Step 1: Mark as uninitialized
+        m_header = new (m_mapped_address) SharedMemoryHeader();
         m_header->init_state.store(0, std::memory_order_release);
 
-        // Step 2: Initialize the management mutex BEFORE anything else
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        PLH_DEBUG("DataBlock '{}': Initializing Windows management mutex.", m_name);
-        m_management_mutex = std::make_unique<DataBlockMutex>(
-            m_name, nullptr, 0, m_is_creator); // Offset is ignored for Windows
+        m_management_mutex = std::make_unique<DataBlockMutex>(m_name, nullptr, 0, m_is_creator);
 #else
-        PLH_DEBUG("DataBlock '{}': Initializing POSIX management mutex at {}.", m_name,
-                  (void *)((char *)m_mapped_address +
-                           offsetof(SharedMemoryHeader, management_mutex_storage)));
         m_management_mutex = std::make_unique<DataBlockMutex>(
             m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
             m_is_creator);
 #endif
-        PLH_DEBUG("DataBlock '{}': Management mutex initialized.", m_name);
 
-        // Mark mutex as ready
         m_header->init_state.store(1, std::memory_order_release);
 
-        // Step 3: Initialize other header fields (mutex protects this now)
+        // Initialize header fields
         m_header->shared_secret = config.shared_secret;
         m_header->version = DATABLOCK_VERSION;
-        m_header->header_size = sizeof(pylabhub::hub::SharedMemoryHeader);
+        m_header->header_size = sizeof(SharedMemoryHeader);
         m_header->active_consumer_count.store(0, std::memory_order_release);
         m_header->write_index.store(0, std::memory_order_release);
         m_header->commit_index.store(0, std::memory_order_release);
         m_header->read_index.store(0, std::memory_order_release);
         m_header->current_slot_id.store(0, std::memory_order_release);
 
-        // Initialize atomic flags for spinlock allocation
+        // Chain: single block is both head and tail
+        m_header->prev_block_offset = 0;
+        m_header->next_block_offset = 0;
+        m_header->chain_flags = CHAIN_HEAD | CHAIN_TAIL;
+        m_header->chain_index = 0;
+        m_header->total_spinlock_count.store(SharedMemoryHeader::MAX_SHARED_SPINLOCKS,
+                                            std::memory_order_release);
+        m_header->total_counter_count.store(SharedMemoryHeader::NUM_COUNTERS_64,
+                                            std::memory_order_release);
+        m_header->flexible_zone_format = config.flexible_zone_format;
+        m_header->flexible_zone_size = static_cast<uint32_t>(config.flexible_zone_size);
+
         for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
         {
             m_header->spinlock_allocated[i].clear(std::memory_order_release);
         }
+        for (size_t i = 0; i < SharedMemoryHeader::NUM_COUNTERS_64; ++i)
+        {
+            m_header->counters_64[i].store(0, std::memory_order_release);
+        }
 
-        // Get pointers to the flexible data zone and structured buffer
-        m_flexible_data_zone =
-            reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
+        m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
         m_structured_data_buffer = m_flexible_data_zone + config.flexible_zone_size;
 
-        // Step 4: Set magic_number LAST - this signals the DataBlock is fully initialized
-        // Use memory_order_release to ensure all prior writes are visible
         std::atomic_thread_fence(std::memory_order_release);
         m_header->magic_number = DATABLOCK_MAGIC_NUMBER;
         m_header->init_state.store(2, std::memory_order_release);
@@ -142,7 +135,6 @@ class DataBlock
         LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, m_size);
     }
 
-    // For consumer: open existing shared memory
     DataBlock(const std::string &name) : m_name(name), m_is_creator(false)
     {
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -151,20 +143,21 @@ class DataBlock
         {
             throw std::runtime_error("Failed to open file mapping.");
         }
-
         m_mapped_address = MapViewOfFile(m_shm_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
         if (m_mapped_address == NULL)
         {
             CloseHandle(m_shm_handle);
             throw std::runtime_error("Failed to map view of file for consumer.");
         }
+        MEMORY_BASIC_INFORMATION mbi;
+        VirtualQuery(m_mapped_address, &mbi, sizeof(mbi));
+        m_size = mbi.RegionSize;
 #else
         m_shm_fd = shm_open(m_name.c_str(), O_RDWR, 0666);
         if (m_shm_fd == -1)
         {
             throw std::runtime_error("shm_open failed for consumer.");
         }
-
         struct stat shm_stat;
         if (fstat(m_shm_fd, &shm_stat) == -1)
         {
@@ -172,7 +165,6 @@ class DataBlock
             throw std::runtime_error("fstat failed.");
         }
         m_size = shm_stat.st_size;
-
         m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
         if (m_mapped_address == MAP_FAILED)
         {
@@ -181,14 +173,11 @@ class DataBlock
         }
 #endif
 
-        m_header = reinterpret_cast<pylabhub::hub::SharedMemoryHeader *>(m_mapped_address);
+        m_header = reinterpret_cast<SharedMemoryHeader *>(m_mapped_address);
 
-        // CRITICAL: Wait for producer to finish initialization before proceeding
-        // Check init_state with acquire semantics to ensure we see all producer's writes
-        const int max_wait_ms = 5000; // 5 second timeout
+        const int max_wait_ms = 5000;
         const int poll_interval_ms = 10;
         int total_wait_ms = 0;
-
         uint32_t init_state = m_header->init_state.load(std::memory_order_acquire);
         while (init_state < 2 && total_wait_ms < max_wait_ms)
         {
@@ -206,12 +195,10 @@ class DataBlock
             munmap(m_mapped_address, m_size);
             close(m_shm_fd);
 #endif
-            throw std::runtime_error(
-                "DataBlock '" + m_name +
-                "' initialization timeout - producer may have crashed during setup.");
+            throw std::runtime_error("DataBlock '" + m_name +
+                                    "' initialization timeout - producer may have crashed.");
         }
 
-        // Validate magic number with acquire semantics
         std::atomic_thread_fence(std::memory_order_acquire);
         if (m_header->magic_number != DATABLOCK_MAGIC_NUMBER)
         {
@@ -222,12 +209,9 @@ class DataBlock
             munmap(m_mapped_address, m_size);
             close(m_shm_fd);
 #endif
-            throw std::runtime_error(
-                "DataBlock '" + m_name +
-                "' has invalid magic number - not a valid DataBlock or corrupted.");
+            throw std::runtime_error("DataBlock '" + m_name + "' invalid magic number.");
         }
 
-        // Validate version
         if (m_header->version != DATABLOCK_VERSION)
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -242,41 +226,105 @@ class DataBlock
                                      std::to_string(m_header->version));
         }
 
-        // Now it's safe to attach to the management mutex
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        PLH_DEBUG("DataBlock '{}': Attaching to Windows management mutex.", m_name);
-        m_management_mutex = std::make_unique<DataBlockMutex>(
-            m_name, nullptr, 0, m_is_creator); // Offset is ignored for Windows
+        m_management_mutex = std::make_unique<DataBlockMutex>(m_name, nullptr, 0, m_is_creator);
 #else
-        PLH_DEBUG("DataBlock '{}': Attaching to POSIX management mutex at {}.", m_name,
-                  (void *)((char *)m_mapped_address +
-                           offsetof(SharedMemoryHeader, management_mutex_storage)));
         m_management_mutex = std::make_unique<DataBlockMutex>(
             m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
             m_is_creator);
 #endif
-        PLH_DEBUG("DataBlock '{}': Management mutex attached.", m_name);
 
-        // Get pointers to the flexible data zone and structured buffer
-        m_flexible_data_zone =
-            reinterpret_cast<char *>(m_header) + sizeof(pylabhub::hub::SharedMemoryHeader);
-        m_structured_data_buffer = nullptr; // Will be set after discovery
+        m_flexible_data_zone = reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
+        m_structured_data_buffer = nullptr;
 
         LOGGER_INFO("DataBlock '{}' opened by consumer.", m_name);
     }
 
-    ~DataBlock();
+    ~DataBlock()
+    {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        if (m_mapped_address)
+        {
+            UnmapViewOfFile(m_mapped_address);
+        }
+        if (m_shm_handle)
+        {
+            CloseHandle(m_shm_handle);
+        }
+#else
+        if (m_is_creator && m_management_mutex)
+        {
+            m_management_mutex.reset();
+        }
+        if (m_mapped_address)
+        {
+            munmap(m_mapped_address, m_size);
+        }
+        if (m_shm_fd != -1)
+        {
+            close(m_shm_fd);
+        }
+        if (m_is_creator)
+        {
+            shm_unlink(m_name.c_str());
+            LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
+        }
+#endif
+    }
 
-    // Accessors declarations
-    pylabhub::hub::SharedMemoryHeader *header() const;
-    char *flexible_data_zone() const;
-    char *structured_data_buffer() const;
-    void *segment() const;
+    SharedMemoryHeader *header() const { return m_header; }
+    char *flexible_data_zone() const { return m_flexible_data_zone; }
+    char *structured_data_buffer() const { return m_structured_data_buffer; }
+    void *segment() const { return m_mapped_address; }
+    size_t size() const { return m_size; }
 
-    // Methods to manage shared spinlocks declarations
-    size_t acquire_shared_spinlock(const std::string &debug_name);
-    void release_shared_spinlock(size_t index);
-    SharedSpinLockState *get_shared_spinlock_state(size_t index);
+    size_t acquire_shared_spinlock(const std::string &debug_name)
+    {
+        DataBlockLockGuard lock(*m_management_mutex);
+        for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
+        {
+            if (!m_header->spinlock_allocated[i].test_and_set(std::memory_order_acq_rel))
+            {
+                m_header->shared_spinlocks[i].owner_pid.store(0, std::memory_order_release);
+                m_header->shared_spinlocks[i].generation.store(0, std::memory_order_release);
+                m_header->shared_spinlocks[i].recursion_count.store(0, std::memory_order_release);
+                m_header->shared_spinlocks[i].owner_thread_id = 0;
+                LOGGER_INFO("DataBlock '{}': Acquired spinlock slot {} for '{}'.", m_name, i,
+                            debug_name);
+                return i;
+            }
+        }
+        throw std::runtime_error("DataBlock '" + m_name + "': No free spinlock slots.");
+    }
+
+    void release_shared_spinlock(size_t index)
+    {
+        if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+        {
+            throw std::out_of_range("Spinlock index out of range.");
+        }
+        DataBlockLockGuard lock(*m_management_mutex);
+        if (m_header->shared_spinlocks[index].owner_pid.load(std::memory_order_acquire) != 0)
+        {
+            LOGGER_WARN("DataBlock '{}': Releasing spinlock {} still held. Force releasing.",
+                        m_name, index);
+        }
+        m_header->spinlock_allocated[index].clear(std::memory_order_release);
+        m_header->shared_spinlocks[index].owner_pid.store(0, std::memory_order_release);
+        m_header->shared_spinlocks[index].generation.store(0, std::memory_order_release);
+        m_header->shared_spinlocks[index].recursion_count.store(0, std::memory_order_release);
+        m_header->shared_spinlocks[index].owner_thread_id = 0;
+        LOGGER_INFO("DataBlock '{}': Released spinlock slot {}.", m_name, index);
+    }
+
+    SharedSpinLockState *get_shared_spinlock_state(size_t index)
+    {
+        if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+        {
+            throw std::out_of_range("Spinlock index out of range.");
+        }
+        return &m_header->shared_spinlocks[index];
+    }
 
   private:
     std::string m_name;
@@ -291,300 +339,439 @@ class DataBlock
     void *m_mapped_address = nullptr;
 #endif
 
-    pylabhub::hub::SharedMemoryHeader *m_header{nullptr};
-    char *m_flexible_data_zone{nullptr};
-    char *m_structured_data_buffer{nullptr};
-    std::unique_ptr<DataBlockMutex> m_management_mutex; // Internal OS-specific mutex for management
-}; // End of class DataBlock
-
-// ============================================================================
-// DataBlock Method Implementations (outside class definition)
-// ============================================================================
-
-// Constructors (already defined)
-
-// Destructor (already defined)
-DataBlock::~DataBlock()
-{
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    UnmapViewOfFile(m_mapped_address);
-    CloseHandle(m_shm_handle);
-#else
-    // For creator, explicitly destroy the management mutex while memory is still mapped.
-    // This calls ~DataBlockMutex() which attempts pthread_mutex_destroy.
-    if (m_is_creator && m_management_mutex)
-    {
-        m_management_mutex.reset(); // Calls ~DataBlockMutex()
-    }
-
-    munmap(m_mapped_address, m_size);
-    close(m_shm_fd);
-    if (m_is_creator)
-    {
-        shm_unlink(m_name.c_str());
-        LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
-    }
-#endif
-}
-
-// Accessors implementations
-pylabhub::hub::SharedMemoryHeader *DataBlock::header() const
-{
-    return m_header;
-}
-char *DataBlock::flexible_data_zone() const
-{
-    return m_flexible_data_zone;
-}
-char *DataBlock::structured_data_buffer() const
-{
-    return m_structured_data_buffer;
-}
-void *DataBlock::segment() const
-{
-    return m_mapped_address;
-}
-
-// Methods to manage shared spinlocks implementations
-SharedSpinLockState *DataBlock::get_shared_spinlock_state(size_t index)
-{
-    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
-    {
-        LOGGER_ERROR(
-            "DataBlock '{}': Attempted to access shared spinlock at invalid index {}. Max is {}.",
-            m_name, index, SharedMemoryHeader::MAX_SHARED_SPINLOCKS - 1);
-        throw std::out_of_range("Shared spinlock index out of range.");
-    }
-    return &m_header->shared_spinlocks[index];
-}
-
-size_t DataBlock::acquire_shared_spinlock(const std::string &debug_name)
-{
-    DataBlockLockGuard lock(*m_management_mutex); // Protect allocation map
-
-    for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
-    {
-        // test_and_set returns true if the flag was ALREADY set, false if it was clear and is now
-        // set. We want to acquire a slot that is currently CLEAR (false).
-        if (!m_header->spinlock_allocated[i].test_and_set(std::memory_order_acq_rel))
-        {
-            // Found a free slot, marked it as allocated.
-            // Initialize the spinlock state for this slot.
-            m_header->shared_spinlocks[i].owner_pid.store(0, std::memory_order_release);
-            m_header->shared_spinlocks[i].generation.store(0, std::memory_order_release);
-            m_header->shared_spinlocks[i].recursion_count.store(0, std::memory_order_release);
-            m_header->shared_spinlocks[i].owner_thread_id =
-                0; // Not atomic, written by owner process
-
-            LOGGER_INFO("DataBlock '{}': Acquired shared spinlock slot {} for '{}'.", m_name, i,
-                        debug_name);
-            return i;
-        }
-    }
-    throw std::runtime_error("DataBlock '" + m_name +
-                             "': No free shared spinlock slots available.");
-}
-
-void DataBlock::release_shared_spinlock(size_t index)
-{
-    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
-    {
-        LOGGER_ERROR(
-            "DataBlock '{}': Attempted to release shared spinlock at invalid index {}. Max is {}.",
-            m_name, index, SharedMemoryHeader::MAX_SHARED_SPINLOCKS - 1);
-        throw std::out_of_range("Shared spinlock index out of range.");
-    }
-
-    DataBlockLockGuard lock(*m_management_mutex); // Protect allocation map
-
-    // Ensure the spinlock is not currently held by any process before marking it free.
-    // A robust check would also involve checking generation counts, but for simple release,
-    // confirming owner_pid == 0 is typically sufficient as a safety measure.
-    if (m_header->shared_spinlocks[index].owner_pid.load(std::memory_order_acquire) != 0)
-    {
-        LOGGER_WARN("DataBlock '{}': Releasing allocated shared spinlock slot {} which is still "
-                    "held by PID {}. Force releasing.",
-                    m_name, index, m_header->shared_spinlocks[index].owner_pid.load());
-        // Force clear for robustness, but log warning.
-    }
-
-    // Clear the allocated flag. This makes the slot available for re-acquisition.
-    m_header->spinlock_allocated[index].clear(std::memory_order_release);
-
-    // Reset state to ensure clean start for next acquirer (though acquire_shared_spinlock also does
-    // this).
-    m_header->shared_spinlocks[index].owner_pid.store(0, std::memory_order_release);
-    m_header->shared_spinlocks[index].generation.store(0, std::memory_order_release);
-    m_header->shared_spinlocks[index].recursion_count.store(0, std::memory_order_release);
-    m_header->shared_spinlocks[index].owner_thread_id = 0;
-
-    LOGGER_INFO("DataBlock '{}': Released shared spinlock slot {}.", m_name, index);
-}
-
-class DataBlockProducerImpl : public IDataBlockProducer
-{
-  public:
-    DataBlockProducerImpl(const std::string &name, const pylabhub::hub::DataBlockConfig &config)
-    try : m_dataBlock(std::make_unique<DataBlock>(name, config))
-    {
-        m_name = name;
-        LOGGER_INFO("DataBlockProducerImpl: Initialized for '{}'.", m_name);
-    }
-    catch (const std::runtime_error &ex)
-    {
-        LOGGER_ERROR("DataBlockProducerImpl: Failed to create DataBlock for '{}': {}", name,
-                     ex.what());
-        throw; // Re-throw to indicate construction failure
-    }
-
-    ~DataBlockProducerImpl() override
-    {
-        // Producer destructor, cleanup as needed
-        LOGGER_INFO("DataBlockProducerImpl: Shutting down for '{}'.", m_name);
-    }
-
-    // Producer specific methods
-    std::unique_ptr<SharedSpinLockGuard>
-    acquire_user_spinlock(const std::string &debug_name) override
-    {
-        size_t index = m_dataBlock->acquire_shared_spinlock(debug_name);
-        
-        // WARNING: Design Flaw - Potential for dangling reference!
-        // SharedSpinLockGuard currently takes a SharedSpinLock&.
-        // If the SharedSpinLock is created as a temporary here, it will be destroyed
-        // at the end of this function, leading to a dangling reference in the returned guard.
-        // This needs to be addressed by modifying SharedSpinLockGuard to own the SharedSpinLock,
-        // or by rethinking the return type of this interface.
-        // See docs/tech_draft/shared_spinlock_guard_design_review.md for details.
-        
-        // For compilation purposes, we create a temporary SharedSpinLock.
-        // This is UNSAFE for actual runtime use if the guard outlives this function.
-        SharedSpinLock temp_lock(m_dataBlock->get_shared_spinlock_state(index), debug_name);
-        return std::make_unique<SharedSpinLockGuard>(temp_lock);
-    }
-
-    void release_user_spinlock(size_t index) override
-    {
-        m_dataBlock->release_shared_spinlock(index);
-    }
-
-
-  private:
-    std::string m_name;
-    std::unique_ptr<DataBlock> m_dataBlock;
+    SharedMemoryHeader *m_header = nullptr;
+    char *m_flexible_data_zone = nullptr;
+    char *m_structured_data_buffer = nullptr;
+    std::unique_ptr<DataBlockMutex> m_management_mutex;
 };
 
 // ============================================================================
-// DataBlockConsumer Implementation
+// DataBlockIterator
 // ============================================================================
-
-class DataBlockConsumerImpl : public IDataBlockConsumer
+DataBlockIterator::DataBlockIterator() : pImpl(std::make_unique<DataBlockIteratorImpl>())
 {
-  public:
-    DataBlockConsumerImpl(const std::string &name, uint64_t shared_secret)
-    try : m_dataBlock(std::make_unique<DataBlock>(name))
+}
+
+DataBlockIterator::DataBlockIterator(std::unique_ptr<DataBlockIteratorImpl> impl)
+    : pImpl(std::move(impl))
+{
+}
+
+DataBlockIterator::~DataBlockIterator() = default;
+
+DataBlockIterator::DataBlockIterator(DataBlockIterator &&other) noexcept = default;
+
+DataBlockIterator &DataBlockIterator::operator=(DataBlockIterator &&other) noexcept = default;
+
+DataBlockIterator::NextResult DataBlockIterator::try_next()
+{
+    NextResult r;
+    r.ok = false;
+    r.error_code = 0;
+    if (!pImpl || pImpl->is_end)
     {
-        m_name = name;
-
-        // Verify magic number and shared secret
-        if (m_dataBlock->header()->magic_number != DATABLOCK_MAGIC_NUMBER)
-        {
-            LOGGER_ERROR("DataBlockConsumerImpl: Invalid magic number for '{}'.", name);
-            throw std::runtime_error("Invalid magic number");
-        }
-        if (m_dataBlock->header()->shared_secret != shared_secret)
-        {
-            LOGGER_ERROR("DataBlockConsumerImpl: Invalid shared secret for '{}'.", name);
-            throw std::runtime_error("Invalid shared secret");
-        }
-
-        m_dataBlock->header()->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
-        LOGGER_INFO("DataBlockConsumerImpl: Initialized for '{}'. Active consumers: {}.", m_name,
-                    m_dataBlock->header()->active_consumer_count.load());
+        r.error_code = 1; // EINVAL or "already at end"
+        return r;
     }
-    catch (const std::runtime_error &ex)
+    if (pImpl->header->next_block_offset == 0)
     {
-        LOGGER_ERROR("DataBlockConsumerImpl: Failed to open DataBlock for '{}': {}", name,
-                     ex.what());
-        throw; // Re-throw to indicate construction failure
+        r.error_code = 2; // "next block not available"
+        return r;
     }
+    // For single-block implementation, next_block_offset is 0 (tail). Multi-block expansion
+    // would resolve the next block here. For now we return not available.
+    r.error_code = 2;
+    return r;
+}
 
-    ~DataBlockConsumerImpl() override
+DataBlockIterator DataBlockIterator::next()
+{
+    auto res = try_next();
+    if (!res.ok)
     {
-        if (m_dataBlock && m_dataBlock->header())
+        throw std::runtime_error("DataBlockIterator::next: next block not available (error " +
+                                 std::to_string(res.error_code) + ")");
+    }
+    return std::move(res.next);
+}
+
+void *DataBlockIterator::block_base() const
+{
+    return pImpl ? pImpl->header : nullptr;
+}
+
+size_t DataBlockIterator::block_index() const
+{
+    return pImpl ? pImpl->block_index : 0;
+}
+
+void *DataBlockIterator::flexible_zone_base() const
+{
+    return pImpl ? pImpl->flexible_zone_base : nullptr;
+}
+
+size_t DataBlockIterator::flexible_zone_size() const
+{
+    return pImpl ? pImpl->flexible_zone_size : 0;
+}
+
+FlexibleZoneFormat DataBlockIterator::flexible_zone_format() const
+{
+    return pImpl && pImpl->header ? pImpl->header->flexible_zone_format
+                                  : FlexibleZoneFormat::Raw;
+}
+
+bool DataBlockIterator::is_head() const
+{
+    return pImpl && pImpl->header && (pImpl->header->chain_flags & CHAIN_HEAD);
+}
+
+bool DataBlockIterator::is_tail() const
+{
+    return pImpl && pImpl->header && (pImpl->header->chain_flags & CHAIN_TAIL);
+}
+
+bool DataBlockIterator::is_valid() const
+{
+    return pImpl && pImpl->header && !pImpl->is_end;
+}
+
+// ============================================================================
+// DataBlockProducerImpl
+// ============================================================================
+struct DataBlockProducerImpl
+{
+    std::string name;
+    std::unique_ptr<DataBlock> dataBlock;
+
+    static size_t to_local_index(size_t global_index)
+    {
+        return global_index % SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
+    }
+    static size_t to_block_index(size_t global_index)
+    {
+        return global_index / SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
+    }
+};
+
+// ============================================================================
+// DataBlockProducer
+// ============================================================================
+DataBlockProducer::DataBlockProducer() : pImpl(nullptr) {}
+
+DataBlockProducer::DataBlockProducer(std::unique_ptr<DataBlockProducerImpl> impl)
+    : pImpl(std::move(impl))
+{
+}
+
+DataBlockProducer::~DataBlockProducer() = default;
+
+DataBlockProducer::DataBlockProducer(DataBlockProducer &&other) noexcept = default;
+
+DataBlockProducer &DataBlockProducer::operator=(DataBlockProducer &&other) noexcept = default;
+
+std::unique_ptr<SharedSpinLockGuardOwning> DataBlockProducer::acquire_spinlock(size_t index,
+                                                                               const std::string &debug_name)
+{
+    if (!pImpl)
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    size_t local = DataBlockProducerImpl::to_local_index(index);
+    if (index >= pImpl->dataBlock->header()->total_spinlock_count.load(std::memory_order_acquire))
+    {
+        throw std::out_of_range("Spinlock index out of range");
+    }
+    // For single block, block index 0. Multi-block would resolve header from chain.
+    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
+    std::string name = debug_name.empty() ? pImpl->name + "_spinlock_" + std::to_string(index)
+                                         : debug_name;
+    return std::make_unique<SharedSpinLockGuardOwning>(state, name);
+}
+
+void DataBlockProducer::release_spinlock(size_t index)
+{
+    if (!pImpl)
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    size_t local = DataBlockProducerImpl::to_local_index(index);
+    pImpl->dataBlock->release_shared_spinlock(local);
+}
+
+SharedSpinLock DataBlockProducer::get_spinlock(size_t index)
+{
+    if (!pImpl)
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    size_t local = DataBlockProducerImpl::to_local_index(index);
+    if (index >= pImpl->dataBlock->header()->total_spinlock_count.load(std::memory_order_acquire))
+    {
+        throw std::out_of_range("Spinlock index out of range");
+    }
+    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
+    return SharedSpinLock(state, pImpl->name + "_spinlock_" + std::to_string(index));
+}
+
+uint32_t DataBlockProducer::spinlock_count() const
+{
+    return pImpl && pImpl->dataBlock && pImpl->dataBlock->header()
+               ? pImpl->dataBlock->header()->total_spinlock_count.load(std::memory_order_acquire)
+               : 0;
+}
+
+std::unique_ptr<SharedSpinLockGuardOwning>
+DataBlockProducer::acquire_user_spinlock(const std::string &debug_name)
+{
+    if (!pImpl)
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    size_t index = pImpl->dataBlock->acquire_shared_spinlock(debug_name);
+    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(index);
+    return std::make_unique<SharedSpinLockGuardOwning>(state, debug_name);
+}
+
+void DataBlockProducer::release_user_spinlock(size_t index)
+{
+    release_spinlock(index);
+}
+
+void DataBlockProducer::set_counter_64(size_t index, uint64_t value)
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
+    {
+        throw std::out_of_range("Counter 64 index out of range");
+    }
+    pImpl->dataBlock->header()->counters_64[index].store(value, std::memory_order_release);
+}
+
+uint64_t DataBlockProducer::get_counter_64(size_t index) const
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    {
+        throw std::runtime_error("DataBlockProducer: invalid state");
+    }
+    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
+    {
+        throw std::out_of_range("Counter 64 index out of range");
+    }
+    return pImpl->dataBlock->header()->counters_64[index].load(std::memory_order_acquire);
+}
+
+uint32_t DataBlockProducer::counter_count() const
+{
+    return pImpl && pImpl->dataBlock && pImpl->dataBlock->header()
+               ? pImpl->dataBlock->header()->total_counter_count.load(std::memory_order_acquire)
+               : 0;
+}
+
+DataBlockIterator DataBlockProducer::begin()
+{
+    if (!pImpl || !pImpl->dataBlock)
+    {
+        return DataBlockIterator();
+    }
+    auto impl = std::make_unique<DataBlockIteratorImpl>();
+    impl->segment_base = pImpl->dataBlock->segment();
+    impl->segment_size = pImpl->dataBlock->size();
+    impl->header = pImpl->dataBlock->header();
+    impl->flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+    impl->flexible_zone_size = pImpl->dataBlock->header()->flexible_zone_size;
+    impl->block_index = 0;
+    impl->is_end = false;
+    return DataBlockIterator(std::move(impl));
+}
+
+DataBlockIterator DataBlockProducer::end()
+{
+    auto impl = std::make_unique<DataBlockIteratorImpl>();
+    impl->is_end = true;
+    return DataBlockIterator(std::move(impl));
+}
+
+// ============================================================================
+// DataBlockConsumerImpl
+// ============================================================================
+struct DataBlockConsumerImpl
+{
+    std::string name;
+    std::unique_ptr<DataBlock> dataBlock;
+
+    ~DataBlockConsumerImpl()
+    {
+        if (dataBlock && dataBlock->header())
         {
-            m_dataBlock->header()->active_consumer_count.fetch_sub(1, std::memory_order_acq_rel);
+            dataBlock->header()->active_consumer_count.fetch_sub(1, std::memory_order_acq_rel);
             LOGGER_INFO("DataBlockConsumerImpl: Shutting down for '{}'. Active consumers: {}.",
-                        m_name, m_dataBlock->header()->active_consumer_count.load());
-        }
-        else
-        {
-            LOGGER_WARN(
-                "DataBlockConsumerImpl: Shutting down for '{}' but DataBlock or header was null.",
-                m_name);
+                        name, dataBlock->header()->active_consumer_count.load());
         }
     }
-
-    // Consumer specific methods
-    SharedSpinLock get_user_spinlock(size_t index) override
-    {
-        return SharedSpinLock(m_dataBlock->get_shared_spinlock_state(index),
-                              m_name + "_spinlock_" + std::to_string(index));
-    }
-
-  private:
-    std::string m_name;
-    std::unique_ptr<DataBlock> m_dataBlock;
 };
+
+// ============================================================================
+// DataBlockConsumer
+// ============================================================================
+DataBlockConsumer::DataBlockConsumer() : pImpl(nullptr) {}
+
+DataBlockConsumer::DataBlockConsumer(std::unique_ptr<DataBlockConsumerImpl> impl)
+    : pImpl(std::move(impl))
+{
+}
+
+DataBlockConsumer::~DataBlockConsumer() = default;
+
+DataBlockConsumer::DataBlockConsumer(DataBlockConsumer &&other) noexcept = default;
+
+DataBlockConsumer &DataBlockConsumer::operator=(DataBlockConsumer &&other) noexcept = default;
+
+SharedSpinLock DataBlockConsumer::get_spinlock(size_t index)
+{
+    if (!pImpl)
+    {
+        throw std::runtime_error("DataBlockConsumer: invalid state");
+    }
+    size_t local = index % SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
+    if (index >= pImpl->dataBlock->header()->total_spinlock_count.load(std::memory_order_acquire))
+    {
+        throw std::out_of_range("Spinlock index out of range");
+    }
+    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
+    return SharedSpinLock(state, pImpl->name + "_spinlock_" + std::to_string(index));
+}
+
+uint32_t DataBlockConsumer::spinlock_count() const
+{
+    return pImpl && pImpl->dataBlock && pImpl->dataBlock->header()
+               ? pImpl->dataBlock->header()->total_spinlock_count.load(std::memory_order_acquire)
+               : 0;
+}
+
+SharedSpinLock DataBlockConsumer::get_user_spinlock(size_t index)
+{
+    return get_spinlock(index);
+}
+
+uint64_t DataBlockConsumer::get_counter_64(size_t index) const
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    {
+        throw std::runtime_error("DataBlockConsumer: invalid state");
+    }
+    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
+    {
+        throw std::out_of_range("Counter 64 index out of range");
+    }
+    return pImpl->dataBlock->header()->counters_64[index].load(std::memory_order_acquire);
+}
+
+void DataBlockConsumer::set_counter_64(size_t index, uint64_t value)
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    {
+        throw std::runtime_error("DataBlockConsumer: invalid state");
+    }
+    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
+    {
+        throw std::out_of_range("Counter 64 index out of range");
+    }
+    pImpl->dataBlock->header()->counters_64[index].store(value, std::memory_order_release);
+}
+
+uint32_t DataBlockConsumer::counter_count() const
+{
+    return pImpl && pImpl->dataBlock && pImpl->dataBlock->header()
+               ? pImpl->dataBlock->header()->total_counter_count.load(std::memory_order_acquire)
+               : 0;
+}
+
+DataBlockIterator DataBlockConsumer::begin()
+{
+    if (!pImpl || !pImpl->dataBlock)
+    {
+        return DataBlockIterator();
+    }
+    auto impl = std::make_unique<DataBlockIteratorImpl>();
+    impl->segment_base = pImpl->dataBlock->segment();
+    impl->segment_size = pImpl->dataBlock->size();
+    impl->header = pImpl->dataBlock->header();
+    impl->flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+    impl->flexible_zone_size = pImpl->dataBlock->header()->flexible_zone_size;
+    impl->block_index = 0;
+    impl->is_end = false;
+    return DataBlockIterator(std::move(impl));
+}
+
+DataBlockIterator DataBlockConsumer::end()
+{
+    auto impl = std::make_unique<DataBlockIteratorImpl>();
+    impl->is_end = true;
+    return DataBlockIterator(std::move(impl));
+}
 
 // ============================================================================
 // Factory Functions
 // ============================================================================
-
-std::unique_ptr<IDataBlockProducer>
-create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const pylabhub::hub::DataBlockConfig &config)
+std::unique_ptr<DataBlockProducer> create_datablock_producer(MessageHub &hub,
+                                                             const std::string &name,
+                                                             DataBlockPolicy policy,
+                                                             const DataBlockConfig &config)
 {
-    (void)hub;    // MessageHub will be used for registration in future steps
-    (void)policy; // Policy will influence DataBlock's internal management
-
+    (void)hub;
+    (void)policy;
     try
     {
-        return std::make_unique<DataBlockProducerImpl>(name, config);
+        auto impl = std::make_unique<DataBlockProducerImpl>();
+        impl->name = name;
+        impl->dataBlock = std::make_unique<DataBlock>(name, config);
+        return std::make_unique<DataBlockProducer>(std::move(impl));
     }
     catch (const std::runtime_error &ex)
     {
-        LOGGER_ERROR("create_datablock_producer: Failed to create producer for '{}': {}", name,
-                     ex.what());
+        LOGGER_ERROR("create_datablock_producer: Failed for '{}': {}", name, ex.what());
         return nullptr;
     }
     catch (const std::bad_alloc &ex)
     {
-        LOGGER_ERROR("create_datablock_producer: Memory allocation failed for '{}': {}", name,
-                     ex.what());
+        LOGGER_ERROR("create_datablock_producer: Memory failed for '{}': {}", name, ex.what());
         return nullptr;
     }
 }
 
-std::unique_ptr<IDataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret)
+std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
+                                                            const std::string &name,
+                                                            uint64_t shared_secret)
 {
-    (void)hub; // MessageHub will be used for discovery in future steps
-
+    (void)hub;
     try
     {
-        return std::make_unique<DataBlockConsumerImpl>(name, shared_secret);
+        auto impl = std::make_unique<DataBlockConsumerImpl>();
+        impl->name = name;
+        impl->dataBlock = std::make_unique<DataBlock>(name);
+        if (impl->dataBlock->header()->magic_number != DATABLOCK_MAGIC_NUMBER)
+        {
+            throw std::runtime_error("Invalid magic number");
+        }
+        if (impl->dataBlock->header()->shared_secret != shared_secret)
+        {
+            throw std::runtime_error("Invalid shared secret");
+        }
+        impl->dataBlock->header()->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
+        return std::make_unique<DataBlockConsumer>(std::move(impl));
     }
     catch (const std::runtime_error &ex)
     {
-        LOGGER_ERROR("find_datablock_consumer: Failed to create consumer for '{}': {}", name,
-                     ex.what());
+        LOGGER_ERROR("find_datablock_consumer: Failed for '{}': {}", name, ex.what());
         return nullptr;
     }
     catch (const std::bad_alloc &ex)
     {
-        LOGGER_ERROR("find_datablock_consumer: Memory allocation failed for '{}': {}", name,
-                     ex.what());
+        LOGGER_ERROR("find_datablock_consumer: Memory failed for '{}': {}", name, ex.what());
         return nullptr;
     }
 }
