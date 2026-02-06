@@ -528,11 +528,14 @@ function(pylabhub_register_directory_for_staging)
         @ONLY
       )
 
+      # CMP0175: COMMENT requires exactly one argument; use variable to avoid
+      # expansion into multiple arguments when path contains semicolons
+      set(_bulk_stage_comment "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})")
       add_custom_command(
         TARGET ${ARG_ATTACH_TO}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-        COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})"
+        COMMENT "${_bulk_stage_comment}"
         VERBATIM
         CONFIGURATIONS ${cfg}
       )
@@ -551,11 +554,14 @@ function(pylabhub_register_directory_for_staging)
       @ONLY
     )
 
+    # CMP0175: COMMENT requires exactly one argument; use variable to avoid
+    # expansion into multiple arguments when path contains semicolons
+    set(_bulk_stage_comment "Bulk staging directory '${ARG_SOURCE_DIR}'")
     add_custom_command(
       TARGET ${ARG_ATTACH_TO}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -P "${output_script}"
-      COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}'"
+      COMMENT "${_bulk_stage_comment}"
       VERBATIM
     )
   endif()
