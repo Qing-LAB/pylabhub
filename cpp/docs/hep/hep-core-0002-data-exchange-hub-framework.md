@@ -216,12 +216,30 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    H["SharedMemoryHeader<br/>Identity, chain links, mutex,<br/>spinlocks × 8,<br/>counters × 8,<br/>indices"]
-    F["Flexible Data Zone<br/>Metadata, descriptors, control"]
-    S["Structured Data Buffer<br/>Ring buffer slots"]
+    H["SharedMemoryHeader fixed"]
+    C["Slot Checksum Region variable"]
+    F["Flexible Data Zone"]
+    S["Structured Data Buffer"]
 
-    H --> F --> S
+    H --> C --> F --> S
 ```
+
+**Total allocation:**
+
+    total = sizeof(SharedMemoryHeader)
+          + (checksum_enabled ? ring_buffer_capacity * 33 : 0)
+          + flexible_zone_size
+          + ring_buffer_capacity * unit_block_size
+
+**Unit block size** (fixed options for simpler bookkeeping; may waste memory):
+
+| Option   | Bytes      | Use case              |
+|----------|------------|------------------------|
+| Size4K   | 4096       | Small messages, metadata |
+| Size4M   | 4,194,304  | Medium buffers, frames   |
+| Size16M  | 16,777,216 | Large blocks, video      |
+
+More options may be added in the future depending on application needs.
 
 ### 2.3 SharedMemoryHeader Structure
 
@@ -262,8 +280,20 @@ struct SharedMemoryHeader {
     // Section 6: 64-bit Counters (64 bytes)
     std::atomic<uint64_t> counters_64[NUM_COUNTERS_64];
 
-    // Section 7: Flexible Zone Metadata (8 bytes)
+    // Section 7: Flexible Zone & Buffer Metadata
     FlexibleZoneFormat flexible_zone_format;
+    uint32_t flexible_zone_size;
+    uint32_t ring_buffer_capacity;    // Slot count (1=Single, 2=Double, N=Ring)
+    uint32_t structured_buffer_size;  // slot_count × unit_block_size
+    uint32_t unit_block_size;        // 4096, 4194304, or 16777216 (DataBlockUnitSize)
+    uint8_t checksum_enabled;
+
+    // Section 8: Integrity Checksums (BLAKE2b via libsodium)
+    // Flexible zone checksum in fixed header; slot checksums in variable region.
+    static constexpr size_t CHECKSUM_BYTES = 32;
+    uint8_t flexible_zone_checksum[CHECKSUM_BYTES];
+    std::atomic<uint8_t> flexible_zone_checksum_valid;
+    // Slot checksums: variable region after header, size = ring_buffer_capacity × 33
 };
 ```
 
@@ -367,7 +397,7 @@ header->write_index.store(new_index, std::memory_order_release);
 | Type | Description |
 |------|--------------|
 | `DataBlockPolicy` | `Single`, `DoubleBuffer`, `RingBuffer` |
-| `DataBlockConfig` | `shared_secret`, `structured_buffer_size`, `flexible_zone_size`, `ring_buffer_capacity`, `flexible_zone_format` |
+| `DataBlockConfig` | `shared_secret`, `structured_buffer_size`, `flexible_zone_size`, `ring_buffer_capacity`, `flexible_zone_format`, `enable_checksum` |
 | `FlexibleZoneFormat` | `Raw`, `MessagePack`, `Json` |
 
 ### 4.2 Producer Interface
@@ -379,6 +409,8 @@ header->write_index.store(new_index, std::memory_order_release);
 | `char* flexible_zone()` | Access mutable flexible data zone |
 | `acquire_spinlock(size_t index)` | Acquire user spinlock by global index |
 | `set_counter_64(size_t index, uint64_t value)` | Set 64-bit counter |
+| `update_checksum_flexible_zone()` | Compute BLAKE2b of flexible zone, store in control zone |
+| `update_checksum_slot(size_t index)` | Compute BLAKE2b of data slot, store in control zone |
 | `DataBlockIterator begin() / end()` | Traverse blocks in chain |
 
 ### 4.3 Consumer Interface
@@ -390,6 +422,8 @@ header->write_index.store(new_index, std::memory_order_release);
 | `const char* flexible_zone() const` | Access read-only flexible zone |
 | `acquire_spinlock(size_t index)` | Acquire user spinlock |
 | `get_counter_64(size_t index)` | Read 64-bit counter |
+| `verify_checksum_flexible_zone()` | Verify stored BLAKE2b matches flexible zone |
+| `verify_checksum_slot(size_t index)` | Verify stored BLAKE2b matches data slot |
 | `DataBlockIterator begin() / end()` | Traverse blocks |
 
 ### 4.4 Factory Functions
@@ -543,8 +577,34 @@ munmap(mapped_addr, size); close(shm_fd);  // Don't unlink
 | **Polling** | Consumers poll indices → detect new data → read | ~100-500 μs | Sustained high rate, active consumers |
 | **Hybrid** | Low-freq poll → notification triggers fast poll | Balanced | Latency + CPU trade-off |
 
-### 7.2 Data Integrity Validation
+### 7.2 Data Integrity Validation and Checksums
 
+**Checksum Strategy (BLAKE2b via libsodium):**
+
+Checksums are stored in the **control zone** (SharedMemoryHeader). The user has no direct access to the checksum bytes; they update and verify via API. This provides a safeguard against accidental corruption while keeping the implementation opaque.
+
+| Zone | Storage | API |
+|------|---------|-----|
+| Flexible zone | `flexible_zone_checksum[32]` per block | `update_checksum_flexible_zone()`, `verify_checksum_flexible_zone()` |
+| Data slot (index-based) | `slot_checksums[slot_index][32]` | `update_checksum_slot(size_t index)`, `verify_checksum_slot(size_t index)` |
+
+- **Hash algorithm:** libsodium `crypto_generichash` (BLAKE2b-256, 32 bytes).
+- **Config option:** `DataBlockConfig::enable_checksum` (default: false) to opt-in.
+- **Versioning:** `SharedMemoryHeader::version` tracks protocol layout. Bump on header changes.
+
+**Producer API:**
+```cpp
+bool update_checksum_flexible_zone();           // Compute BLAKE2b of flexible zone, store in header
+bool update_checksum_slot(size_t slot_index);   // Compute BLAKE2b of slot bytes, store in header
+```
+
+**Consumer API:**
+```cpp
+bool verify_checksum_flexible_zone() const;     // Returns true if stored checksum matches computed
+bool verify_checksum_slot(size_t slot_index) const;
+```
+
+**Legacy slot-based pattern (user-managed):**
 ```cpp
 struct DataSlot {
     uint64_t sequence_number;
@@ -693,7 +753,7 @@ if (header->version < DATABLOCK_VERSION_MIN_SUPPORTED)
 - **Full Policy-Based Buffer Management:** `begin_write`/`end_write`/`begin_consume`/`end_consume` for all policies
 - **Flexible Data Zone Serialization:** MessagePack integration
 - **Consumer Heartbeat:** Auto-decrement `active_consumer_count` on timeout
-- **Integrity Checking:** Checksums, sequence numbers
+- **Integrity Checking:** BLAKE2b checksums in control zone (see §7.2)
 - **Multi-Producer Support:** Per-producer write indices + merge logic
 - **Zero-Copy Cross-Language API:** C API for FFI (Python, Rust, Go)
 - **Advanced Buffer Policies:** Priority queues, time-based expiry
