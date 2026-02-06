@@ -196,7 +196,8 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
         {
             auto fname = canonical_target.filename();
             auto parent = canonical_target.parent_path();
-            if (fname.empty() || fname == "." || fname == "..")
+            if ((canonical_target.has_root_name() && !canonical_target.has_parent_path()) ||
+                fname.empty() || fname == "." || fname == "..")
             {
                 fname = "pylabhub_root";
             }

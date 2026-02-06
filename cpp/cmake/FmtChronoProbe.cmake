@@ -3,16 +3,16 @@
 # Probes the fmt library to detect how it handles subsecond formatting
 # in chrono time points.
 
-message(STATUS "Performing test: probing fmt chrono subseconds support...")
+message(STATUS "[pylabhub-fmt-probe] Performing test: probing fmt chrono subseconds support...")
 if (CMAKE_CROSSCOMPILING)
-  message(STATUS "Cross-compiling: skipping fmt chrono subseconds runtime probe; defaulting to fallback (no subseconds).")
+  message(STATUS "[pylabhub-fmt-probe] Cross-compiling: skipping fmt chrono subseconds runtime probe; defaulting to fallback (no subseconds).")
   set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")
 else()
   # Check if the probe has already been run and its results cached.
   if (DEFINED HAVE_FMT_CHRONO_SUBSECONDS AND DEFINED FMT_CHRONO_FMT_STYLE)
-    message(STATUS "    ** fmt chrono: probe results found in cache. Skipping re-run.")
-    message(STATUS "    ** HAVE_FMT_CHRONO_SUBSECONDS = ${HAVE_FMT_CHRONO_SUBSECONDS}")
-    message(STATUS "    ** FMT_CHRONO_FMT_STYLE = ${FMT_CHRONO_FMT_STYLE}")
+    message(STATUS "[pylabhub-fmt-probe] Probe results found in cache. Skipping re-run.")
+    message(STATUS "[pylabhub-fmt-probe] HAVE_FMT_CHRONO_SUBSECONDS = ${HAVE_FMT_CHRONO_SUBSECONDS}")
+    message(STATUS "[pylabhub-fmt-probe] FMT_CHRONO_FMT_STYLE = ${FMT_CHRONO_FMT_STYLE}")
   else()
   # Get fmt include directories from the fmt::fmt target
   if (TARGET fmt::fmt)
@@ -89,17 +89,17 @@ int main() {
 
   if(FMT_PROBE_COMPILE_RESULT)
     if(FMT_PROBE_RUN_RESULT EQUAL 0)
-      message(STATUS "    ** fmt chrono: sub-second support detected, format microsecond with '%f'.")
+      message(STATUS "[pylabhub-fmt-probe] Sub-second support detected, format microsecond with '%f'.")
       message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
       set(HAVE_FMT_CHRONO_SUBSECONDS 1 CACHE INTERNAL "fmt chrono subseconds support")
       set(FMT_CHRONO_FMT_STYLE 1 CACHE INTERNAL "fmt chrono format style is %f")
     elseif(FMT_PROBE_RUN_RESULT EQUAL 2)
-      message(STATUS "    ** fmt chrono: sub-second support detected, format microsecond without '%f'.")
+      message(STATUS "[pylabhub-fmt-probe] Sub-second support detected, format microsecond without '%f'.")
       message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
       set(HAVE_FMT_CHRONO_SUBSECONDS 1 CACHE INTERNAL "fmt chrono subseconds support")
       set(FMT_CHRONO_FMT_STYLE 2 CACHE INTERNAL "fmt chrono format style is implicit")
     else()
-      message(STATUS "    ** fmt chrono: sub-second support not available.")
+      message(STATUS "[pylabhub-fmt-probe] Sub-second support not available.")
       message(VERBOSE "        Probe returned: ${FMT_PROBE_RUN_RESULT}")
       message(VERBOSE "        Probe run output:\n\n${FMT_PROBE_RUN_OUTPUT}\n")
       set(HAVE_FMT_CHRONO_SUBSECONDS 0 CACHE INTERNAL "fmt chrono subseconds support")

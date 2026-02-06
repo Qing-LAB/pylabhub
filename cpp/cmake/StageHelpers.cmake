@@ -45,7 +45,7 @@ cmake_minimum_required(VERSION 3.29)
 #
 # For a detailed explanation of how `DIRECTORIES`, `FILES`, and `SUBDIR`
 # interact to control the resulting include path structure, refer to:
-# `docs/README_CMake_Design.md#header-staging-mechanics`
+# `docs/README_CMake_Design.md#111-header-staging-mechanics`
 #
 function(pylabhub_register_headers_for_staging)
   set(options "")
@@ -354,8 +354,7 @@ function(pylabhub_attach_library_staging_commands)
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands requires TARGET and ATTACH_TO arguments.")
   endif()
   if(NOT TARGET ${ARG_TARGET})
-    message(WARNING "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist, skipping.")
-    return()
+    message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_TARGET}' does not exist.")
   endif()
   if(NOT TARGET ${ARG_ATTACH_TO})
     message(FATAL_ERROR "pylabhub_attach_library_staging_commands: Target '${ARG_ATTACH_TO}' does not exist.")
@@ -406,6 +405,15 @@ endfunction()
 # This version is hardened to correctly expand list arguments and ensure
 # commands are deferred until post-build using COMMAND_EXPAND_LISTS.
 #
+
+# --- pylabhub_attach_headers_staging_commands ---
+#
+# Attaches custom commands to a target to stage header directories. This is
+# used to simplify the staging logic for third-party libraries.
+#
+# This version is hardened to correctly expand list arguments and ensure
+# commands are deferred until post-build using COMMAND_EXPAND_LISTS.
+#
 function(pylabhub_attach_headers_staging_commands)
   set(options "")
   set(oneValueArgs "SUBDIR;ATTACH_TO;EXTERNAL_PROJECT_DEPENDENCY")
@@ -430,19 +438,19 @@ function(pylabhub_attach_headers_staging_commands)
   endif()
 
   set(custom_cmds "")
-  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Preparing staging headers -> ${DEST_DIR}")
+  list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Preparing staging headers -> ${DEST_DIR}")
   # Ensure destination directory exists (idempotent — does not remove siblings)
   list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_DIR}")
 
   # Copy directories (use copy_directory_if_different — non-destructive for siblings)
   foreach(SRC_DIR IN LISTS ARG_DIRECTORIES)
-    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying directory: ${SRC_DIR} -> ${DEST_DIR}")
     list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DEST_DIR}")
   endforeach()
 
   # Copy individual files (copy_if_different each file)
   foreach(_file IN LISTS ARG_FILES)
-    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "DEBUG: Copying file: ${_file} -> ${DEST_DIR}/")
+    list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E echo "[pylabhub-staging] Copying file: ${_file} -> ${DEST_DIR}/")
     list(APPEND custom_cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "${DEST_DIR}/")
   endforeach()
 
@@ -458,6 +466,100 @@ function(pylabhub_attach_headers_staging_commands)
   if(ARG_EXTERNAL_PROJECT_DEPENDENCY)
     add_dependencies(${ARG_ATTACH_TO} ${ARG_EXTERNAL_PROJECT_DEPENDENCY})
   endif()
+endfunction()
+
+
+# --- pylabhub_register_directory_for_staging ---
+#
+# Registers a full directory structure (e.g., an install prefix) to be staged.
+# This is useful for external projects that install multiple subdirectories
+# (bin, lib, include, share) into a single prefix. It leverages a template
+# script to handle the actual file operations and platform-specific logic
+# like Windows DLL staging.
+#
+# Usage:
+#   pylabhub_register_directory_for_staging(
+#     SOURCE_DIR <path_to_source_directory> # The root directory to copy from.
+#     ATTACH_TO <target_name>               # The custom target to attach the commands to.
+#     [SUBDIRS <list_of_subdirs>]           # Optional: List of subdirectories to copy (e.g., "bin;lib;include").
+#                                           # If not provided, common subdirs ("bin;lib;include;share") are used.
+#   )
+#
+function(pylabhub_register_directory_for_staging)
+  set(options "")
+  set(oneValueArgs "SOURCE_DIR;ATTACH_TO")
+  set(multiValueArgs "SUBDIRS")
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_SOURCE_DIR OR NOT ARG_ATTACH_TO)
+    message(FATAL_ERROR "pylabhub_register_directory_for_staging requires SOURCE_DIR and ATTACH_TO arguments.")
+  endif()
+  if(NOT TARGET ${ARG_ATTACH_TO})
+    message(FATAL_ERROR "pylabhub_register_directory_for_staging: Target '${ARG_ATTACH_TO}' does not exist.")
+  endif()
+
+  set(_subdirs_to_copy "")
+  if(ARG_SUBDIRS)
+    set(_subdirs_to_copy "${ARG_SUBDIRS}")
+  else()
+    set(_subdirs_to_copy "bin;lib;include;share") # Default common subdirectories
+  endif()
+
+  set(_bulk_stage_template "${CMAKE_SOURCE_DIR}/cmake/BulkStageSingleDirectory.cmake.in")
+
+  # Derive a unique name for the configured script for better readability.
+  get_filename_component(_source_dir_name "${ARG_SOURCE_DIR}" NAME)
+  string(REPLACE "/" "-" _source_dir_name "${_source_dir_name}") # Replace slashes in name for path safety
+
+  # Generate and attach custom commands for each configuration type.
+  if(CMAKE_CONFIGURATION_TYPES)
+    foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+      string(TOUPPER "${cfg}" CFGU)
+      set(output_script "${CMAKE_BINARY_DIR}/BulkStage-${ARG_ATTACH_TO}-${cfg}-${_source_dir_name}.cmake")
+
+      # Define variables that will be substituted in the template
+      set(SOURCE_DIR "${ARG_SOURCE_DIR}")
+      set(STAGING_ROOT_DIR "${PYLABHUB_STAGING_DIR}")
+      set(SUBDIRS_TO_COPY "${_subdirs_to_copy}")
+
+      configure_file(
+        "${_bulk_stage_template}"
+        "${output_script}"
+        @ONLY
+      )
+
+      add_custom_command(
+        TARGET ${ARG_ATTACH_TO}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+        COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}' (config ${cfg})"
+        VERBATIM
+        CONFIGURATIONS ${cfg}
+      )
+    endforeach()
+  else() # Single-configuration generator
+    set(output_script "${CMAKE_BINARY_DIR}/BulkStage-${ARG_ATTACH_TO}-${_source_dir_name}.cmake")
+
+    # Define variables that will be substituted in the template
+    set(SOURCE_DIR "${ARG_SOURCE_DIR}")
+    set(STAGING_ROOT_DIR "${PYLABHUB_STAGING_DIR}")
+    set(SUBDIRS_TO_COPY "${_subdirs_to_copy}")
+
+    configure_file(
+      "${_bulk_stage_template}"
+      "${output_script}"
+      @ONLY
+    )
+
+    add_custom_command(
+      TARGET ${ARG_ATTACH_TO}
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${output_script}"
+      COMMENT "Bulk staging directory '${ARG_SOURCE_DIR}'"
+      VERBATIM
+    )
+  endif()
+
 endfunction()
 
 

@@ -10,6 +10,11 @@ project(third_party NONE)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ThirdPartyPolicyAndHelper)
 
+# Validate PYLABHUB_STAGING_DIR. This is crucial as all staging relies on it.
+if(NOT DEFINED PYLABHUB_STAGING_DIR OR "${PYLABHUB_STAGING_DIR}" STREQUAL "")
+  message(FATAL_ERROR "third_party/CMakeLists.txt expects PYLABHUB_STAGING_DIR to be defined by the parent project.")
+endif()
+
 # --- Staging Infrastructure ---
 if(THIRD_PARTY_INSTALL)
   add_custom_target(stage_third_party_deps
@@ -119,27 +124,6 @@ include(cppzmq)
 include(XOPToolKit)
 include(cmake/googletest.cmake)
 
-# ===========================================================================
-# Bulk Staging of External Prerequisite Artifacts (Strategy 2)
-#
-# This step orchestrates the copying of all files installed by ExternalProjects
-# (Type B dependencies) from PREREQ_INSTALL_DIR to PYLABHUB_STAGING_DIR.
-# It is executed as a custom command attached to `stage_third_party_deps`,
-# ensuring it runs after `build_prerequisites` has completed its install step.
-# ===========================================================================
-if(THIRD_PARTY_INSTALL)
-  # Add a custom command to execute the dedicated bulk staging script.
-  add_custom_command(
-    TARGET stage_third_party_deps
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/BulkStagePrerequisites.cmake"
-      -DPREREQ_DIR="${PREREQ_INSTALL_DIR}"
-      -DSTAGING_DIR="${PYLABHUB_STAGING_DIR}"
-    COMMENT "Bulk staging external prerequisites from ${PREREQ_INSTALL_DIR} to ${PYLABHUB_STAGING_DIR}"
-    VERBATIM
-  )
-endif()
-
 # --- 4. Staging ---
 # The per-target staging registration below only applies to third-party libraries
 # that are configured as native CMake sub-projects (e.g., fmt, libzmq).
@@ -161,41 +145,49 @@ endif()
 # to generate the final staging commands.
 # ===========================================================================
 if(THIRD_PARTY_INSTALL)
-    # --- Finalize Third-Party Library Staging ---
-    get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
-    if(third_party_libs_to_stage)
-        message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
-        foreach(TGT ${third_party_libs_to_stage})
-            if(TARGET ${TGT})
-                pylabhub_attach_library_staging_commands(
-                    TARGET ${TGT}
-                    ATTACH_TO stage_third_party_deps
-                )
-            else()
-                message(WARNING "A registered library target for staging does not exist: ${TGT}")
-            endif()
-        endforeach()
-    endif()
+  # Use the new holistic registration for external project prerequisites.
+  # This replaces the old BulkStagePrerequisites.cmake.in approach.
+  pylabhub_register_directory_for_staging(
+    SOURCE_DIR "${PREREQ_INSTALL_DIR}"
+    ATTACH_TO stage_third_party_deps
+    SUBDIRS "bin;lib;include;share" # Stage common directories
+  )
 
-    # --- Finalize Third-Party Header Staging ---
-    get_property(header_registrations GLOBAL PROPERTY PYLABHUB_HEADERS_TO_STAGE)
-    if(header_registrations)
-        message(STATUS "Processing registered third-party headers for staging...")
-        foreach(REG_STRING IN LISTS header_registrations)
-            if(NOT REG_STRING)
-                continue()
-            endif()
-            
-            # The registration string is a set of key-value pairs separated by '@@'.
-            # We replace '@@' with ';' to create a standard CMake argument list,
-            # and then pass it directly to our helper function.
-            string(REPLACE "@@" ";" ARGS_LIST "${REG_STRING}")
-            pylabhub_attach_headers_staging_commands(
-                ${ARGS_LIST}
-                ATTACH_TO stage_third_party_deps
-            )
-        endforeach()
-    endif()
+  # --- Finalize Third-Party Library Staging ---
+  get_property(third_party_libs_to_stage GLOBAL PROPERTY PYLABHUB_LIBRARIES_TO_STAGE)
+  if(third_party_libs_to_stage)
+      message(STATUS "Processing registered third-party libraries for staging: ${third_party_libs_to_stage}")
+      foreach(TGT ${third_party_libs_to_stage})
+          if(TARGET ${TGT})
+              pylabhub_attach_library_staging_commands(
+                  TARGET ${TGT}
+                  ATTACH_TO stage_third_party_deps
+              )
+          else()
+              message(WARNING "A registered library target for staging does not exist: ${TGT}")
+          endif()
+      endforeach()
+  endif()
+
+  # --- Finalize Third-Party Header Staging ---
+  get_property(header_registrations GLOBAL PROPERTY PYLABHUB_HEADERS_TO_STAGE)
+  if(header_registrations)
+      message(STATUS "Processing registered third-party headers for staging...")
+      foreach(REG_STRING IN LISTS header_registrations)
+          if(NOT REG_STRING)
+              continue()
+          endif()
+          
+          # The registration string is a set of key-value pairs separated by '@@'.
+          # We replace '@@' with ';' to create a standard CMake argument list,
+          # and then pass it directly to our helper function.
+          string(REPLACE "@@" ";" ARGS_LIST "${REG_STRING}")
+          pylabhub_attach_headers_staging_commands(
+              ${ARGS_LIST}
+              ATTACH_TO stage_third_party_deps
+          )
+      endforeach()
+  endif()
 endif()
 
 # ===========================================================================
