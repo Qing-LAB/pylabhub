@@ -15,7 +15,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-#include "nlohmann/json.hpp"
 
 #include "utils/json_config.hpp"
 

@@ -8,6 +8,8 @@
  */
 #include "plh_service.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include "utils/json_config.hpp"
 #include "utils/message_hub.hpp"
 #include "utils/data_block.hpp"
