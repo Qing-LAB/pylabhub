@@ -1,4 +1,5 @@
 include(ThirdPartyPolicyAndHelper) # Ensure helpers are available.
+
 # --------------------------------------------
 # third_party/cmake/nlohmann_json.cmake
 # Setup nlohmann/json
@@ -45,7 +46,9 @@ set(_nlohmann_layout "unknown")      # "namespaced" or "flat" or "unknown" (for 
 
 # --- 1. Create the wrapper and alias ---
 # This provides the stable, namespaced target for consumers.
-_expose_wrapper(pylabhub_nlohmann_json pylabhub::third_party::nlohmann_json)
+add_library(pylabhub_nlohmann_json INTERFACE)
+add_library(pylabhub::third_party::nlohmann_json ALIAS pylabhub_nlohmann_json)
+
 
 # --- Local Helper Function ---
 # Checks for the existence of the canonical nlohmann_json targets and sets
@@ -148,7 +151,10 @@ if(THIRD_PARTY_INSTALL)
   if(_nlohmann_include_dir AND EXISTS "${_nlohmann_include_dir}/nlohmann/json.hpp")
     # The layout is guaranteed to be namespaced at this point. Copy the nlohmann
     # directory from the resolved include path into the staging include directory.
-    pylabhub_register_headers_for_staging(DIRECTORIES "${_nlohmann_include_dir}" SUBDIR "")
+        pylabhub_register_headers_for_staging(
+          DIRECTORIES "${_nlohmann_include_dir}/nlohmann"  # Changed from "${_nlohmann_include_dir}"
+          SUBDIR "nlohmann"  # Changed from ""
+        )
     message(STATUS "[pylabhub-third-party] Staging nlohmann/json headers.")
   else()
     message(WARNING "[pylabhub-third-party] No include directory resolved for nlohmann/json; skipping header staging.")
@@ -156,13 +162,5 @@ if(THIRD_PARTY_INSTALL)
 else()
     message(STATUS "[pylabhub-third-party] THIRD_PARTY_INSTALL is OFF; skipping staging for nlohmann/json.")
 endif()
-
-# --- 5. Add to export set for installation ---
-# This target is an INTERFACE library, but it must be part of the export
-# set so that downstream projects consuming our package can find its
-# include directories.
-install(TARGETS pylabhub_nlohmann_json
-  EXPORT pylabhubTargets
-)
 
 message(STATUS "[pylabhub-third-party] nlohmann/json configuration complete.")

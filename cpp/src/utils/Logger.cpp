@@ -346,22 +346,35 @@ void Logger::Impl::enqueue_command(Command &&cmd)
             return;
         }
 
-        // Bounded queue implementation: Drop new messages if the queue is full.
-        // This check is applied only to LogMessage types to ensure control commands
-        // (like flush, shutdown) are not dropped.
-        if (std::holds_alternative<LogMessage>(cmd))
+        const size_t current_queue_size = queue_.size();
+        const size_t max_queue_size_soft = m_max_queue_size;
+        const size_t max_queue_size_hard = m_max_queue_size * 2; // Hard limit for all commands
+
+        // Check 1: Hard limit reached. Drop ALL messages (including control commands).
+        if (current_queue_size >= max_queue_size_hard)
         {
-            if (queue_.size() >= m_max_queue_size)
+            m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
+            if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
             {
-                m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
-                // If this is the first message being dropped, record the time.
-                if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
-                {
-                    m_dropping_since = std::chrono::system_clock::now();
-                }
-                return; // Message is dropped here.
+                m_dropping_since = std::chrono::system_clock::now();
             }
+            reject_command_due_to_shutdown(cmd); // Reject promise if applicable
+            return;
         }
+
+        // Check 2: Soft limit reached, and it's a LogMessage. Drop only LogMessages.
+        if (current_queue_size >= max_queue_size_soft && std::holds_alternative<LogMessage>(cmd))
+        {
+            m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
+            if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
+            {
+                m_dropping_since = std::chrono::system_clock::now();
+            }
+            // LogMessages don't have promises, so no need to call reject_command_due_to_shutdown.
+            return;
+        }
+
+        // Enqueue: Below soft limit, or it's a control message below the hard limit.
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
@@ -417,6 +430,9 @@ void Logger::Impl::worker_loop()
         }
 
         // --- Find last SetSinkCommand ---
+        // Optimization: If multiple sink changes were requested in a single batch,
+        // only the final one needs to be executed. We find its index here and
+        // will ignore any others during processing.
         ssize_t last_set_sink_idx = -1;
         for (ssize_t i = static_cast<ssize_t>(local_queue.size()) - 1; i >= 0; --i)
         {

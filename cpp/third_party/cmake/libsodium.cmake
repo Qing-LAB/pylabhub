@@ -1,126 +1,134 @@
 # third_party/cmake/libsodium.cmake
 #
-# This script uses ExternalProject_Add to build libsodium.
-# It is designed to be the first step in a prerequisite build chain.
-
-include(ExternalProject)
+# This script is a wrapper for building the libsodium library. It handles the
+# major differences between the Windows and POSIX build systems for libsodium.
+#
+# Its strategy is to:
+#  1. Detect the current platform (MSVC vs. non-MSVC).
+#  2. Define the appropriate build commands:
+#     - For MSVC, it uses `msbuild` to build the provided Visual Studio solution.
+#     - For POSIX, it uses the standard `./configure && make` Autotools workflow.
+#  3. Pass these platform-specific commands to the generic
+#     `pylabhub_add_external_prerequisite` function, which handles the
+#     `ExternalProject_Add` boilerplate and post-build normalization.
+#
+# Wrapper to build libsodium using the generic prerequisite helper function.
 include(ThirdPartyPolicyAndHelper)
 
-# This will be set in the parent scope (third_party/CMakeLists.txt)
-if(NOT PREREQ_INSTALL_DIR)
-  set(PREREQ_INSTALL_DIR "${CMAKE_BINARY_DIR}/prereqs")
-endif()
+# --- 1. Define Paths ---
 
-set(LIBSODIUM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libsodium")
-set(LIBSODIUM_INSTALL_DIR "${PREREQ_INSTALL_DIR}") # Install to the prerequisite dir
-set(LIBSODIUM_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/libsodium-build")
+
+set(_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/libsodium")
+set(_build_dir "${CMAKE_BINARY_DIR}/third_party/libsodium-build")
+set(_install_dir "${PREREQ_INSTALL_DIR}")
+
+# --- 2. Define Platform-Specific Build Commands ---
+set(_configure_command "")
+set(_build_command "")
+set(_install_command "")
+set(_byproducts "")
 
 if(MSVC)
-  # -----------------------------
-  # Windows + MSVC: MSBuild solution build
-  # -----------------------------
-  find_program(MSBUILD_EXECUTABLE msbuild)
-  if(NOT MSBUILD_EXECUTABLE)
-    message(FATAL_ERROR "msbuild.exe not found. Run CMake from a Visual Studio Developer Command Prompt.")
-  endif()
+  # --- MSVC Build Definition ---
+  find_program(_MSBUILD_EXECUTABLE msbuild REQUIRED)
 
-  # libsodium MSVC configs are typically StaticRelease/StaticDebug
   if(CMAKE_CONFIGURATION_TYPES)
-    # Multi-config generator: choose config at build time with $<CONFIG>
     set(_libsodium_cfg "$<IF:$<CONFIG:Debug>,StaticDebug,StaticRelease>")
   else()
-    # Single-config generator
-    if(CMAKE_BUILD_TYPE MATCHES "Debug")
+    if(CMAKE_BUILD_TYPE MATCHES "Debug") 
       set(_libsodium_cfg "StaticDebug")
-    else()
-      set(_libsodium_cfg "StaticRelease")
+    else() 
+      set(_libsodium_cfg "StaticRelease") 
     endif()
   endif()
 
-  if(NOT MSVC_TOOLSET_VERSION)
-    message(FATAL_ERROR "MSVC_TOOLSET_VERSION is not defined, but MSVC is the compiler.")
+  if(NOT DEFINED MSVC_TOOLSET_VERSION)
+    message(FATAL_ERROR "[libsodium] MSVC_TOOLSET_VERSION is not defined.")
   endif()
-  message(STATUS "[libsodium.cmake] MSVC_TOOLSET_VERSION=${MSVC_TOOLSET_VERSION}")
 
-  # Map toolset -> libsodium solution folder
   set(_vs_dir "")
-  if(MSVC_TOOLSET_VERSION STREQUAL "140")
+  if(MSVC_TOOLSET_VERSION STREQUAL "140") 
     set(_vs_dir "vs2015")
-  elseif(MSVC_TOOLSET_VERSION STREQUAL "141")
+  elseif(MSVC_TOOLSET_VERSION STREQUAL "141") 
     set(_vs_dir "vs2017")
-  elseif(MSVC_TOOLSET_VERSION STREQUAL "142")
+  elseif(MSVC_TOOLSET_VERSION STREQUAL "142") 
     set(_vs_dir "vs2019")
-  elseif(MSVC_TOOLSET_VERSION STREQUAL "143")
+  elseif(MSVC_TOOLSET_VERSION STREQUAL "143") 
     set(_vs_dir "vs2022")
   else()
-    # Fallback to the latest known version
     set(_vs_dir "vs2022")
-    message(WARNING "Unsupported Visual Studio toolset version: ${MSVC_TOOLSET_VERSION}. Falling back to vs2022. Build may fail.")
+    message(WARNING "[libsodium] Unsupported MSVC_TOOLSET_VERSION: ${MSVC_TOOLSET_VERSION}. Falling back to vs2022.")
   endif()
 
-  set(LIBSODIUM_PROJECT_ROOT_DIR "${LIBSODIUM_SOURCE_DIR}/builds/msvc/${_vs_dir}")
-  set(LIBSODIUM_PROJECT_FILE "${LIBSODIUM_PROJECT_ROOT_DIR}/libsodium.sln")
+  set(_sln_file "${_source_dir}/builds/msvc/${_vs_dir}/libsodium.sln")
+  string(REPLACE "\\" "/" _out_dir_fwd "${_build_dir}/lib/")
+  string(REPLACE "\\" "/" _int_dir_fwd "${_build_dir}/obj/")
 
-  # MSBuild OutDir/IntDir need Windows-style paths and must end with a trailing slash.
-  # To avoid issues with backslash parsing at the command line, we use forward
-  # slashes, which MSBuild handles correctly.
-  string(REPLACE "\\" "/" _out_dir_fwd "${LIBSODIUM_BUILD_DIR}/lib/")
-  string(REPLACE "\\" "/" _int_dir_fwd "${LIBSODIUM_BUILD_DIR}/obj/")
+  set(_configure_command COMMAND ${CMAKE_COMMAND} -E echo "No configure step for libsodium (MSVC)")
 
-  set(_msbuild_cmd
-    "${MSBUILD_EXECUTABLE}" "${LIBSODIUM_PROJECT_FILE}"
-    /m
+  set(_build_command
+    "${_MSBUILD_EXECUTABLE}" "${_sln_file}" /m
     "/p:Configuration=${_libsodium_cfg}"
     "/p:Platform=${CMAKE_VS_PLATFORM_NAME}"
     "/p:PlatformToolset=${CMAKE_VS_PLATFORM_TOOLSET}"
-    "/p:SolutionDir=${LIBSODIUM_PROJECT_ROOT_DIR}\\"
+    "/p:SolutionDir=${_source_dir}/builds/msvc/${_vs_dir}\\"
     "/p:OutDir=${_out_dir_fwd}"
     "/p:IntDir=${_int_dir_fwd}"
   )
 
-  # After build, copy the produced libs and headers to INSTALL_DIR so consumers have a stable layout.
-  set(_copy_cmd
-    "${CMAKE_COMMAND}" -E make_directory "<INSTALL_DIR>/lib"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "<INSTALL_DIR>/include"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${LIBSODIUM_BUILD_DIR}/lib" "<INSTALL_DIR>/lib"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${LIBSODIUM_SOURCE_DIR}/src/libsodium/include" "<INSTALL_DIR>/include"
+  # The MSBuild project for libsodium does not have an install step, so we define
+  # a manual one to copy the built artifacts and headers to the install dir.
+  set(_install_command
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_build_dir}/lib" "${_install_dir}/lib"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_source_dir}/src/libsodium/include" "${_install_dir}/include"
   )
+  set(_byproducts "${_install_dir}/lib/libsodium.lib")
 
-  ExternalProject_Add(
-    libsodium_external
-    SOURCE_DIR   "${LIBSODIUM_SOURCE_DIR}"
-    BINARY_DIR   "${LIBSODIUM_BUILD_DIR}"
-    INSTALL_DIR  "${LIBSODIUM_INSTALL_DIR}"
-
-    CONFIGURE_COMMAND ""   # MSBuild project is pre-generated
-    INSTALL_COMMAND  ${_copy_cmd}
-
-    # The library name produced by libsodium MSVC builds is typically "libsodium.lib"
-    BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libsodium.lib"
-    BUILD_COMMAND    ${_msbuild_cmd}
-  )
 else()
-  # macOS/Linux: autotools build
-  ExternalProject_Add(
-    libsodium_external
-    SOURCE_DIR   "${LIBSODIUM_SOURCE_DIR}"
-    BINARY_DIR   "${LIBSODIUM_BUILD_DIR}"
-    INSTALL_DIR  "${LIBSODIUM_INSTALL_DIR}"
-    CONFIGURE_COMMAND
-      "${CMAKE_COMMAND}" -E env
-        "CC=${CMAKE_C_COMPILER}"
-        "CXX=${CMAKE_CXX_COMPILER}"
-      "${LIBSODIUM_SOURCE_DIR}/configure"
-        --prefix=<INSTALL_DIR>
-        --disable-shared
-        --enable-static
-        --disable-tests
-        --disable-dependency-tracking
-        --with-pic
-    BUILD_COMMAND    "$(MAKE)"
-    INSTALL_COMMAND  "$(MAKE)" install
-    BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libsodium.a"
+  # --- POSIX (Autotools) Build Definition ---
+  find_program(_make_prog make REQUIRED)
+  if(DEFINED CMAKE_BUILD_PARALLEL_LEVEL)
+    set(_par_args "-j${CMAKE_BUILD_PARALLEL_LEVEL}")
+  else()
+    set(_par_args "")
+  endif()
+
+  if(NOT EXISTS "${_source_dir}/configure")
+      message(FATAL_ERROR "[libsodium] Autotools configure script not found in ${_source_dir}")
+  endif()
+
+  set(_configure_command
+    ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
+    "${_source_dir}/configure"
+      --prefix=${_install_dir}
+      --disable-shared
+      --enable-static
+      --disable-tests
+      --disable-dependency-tracking
+      --with-pic
   )
+  set(_build_command ${_make_prog} ${_par_args})
+  set(_install_command ${_make_prog} install)
+  set(_byproducts "${_install_dir}/lib/libsodium.a")
 endif()
 
-message(STATUS "[pylabhub-third-party] Defined libsodium_external project to install to ${LIBSODIUM_INSTALL_DIR}")
+# --- 3. Call the generic helper function ---
+pylabhub_add_external_prerequisite(
+  NAME              libsodium
+  SOURCE_DIR        "${_source_dir}"
+  BINARY_DIR        "${_build_dir}"
+  INSTALL_DIR       "${_install_dir}"
+
+  # Pass the platform-specific commands defined above
+  CONFIGURE_COMMAND ${_configure_command}
+  BUILD_COMMAND     ${_build_command}
+  INSTALL_COMMAND   ${_install_command}
+  BUILD_BYPRODUCTS  ${_byproducts}
+
+  # Define patterns for the post-build detection script
+  LIB_PATTERNS      "libsodium.lib;libsodium.a"
+  HEADER_SOURCE_PATTERNS "src/libsodium/include" # Source location of headers
+)
+
+message(STATUS "[pylabhub-third-party] libsodium configuration complete.")
+
