@@ -2,7 +2,7 @@
 | -------------- | ------------------------------------------ |
 | **HEP**        | `core-0002`                                |
 | **Title**      | A Framework for Inter-Process Data Exchange|
-| **Author**     | Quan Qing <quan.qing@asu.edu>              |
+| **Author**     | Quan Qing, AI assistant                    |
 | **Status**     | Draft                                      |
 | **Category**   | Core                                       |
 | **Created**    | 2026-01-07                                 |
