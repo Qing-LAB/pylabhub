@@ -142,10 +142,6 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
 )
 
-# We always use static libsodium; define SODIUM_STATIC so libsodium headers do not
-# use __declspec(dllimport) on Windows (which would require libsodium.dll at runtime).
-target_compile_definitions(pylabhub-utils PUBLIC SODIUM_STATIC)
-
 if(PYLABHUB_EXECINFO_LIB)
   target_link_libraries(pylabhub-utils PRIVATE ${PYLABHUB_EXECINFO_LIB})
 endif()

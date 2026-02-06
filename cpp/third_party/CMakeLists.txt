@@ -84,6 +84,8 @@ add_dependencies(${_internal_imported_target} libsodium_external)
 # 2. Create the canonical INTERFACE wrapper target (pylabhub_libsodium).
 add_library(pylabhub_${_pkg} INTERFACE)
 target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
+# We always use static libsodium; SODIUM_STATIC prevents __declspec(dllimport) on Windows.
+target_compile_definitions(pylabhub_${_pkg} INTERFACE SODIUM_STATIC)
 
 # 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
