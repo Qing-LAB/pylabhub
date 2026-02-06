@@ -9,15 +9,18 @@
  * source code location reporting.
  */
 
-// -- Debugging utilities: stack trace printing, panic and debug messages
 #pragma once
+/**
+ * @file debug_info.hpp
+ * @brief Stack trace, panic handling, and debug messaging utilities.
+ */
+#include "utils/format_tools.hpp"
 
-#include "utils/format_tools.hpp" // for pylabhub::format_tools::filename_only
-#include <cstdio>                 // for fflush
-#include <fmt/format.h>           // for fmt::format_string, fmt::print, fmt::format
-#include <source_location>        // for std::source_location
-#include <string>                 // for std::string
-#include <string_view>            // for std::string_view
+#include <cstdio>
+#include <fmt/format.h>
+#include <source_location>
+#include <string>
+#include <string_view>
 
 // ---------------- thin macros for convenience --------------
 /**

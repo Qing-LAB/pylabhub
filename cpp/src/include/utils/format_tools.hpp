@@ -1,11 +1,17 @@
-// Tools for formatting string
 #pragma once
+/**
+ * @file format_tools.hpp
+ * @brief String formatting, path utilities, and Windows conversion helpers.
+ */
+#include "pylabhub_utils_export.h"
+
 #include <chrono>
 #include <filesystem>
-#include <fmt/format.h> // or the specific fmt headers used
 #include <optional>
 #include <string>
 #include <string_view>
+
+#include <fmt/format.h>
 
 namespace pylabhub::format_tools
 {

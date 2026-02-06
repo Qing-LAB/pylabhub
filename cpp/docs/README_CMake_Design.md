@@ -631,7 +631,7 @@ This recipe explains how to add a new test executable and ensure its dependencie
     add_subdirectory(my_new_test)
     ```
 
-#### Developer Note: Handling Test Dependencies on Windows
+**Scenario**: Add `libexternal`, a non-CMake library, to the project.
 
 On Windows, an executable needs to be able to find its dependent DLLs at runtime. The project uses a robust, automated approach:
 

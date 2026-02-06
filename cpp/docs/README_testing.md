@@ -103,7 +103,7 @@ cd build/stage-debug/tests
 
 **Workflow 1: Test-Driven Development**
 ```bash
-# Edit code in src/utils/FileLock.cpp
+# Edit code in src/utils/file_lock.cpp
 # Edit test in tests/test_pylabhub_utils/test_filelock.cpp
 
 # Quick rebuild and test
