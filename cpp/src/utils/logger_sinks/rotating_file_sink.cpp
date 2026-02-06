@@ -1,7 +1,7 @@
-// File: RotatingFileSink.cpp
+// File: rotating_file_sink.cpp
 #include "plh_base.hpp"
 
-#include "utils/logger_sinks/RotatingFileSink.hpp"
+#include "utils/logger_sinks/rotating_file_sink.hpp"
 
 namespace pylabhub::utils
 {

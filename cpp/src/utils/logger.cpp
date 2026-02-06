@@ -1,5 +1,5 @@
 /*******************************************************************************
- * @file Logger.cpp
+ * @file logger.cpp
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
 
@@ -12,15 +12,15 @@
 
 #include "plh_base.hpp"
 
-#include "utils/Lifecycle.hpp"
-#include "utils/Logger.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/logger.hpp"
 
-#include "utils/logger_sinks/Sink.hpp"
-#include "utils/logger_sinks/ConsoleSink.hpp"
-#include "utils/logger_sinks/FileSink.hpp"
-#include "utils/logger_sinks/RotatingFileSink.hpp"
-#include "utils/logger_sinks/SyslogSink.hpp"
-#include "utils/logger_sinks/EventLogSink.hpp"
+#include "utils/logger_sinks/sink.hpp"
+#include "utils/logger_sinks/console_sink.hpp"
+#include "utils/logger_sinks/file_sink.hpp"
+#include "utils/logger_sinks/rotating_file_sink.hpp"
+#include "utils/logger_sinks/syslog_sink.hpp"
+#include "utils/logger_sinks/event_log_sink.hpp"
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>

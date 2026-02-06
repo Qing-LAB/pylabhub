@@ -1,10 +1,10 @@
 #pragma once
 
 /*******************************************************************************
- * @file Lifecycle.hpp
+ * @file lifecycle.hpp
  * @brief Manages application startup and shutdown with dependency-aware modules.
  *
- * @see src/utils/Lifecycle.cpp
+ * @see src/utils/lifecycle.cpp
  * @see tests/test_recursionguard.cpp (for an example of usage)
  *
  * **Design Philosophy**
@@ -45,9 +45,9 @@
  * lifecycle. This is best done with the `LifecycleGuard` RAII helper.
  *
  * ```cpp
- * #include "utils/Lifecycle.hpp"
- * #include "utils/Logger.hpp"
- * #include "utils/FileLock.hpp"
+ * #include "utils/lifecycle.hpp"
+ * #include "utils/logger.hpp"
+ * #include "utils/file_lock.hpp"
  *
  * int main(int argc, char* argv[]) {
  *     // In main(), create a LifecycleGuard and pass it the ModuleDef objects
@@ -73,7 +73,7 @@
  ******************************************************************************/
 #include "plh_base.hpp"
 #include "pylabhub_utils_export.h"
-#include "utils/ModuleDef.hpp"
+#include "utils/module_def.hpp"
 
 #include <memory>
 #include <type_traits>

@@ -1,7 +1,7 @@
-// FileLock.cpp
+// file_lock.cpp
 #include "plh_base.hpp"
-#include "utils/Lifecycle.hpp"
-#include "utils/FileLock.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/file_lock.hpp"
 
 #include <condition_variable>
 #include <functional>

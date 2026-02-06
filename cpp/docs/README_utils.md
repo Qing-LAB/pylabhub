@@ -40,8 +40,8 @@ The `Lifecycle` module provides a dependency-aware manager for application start
     The recommended way to manage the application lifecycle is with the `LifecycleGuard` RAII helper. It ensures that `InitializeApp()` is called once when the first guard is created, and `FinalizeApp()` is called when that first "owner" guard goes out of scope.
 
     ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/Logger.hpp" // Example module
+    #include "utils/lifecycle.hpp"
+    #include "utils/logger.hpp" // Example module
 
     int main(int argc, char* argv[]) {
         // Create a LifecycleGuard and pass it the modules to register.
@@ -78,8 +78,8 @@ Dynamic modules allow for runtime loading and unloading of application component
     First, define a dynamic module. Note that dynamic modules must be registered *after* the static application core is initialized.
 
     ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/Logger.hpp"
+    #include "utils/lifecycle.hpp"
+    #include "utils/logger.hpp"
 
     // Define a simple dynamic module
     namespace MyDynamicModule {
@@ -175,8 +175,8 @@ The `Logger` is a high-performance, asynchronous, thread-safe logging framework 
     The `Logger` module must be registered with the `LifecycleManager`. Configuration and logging can then be performed via the `Logger::instance()` singleton.
 
     ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/Logger.hpp"
+    #include "utils/lifecycle.hpp"
+    #include "utils/logger.hpp"
 
     int main() {
         // Register the Logger module with the application's lifecycle.
@@ -243,9 +243,9 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
     The `try_lock` method is best for cases where you only need to know *if* the lock was acquired, not *why* it failed. It returns a `std::optional<FileLock>`, making it ideal for simple `if` statements.
 
     ```cpp
-    #include "utils/Lifecycle.hpp"
-    #include "utils/FileLock.hpp"
-    #include "utils/Logger.hpp"
+    #include "utils/lifecycle.hpp"
+    #include "utils/file_lock.hpp"
+    #include "utils/logger.hpp"
 
     void simple_lock_attempt(const std::filesystem::path& path) {
         // Initialization would happen in main()
@@ -304,7 +304,7 @@ The `FileLock` utility provides a robust, RAII-style mechanism for cross-process
 
 *   **Usage**:
     ```cpp
-    #include "utils/JsonConfig.hpp"
+    #include "utils/json_config.hpp"
 
     void use_config(pylabhub::utils::JsonConfig& config) {
         // Reading a value
@@ -1446,10 +1446,10 @@ if (auto lock = FileLock::try_lock(file_path, ResourceType::File)) {
 
 For detailed API documentation, see the header files:
 
-- **Lifecycle**: `cpp/src/include/utils/Lifecycle.hpp`
-- **Logger**: `cpp/src/include/utils/Logger.hpp`
-- **FileLock**: `cpp/src/include/utils/FileLock.hpp`
-- **JsonConfig**: `cpp/src/include/utils/JsonConfig.hpp`
+- **Lifecycle**: `cpp/src/include/utils/lifecycle.hpp`
+- **Logger**: `cpp/src/include/utils/logger.hpp`
+- **FileLock**: `cpp/src/include/utils/file_lock.hpp`
+- **JsonConfig**: `cpp/src/include/utils/json_config.hpp`
 - **ScopeGuard**: `cpp/src/include/utils/scope_guard.hpp`
 - **RecursionGuard**: `cpp/src/include/utils/recursion_guard.hpp`
 - **AtomicGuard**: `cpp/src/include/utils/atomic_guard.hpp`

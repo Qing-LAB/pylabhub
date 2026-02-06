@@ -5,6 +5,6 @@
 
 #include "nlohmann/json.hpp"
 #include "plh_service.hpp"
-#include "utils/JsonConfig.hpp"
-#include "utils/MessageHub.hpp"
-#include "utils/DataBlock.hpp" // Also include DataBlock.hpp as it's part of the new hub architecture
+#include "utils/json_config.hpp"
+#include "utils/message_hub.hpp"
+#include "utils/data_block.hpp" // Also include data_block.hpp as it's part of the new hub architecture
