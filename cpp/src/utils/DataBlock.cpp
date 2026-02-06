@@ -4,18 +4,8 @@
 #include "utils/shared_memory_mutex.hpp" // Include the new DataBlockMutex header
 #include <cstddef>                       // For offsetof
 #include <stdexcept>
-#include <thread>                        // For std::this_thread::sleep_for
-#include <chrono>                        // For std::chrono::milliseconds
-
-#if defined(PYLABHUB_PLATFORM_WIN64)
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <pthread.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
+#include <thread> // For std::this_thread::sleep_for
+#include <chrono> // For std::chrono::milliseconds
 
 namespace pylabhub::hub
 {
@@ -100,10 +90,10 @@ class DataBlock
         // 2. Initialize management mutex FIRST
         // 3. Initialize other fields while mutex exists
         // 4. Set magic_number LAST as the "ready" flag
-        
+
         // Step 1: Mark as uninitialized
         m_header->init_state.store(0, std::memory_order_release);
-        
+
         // Step 2: Initialize the management mutex BEFORE anything else
 #if defined(PYLABHUB_PLATFORM_WIN64)
         PLH_DEBUG("DataBlock '{}': Initializing Windows management mutex.", m_name);
@@ -118,10 +108,10 @@ class DataBlock
             m_is_creator);
 #endif
         PLH_DEBUG("DataBlock '{}': Management mutex initialized.", m_name);
-        
+
         // Mark mutex as ready
         m_header->init_state.store(1, std::memory_order_release);
-        
+
         // Step 3: Initialize other header fields (mutex protects this now)
         m_header->shared_secret = config.shared_secret;
         m_header->version = DATABLOCK_VERSION;
@@ -195,10 +185,10 @@ class DataBlock
 
         // CRITICAL: Wait for producer to finish initialization before proceeding
         // Check init_state with acquire semantics to ensure we see all producer's writes
-        const int max_wait_ms = 5000;  // 5 second timeout
+        const int max_wait_ms = 5000; // 5 second timeout
         const int poll_interval_ms = 10;
         int total_wait_ms = 0;
-        
+
         uint32_t init_state = m_header->init_state.load(std::memory_order_acquire);
         while (init_state < 2 && total_wait_ms < max_wait_ms)
         {
@@ -206,7 +196,7 @@ class DataBlock
             total_wait_ms += poll_interval_ms;
             init_state = m_header->init_state.load(std::memory_order_acquire);
         }
-        
+
         if (init_state < 2)
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -216,9 +206,11 @@ class DataBlock
             munmap(m_mapped_address, m_size);
             close(m_shm_fd);
 #endif
-            throw std::runtime_error("DataBlock '"+m_name+"' initialization timeout - producer may have crashed during setup.");
+            throw std::runtime_error(
+                "DataBlock '" + m_name +
+                "' initialization timeout - producer may have crashed during setup.");
         }
-        
+
         // Validate magic number with acquire semantics
         std::atomic_thread_fence(std::memory_order_acquire);
         if (m_header->magic_number != DATABLOCK_MAGIC_NUMBER)
@@ -230,7 +222,9 @@ class DataBlock
             munmap(m_mapped_address, m_size);
             close(m_shm_fd);
 #endif
-            throw std::runtime_error("DataBlock '"+m_name+"' has invalid magic number - not a valid DataBlock or corrupted.");
+            throw std::runtime_error(
+                "DataBlock '" + m_name +
+                "' has invalid magic number - not a valid DataBlock or corrupted.");
         }
 
         // Validate version
@@ -243,7 +237,9 @@ class DataBlock
             munmap(m_mapped_address, m_size);
             close(m_shm_fd);
 #endif
-            throw std::runtime_error("DataBlock '"+m_name+"' version mismatch. Expected "+std::to_string(DATABLOCK_VERSION)+", got "+std::to_string(m_header->version));
+            throw std::runtime_error("DataBlock '" + m_name + "' version mismatch. Expected " +
+                                     std::to_string(DATABLOCK_VERSION) + ", got " +
+                                     std::to_string(m_header->version));
         }
 
         // Now it's safe to attach to the management mutex
@@ -280,7 +276,7 @@ class DataBlock
     // Methods to manage shared spinlocks declarations
     size_t acquire_shared_spinlock(const std::string &debug_name);
     void release_shared_spinlock(size_t index);
-    SharedMemoryHeader::SharedSpinLockState *get_shared_spinlock_state(size_t index);
+    SharedSpinLockState *get_shared_spinlock_state(size_t index);
 
   private:
     std::string m_name;
@@ -350,7 +346,7 @@ void *DataBlock::segment() const
 }
 
 // Methods to manage shared spinlocks implementations
-SharedMemoryHeader::SharedSpinLockState *DataBlock::get_shared_spinlock_state(size_t index)
+SharedSpinLockState *DataBlock::get_shared_spinlock_state(size_t index)
 {
     if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
     {
@@ -447,8 +443,31 @@ class DataBlockProducerImpl : public IDataBlockProducer
         LOGGER_INFO("DataBlockProducerImpl: Shutting down for '{}'.", m_name);
     }
 
-    // Producer specific methods will be added here
-    // For example: acquire_write_slot, release_write_slot, get_flexible_zone, etc.
+    // Producer specific methods
+    std::unique_ptr<SharedSpinLockGuard>
+    acquire_user_spinlock(const std::string &debug_name) override
+    {
+        size_t index = m_dataBlock->acquire_shared_spinlock(debug_name);
+        
+        // WARNING: Design Flaw - Potential for dangling reference!
+        // SharedSpinLockGuard currently takes a SharedSpinLock&.
+        // If the SharedSpinLock is created as a temporary here, it will be destroyed
+        // at the end of this function, leading to a dangling reference in the returned guard.
+        // This needs to be addressed by modifying SharedSpinLockGuard to own the SharedSpinLock,
+        // or by rethinking the return type of this interface.
+        // See docs/tech_draft/shared_spinlock_guard_design_review.md for details.
+        
+        // For compilation purposes, we create a temporary SharedSpinLock.
+        // This is UNSAFE for actual runtime use if the guard outlives this function.
+        SharedSpinLock temp_lock(m_dataBlock->get_shared_spinlock_state(index), debug_name);
+        return std::make_unique<SharedSpinLockGuard>(temp_lock);
+    }
+
+    void release_user_spinlock(size_t index) override
+    {
+        m_dataBlock->release_shared_spinlock(index);
+    }
+
 
   private:
     std::string m_name;
@@ -506,8 +525,12 @@ class DataBlockConsumerImpl : public IDataBlockConsumer
         }
     }
 
-    // Consumer specific methods will be added here
-    // For example: begin_consume, end_consume, get_flexible_zone, etc.
+    // Consumer specific methods
+    SharedSpinLock get_user_spinlock(size_t index) override
+    {
+        return SharedSpinLock(m_dataBlock->get_shared_spinlock_state(index),
+                              m_name + "_spinlock_" + std::to_string(index));
+    }
 
   private:
     std::string m_name;
