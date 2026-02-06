@@ -1,9 +1,9 @@
 /*******************************************************************************
- * @file FileLock.hpp
+ * @file file_lock.hpp
  * @brief Cross-platform, RAII-style, advisory file lock for inter-process
  *        and inter-thread synchronization.
  *
- * @see src/utils/FileLock.cpp
+ * @see src/utils/file_lock.cpp
  * @see tests/test_filelock.cpp
  *
  * **Design Philosophy**
@@ -59,9 +59,9 @@
  * before a `FileLock` object can be constructed.
  *
  * ```cpp
- * #include "utils/Lifecycle.hpp"
- * #include "utils/FileLock.hpp"
- * #include "utils/Logger.hpp" // For example error logging (optional)
+ * #include "utils/lifecycle.hpp"
+ * #include "utils/file_lock.hpp"
+ * #include "utils/logger.hpp" // For example error logging (optional)
  *
  * void perform_exclusive_work(const std::filesystem::path& resource) {
  *     // In main() or test setup, ensure the necessary lifecycle modules are started.

@@ -1,5 +1,5 @@
-#include "utils/logger_sinks/EventLogSink.hpp"
-#include "utils/logger_sinks/Sink.hpp"
+#include "utils/logger_sinks/event_log_sink.hpp"
+#include "utils/logger_sinks/sink.hpp"
 #include <stdexcept>
 
 #ifdef PYLABHUB_PLATFORM_WIN64

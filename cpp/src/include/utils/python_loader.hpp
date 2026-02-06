@@ -1,5 +1,5 @@
 /*******************************************************************************
- * @file PythonLoader.hpp
+ * @file python_loader.hpp
  * @brief C-style API for managing an embedded Python interpreter.
  *
  * **Design Philosophy**

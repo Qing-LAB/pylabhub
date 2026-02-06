@@ -1,8 +1,8 @@
 /*******************************************************************************
- * @file Lifecycle.cpp
+ * @file lifecycle.cpp
  * @brief Implementation of the dependency-aware application lifecycle manager.
  *
- * @see include/utils/Lifecycle.hpp
+ * @see include/utils/lifecycle.hpp
  *
  * **Implementation Details**
  *
@@ -31,7 +31,7 @@
  ******************************************************************************/
 #include "plh_base.hpp"
 
-#include "utils/Lifecycle.hpp"
+#include "utils/lifecycle.hpp"
 #include <fmt/ranges.h> // For fmt::join on vectors
 #include <future>       // For std::async, std::future
 #include <map>          // For std::map

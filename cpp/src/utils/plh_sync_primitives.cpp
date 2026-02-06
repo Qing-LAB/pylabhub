@@ -1,6 +1,6 @@
 #include "utils/plh_sync_primitives.hpp"
 #include "plh_platform.hpp" // For pylabhub::platform::get_pid() and get_native_thread_id()
-#include "utils/Logger.hpp" // For logging macros
+#include "utils/logger.hpp" // For logging macros
 
 // For process checking (needed for is_process_alive)
 #if defined(PYLABHUB_IS_WINDOWS)

@@ -1,5 +1,5 @@
-#include "utils/logger_sinks/SyslogSink.hpp"
-#include "utils/logger_sinks/Sink.hpp"
+#include "utils/logger_sinks/syslog_sink.hpp"
+#include "utils/logger_sinks/sink.hpp"
 
 #if !defined(PLATFORM_WIN64)
 #include <syslog.h>

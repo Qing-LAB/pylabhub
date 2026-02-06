@@ -292,8 +292,8 @@ auto pid = pylabhub::platform::get_pid();  // ✅ Same function
 
 ### Modified Files
 
-1. ✅ `cpp/src/include/utils/DataBlock.hpp` - Added `init_state` field
-2. ✅ `cpp/src/utils/DataBlock.cpp` - Fixed initialization order, added consumer validation
+1. ✅ `cpp/src/include/utils/data_block.hpp` - Added `init_state` field
+2. ✅ `cpp/src/utils/data_block.cpp` - Fixed initialization order, added consumer validation
 3. ✅ `cpp/src/utils/shared_spin_lock.cpp` - Using centralized platform utilities
 4. ✅ `cpp/tests/test_pylabhub_utils/test_datablock_management_mutex.cpp` - Fixed all errors
 5. ✅ `cpp/tests/test_pylabhub_utils/datablock_management_mutex_workers.cpp` - Rewritten with proper code reuse

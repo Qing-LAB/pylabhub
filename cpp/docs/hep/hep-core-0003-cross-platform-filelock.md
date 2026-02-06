@@ -111,7 +111,7 @@ public:
 -   **Risk**: Stale lock files can be left behind if a process crashes without `cleanup_on_shutdown` enabled.
     -   **Mitigation**: The `cleanup_on_shutdown` option mitigates this during graceful application exits. However, for hard crashes, manual cleanup or a dedicated watchdog process might be necessary. The trade-off (potential for interfering with other processes) is explicitly documented for `cleanup_on_shutdown`.
 -   **Risk**: Unreliable behavior on network filesystems (e.g., NFS).
-    -   **Mitigation**: A `WARNING` is explicitly included in the `FileLock.hpp` documentation. `FileLock` is designed primarily for local filesystem synchronization.
+    -   **Mitigation**: A `WARNING` is explicitly included in the `file_lock.hpp` documentation. `FileLock` is designed primarily for local filesystem synchronization.
 -   **Risk**: Deadlocks if client code attempts to acquire a lock twice within the same process/thread.
     -   **Mitigation**: The two-layer locking model (specifically the intra-process registry) handles this. A thread attempting to re-acquire an already held lock for the same path will either block (in `Blocking` mode) or fail immediately (in `NonBlocking` mode), preventing self-deadlock. It won't cause an actual system deadlock, but rather a programmatic one or an acquisition failure.
 

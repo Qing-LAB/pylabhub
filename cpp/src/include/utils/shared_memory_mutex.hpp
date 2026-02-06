@@ -11,7 +11,7 @@
 #include <pthread.h>
 #endif
 
-#include "DataBlock.hpp"
+#include "data_block.hpp"
 
 namespace pylabhub::hub
 {

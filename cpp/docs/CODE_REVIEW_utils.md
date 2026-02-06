@@ -21,7 +21,7 @@ The codebase shows significant improvements from the previous review. Major issu
 
 ### 1.1 DataBlock: Windows Process Synchronization Not Implemented
 
-**File**: `cpp/src/utils/DataBlock.cpp`  
+**File**: `cpp/src/utils/data_block.cpp`  
 **Lines**: 113-122  
 **Severity**: CRITICAL
 
@@ -48,7 +48,7 @@ The codebase shows significant improvements from the previous review. Major issu
 
 ### 1.2 JsonConfig: File Descriptor State After close() Failure
 
-**File**: `cpp/src/utils/JsonConfig.cpp`  
+**File**: `cpp/src/utils/json_config.cpp`  
 **Lines**: 885-895  
 **Severity**: CRITICAL (POSIX only)
 
@@ -90,7 +90,7 @@ fd = -1;
 
 ### 2.1 Lifecycle: Iterator Invalidation in unloadModuleInternal()
 
-**File**: `cpp/src/utils/Lifecycle.cpp`  
+**File**: `cpp/src/utils/lifecycle.cpp`  
 **Lines**: 686-701  
 **Severity**: HIGH
 
@@ -128,7 +128,7 @@ Actually, looking more carefully, the current code passes by reference which cou
 
 ### 2.2 Logger: Queue Size Semantics Unclear
 
-**File**: `cpp/src/utils/Logger.cpp`  
+**File**: `cpp/src/utils/logger.cpp`  
 **Lines**: 349-363  
 **Severity**: HIGH
 
@@ -150,7 +150,7 @@ const size_t max_queue_size_hard = m_max_queue_size * 2; // Hard limit for all c
 
 ### 2.3 FileLock: [[maybe_unused]] Hiding Potential Bug
 
-**File**: `cpp/src/utils/JsonConfig.cpp`  
+**File**: `cpp/src/utils/json_config.cpp`  
 **Line**: 821  
 **Severity**: MEDIUM-HIGH
 
@@ -168,7 +168,7 @@ const size_t max_queue_size_hard = m_max_queue_size * 2; // Hard limit for all c
 
 ### 2.4 Lifecycle: Exception Safety in unloadModuleInternal
 
-**File**: `cpp/src/utils/Lifecycle.cpp`  
+**File**: `cpp/src/utils/lifecycle.cpp`  
 **Lines**: 676, 723  
 **Severity**: MEDIUM-HIGH
 
@@ -216,7 +216,7 @@ cleanup_guard.dismiss(); // If we reach here, we handled cleanup properly
 
 ### 3.2 MessageHub: Unused Parameters in Factory Functions
 
-**File**: `cpp/src/utils/DataBlock.cpp`  
+**File**: `cpp/src/utils/data_block.cpp`  
 **Lines**: 305-327  
 **Severity**: MEDIUM
 
@@ -241,7 +241,7 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
 
 ### 3.3 FileLock: Directory Lock Naming Edge Case
 
-**File**: `cpp/src/utils/FileLock.cpp`  
+**File**: `cpp/src/utils/file_lock.cpp`  
 **Lines**: 194-211  
 **Severity**: MEDIUM
 
@@ -264,7 +264,7 @@ if (fname.empty() || fname == "." || fname == "..") {
 
 ### 3.4 Logger: Drop Counter Overflow Not Handled
 
-**File**: `cpp/src/utils/Logger.cpp`  
+**File**: `cpp/src/utils/logger.cpp`  
 **Line**: 356  
 **Severity**: LOW-MEDIUM
 
@@ -285,7 +285,7 @@ m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
 
 ### 3.5 JsonConfig: move() with Outstanding Transactions
 
-**File**: `cpp/src/utils/JsonConfig.cpp`  
+**File**: `cpp/src/utils/json_config.cpp`  
 **Lines**: 110-127, 129-155  
 **Severity**: MEDIUM
 
@@ -357,7 +357,7 @@ After the initial allocation, the guard is allocation-free for depths ≤16.
 
 ### 4.3 Magic Numbers Without Named Constants
 
-**File**: `cpp/src/utils/FileLock.cpp`  
+**File**: `cpp/src/utils/file_lock.cpp`  
 **Line**: 80  
 **Severity**: LOW
 

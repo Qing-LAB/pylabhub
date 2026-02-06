@@ -9,7 +9,7 @@
 #include <unistd.h>
 #endif
 
-#include "utils/logger_sinks/BaseFileSink.hpp"
+#include "utils/logger_sinks/base_file_sink.hpp"
 
 namespace pylabhub::utils
 {
