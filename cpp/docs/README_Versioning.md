@@ -104,13 +104,13 @@ The C++ functions return these values. The header is installed with the library 
 
 The pylabhub-utils shared library uses a stable base name with version suffixes:
 
-| Platform | Build Output | Staged Output |
-|----------|--------------|---------------|
-| **Linux** | `libpylabhub-utils-stable.so.0.1.42` | Same + soname symlink `libpylabhub-utils-stable.so.0` |
-| **macOS** | `libpylabhub-utils-stable.0.1.42.dylib` | Same + soname symlink |
-| **Windows** | `pylabhub-utils-stable.dll` | `pylabhub-utils-stable.dll` |
+| Platform | Build Output | Staged Output | Version Metadata |
+|----------|--------------|---------------|------------------|
+| **Linux** | `libpylabhub-utils-stable.so.0.1.42` | Same + soname symlink | Filename only |
+| **macOS** | `libpylabhub-utils-stable.0.1.42.dylib` | Same + soname symlink | Mach-O load commands |
+| **Windows** | `pylabhub-utils-stable.dll` | `pylabhub-utils-stable.dll` | PE VERSIONINFO resource |
 
-This is configured in `src/utils/CMakeLists.txt` via `OUTPUT_NAME`, `VERSION`, and `SOVERSION`.
+On Windows, version is embedded via a VERSIONINFO resource (generated from `cmake/pylabhub_utils_version.rc.in`). Right-click the DLL → Properties → Details to view File Version and Product Version.
 
 ---
 

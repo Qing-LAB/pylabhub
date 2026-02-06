@@ -34,6 +34,8 @@ htmlcov/
 **/.vscode/
 **/.idea/
 **/.cursor
+**/.cache/
+
 
 # OS files
 .DS_Store
