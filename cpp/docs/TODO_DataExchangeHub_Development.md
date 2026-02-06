@@ -64,7 +64,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 1.1 Define `SharedSpinLockState`
 *   **Description**: Define the `SharedSpinLockState` struct within `SharedMemoryHeader`. This struct will contain `std::atomic<uint64_t> owner_pid`, `std::atomic<uint64_t> generation`, `std::atomic<uint32_t> recursion_count`, and `uint64_t owner_thread_id`. These atomic variables will form the core of the user-facing spin-locks.
 *   **Status**: COMPLETED.
-*   **Procedure**: See `src/include/utils/DataBlock.hpp`.
+*   **Procedure**: See `src/include/utils/data_block.hpp`.
 
 ### 1.2 Implement `SharedSpinLock` Class
 *   **Description**: Design and implement the `SharedSpinLock` class. This class will wrap a pointer to a `SharedSpinLockState` struct in shared memory and implement the core `lock()`, `unlock()`, and `try_lock_for()` logic. This includes robust handling of dead PID detection, generation counters to mitigate PID reuse, and support for recursive locking by the same thread.
@@ -79,7 +79,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 1.4 Implement `DataBlockMutex` & `DataBlockLockGuard` (Internal Management Mutex)
 *   **Description**: Design and implement the `DataBlockMutex` class (OS-specific, robust cross-process mutex) and its RAII `DataBlockLockGuard`. This mutex protects the allocation map (`SharedMemoryHeader::spinlock_allocated`) and other metadata manipulation within the shared memory.
 *   **Status**: COMPLETED.
-*   **Procedure**: See `src/include/utils/shared_memory_mutex.hpp` and `src/utils/shared_memory_mutex.cpp`.
+*   **Procedure**: See `src/include/utils/data_block_mutex.hpp` and `src/utils/data_block_mutex.cpp`.
 
 ### 1.5 Integrate `DataBlockMutex` into `DataBlock`
 *   **Description**: Integrate the `DataBlockMutex` into the `DataBlock` internal helper class. This involves:
@@ -87,7 +87,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
     *   Initializing this member in both the producer and consumer `DataBlock` constructors.
     *   Ensuring `pthread_mutex_destroy` is called correctly for POSIX implementation by explicitly `reset()`ing `m_management_mutex` in `DataBlock::~DataBlock()` before `munmap` and `shm_unlink`.
 *   **Status**: COMPLETED.
-*   **Procedure**: See `src/utils/DataBlock.cpp`.
+*   **Procedure**: See `src/utils/data_block.cpp`.
 
 ### 1.6 Add Tests for Cross-Process Mutex (Internal)
 *   **Description**: Develop tests to verify the correctness and robustness of the `DataBlockMutex`. This involves multi-process tests to ensure the management mutex correctly protects access to shared memory metadata.
@@ -110,12 +110,12 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 2.1 Integrate `SharedSpinLock` into `DataBlockProducerImpl` and `DataBlockConsumerImpl`
 *   **Description**: Implement the pure virtual methods `acquire_user_spinlock`, `release_user_spinlock` in `DataBlockProducerImpl` and `get_user_spinlock` in `DataBlockConsumerImpl`. These implementations will utilize the `DataBlock` helper class's internal spinlock management (`acquire_shared_spinlock`, `release_shared_spinlock`, `get_shared_spinlock_state`).
 *   **Status**: PENDING.
-*   **Procedure**: See `src/utils/DataBlock.cpp`.
+*   **Procedure**: See `src/utils/data_block.cpp`.
 
 ### 2.2 Implement Data Transfer Methods
 *   **Description**: Add pure virtual methods to `IDataBlockProducer` and `IDataBlockConsumer` (e.g., `acquire_write_slot`, `release_write_slot`, `begin_read`, `end_read`, `get_flexible_zone`, `get_structured_buffer`) to enable reading from and writing to the shared memory buffers. Implement these methods in `DataBlockProducerImpl` and `DataBlockConsumerImpl`.
 *   **Status**: PENDING.
-*   **Procedure**: See `src/include/utils/DataBlock.hpp`, `src/utils/DataBlock.cpp`.
+*   **Procedure**: See `src/include/utils/data_block.hpp`, `src/utils/data_block.cpp`.
 
 ### 2.3 Add Tests for Data Transfer
 *   **Description**: Develop tests for fundamental producer write / consumer read operations on both the flexible data zone and the structured data buffer.
@@ -140,7 +140,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 2.7 Add Tests for Structured Buffer Discovery
 *   **Description**: Once the mechanism for consumers to discover the layout of the structured buffer (which is currently `nullptr` after initial mapping) is implemented, add tests to verify its correctness.
 *   **Status**: PENDING.
-*   **Procedure**: See `src/utils/DataBlock.cpp`, `tests/test_pylabhub_utils/test_datablock.cpp`.
+*   **Procedure**: See `src/utils/data_block.cpp`, `tests/test_pylabhub_utils/test_datablock.cpp`.
 
 ---
 
@@ -173,7 +173,7 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 3.5 Add Tests for `DATABLOCK_VERSION` Mismatch
 *   **Description**: Create a `DataBlock` with one version, then attempt to connect a consumer configured with a different `DATABLOCK_VERSION` (simulating an older/newer consumer). Ensure the consumer fails gracefully (e.g., returns `nullptr` or throws a specific exception). This requires implementing the version check in the consumer.
 *   **Status**: PENDING.
-*   **Procedure**: `src/utils/DataBlock.cpp` (version check implementation), `tests/test_pylabhub_utils/test_datablock.cpp`.
+*   **Procedure**: `src/utils/data_block.cpp` (version check implementation), `tests/test_pylabhub_utils/test_datablock.cpp`.
 
 ### 3.6 Add Negative Tests for Header Mismatches
 *   **Description**: Develop explicit negative tests for `DataBlock` consumers when `magic_number` or `shared_secret` are mismatched. Assert that `find_datablock_consumer` returns `nullptr` for these scenarios.
@@ -275,12 +275,12 @@ This document consolidates the findings from a comprehensive evaluation of the `
 ### 6.1 Implement Broker Registration Protocol
 *   **Description**: Develop the protocol and implementation for `DataBlock` channels to register themselves with a central broker via `MessageHub`. This would involve defining message types for registration/discovery and implementing the broker-side logic.
 *   **Status**: PENDING.
-*   **Procedure**: `src/utils/MessageHub.cpp`, new broker module (future), related headers.
+*   **Procedure**: `src/utils/message_hub.cpp`, new broker module (future), related headers.
 
 ### 6.2 Implement Coordinated Data Transfer
 *   **Description**: Develop the mechanisms for `MessageHub` to signal data availability or updates within `DataBlock` channels. This involves integrating the `MessageHub` into `IDataBlockProducer`/`IDataBlockConsumer`'s data transfer and slot management methods.
 *   **Status**: PENDING.
-*   **Procedure**: `src/utils/DataBlock.cpp`, `src/utils/MessageHub.cpp`, related headers.
+*   **Procedure**: `src/utils/data_block.cpp`, `src/utils/message_hub.cpp`, related headers.
 
 ### 6.3 Add End-to-End Tests for Registration/Discovery
 *   **Description**: Develop tests that cover the entire lifecycle of `DataBlock` channel registration and discovery, from a producer registering via `MessageHub` to consumers successfully discovering and connecting to the `DataBlock`.

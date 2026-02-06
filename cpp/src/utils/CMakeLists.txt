@@ -19,20 +19,20 @@ set(UTILS_SOURCES
   format_tools.cpp
   debug_info.cpp  
   platform.cpp
-  Lifecycle.cpp
-  FileLock.cpp
-  logger_sinks/Sink.cpp
-  logger_sinks/BaseFileSink.cpp
-  logger_sinks/RotatingFileSink.cpp
-  logger_sinks/FileSink.cpp
-  logger_sinks/SyslogSink.cpp
-  logger_sinks/EventLogSink.cpp
-  Logger.cpp
-  JsonConfig.cpp
-  MessageHub.cpp
-  DataBlock.cpp
-  shared_memory_mutex.cpp
-  plh_sync_primitives.cpp
+  lifecycle.cpp
+  file_lock.cpp
+  logger_sinks/sink.cpp
+  logger_sinks/base_file_sink.cpp
+  logger_sinks/rotating_file_sink.cpp
+  logger_sinks/file_sink.cpp
+  logger_sinks/syslog_sink.cpp
+  logger_sinks/event_log_sink.cpp
+  logger.cpp
+  json_config.cpp
+  message_hub.cpp
+  data_block.cpp
+  data_block_mutex.cpp
+  data_header_sync_primitives.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
