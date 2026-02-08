@@ -81,7 +81,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
 
     // Recursive lock check by the same thread
     if (m_state->owner_pid.load(std::memory_order_acquire) == current_pid &&
-        m_state->owner_thread_id == current_thread_id)
+        m_state->owner_thread_id.load(std::memory_order_acquire) == current_thread_id)
     {
         m_state->recursion_count.fetch_add(1, std::memory_order_relaxed);
         return true;
@@ -102,7 +102,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
                                                            std::memory_order_acq_rel,
                                                            std::memory_order_acquire))
             {
-                m_state->owner_thread_id = current_thread_id;
+                m_state->owner_thread_id.store(current_thread_id, std::memory_order_release);
                 m_state->recursion_count.store(1, std::memory_order_release);
                 return true; // Acquired
             }
@@ -128,7 +128,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
                     // Increment generation to make sure other processes waiting for old owner
                     // recognize the change.
                     m_state->generation.fetch_add(1, std::memory_order_release);
-                    m_state->owner_thread_id = current_thread_id;
+                    m_state->owner_thread_id.store(current_thread_id, std::memory_order_release);
                     m_state->recursion_count.store(1, std::memory_order_release);
                     return true; // Acquired
                 }
@@ -167,12 +167,13 @@ void SharedSpinLock::unlock()
     uint64_t current_thread_id = get_current_thread_id();
 
     if (m_state->owner_pid.load(std::memory_order_acquire) != current_pid ||
-        m_state->owner_thread_id != current_thread_id)
+        m_state->owner_thread_id.load(std::memory_order_acquire) != current_thread_id)
     {
         LOGGER_ERROR("SharedSpinLock '{}': Attempted to unlock by non-owner. Current owner PID {}, "
                      "Thread ID {}. Caller PID {}, Thread ID {}.",
                      m_name, m_state->owner_pid.load(std::memory_order_acquire),
-                     m_state->owner_thread_id, current_pid, current_thread_id);
+                     m_state->owner_thread_id.load(std::memory_order_acquire), current_pid,
+                     current_thread_id);
         throw std::runtime_error("Attempted to unlock by non-owner.");
     }
 
@@ -183,7 +184,7 @@ void SharedSpinLock::unlock()
     }
 
     // Release the lock
-    m_state->owner_thread_id = 0; // Not atomic, but protected by the lock being held.
+    m_state->owner_thread_id.store(0, std::memory_order_release);
     m_state->recursion_count.store(0, std::memory_order_release);
     m_state->generation.fetch_add(1, std::memory_order_release); // Increment generation
     m_state->owner_pid.store(0, std::memory_order_release);      // Finally release ownership
@@ -197,7 +198,7 @@ bool SharedSpinLock::is_locked_by_current_process() const
 bool SharedSpinLock::is_locked_by_current_thread() const
 {
     return m_state->owner_pid.load(std::memory_order_acquire) == get_current_pid() &&
-           m_state->owner_thread_id == get_current_thread_id();
+           m_state->owner_thread_id.load(std::memory_order_acquire) == get_current_thread_id();
 }
 
 // ============================================================================

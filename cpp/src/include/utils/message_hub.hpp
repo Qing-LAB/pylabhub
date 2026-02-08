@@ -24,6 +24,9 @@ class MessageHubImpl;
  *
  * This class handles connecting to the broker and sending messages according to the
  * strict two-part protocol defined in HEP-core-0002.
+ *
+ * @note Thread safety: ZeroMQ sockets are not thread-safe. Use MessageHub from a single
+ *       thread, or add external synchronization for concurrent send_request/send_notification.
  */
 class PYLABHUB_UTILS_EXPORT MessageHub
 {
@@ -51,7 +54,8 @@ class PYLABHUB_UTILS_EXPORT MessageHub
 
     /**
      * @brief Sends a two-part message to the broker.
-     * @param header A 16-byte character array representing the message type.
+     * @param header A 16-byte character array representing the message type (HEP-core-0002 §5.1).
+     *               Must not be null and must point to at least 16 valid bytes.
      * @param payload A JSON object to be serialized with MessagePack.
      * @param response Optional output parameter to store the broker's response.
      * @param timeout_ms Timeout for waiting for a response.
@@ -62,7 +66,8 @@ class PYLABHUB_UTILS_EXPORT MessageHub
 
     /**
      * @brief Sends a one-way notification to the broker.
-     * @param header A 16-byte character array representing the message type.
+     * @param header A 16-byte character array representing the message type (HEP-core-0002 §5.1).
+     *               Must not be null and must point to at least 16 valid bytes.
      * @param payload A JSON object to be serialized with MessagePack.
      * @return True on success, false on failure.
      */

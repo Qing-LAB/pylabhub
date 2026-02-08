@@ -35,7 +35,7 @@ struct SharedSpinLockState
     std::atomic<uint64_t> owner_pid{0};       // 0 means unlocked
     std::atomic<uint64_t> generation{0};      // Incremented on release, to mitigate PID reuse
     std::atomic<uint32_t> recursion_count{0}; // For recursive locking by same thread
-    uint64_t owner_thread_id{0}; // Thread ID of lock holder (only valid if owner_pid != 0)
+    std::atomic<uint64_t> owner_thread_id{0}; // Thread ID of lock holder (only valid if owner_pid != 0)
 };
 
 /**
