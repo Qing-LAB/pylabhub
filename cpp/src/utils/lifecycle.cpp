@@ -3,6 +3,7 @@
  * @brief Implementation of the dependency-aware application lifecycle manager.
  *
  * @see include/utils/lifecycle.hpp
+ * @see include/utils/module_def.hpp (for MAX_MODULE_NAME_LEN and C-string requirements)
  *
  * **Implementation Details**
  *
@@ -32,10 +33,48 @@
 #include "plh_base.hpp"
 
 #include "utils/lifecycle.hpp"
+#include "utils/module_def.hpp"
+#include <cstring>      // For strnlen
 #include <fmt/ranges.h> // For fmt::join on vectors
 #include <future>       // For std::async, std::future
 #include <map>          // For std::map
 #include <stdexcept>    // For std::runtime_error, std::length_error
+
+namespace
+{
+/**
+ * @brief Validates a module name C-string for safe use.
+ *
+ * Requirements: non-null, null-terminated within MAX_MODULE_NAME_LEN chars,
+ * length (excluding null) not exceeding MAX_MODULE_NAME_LEN.
+ *
+ * @param name The C-string to validate (may be null for dependency_name, but not for module name).
+ * @param allow_null If true, nullptr is accepted (no validation). If false, nullptr throws.
+ * @param param_name For error messages (e.g., "module name", "dependency name").
+ * @throws std::invalid_argument if name is null and allow_null is false, or if not null-terminated.
+ * @throws std::length_error if length exceeds MAX_MODULE_NAME_LEN.
+ */
+void validate_module_name_cstr(const char *name, bool allow_null, const char *param_name)
+{
+    if (name == nullptr)
+    {
+        if (allow_null)
+            return;
+        throw std::invalid_argument(
+            std::string("Lifecycle: ") + param_name + " must not be null.");
+    }
+    const size_t len =
+        strnlen(name, pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN + 1);
+    if (len > pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN)
+    {
+        throw std::length_error(std::string("Lifecycle: ") + param_name +
+                                " exceeds maximum length of " +
+                                std::to_string(
+                                    pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN) +
+                                " or is not null-terminated.");
+    }
+}
+} // namespace
 
 namespace pylabhub::utils::lifecycle_internal
 {
@@ -65,10 +104,8 @@ class ModuleDefImpl
 
 ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>())
 {
-    if (name)
-    {
-        pImpl->def.name = name;
-    }
+    validate_module_name_cstr(name, false, "module name");
+    pImpl->def.name = name;
 }
 ModuleDef::~ModuleDef() = default;
 ModuleDef::ModuleDef(ModuleDef &&other) noexcept = default;
@@ -76,7 +113,10 @@ ModuleDef &ModuleDef::operator=(ModuleDef &&other) noexcept = default;
 void ModuleDef::add_dependency(const char *dependency_name)
 {
     if (pImpl && dependency_name)
+    {
+        validate_module_name_cstr(dependency_name, false, "dependency name");
         pImpl->def.dependencies.emplace_back(dependency_name);
+    }
 }
 void ModuleDef::set_startup(LifecycleCallback startup_func)
 {
@@ -438,6 +478,14 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     if (!name)
         return false;
+    try
+    {
+        validate_module_name_cstr(name, false, "load_module name");
+    }
+    catch (const std::exception &)
+    {
+        return false;
+    }
 
     PLH_DEBUG("loadModule: request to load '{}'", name);
 
@@ -581,6 +629,14 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     if (!name)
         return false;
+    try
+    {
+        validate_module_name_cstr(name, false, "unload_module name");
+    }
+    catch (const std::exception &)
+    {
+        return false;
+    }
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
         PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"

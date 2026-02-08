@@ -5,6 +5,8 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
+#include <string>
+
 using namespace pylabhub::utils;
 using namespace pylabhub::tests::helper;
 using namespace ::testing;
@@ -93,4 +95,62 @@ TEST_F(LifecycleTest, StaticElaborateIndirectCycleAborts)
     ASSERT_NE(proc.wait_for_exit(), 0);
     ASSERT_THAT(proc.get_stderr(),
                 HasSubstr("[PLH_LifeCycle] FATAL: Circular dependency detected"));
+}
+
+// ============================================================================
+// Module name C-string validation (MAX_MODULE_NAME_LEN = 256, null-terminated)
+// ============================================================================
+
+TEST_F(LifecycleTest, ModuleDef_RejectsNullName)
+{
+    EXPECT_THROW(ModuleDef(nullptr), std::invalid_argument);
+}
+
+TEST_F(LifecycleTest, ModuleDef_RejectsNameExceedingMaxLength)
+{
+    std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'x');
+    EXPECT_THROW(ModuleDef mod(long_name.c_str()), std::length_error);
+}
+
+TEST_F(LifecycleTest, ModuleDef_AcceptsNameAtMaxLength)
+{
+    std::string max_name(ModuleDef::MAX_MODULE_NAME_LEN, 'a');
+    EXPECT_NO_THROW({
+        ModuleDef mod(max_name.c_str());
+    });
+}
+
+TEST_F(LifecycleTest, AddDependency_IgnoresNull)
+{
+    ModuleDef mod("ValidModule");
+    EXPECT_NO_THROW(mod.add_dependency(nullptr));
+}
+
+TEST_F(LifecycleTest, AddDependency_RejectsNameExceedingMaxLength)
+{
+    ModuleDef mod("ValidModule");
+    std::string long_dep(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'y');
+    EXPECT_THROW(mod.add_dependency(long_dep.c_str()), std::length_error);
+}
+
+TEST_F(LifecycleTest, LoadModule_ReturnsFalseForNull)
+{
+    EXPECT_FALSE(LoadModule(nullptr));
+}
+
+TEST_F(LifecycleTest, LoadModule_ReturnsFalseForNameExceedingMaxLength)
+{
+    std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'z');
+    EXPECT_FALSE(LoadModule(long_name.c_str()));
+}
+
+TEST_F(LifecycleTest, UnloadModule_ReturnsFalseForNull)
+{
+    EXPECT_FALSE(UnloadModule(nullptr));
+}
+
+TEST_F(LifecycleTest, UnloadModule_ReturnsFalseForNameExceedingMaxLength)
+{
+    std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'w');
+    EXPECT_FALSE(UnloadModule(long_name.c_str()));
 }
