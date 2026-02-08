@@ -209,7 +209,9 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *       A direct call to `load_module` does not increment this count; it
      *       simply ensures the module is in the `LOADED` state.
      *
-     * @param name The name of the module to load.
+     * @param name The name of the module to load. Must be a null-terminated
+     *             C-string. Length must not exceed ModuleDef::MAX_MODULE_NAME_LEN
+     *             (256). Returns false if null or invalid.
      * @return `true` if the module was loaded successfully, `false` otherwise.
      */
     bool load_module(const char *name, std::source_location loc);
@@ -228,7 +230,9 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      * `register_dynamic_module()`. This function must not be called from within a
      * startup or shutdown callback.
      *
-     * @param name The name of the module to unload.
+     * @param name The name of the module to unload. Must be a null-terminated
+     *             C-string. Length must not exceed ModuleDef::MAX_MODULE_NAME_LEN
+     *             (256). Returns false if null or invalid.
      * @return `true` if the module was considered for unloading (even if it was
      *         already unloaded). Returns `false` if the module could not be
      *         unloaded because it is still in use by another loaded module.
@@ -319,7 +323,8 @@ inline bool RegisterDynamicModule(ModuleDef &&module_def)
  * @brief A convenience function to load a dynamic module.
  * @see LifecycleManager::load_module
  *
- * @param name The name of the module to load.
+ * @param name The name of the module to load. Must be a null-terminated C-string,
+ *             length not exceeding ModuleDef::MAX_MODULE_NAME_LEN (256).
  * @return `true` if the module was loaded successfully, `false` otherwise.
  */
 inline bool LoadModule(const char *name, std::source_location loc = std::source_location::current())
@@ -331,7 +336,8 @@ inline bool LoadModule(const char *name, std::source_location loc = std::source_
  * @brief A convenience function to unload a dynamic module.
  * @see LifecycleManager::unload_module
  *
- * @param name The name of the module to unload.
+ * @param name The name of the module to unload. Must be a null-terminated C-string,
+ *             length not exceeding ModuleDef::MAX_MODULE_NAME_LEN (256).
  * @return `true` if the module was considered for unloading.
  */
 inline bool UnloadModule(const char *name,

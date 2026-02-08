@@ -5,6 +5,7 @@
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
 
+#include <cassert>
 #include <vector>
 #include <atomic>
 
@@ -142,6 +143,13 @@ bool MessageHub::send_request(const char *header, const nlohmann::json &payload,
         LOGGER_ERROR("MessageHub: Not connected.");
         return false;
     }
+    // HEP-core-0002 §5.1: Frame 1 is 16 bytes. header must point to at least 16 valid bytes.
+    assert(header != nullptr && "header must not be null and must point to at least 16 valid bytes");
+    if (header == nullptr)
+    {
+        LOGGER_ERROR("MessageHub: header must not be null.");
+        return false;
+    }
 
     try
     {
@@ -200,6 +208,13 @@ bool MessageHub::send_notification(const char *header, const nlohmann::json &pay
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
         LOGGER_ERROR("MessageHub: Not connected.");
+        return false;
+    }
+    // HEP-core-0002 §5.1: Frame 1 is 16 bytes. header must point to at least 16 valid bytes.
+    assert(header != nullptr && "header must not be null and must point to at least 16 valid bytes");
+    if (header == nullptr)
+    {
+        LOGGER_ERROR("MessageHub: header must not be null.");
         return false;
     }
 

@@ -5,6 +5,7 @@
  */
 #include "pylabhub_utils_export.h"
 
+#include <cstddef>
 #include <memory>
 
 // Disable warning C4251 on MSVC. This is a common practice for exported classes
@@ -42,10 +43,30 @@ typedef void (*LifecycleCallback)(const char *arg);
  *
  * It is movable but not copyable, enforcing a clear ownership model. Once a
  * `ModuleDef` is registered with the `LifecycleManager`, ownership is transferred.
+ *
+ * **C-string requirements for module and dependency names:**
+ * All `const char*` parameters for module names (e.g., `name`, `dependency_name`)
+ * and names passed to `load_module`/`unload_module` must satisfy:
+ * - Be a valid C-string (null-terminated)
+ * - Have length (excluding the null terminator) not exceeding `MAX_MODULE_NAME_LEN` (256)
+ *
+ * Malformed or oversized strings are rejected to protect against buffer overreads
+ * and excessive memory allocation. Violations throw `std::invalid_argument` or
+ * `std::length_error`.
  */
 class PYLABHUB_UTILS_EXPORT ModuleDef
 {
   public:
+    /**
+     * @brief The maximum allowed length for a module or dependency name.
+     *
+     * Module names and dependency names must be null-terminated C-strings with
+     * length (excluding the null terminator) not exceeding this value. This limit
+     * protects against buffer overreads and malicious or accidental oversized
+     * inputs.
+     */
+    static constexpr size_t MAX_MODULE_NAME_LEN = 256;
+
     /**
      * @brief The maximum allowed length for a callback string argument.
      *
@@ -57,7 +78,10 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     /**
      * @brief Constructs a module definition with a given name.
      * @param name The unique name for this module (e.g., "Logger", "Database").
-     *             This name is used for dependency resolution. Must not be null.
+     *             Must be a null-terminated C-string. Length must not exceed
+     *             MAX_MODULE_NAME_LEN (256). Must not be null.
+     * @throws std::invalid_argument if name is null or not null-terminated.
+     * @throws std::length_error if string length exceeds MAX_MODULE_NAME_LEN.
      */
     explicit ModuleDef(const char *name);
 
@@ -75,6 +99,10 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
     /**
      * @brief Adds a dependency to this module.
      * @param dependency_name The name of the module that this module depends on.
+     *                        Must be a null-terminated C-string. Length must not
+     *                        exceed MAX_MODULE_NAME_LEN (256). Ignored if null.
+     * @throws std::length_error if string length exceeds MAX_MODULE_NAME_LEN or
+     *         if the string is not null-terminated within MAX_MODULE_NAME_LEN chars.
      */
     void add_dependency(const char *dependency_name);
 
