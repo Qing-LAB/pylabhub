@@ -31,11 +31,29 @@ if(BUILD_TESTS)
     add_dependencies(stage_tests stage_pylabhub_utils)
   endif()
 
-  # Configure all test sub-projects
+  # Configure test framework (shared infrastructure)
   add_subdirectory(test_framework)
-  add_subdirectory(test_pylabhub_corelib)
-  add_subdirectory(test_pylabhub_utils)
-  add_subdirectory(test_misc)
+
+  # Configure layered test sub-projects (new architecture)
+  option(BUILD_LAYERED_TESTS "Build layered test architecture (new)" ON)
+  if(BUILD_LAYERED_TESTS)
+    message(STATUS "-- Building layered test architecture...")
+    add_subdirectory(test_layer0_platform)
+    add_subdirectory(test_layer1_base)
+    add_subdirectory(test_layer2_service)
+    add_subdirectory(test_layer3_datahub)
+    message(STATUS "-- Layered tests configured.")
+  endif()
+
+  # Configure legacy test sub-projects (during migration)
+  option(BUILD_LEGACY_TESTS "Build legacy test structure (old)" ON)
+  if(BUILD_LEGACY_TESTS)
+    message(STATUS "-- Building legacy test structure...")
+    add_subdirectory(test_pylabhub_corelib)
+    add_subdirectory(test_pylabhub_utils)
+    add_subdirectory(test_misc)
+    message(STATUS "-- Legacy tests configured.")
+  endif()
 
   # Collect all test executables registered by the subdirectories
   get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)
