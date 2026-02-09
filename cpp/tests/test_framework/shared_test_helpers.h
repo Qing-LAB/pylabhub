@@ -201,4 +201,56 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     return 0; // Success
 }
 
+// ============================================================================
+// DataBlock Test Utilities (for layered test architecture)
+// ============================================================================
+
+/**
+ * @brief Generates unique test channel name with timestamp.
+ * @param test_name Base name (e.g., "SchemaValidation")
+ * @return Unique channel name (e.g., "test_SchemaValidation_1675960234567")
+ */
+std::string make_test_channel_name(const char* test_name);
+
+/**
+ * @brief Cleans up shared memory DataBlock after test.
+ * @param channel_name Channel name to clean up
+ * @return True if cleanup succeeded
+ */
+bool cleanup_test_datablock(const std::string& channel_name);
+
+/**
+ * @brief RAII guard for test DataBlock cleanup.
+ * @details Automatically generates unique channel name and cleans up on destruction.
+ *
+ * Usage:
+ * @code
+ *   DataBlockTestGuard guard("MyTest");
+ *   auto producer = create_datablock_producer(hub, guard.channel_name(), ...);
+ *   // ~DataBlockTestGuard() automatically cleans up
+ * @endcode
+ */
+class DataBlockTestGuard
+{
+public:
+    explicit DataBlockTestGuard(const char* test_name)
+        : channel_name_(make_test_channel_name(test_name))
+    {}
+
+    ~DataBlockTestGuard()
+    {
+        cleanup_test_datablock(channel_name_);
+    }
+
+    const std::string& channel_name() const { return channel_name_; }
+
+    DataBlockTestGuard(const DataBlockTestGuard&) = delete;
+    DataBlockTestGuard& operator=(const DataBlockTestGuard&) = delete;
+    DataBlockTestGuard(DataBlockTestGuard&&) = delete;
+    DataBlockTestGuard& operator=(DataBlockTestGuard&&) = delete;
+
+private:
+    std::string channel_name_;
+};
+
 } // namespace pylabhub::tests::helper

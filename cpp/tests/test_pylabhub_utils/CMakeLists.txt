@@ -16,6 +16,10 @@ add_executable(test_pylabhub_utils
   test_messagehub.cpp
   test_datablock.cpp
   test_datablock_management_mutex.cpp
+  test_transaction_api.cpp
+  test_recovery_api.cpp
+  test_schema_validation.cpp
+  test_benchmarks.cpp
 
   # Worker implementations
   filelock_workers.cpp

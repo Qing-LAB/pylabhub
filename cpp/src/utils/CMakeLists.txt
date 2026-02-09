@@ -17,8 +17,9 @@ message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 
 set(UTILS_SOURCES
   format_tools.cpp
-  debug_info.cpp  
+  debug_info.cpp
   platform.cpp
+  crypto_utils.cpp
   lifecycle.cpp
   file_lock.cpp
   logger_sinks/sink.cpp
@@ -32,7 +33,14 @@ set(UTILS_SOURCES
   message_hub.cpp
   data_block.cpp
   data_block_mutex.cpp
-  data_header_sync_primitives.cpp
+  data_block_spinlock.cpp
+  # Temporarily excluded: P10/P11 recovery features (incomplete implementation)
+  # Will be re-enabled when recovery APIs are implemented
+  # data_block_recovery.cpp
+  # slot_diagnostics.cpp
+  # slot_recovery.cpp
+  # heartbeat_manager.cpp
+  # integrity_validator.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
