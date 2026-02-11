@@ -1,41 +1,137 @@
 # tests/test_layer1_base/CMakeLists.txt
 #
-# Layer 1: Base utilities tests
-# Tests for plh_base.hpp (depends on plh_platform.hpp)
+# Layer 1 (Base) tests - Pure API tests (no lifecycle required)
+#
+# These tests verify base utilities built on plh_platform.hpp:
+# - Guards (atomic, recursion, scope)
+# - Format tools
+# - Debug info
+# - Module definitions
 
-message(STATUS "** Configuring Layer 1 (Base) tests...")
+cmake_minimum_required(VERSION 3.29)
 
-add_executable(test_layer1_base
-  # Placeholder during Phase 0
-  test_base_placeholder.cpp
+message(STATUS "Configuring Layer 1 (Base) tests...")
 
-  # To be migrated from test_pylabhub_corelib in Phase 2
-  # test_format_tools.cpp
-  # test_debug_info.cpp
-  # test_atomic_guard.cpp
-  # test_recursion_guard.cpp
-  # test_scope_guard.cpp
-  # test_module_def.cpp
+macro(layer1_require_staged_utils target)
+    if(TARGET stage_pylabhub_utils)
+        add_dependencies(${target} stage_pylabhub_utils)
+    endif()
+endmacro()
+
+# ============================================================================
+# Test: AtomicGuard
+# ============================================================================
+
+add_executable(test_layer1_atomic_guard
+    test_atomicguard.cpp
 )
 
-target_link_libraries(test_layer1_base
-  PRIVATE
-    pylabhub::test_framework
-    pylabhub::utils
+target_link_libraries(test_layer1_atomic_guard
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
 )
 
-target_compile_features(test_layer1_base PRIVATE cxx_std_20)
-target_compile_definitions(test_layer1_base PRIVATE LOGGER_COMPILE_LEVEL=0)
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_atomic_guard
+    SUITE_NAME "Layer1_AtomicGuard"
+)
+layer1_require_staged_utils(test_layer1_atomic_guard)
 
-pylabhub_register_test_for_staging(TARGET test_layer1_base)
-
-set_property(TARGET test_layer1_base PROPERTY
-  TEST_LAUNCHER "${CMAKE_COMMAND}" -E env --modify "PATH=path_list_append:${PYLABHUB_STAGING_DIR}/bin"
+gtest_discover_tests(test_layer1_atomic_guard
+    PROPERTIES
+        LABELS "layer1;base;guard;atomic"
+        TIMEOUT 120  # Stress tests may take longer
 )
 
-gtest_discover_tests(test_layer1_base
-  WORKING_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
-  DISCOVERY_TIMEOUT 60
+# ============================================================================
+# Test: RecursionGuard
+# ============================================================================
+
+add_executable(test_layer1_recursion_guard
+    test_recursionguard.cpp
 )
 
-message(STATUS "** Layer 1 tests configured.")
+target_link_libraries(test_layer1_recursion_guard
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_recursion_guard
+    SUITE_NAME "Layer1_RecursionGuard"
+)
+layer1_require_staged_utils(test_layer1_recursion_guard)
+
+gtest_discover_tests(test_layer1_recursion_guard
+    PROPERTIES
+        LABELS "layer1;base;guard;recursion"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: ScopeGuard
+# ============================================================================
+
+add_executable(test_layer1_scope_guard
+    test_scopeguard.cpp
+)
+
+target_link_libraries(test_layer1_scope_guard
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_scope_guard
+    SUITE_NAME "Layer1_ScopeGuard"
+)
+layer1_require_staged_utils(test_layer1_scope_guard)
+
+gtest_discover_tests(test_layer1_scope_guard
+    PROPERTIES
+        LABELS "layer1;base;guard;scope"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: Format Tools
+# ============================================================================
+
+add_executable(test_layer1_format_tools
+    test_formattable.cpp
+)
+
+target_link_libraries(test_layer1_format_tools
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_format_tools
+    SUITE_NAME "Layer1_FormatTools"
+)
+layer1_require_staged_utils(test_layer1_format_tools)
+
+gtest_discover_tests(test_layer1_format_tools
+    PROPERTIES
+        LABELS "layer1;base;format"
+        TIMEOUT 30
+)
+
+message(STATUS "Layer 1 (Base) tests configured successfully")
+message(STATUS "  - test_layer1_atomic_guard")
+message(STATUS "  - test_layer1_recursion_guard")
+message(STATUS "  - test_layer1_scope_guard")
+message(STATUS "  - test_layer1_format_tools")

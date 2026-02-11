@@ -82,9 +82,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
 #else
     void *m_base_shared_memory_address{nullptr};
     size_t m_offset_to_mutex_storage{0};
-    int m_dedicated_shm_fd{-1};       // When base is null: fd of dedicated shm for mutex storage
-    void *m_dedicated_shm_mapped{nullptr}; // When base is null: mapped address (for munmap)
-    size_t m_dedicated_shm_size{0};   // When base is null: mapping size
+    pylabhub::platform::ShmHandle m_dedicated_shm{}; // When base is null: dedicated shm for mutex
     pthread_mutex_t *get_pthread_mutex() const
     {
         return reinterpret_cast<pthread_mutex_t *>(

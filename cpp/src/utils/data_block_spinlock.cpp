@@ -33,7 +33,8 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
     uint64_t my_pid = get_current_pid();
 
     // Check if already owned (recursive case)
-    if (m_state->owner_pid.load(std::memory_order_relaxed) == my_pid) { // Use relaxed as per spec
+    if (m_state->owner_pid.load(std::memory_order_relaxed) == my_pid)
+    { // Use relaxed as per spec
         m_state->recursion_count.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -45,17 +46,16 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
     // CAS loop with timeout
     uint64_t expected_pid = 0;
     while (!m_state->owner_pid.compare_exchange_weak(
-            expected_pid, my_pid,
-            std::memory_order_acquire,
-            std::memory_order_relaxed)) {
+        expected_pid, my_pid, std::memory_order_acquire, std::memory_order_relaxed))
+    {
 
         // Check if lock holder is dead
-        if (expected_pid != 0 && !pylabhub::platform::is_process_alive(expected_pid)) {
+        if (expected_pid != 0 && !pylabhub::platform::is_process_alive(expected_pid))
+        {
             // Force reclaim zombie lock
-            LOGGER_WARN(
-                "SharedSpinLock '{}': Detected dead owner PID {}. Force reclaiming.",
-                m_name, expected_pid);
-            m_state->owner_pid.store(my_pid, std::memory_order_acquire);
+            LOGGER_WARN("SharedSpinLock '{}': Detected dead owner PID {}. Force reclaiming.",
+                        m_name, expected_pid);
+            m_state->owner_pid.store(my_pid, std::memory_order_release);
             m_state->recursion_count.store(1, std::memory_order_relaxed);
             m_state->generation.fetch_add(1, std::memory_order_relaxed);
             return true;
@@ -72,7 +72,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
             }
         }
 
-        expected_pid = 0; // Reset for next CAS attempt
+        expected_pid = 0;              // Reset for next CAS attempt
         backoff_strategy(iteration++); // Exponential backoff
     }
 

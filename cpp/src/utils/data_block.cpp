@@ -1,87 +1,224 @@
-#include "plh_service.hpp"
+#include "plh_service.hpp" // Includes crypto_utils, logger, lifecycle
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
 #include "utils/data_block_mutex.hpp"
-#include <sodium.h>
 #include <cstddef>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <thread>
 #include <chrono>
+#include <type_traits>
 
 namespace pylabhub::hub
 {
+// Forward declaration for use in anonymous namespace helpers
+class DataBlock;
 
 // ============================================================================
 // Constants
 // ============================================================================
 namespace
 {
-static constexpr uint64_t DATABLOCK_MAGIC_NUMBER = 0xBADF00DFEEDFACEULL;
-static constexpr uint32_t DATABLOCK_VERSION = 4; // Bumped for variable slot checksum region
-// HEP-core-0002 §8.3: Version range for consumer compatibility
-static constexpr uint32_t DATABLOCK_VERSION_MIN_SUPPORTED = 4;
-static constexpr uint32_t DATABLOCK_VERSION_SUPPORTED = 4;
+// Use backoff from utils module (provided by backoff_strategy.hpp)
+using pylabhub::utils::backoff;
+
+// Import version constants from header
+using pylabhub::hub::detail::HEADER_VERSION_MAJOR;
+using pylabhub::hub::detail::HEADER_VERSION_MINOR;
+using pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS;
+using pylabhub::hub::detail::MAX_SHARED_SPINLOCKS;
+
+// Use detail::DATABLOCK_MAGIC_NUMBER and detail::is_header_magic_valid from data_block.hpp
+static constexpr uint16_t DATABLOCK_VERSION_MAJOR = HEADER_VERSION_MAJOR;
+static constexpr uint16_t DATABLOCK_VERSION_MINOR = HEADER_VERSION_MINOR;
 static constexpr uint64_t INVALID_SLOT_ID = std::numeric_limits<uint64_t>::max();
 
-// BLAKE2b checksum via libsodium (crypto_generichash)
-inline bool compute_blake2b(uint8_t *out, const void *data, size_t len)
+// Helper function to get current PID
+uint64_t get_current_pid()
 {
-    if (sodium_init() < 0)
-        return false;
-    return crypto_generichash(out, SharedMemoryHeader::CHECKSUM_BYTES,
-                             static_cast<const unsigned char *>(data), len, nullptr, 0) == 0;
+    return pylabhub::platform::get_pid();
 }
 
-inline bool verify_blake2b(const uint8_t *stored, const void *data, size_t len)
+// === SlotRWState Coordination Logic ===
+// Note: backoff() is now provided by pylabhub::utils::backoff() from backoff_strategy.hpp
+
+// 4.2.1 Writer Acquisition Flow
+SlotAcquireResult acquire_write(SlotRWState *rw, SharedMemoryHeader *header, int timeout_ms)
 {
-    uint8_t computed[SharedMemoryHeader::CHECKSUM_BYTES];
-    if (!compute_blake2b(computed, data, len))
-        return false;
-    return std::memcmp(stored, computed, SharedMemoryHeader::CHECKSUM_BYTES) == 0;
+    auto start_time = pylabhub::platform::monotonic_time_ns();
+    uint64_t my_pid = get_current_pid();
+    int iteration = 0;
+
+    while (true)
+    {
+        uint64_t expected_lock = 0;
+        if (rw->write_lock.compare_exchange_strong(expected_lock, my_pid, std::memory_order_acquire,
+                                                   std::memory_order_relaxed))
+        {
+            // Lock acquired
+            break;
+        }
+        else
+        {
+            // Lock held by another process
+            if (pylabhub::platform::is_process_alive(expected_lock))
+            {
+                // Valid contention, continue waiting or timeout
+            }
+            else
+            {
+                // Zombie lock - force reclaim
+                LOGGER_WARN("SlotRWState: Detected zombie write lock by PID {}. Force reclaiming.",
+                            expected_lock);
+                rw->write_lock.store(my_pid, std::memory_order_release); // Reclaim
+                if (header)
+                    header->write_lock_contention.fetch_add(1, std::memory_order_relaxed);
+                break; // Acquired
+            }
+        }
+
+        // Check for timeout if lock was not acquired or was valid contention
+        if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                                  static_cast<uint64_t>(timeout_ms))
+        {
+            if (header)
+                header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+            return SLOT_ACQUIRE_TIMEOUT;
+        }
+        backoff(iteration++);
+    }
+
+    // Now we hold the write_lock
+    rw->writer_waiting.store(1, std::memory_order_relaxed); // Signal readers to drain
+
+    iteration = 0;
+    while (true)
+    {
+        std::atomic_thread_fence(std::memory_order_seq_cst); // Force visibility
+
+        uint32_t readers = rw->reader_count.load(std::memory_order_acquire);
+        if (readers == 0)
+        {
+            break; // All readers finished
+        }
+
+        // Check timeout
+        if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                                  static_cast<uint64_t>(timeout_ms))
+        {
+            rw->writer_waiting.store(0, std::memory_order_relaxed);
+            rw->write_lock.store(
+                0, std::memory_order_release); // Release the lock before returning timeout
+            if (header)
+                header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+            return SLOT_ACQUIRE_TIMEOUT;
+        }
+
+        backoff(iteration++);
+    }
+    rw->writer_waiting.store(0, std::memory_order_relaxed); // All readers drained
+
+    // Transition to WRITING state
+    rw->slot_state.store(SlotRWState::SlotState::WRITING, std::memory_order_release);
+    std::atomic_thread_fence(std::memory_order_seq_cst); // Ensure state change is visible
+
+    return SLOT_ACQUIRE_OK;
 }
 
-// Defined after DataBlock class (uses its methods)
-bool update_checksum_flexible_zone_impl(DataBlock *block);
-bool update_checksum_slot_impl(DataBlock *block, size_t slot_index);
-bool verify_checksum_flexible_zone_impl(const DataBlock *block);
-bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index);
-
-inline bool enter_thread_guard(std::atomic<uint64_t> &owner_tid,
-                               std::atomic<uint32_t> &depth,
-                               uint64_t tid)
+// 4.2.2 Writer Commit Flow
+void commit_write(SlotRWState *rw, SharedMemoryHeader *header)
 {
-    uint64_t current = owner_tid.load(std::memory_order_acquire);
-    if (current == tid)
-    {
-        depth.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
-    uint64_t expected = 0;
-    if (owner_tid.compare_exchange_strong(expected, tid, std::memory_order_acq_rel,
-                                          std::memory_order_acquire))
-    {
-        depth.store(1, std::memory_order_release);
-        return true;
-    }
-    return false;
+    rw->write_generation.fetch_add(
+        1, std::memory_order_release); // Step 1: Increment generation counter
+    rw->slot_state.store(SlotRWState::SlotState::COMMITTED,
+                         std::memory_order_release); // Step 2: Transition to COMMITTED state
+    if (header)
+        header->commit_index.fetch_add(
+            1, std::memory_order_release); // Step 3: Increment global commit index (makes visible
+                                           // to consumers)
+    // Memory ordering: All writes before this release are visible to
+    // any consumer that performs acquire on commit_index or slot_state
 }
 
-inline bool exit_thread_guard(std::atomic<uint64_t> &owner_tid,
-                              std::atomic<uint32_t> &depth,
-                              uint64_t tid)
+// 4.2.2b Writer Release (without commit) - for C API and abort paths
+void release_write(SlotRWState *rw, SharedMemoryHeader * /*header*/)
 {
-    if (owner_tid.load(std::memory_order_acquire) != tid)
-        return false;
-    uint32_t prev = depth.fetch_sub(1, std::memory_order_acq_rel);
-    if (prev == 1)
+    rw->write_lock.store(0, std::memory_order_release);
+    rw->slot_state.store(SlotRWState::SlotState::FREE, std::memory_order_release);
+}
+
+// 4.2.3 Reader Acquisition Flow (TOCTTOU-Safe)
+SlotAcquireResult acquire_read(SlotRWState *rw, SharedMemoryHeader *header,
+                               uint64_t *out_generation)
+{
+    // Step 1: Check slot state (first check)
+    SlotRWState::SlotState state = rw->slot_state.load(std::memory_order_acquire);
+    if (state != SlotRWState::SlotState::COMMITTED)
     {
-        owner_tid.store(0, std::memory_order_release);
+        return SLOT_ACQUIRE_NOT_READY;
     }
+
+    // Step 2: Register as reader (minimize race window)
+    rw->reader_count.fetch_add(1, std::memory_order_acq_rel);
+
+    // Step 3: Memory fence (force writer visibility)
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    // Step 4: Double-check slot state (TOCTTOU mitigation)
+    state = rw->slot_state.load(std::memory_order_acquire);
+    if (state != SlotRWState::SlotState::COMMITTED)
+    {
+        // Race detected! Writer changed state after our first check
+        // but before we registered. Safely abort.
+        rw->reader_count.fetch_sub(1, std::memory_order_release);
+        if (header)
+            header->reader_race_detected.fetch_add(1, std::memory_order_relaxed);
+        return SLOT_ACQUIRE_NOT_READY;
+    }
+
+    // Step 5: Capture generation for optimistic validation
+    *out_generation = rw->write_generation.load(std::memory_order_acquire);
+
+    return SLOT_ACQUIRE_OK;
+}
+
+// 4.2.4 Reader Validation (Wrap-Around Detection)
+bool validate_read(SlotRWState *rw, SharedMemoryHeader *header, uint64_t captured_gen)
+{
+    // Check if slot was overwritten during read
+    uint64_t current_gen = rw->write_generation.load(std::memory_order_acquire);
+
+    if (current_gen != captured_gen)
+    {
+        // Slot was reused (ring buffer wrapped around)
+        if (header)
+            header->reader_validation_failed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
     return true;
 }
+
+// 4.2.5 Reader Release Flow
+void release_read(SlotRWState *rw, SharedMemoryHeader *header)
+{
+    // Decrement reader count
+    uint32_t prev_count = rw->reader_count.fetch_sub(1, std::memory_order_release);
+
+    // Track peak reader count (optional; header may be null for C API)
+    if (header)
+    {
+        uint64_t peak = header->reader_peak_count.load(std::memory_order_relaxed);
+        if (prev_count > peak)
+        {
+            header->reader_peak_count.store(prev_count, std::memory_order_relaxed);
+        }
+    }
+    // If last reader and writer is waiting, writer will proceed
+    // (writer polls reader_count with acquire ordering)
+}
+
 } // namespace
 
 // ============================================================================
@@ -93,305 +230,271 @@ class DataBlock
     DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_is_creator(true)
     {
-        size_t slot_count = (config.ring_buffer_capacity > 0)
-                                ? static_cast<size_t>(config.ring_buffer_capacity)
-                                : 1u;
-        size_t struct_size = slot_count * to_bytes(config.unit_block_size);
-        size_t slot_checksum_size =
-            config.enable_checksum ? slot_count * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE : 0;
-        m_size = sizeof(SharedMemoryHeader) + slot_checksum_size + config.flexible_zone_size +
-                 struct_size;
+        // 1. Calculate total shared memory size
+        size_t slot_rw_state_array_size = config.ring_buffer_capacity * sizeof(SlotRWState);
+        size_t total_flexible_zone_size = config.total_flexible_zone_size(); // Using new helper
+        size_t structured_buffer_total_size = config.structured_buffer_size();
 
-#if defined(PYLABHUB_PLATFORM_WIN64)
-        m_shm_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
-                                          static_cast<DWORD>(m_size), m_name.c_str());
-        if (m_shm_handle == NULL)
-        {
-            throw std::runtime_error("Failed to create file mapping.");
-        }
+        m_size = sizeof(SharedMemoryHeader) + slot_rw_state_array_size + total_flexible_zone_size +
+                 structured_buffer_total_size;
 
-        m_mapped_address = MapViewOfFile(m_shm_handle, FILE_MAP_ALL_ACCESS, 0, 0, m_size);
-        if (m_mapped_address == NULL)
-        {
-            CloseHandle(m_shm_handle);
-            throw std::runtime_error("Failed to map view of file.");
-        }
-#else
-        shm_unlink(m_name.c_str());
-        m_shm_fd = shm_open(m_name.c_str(), O_CREAT | O_RDWR, 0666);
-        if (m_shm_fd == -1)
-        {
-            throw std::runtime_error("shm_open failed.");
-        }
-        if (ftruncate(m_shm_fd, m_size) == -1)
-        {
-            close(m_shm_fd);
-            shm_unlink(m_name.c_str());
-            throw std::runtime_error("ftruncate failed.");
-        }
-        m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
-        if (m_mapped_address == MAP_FAILED)
-        {
-            close(m_shm_fd);
-            shm_unlink(m_name.c_str());
-            throw std::runtime_error("mmap failed.");
-        }
+#if defined(PYLABHUB_IS_POSIX)
+        pylabhub::platform::shm_unlink(m_name.c_str()); // Ensure it's not already existing
 #endif
-
-        m_header = new (m_mapped_address) SharedMemoryHeader();
-        m_header->init_state.store(0, std::memory_order_release);
-
+        m_shm = pylabhub::platform::shm_create(m_name.c_str(), m_size);
+        if (m_shm.base == nullptr)
+        {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        m_management_mutex = std::make_unique<DataBlockMutex>(m_name, nullptr, 0, m_is_creator);
+            throw std::runtime_error("Failed to create file mapping for '" + m_name +
+                                     "'. Error: " + std::to_string(GetLastError()));
 #else
-        m_management_mutex = std::make_unique<DataBlockMutex>(
-            m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
-            m_is_creator);
+            throw std::runtime_error("shm_create failed for '" + m_name +
+                                     "'. Error: " + std::to_string(errno));
 #endif
+        }
+        // Placement new for SharedMemoryHeader (value-initializes; do not memset non-trivials)
+        m_header = new (m_shm.base) SharedMemoryHeader();
 
-        m_header->init_state.store(1, std::memory_order_release);
+        // 2. Initialize SharedMemoryHeader fields
+        m_header->version_major = DATABLOCK_VERSION_MAJOR;
+        m_header->version_minor = DATABLOCK_VERSION_MINOR;
+        m_header->total_block_size = m_size;
 
-        // Initialize header fields
-        m_header->shared_secret = config.shared_secret;
-        m_header->version = DATABLOCK_VERSION;
-        m_header->header_size = sizeof(SharedMemoryHeader);
-        m_header->active_consumer_count.store(0, std::memory_order_release);
+        pylabhub::crypto::generate_random_bytes(
+            m_header->shared_secret, sizeof(m_header->shared_secret)); // Generate random secret
+        if (config.shared_secret != 0)
+        {
+            std::memcpy(m_header->shared_secret, &config.shared_secret,
+                        sizeof(config.shared_secret)); // Store capability for discovery
+        }
+
+        m_header->schema_version = 0; // Will be set by factory function if schema is used
+        std::memset(m_header->schema_hash, 0, sizeof(m_header->schema_hash));
+
+        m_header->policy = config.policy;
+        m_header->unit_block_size = static_cast<uint32_t>(to_bytes(config.unit_block_size));
+        m_header->ring_buffer_capacity = config.ring_buffer_capacity;
+        m_header->flexible_zone_size = total_flexible_zone_size;
+        m_header->enable_checksum = config.enable_checksum;
+        m_header->checksum_policy = config.checksum_policy;
+
+        // Initialize hot path indices
         m_header->write_index.store(0, std::memory_order_release);
         m_header->commit_index.store(INVALID_SLOT_ID, std::memory_order_release);
         m_header->read_index.store(0, std::memory_order_release);
-        m_header->current_slot_id.store(INVALID_SLOT_ID, std::memory_order_release);
+        m_header->active_consumer_count.store(0, std::memory_order_release);
 
-        m_header->flexible_zone_format = config.flexible_zone_format;
-        m_header->flexible_zone_size = static_cast<uint32_t>(config.flexible_zone_size);
-        m_header->ring_buffer_capacity =
-            (config.ring_buffer_capacity > 0) ? static_cast<uint32_t>(config.ring_buffer_capacity) : 1u;
-        m_header->structured_buffer_size = static_cast<uint32_t>(struct_size);
-        m_header->unit_block_size = static_cast<uint32_t>(config.unit_block_size);
-        m_header->checksum_enabled = config.enable_checksum ? 1u : 0u;
+        // Initialize metrics section to zero
+        m_header->writer_timeout_count.store(0, std::memory_order_release);
+        m_header->writer_blocked_total_ns.store(0, std::memory_order_release);
+        m_header->write_lock_contention.store(0, std::memory_order_release);
+        m_header->write_generation_wraps.store(0, std::memory_order_release);
+        m_header->reader_not_ready_count.store(0, std::memory_order_release);
+        m_header->reader_race_detected.store(0, std::memory_order_release);
+        m_header->reader_validation_failed.store(0, std::memory_order_release);
+        m_header->reader_peak_count.store(0, std::memory_order_release);
+        m_header->reader_timeout_count.store(0, std::memory_order_release);
 
-        std::memset(m_header->flexible_zone_checksum, 0, SharedMemoryHeader::CHECKSUM_BYTES);
-        m_header->flexible_zone_checksum_valid.store(0, std::memory_order_release);
-        if (slot_checksum_size > 0)
+        m_header->last_error_timestamp_ns.store(0, std::memory_order_release);
+        m_header->last_error_code.store(0, std::memory_order_release);
+        m_header->error_sequence.store(0, std::memory_order_release);
+        m_header->slot_acquire_errors.store(0, std::memory_order_release);
+        m_header->slot_commit_errors.store(0, std::memory_order_release);
+        m_header->checksum_failures.store(0, std::memory_order_release);
+        m_header->zmq_send_failures.store(0, std::memory_order_release);
+        m_header->zmq_recv_failures.store(0, std::memory_order_release);
+        m_header->zmq_timeout_count.store(0, std::memory_order_release);
+        m_header->recovery_actions_count.store(0, std::memory_order_release);
+        m_header->schema_mismatch_count.store(0, std::memory_order_release);
+        for (size_t i = 0; i < 2; ++i)
+            m_header->reserved_errors[i].store(0, std::memory_order_release);
+
+        m_header->heartbeat_sent_count.store(0, std::memory_order_release);
+        m_header->heartbeat_failed_count.store(0, std::memory_order_release);
+        m_header->last_heartbeat_ns.store(0, std::memory_order_release);
+        m_header->reserved_hb.store(0, std::memory_order_release);
+
+        m_header->total_slots_written.store(0, std::memory_order_release);
+        m_header->total_slots_read.store(0, std::memory_order_release);
+        m_header->total_bytes_written.store(0, std::memory_order_release);
+        m_header->total_bytes_read.store(0, std::memory_order_release);
+        m_header->uptime_seconds.store(0, std::memory_order_release);
+        m_header->creation_timestamp_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::high_resolution_clock::now().time_since_epoch())
+                .count(),
+            std::memory_order_release);
+        for (size_t i = 0; i < 2; ++i)
+            m_header->reserved_perf[i].store(0, std::memory_order_release);
+
+        // Initialize Consumer Heartbeats
+        for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
         {
-            char *slot_checksum_base =
-                reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader);
-            std::memset(slot_checksum_base, 0, slot_checksum_size);
+            m_header->consumer_heartbeats[i].consumer_id.store(0, std::memory_order_release);
+            m_header->consumer_heartbeats[i].last_heartbeat_ns.store(0, std::memory_order_release);
         }
 
-        for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
+        // Initialize SharedSpinLock States
+        for (size_t i = 0; i < MAX_SHARED_SPINLOCKS; ++i)
         {
-            m_header->spinlock_allocated[i].clear(std::memory_order_release);
-        }
-        for (size_t i = 0; i < SharedMemoryHeader::NUM_COUNTERS_64; ++i)
-        {
-            m_header->counters_64[i].store(0, std::memory_order_release);
+            m_header->spinlock_states[i].owner_pid.store(0, std::memory_order_release);
+            m_header->spinlock_states[i].recursion_count.store(0, std::memory_order_release);
+            m_header->spinlock_states[i].generation.store(0, std::memory_order_release);
         }
 
+        // 3. Initialize SlotRWState array
+        m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
+            reinterpret_cast<char *>(m_shm.base) + sizeof(SharedMemoryHeader));
+
+        for (uint32_t i = 0; i < config.ring_buffer_capacity; ++i)
+        {
+            m_slot_rw_states_array[i].write_lock.store(0, std::memory_order_release);
+            m_slot_rw_states_array[i].reader_count.store(0, std::memory_order_release);
+            m_slot_rw_states_array[i].slot_state.store(SlotRWState::SlotState::FREE,
+                                                       std::memory_order_release);
+            m_slot_rw_states_array[i].writer_waiting.store(0, std::memory_order_release);
+            m_slot_rw_states_array[i].write_generation.store(0, std::memory_order_release);
+        }
+
+        // 4. Calculate pointers for flexible zones and structured data buffer
         m_flexible_data_zone =
-            reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader) + slot_checksum_size;
-        m_structured_data_buffer = m_flexible_data_zone + config.flexible_zone_size;
+            reinterpret_cast<char *>(m_slot_rw_states_array) + slot_rw_state_array_size;
+        m_structured_data_buffer = m_flexible_data_zone + total_flexible_zone_size;
+
+        // Populate flexible zone info map
+        size_t current_offset = 0;
+        for (const auto &fz_config : config.flexible_zone_configs)
+        {
+            FlexibleZoneInfo info;
+            info.offset = current_offset;
+            info.size = fz_config.size;
+            info.spinlock_index = fz_config.spinlock_index;
+            m_flexible_zone_info[fz_config.name] = info; // Store by name for easy lookup
+            current_offset += fz_config.size;
+        }
 
         std::atomic_thread_fence(std::memory_order_release);
-        m_header->magic_number = DATABLOCK_MAGIC_NUMBER;
-        m_header->init_state.store(2, std::memory_order_release);
+        m_header->magic_number.store(
+            detail::DATABLOCK_MAGIC_NUMBER,
+            std::memory_order_release); // Set magic number last for atomicity
+
+        // Store header layout hash for protocol check (consumer validates same ABI)
+        pylabhub::schema::SchemaInfo header_schema = get_shared_memory_header_schema_info();
+        std::memcpy(m_header->reserved_header + detail::HEADER_LAYOUT_HASH_OFFSET,
+                    header_schema.hash.data(), detail::HEADER_LAYOUT_HASH_SIZE);
 
         LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, m_size);
     }
 
     DataBlock(const std::string &name) : m_name(name), m_is_creator(false)
     {
+        m_shm = pylabhub::platform::shm_attach(m_name.c_str());
+        if (m_shm.base == nullptr)
+        {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        m_shm_handle = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, m_name.c_str());
-        if (m_shm_handle == NULL)
-        {
-            throw std::runtime_error("Failed to open file mapping.");
-        }
-        m_mapped_address = MapViewOfFile(m_shm_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
-        if (m_mapped_address == NULL)
-        {
-            CloseHandle(m_shm_handle);
-            throw std::runtime_error("Failed to map view of file for consumer.");
-        }
-        MEMORY_BASIC_INFORMATION mbi;
-        VirtualQuery(m_mapped_address, &mbi, sizeof(mbi));
-        m_size = mbi.RegionSize;
+            throw std::runtime_error("Failed to open file mapping for consumer '" + m_name +
+                                     "'. Error: " + std::to_string(GetLastError()));
 #else
-        m_shm_fd = shm_open(m_name.c_str(), O_RDWR, 0666);
-        if (m_shm_fd == -1)
-        {
-            throw std::runtime_error("shm_open failed for consumer.");
-        }
-        struct stat shm_stat;
-        if (fstat(m_shm_fd, &shm_stat) == -1)
-        {
-            close(m_shm_fd);
-            throw std::runtime_error("fstat failed.");
-        }
-        m_size = shm_stat.st_size;
-        m_mapped_address = mmap(NULL, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
-        if (m_mapped_address == MAP_FAILED)
-        {
-            close(m_shm_fd);
-            throw std::runtime_error("mmap failed for consumer.");
-        }
+            throw std::runtime_error("shm_attach failed for consumer '" + m_name +
+                                     "'. Error: " + std::to_string(errno));
 #endif
+        }
+        m_size = m_shm.size;
 
-        m_header = reinterpret_cast<SharedMemoryHeader *>(m_mapped_address);
+        m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
 
+        // Wait for producer to fully initialize the header.
+        // The magic_number being set indicates initialization is complete.
+        // Timeout for robustness against crashed producers.
         const int max_wait_ms = 5000;
         const int poll_interval_ms = 10;
         int total_wait_ms = 0;
-        uint32_t init_state = m_header->init_state.load(std::memory_order_acquire);
-        while (init_state < 2 && total_wait_ms < max_wait_ms)
+        while (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER) &&
+               total_wait_ms < max_wait_ms)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
             total_wait_ms += poll_interval_ms;
-            init_state = m_header->init_state.load(std::memory_order_acquire);
         }
 
-        if (init_state < 2)
+        if (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER))
         {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-            UnmapViewOfFile(m_mapped_address);
-            CloseHandle(m_shm_handle);
-#else
-            munmap(m_mapped_address, m_size);
-            close(m_shm_fd);
-#endif
-            throw std::runtime_error("DataBlock '" + m_name +
-                                    "' initialization timeout - producer may have crashed.");
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error(
+                "DataBlock '" + m_name +
+                "' initialization timeout - producer may have crashed or not fully initialized.");
         }
 
-        std::atomic_thread_fence(std::memory_order_acquire);
-        if (m_header->magic_number != DATABLOCK_MAGIC_NUMBER)
+        // Validate version compatibility
+        if (m_header->version_major != DATABLOCK_VERSION_MAJOR ||
+            m_header->version_minor >
+                DATABLOCK_VERSION_MINOR) // Consumer can read older minor versions
         {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-            UnmapViewOfFile(m_mapped_address);
-            CloseHandle(m_shm_handle);
-#else
-            munmap(m_mapped_address, m_size);
-            close(m_shm_fd);
-#endif
-            throw std::runtime_error("DataBlock '" + m_name + "' invalid magic number.");
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error("DataBlock '" + m_name + "' version mismatch. Producer: " +
+                                     std::to_string(m_header->version_major) + "." +
+                                     std::to_string(m_header->version_minor) +
+                                     ", Consumer: " + std::to_string(DATABLOCK_VERSION_MAJOR) +
+                                     "." + std::to_string(DATABLOCK_VERSION_MINOR));
         }
 
-        if (m_header->version > DATABLOCK_VERSION_SUPPORTED)
+        // Validate total size
+        if (m_size != m_header->total_block_size)
         {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-            UnmapViewOfFile(m_mapped_address);
-            CloseHandle(m_shm_handle);
-#else
-            munmap(m_mapped_address, m_size);
-            close(m_shm_fd);
-#endif
-            throw std::runtime_error("DataBlock '" + m_name +
-                                     "' version too new (got " + std::to_string(m_header->version) +
-                                     "), upgrade client to support up to " +
-                                     std::to_string(DATABLOCK_VERSION_SUPPORTED));
-        }
-        if (m_header->version < DATABLOCK_VERSION_MIN_SUPPORTED)
-        {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-            UnmapViewOfFile(m_mapped_address);
-            CloseHandle(m_shm_handle);
-#else
-            munmap(m_mapped_address, m_size);
-            close(m_shm_fd);
-#endif
-            throw std::runtime_error("DataBlock '" + m_name +
-                                     "' version too old (got " + std::to_string(m_header->version) +
-                                     "), upgrade producer to at least " +
-                                     std::to_string(DATABLOCK_VERSION_MIN_SUPPORTED));
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error("DataBlock '" + m_name + "' size mismatch. Expected " +
+                                     std::to_string(m_header->total_block_size) + ", got " +
+                                     std::to_string(m_size));
         }
 
-        size_t expected_size = sizeof(SharedMemoryHeader) + m_header->slot_checksum_region_size() +
-                              m_header->flexible_zone_size + m_header->structured_buffer_size;
-#if defined(PYLABHUB_PLATFORM_WIN64)
-        // Windows: VirtualQuery RegionSize can exceed allocation due to granularity rounding.
-        if (m_size < expected_size)
-#else
-        if (m_size != expected_size)
-#endif
-        {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-            UnmapViewOfFile(m_mapped_address);
-            CloseHandle(m_shm_handle);
-#else
-            munmap(m_mapped_address, m_size);
-            close(m_shm_fd);
-#endif
-            throw std::runtime_error("DataBlock '" + m_name +
-                                    "' size mismatch. Expected " + std::to_string(expected_size) +
-                                    ", got " + std::to_string(m_size));
-        }
+        // Calculate pointers for SlotRWState array, flexible zones and structured data buffer
+        m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
+            reinterpret_cast<char *>(m_shm.base) + sizeof(SharedMemoryHeader));
 
-#if defined(PYLABHUB_PLATFORM_WIN64)
-        m_management_mutex = std::make_unique<DataBlockMutex>(m_name, nullptr, 0, m_is_creator);
-#else
-        m_management_mutex = std::make_unique<DataBlockMutex>(
-            m_name, m_mapped_address, offsetof(SharedMemoryHeader, management_mutex_storage),
-            m_is_creator);
-#endif
-
-        size_t slot_checksum_sz = m_header->slot_checksum_region_size();
+        size_t slot_rw_state_array_size = m_header->ring_buffer_capacity * sizeof(SlotRWState);
         m_flexible_data_zone =
-            reinterpret_cast<char *>(m_header) + sizeof(SharedMemoryHeader) + slot_checksum_sz;
+            reinterpret_cast<char *>(m_slot_rw_states_array) + slot_rw_state_array_size;
         m_structured_data_buffer = m_flexible_data_zone + m_header->flexible_zone_size;
 
-        LOGGER_INFO("DataBlock '{}' opened by consumer.", m_name);
+        // Populate flexible zone info map (this is tricky for consumer as it doesn't have config)
+        // This will be handled in a factory function with expected_config.
+        // For now, this constructor doesn't know about individual flexible zones.
+
+        LOGGER_INFO("DataBlock '{}' opened by consumer. Total size {} bytes.", m_name, m_size);
     }
 
     ~DataBlock()
     {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-        if (m_mapped_address)
-        {
-            UnmapViewOfFile(m_mapped_address);
-        }
-        if (m_shm_handle)
-        {
-            CloseHandle(m_shm_handle);
-        }
-#else
-        if (m_is_creator && m_management_mutex)
-        {
-            m_management_mutex.reset();
-        }
-        if (m_mapped_address)
-        {
-            munmap(m_mapped_address, m_size);
-        }
-        if (m_shm_fd != -1)
-        {
-            close(m_shm_fd);
-        }
+        pylabhub::platform::shm_close(&m_shm);
         if (m_is_creator)
         {
-            shm_unlink(m_name.c_str());
+            pylabhub::platform::shm_unlink(m_name.c_str());
             LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
         }
-#endif
     }
 
     SharedMemoryHeader *header() const { return m_header; }
     char *flexible_data_zone() const { return m_flexible_data_zone; }
     char *structured_data_buffer() const { return m_structured_data_buffer; }
-    void *segment() const { return m_mapped_address; }
+    void *segment() const { return m_shm.base; }
     size_t size() const { return m_size; }
 
     size_t acquire_shared_spinlock(const std::string &debug_name)
     {
-        DataBlockLockGuard lock(*m_management_mutex);
-        for (size_t i = 0; i < SharedMemoryHeader::MAX_SHARED_SPINLOCKS; ++i)
+        // Simple allocation: find first spinlock with owner_pid == 0
+        for (size_t i = 0; i < MAX_SHARED_SPINLOCKS; ++i)
         {
-            if (!m_header->spinlock_allocated[i].test_and_set(std::memory_order_acq_rel))
+            uint64_t expected_pid = 0;
+            if (m_header->spinlock_states[i].owner_pid.compare_exchange_strong(
+                    expected_pid, 1, // Use 1 as "allocated but not locked" marker
+                    std::memory_order_acq_rel, std::memory_order_relaxed))
             {
-                m_header->shared_spinlocks[i].owner_pid.store(0, std::memory_order_release);
-                m_header->shared_spinlocks[i].generation.store(0, std::memory_order_release);
-                m_header->shared_spinlocks[i].recursion_count.store(0, std::memory_order_release);
-                m_header->shared_spinlocks[i].owner_thread_id.store(0, std::memory_order_release);
+                // Successfully claimed this spinlock slot
+                m_header->spinlock_states[i].generation.store(0, std::memory_order_release);
+                m_header->spinlock_states[i].recursion_count.store(0, std::memory_order_release);
                 LOGGER_INFO("DataBlock '{}': Acquired spinlock slot {} for '{}'.", m_name, i,
                             debug_name);
+                // Reset to 0 so it's ready for actual locking
+                m_header->spinlock_states[i].owner_pid.store(0, std::memory_order_release);
                 return i;
             }
         }
@@ -400,68 +503,104 @@ class DataBlock
 
     void release_shared_spinlock(size_t index)
     {
-        if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+        if (index >= detail::MAX_SHARED_SPINLOCKS)
         {
             throw std::out_of_range("Spinlock index out of range.");
         }
-        DataBlockLockGuard lock(*m_management_mutex);
-        if (m_header->shared_spinlocks[index].owner_pid.load(std::memory_order_acquire) != 0)
+        if (m_header->spinlock_states[index].owner_pid.load(std::memory_order_acquire) != 0)
         {
             LOGGER_WARN("DataBlock '{}': Releasing spinlock {} still held. Force releasing.",
                         m_name, index);
         }
-        m_header->spinlock_allocated[index].clear(std::memory_order_release);
-        m_header->shared_spinlocks[index].owner_pid.store(0, std::memory_order_release);
-        m_header->shared_spinlocks[index].generation.store(0, std::memory_order_release);
-        m_header->shared_spinlocks[index].recursion_count.store(0, std::memory_order_release);
-        m_header->shared_spinlocks[index].owner_thread_id.store(0, std::memory_order_release);
+        m_header->spinlock_states[index].owner_pid.store(0, std::memory_order_release);
+        m_header->spinlock_states[index].generation.store(0, std::memory_order_release);
+        m_header->spinlock_states[index].recursion_count.store(0, std::memory_order_release);
         LOGGER_INFO("DataBlock '{}': Released spinlock slot {}.", m_name, index);
     }
 
     SharedSpinLockState *get_shared_spinlock_state(size_t index)
     {
-        if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
+        if (index >= detail::MAX_SHARED_SPINLOCKS)
         {
             throw std::out_of_range("Spinlock index out of range.");
         }
-        return &m_header->shared_spinlocks[index];
+        return &m_header->spinlock_states[index];
+    }
+
+    SlotRWState *slot_rw_state(size_t index) const
+    {
+        if (!m_header || index >= m_header->ring_buffer_capacity)
+        {
+            throw std::out_of_range("SlotRWState index " + std::to_string(index) +
+                                    " out of range or header invalid.");
+        }
+        return &m_slot_rw_states_array[index];
+    }
+    const std::unordered_map<std::string, FlexibleZoneInfo> &flexible_zone_info() const
+    {
+        return m_flexible_zone_info;
     }
 
   private:
     std::string m_name;
     bool m_is_creator;
-    size_t m_size = 0;
-
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    HANDLE m_shm_handle = NULL;
-    LPVOID m_mapped_address = NULL;
-#else
-    int m_shm_fd = -1;
-    void *m_mapped_address = nullptr;
-#endif
+    pylabhub::platform::ShmHandle m_shm{};
+    size_t m_size = 0; // Cached from m_shm.size for convenience
 
     SharedMemoryHeader *m_header = nullptr;
+    SlotRWState *m_slot_rw_states_array = nullptr; // New member
     char *m_flexible_data_zone = nullptr;
     char *m_structured_data_buffer = nullptr;
-    std::unique_ptr<DataBlockMutex> m_management_mutex;
+    // Removed m_management_mutex as it's no longer managed by DataBlock directly
+    std::unordered_map<std::string, FlexibleZoneInfo> m_flexible_zone_info; // New member
+};
+
+// ============================================================================
+// DataBlockDiagnosticHandle (opaque attach for recovery/tooling)
+// ============================================================================
+struct DataBlockDiagnosticHandleImpl
+{
+    SharedMemoryHeader *header_ptr = nullptr;
+    SlotRWState *slot_rw_states = nullptr;
+    uint32_t ring_buffer_capacity = 0;
+    pylabhub::platform::ShmHandle m_shm{};
 };
 
 namespace
 {
-inline bool update_checksum_flexible_zone_impl(DataBlock *block)
+inline bool update_checksum_flexible_zone_impl(DataBlock *block, size_t flexible_zone_idx)
 {
     if (!block || !block->header())
         return false;
     auto *h = block->header();
-    if (!h->checksum_enabled)
+    if (!h->enable_checksum) // Use enable_checksum
         return false;
+
+    // Get the FlexibleZoneInfo from the block's flexible_zone_info map
+    if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
+        flexible_zone_idx >= block->flexible_zone_info().size())
+    {
+        return false;
+    }
+    auto it = block->flexible_zone_info().begin();
+    std::advance(it, flexible_zone_idx);
+    const FlexibleZoneInfo &zone_info = it->second;
+
     char *flex = block->flexible_data_zone();
-    size_t len = h->flexible_zone_size;
-    if (!flex || len == 0)
+    size_t len = zone_info.size;              // Use size from zone_info
+    char *zone_ptr = flex + zone_info.offset; // Calculate pointer to specific zone
+
+    if (!zone_ptr || len == 0)
         return false;
-    if (!compute_blake2b(h->flexible_zone_checksum, flex, len))
+
+    // Checksum data is now per flexible zone, stored in SharedMemoryHeader::flexible_zone_checksums
+    if (!pylabhub::crypto::compute_blake2b(
+            h->flexible_zone_checksums[flexible_zone_idx].checksum_bytes, zone_ptr,
+            len)) // Use flexible_zone_checksums
         return false;
-    h->flexible_zone_checksum_valid.store(1, std::memory_order_release);
+
+    h->flexible_zone_checksums[flexible_zone_idx].valid.store(
+        1, std::memory_order_release); // Use valid
     return true;
 }
 
@@ -470,7 +609,7 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
     if (!block || !block->header())
         return false;
     auto *h = block->header();
-    if (!h->checksum_enabled)
+    if (!h->enable_checksum)
         return false;
     uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
     if (slot_index >= slot_count)
@@ -481,34 +620,51 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
     char *buf = block->structured_data_buffer();
     if (!buf)
         return false;
-    char *slot_checksum_base =
-        reinterpret_cast<char *>(h) + sizeof(SharedMemoryHeader);
-    uint8_t *slot_checksum =
-        reinterpret_cast<uint8_t *>(slot_checksum_base +
-                                    slot_index * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE);
+    char *slot_checksum_base = reinterpret_cast<char *>(h) + sizeof(SharedMemoryHeader);
+    uint8_t *slot_checksum = reinterpret_cast<uint8_t *>(
+        slot_checksum_base + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
     std::atomic<uint8_t> *slot_valid =
-        reinterpret_cast<std::atomic<uint8_t> *>(slot_checksum + SharedMemoryHeader::CHECKSUM_BYTES);
+        reinterpret_cast<std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
     const void *slot_data = buf + slot_index * slot_size;
-    if (!compute_blake2b(slot_checksum, slot_data, slot_size))
+    if (!pylabhub::crypto::compute_blake2b(slot_checksum, slot_data, slot_size))
         return false;
     slot_valid->store(1, std::memory_order_release);
     return true;
 }
 
-inline bool verify_checksum_flexible_zone_impl(const DataBlock *block)
+inline bool verify_checksum_flexible_zone_impl(const DataBlock *block, size_t flexible_zone_idx)
 {
     if (!block || !block->header())
         return false;
     auto *h = block->header();
-    if (!h->checksum_enabled)
+    if (!h->enable_checksum) // Use enable_checksum
         return false;
-    if (h->flexible_zone_checksum_valid.load(std::memory_order_acquire) != 1)
+
+    // Get the FlexibleZoneInfo from the block's flexible_zone_info map
+    if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
+        flexible_zone_idx >= block->flexible_zone_info().size())
+    {
         return false;
+    }
+    auto it = block->flexible_zone_info().begin();
+    std::advance(it, flexible_zone_idx);
+    const FlexibleZoneInfo &zone_info = it->second;
+
+    if (h->flexible_zone_checksums[flexible_zone_idx].valid.load(std::memory_order_acquire) !=
+        1) // Use valid
+        return false;
+
     const char *flex = block->flexible_data_zone();
-    size_t len = h->flexible_zone_size;
-    if (!flex || len == 0)
+    size_t len = zone_info.size;                    // Use size from zone_info
+    const char *zone_ptr = flex + zone_info.offset; // Calculate pointer to specific zone
+
+    if (!zone_ptr || len == 0)
         return false;
-    return verify_blake2b(h->flexible_zone_checksum, flex, len);
+
+    // Checksum data is now per flexible zone, stored in SharedMemoryHeader::flexible_zone_checksums
+    return pylabhub::crypto::verify_blake2b(
+        h->flexible_zone_checksums[flexible_zone_idx].checksum_bytes, zone_ptr,
+        len); // Use flexible_zone_checksums
 }
 
 inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
@@ -516,19 +672,16 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
     if (!block || !block->header())
         return false;
     auto *h = block->header();
-    if (!h->checksum_enabled)
+    if (!h->enable_checksum)
         return false;
     uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
     if (slot_index >= slot_count)
         return false;
-    const char *slot_checksum_base =
-        reinterpret_cast<const char *>(h) + sizeof(SharedMemoryHeader);
-    const uint8_t *slot_checksum =
-        reinterpret_cast<const uint8_t *>(slot_checksum_base +
-                                          slot_index * SharedMemoryHeader::SLOT_CHECKSUM_ENTRY_SIZE);
+    const char *slot_checksum_base = reinterpret_cast<const char *>(h) + sizeof(SharedMemoryHeader);
+    const uint8_t *slot_checksum = reinterpret_cast<const uint8_t *>(
+        slot_checksum_base + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
     const std::atomic<uint8_t> *slot_valid =
-        reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum +
-                                                       SharedMemoryHeader::CHECKSUM_BYTES);
+        reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
     if (slot_valid->load(std::memory_order_acquire) != 1)
         return false;
     size_t slot_size = h->unit_block_size;
@@ -538,7 +691,7 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
     if (!buf)
         return false;
     const void *slot_data = buf + slot_index * slot_size;
-    return verify_blake2b(slot_checksum, slot_data, slot_size);
+    return pylabhub::crypto::verify_blake2b(slot_checksum, slot_data, slot_size);
 }
 } // namespace
 
@@ -557,11 +710,10 @@ struct SlotWriteHandleImpl
     uint64_t slot_id = 0;
     char *buffer_ptr = nullptr;
     size_t buffer_size = 0;
-    char *flexible_ptr = nullptr;
-    size_t flexible_size = 0;
     size_t bytes_written = 0;
     bool committed = false;
     bool released = false;
+    SlotRWState *rw_state = nullptr; // New: Pointer to the SlotRWState for this slot
 };
 
 struct SlotConsumeHandleImpl
@@ -573,10 +725,16 @@ struct SlotConsumeHandleImpl
     uint64_t slot_id = 0;
     const char *buffer_ptr = nullptr;
     size_t buffer_size = 0;
-    const char *flexible_ptr = nullptr;
-    size_t flexible_size = 0;
     bool released = false;
+    SlotRWState *rw_state = nullptr;  // New: Pointer to the SlotRWState for this slot
+    uint64_t captured_generation = 0; // New: Captured generation for validation
 };
+
+namespace
+{
+bool release_write_handle(SlotWriteHandleImpl &);
+bool release_consume_handle(SlotConsumeHandleImpl &);
+} // namespace
 
 // ============================================================================
 // DataBlockProducerImpl
@@ -586,17 +744,7 @@ struct DataBlockProducerImpl
     std::string name;
     std::unique_ptr<DataBlock> dataBlock;
     ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
-    std::atomic<uint64_t> writer_thread_id{0};
-    std::atomic<uint32_t> writer_depth{0};
-
-    static size_t to_local_index(size_t global_index)
-    {
-        return global_index % SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
-    }
-    static size_t to_block_index(size_t global_index)
-    {
-        return global_index / SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
-    }
+    std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
 };
 
 // ============================================================================
@@ -615,75 +763,85 @@ DataBlockProducer::DataBlockProducer(DataBlockProducer &&other) noexcept = defau
 
 DataBlockProducer &DataBlockProducer::operator=(DataBlockProducer &&other) noexcept = default;
 
-std::unique_ptr<SharedSpinLockGuardOwning> DataBlockProducer::acquire_spinlock(size_t index,
-                                                                               const std::string &debug_name)
+// ============================================================================
+// DataBlockConsumerImpl
+// ============================================================================
+struct DataBlockConsumerImpl
 {
-    if (!pImpl)
+    std::string name;
+    std::unique_ptr<DataBlock> dataBlock;
+    ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
+    uint64_t last_consumed_slot_id = INVALID_SLOT_ID;  // This field is still needed
+    std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
+
+    ~DataBlockConsumerImpl()
     {
-        throw std::runtime_error("DataBlockProducer: invalid state");
+        LOGGER_INFO("DataBlockConsumerImpl: Shutting down for '{}'.", name);
     }
-    size_t local = DataBlockProducerImpl::to_local_index(index);
-    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
-    {
-        throw std::out_of_range("Spinlock index out of range");
-    }
-    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
-    std::string name = debug_name.empty() ? pImpl->name + "_spinlock_" + std::to_string(index)
-                                         : debug_name;
-    return std::make_unique<SharedSpinLockGuardOwning>(state, name);
+};
+
+// ============================================================================
+// DataBlockDiagnosticHandle implementation
+// ============================================================================
+DataBlockDiagnosticHandle::DataBlockDiagnosticHandle(
+    std::unique_ptr<DataBlockDiagnosticHandleImpl> impl)
+    : pImpl(std::move(impl))
+{
 }
 
-void DataBlockProducer::release_spinlock(size_t index)
+DataBlockDiagnosticHandle::~DataBlockDiagnosticHandle()
 {
-    if (!pImpl)
+    if (pImpl)
+        pylabhub::platform::shm_close(&pImpl->m_shm);
+}
+
+DataBlockDiagnosticHandle::DataBlockDiagnosticHandle(DataBlockDiagnosticHandle &&) noexcept =
+    default;
+
+DataBlockDiagnosticHandle &
+DataBlockDiagnosticHandle::operator=(DataBlockDiagnosticHandle &&) noexcept = default;
+
+SharedMemoryHeader *DataBlockDiagnosticHandle::header() const
+{
+    return pImpl ? pImpl->header_ptr : nullptr;
+}
+
+SlotRWState *DataBlockDiagnosticHandle::slot_rw_state(uint32_t index) const
+{
+    if (!pImpl || !pImpl->slot_rw_states || index >= pImpl->ring_buffer_capacity)
+        return nullptr;
+    return &pImpl->slot_rw_states[index];
+}
+
+std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const std::string &name)
+{
+    auto impl = std::make_unique<DataBlockDiagnosticHandleImpl>();
+    try
     {
-        throw std::runtime_error("DataBlockProducer: invalid state");
+        impl->m_shm = pylabhub::platform::shm_attach(name.c_str());
+        if (impl->m_shm.base == nullptr)
+            return nullptr;
+        impl->header_ptr = reinterpret_cast<SharedMemoryHeader *>(impl->m_shm.base);
+        if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
+                                            detail::DATABLOCK_MAGIC_NUMBER))
+            return nullptr;
+        impl->ring_buffer_capacity = impl->header_ptr->ring_buffer_capacity;
+        impl->slot_rw_states = reinterpret_cast<SlotRWState *>(
+            reinterpret_cast<char *>(impl->m_shm.base) + sizeof(SharedMemoryHeader));
+        return std::unique_ptr<DataBlockDiagnosticHandle>(
+            new DataBlockDiagnosticHandle(std::move(impl)));
     }
-    size_t local = DataBlockProducerImpl::to_local_index(index);
-    pImpl->dataBlock->release_shared_spinlock(local);
-}
-
-SharedSpinLock DataBlockProducer::get_spinlock(size_t index)
-{
-    if (!pImpl)
+    catch (...)
     {
-        throw std::runtime_error("DataBlockProducer: invalid state");
+        return nullptr;
     }
-    size_t local = DataBlockProducerImpl::to_local_index(index);
-    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
-    {
-        throw std::out_of_range("Spinlock index out of range");
-    }
-    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
-    return SharedSpinLock(state, pImpl->name + "_spinlock_" + std::to_string(index));
 }
 
-uint32_t DataBlockProducer::spinlock_count() const
+bool DataBlockProducer::update_checksum_flexible_zone(size_t flexible_zone_idx)
 {
-    return pImpl && pImpl->dataBlock ? static_cast<uint32_t>(SharedMemoryHeader::MAX_SHARED_SPINLOCKS) : 0;
-}
-
-std::unique_ptr<SharedSpinLockGuardOwning>
-DataBlockProducer::acquire_user_spinlock(const std::string &debug_name)
-{
-    if (!pImpl)
-    {
-        throw std::runtime_error("DataBlockProducer: invalid state");
-    }
-    size_t index = pImpl->dataBlock->acquire_shared_spinlock(debug_name);
-    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(index);
-    return std::make_unique<SharedSpinLockGuardOwning>(state, debug_name);
-}
-
-void DataBlockProducer::release_user_spinlock(size_t index)
-{
-    release_spinlock(index);
-}
-
-bool DataBlockProducer::update_checksum_flexible_zone()
-{
-    return pImpl && pImpl->dataBlock ? update_checksum_flexible_zone_impl(pImpl->dataBlock.get())
-                                     : false;
+    return pImpl && pImpl->dataBlock
+               ? update_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
+               : false;
 }
 
 bool DataBlockProducer::update_checksum_slot(size_t slot_index)
@@ -694,32 +852,44 @@ bool DataBlockProducer::update_checksum_slot(size_t slot_index)
 
 std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeout_ms)
 {
-    (void)timeout_ms; // No blocking policy implemented yet
     if (!pImpl || !pImpl->dataBlock)
         return nullptr;
 
-    uint64_t tid = pylabhub::platform::get_native_thread_id();
-    if (!enter_thread_guard(pImpl->writer_thread_id, pImpl->writer_depth, tid))
-    {
-        throw std::runtime_error("DataBlockProducer: acquire_write_slot recursion or cross-thread use.");
-    }
-
     auto *h = pImpl->dataBlock->header();
     if (!h)
-    {
-        exit_thread_guard(pImpl->writer_thread_id, pImpl->writer_depth, tid);
+        return nullptr;
+
+    uint32_t slot_count = h->ring_buffer_capacity;
+    if (slot_count == 0)
+    { // Should not happen with validation in constructor, but for safety
         return nullptr;
     }
 
-    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
+    // Acquire a new slot ID (monotonically increasing)
     uint64_t slot_id = h->write_index.fetch_add(1, std::memory_order_acq_rel);
     size_t slot_index = static_cast<size_t>(slot_id % slot_count);
+
+    // Get the SlotRWState for this slot
+    SlotRWState *rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
+    if (!rw_state)
+    {
+        return nullptr; // Should not happen, slot_rw_state throws on error
+    }
+
+    // Acquire write lock for this slot
+    SlotAcquireResult acquire_res = acquire_write(rw_state, h, timeout_ms);
+    if (acquire_res != SLOT_ACQUIRE_OK)
+    {
+        // Error already logged in acquire_write. Just return nullptr.
+        return nullptr;
+    }
 
     size_t slot_size = h->unit_block_size;
     char *buf = pImpl->dataBlock->structured_data_buffer();
     if (!buf || slot_size == 0)
     {
-        exit_thread_guard(pImpl->writer_thread_id, pImpl->writer_depth, tid);
+        // Release write lock if buffer is invalid before returning
+        rw_state->write_lock.store(0, std::memory_order_release);
         return nullptr;
     }
 
@@ -731,9 +901,9 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     impl->slot_index = slot_index;
     impl->buffer_ptr = buf + slot_index * slot_size;
     impl->buffer_size = slot_size;
-    impl->flexible_ptr = pImpl->dataBlock->flexible_data_zone();
-    impl->flexible_size = h->flexible_zone_size;
-    return std::make_unique<SlotWriteHandle>(std::move(impl));
+    impl->rw_state = rw_state; // New: Pointer to the SlotRWState for this slot
+    // flexible_ptr and flexible_size are no longer directly used in SlotWriteHandleImpl
+    return std::unique_ptr<SlotWriteHandle>(new SlotWriteHandle(std::move(impl)));
 }
 
 bool DataBlockProducer::release_write_slot(SlotWriteHandle &handle)
@@ -743,64 +913,53 @@ bool DataBlockProducer::release_write_slot(SlotWriteHandle &handle)
     return release_write_handle(*handle.pImpl);
 }
 
-void DataBlockProducer::set_counter_64(size_t index, uint64_t value)
+void DataBlockProducer::check_consumer_health()
 {
     if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
     {
-        throw std::runtime_error("DataBlockProducer: invalid state");
+        return;
     }
-    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
-    {
-        throw std::out_of_range("Counter 64 index out of range");
-    }
-    pImpl->dataBlock->header()->counters_64[index].store(value, std::memory_order_release);
-}
+    auto *header = pImpl->dataBlock->header();
 
-uint64_t DataBlockProducer::get_counter_64(size_t index) const
-{
-    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
     {
-        throw std::runtime_error("DataBlockProducer: invalid state");
-    }
-    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
-    {
-        throw std::out_of_range("Counter 64 index out of range");
-    }
-    return pImpl->dataBlock->header()->counters_64[index].load(std::memory_order_acquire);
-}
-
-uint32_t DataBlockProducer::counter_count() const
-{
-    return pImpl && pImpl->dataBlock ? static_cast<uint32_t>(SharedMemoryHeader::NUM_COUNTERS_64) : 0;
-}
-
-// ============================================================================
-// DataBlockConsumerImpl
-// ============================================================================
-struct DataBlockConsumerImpl
-{
-    std::string name;
-    std::unique_ptr<DataBlock> dataBlock;
-    ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
-    std::atomic<uint64_t> reader_thread_id{0};
-    std::atomic<uint32_t> reader_depth{0};
-    uint64_t last_consumed_slot_id = INVALID_SLOT_ID;
-
-    ~DataBlockConsumerImpl()
-    {
-        if (dataBlock && dataBlock->header())
+        uint64_t consumer_pid =
+            header->consumer_heartbeats[i].consumer_id.load(std::memory_order_acquire);
+        if (consumer_pid != 0)
         {
-            dataBlock->header()->active_consumer_count.fetch_sub(1, std::memory_order_acq_rel);
-            LOGGER_INFO("DataBlockConsumerImpl: Shutting down for '{}'. Active consumers: {}.",
-                        name, dataBlock->header()->active_consumer_count.load());
+            if (!pylabhub::platform::is_process_alive(consumer_pid))
+            {
+                LOGGER_WARN(
+                    "DataBlock '{}': Detected dead consumer PID {}. Clearing heartbeat slot {}.",
+                    pImpl->name, consumer_pid, i);
+                uint64_t expected_pid = consumer_pid;
+                if (header->consumer_heartbeats[i].consumer_id.compare_exchange_strong(
+                        expected_pid, 0, std::memory_order_acq_rel))
+                {
+                    header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
+                }
+            }
         }
     }
-};
+}
+
+bool DataBlockProducer::register_with_broker(MessageHub &hub, const std::string &channel_name)
+{
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    {
+        return false;
+    }
+    ProducerInfo info;
+    info.shm_name = pImpl->name;
+    info.producer_pid = pylabhub::platform::get_pid();
+    info.schema_hash.assign(reinterpret_cast<const char *>(pImpl->dataBlock->header()->schema_hash),
+                            32);
+    info.schema_version = pImpl->dataBlock->header()->schema_version;
+    return hub.register_producer(channel_name, info);
+}
 
 namespace
 {
-std::unique_ptr<SlotConsumeHandleImpl> build_consume_handle_impl(DataBlockConsumerImpl *owner,
-                                                                 uint64_t slot_id);
 bool release_write_handle(SlotWriteHandleImpl &impl);
 bool release_consume_handle(SlotConsumeHandleImpl &impl);
 } // namespace
@@ -826,8 +985,8 @@ DataBlockSlotIterator::~DataBlockSlotIterator() = default;
 
 DataBlockSlotIterator::DataBlockSlotIterator(DataBlockSlotIterator &&other) noexcept = default;
 
-DataBlockSlotIterator &DataBlockSlotIterator::operator=(DataBlockSlotIterator &&other) noexcept =
-    default;
+DataBlockSlotIterator &
+DataBlockSlotIterator::operator=(DataBlockSlotIterator &&other) noexcept = default;
 
 DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms)
 {
@@ -846,37 +1005,77 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
         return r;
     }
 
-    uint64_t tid = pylabhub::platform::get_native_thread_id();
-    if (!enter_thread_guard(pImpl->owner->reader_thread_id, pImpl->owner->reader_depth, tid))
-    {
-        r.error_code = 4; // recursion or cross-thread use
+    // --- Reader Acquisition Flow (similar to DataBlockConsumer::acquire_consume_slot) ---
+    auto start_time = pylabhub::platform::monotonic_time_ns();
+    int iteration = 0;
+    uint64_t slot_id;
+    size_t slot_index;
+    SlotRWState *rw_state;
+    uint64_t captured_generation = 0;
+    SlotAcquireResult acquire_res;
+
+    uint32_t slot_count = h->ring_buffer_capacity;
+    if (slot_count == 0)
+    { // Should not happen with validation in constructor, but for safety
+        r.error_code = 1;
         return r;
     }
 
-    const int poll_interval_ms = 2;
-    int waited_ms = 0;
-    uint64_t slot_id = h->commit_index.load(std::memory_order_acquire);
-    while (slot_id == INVALID_SLOT_ID || slot_id == pImpl->last_seen_slot_id)
+    while (true)
     {
-        if (timeout_ms > 0 && waited_ms >= timeout_ms)
+        slot_id = h->commit_index.load(std::memory_order_acquire);
+
+        // Only try to acquire a slot if it's new and valid
+        if (slot_id != INVALID_SLOT_ID && slot_id != pImpl->last_seen_slot_id)
         {
-            (void)exit_thread_guard(pImpl->owner->reader_thread_id, pImpl->owner->reader_depth, tid);
+            slot_index = static_cast<size_t>(slot_id % slot_count);
+            rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
+            if (!rw_state)
+            {
+                // Should not happen, slot_rw_state throws on error
+                r.error_code = 3;
+                return r;
+            }
+
+            acquire_res = acquire_read(rw_state, h, &captured_generation);
+            if (acquire_res == SLOT_ACQUIRE_OK)
+            {
+                // Successfully acquired read lock, proceed to build handle
+                break;
+            }
+            else if (acquire_res == SLOT_ACQUIRE_NOT_READY)
+            {
+                // Slot not ready (e.g., writer changed state), try again with same slot_id in next
+                // iteration Or potentially the producer hasn't committed yet. Continue polling.
+            }
+            else
+            {
+                // Other error or timeout from acquire_read
+                r.error_code = 3;
+                return r;
+            }
+        }
+
+        if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                                  static_cast<uint64_t>(timeout_ms))
+        {
+            h->reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
             r.error_code = 2; // timeout
             return r;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
-        if (timeout_ms > 0)
-            waited_ms += poll_interval_ms;
-        slot_id = h->commit_index.load(std::memory_order_acquire);
+        backoff(iteration++);
     }
 
-    auto impl = build_consume_handle_impl(pImpl->owner, slot_id);
-    if (!impl)
-    {
-        (void)exit_thread_guard(pImpl->owner->reader_thread_id, pImpl->owner->reader_depth, tid);
-        r.error_code = 3;
-        return r;
-    }
+    auto impl = std::make_unique<SlotConsumeHandleImpl>();
+    impl->owner = pImpl->owner;         // Pass the consumer impl owner
+    impl->dataBlock = pImpl->dataBlock; // DataBlockSlotIteratorImpl has raw pointer
+    impl->header = h;
+    impl->slot_id = slot_id;
+    impl->slot_index = slot_index;
+    impl->buffer_ptr = pImpl->dataBlock->structured_data_buffer() + slot_index * h->unit_block_size;
+    impl->buffer_size = h->unit_block_size;
+    impl->rw_state = rw_state;
+    impl->captured_generation = captured_generation;
 
     r.next = SlotConsumeHandle(std::move(impl));
     r.ok = true;
@@ -927,58 +1126,46 @@ bool DataBlockSlotIterator::is_valid() const
 // ============================================================================
 namespace
 {
-std::unique_ptr<SlotConsumeHandleImpl> build_consume_handle_impl(DataBlockConsumerImpl *owner,
-                                                                 uint64_t slot_id)
-{
-    if (!owner || !owner->dataBlock)
-        return nullptr;
-    auto *h = owner->dataBlock->header();
-    if (!h)
-        return nullptr;
-    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
-    size_t slot_index = static_cast<size_t>(slot_id % slot_count);
-    size_t slot_size = h->unit_block_size;
-    const char *buf = owner->dataBlock->structured_data_buffer();
-    if (!buf || slot_size == 0)
-        return nullptr;
-
-    auto impl = std::make_unique<SlotConsumeHandleImpl>();
-    impl->owner = owner;
-    impl->dataBlock = owner->dataBlock.get();
-    impl->header = h;
-    impl->slot_id = slot_id;
-    impl->slot_index = slot_index;
-    impl->buffer_ptr = buf + slot_index * slot_size;
-    impl->buffer_size = slot_size;
-    impl->flexible_ptr = owner->dataBlock->flexible_data_zone();
-    impl->flexible_size = h->flexible_zone_size;
-    return impl;
-}
-
 bool release_write_handle(SlotWriteHandleImpl &impl)
 {
     if (impl.released)
         return true;
     bool ok = true;
-    if (impl.owner && impl.owner->checksum_policy == ChecksumPolicy::EnforceOnRelease &&
-        impl.header && impl.header->checksum_enabled && impl.committed)
+
+    // Perform checksum updates if policy requires and committed
+    if (impl.committed && impl.owner && impl.owner->checksum_policy != ChecksumPolicy::None &&
+        impl.header && impl.header->enable_checksum)
     {
-        ok &= update_checksum_slot_impl(impl.dataBlock, impl.slot_index);
-        ok &= update_checksum_flexible_zone_impl(impl.dataBlock);
+        // Update slot checksum
+        if (!update_checksum_slot_impl(impl.dataBlock, impl.slot_index))
+        {
+            ok = false;
+        }
+
+        // Update flexible zone checksums
+        for (size_t i = 0; i < impl.dataBlock->flexible_zone_info().size(); ++i)
+        {
+            if (!update_checksum_flexible_zone_impl(impl.dataBlock, i))
+            { // pass flexible zone index
+                ok = false;
+                break;
+            }
+        }
     }
 
-    if (impl.owner && impl.owner->checksum_policy == ChecksumPolicy::EnforceOnRelease &&
-        impl.header && impl.committed)
+    // Commit the write (make it visible to readers)
+    if (impl.committed && impl.rw_state && impl.header)
     {
-        impl.header->current_slot_id.store(impl.slot_id, std::memory_order_release);
-        impl.header->commit_index.store(impl.slot_id, std::memory_order_release);
+        commit_write(impl.rw_state, impl.header);
+    }
+    else if (impl.rw_state)
+    {
+        // If not committed, simply release the write lock
+        impl.rw_state->write_lock.store(0, std::memory_order_release);
+        impl.rw_state->slot_state.store(SlotRWState::SlotState::FREE, std::memory_order_release);
     }
 
-    if (impl.owner)
-    {
-        uint64_t tid = pylabhub::platform::get_native_thread_id();
-        ok &= exit_thread_guard(impl.owner->writer_thread_id, impl.owner->writer_depth, tid);
-    }
+    // No thread guard exit needed here, as acquire_write doesn't use it.
     impl.released = true;
     return ok;
 }
@@ -988,18 +1175,48 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     if (impl.released)
         return true;
     bool ok = true;
-    if (impl.owner && impl.owner->checksum_policy == ChecksumPolicy::EnforceOnRelease &&
-        impl.header && impl.header->checksum_enabled)
+
+    // 1. Validate captured generation to detect wrap-around (if reader was pre-empted)
+    if (impl.rw_state && impl.header)
     {
-        ok &= verify_checksum_slot_impl(impl.dataBlock, impl.slot_index);
-        ok &= verify_checksum_flexible_zone_impl(impl.dataBlock);
+        if (!validate_read(impl.rw_state, impl.header, impl.captured_generation))
+        {
+            ok = false; // Validation failed (slot overwritten or corrupted)
+        }
+    }
+    else
+    {
+        ok = false; // Invalid state
     }
 
-    if (impl.owner)
+    // 2. Perform checksum verification if policy requires
+    if (ok && impl.owner && impl.owner->checksum_policy != ChecksumPolicy::None && impl.header &&
+        impl.header->enable_checksum)
     {
-        uint64_t tid = pylabhub::platform::get_native_thread_id();
-        ok &= exit_thread_guard(impl.owner->reader_thread_id, impl.owner->reader_depth, tid);
+        if (!verify_checksum_slot_impl(impl.dataBlock, impl.slot_index))
+        {
+            ok = false;
+        }
+        for (size_t i = 0; i < impl.dataBlock->flexible_zone_info().size(); ++i)
+        {
+            if (!verify_checksum_flexible_zone_impl(impl.dataBlock, i))
+            {
+                ok = false;
+                break;
+            }
+        }
     }
+
+    // 3. Release the read lock
+    if (impl.rw_state && impl.header)
+    {
+        release_read(impl.rw_state, impl.header);
+    }
+    else
+    {
+        ok = false; // Cannot release if state is invalid
+    }
+
     impl.released = true;
     return ok;
 }
@@ -1007,8 +1224,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
 
 SlotWriteHandle::SlotWriteHandle() : pImpl(nullptr) {}
 
-SlotWriteHandle::SlotWriteHandle(std::unique_ptr<SlotWriteHandleImpl> impl)
-    : pImpl(std::move(impl))
+SlotWriteHandle::SlotWriteHandle(std::unique_ptr<SlotWriteHandleImpl> impl) : pImpl(std::move(impl))
 {
 }
 
@@ -1041,11 +1257,19 @@ std::span<std::byte> SlotWriteHandle::buffer_span()
     return {reinterpret_cast<std::byte *>(pImpl->buffer_ptr), pImpl->buffer_size};
 }
 
-std::span<std::byte> SlotWriteHandle::flexible_zone_span()
+std::span<std::byte> SlotWriteHandle::flexible_zone_span(size_t index)
 {
-    if (!pImpl || !pImpl->flexible_ptr || pImpl->flexible_size == 0)
+    if (!pImpl || !pImpl->owner || !pImpl->dataBlock ||
+        index >= pImpl->owner->flexible_zones_info.size())
         return {};
-    return {reinterpret_cast<std::byte *>(pImpl->flexible_ptr), pImpl->flexible_size};
+
+    const auto &zone_info = pImpl->owner->flexible_zones_info[index];
+    char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+
+    if (!flexible_zone_base || zone_info.size == 0)
+        return {};
+
+    return {reinterpret_cast<std::byte *>(flexible_zone_base + zone_info.offset), zone_info.size};
 }
 
 bool SlotWriteHandle::write(const void *src, size_t len, size_t offset)
@@ -1069,7 +1293,6 @@ bool SlotWriteHandle::commit(size_t bytes_written)
 
     if (pImpl->owner && pImpl->owner->checksum_policy == ChecksumPolicy::Explicit)
     {
-        pImpl->header->current_slot_id.store(pImpl->slot_id, std::memory_order_release);
         pImpl->header->commit_index.store(pImpl->slot_id, std::memory_order_release);
     }
     return true;
@@ -1082,11 +1305,11 @@ bool SlotWriteHandle::update_checksum_slot()
     return update_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
 }
 
-bool SlotWriteHandle::update_checksum_flexible_zone()
+bool SlotWriteHandle::update_checksum_flexible_zone(size_t index)
 {
     if (!pImpl || !pImpl->dataBlock)
         return false;
-    return update_checksum_flexible_zone_impl(pImpl->dataBlock);
+    return update_checksum_flexible_zone_impl(pImpl->dataBlock, index);
 }
 
 SlotConsumeHandle::SlotConsumeHandle() : pImpl(nullptr) {}
@@ -1125,11 +1348,20 @@ std::span<const std::byte> SlotConsumeHandle::buffer_span() const
     return {reinterpret_cast<const std::byte *>(pImpl->buffer_ptr), pImpl->buffer_size};
 }
 
-std::span<const std::byte> SlotConsumeHandle::flexible_zone_span() const
+std::span<const std::byte> SlotConsumeHandle::flexible_zone_span(size_t index) const
 {
-    if (!pImpl || !pImpl->flexible_ptr || pImpl->flexible_size == 0)
+    if (!pImpl || !pImpl->owner || !pImpl->dataBlock ||
+        index >= pImpl->owner->flexible_zones_info.size())
         return {};
-    return {reinterpret_cast<const std::byte *>(pImpl->flexible_ptr), pImpl->flexible_size};
+
+    const auto &zone_info = pImpl->owner->flexible_zones_info[index];
+    const char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+
+    if (!flexible_zone_base || zone_info.size == 0)
+        return {};
+
+    return {reinterpret_cast<const std::byte *>(flexible_zone_base + zone_info.offset),
+            zone_info.size};
 }
 
 bool SlotConsumeHandle::read(void *dst, size_t len, size_t offset) const
@@ -1149,11 +1381,11 @@ bool SlotConsumeHandle::verify_checksum_slot() const
     return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
 }
 
-bool SlotConsumeHandle::verify_checksum_flexible_zone() const
+bool SlotConsumeHandle::verify_checksum_flexible_zone(size_t index) const
 {
     if (!pImpl || !pImpl->dataBlock)
         return false;
-    return verify_checksum_flexible_zone_impl(pImpl->dataBlock);
+    return verify_checksum_flexible_zone_impl(pImpl->dataBlock, index);
 }
 
 // ============================================================================
@@ -1172,35 +1404,11 @@ DataBlockConsumer::DataBlockConsumer(DataBlockConsumer &&other) noexcept = defau
 
 DataBlockConsumer &DataBlockConsumer::operator=(DataBlockConsumer &&other) noexcept = default;
 
-SharedSpinLock DataBlockConsumer::get_spinlock(size_t index)
+bool DataBlockConsumer::verify_checksum_flexible_zone(size_t flexible_zone_idx) const
 {
-    if (!pImpl)
-    {
-        throw std::runtime_error("DataBlockConsumer: invalid state");
-    }
-    size_t local = index % SharedMemoryHeader::MAX_SHARED_SPINLOCKS;
-    if (index >= SharedMemoryHeader::MAX_SHARED_SPINLOCKS)
-    {
-        throw std::out_of_range("Spinlock index out of range");
-    }
-    SharedSpinLockState *state = pImpl->dataBlock->get_shared_spinlock_state(local);
-    return SharedSpinLock(state, pImpl->name + "_spinlock_" + std::to_string(index));
-}
-
-uint32_t DataBlockConsumer::spinlock_count() const
-{
-    return pImpl && pImpl->dataBlock ? static_cast<uint32_t>(SharedMemoryHeader::MAX_SHARED_SPINLOCKS) : 0;
-}
-
-SharedSpinLock DataBlockConsumer::get_user_spinlock(size_t index)
-{
-    return get_spinlock(index);
-}
-
-bool DataBlockConsumer::verify_checksum_flexible_zone() const
-{
-    return pImpl && pImpl->dataBlock ? verify_checksum_flexible_zone_impl(pImpl->dataBlock.get())
-                                     : false;
+    return pImpl && pImpl->dataBlock
+               ? verify_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
+               : false;
 }
 
 bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const
@@ -1214,44 +1422,151 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     if (!pImpl || !pImpl->dataBlock)
         return nullptr;
 
-    uint64_t tid = pylabhub::platform::get_native_thread_id();
-    if (!enter_thread_guard(pImpl->reader_thread_id, pImpl->reader_depth, tid))
-    {
-        throw std::runtime_error("DataBlockConsumer: acquire_consume_slot recursion or cross-thread use.");
-    }
-
     auto *h = pImpl->dataBlock->header();
     if (!h)
     {
-        exit_thread_guard(pImpl->reader_thread_id, pImpl->reader_depth, tid);
         return nullptr;
     }
 
-    const int poll_interval_ms = 2;
-    int waited_ms = 0;
-    uint64_t slot_id = h->commit_index.load(std::memory_order_acquire);
-    while (slot_id == INVALID_SLOT_ID || slot_id == pImpl->last_consumed_slot_id)
+    uint32_t slot_count = h->ring_buffer_capacity;
+    if (slot_count == 0)
+    { // Should not happen with validation in constructor, but for safety
+        return nullptr;
+    }
+
+    // --- Reader Acquisition Flow ---
+    auto start_time = pylabhub::platform::monotonic_time_ns();
+    int iteration = 0;
+    uint64_t slot_id;
+    size_t slot_index;
+    SlotRWState *rw_state;
+    uint64_t captured_generation = 0;
+    SlotAcquireResult acquire_res;
+
+    while (true)
     {
-        if (timeout_ms > 0 && waited_ms >= timeout_ms)
+        slot_id = h->commit_index.load(std::memory_order_acquire);
+        if (slot_id == INVALID_SLOT_ID || slot_id == pImpl->last_consumed_slot_id)
         {
-            exit_thread_guard(pImpl->reader_thread_id, pImpl->reader_depth, tid);
+            // No new slot available, continue polling
+        }
+        else
+        {
+            slot_index = static_cast<size_t>(slot_id % slot_count);
+            rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
+            if (!rw_state)
+            {
+                // Should not happen, slot_rw_state throws on error
+                return nullptr;
+            }
+
+            acquire_res = acquire_read(rw_state, h, &captured_generation);
+            if (acquire_res == SLOT_ACQUIRE_OK)
+            {
+                break; // Successfully acquired read lock
+            }
+            else if (acquire_res == SLOT_ACQUIRE_NOT_READY)
+            {
+                // Slot not ready (e.g., writer changed state), try again
+                // No need to log, acquire_read handles metrics for race
+            }
+            else
+            {
+                // Other error or timeout
+                return nullptr;
+            }
+        }
+
+        if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                                  static_cast<uint64_t>(timeout_ms))
+        {
+            h->reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
             return nullptr;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
-        if (timeout_ms > 0)
-            waited_ms += poll_interval_ms;
-        slot_id = h->commit_index.load(std::memory_order_acquire);
+        backoff(iteration++);
     }
 
-    auto impl = build_consume_handle_impl(pImpl.get(), slot_id);
-    if (!impl)
+    size_t slot_size = h->unit_block_size;
+    const char *buf = pImpl->dataBlock->structured_data_buffer();
+    if (!buf || slot_size == 0)
     {
-        exit_thread_guard(pImpl->reader_thread_id, pImpl->reader_depth, tid);
+        // Release read lock if buffer is invalid before returning
+        release_read(rw_state, h);
         return nullptr;
     }
 
+    auto impl = std::make_unique<SlotConsumeHandleImpl>();
+    impl->owner = pImpl.get();
+    impl->dataBlock = pImpl->dataBlock.get();
+    impl->header = h;
+    impl->slot_id = slot_id;
+    impl->slot_index = slot_index;
+    impl->buffer_ptr = buf + slot_index * slot_size;
+    impl->buffer_size = slot_size;
+    impl->rw_state = rw_state; // New: Pointer to the SlotRWState for this slot
+    impl->captured_generation = captured_generation; // New: Captured generation for validation
+
     pImpl->last_consumed_slot_id = slot_id;
-    return std::make_unique<SlotConsumeHandle>(std::move(impl));
+    return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(impl)));
+}
+
+std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint64_t slot_id,
+                                                                           int timeout_ms)
+{
+    if (!pImpl || !pImpl->dataBlock)
+        return nullptr;
+
+    auto *h = pImpl->dataBlock->header();
+    if (!h)
+        return nullptr;
+
+    uint32_t slot_count = h->ring_buffer_capacity;
+    if (slot_count == 0)
+        return nullptr;
+
+    auto start_time = pylabhub::platform::monotonic_time_ns();
+    int iteration = 0;
+
+    // Wait until this slot_id is committed
+    while (h->commit_index.load(std::memory_order_acquire) < slot_id)
+    {
+        if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                                  static_cast<uint64_t>(timeout_ms))
+        {
+            h->reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
+        }
+        backoff(iteration++);
+    }
+
+    size_t slot_index = static_cast<size_t>(slot_id % slot_count);
+    SlotRWState *rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
+    uint64_t captured_generation = 0;
+    SlotAcquireResult acquire_res = acquire_read(rw_state, h, &captured_generation);
+    if (acquire_res != SLOT_ACQUIRE_OK)
+        return nullptr;
+
+    size_t slot_size = h->unit_block_size;
+    const char *buf = pImpl->dataBlock->structured_data_buffer();
+    if (!buf || slot_size == 0)
+    {
+        release_read(rw_state, h);
+        return nullptr;
+    }
+
+    auto impl = std::make_unique<SlotConsumeHandleImpl>();
+    impl->owner = pImpl.get();
+    impl->dataBlock = pImpl->dataBlock.get();
+    impl->header = h;
+    impl->slot_id = slot_id;
+    impl->slot_index = slot_index;
+    impl->buffer_ptr = buf + slot_index * slot_size;
+    impl->buffer_size = slot_size;
+    impl->rw_state = rw_state;
+    impl->captured_generation = captured_generation;
+
+    pImpl->last_consumed_slot_id = slot_id;
+    return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(impl)));
 }
 
 bool DataBlockConsumer::release_consume_slot(SlotConsumeHandle &handle)
@@ -1274,180 +1589,668 @@ DataBlockSlotIterator DataBlockConsumer::slot_iterator()
     return DataBlockSlotIterator(std::move(impl));
 }
 
-uint64_t DataBlockConsumer::get_counter_64(size_t index) const
+int DataBlockConsumer::register_heartbeat()
 {
     if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
     {
-        throw std::runtime_error("DataBlockConsumer: invalid state");
+        return -1;
     }
-    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
+    auto *header = pImpl->dataBlock->header();
+    uint64_t pid = pylabhub::platform::get_pid();
+
+    for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
     {
-        throw std::out_of_range("Counter 64 index out of range");
+        uint64_t expected = 0;
+        if (header->consumer_heartbeats[i].consumer_id.compare_exchange_strong(
+                expected, pid, std::memory_order_acq_rel))
+        {
+            header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
+            // Initialize last_heartbeat_ns here as well
+            header->consumer_heartbeats[i].last_heartbeat_ns.store(
+                pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
+            return static_cast<int>(i);
+        }
     }
-    return pImpl->dataBlock->header()->counters_64[index].load(std::memory_order_acquire);
+    return -1; // No available slot
 }
 
-void DataBlockConsumer::set_counter_64(size_t index, uint64_t value)
+void DataBlockConsumer::update_heartbeat(int slot)
 {
-    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header())
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header() || slot < 0 ||
+        slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
     {
-        throw std::runtime_error("DataBlockConsumer: invalid state");
+        return;
     }
-    if (index >= SharedMemoryHeader::NUM_COUNTERS_64)
-    {
-        throw std::out_of_range("Counter 64 index out of range");
-    }
-    pImpl->dataBlock->header()->counters_64[index].store(value, std::memory_order_release);
+    auto *header = pImpl->dataBlock->header();
+    header->consumer_heartbeats[slot].last_heartbeat_ns.store(
+        pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
 }
 
-uint32_t DataBlockConsumer::counter_count() const
+void DataBlockConsumer::unregister_heartbeat(int slot)
 {
-    return pImpl && pImpl->dataBlock ? static_cast<uint32_t>(SharedMemoryHeader::NUM_COUNTERS_64) : 0;
+    if (!pImpl || !pImpl->dataBlock || !pImpl->dataBlock->header() || slot < 0 ||
+        slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
+    {
+        return;
+    }
+    auto *header = pImpl->dataBlock->header();
+    uint64_t pid = pylabhub::platform::get_pid();
+    uint64_t expected = pid; // Expected to be the current process's PID
+    if (header->consumer_heartbeats[slot].consumer_id.compare_exchange_strong(
+            expected, 0, std::memory_order_acq_rel))
+    {
+        header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
+    }
+}
+
+// ============================================================================
+// SharedMemoryHeader schema (layout + protocol check)
+// ============================================================================
+
+pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info()
+{
+    using pylabhub::schema::BLDSBuilder;
+    using pylabhub::schema::SchemaInfo;
+    using pylabhub::schema::SchemaVersion;
+
+    BLDSBuilder b;
+    // All members with offset and size so hash reflects ABI layout
+#define ADD(member, type_id)                                                                       \
+    b.add_member(#member, type_id, offsetof(SharedMemoryHeader, member),                           \
+                 sizeof(SharedMemoryHeader::member))
+
+    ADD(magic_number, "u32");
+    ADD(version_major, "u16");
+    ADD(version_minor, "u16");
+    ADD(total_block_size, "u64");
+    ADD(shared_secret, "u8[64]");
+    ADD(schema_hash, "u8[32]");
+    ADD(schema_version, "u32");
+    ADD(padding_sec, "u8[28]");
+    ADD(policy, "u32");
+    ADD(unit_block_size, "u32");
+    ADD(ring_buffer_capacity, "u32");
+    ADD(flexible_zone_size, "u64");
+    ADD(enable_checksum, "b");
+    ADD(checksum_policy, "u32");
+    ADD(write_index, "u64");
+    ADD(commit_index, "u64");
+    ADD(read_index, "u64");
+    ADD(active_consumer_count, "u32");
+    ADD(writer_timeout_count, "u64");
+    ADD(writer_blocked_total_ns, "u64");
+    ADD(write_lock_contention, "u64");
+    ADD(write_generation_wraps, "u64");
+    ADD(reader_not_ready_count, "u64");
+    ADD(reader_race_detected, "u64");
+    ADD(reader_validation_failed, "u64");
+    ADD(reader_peak_count, "u64");
+    ADD(reader_timeout_count, "u64");
+    ADD(last_error_timestamp_ns, "u64");
+    ADD(last_error_code, "u32");
+    ADD(error_sequence, "u32");
+    ADD(slot_acquire_errors, "u64");
+    ADD(slot_commit_errors, "u64");
+    ADD(checksum_failures, "u64");
+    ADD(zmq_send_failures, "u64");
+    ADD(zmq_recv_failures, "u64");
+    ADD(zmq_timeout_count, "u64");
+    ADD(recovery_actions_count, "u64");
+    ADD(schema_mismatch_count, "u64");
+    ADD(reserved_errors, "u64[2]");
+    ADD(heartbeat_sent_count, "u64");
+    ADD(heartbeat_failed_count, "u64");
+    ADD(last_heartbeat_ns, "u64");
+    ADD(reserved_hb, "u64");
+    ADD(total_slots_written, "u64");
+    ADD(total_slots_read, "u64");
+    ADD(total_bytes_written, "u64");
+    ADD(total_bytes_read, "u64");
+    ADD(uptime_seconds, "u64");
+    ADD(creation_timestamp_ns, "u64");
+    ADD(reserved_perf, "u64[2]");
+    ADD(consumer_heartbeats,
+        "ConsumerHeartbeat[" + std::to_string(detail::MAX_CONSUMER_HEARTBEATS) + "]");
+    ADD(spinlock_states,
+        "SharedSpinLockState[" + std::to_string(detail::MAX_SHARED_SPINLOCKS) + "]");
+    ADD(flexible_zone_checksums,
+        "FlexibleZoneChecksumEntry[" + std::to_string(detail::MAX_FLEXIBLE_ZONE_CHECKSUMS) + "]");
+    ADD(reserved_header, "u8[" + std::to_string(sizeof(SharedMemoryHeader::reserved_header)) + "]");
+
+#undef ADD
+
+    SchemaInfo info;
+    info.name = "pylabhub.hub.SharedMemoryHeader";
+    info.version = SchemaVersion{detail::HEADER_VERSION_MAJOR, detail::HEADER_VERSION_MINOR, 0};
+    info.struct_size = sizeof(SharedMemoryHeader);
+    info.blds = b.build();
+    info.compute_hash();
+    return info;
+}
+
+void validate_header_layout_hash(const SharedMemoryHeader *header)
+{
+    if (!header)
+    {
+        throw std::invalid_argument("validate_header_layout_hash: header is null");
+    }
+    pylabhub::schema::SchemaInfo expected = get_shared_memory_header_schema_info();
+    const uint8_t *stored = header->reserved_header + detail::HEADER_LAYOUT_HASH_OFFSET;
+    if (std::memcmp(expected.hash.data(), stored, detail::HEADER_LAYOUT_HASH_SIZE) != 0)
+    {
+        std::array<uint8_t, 32> actual_hash;
+        std::memcpy(actual_hash.data(), stored, detail::HEADER_LAYOUT_HASH_SIZE);
+        throw pylabhub::schema::SchemaValidationException(
+            "SharedMemoryHeader layout mismatch: producer and consumer have different ABI "
+            "(offset/size).",
+            expected.hash, actual_hash);
+    }
 }
 
 // ============================================================================
 // Factory Functions
 // ============================================================================
+
+// Internal implementation that accepts optional schema info
+std::unique_ptr<DataBlockProducer>
+create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+                               const DataBlockConfig &config,
+                               const pylabhub::schema::SchemaInfo *schema_info)
+{
+    (void)policy; // Reserved for future policy-specific behavior
+    auto impl = std::make_unique<DataBlockProducerImpl>();
+    impl->name = name;
+    impl->dataBlock = std::make_unique<DataBlock>(name, config);
+    impl->checksum_policy = config.checksum_policy;
+    size_t offset = 0;
+    for (const auto &c : config.flexible_zone_configs)
+    {
+        FlexibleZoneInfo info;
+        info.offset = offset;
+        info.size = c.size;
+        info.spinlock_index = c.spinlock_index;
+        impl->flexible_zones_info.push_back(info);
+        offset += c.size;
+    }
+
+    auto *header = impl->dataBlock->header();
+    if (header && schema_info)
+    {
+        // Store schema hash (full 32 bytes)
+        std::memcpy(header->schema_hash, schema_info->hash.data(), 32);
+
+        // Store packed schema version
+        header->schema_version = schema_info->version.pack();
+
+        LOGGER_DEBUG("[DataBlock:{}] Schema stored: {} v{}, hash={}...", name, schema_info->name,
+                     schema_info->version.to_string(),
+                     fmt::format("{:02x}{:02x}{:02x}{:02x}", schema_info->hash[0],
+                                 schema_info->hash[1], schema_info->hash[2], schema_info->hash[3]));
+    }
+    else if (header)
+    {
+        // No schema validation - zero out schema fields
+        std::memset(header->schema_hash, 0, 32);
+        header->schema_version = 0;
+    }
+
+    ProducerInfo pinfo;
+    pinfo.shm_name = name;
+    pinfo.producer_pid = pylabhub::platform::get_pid();
+    pinfo.schema_hash.assign(reinterpret_cast<const char *>(header->schema_hash), 32);
+    pinfo.schema_version = header->schema_version;
+    hub.register_producer(name, pinfo);
+    return std::make_unique<DataBlockProducer>(std::move(impl));
+}
+
+// Non-template version (no schema validation)
 std::unique_ptr<DataBlockProducer> create_datablock_producer(MessageHub &hub,
                                                              const std::string &name,
                                                              DataBlockPolicy policy,
                                                              const DataBlockConfig &config)
 {
-    // HEP-core-0002 §4.4: hub reserved for broker coordination. Stub until §14 Future Work.
-    (void)hub;
+    return create_datablock_producer_impl(hub, name, policy, config, nullptr);
+}
+
+// Internal implementation that accepts optional schema info for validation
+std::unique_ptr<DataBlockConsumer>
+find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
+                             const DataBlockConfig *expected_config,
+                             const pylabhub::schema::SchemaInfo *schema_info)
+{
+    auto impl = std::make_unique<DataBlockConsumerImpl>();
+    impl->name = name;
+    impl->dataBlock = std::make_unique<DataBlock>(name);
+
+    auto *header = impl->dataBlock->header();
+    if (!header)
+    {
+        return nullptr;
+    }
+
+    // Validate shared secret (first 8 bytes store capability for discovery)
+    if (std::memcmp(header->shared_secret, &shared_secret, sizeof(shared_secret)) != 0)
+    {
+        return nullptr;
+    }
+
+    // Validate header layout (producer and consumer must have same SharedMemoryHeader ABI)
     try
     {
-        DataBlockConfig config_copy = config;
-        if (config_copy.ring_buffer_capacity <= 0)
+        validate_header_layout_hash(header);
+    }
+    catch (const pylabhub::schema::SchemaValidationException &)
+    {
+        header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+        LOGGER_WARN("[DataBlock:{}] Header layout mismatch during consumer attachment (ABI "
+                    "incompatibility)",
+                    name);
+        return nullptr;
+    }
+
+    // Validate config if provided
+    if (expected_config)
+    {
+        if (header->flexible_zone_size != expected_config->total_flexible_zone_size() ||
+            header->ring_buffer_capacity != expected_config->ring_buffer_capacity ||
+            header->unit_block_size != static_cast<uint32_t>(expected_config->unit_block_size) ||
+            header->enable_checksum != expected_config->enable_checksum)
         {
-            config_copy.ring_buffer_capacity =
-                (policy == DataBlockPolicy::Single) ? 1
-                : (policy == DataBlockPolicy::DoubleBuffer)
-                    ? 2
-                    : 8; // RingBuffer default
+            LOGGER_WARN("[DataBlock:{}] Config mismatch during consumer attachment", name);
+            return nullptr;
         }
-        auto impl = std::make_unique<DataBlockProducerImpl>();
-        impl->name = name;
-        impl->checksum_policy = config_copy.checksum_policy;
-        impl->dataBlock = std::make_unique<DataBlock>(name, config_copy);
-        return std::make_unique<DataBlockProducer>(std::move(impl));
+        size_t offset = 0;
+        for (const auto &c : expected_config->flexible_zone_configs)
+        {
+            FlexibleZoneInfo info;
+            info.offset = offset;
+            info.size = c.size;
+            info.spinlock_index = c.spinlock_index;
+            impl->flexible_zones_info.push_back(info);
+            offset += c.size;
+        }
     }
-    catch (const std::runtime_error &ex)
+
+    // Validate schema if provided
+    if (schema_info)
     {
-        LOGGER_ERROR("create_datablock_producer: Failed for '{}': {}", name, ex.what());
-        return nullptr;
+        // Check if producer stored a schema (non-zero hash)
+        bool has_producer_schema = false;
+        for (size_t i = 0; i < 32; ++i)
+        {
+            if (header->schema_hash[i] != 0)
+            {
+                has_producer_schema = true;
+                break;
+            }
+        }
+
+        if (!has_producer_schema)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN(
+                "[DataBlock:{}] Producer did not store schema, but consumer expects schema '{}'",
+                name, schema_info->name);
+            return nullptr;
+        }
+
+        // Compare schema hashes
+        if (std::memcmp(header->schema_hash, schema_info->hash.data(), 32) != 0)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR(
+                "[DataBlock:{}] Schema hash mismatch! Expected schema '{}' v{}, hash={}...", name,
+                schema_info->name, schema_info->version.to_string(),
+                fmt::format("{:02x}{:02x}{:02x}{:02x}", schema_info->hash[0], schema_info->hash[1],
+                            schema_info->hash[2], schema_info->hash[3]));
+            return nullptr;
+        }
+
+        // Validate schema version compatibility
+        auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
+        if (stored_version.major != schema_info->version.major)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] Incompatible schema version! Producer: {}, Consumer: {}",
+                         name, stored_version.to_string(), schema_info->version.to_string());
+            return nullptr;
+        }
+
+        LOGGER_DEBUG("[DataBlock:{}] Schema validated: {} v{}", name, schema_info->name,
+                     schema_info->version.to_string());
     }
-    catch (const std::bad_alloc &ex)
+
+    header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
+    ConsumerInfo cinfo;
+    cinfo.shm_name = name;
+    cinfo.schema_hash.assign(reinterpret_cast<const char *>(header->schema_hash), 32);
+    cinfo.schema_version = header->schema_version;
+    hub.register_consumer(name, cinfo);
+    return std::make_unique<DataBlockConsumer>(std::move(impl));
+}
+
+std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub, const std::string &name,
+                                                           uint64_t shared_secret)
+{
+    return find_datablock_consumer_impl(hub, name, shared_secret, nullptr, nullptr);
+}
+
+std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub, const std::string &name,
+                                                           uint64_t shared_secret,
+                                                           const DataBlockConfig &expected_config)
+{
+    return find_datablock_consumer_impl(hub, name, shared_secret, &expected_config, nullptr);
+}
+
+WriteTransactionGuard::WriteTransactionGuard(DataBlockProducer &producer, int timeout_ms)
+    : producer_(&producer), slot_(producer.acquire_write_slot(timeout_ms)),
+      acquired_(static_cast<bool>(slot_)), committed_(false), aborted_(false)
+{
+}
+
+WriteTransactionGuard::~WriteTransactionGuard() noexcept
+{
+    if (acquired_ && !aborted_ && slot_)
     {
-        LOGGER_ERROR("create_datablock_producer: Memory failed for '{}': {}", name, ex.what());
-        return nullptr;
+        // The user is responsible for calling slot().commit(bytes_written).
+        // The guard only ensures the slot is released.
+        // We do not implicitly commit here.
+        producer_->release_write_slot(*slot_);
     }
 }
 
-namespace
+WriteTransactionGuard::WriteTransactionGuard(WriteTransactionGuard &&other) noexcept
+    : producer_(other.producer_), slot_(std::move(other.slot_)), acquired_(other.acquired_),
+      committed_(other.committed_), aborted_(other.aborted_)
 {
-bool validate_config_against_header(const SharedMemoryHeader *h, const DataBlockConfig &expected)
-{
-    if (h->flexible_zone_size != expected.flexible_zone_size)
-        return false;
-    if (static_cast<DataBlockUnitSize>(h->unit_block_size) != expected.unit_block_size)
-        return false;
-    size_t exp_slots = (expected.ring_buffer_capacity > 0)
-                           ? static_cast<size_t>(expected.ring_buffer_capacity)
-                           : 1u;
-    if (h->ring_buffer_capacity != exp_slots)
-        return false;
-    if (h->structured_buffer_size != expected.structured_buffer_size())
-        return false;
-    if ((h->checksum_enabled != 0) != expected.enable_checksum)
-        return false;
-    return true;
-}
-} // namespace
-
-std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
-                                                            const std::string &name,
-                                                            uint64_t shared_secret)
-{
-    // HEP-core-0002 §4.4: hub reserved for broker discovery. Stub until §14 Future Work.
-    (void)hub;
-    try
-    {
-        auto impl = std::make_unique<DataBlockConsumerImpl>();
-        impl->name = name;
-        impl->checksum_policy = ChecksumPolicy::EnforceOnRelease;
-        impl->dataBlock = std::make_unique<DataBlock>(name);
-        auto *h = impl->dataBlock->header();
-        if (h->magic_number != DATABLOCK_MAGIC_NUMBER)
-        {
-            throw std::runtime_error("Invalid magic number");
-        }
-        if (h->shared_secret != shared_secret)
-        {
-            throw std::runtime_error("Invalid shared secret");
-        }
-        h->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
-        return std::make_unique<DataBlockConsumer>(std::move(impl));
-    }
-    catch (const std::runtime_error &ex)
-    {
-        LOGGER_ERROR("find_datablock_consumer: Failed for '{}': {}", name, ex.what());
-        return nullptr;
-    }
-    catch (const std::bad_alloc &ex)
-    {
-        LOGGER_ERROR("find_datablock_consumer: Memory failed for '{}': {}", name, ex.what());
-        return nullptr;
-    }
+    other.acquired_ = false;  // Transfer ownership
+    other.committed_ = false; // Ensure other doesn't commit/release
+    other.aborted_ = true;    // Mark other as aborted to prevent its destructor actions
 }
 
-std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub,
-                                                            const std::string &name,
-                                                            uint64_t shared_secret,
-                                                            const DataBlockConfig &expected_config)
+WriteTransactionGuard &WriteTransactionGuard::operator=(WriteTransactionGuard &&other) noexcept
 {
-    // HEP-core-0002 §4.4: hub reserved for broker discovery. Stub until §14 Future Work.
-    (void)hub;
-    try
+    if (this != &other)
     {
-        auto impl = std::make_unique<DataBlockConsumerImpl>();
-        impl->name = name;
-        impl->checksum_policy = expected_config.checksum_policy;
-        impl->dataBlock = std::make_unique<DataBlock>(name);
-        auto *h = impl->dataBlock->header();
-        if (h->magic_number != DATABLOCK_MAGIC_NUMBER)
+        // Release our current slot first if it was acquired
+        if (acquired_ && !aborted_ && slot_)
         {
-            throw std::runtime_error("Invalid magic number");
+            producer_->release_write_slot(*slot_);
         }
-        if (h->shared_secret != shared_secret)
-        {
-            throw std::runtime_error("Invalid shared secret");
-        }
-        if (!validate_config_against_header(h, expected_config))
-        {
-            throw std::runtime_error(
-                "DataBlock config mismatch: unit_block_size, flexible_zone_size, "
-                "ring_buffer_capacity, or checksum_enabled inconsistent with expected");
-        }
-        h->active_consumer_count.fetch_add(1, std::memory_order_acq_rel);
-        return std::make_unique<DataBlockConsumer>(std::move(impl));
+
+        // Transfer ownership from other
+        producer_ = other.producer_;
+        slot_ = std::move(other.slot_);
+        acquired_ = other.acquired_;
+        committed_ = other.committed_;
+        aborted_ = other.aborted_;
+
+        other.acquired_ = false;
+        other.committed_ = false;
+        other.aborted_ = true;
     }
-    catch (const std::runtime_error &ex)
+    return *this;
+}
+
+WriteTransactionGuard::operator bool() const noexcept
+{
+    return acquired_ && !aborted_ && static_cast<bool>(slot_);
+}
+
+std::optional<std::reference_wrapper<SlotWriteHandle>> WriteTransactionGuard::slot() noexcept
+{
+    if (!slot_)
+        return std::nullopt;
+    return std::ref(*slot_);
+}
+
+void WriteTransactionGuard::commit()
+{
+    // This `commit()` merely sets an internal flag.
+    // The user MUST call `slot().commit(bytes_written)` explicitly
+    // to make the data visible. This flag is for internal state tracking.
+    if (!acquired_)
     {
-        LOGGER_ERROR("find_datablock_consumer: Failed for '{}': {}", name, ex.what());
-        return nullptr;
+        throw std::runtime_error("WriteTransactionGuard: Cannot commit, slot not acquired.");
     }
-    catch (const std::bad_alloc &ex)
+    if (aborted_)
     {
-        LOGGER_ERROR("find_datablock_consumer: Memory failed for '{}': {}", name, ex.what());
-        return nullptr;
+        throw std::runtime_error("WriteTransactionGuard: Cannot commit, transaction aborted.");
+    }
+    committed_ = true;
+}
+
+void WriteTransactionGuard::abort() noexcept
+{
+    aborted_ = true;
+    committed_ = false; // Ensure it's not marked as committed if aborted
+}
+
+// ============================================================================
+// ReadTransactionGuard
+// ============================================================================
+
+ReadTransactionGuard::ReadTransactionGuard(DataBlockConsumer &consumer, uint64_t slot_id,
+                                           int timeout_ms)
+    : consumer_(&consumer), slot_(consumer.acquire_consume_slot(slot_id, timeout_ms)),
+      acquired_(static_cast<bool>(slot_))
+{
+}
+
+ReadTransactionGuard::~ReadTransactionGuard() noexcept
+{
+    if (acquired_ && slot_)
+    {
+        consumer_->release_consume_slot(*slot_);
     }
 }
 
-} // namespace pylabhub::hub
-;
-        return nullptr;
-    }
+ReadTransactionGuard::ReadTransactionGuard(ReadTransactionGuard &&other) noexcept
+    : consumer_(other.consumer_), slot_(std::move(other.slot_)), acquired_(other.acquired_)
+{
+    other.acquired_ = false; // Transfer ownership
 }
+
+ReadTransactionGuard &ReadTransactionGuard::operator=(ReadTransactionGuard &&other) noexcept
+{
+    if (this != &other)
+    {
+        // Release our current slot first if it was acquired
+        if (acquired_ && slot_)
+        {
+            consumer_->release_consume_slot(*slot_);
+        }
+
+        // Transfer ownership from other
+        consumer_ = other.consumer_;
+        slot_ = std::move(other.slot_);
+        acquired_ = other.acquired_;
+
+        other.acquired_ = false;
+    }
+    return *this;
+}
+
+ReadTransactionGuard::operator bool() const noexcept
+{
+    return acquired_ && static_cast<bool>(slot_);
+}
+
+std::optional<std::reference_wrapper<const SlotConsumeHandle>>
+ReadTransactionGuard::slot() const noexcept
+{
+    if (!slot_)
+        return std::nullopt;
+    return std::ref(*slot_);
+}
+
+// ============================================================================
+// Slot RW Coordinator C API (extern "C" for ABI stability; global symbol names)
+// ============================================================================
+#include "utils/slot_rw_coordinator.h"
+
+extern "C"
+{
+
+    SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms)
+    {
+        if (!rw_state)
+            return SLOT_ACQUIRE_ERROR;
+        return acquire_write(rw_state, nullptr, timeout_ms);
+    }
+
+    void slot_rw_commit(pylabhub::hub::SlotRWState *rw_state)
+    {
+        if (rw_state)
+            commit_write(rw_state, nullptr);
+    }
+
+    void slot_rw_release_write(pylabhub::hub::SlotRWState *rw_state)
+    {
+        if (rw_state)
+            release_write(rw_state, nullptr);
+    }
+
+    SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
+                                           uint64_t *out_generation)
+    {
+        if (!rw_state || !out_generation)
+            return SLOT_ACQUIRE_ERROR;
+        return acquire_read(rw_state, nullptr, out_generation);
+    }
+
+    bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation)
+    {
+        if (!rw_state)
+            return false;
+        return validate_read(rw_state, nullptr, generation);
+    }
+
+    void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state)
+    {
+        if (rw_state)
+            release_read(rw_state, nullptr);
+    }
+
+    const char *slot_acquire_result_string(SlotAcquireResult result)
+    {
+        switch (result)
+        {
+        case SLOT_ACQUIRE_OK:
+            return "OK";
+        case SLOT_ACQUIRE_TIMEOUT:
+            return "TIMEOUT";
+        case SLOT_ACQUIRE_NOT_READY:
+            return "NOT_READY";
+        case SLOT_ACQUIRE_LOCKED:
+            return "LOCKED";
+        case SLOT_ACQUIRE_ERROR:
+            return "ERROR";
+        case SLOT_ACQUIRE_INVALID_STATE:
+            return "INVALID_STATE";
+        default:
+            return "UNKNOWN";
+        }
+    }
+
+    int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
+                            DataBlockMetrics *out_metrics)
+    {
+        if (!shared_memory_header || !out_metrics)
+            return -1;
+        out_metrics->writer_timeout_count =
+            shared_memory_header->writer_timeout_count.load(std::memory_order_relaxed);
+        out_metrics->writer_blocked_total_ns =
+            shared_memory_header->writer_blocked_total_ns.load(std::memory_order_relaxed);
+        out_metrics->write_lock_contention =
+            shared_memory_header->write_lock_contention.load(std::memory_order_relaxed);
+        out_metrics->write_generation_wraps =
+            shared_memory_header->write_generation_wraps.load(std::memory_order_relaxed);
+        out_metrics->reader_not_ready_count =
+            shared_memory_header->reader_not_ready_count.load(std::memory_order_relaxed);
+        out_metrics->reader_race_detected =
+            shared_memory_header->reader_race_detected.load(std::memory_order_relaxed);
+        out_metrics->reader_validation_failed =
+            shared_memory_header->reader_validation_failed.load(std::memory_order_relaxed);
+        out_metrics->reader_peak_count =
+            shared_memory_header->reader_peak_count.load(std::memory_order_relaxed);
+        out_metrics->last_error_timestamp_ns =
+            shared_memory_header->last_error_timestamp_ns.load(std::memory_order_relaxed);
+        out_metrics->last_error_code =
+            shared_memory_header->last_error_code.load(std::memory_order_relaxed);
+        out_metrics->error_sequence =
+            shared_memory_header->error_sequence.load(std::memory_order_relaxed);
+        out_metrics->slot_acquire_errors =
+            shared_memory_header->slot_acquire_errors.load(std::memory_order_relaxed);
+        out_metrics->slot_commit_errors =
+            shared_memory_header->slot_commit_errors.load(std::memory_order_relaxed);
+        out_metrics->checksum_failures =
+            shared_memory_header->checksum_failures.load(std::memory_order_relaxed);
+        out_metrics->zmq_send_failures =
+            shared_memory_header->zmq_send_failures.load(std::memory_order_relaxed);
+        out_metrics->zmq_recv_failures =
+            shared_memory_header->zmq_recv_failures.load(std::memory_order_relaxed);
+        out_metrics->zmq_timeout_count =
+            shared_memory_header->zmq_timeout_count.load(std::memory_order_relaxed);
+        out_metrics->recovery_actions_count =
+            shared_memory_header->recovery_actions_count.load(std::memory_order_relaxed);
+        out_metrics->schema_mismatch_count =
+            shared_memory_header->schema_mismatch_count.load(std::memory_order_relaxed);
+        out_metrics->heartbeat_sent_count =
+            shared_memory_header->heartbeat_sent_count.load(std::memory_order_relaxed);
+        out_metrics->heartbeat_failed_count =
+            shared_memory_header->heartbeat_failed_count.load(std::memory_order_relaxed);
+        out_metrics->last_heartbeat_ns =
+            shared_memory_header->last_heartbeat_ns.load(std::memory_order_relaxed);
+        out_metrics->total_slots_written =
+            shared_memory_header->total_slots_written.load(std::memory_order_relaxed);
+        out_metrics->total_slots_read =
+            shared_memory_header->total_slots_read.load(std::memory_order_relaxed);
+        out_metrics->total_bytes_written =
+            shared_memory_header->total_bytes_written.load(std::memory_order_relaxed);
+        out_metrics->total_bytes_read =
+            shared_memory_header->total_bytes_read.load(std::memory_order_relaxed);
+        out_metrics->uptime_seconds =
+            shared_memory_header->uptime_seconds.load(std::memory_order_relaxed);
+        out_metrics->creation_timestamp_ns =
+            shared_memory_header->creation_timestamp_ns.load(std::memory_order_relaxed);
+        return 0;
+    }
+
+    int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header)
+    {
+        if (!shared_memory_header)
+            return -1;
+        shared_memory_header->writer_timeout_count.store(0, std::memory_order_release);
+        shared_memory_header->writer_blocked_total_ns.store(0, std::memory_order_release);
+        shared_memory_header->write_lock_contention.store(0, std::memory_order_release);
+        shared_memory_header->write_generation_wraps.store(0, std::memory_order_release);
+        shared_memory_header->reader_not_ready_count.store(0, std::memory_order_release);
+        shared_memory_header->reader_race_detected.store(0, std::memory_order_release);
+        shared_memory_header->reader_validation_failed.store(0, std::memory_order_release);
+        shared_memory_header->reader_peak_count.store(0, std::memory_order_release);
+        shared_memory_header->last_error_timestamp_ns.store(0, std::memory_order_release);
+        shared_memory_header->last_error_code.store(0, std::memory_order_release);
+        shared_memory_header->error_sequence.store(0, std::memory_order_release);
+        shared_memory_header->slot_acquire_errors.store(0, std::memory_order_release);
+        shared_memory_header->slot_commit_errors.store(0, std::memory_order_release);
+        shared_memory_header->checksum_failures.store(0, std::memory_order_release);
+        shared_memory_header->zmq_send_failures.store(0, std::memory_order_release);
+        shared_memory_header->zmq_recv_failures.store(0, std::memory_order_release);
+        shared_memory_header->zmq_timeout_count.store(0, std::memory_order_release);
+        shared_memory_header->recovery_actions_count.store(0, std::memory_order_release);
+        shared_memory_header->schema_mismatch_count.store(0, std::memory_order_release);
+        shared_memory_header->heartbeat_sent_count.store(0, std::memory_order_release);
+        shared_memory_header->heartbeat_failed_count.store(0, std::memory_order_release);
+        shared_memory_header->last_heartbeat_ns.store(0, std::memory_order_release);
+        shared_memory_header->total_slots_written.store(0, std::memory_order_release);
+        shared_memory_header->total_slots_read.store(0, std::memory_order_release);
+        shared_memory_header->total_bytes_written.store(0, std::memory_order_release);
+        shared_memory_header->total_bytes_read.store(0, std::memory_order_release);
+        shared_memory_header->uptime_seconds.store(0, std::memory_order_release);
+        return 0;
+    }
+
+} // extern "C"
 
 } // namespace pylabhub::hub

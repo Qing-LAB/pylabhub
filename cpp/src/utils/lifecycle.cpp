@@ -60,17 +60,14 @@ void validate_module_name_cstr(const char *name, bool allow_null, const char *pa
     {
         if (allow_null)
             return;
-        throw std::invalid_argument(
-            std::string("Lifecycle: ") + param_name + " must not be null.");
+        throw std::invalid_argument(std::string("Lifecycle: ") + param_name + " must not be null.");
     }
-    const size_t len =
-        strnlen(name, pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN + 1);
+    const size_t len = strnlen(name, pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN + 1);
     if (len > pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN)
     {
         throw std::length_error(std::string("Lifecycle: ") + param_name +
                                 " exceeds maximum length of " +
-                                std::to_string(
-                                    pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN) +
+                                std::to_string(pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN) +
                                 " or is not null-terminated.");
     }
 }

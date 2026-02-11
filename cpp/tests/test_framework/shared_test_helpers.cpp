@@ -11,8 +11,8 @@
 #include <thread> // Required for std::this_thread::sleep_for
 
 #if PYLABHUB_IS_POSIX
-#include <sys/mman.h>  // For shm_unlink
-#include <cerrno>      // For errno
+#include <sys/mman.h> // For shm_unlink
+#include <cerrno>     // For errno
 #endif
 
 #include "plh_service.hpp"
@@ -106,18 +106,17 @@ int scaled_value(int original, int small_value)
 // DataBlock Test Utilities Implementation
 // ============================================================================
 
-std::string make_test_channel_name(const char* test_name)
+std::string make_test_channel_name(const char *test_name)
 {
     // Generate unique name with timestamp
     auto now = std::chrono::steady_clock::now();
-    auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now.time_since_epoch()
-    ).count();
+    auto timestamp =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
 
     return fmt::format("test_{}_{}", test_name, timestamp);
 }
 
-bool cleanup_test_datablock(const std::string& channel_name)
+bool cleanup_test_datablock(const std::string &channel_name)
 {
     // Attempt to clean up shared memory for the given channel
     // Platform-specific cleanup
@@ -127,15 +126,19 @@ bool cleanup_test_datablock(const std::string& channel_name)
     std::string shm_path = "/" + channel_name;
     int result = shm_unlink(shm_path.c_str());
 
-    if (result == 0) {
+    if (result == 0)
+    {
         return true;
-    } else if (errno == ENOENT) {
+    }
+    else if (errno == ENOENT)
+    {
         // Already doesn't exist, that's fine
         return true;
-    } else {
+    }
+    else
+    {
         // Other error
-        LOGGER_WARN("[TestCleanup] Failed to unlink shared memory '{}': errno={}",
-                    shm_path, errno);
+        LOGGER_WARN("[TestCleanup] Failed to unlink shared memory '{}': errno={}", shm_path, errno);
         return false;
     }
 #elif PYLABHUB_IS_WINDOWS

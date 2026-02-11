@@ -1,305 +1,195 @@
 #pragma once
 /**
  * @file test_patterns.h
- * @brief Provides three standard test patterns for PyLabHub test suite.
+ * @brief Three standard test patterns for the PyLabHub test suite.
  *
- * Pattern 1: Pure API/Function Tests
- *   - No lifecycle management
- *   - No module dependencies
- *   - Fast, isolated unit tests
- *   - Use: class MyTest : public PureApiTest
+ * ## Why three patterns?
  *
- * Pattern 2: Lifecycle-Managed Tests
- *   - Lifecycle management with module dependencies
- *   - Thread safety and correctness testing
- *   - Single process only
- *   - Use: class MyTest : public LifecycleManagedTest
+ * Lifecycle modules (Logger, FileLock, JsonConfig, CryptoUtils) are process-global
+ * singletons. A test that panics, calls finalize(), or crashes will corrupt the
+ * lifecycle state for every subsequent test in the same process. CTest hides this
+ * because it spawns a fresh executable per suite; running an executable directly
+ * for debugging will fail.
  *
- * Pattern 3: Multi-Process Tests
- *   - Independent worker processes
- *   - Optional lifecycle per process
- *   - Crash/error handling validation
- *   - Use: class MyTest : public MultiProcessTest
+ * The solution: `main()` initializes NOTHING. Every test that needs a lifecycle
+ * spawns a subprocess. Each subprocess starts with a clean slate.
+ *
+ * ---
+ *
+ * ## Pattern 1 — PureApiTest
+ *
+ * In-process, no lifecycle, no module dependencies.
+ * For: pure functions, data structures, algorithms, compile-time traits.
+ *
+ *   class MyTest : public pylabhub::tests::PureApiTest { ... };
+ *   TEST_F(MyTest, SomeFunction) { EXPECT_EQ(add(1,2), 3); }
+ *
+ * ---
+ *
+ * ## Pattern 2 — plain ::testing::Test (in-process, thread-racing only)
+ *
+ * Use this ONLY for thread-racing tests that do NOT need lifecycle modules.
+ * The test runs in the main process. Use ThreadRacer from shared_test_helpers.h
+ * for concurrent execution.
+ *
+ * If your threading test DOES need a lifecycle module (Logger, FileLock, etc.),
+ * use Pattern 3: put the threading logic inside a worker subprocess.
+ *
+ * ---
+ *
+ * ## Pattern 3 — IsolatedProcessTest
+ *
+ * Spawns one or more subprocesses. Each subprocess owns its lifecycle.
+ * For: any test that needs lifecycle modules, crash/panic testing, true IPC,
+ * lifecycle finalize/shutdown testing, threading tests that need module state.
+ *
+ *   class MyTest : public pylabhub::tests::IsolatedProcessTest {
+ *   protected:
+ *       void SetUp() override { IsolatedProcessTest::SetUp(); }
+ *   };
+ *
+ *   TEST_F(MyTest, BasicLogging) {
+ *       auto w = SpawnWorker("logger.basic_logging", {log_path});
+ *       ExpectWorkerOk(w);
+ *   }
+ *
+ *   TEST_F(MyTest, TwoProcessContention) {
+ *       auto workers = SpawnWorkers({
+ *           {"filelock.writer", {path}},
+ *           {"filelock.reader", {path}},
+ *       });
+ *       for (auto& w : workers) ExpectWorkerOk(w);
+ *   }
+ *
+ * Workers define their own lifecycle inside the worker function body using
+ * run_gtest_worker() (standard) or run_worker_bare() (manual lifecycle control).
  */
 
 #include "gtest/gtest.h"
-#include "plh_service.hpp"
-#include "shared_test_helpers.h"
-#include <memory>
+#include "test_entrypoint.h"
+#include "test_process_utils.h"
+#include <list>
+#include <string>
 #include <vector>
+#include <utility>
 
 namespace pylabhub::tests
 {
 
 // ============================================================================
-// Pattern 1: Pure API/Function Tests
+// Pattern 1: Pure API / Function Tests
 // ============================================================================
 
 /**
  * @brief Base class for pure API/function tests.
- * @details No lifecycle management, no module dependencies.
- *          Fast, isolated unit tests for testing pure functions and APIs.
  *
- * Usage:
- * @code
- * class MyApiTest : public PureApiTest {
- * protected:
- *     void SetUp() override {
- *         PureApiTest::SetUp();
- *         // Your setup...
- *     }
- * };
- *
- * TEST_F(MyApiTest, FunctionReturnsCorrectValue) {
- *     EXPECT_EQ(my_function(42), 84);
- * }
- * @endcode
+ * No lifecycle initialization, no module dependencies. Fast, isolated.
+ * These tests run in-process in the main GTest runner.
  */
 class PureApiTest : public ::testing::Test
 {
-protected:
-    void SetUp() override
-    {
-        // No lifecycle initialization needed
-    }
-
-    void TearDown() override
-    {
-        // No lifecycle cleanup needed
-    }
+  protected:
+    void SetUp() override {}
+    void TearDown() override {}
 };
 
 // ============================================================================
-// Pattern 2: Lifecycle-Managed Tests
+// Pattern 3: Isolated Process Tests
 // ============================================================================
 
 /**
- * @brief Base class for lifecycle-managed tests.
- * @details Provides automatic lifecycle management with module dependencies.
- *          Suitable for testing thread safety, correctness, integration between modules.
- *          Single process only (no worker processes).
+ * @brief Base class for tests that spawn isolated worker subprocesses.
  *
- * Usage:
- * @code
- * class MyServiceTest : public LifecycleManagedTest {
- * protected:
- *     void SetUp() override {
- *         // Register required modules
- *         RegisterModule(Logger::GetLifecycleModule());
- *         RegisterModule(FileLock::GetLifecycleModule());
+ * Each call to SpawnWorker() re-executes the current test binary as a child
+ * process in "worker mode". The worker initializes its own lifecycle (via
+ * run_gtest_worker or run_worker_bare), runs the test logic, and exits.
+ * The parent then inspects the exit code and captured output.
  *
- *         // Initialize lifecycle
- *         LifecycleManagedTest::SetUp();
- *
- *         // Your setup...
- *     }
- * };
- *
- * TEST_F(MyServiceTest, LoggerWorksCorrectly) {
- *     LOGGER_INFO("Test message");  // Logger initialized automatically
- * }
- * @endcode
+ * This guarantees complete lifecycle isolation: crashes, panics, finalize(),
+ * and shutdown() in a worker cannot affect any other test.
  */
-class LifecycleManagedTest : public ::testing::Test
+class IsolatedProcessTest : public ::testing::Test
 {
-protected:
-    /**
-     * @brief Registers a module for lifecycle management.
-     * @param module The ModuleDef to register
-     * @note Must be called BEFORE SetUp()
-     */
-    void RegisterModule(pylabhub::utils::ModuleDef module)
+  protected:
+    void SetUp() override
     {
-        modules_.push_back(std::move(module));
+        // Verify that this executable knows its own path (set by test_entrypoint main()).
+        ASSERT_FALSE(g_self_exe_path.empty())
+            << "g_self_exe_path is empty — test_entrypoint.cpp must set it in main()";
     }
 
     /**
-     * @brief Initializes lifecycle with registered modules.
-     * @note Call this at the END of your derived SetUp() method
-     */
-    void SetUp() override
-    {
-        // Create lifecycle guard with registered modules
-        auto module_list = pylabhub::utils::MakeModDefList();
-        for (auto& mod : modules_) {
-            module_list.push_back(std::move(mod));
-        }
-
-        lifecycle_guard_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
-            std::move(module_list)
-        );
-    }
-
-    void TearDown() override
-    {
-        // Lifecycle guard destructor handles shutdown in reverse order
-        lifecycle_guard_.reset();
-    }
-
-private:
-    std::vector<pylabhub::utils::ModuleDef> modules_;
-    std::unique_ptr<pylabhub::utils::LifecycleGuard> lifecycle_guard_;
-};
-
-// ============================================================================
-// Pattern 3: Multi-Process Tests
-// ============================================================================
-
-/**
- * @brief Configuration for a worker process.
- */
-struct WorkerConfig
-{
-    std::string worker_name;                           ///< Unique worker name
-    std::vector<pylabhub::utils::ModuleDef> modules;   ///< Lifecycle modules for this worker
-    bool enable_lifecycle = true;                      ///< Whether to use lifecycle management
-    int timeout_ms = 30000;                            ///< Worker timeout (30 seconds default)
-};
-
-/**
- * @brief Result from a worker process execution.
- */
-struct WorkerResult
-{
-    int exit_code = -1;          ///< Worker process exit code (0 = success)
-    bool timed_out = false;      ///< Whether worker timed out
-    bool crashed = false;        ///< Whether worker crashed (signal/exception)
-    std::string worker_name;     ///< Worker name for identification
-
-    bool succeeded() const { return exit_code == 0 && !timed_out && !crashed; }
-};
-
-/**
- * @brief Base class for multi-process tests.
- * @details Provides infrastructure for spawning independent worker processes.
- *          Each worker can have its own lifecycle configuration.
- *          Useful for testing crash handling, process isolation, true IPC scenarios.
- *
- * Usage:
- * @code
- * class MyMultiProcessTest : public MultiProcessTest {
- * protected:
- *     void SetUp() override {
- *         MultiProcessTest::SetUp();
- *     }
- * };
- *
- * TEST_F(MyMultiProcessTest, ProducerConsumerIPC) {
- *     // Define producer worker
- *     WorkerConfig producer_cfg;
- *     producer_cfg.worker_name = "producer";
- *     producer_cfg.modules.push_back(Logger::GetLifecycleModule());
- *
- *     // Define consumer worker
- *     WorkerConfig consumer_cfg;
- *     consumer_cfg.worker_name = "consumer";
- *     consumer_cfg.enable_lifecycle = false;  // No modules needed
- *
- *     // Spawn workers
- *     auto producer_result = SpawnWorker(producer_cfg, []() {
- *         // Producer logic...
- *         return 0;  // Success
- *     });
- *
- *     auto consumer_result = SpawnWorker(consumer_cfg, []() {
- *         // Consumer logic...
- *         return 0;
- *     });
- *
- *     EXPECT_TRUE(producer_result.succeeded());
- *     EXPECT_TRUE(consumer_result.succeeded());
- * }
- * @endcode
- */
-class MultiProcessTest : public ::testing::Test
-{
-protected:
-    void SetUp() override
-    {
-        // Prepare for multi-process testing
-    }
-
-    void TearDown() override
-    {
-        // Cleanup any remaining worker processes
-        for (auto& worker : active_workers_) {
-            // Wait for or terminate worker
-            // TODO: Implement worker cleanup
-        }
-        active_workers_.clear();
-    }
-
-    /**
-     * @brief Spawns a worker process with the given configuration.
-     * @tparam Fn Worker function type (must return int)
-     * @param config Worker configuration
-     * @param worker_fn Worker function to execute (return 0 for success)
-     * @return WorkerResult with exit code and status
+     * @brief Spawns a single worker subprocess for a named scenario.
      *
-     * @note This is a placeholder. Actual implementation should integrate
-     *       with test_process_utils.h (TestProcess class) and worker dispatcher.
+     * @param scenario Worker mode string, e.g. "logger.basic_logging"
+     * @param args      Additional positional arguments passed after the scenario name
+     * @param redirect_stderr_to_console  If true, worker stderr appears in test output
+     * @return WorkerProcess handle (call wait_for_exit() or ExpectWorkerOk())
      */
-    template <typename Fn>
-    WorkerResult SpawnWorker(const WorkerConfig& config, Fn&& worker_fn)
+    helper::WorkerProcess SpawnWorker(const std::string &scenario,
+                                      std::vector<std::string> args = {},
+                                      bool redirect_stderr_to_console = false)
     {
-        WorkerResult result;
-        result.worker_name = config.worker_name;
-
-        // TODO: Implement actual worker spawning using TestProcess
-        // For now, this is a placeholder that calls the function in-process
-        // Real implementation should:
-        // 1. Fork/spawn independent process
-        // 2. Set up lifecycle if config.enable_lifecycle
-        // 3. Execute worker_fn in child process
-        // 4. Collect exit code and detect crashes
-        // 5. Return WorkerResult
-
-        try {
-            if (config.enable_lifecycle) {
-                // Create lifecycle guard for worker
-                pylabhub::utils::LifecycleGuard guard(
-                    pylabhub::utils::MakeModDefList(config.modules)
-                );
-                result.exit_code = worker_fn();
-            } else {
-                // No lifecycle
-                result.exit_code = worker_fn();
-            }
-        } catch (const std::exception& e) {
-            result.crashed = true;
-            result.exit_code = 1;
-            LOGGER_ERROR("[Worker:{}] Crashed with exception: {}",
-                        config.worker_name, e.what());
-        } catch (...) {
-            result.crashed = true;
-            result.exit_code = 1;
-            LOGGER_ERROR("[Worker:{}] Crashed with unknown exception",
-                        config.worker_name);
-        }
-
-        return result;
+        return helper::WorkerProcess(g_self_exe_path, scenario, args, redirect_stderr_to_console);
     }
 
-private:
-    std::vector<std::string> active_workers_;  ///< Track active worker processes
+    /**
+     * @brief Spawns multiple worker subprocesses simultaneously.
+     *
+     * Workers are launched concurrently (before any are waited on), making
+     * this suitable for IPC contention tests.
+     *
+     * std::list is used because WorkerProcess is neither copyable nor movable;
+     * list nodes are never relocated so emplace_back constructs in-place safely.
+     *
+     * @param scenarios List of (scenario, args) pairs
+     * @return List of WorkerProcess handles
+     */
+    std::list<helper::WorkerProcess>
+    SpawnWorkers(std::vector<std::pair<std::string, std::vector<std::string>>> scenarios,
+                 bool redirect_stderr_to_console = false)
+    {
+        std::list<helper::WorkerProcess> workers;
+        for (auto &[scenario, args] : scenarios)
+            workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console);
+        return workers;
+    }
+
+    /**
+     * @brief Waits for a worker and asserts it succeeded.
+     *
+     * @param proc                    Worker to wait on
+     * @param expected_stderr_substrings  Optional: strings that must appear in stderr
+     */
+    void ExpectWorkerOk(helper::WorkerProcess &proc,
+                        std::vector<std::string> expected_stderr_substrings = {})
+    {
+        proc.wait_for_exit();
+        helper::expect_worker_ok(proc, expected_stderr_substrings);
+    }
+
+    /**
+     * @brief Waits for all workers and asserts all succeeded.
+     */
+    void ExpectAllWorkersOk(std::list<helper::WorkerProcess> &workers)
+    {
+        for (auto &w : workers)
+        {
+            w.wait_for_exit();
+            helper::expect_worker_ok(w);
+        }
+    }
 };
 
 // ============================================================================
-// Helper: Determine Test Pattern from Test Class
+// Type trait: determine which pattern a test class uses
 // ============================================================================
 
-/**
- * @brief Type trait to determine which test pattern a test uses.
- */
-template <typename TestClass>
-struct test_pattern
+template <typename TestClass> struct test_pattern
 {
-    static constexpr bool is_pure_api =
-        std::is_base_of_v<PureApiTest, TestClass>;
-    static constexpr bool is_lifecycle_managed =
-        std::is_base_of_v<LifecycleManagedTest, TestClass>;
-    static constexpr bool is_multi_process =
-        std::is_base_of_v<MultiProcessTest, TestClass>;
+    static constexpr bool is_pure_api = std::is_base_of_v<PureApiTest, TestClass>;
+    static constexpr bool is_isolated = std::is_base_of_v<IsolatedProcessTest, TestClass>;
+    static constexpr bool is_in_process = !is_pure_api && !is_isolated;
 };
 
 } // namespace pylabhub::tests

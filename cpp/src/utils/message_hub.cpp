@@ -36,6 +36,7 @@ class MessageHubImpl
     std::string m_client_public_key_z85;
     std::string m_client_secret_key_z85;
     std::atomic<bool> m_is_connected{false};
+    mutable std::mutex m_socket_mutex; // For thread-safety
 
     MessageHubImpl() : m_context(1), m_socket(m_context, zmq::socket_type::dealer) {}
 };
@@ -57,8 +58,32 @@ MessageHub::~MessageHub()
 MessageHub::MessageHub(MessageHub &&other) noexcept = default;
 MessageHub &MessageHub::operator=(MessageHub &&other) noexcept = default;
 
+void MessageHub::disconnect()
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_socket_mutex);
+
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        return; // Already disconnected
+    }
+
+    try
+    {
+        pImpl->m_socket.close();
+        pImpl->m_is_connected.store(false, std::memory_order_release);
+        LOGGER_INFO("MessageHub: Disconnected from broker.");
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("MessageHub: Error during disconnect: {}", e.what());
+        pImpl->m_is_connected.store(false, std::memory_order_release);
+    }
+}
+
 bool MessageHub::connect(const std::string &endpoint, const std::string &server_key)
 {
+    std::lock_guard<std::mutex> lock(pImpl->m_socket_mutex); // Protect socket operations
+
     if (!pImpl->m_socket)
     { // operator bool() checks if the socket is valid
         pImpl->m_socket = zmq::socket_t(pImpl->m_context, zmq::socket_type::dealer);
@@ -115,54 +140,24 @@ bool MessageHub::connect(const std::string &endpoint, const std::string &server_
     return true;
 }
 
-void MessageHub::disconnect()
+std::optional<std::string> MessageHub::send_message(const std::string &message_type,
+                                                    const std::string &json_payload, int timeout_ms)
 {
-    if (pImpl->m_is_connected.load(std::memory_order_acquire))
-    {
-        try
-        {
-            LOGGER_WARN("MessageHub: Disconnecting. Unsent 'fire-and-forget' notifications may be "
-                        "discarded.");
-            pImpl->m_socket.set(zmq::sockopt::linger, 0); // Discard unsent messages immediately
-            pImpl->m_socket.close();
-            pImpl->m_is_connected.store(false, std::memory_order_release);
-            LOGGER_INFO("MessageHub: Disconnected from broker.");
-        }
-        catch (const zmq::error_t &e)
-        {
-            LOGGER_ERROR("MessageHub: Error during disconnect: {}", e.what());
-        }
-    }
-}
+    std::lock_guard<std::mutex> lock(pImpl->m_socket_mutex);
 
-bool MessageHub::send_request(const char *header, const nlohmann::json &payload,
-                              nlohmann::json &response, int timeout_ms)
-{
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
         LOGGER_ERROR("MessageHub: Not connected.");
-        return false;
-    }
-    // HEP-core-0002 §5.1: Frame 1 is 16 bytes. header must point to at least 16 valid bytes.
-    assert(header != nullptr && "header must not be null and must point to at least 16 valid bytes");
-    if (header == nullptr)
-    {
-        LOGGER_ERROR("MessageHub: header must not be null.");
-        return false;
+        return std::nullopt;
     }
 
     try
     {
-        std::vector<zmq::const_buffer> request_parts;
-        request_parts.emplace_back(header, 16);
-        std::vector<uint8_t> msgpack_payload = nlohmann::json::to_msgpack(payload);
-        request_parts.emplace_back(msgpack_payload.data(), msgpack_payload.size());
-
-        if (!zmq::send_multipart(pImpl->m_socket, request_parts))
-        {
-            LOGGER_ERROR("MessageHub: Failed to send request, socket not ready (EAGAIN).");
-            return false;
-        }
+        // First frame: message type
+        // Second frame: JSON payload
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(message_type),
+                                               zmq::buffer(json_payload)};
+        zmq::send_multipart(pImpl->m_socket, msgs);
 
         std::vector<zmq::pollitem_t> items = {{pImpl->m_socket, 0, ZMQ_POLLIN, 0}};
         zmq::poll(items, std::chrono::milliseconds(timeout_ms));
@@ -170,68 +165,157 @@ bool MessageHub::send_request(const char *header, const nlohmann::json &payload,
         if (!(items[0].revents & ZMQ_POLLIN))
         {
             LOGGER_ERROR("MessageHub: Timeout waiting for broker response ({}ms).", timeout_ms);
-            return false;
+            return std::nullopt;
         }
 
-        std::vector<zmq::message_t> response_parts;
-        auto result = zmq::recv_multipart(pImpl->m_socket, std::back_inserter(response_parts),
-                                          zmq::recv_flags::dontwait);
-
-        if (!result || *result < 2)
+        std::vector<zmq::message_t> recv_msgs;
+        auto recv_result =
+            zmq::recv_multipart(pImpl->m_socket, std::back_inserter(recv_msgs));
+        if (!recv_result)
         {
-            LOGGER_ERROR("MessageHub: Invalid response from broker: expected 2 parts, got {}.",
-                         result.value_or(0));
-            return false;
+            LOGGER_ERROR("MessageHub: recv_multipart failed.");
+            return std::nullopt;
         }
 
-        const auto &payload_part = response_parts.back();
-        response =
-            nlohmann::json::from_msgpack(payload_part.data<const uint8_t>(),
-                                         payload_part.data<const uint8_t>() + payload_part.size());
+        if (recv_msgs.size() < 2)
+        {
+            LOGGER_ERROR("MessageHub: Invalid response format: expected at least 2 frames, got {}.",
+                         recv_msgs.size());
+            return std::nullopt;
+        }
+
+        // We only care about the last frame as the actual response payload
+        return recv_msgs.back().to_string();
     }
     catch (const zmq::error_t &e)
     {
-        LOGGER_ERROR("MessageHub: 0MQ error during send_request: {}", e.what());
+        LOGGER_ERROR("MessageHub: 0MQ error during send_message: {}", e.what());
+        return std::nullopt;
+    }
+}
+
+std::optional<std::string> MessageHub::receive_message(int timeout_ms)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_socket_mutex);
+
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        // This is a passive receive, so no error log, just return nullopt
+        return std::nullopt;
+    }
+
+    try
+    {
+        std::vector<zmq::pollitem_t> items = {{pImpl->m_socket, 0, ZMQ_POLLIN, 0}};
+        zmq::poll(items, std::chrono::milliseconds(timeout_ms));
+
+        if (!(items[0].revents & ZMQ_POLLIN))
+        {
+            return std::nullopt; // Timeout or no message
+        }
+
+        std::vector<zmq::message_t> recv_msgs;
+        auto recv_result =
+            zmq::recv_multipart(pImpl->m_socket, std::back_inserter(recv_msgs));
+        if (!recv_result)
+        {
+            LOGGER_ERROR("MessageHub: recv_multipart failed.");
+            return std::nullopt;
+        }
+
+        if (recv_msgs.size() < 2)
+        {
+            LOGGER_ERROR(
+                "MessageHub: Invalid received message format: expected at least 2 frames, got {}.",
+                recv_msgs.size());
+            return std::nullopt;
+        }
+
+        // We only care about the last frame as the actual message payload
+        return recv_msgs.back().to_string();
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("MessageHub: 0MQ error during receive_message: {}", e.what());
+        return std::nullopt;
+    }
+}
+
+bool MessageHub::register_producer(const std::string &channel, const ProducerInfo &info)
+{
+    // Build JSON payload for registration
+    nlohmann::json request_payload;
+    request_payload["msg_type"] = "REG_REQ";
+    // ... add other fields from ProducerInfo to request_payload
+    request_payload["channel_name"] = channel;
+    request_payload["shm_name"] = info.shm_name;
+    request_payload["producer_pid"] = info.producer_pid;
+    request_payload["schema_hash"] = info.schema_hash;
+    request_payload["schema_version"] = info.schema_version;
+    // Add metadata based on DataBlockConfig if needed
+
+    std::optional<std::string> response_str = send_message("REG_REQ", request_payload.dump());
+
+    if (!response_str)
+    {
         return false;
     }
-    catch (const nlohmann::json::parse_error &e)
+
+    nlohmann::json response_json = nlohmann::json::parse(response_str.value());
+    if (response_json["status"] != "success")
     {
-        LOGGER_ERROR("MessageHub: Failed to parse response payload: {}", e.what());
+        LOGGER_ERROR("MessageHub: Producer registration failed: {}",
+                     response_json["message"].get<std::string>());
         return false;
     }
 
     return true;
 }
 
-bool MessageHub::send_notification(const char *header, const nlohmann::json &payload)
+std::optional<ConsumerInfo> MessageHub::discover_producer(const std::string &channel)
 {
-    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    // Build JSON payload for discovery
+    nlohmann::json request_payload;
+    request_payload["msg_type"] = "DISC_REQ";
+    request_payload["channel_name"] = channel;
+    // Add consumer_pid and secret_hash if available
+
+    std::optional<std::string> response_str = send_message("DISC_REQ", request_payload.dump());
+
+    if (!response_str)
     {
-        LOGGER_ERROR("MessageHub: Not connected.");
-        return false;
-    }
-    // HEP-core-0002 §5.1: Frame 1 is 16 bytes. header must point to at least 16 valid bytes.
-    assert(header != nullptr && "header must not be null and must point to at least 16 valid bytes");
-    if (header == nullptr)
-    {
-        LOGGER_ERROR("MessageHub: header must not be null.");
-        return false;
+        return std::nullopt;
     }
 
-    try
+    nlohmann::json response_json = nlohmann::json::parse(response_str.value());
+    if (response_json["status"] != "success")
     {
-        std::vector<zmq::const_buffer> request_parts;
-        request_parts.emplace_back(header, 16);
-        std::vector<uint8_t> msgpack_payload = nlohmann::json::to_msgpack(payload);
-        request_parts.emplace_back(msgpack_payload.data(), msgpack_payload.size());
+        LOGGER_ERROR("MessageHub: Producer discovery failed: {}",
+                     response_json["message"].get<std::string>());
+        return std::nullopt;
+    }
 
-        return zmq::send_multipart(pImpl->m_socket, request_parts).has_value();
-    }
-    catch (const zmq::error_t &e)
-    {
-        LOGGER_ERROR("MessageHub: 0MQ error during send_notification: {}", e.what());
-        return false;
-    }
+    ConsumerInfo consumer_info;
+    consumer_info.shm_name = response_json["shm_name"].get<std::string>();
+    consumer_info.schema_hash = response_json["schema_hash"].get<std::string>();
+    consumer_info.schema_version = response_json["schema_version"].get<uint32_t>();
+    // Extract other metadata if available
+
+    return consumer_info;
+}
+
+bool MessageHub::register_consumer(const std::string &channel, const ConsumerInfo &info)
+{
+    (void)channel;
+    (void)info;
+    // TODO: Send consumer registration to broker when protocol is defined.
+    return true;
+}
+
+MessageHub &MessageHub::get_instance()
+{
+    static MessageHub instance; // Guaranteed to be destroyed, instantiated on first use.
+    return instance;
 }
 
 // ============================================================================
