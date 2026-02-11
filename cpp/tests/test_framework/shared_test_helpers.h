@@ -1,6 +1,10 @@
 // tests/test_harness/shared_test_helpers.h
 #pragma once
 
+// Must be first: defines PYLABHUB_IS_POSIX before any platform-conditional includes.
+#include "plh_platform.hpp"
+
+#include <filesystem>
 namespace fs = std::filesystem;
 
 /**
@@ -25,6 +29,15 @@ typedef int ssize_t;
 #endif
 
 #include "gtest/gtest.h"
+
+// Required for run_gtest_worker: LifecycleGuard, PLH_DEBUG, print_stack_trace (Layer 2 umbrella)
+#include "plh_service.hpp"
+
+// Required for ThreadRacer
+#include <algorithm>
+#include <atomic>
+#include <exception>
+#include <thread>
 
 namespace pylabhub::tests::helper
 {
@@ -173,6 +186,13 @@ int scaled_value(int original, int small_value);
 template <typename Fn, typename... Mods>
 int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
 {
+    // Enable throw-on-failure so ASSERT_* and EXPECT_* throw on failure.
+    // Without this, ASSERT_* only returns from the lambda (not throws), and
+    // EXPECT_* prints to stderr but continues — both causing silent false-passes.
+    // GTest throws ::testing::internal::GoogleTestFailureException (base class of
+    // AssertionException) when throw_on_failure is set.
+    GTEST_FLAG_SET(throw_on_failure, true);
+
     pylabhub::utils::LifecycleGuard guard(
         pylabhub::utils::MakeModDefList(std::forward<Mods>(mods)...));
 
@@ -180,7 +200,7 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     {
         test_logic();
     }
-    catch (const ::testing::AssertionException &e)
+    catch (const ::testing::internal::GoogleTestFailureException &e)
     {
         PLH_DEBUG("[WORKER FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
         pylabhub::debug::print_stack_trace();
@@ -201,6 +221,139 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     return 0; // Success
 }
 
+/**
+ * @brief Wraps worker logic with NO lifecycle initialization.
+ *
+ * Use this when the worker itself needs to control lifecycle steps —
+ * e.g., testing pre-init state, staged initialization, or partial module loads.
+ * The test_logic lambda is responsible for calling LifecycleGuard / InitializeApp
+ * / FinalizeApp as needed.
+ *
+ * @param test_logic The lambda containing test assertions and manual lifecycle calls.
+ * @param test_name  Descriptive name for error messages.
+ * @return 0 on success, 1 GTest failure, 2 std::exception, 3 unknown exception.
+ */
+template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
+{
+    // Same throw_on_failure fix as run_gtest_worker: makes ASSERT_*/EXPECT_* throw.
+    GTEST_FLAG_SET(throw_on_failure, true);
+
+    try
+    {
+        test_logic();
+    }
+    catch (const ::testing::internal::GoogleTestFailureException &e)
+    {
+        PLH_DEBUG("[WORKER BARE FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
+        pylabhub::debug::print_stack_trace();
+        return 1;
+    }
+    catch (const std::exception &e)
+    {
+        PLH_DEBUG("[WORKER BARE FAILURE] {} threw an exception: {}", test_name, e.what());
+        pylabhub::debug::print_stack_trace();
+        return 2;
+    }
+    catch (...)
+    {
+        PLH_DEBUG("[WORKER BARE FAILURE] {} threw an unknown exception.", test_name);
+        pylabhub::debug::print_stack_trace();
+        return 3;
+    }
+    return 0;
+}
+
+// ============================================================================
+// ThreadRacer — concurrent test execution inside worker processes
+// ============================================================================
+
+/**
+ * @brief Runs N threads simultaneously to test concurrent behavior.
+ *
+ * All threads start at the same time (synchronized via a barrier).
+ * Any exception thrown by a thread is captured and re-thrown from race().
+ *
+ * Usage (inside a worker function):
+ * @code
+ *   ThreadRacer racer(8);
+ *   bool ok = racer.race([&](int thread_id) {
+ *       FileLock lock(path, ResourceType::File, LockMode::NonBlocking);
+ *       // ... assertions ...
+ *   });
+ *   if (!ok) {
+ *       for (auto& eptr : racer.exceptions()) {
+ *           try { std::rethrow_exception(eptr); }
+ *           catch (const std::exception& e) { PLH_DEBUG("Thread failed: {}", e.what()); }
+ *       }
+ *       return 1;
+ *   }
+ * @endcode
+ */
+class ThreadRacer
+{
+  public:
+    explicit ThreadRacer(int n_threads) : n_threads_(n_threads) {}
+
+    /**
+     * @brief Runs fn(thread_index) on n_threads simultaneously.
+     *
+     * All threads synchronize on a barrier before starting work, maximizing
+     * the chance of true concurrency and exposing race conditions.
+     *
+     * @return true if all threads completed without throwing, false otherwise.
+     */
+    template <typename F> bool race(F fn)
+    {
+        exceptions_.clear();
+        exceptions_.resize(static_cast<size_t>(n_threads_));
+
+        std::atomic<int> ready_count{0};
+        std::atomic<bool> start_flag{false};
+
+        std::vector<std::thread> threads;
+        threads.reserve(static_cast<size_t>(n_threads_));
+
+        for (int i = 0; i < n_threads_; ++i)
+        {
+            threads.emplace_back(
+                [&, i]()
+                {
+                    ready_count.fetch_add(1, std::memory_order_release);
+                    // Spin until all threads are ready
+                    while (!start_flag.load(std::memory_order_acquire))
+                        std::this_thread::yield();
+                    try
+                    {
+                        fn(i);
+                    }
+                    catch (...)
+                    {
+                        exceptions_[static_cast<size_t>(i)] = std::current_exception();
+                    }
+                });
+        }
+
+        // Wait until all threads are at the barrier
+        while (ready_count.load(std::memory_order_acquire) < n_threads_)
+            std::this_thread::yield();
+
+        // Release all threads simultaneously
+        start_flag.store(true, std::memory_order_release);
+
+        for (auto &t : threads)
+            t.join();
+
+        return std::all_of(exceptions_.begin(), exceptions_.end(),
+                           [](const std::exception_ptr &p) { return p == nullptr; });
+    }
+
+    const std::vector<std::exception_ptr> &exceptions() const { return exceptions_; }
+
+  private:
+    int n_threads_;
+    std::vector<std::exception_ptr> exceptions_;
+};
+
 // ============================================================================
 // DataBlock Test Utilities (for layered test architecture)
 // ============================================================================
@@ -210,14 +363,14 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
  * @param test_name Base name (e.g., "SchemaValidation")
  * @return Unique channel name (e.g., "test_SchemaValidation_1675960234567")
  */
-std::string make_test_channel_name(const char* test_name);
+std::string make_test_channel_name(const char *test_name);
 
 /**
  * @brief Cleans up shared memory DataBlock after test.
  * @param channel_name Channel name to clean up
  * @return True if cleanup succeeded
  */
-bool cleanup_test_datablock(const std::string& channel_name);
+bool cleanup_test_datablock(const std::string &channel_name);
 
 /**
  * @brief RAII guard for test DataBlock cleanup.
@@ -232,24 +385,22 @@ bool cleanup_test_datablock(const std::string& channel_name);
  */
 class DataBlockTestGuard
 {
-public:
-    explicit DataBlockTestGuard(const char* test_name)
+  public:
+    explicit DataBlockTestGuard(const char *test_name)
         : channel_name_(make_test_channel_name(test_name))
-    {}
-
-    ~DataBlockTestGuard()
     {
-        cleanup_test_datablock(channel_name_);
     }
 
-    const std::string& channel_name() const { return channel_name_; }
+    ~DataBlockTestGuard() { cleanup_test_datablock(channel_name_); }
 
-    DataBlockTestGuard(const DataBlockTestGuard&) = delete;
-    DataBlockTestGuard& operator=(const DataBlockTestGuard&) = delete;
-    DataBlockTestGuard(DataBlockTestGuard&&) = delete;
-    DataBlockTestGuard& operator=(DataBlockTestGuard&&) = delete;
+    const std::string &channel_name() const { return channel_name_; }
 
-private:
+    DataBlockTestGuard(const DataBlockTestGuard &) = delete;
+    DataBlockTestGuard &operator=(const DataBlockTestGuard &) = delete;
+    DataBlockTestGuard(DataBlockTestGuard &&) = delete;
+    DataBlockTestGuard &operator=(DataBlockTestGuard &&) = delete;
+
+  private:
     std::string channel_name_;
 };
 

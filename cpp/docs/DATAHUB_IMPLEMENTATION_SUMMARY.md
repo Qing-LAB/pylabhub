@@ -1,7 +1,7 @@
 # Data Exchange Hub - Implementation Setup Summary
 
-**Date:** 2026-02-09
-**Status:** Ready to Begin Implementation
+**Date:** 2026-02-10
+**Status:** In progress (Phase 0 partial, recovery/diagnostics building)
 
 ---
 
@@ -137,26 +137,7 @@ namespace pylabhub::utils {
 
 **Move from DataHub → Debug Info**:
 
-```cpp
-// BEFORE (scattered in acquisition functions)
-if (timeout_occurred) {
-    LOGGER_WARN("Potential deadlock detected");
-}
-
-// AFTER (in debug_info.cpp, reusable everywhere)
-namespace pylabhub::debug {
-    PYLABHUB_UTILS_EXPORT bool detect_potential_deadlock(
-        const char* resource_name,
-        uint64_t holder_pid,
-        uint64_t wait_duration_ms
-    );
-}
-```
-
-**Benefits**:
-- FileLock can use for deadlock detection
-- Lifecycle can use for module startup timeout detection
-- Logger can use for queue full detection
+Timeout reporting should live in the module where the timeout occurs (e.g. data_block, file_lock, message_hub), using the Logger module (e.g. LOGGER_WARN) so reporting is persistent and not compiled out. Do not add a generic timeout reporter in debug_info; debug_info is low-level and has no Logger dependency.
 
 ### Implementation Order
 
@@ -228,19 +209,22 @@ See **DATAHUB_TODO.md** Section "Phase 1: P9 Schema Validation"
 - Lifecycle management system
 - Logger with multiple sinks
 - FileLock (cross-platform)
-- Platform utilities (basic: get_pid, get_thread_id, get_version)
+- Platform utilities: get_pid, get_thread_id, get_version, **is_process_alive**, **monotonic_time_ns** (steady_clock)
 - Debug info (stack traces)
 - SharedMemoryHeader structure (with P9 fields)
 - SlotRWState structure
-- SharedSpinLock (basic implementation)
+- SharedSpinLock (basic implementation; uses platform::is_process_alive)
 - Transaction guards (API defined, partial implementation)
-- P8 Recovery API (defined, partial implementation)
+- **Slot RW C API** (slot_rw_acquire_write/commit/release_write, acquire_read/validate_read/release_read, metrics; optional header)
+- **DataBlock diagnostic API** (DataBlockDiagnosticHandle, open_datablock_for_diagnostic)
+- P8 Recovery API (defined; recovery/diagnostics modules in build; datablock_validate_integrity, force_reset, release_zombie_* wired)
+- MessageHub (connect, send_message, receive_message, get_instance; recv_multipart return checked)
 
 ### ⚠️ Partially Implemented
 
-- DataBlock (skeleton exists, needs completion)
-- MessageHub (skeleton exists, needs completion)
-- SlotRWCoordinator (header exists, implementation incomplete)
+- DataBlock (core exists; factory/consumer paths in use)
+- MessageHub (register_consumer stub; broker discovery)
+- SlotRWCoordinator (C API in use; C++ wrappers in slot_rw_access.hpp)
 
 ### ❌ Not Yet Implemented
 
