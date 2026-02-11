@@ -14,8 +14,11 @@
  * @file debug_info.hpp
  * @brief Stack trace, panic handling, and debug messaging utilities.
  */
+#include "pylabhub_utils_export.h"
 #include "utils/format_tools.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <fmt/format.h>
 #include <source_location>

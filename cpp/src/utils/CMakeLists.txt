@@ -34,13 +34,11 @@ set(UTILS_SOURCES
   data_block.cpp
   data_block_mutex.cpp
   data_block_spinlock.cpp
-  # Temporarily excluded: P10/P11 recovery features (incomplete implementation)
-  # Will be re-enabled when recovery APIs are implemented
-  # data_block_recovery.cpp
-  # slot_diagnostics.cpp
-  # slot_recovery.cpp
-  # heartbeat_manager.cpp
-  # integrity_validator.cpp
+  data_block_recovery.cpp
+  slot_diagnostics.cpp
+  slot_recovery.cpp
+  heartbeat_manager.cpp
+  integrity_validator.cpp
   # Add any new .cpp files for this library to the list above.
 )
 

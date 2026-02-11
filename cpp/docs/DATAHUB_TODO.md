@@ -1,7 +1,17 @@
 # Data Exchange Hub - Implementation TODO
 
-**Last Updated:** 2026-02-09
+**Last Updated:** 2026-02-10
 **Priority Legend:** 🔴 Critical | 🟡 High | 🟢 Medium | 🔵 Low
+
+---
+
+## Recent completions (2026-02-10)
+
+- **Platform shm_***: `ShmHandle`, `shm_create()`, `shm_attach()`, `shm_close()`, `shm_unlink()` in `plh_platform.hpp`/`platform.cpp`. `data_block.cpp` and `open_datablock_for_diagnostic` refactored to use them.
+- **Platform**: `pylabhub::platform::is_process_alive(uint64_t)` and `monotonic_time_ns()` in place; `SharedSpinLock::is_process_alive()` removed; callers use platform. `monotonic_time_ns()` uses `std::chrono::steady_clock`.
+- **Slot RW C API**: Full C API in `data_block.cpp` (`slot_rw_acquire_write`, `slot_rw_commit`, `slot_rw_release_write`, `slot_rw_acquire_read`, `slot_rw_validate_read`, `slot_rw_release_read`, metrics/reset) with optional `SharedMemoryHeader*` for metrics.
+- **Recovery/diagnostics**: CMake re-enabled `data_block_recovery`, `slot_diagnostics`, `slot_recovery`, `heartbeat_manager`, `integrity_validator`. Public `DataBlockDiagnosticHandle` and `open_datablock_for_diagnostic()`; recovery uses them instead of internal `DataBlock`. `datablock_validate_integrity` and related calls fixed (MessageHub reference, `shared_secret` uint64_t, RecoveryResult logging).
+- **MessageHub**: `zmq::recv_multipart` return value checked to fix `-Wunused-result`.
 
 ---
 
@@ -18,6 +28,34 @@
 
 ---
 
+## Cross-Platform and Behavioral Consistency
+
+**Principle:** All DataHub behavior must be **consistent across platforms** (Windows, Linux, macOS, FreeBSD). Platform-specific code belongs only in the platform layer; higher layers use a single, documented semantics.
+
+### Rules
+
+1. **Single abstraction layer**
+   - Use `pylabhub::platform::*` for: PID, thread ID, monotonic time, process liveness, shared memory.
+   - Use `plh_platform.hpp` macros: `PYLABHUB_PLATFORM_WIN64`, `PYLABHUB_IS_POSIX`, `PYLABHUB_PLATFORM_APPLE`, etc.
+   - No direct `#ifdef _WIN32` or `#ifdef __linux__` in DataBlock, SlotRWCoordinator, or recovery code.
+
+2. **Identical semantics**
+   - Timeouts: always milliseconds; same meaning on all platforms.
+   - PID 0: always "not alive" everywhere.
+   - Error codes (e.g. `SlotAcquireResult`): same numeric values and meaning on all platforms.
+   - Memory ordering: use `std::memory_order_acquire` / `release` (and seq_cst where required) so behavior is correct on both x86 and ARM.
+
+3. **Document platform quirks**
+   - Where behavior differs by OS (e.g. POSIX `kill(pid,0)` EPERM → "alive"), document in platform implementation and keep semantics stable at the API boundary (e.g. "alive" vs "not alive" is consistent).
+
+4. **Testing**
+   - Run the same unit and integration tests on all supported platforms; avoid platform-only code paths that skip tests.
+
+5. **Clocks**
+   - Use `std::chrono::steady_clock` (or platform `monotonic_time_ns()`) for timeouts and elapsed time so behavior is monotonic and consistent across platforms.
+
+---
+
 ## Phase 0: Code Refactoring and Service Integration
 
 ### 🔴 PRIORITY 0.1: Refactor Helper Functions to Service Modules
@@ -26,59 +64,51 @@
 
 #### Platform Service Enhancements (`src/utils/platform.cpp`)
 
-- [ ] **Move PID liveness check** from `SharedSpinLock::is_process_alive()` to `pylabhub::platform::is_process_alive(uint64_t pid)`
-  - Current: In `datablock_spinlock.cpp`
-  - Target: `platform.cpp` (more general utility)
+- [x] **Move PID liveness check** from `SharedSpinLock::is_process_alive()` to `pylabhub::platform::is_process_alive(uint64_t pid)` (✅ 2026-02-10)
+  - Done: In `platform.cpp`; `SharedSpinLock::is_process_alive()` removed; callers use platform.
   - Signature: `PYLABHUB_UTILS_EXPORT bool pylabhub::platform::is_process_alive(uint64_t pid);`
   - Benefits: Reusable by FileLock, other IPC modules
 
-- [ ] **Move monotonic timestamp** from anonymous namespace to platform utilities
-  - Current: `now_ns()` in `data_block.cpp`
-  - Target: `pylabhub::platform::monotonic_time_ns()`
+- [x] **Move monotonic timestamp** from anonymous namespace to platform utilities (✅ 2026-02-10)
+  - Done: `pylabhub::platform::monotonic_time_ns()` in `platform.cpp` using `std::chrono::steady_clock`.
   - Signature: `PYLABHUB_UTILS_EXPORT uint64_t pylabhub::platform::monotonic_time_ns();`
   - Benefits: Consistent timestamp source across modules
 
-- [ ] **Add platform-specific shared memory utilities** to platform module
-  - `shm_create()`, `shm_open()`, `shm_unlink()` wrappers
-  - Current: Scattered in `data_block.cpp`
-  - Target: `pylabhub::platform::shm_*` family
-  - Benefits: Centralized platform abstraction
+- [x] **Add platform-specific shared memory utilities** (✅ 2026-02-10)
+  - Done: `pylabhub::platform::ShmHandle`, `shm_create()`, `shm_attach()`, `shm_close()`, `shm_unlink()` in `plh_platform.hpp` and `platform.cpp`. `data_block.cpp` and `open_datablock_for_diagnostic` refactored to use them.
+  - Optional follow-up: `data_block_mutex.cpp` uses POSIX-specific `O_EXCL` and retry logic; could be adapted to use platform API if needed.
 
 #### Debug Info Enhancements (`src/utils/debug_info.cpp`)
 
-- [ ] **Add deadlock detector helper**
-  - Current: Timeout logic scattered in acquisition functions
-  - Target: `pylabhub::debug::detect_potential_deadlock()`
-  - Use case: Detect hung locks, readers, spinlocks
-  - Benefits: Reusable across all synchronization primitives
+- [x] **Timeout visibility: metrics, not per-event log** (✅ 2026-02-10)
+  - Done: Timeouts are not logged per event (individual timeouts add little diagnostic value; log should report serious issues or aggregate/context useful for diagnosis). Writer and reader timeout counts are already updated in `SharedMemoryHeader` (`writer_timeout_count`, `reader_timeout_count`). Operators and health checks can use these metrics; if accumulated timeouts run high, then investigate (e.g. recovery/diagnostics, logs from other layers).
 
-- [ ] **Add memory corruption detector**
-  - Current: Magic number checks in `data_block.cpp`
-  - Target: `pylabhub::debug::validate_magic_number()`
-  - Benefits: Reusable for other shared memory structures
+- [x] **Magic number validation in data_block module** (✅ 2026-02-10)
+  - Done: `pylabhub::hub::detail::DATABLOCK_MAGIC_NUMBER` and `detail::is_header_magic_valid(magic_ptr, expected)` inline in `data_block.hpp`. Kept in the module that uses it; not in debug_info.
 
 #### Crypto Utilities Module (NEW)
 
-- [ ] **Create `src/utils/crypto_utils.cpp`** for cryptographic primitives
-  - Move `compute_blake2b()` from anonymous namespace
-  - Move `verify_blake2b()` from anonymous namespace
-  - Add `generate_random_secret()` for shared secret generation
+- [x] **Create `src/utils/crypto_utils.cpp`** (✅ already implemented)
+  - Done: `compute_blake2b()`, `verify_blake2b()`, `generate_random_bytes()`, `generate_shared_secret()` in `crypto_utils.cpp`; used by `data_block.cpp`.
   - Benefits: Single point for libsodium initialization, reusable checksums
 
-- [ ] **Add header `src/include/utils/crypto_utils.hpp`**
-  - Export: `compute_blake2b()`, `verify_blake2b()`, `generate_random_bytes()`
-  - Integrate with lifecycle (libsodium init on startup)
+- [x] **Add header `src/include/utils/crypto_utils.hpp`** (✅ already implemented)
+  - Done: Exports above; `GetLifecycleModule()` for libsodium init on startup (used by tests and schema validation).
 
 #### Backoff Strategy Module (NEW)
 
-- [ ] **Create `src/include/utils/backoff_strategy.hpp`** (header-only)
-  - Move `backoff(int iteration)` from anonymous namespace
-  - Add configurable strategies: `ExponentialBackoff`, `ConstantBackoff`, `NoBackoff`
-  - Benefits: Reusable for all spin loops (FileLock, SharedSpinLock, SlotRWState)
+- [x] **Create `src/include/utils/backoff_strategy.hpp`** (✅ already implemented)
+  - Done: Header-only with `ExponentialBackoff`, `ConstantBackoff`, `NoBackoff`, `AggressiveBackoff`, and `backoff(iteration)`.
+  - Used by: `data_block.cpp` (pylabhub::utils::backoff), `data_block_spinlock.cpp` (ExponentialBackoff).
+  - Benefits: Reusable for all spin loops (FileLock could adopt later)
 
-**Estimated Effort**: 2-3 days
-**Dependencies**: None (can be done in parallel with other tasks)
+**Status (2026-02-10)**: Phase 0 platform refactoring complete. `shm_*` API in place; `data_block.cpp`, `open_datablock_for_diagnostic`, and `data_block_mutex.cpp` all use platform shm_* API.
 **Testing**: Unit tests for each new utility function
+
+#### DataBlockMutex Follow-ups ( revisit when integrating into DataHub )
+
+- [ ] **pthread_mutex_destroy**: Intentionally omitted. Mutex lives in shm; when segment is released (shm_close/unlink), memory is reclaimed—no leak. Calling destroy is unsafe: which process is "last" is unpredictable; destroy while another holds the lock is UB. See `data_block_mutex.cpp` destructor comment.
+- [ ] **Constructor exception behavior**: Revisit when integrating DataBlockMutex into DataHub. Current design throws on failure (shm_create, pthread_init, etc.). Consider factory returning `std::optional` or `std::expected` if callers prefer non-throwing API or if embedded as member in DataBlock.
 
 ---
 
@@ -86,30 +116,17 @@
 
 ### 🔴 PRIORITY 1.1: BLDS Schema Generation
 
-- [ ] **Define BLDS grammar and type ID mapping**
-  - File: `src/include/utils/schema_blds.hpp`
-  - Implement: Type ID mapping (f32, f64, i8-i64, u8-u64, arrays, nested structs)
-  - Implement: Canonical BLDS string generation
+- [x] **Define BLDS grammar and type ID mapping** (✅ already in `schema_blds.hpp`)
+  - Done: Type ID mapping (f32, f64, i8-i64, u8-u64, arrays, nested structs), canonical BLDS string via `BLDSTypeID`, `BLDSBuilder`.
 
-- [ ] **Implement schema registration macros**
-  - `PYLABHUB_SCHEMA_BEGIN(StructName)`
-  - `PYLABHUB_SCHEMA_MEMBER(member_name)`
-  - `PYLABHUB_SCHEMA_END()`
-  - Use: Compile-time reflection to generate BLDS string
+- [x] **Implement schema registration macros** (✅ already in `schema_blds.hpp`)
+  - Done: `PYLABHUB_SCHEMA_BEGIN`, `PYLABHUB_SCHEMA_MEMBER`, `PYLABHUB_SCHEMA_END` with compile-time reflection.
 
-- [ ] **Implement `SchemaInfo` struct**
-  ```cpp
-  struct SchemaInfo {
-      std::string name;          // "SensorHub.SensorData"
-      std::string blds;          // "timestamp_ns:u64;temperature:f32;..."
-      std::array<uint8_t, 32> hash; // BLAKE2b-256
-      SchemaVersion version;     // {major, minor, patch}
-  };
-  ```
+- [x] **Implement `SchemaInfo` struct** (✅ already in `schema_blds.hpp`)
+  - Done: `SchemaInfo` with name, blds, hash (32 bytes), version, struct_size; `compute_hash()`, `matches()`, `matches_hash()`.
 
-- [ ] **Implement hash computation**
-  - Use BLAKE2b-256 from libsodium (via new crypto_utils module)
-  - Personalization string: `"PYLABHUB_SCHEMA_V1"`
+- [x] **Implement hash computation** (✅ already implemented)
+  - Done: `SchemaInfo::compute_hash()` uses `pylabhub::crypto::compute_blake2b_array(blds)` (crypto_utils module). Personalization can be added later if needed for domain separation.
 
 **Estimated Effort**: 2 days
 **Dependencies**: Phase 0 (crypto_utils module)
@@ -117,27 +134,17 @@
 
 ### 🔴 PRIORITY 1.2: Producer Schema Registration
 
-- [ ] **Update `SharedMemoryHeader`** to include schema fields
-  - Already done: `schema_hash[32]`, `schema_version`
-  - Verify: Padding calculation is correct
+- [x] **Update `SharedMemoryHeader`** (✅ already has `schema_hash[32]`, `schema_version`)
+  - Padding/layout used by `get_shared_memory_header_schema_info()` and header layout hash.
 
-- [ ] **Update `create_datablock_producer()` overload with schema**
-  ```cpp
-  template <typename Schema>
-  std::unique_ptr<DataBlockProducer>
-  create_datablock_producer(MessageHub& hub, const std::string& name,
-                            DataBlockPolicy policy, const DataBlockConfig& config,
-                            const Schema& schema_instance);
-  ```
+- [x] **Update `create_datablock_producer()` overload with schema** (✅ already in `data_block.hpp/cpp`)
+  - Done: Template overload and `create_datablock_producer_impl(..., schema_info)`; hash stored in header.
 
-- [ ] **Compute and store schema hash in header**
-  - Generate BLDS from `Schema` type
-  - Compute BLAKE2b-256 hash
-  - Store in `SharedMemoryHeader::schema_hash`
+- [x] **Compute and store schema hash in header** (✅ already implemented)
+  - Done: BLDS from schema, BLAKE2b-256 via `SchemaInfo::compute_hash()`, stored in `SharedMemoryHeader::schema_hash`.
 
-- [ ] **Include schema in broker registration**
-  - Update `REG_REQ` message format to include `schema_hash`, `schema_version`, `schema_name`
-  - Update `MessageHub::register_producer()` to accept schema info
+- [x] **Include schema in broker registration** (✅ already in `message_hub.cpp` / producer info)
+  - Done: Producer info includes `schema_hash`; `REG_REQ`/registration carries schema info.
 
 **Estimated Effort**: 1 day
 **Dependencies**: Priority 1.1 (BLDS implementation)
@@ -145,32 +152,16 @@
 
 ### 🔴 PRIORITY 1.3: Consumer Schema Validation
 
-- [ ] **Update `find_datablock_consumer()` overload with schema**
-  ```cpp
-  template <typename Schema>
-  std::unique_ptr<DataBlockConsumer>
-  find_datablock_consumer(MessageHub& hub, const std::string& name,
-                          uint64_t shared_secret,
-                          const DataBlockConfig& expected_config,
-                          const Schema& schema_instance);
-  ```
+- [x] **Update `find_datablock_consumer()` overload with schema** (✅ already in `data_block.hpp/cpp`)
+  - Done: Template overload and `find_datablock_consumer_impl(..., schema_info)`.
 
-- [ ] **Implement schema validation flow**
-  1. Discover producer via broker (retrieve `schema_hash` from `DISC_RESP`)
-  2. Compute expected hash from local `Schema` type
-  3. Compare hashes (strict equality check)
-  4. Attach to shared memory
-  5. Verify hash in `SharedMemoryHeader` matches
+- [x] **Implement schema validation flow** (✅ in `find_datablock_consumer_impl`)
+  - Done: Discover producer, compare header `schema_hash` with expected from local Schema; attach and verify hash in header.
 
-- [ ] **Throw `SchemaValidationException` on mismatch**
-  ```cpp
-  class SchemaValidationException : public std::runtime_error {
-      std::array<uint8_t, 32> expected_hash;
-      std::array<uint8_t, 32> actual_hash;
-  };
-  ```
+- [x] **Throw `SchemaValidationException` on mismatch** (✅ in `schema_blds.hpp`)
+  - Done: `SchemaValidationException` with expected_hash, actual_hash; `validate_schema_match` / `validate_schema_hash`.
 
-- [ ] **Update metrics**: Increment `SharedMemoryHeader::schema_mismatch_count` on failure
+- [x] **Update metrics**: Increment `SharedMemoryHeader::schema_mismatch_count` on failure (✅ 2026-02-10)
 
 **Estimated Effort**: 1 day
 **Dependencies**: Priority 1.2 (producer registration)
