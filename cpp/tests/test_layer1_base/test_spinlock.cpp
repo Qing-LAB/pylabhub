@@ -76,6 +76,7 @@ TEST(InProcessSpinStateTest, RaiiAndTokenPersistence)
         ASSERT_TRUE(g.holds_lock());
         ASSERT_TRUE(state.is_locked());
     }
+    ASSERT_NE(token_in_scope, 0u);
     ASSERT_FALSE(state.is_locked());
 }
 
@@ -101,7 +102,7 @@ TEST(InProcessSpinStateTest, RaiiAcquireFailure)
         ASSERT_FALSE(g.try_lock(state, 1)); // short timeout
     }
     ASSERT_TRUE(state.is_locked());
-    g_locker.release();
+    (void)g_locker.release();
     ASSERT_FALSE(state.is_locked());
 }
 
@@ -132,7 +133,7 @@ TEST(InProcessSpinStateTest, ConcurrentAcquireStress)
                         success_count.fetch_add(1, std::memory_order_relaxed);
                         if ((rng() & 0xF) == 0)
                             std::this_thread::sleep_for(std::chrono::microseconds(rng() & 0xFF));
-                        g.release();
+                        (void)g.release();
                     }
                 }
             });
@@ -206,7 +207,14 @@ TEST(InProcessSpinStateTest, SelfMoveAssignmentAndDetachedMove)
         InProcessSpinStateGuard e(state);
         ASSERT_TRUE(e.holds_lock());
         uint64_t token_e = e.token();
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
         e = std::move(e); // self-move
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
         ASSERT_TRUE(e.holds_lock());
         ASSERT_EQ(e.token(), token_e);
         ASSERT_TRUE(state.is_locked());
@@ -218,7 +226,14 @@ TEST(InProcessSpinStateTest, SelfMoveAssignmentAndDetachedMove)
         InProcessSpinStateGuard f;
         ASSERT_FALSE(f.holds_lock());
         uint64_t token_f = f.token();
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
         f = std::move(f); // self-move
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
         ASSERT_FALSE(f.holds_lock());
         ASSERT_EQ(f.token(), token_f);
     }
@@ -245,7 +260,7 @@ TEST(InProcessSpinStateTest, DetachThenTryLockReuse)
     // Reuse: try_lock again (same or another state) works
     ASSERT_TRUE(g.try_lock(state, 10));
     ASSERT_TRUE(g.holds_lock());
-    g.release();
+    (void)g.release();
     ASSERT_FALSE(state.is_locked());
 }
 
@@ -304,7 +319,7 @@ TEST(InProcessSpinStateTest, ConcurrentMoveAssignmentStress)
     for (auto &s : slots)
     {
         if (s.holds_lock())
-            s.release();
+            (void)s.release();
     }
     ASSERT_FALSE(state.is_locked());
 }
@@ -347,7 +362,7 @@ TEST(InProcessSpinStateTest, TransferBetweenThreads_SingleHandoff)
                 if (!g.holds_lock())
                     thread_failure.store(true, std::memory_order_relaxed);
                 else
-                    g.release();
+                    (void)g.release();
             }
             catch (...)
             {
@@ -413,7 +428,7 @@ TEST(InProcessSpinStateTest, TransferBetweenThreads_HeavyHandoff)
                     if (!moved.holds_lock())
                         thread_failure.store(true, std::memory_order_relaxed);
                     else
-                        moved.release();
+                        (void)moved.release();
                     local_consumer.join();
                 }
             });
@@ -464,7 +479,7 @@ TEST(InProcessSpinStateTest, ManyConcurrentProducerConsumerPairs)
                 {
                     InProcessSpinStateGuard g = fut.get();
                     if (g.holds_lock())
-                        g.release();
+                        (void)g.release();
                 }
                 catch (...)
                 {
@@ -477,7 +492,7 @@ TEST(InProcessSpinStateTest, ManyConcurrentProducerConsumerPairs)
     for (int t = 0; t < pairs; ++t)
     {
         producers.emplace_back(
-            [&, t]()
+            [&]()
             {
                 for (int i = 0; i < iters; ++i)
                 {
