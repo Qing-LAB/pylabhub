@@ -3,9 +3,17 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
+#include "utils/logger.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
+#include <cstdint>
 #include <cstring>
+#include <chrono>
+#include <thread>
+
+#if PYLABHUB_IS_POSIX
+#include <unistd.h>
+#endif
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -61,6 +69,219 @@ int write_read_succeeds_in_process()
         "write_read_succeeds_in_process", logger_module(), crypto_module(), hub_module());
 }
 
+// Structured data through slot: write POD, commit, consumer reads same struct
+struct SlotPayload
+{
+    uint64_t id;
+    uint32_t value;
+};
+
+int structured_slot_data_passes()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SlotProtocolStructured");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 44444;
+            config.ring_buffer_capacity = 2;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            SlotPayload written{1001, 42};
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+            EXPECT_TRUE(write_handle->write(&written, sizeof(written)));
+            EXPECT_TRUE(write_handle->commit(sizeof(written)));
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+            auto consume_handle = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(consume_handle, nullptr);
+            SlotPayload read{};
+            EXPECT_TRUE(consume_handle->read(&read, sizeof(read)));
+            EXPECT_EQ(read.id, written.id);
+            EXPECT_EQ(read.value, written.value);
+
+            consume_handle.reset();
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "structured_slot_data_passes", logger_module(), crypto_module(), hub_module());
+}
+
+int ring_buffer_iteration_content_verified()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SlotProtocolRingIter");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            constexpr uint32_t kRingCapacity = 4;
+            DataBlockConfig config{};
+            config.shared_secret = 66666;
+            config.ring_buffer_capacity = kRingCapacity;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Interleave write/read: commit_index is "last committed"; consumer reads one per commit.
+            // So we must write one, read one, etc. to verify each ring unit.
+            for (uint32_t i = 0; i < kRingCapacity; ++i)
+            {
+                SlotPayload written{static_cast<uint64_t>(i), i * 10u};
+                auto write_handle = producer->acquire_write_slot(5000);
+                ASSERT_NE(write_handle, nullptr) << "acquire_write_slot failed at iteration " << i;
+                EXPECT_TRUE(write_handle->write(&written, sizeof(written)));
+                EXPECT_TRUE(write_handle->commit(sizeof(written)));
+                EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+                auto consume_handle = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(consume_handle, nullptr) << "acquire_consume_slot failed at iteration " << i;
+                SlotPayload read{};
+                EXPECT_TRUE(consume_handle->read(&read, sizeof(read)));
+                EXPECT_EQ(read.id, static_cast<uint64_t>(i))
+                    << "ring unit " << i << ": id mismatch (expected " << i << ", got " << read.id << ")";
+                EXPECT_EQ(read.value, i * 10u)
+                    << "ring unit " << i << ": value mismatch (expected " << (i * 10u) << ", got " << read.value << ")";
+                consume_handle.reset();
+            }
+            LOGGER_INFO("{}", "[SlotTest:Producer] lap1 wrote 4 units ok");
+            LOGGER_INFO("{}", "[SlotTest:Consumer] lap1 read 4 units ok");
+
+            // Lap2 (wrap-around): reuse physical slots 0..3 for logical slots 4..7
+            for (uint32_t i = 0; i < kRingCapacity; ++i)
+            {
+                uint32_t logical = kRingCapacity + i;
+                SlotPayload written{static_cast<uint64_t>(logical), logical * 10u};
+                auto write_handle = producer->acquire_write_slot(5000);
+                ASSERT_NE(write_handle, nullptr) << "wrap lap acquire_write_slot at " << i;
+                EXPECT_TRUE(write_handle->write(&written, sizeof(written)));
+                EXPECT_TRUE(write_handle->commit(sizeof(written)));
+                EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+                auto consume_handle = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(consume_handle, nullptr) << "wrap lap acquire_consume_slot at " << i;
+                SlotPayload read{};
+                EXPECT_TRUE(consume_handle->read(&read, sizeof(read)));
+                EXPECT_EQ(read.id, static_cast<uint64_t>(logical))
+                    << "lap2 ring unit " << i << ": id mismatch";
+                EXPECT_EQ(read.value, logical * 10u)
+                    << "lap2 ring unit " << i << ": value mismatch";
+                consume_handle.reset();
+            }
+            LOGGER_INFO("{}", "[SlotTest:Producer] lap2 wrote 4 units ok");
+            LOGGER_INFO("{}", "[SlotTest:Consumer] lap2 read 4 units ok");
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "ring_buffer_iteration_content_verified", logger_module(), crypto_module(), hub_module());
+}
+
+int writer_blocks_on_reader_then_unblocks()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SlotProtocolContention");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            // Single slot so writer and reader contend for the same slot (writer waits for reader_count to drain)
+            constexpr uint32_t kRingCapacity = 1;
+            DataBlockConfig config{};
+            config.shared_secret = 77777;
+            config.ring_buffer_capacity = kRingCapacity;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // First frame: producer writes and commits so consumer can acquire
+            SlotPayload first{1, 10};
+            {
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                LOGGER_INFO("{}", "[SlotTest:Producer] first write acquired");
+                EXPECT_TRUE(wh->write(&first, sizeof(first)));
+                EXPECT_TRUE(wh->commit(sizeof(first)));
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+                LOGGER_INFO("{}", "[SlotTest:Producer] first write committed, released");
+            }
+
+            std::atomic<bool> writer_timed_out{false};
+            std::atomic<bool> writer_succeeded_after_release{false};
+            std::unique_ptr<SlotConsumeHandle> reader_handle;
+
+            std::thread reader_thread([&]() {
+                reader_handle = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(reader_handle.get(), nullptr);
+                LOGGER_INFO("{}", "[SlotTest:Consumer] acquired consume, holding");
+                // Hold the read lock long enough for writer to try and timeout
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                reader_handle.reset();
+                LOGGER_INFO("{}", "[SlotTest:Consumer] released");
+            });
+
+            std::thread writer_thread([&]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Let reader acquire first
+                // Writer wants same slot (ring size 1); reader still holds -> must timeout
+                auto wh = producer->acquire_write_slot(200);
+                writer_timed_out.store(wh == nullptr, std::memory_order_release);
+                if (wh)
+                {
+                    producer->release_write_slot(*wh);
+                }
+                else
+                {
+                    LOGGER_INFO("{}", "[SlotTest:Producer] acquire_write(100) timeout (reader holds)");
+                }
+                // Wait for reader to release, then acquire (reader releases at ~500ms)
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                wh = producer->acquire_write_slot(5000);
+                writer_succeeded_after_release.store(wh != nullptr, std::memory_order_release);
+                if (wh)
+                {
+                    LOGGER_INFO("{}", "[SlotTest:Producer] acquire_write(2000) ok after reader released");
+                    SlotPayload second{2, 20};
+                    wh->write(&second, sizeof(second));
+                    wh->commit(sizeof(second));
+                    producer->release_write_slot(*wh);
+                    LOGGER_INFO("{}", "[SlotTest:Producer] second write committed");
+                }
+            });
+
+            reader_thread.join();
+            writer_thread.join();
+
+            EXPECT_TRUE(writer_timed_out.load(std::memory_order_acquire))
+                << "Writer should timeout when reader holds slot (blocking/spin behavior)";
+            EXPECT_TRUE(writer_succeeded_after_release.load(std::memory_order_acquire))
+                << "Writer should acquire after reader releases (unblocking behavior)";
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "writer_blocks_on_reader_then_unblocks", logger_module(), crypto_module(), hub_module());
+}
+
 int checksum_update_verify_succeeds()
 {
     return run_gtest_worker(
@@ -73,7 +294,7 @@ int checksum_update_verify_succeeds()
             config.ring_buffer_capacity = 2;
             config.unit_block_size = DataBlockUnitSize::Size4K;
             config.enable_checksum = true;
-            config.checksum_policy = ChecksumPolicy::EnforceOnRelease;
+            config.checksum_policy = ChecksumPolicy::Enforced;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -89,7 +310,7 @@ int checksum_update_verify_succeeds()
             ASSERT_NE(write_handle, nullptr);
             EXPECT_TRUE(write_handle->write(payload, payload_len));
             EXPECT_TRUE(write_handle->commit(payload_len));
-            EXPECT_TRUE(producer->release_write_slot(*write_handle)); // EnforceOnRelease updates checksum in release
+            EXPECT_TRUE(producer->release_write_slot(*write_handle)); // Enforced policy updates checksum in release
 
             auto consume_handle = consumer->acquire_consume_slot(5000);
             ASSERT_NE(consume_handle, nullptr);
@@ -118,7 +339,7 @@ int layout_with_checksum_and_flexible_zone_succeeds()
             config.ring_buffer_capacity = 4;
             config.unit_block_size = DataBlockUnitSize::Size4K;
             config.enable_checksum = true;
-            config.checksum_policy = ChecksumPolicy::EnforceOnRelease;
+            config.checksum_policy = ChecksumPolicy::Enforced;
             config.flexible_zone_configs.push_back({"zone0", 128, -1});
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -149,6 +370,90 @@ int layout_with_checksum_and_flexible_zone_succeeds()
         },
         "layout_with_checksum_and_flexible_zone_succeeds", logger_module(), crypto_module(),
         hub_module());
+}
+
+// Canonical payload for cross-process data exchange (verifies offset, format, both processes see same data)
+static constexpr uint64_t kCrossProcessExpectedId = 0xCAFEBABEULL;
+static constexpr uint32_t kCrossProcessExpectedValue = 0xDEAD;
+
+int cross_process_writer(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        fmt::print(stderr, "ERROR: cross_process_writer requires channel as argv[2]\n");
+        return 1;
+    }
+    std::string channel(argv[2]);
+    return run_gtest_worker(
+        [&channel]()
+        {
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 55555;
+            config.ring_buffer_capacity = 2;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+
+            SlotPayload written{kCrossProcessExpectedId, kCrossProcessExpectedValue};
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+            LOGGER_INFO("{}", "[SlotTest:Producer] cross-process write acquired");
+            EXPECT_TRUE(write_handle->write(&written, sizeof(written)));
+            EXPECT_TRUE(write_handle->commit(sizeof(written)));
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+            LOGGER_INFO("{}", "[SlotTest:Producer] cross-process write committed ok");
+
+            write_handle.reset();
+            // Keep producer alive so shm persists until reader attaches; sleep then exit
+            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+            producer.reset();
+            // Do NOT cleanup: reader process will clean up
+        },
+        "cross_process_writer", logger_module(), crypto_module(), hub_module());
+}
+
+int cross_process_reader(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        fmt::print(stderr, "ERROR: cross_process_reader requires channel as argv[2]\n");
+        return 1;
+    }
+    std::string channel(argv[2]);
+    return run_gtest_worker(
+        [&channel]()
+        {
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 55555;
+            config.ring_buffer_capacity = 2;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Let writer create and write
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+            LOGGER_INFO("{}", "[SlotTest:Consumer] cross-process read acquired");
+
+            auto consume_handle = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(consume_handle, nullptr);
+            SlotPayload read{};
+            EXPECT_TRUE(consume_handle->read(&read, sizeof(read)));
+            EXPECT_EQ(read.id, kCrossProcessExpectedId)
+                << "cross-process data exchange: id mismatch (offset/format error)";
+            EXPECT_EQ(read.value, kCrossProcessExpectedValue)
+                << "cross-process data exchange: value mismatch (offset/format error)";
+            LOGGER_INFO("[SlotTest:Consumer] cross-process read ok id={} value={}", read.id, read.value);
+
+            consume_handle.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "cross_process_reader", logger_module(), crypto_module(), hub_module());
 }
 
 int diagnostic_handle_opens_and_accesses_header()
@@ -184,6 +489,355 @@ int diagnostic_handle_opens_and_accesses_header()
         "diagnostic_handle_opens_and_accesses_header", logger_module(), crypto_module(), hub_module());
 }
 
+int high_contention_wrap_around()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SlotProtocolHighContention");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            // Ring capacity 1: reader holds the only slot; writer blocks until reader releases
+            constexpr uint32_t kRingCapacity = 1;
+            DataBlockConfig config{};
+            config.shared_secret = 88888;
+            config.ring_buffer_capacity = kRingCapacity;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Write one slot so consumer has something to read
+            SlotPayload p0{0, 0};
+            auto wh0 = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh0, nullptr);
+            EXPECT_TRUE(wh0->write(&p0, sizeof(p0)));
+            EXPECT_TRUE(wh0->commit(sizeof(p0)));
+            EXPECT_TRUE(producer->release_write_slot(*wh0));
+            LOGGER_INFO("{}", "[SlotTest:Producer] slot 0 written, writer will block until reader drains");
+
+            std::atomic<bool> writer_blocked{false};
+            std::atomic<bool> writer_unblocked{false};
+
+            std::thread reader([&]() {
+                auto h = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(h.get(), nullptr);
+                LOGGER_INFO("{}", "[SlotTest:Consumer] R1 acquired slot 0, holding");
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                h.reset();
+                LOGGER_INFO("{}", "[SlotTest:Consumer] R1 released");
+            });
+            std::thread writer([&]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Let reader acquire first
+                auto wh = producer->acquire_write_slot(300);
+                if (!wh)
+                {
+                    writer_blocked.store(true, std::memory_order_release);
+                    LOGGER_INFO("{}", "[SlotTest:Producer] writer blocked (ring full, readers hold)");
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(400)); // Wait for reader to release
+                wh = producer->acquire_write_slot(5000);
+                writer_unblocked.store(wh != nullptr, std::memory_order_release);
+                if (wh)
+                {
+                    LOGGER_INFO("{}", "[SlotTest:Producer] writer unblocked after R1 released");
+                    SlotPayload p1{1, 1};
+                    wh->write(&p1, sizeof(p1));
+                    wh->commit(sizeof(p1));
+                    producer->release_write_slot(*wh);
+                }
+            });
+
+            reader.join();
+            writer.join();
+
+            EXPECT_TRUE(writer_blocked.load(std::memory_order_acquire))
+                << "Writer should block when ring full and readers hold";
+            EXPECT_TRUE(writer_unblocked.load(std::memory_order_acquire))
+                << "Writer should unblock after readers drain";
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "high_contention_wrap_around", logger_module(), crypto_module(), hub_module());
+}
+
+int zombie_writer_acquire_then_exit(int argc, char **argv)
+{
+#if !PYLABHUB_IS_POSIX
+    (void)argc;
+    (void)argv;
+    fmt::print(stderr, "Zombie writer test only supported on POSIX\n");
+    return 1;
+#else
+    if (argc < 3)
+    {
+        fmt::print(stderr, "ERROR: zombie_writer_acquire_then_exit requires channel as argv[2]\n");
+        return 1;
+    }
+    std::string channel(argv[2]);
+    int r = run_gtest_worker(
+        [&channel]()
+        {
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99999;
+            config.ring_buffer_capacity = 1; // Single slot so same physical slot reused
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh.get(), nullptr);
+            SlotPayload p{1, 1};
+            wh->write(&p, sizeof(p));
+            wh->commit(sizeof(p));
+            // Do NOT release; exit without destructors so write_lock stays held
+            _exit(0);
+        },
+        "zombie_writer_acquire_then_exit", logger_module(), crypto_module(), hub_module());
+    (void)r;
+    return 0; // _exit never returns
+#endif
+}
+
+int zombie_writer_reclaimer(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        fmt::print(stderr, "ERROR: zombie_writer_reclaimer requires channel as argv[2]\n");
+        return 1;
+    }
+    std::string channel(argv[2]);
+    return run_gtest_worker(
+        [&channel]()
+        {
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99999;
+            config.ring_buffer_capacity = 1;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Let zombie exit
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            // Should succeed via force reclaim (is_process_alive(zombie_pid)==false)
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh.get(), nullptr) << "Reclaimer should acquire after zombie exit (force reclaim)";
+            LOGGER_INFO("{}", "[SlotTest:Producer] zombie writer reclaimed, write ok");
+            SlotPayload p{2, 2};
+            wh->write(&p, sizeof(p));
+            wh->commit(sizeof(p));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+            producer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "zombie_writer_reclaimer", logger_module(), crypto_module(), hub_module());
+}
+
+int policy_latest_only()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicyLatestOnly");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99991;
+            config.ring_buffer_capacity = 4;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Write two slots; consumer sees only "latest" (slot 1)
+            for (uint64_t i = 0; i < 2; ++i)
+            {
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                EXPECT_TRUE(wh->write(&i, sizeof(i)));
+                EXPECT_TRUE(wh->commit(sizeof(i)));
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+            }
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            EXPECT_EQ(ch->slot_id(), 1u) << "Latest_only: consumer gets latest committed slot";
+            uint64_t v = 0;
+            EXPECT_TRUE(ch->read(&v, sizeof(v)));
+            EXPECT_EQ(v, 1u);
+            ch.reset();
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "policy_latest_only", logger_module(), crypto_module(), hub_module());
+}
+
+int policy_single_reader()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicySingleReader");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99992;
+            config.ring_buffer_capacity = 4;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Write 0,1,2; consumer must read in order 0, 1, 2
+            for (uint64_t i = 0; i < 3; ++i)
+            {
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                EXPECT_TRUE(wh->write(&i, sizeof(i)));
+                EXPECT_TRUE(wh->commit(sizeof(i)));
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+            }
+            for (uint64_t expected = 0; expected < 3; ++expected)
+            {
+                auto ch = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(ch, nullptr) << "Single_reader: acquire slot " << expected;
+                EXPECT_EQ(ch->slot_id(), expected) << "Single_reader: read in order";
+                uint64_t v = 0;
+                EXPECT_TRUE(ch->read(&v, sizeof(v)));
+                EXPECT_EQ(v, expected);
+                ch.reset();
+            }
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "policy_single_reader", logger_module(), crypto_module(), hub_module());
+}
+
+int policy_sync_reader()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicySyncReader");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99993;
+            config.ring_buffer_capacity = 4;
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Sync_reader;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Sync_reader: consumer registers (via first acquire), then reads in order
+            int slot = consumer->register_heartbeat();
+            ASSERT_GE(slot, 0) << "Sync_reader: need heartbeat slot";
+
+            for (uint64_t i = 0; i < 3; ++i)
+            {
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                EXPECT_TRUE(wh->write(&i, sizeof(i)));
+                EXPECT_TRUE(wh->commit(sizeof(i)));
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+            }
+            for (uint64_t expected = 0; expected < 3; ++expected)
+            {
+                auto ch = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(ch, nullptr) << "Sync_reader: acquire slot " << expected;
+                EXPECT_EQ(ch->slot_id(), expected) << "Sync_reader: read in order";
+                uint64_t v = 0;
+                EXPECT_TRUE(ch->read(&v, sizeof(v)));
+                EXPECT_EQ(v, expected);
+                ch.reset();
+            }
+            consumer->unregister_heartbeat(slot);
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "policy_sync_reader", logger_module(), crypto_module(), hub_module());
+}
+
+int high_load_single_reader()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicySingleReaderHighLoad");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 99994;
+            config.ring_buffer_capacity = 4; // small ring to force frequent wrap-around
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            // Use scaled iterations so we can run longer in local dev and shorter in CI.
+            int iterations = scaled_value(50000, 5000);
+            uint64_t expected = 0;
+
+            for (int i = 0; i < iterations; ++i)
+            {
+                // Producer: write monotonic sequence number
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                uint64_t value = static_cast<uint64_t>(i);
+                EXPECT_TRUE(wh->write(&value, sizeof(value)));
+                EXPECT_TRUE(wh->commit(sizeof(value)));
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+
+                // Consumer: must see slots strictly in order 0,1,2,...
+                auto ch = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(ch, nullptr) << "high_load_single_reader: acquire slot " << expected;
+                EXPECT_EQ(ch->slot_id(), expected)
+                    << "high_load_single_reader: slot_id sequence broken under load";
+                uint64_t read_val = 0;
+                EXPECT_TRUE(ch->read(&read_val, sizeof(read_val)));
+                EXPECT_EQ(read_val, expected)
+                    << "high_load_single_reader: payload mismatch under load";
+                ch.reset();
+                ++expected;
+            }
+
+            fmt::print(stderr, "[SlotTest:HighLoadSingleReader] ok iterations={}\n", iterations);
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "high_load_single_reader", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::slot_protocol
 
 namespace
@@ -205,12 +859,36 @@ struct SlotProtocolWorkerRegistrar
                 using namespace pylabhub::tests::worker::slot_protocol;
                 if (scenario == "write_read")
                     return write_read_succeeds_in_process();
+                if (scenario == "structured_slot_data_passes")
+                    return structured_slot_data_passes();
                 if (scenario == "checksum")
                     return checksum_update_verify_succeeds();
                 if (scenario == "layout_smoke")
                     return layout_with_checksum_and_flexible_zone_succeeds();
+                if (scenario == "ring_buffer_iteration")
+                    return ring_buffer_iteration_content_verified();
+                if (scenario == "writer_blocks_on_reader_then_unblocks")
+                    return writer_blocks_on_reader_then_unblocks();
                 if (scenario == "diagnostic_handle")
                     return diagnostic_handle_opens_and_accesses_header();
+                if (scenario == "cross_process_writer")
+                    return cross_process_writer(argc, argv);
+                if (scenario == "cross_process_reader")
+                    return cross_process_reader(argc, argv);
+                if (scenario == "high_contention_wrap_around")
+                    return high_contention_wrap_around();
+                if (scenario == "zombie_writer_acquire_then_exit")
+                    return zombie_writer_acquire_then_exit(argc, argv);
+                if (scenario == "zombie_writer_reclaimer")
+                    return zombie_writer_reclaimer(argc, argv);
+                if (scenario == "policy_latest_only")
+                    return policy_latest_only();
+                if (scenario == "policy_single_reader")
+                    return policy_single_reader();
+                if (scenario == "policy_sync_reader")
+                    return policy_sync_reader();
+                if (scenario == "high_load_single_reader")
+                    return high_load_single_reader();
                 fmt::print(stderr, "ERROR: Unknown slot_protocol scenario '{}'\n", scenario);
                 return 1;
             });

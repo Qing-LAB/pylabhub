@@ -64,6 +64,8 @@ inline constexpr size_t SLOT_CHECKSUM_ENTRY_SIZE = 33; // 32 hash + 1 valid byte
 inline constexpr size_t HEADER_LAYOUT_HASH_OFFSET = 0;
 /** Size in bytes of the header layout hash (BLAKE2b-256). */
 inline constexpr size_t HEADER_LAYOUT_HASH_SIZE = 32;
+/** Offset in reserved_header[] for Sync_reader per-consumer next-read slot ids (8 * uint64_t). */
+inline constexpr size_t CONSUMER_READ_POSITIONS_OFFSET = 64;
 
 /** DataBlock shared memory header magic number ('PLHB'). */
 inline constexpr uint32_t DATABLOCK_MAGIC_NUMBER = 0x504C4842;
@@ -164,23 +166,39 @@ enum class DataBlockPolicy
 };
 
 /**
-
  * @enum ChecksumPolicy
-
- * @brief Defines checksum enforcement behavior when checksums are enabled.
-
+ * @brief When checksums are enabled (enable_checksum), who runs update/verify and when.
+ *
+ * - None: No checksum enforcement (update/verify are no-ops or optional).
+ * - Manual: Caller must call update_checksum_* and verify_checksum_* explicitly.
+ *   Slot becomes visible to consumers on commit().
+ * - Enforced: System automatically updates checksum on release_write_slot and
+ *   verifies on release_consume_slot. Slot becomes visible only after release
+ *   (after checksum is stored). Use this when you want integrity without manual calls.
  */
-
 enum class ChecksumPolicy
-
 {
+    None,    // No checksum enforcement
+    Manual,  // User calls update/verify explicitly; slot visible on commit()
+    Enforced // Automatic update on write release, verify on consume release
+};
 
-    None, // No checksum enforcement
-
-    Explicit, // User explicitly calls update/verify primitives
-
-    EnforceOnRelease // Enforce update/verify at slot release
-
+/**
+ * @enum ConsumerSyncPolicy
+ * @brief How the reader(s) advance and when the writer may overwrite slots.
+ *
+ * - Latest_only: Reader only follows the latest committed slot; older slots may be
+ *   overwritten. No per-consumer or global read_index; writer never blocks on readers.
+ * - Single_reader: One consumer only. One shared read_index (tail); consumer reads in
+ *   order; writer blocks when (write_index - read_index) >= capacity. Simplest ordered mode.
+ * - Sync_reader: Multiple consumers. Per-consumer positions; read_index = min(positions).
+ *   Iterator blocks until slowest reader has consumed; writer blocks when ring full.
+ */
+enum class ConsumerSyncPolicy
+{
+    Latest_only,  // Reader follows latest committed only; writer can overwrite
+    Single_reader,// One consumer, one read_index; read in order; writer blocks when full
+    Sync_reader   // Multi-consumer; read_index = min(positions); writer blocks when full
 };
 
 /**
@@ -223,9 +241,11 @@ struct DataBlockConfig
 
     DataBlockPolicy policy;
 
+    ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+
     bool enable_checksum = false; // BLAKE2b checksums in control zone (flexible zone + slots)
 
-    ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
+    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
 
     std::vector<FlexibleZoneConfig> flexible_zone_configs;
 
@@ -285,12 +305,13 @@ struct alignas(4096) SharedMemoryHeader
     uint8_t padding_sec[28];   // Align to cache line
 
     // === Ring Buffer Configuration ===
-    DataBlockPolicy policy;         // Single/DoubleBuffer/RingBuffer
-    uint32_t unit_block_size;       // Bytes per slot (power of 2)
-    uint32_t ring_buffer_capacity;  // Number of slots
+    DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
+    ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
+    uint32_t unit_block_size;             // Bytes per slot (power of 2)
+    uint32_t ring_buffer_capacity;        // Number of slots
     size_t flexible_zone_size;      // Total TABLE 1 size
     bool enable_checksum;           // BLAKE2b checksums enabled
-    ChecksumPolicy checksum_policy; // Manual or Enforced
+    ChecksumPolicy checksum_policy;
 
     // === Ring Buffer State (Hot Path) ===
     std::atomic<uint64_t> write_index;  // Next slot to write (producer)
@@ -579,7 +600,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @brief Release a previously acquired slot.
      * @return true on success. Returns false if:
      *   - handle is invalid (default-constructed or moved-from)
-     *   - checksum update failed (when ChecksumPolicy::EnforceOnRelease and enable_checksum;
+     *   - checksum update failed (when ChecksumPolicy::Enforced and enable_checksum);
      *     slot was committed but BLAKE2b update failed)
      * Idempotent: calling again on an already-released handle returns true.
      */
@@ -601,6 +622,13 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 /**
  * @class DataBlockConsumer
  * @brief Consumer handle for a DataBlock. ABI-stable via pImpl.
+ *
+ * @par Thread Safety
+ * DataBlockConsumer is **not** thread-safe. Do not call acquire_consume_slot(),
+ * acquire_consume_slot(slot_id), release_consume_slot(), slot_iterator(), or other
+ * methods that mutate internal state from more than one thread concurrently.
+ * Use a single consumer thread, or create one DataBlockConsumer per thread with
+ * explicit coordination for slot distribution. See docs/testing/TEST_PROCESS_SYNC_DESIGN.md.
  */
 class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 {
@@ -647,7 +675,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 
     // ─── Primitive Data Transfer API ───
     /** Acquire the next slot for reading; returns nullptr on timeout.
-     * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle). */
+     * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle).
+     * @note Single-threaded: do not call from multiple threads on the same consumer instance. */
     std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = 0);
     /** Acquire a specific slot by ID for reading; returns nullptr on timeout or if slot not
      * available. */

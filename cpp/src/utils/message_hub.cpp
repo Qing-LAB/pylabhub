@@ -185,7 +185,7 @@ std::optional<std::string> MessageHub::send_message(const std::string &message_t
 
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
-        LOGGER_ERROR("MessageHub: Not connected.");
+        LOGGER_WARN("MessageHub: Not connected.");
         return std::nullopt;
     }
 
@@ -299,11 +299,22 @@ bool MessageHub::register_producer(const std::string &channel, const ProducerInf
         return false;
     }
 
-    nlohmann::json response_json = nlohmann::json::parse(response_str.value());
-    if (response_json["status"] != "success")
+    nlohmann::json response_json;
+    try
     {
-        LOGGER_ERROR("MessageHub: Producer registration failed: {}",
-                     response_json["message"].get<std::string>());
+        response_json = nlohmann::json::parse(response_str.value());
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("MessageHub: Producer registration response parse failed: {}", e.what());
+        return false;
+    }
+    if (!response_json.contains("status") || response_json["status"] != "success")
+    {
+        std::string msg = (response_json.contains("message") && response_json["message"].is_string())
+                              ? response_json["message"].get<std::string>()
+                              : "unknown";
+        LOGGER_ERROR("MessageHub: Producer registration failed: {}", msg);
         return false;
     }
 
@@ -325,11 +336,29 @@ std::optional<ConsumerInfo> MessageHub::discover_producer(const std::string &cha
         return std::nullopt;
     }
 
-    nlohmann::json response_json = nlohmann::json::parse(response_str.value());
-    if (response_json["status"] != "success")
+    nlohmann::json response_json;
+    try
     {
-        LOGGER_ERROR("MessageHub: Producer discovery failed: {}",
-                     response_json["message"].get<std::string>());
+        response_json = nlohmann::json::parse(response_str.value());
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("MessageHub: Producer discovery response parse failed: {}", e.what());
+        return std::nullopt;
+    }
+    if (!response_json.contains("status") || response_json["status"] != "success")
+    {
+        std::string msg = (response_json.contains("message") && response_json["message"].is_string())
+                              ? response_json["message"].get<std::string>()
+                              : "unknown";
+        LOGGER_ERROR("MessageHub: Producer discovery failed: {}", msg);
+        return std::nullopt;
+    }
+    if (!response_json.contains("shm_name") || !response_json["shm_name"].is_string() ||
+        !response_json.contains("schema_hash") || !response_json["schema_hash"].is_string() ||
+        !response_json.contains("schema_version") || !response_json["schema_version"].is_number_unsigned())
+    {
+        LOGGER_ERROR("MessageHub: Producer discovery response missing required fields (shm_name, schema_hash, schema_version)");
         return std::nullopt;
     }
 

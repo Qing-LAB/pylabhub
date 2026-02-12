@@ -35,7 +35,7 @@ int main() {
     config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K; // 4KB per slot
     config.ring_buffer_capacity = 2; // Double buffer for stable writes
     config.enable_checksum = true;
-    config.checksum_policy = pylabhub::hub::ChecksumPolicy::EnforceOnRelease;
+    config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
 
     std::unique_ptr<pylabhub::hub::DataBlockProducer> producer;
     try {

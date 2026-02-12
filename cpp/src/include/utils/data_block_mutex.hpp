@@ -69,6 +69,15 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
     void lock();
 
     /**
+     * @brief Tries to acquire the mutex within a timeout.
+     * @param timeout_ms Maximum wait in milliseconds (0 = try once, no wait).
+     * @return true if the mutex was acquired (including after EOWNERDEAD/WAIT_ABANDONED recovery),
+     *         false if the timeout expired without acquiring.
+     * @throws std::runtime_error on other errors (invalid state, etc.).
+     */
+    bool try_lock_for(int timeout_ms);
+
+    /**
      * @brief Releases the mutex.
      */
     void unlock();
