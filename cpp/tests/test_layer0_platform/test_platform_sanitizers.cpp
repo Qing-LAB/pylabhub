@@ -16,8 +16,8 @@
 #include <limits>
 #include <thread>
 
-// Accept any exit code; we only care about stderr content
-static bool any_exit(int) { return true; }
+// Accept any exit code; we only care about stderr content (used by EXPECT_EXIT in sanitizer tests)
+__attribute__((unused)) static bool any_exit(int) { return true; }
 
 // ============================================================================
 // ThreadSanitizer (TSan) Tests

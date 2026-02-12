@@ -253,13 +253,13 @@ TEST(RecursionGuardTest, MaxDepthPanics)
 {
     int key = 0;
     EXPECT_DEATH(
-        {
+        ([&key]() {
             std::array<std::unique_ptr<RecursionGuard>, pylabhub::basics::kMaxRecursionDepth + 1>
                 guards;
             for (size_t i = 0; i <= pylabhub::basics::kMaxRecursionDepth; ++i)
             {
                 guards[i] = std::make_unique<RecursionGuard>(&key);
             }
-        },
+        }()),
         "max recursion depth");
 }
