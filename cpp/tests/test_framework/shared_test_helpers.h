@@ -355,6 +355,17 @@ class ThreadRacer
 };
 
 // ============================================================================
+// Process Ready Signal (for deterministic parent-child init ordering)
+// ============================================================================
+
+/**
+ * @brief Signals "ready" to the parent when PLH_TEST_READY_FD (POSIX) or
+ * PLH_TEST_READY_HANDLE (Windows) is set. No-op if not set. Call from worker
+ * after init is complete; parent blocks on wait_for_ready() until then.
+ */
+void signal_test_ready();
+
+// ============================================================================
 // DataBlock Test Utilities (for layered test architecture)
 // ============================================================================
 

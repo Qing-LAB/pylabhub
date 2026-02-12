@@ -102,8 +102,9 @@ Tests should be layered so that protocol and correctness are assured before addi
    - Optional: diagnostic handle open and header/slot_rw_state access.
 
 3. **Phase C – MessageHub and broker**  
-   - MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors).  
-   - With broker: register_producer, discover_producer, then full create/find and one write/read.
+   - **Include tests for MessageHub and broker.** MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors).  
+   - With broker: register_producer, discover_producer, then full create/find and one write/read.  
+   - **Reevaluate existing MessageHub test code:** There may already be a MessageHub-related test or worker (e.g. `test_layer3_datahub/workers/messagehub_workers.cpp`); it may be based on outdated code or only cover lifecycle. When implementing Phase C, reevaluate and update or replace as needed so tests match current MessageHub API and broker contract.
 
 4. **Phase D – Concurrency and multi-process**  
    - Concurrent readers; writer timeout; TOCTTOU and wrap-around; zombie reclaim; DataBlockMutex.
@@ -179,6 +180,26 @@ Tests should be layered so that protocol and correctness are assured before addi
   - Extract receive path into a shared helper; add `[[nodiscard]]` and optional timeout parameter for register_* / discover_* if needed.  
   - Document the exact broker contract (message types, JSON keys, success/error shape) in one place (e.g. HEP or a short protocol doc) so tests and broker impl stay in sync.  
   - Once broker protocol for consumer registration is defined, implement `register_consumer` and add tests that use it.
+
+---
+
+## Current test coverage (Layer 3 DataHub)
+
+**Last updated:** 2026-02-11. All listed tests are in `test_layer3_datahub` (single executable); workers run as isolated subprocesses.
+
+| Plan area | Covered | Tests / workers |
+|-----------|---------|-----------------|
+| **Part 0 (foundations)** | Yes | Platform shm (test_platform_shm), SharedSpinLock (test_shared_memory_spinlock), Platform/Backoff/Crypto/Lifecycle in layer 0/2. |
+| **Phase A – Protocol/API** | Yes | test_phase_a_protocol + phase_a_workers: flexible_zone empty/non-empty, checksum false/true, consumer no config / with config, structured flex zone data, error flex_zone type too large, checksum tampering. test_schema_validation: match / mismatch. |
+| **Phase B – Slot protocol** | Yes | test_slot_protocol + slot_protocol_workers: write_read, structured_slot_data_passes, checksum update/verify, layout (checksum+flex zone), ring_buffer_iteration, writer_blocks_on_reader_then_unblocks, cross_process writer/reader, diagnostic_handle. Logger markers ([SlotTest:Producer], [SlotTest:Consumer]) and count_lines(must_include, must_exclude) used to verify producer/consumer outcome before MessageHub/broker. |
+| **Error handling** | Yes | test_error_handling + error_handling_workers: acquire timeout, wrong secret, invalid handle release, write/commit/read bounds, double release, iterator try_next timeout. |
+| **Recovery/diagnostics** | Smoke | test_recovery_api + recovery_workers: is_process_alive, integrity_validator, slot_diagnostics, slot_recovery, heartbeat_manager. |
+| **Schema BLDS** | Yes | test_schema_blds (in-process + workers): types, builder, version, SchemaInfo, validate match/hash. |
+| **Phase C – MessageHub + broker** | No | Not implemented. Existing `workers/messagehub_workers.cpp` is lifecycle-only; must be reevaluated when adding Phase C tests. |
+| **Phase D – Concurrency / multi-process** | No | Not implemented. |
+| **Recovery scenario** | No | **Deferred.** Recovery policy (what to recover vs fail, protocol) needs definition first; see DATAHUB_TODO “Recovery (deferred)”. Zombie reclaim, corrupted block, stuck slot left for later. |
+
+**Gaps:** Phase C (MessageHub + broker; reevaluate existing messagehub_workers), Phase D (concurrency/multi-process), recovery scenario tests (deferred). Optional: DataBlockConfig ordering, header layout hash ABI mismatch (P2).
 
 ---
 
