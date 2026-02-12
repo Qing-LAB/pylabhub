@@ -1,13 +1,21 @@
-| Property       | Value                                        |
-| -------------- | -------------------------------------------- |
-| **HEP**        | `core-0003`                                  |
-| **Title**      | Cross-Platform RAII File Locking (FileLock)  |
-| **Author**     | Quan Qing, AI assistant                      |
-| **Status**     | Draft                                        |
-| **Category**   | Core                                         |
-| **Created**    | 2026-01-30                                   |
-| **Updated**    | 2026-02-06                                   |
-| **C++-Standard** | C++20                                        |
+| Property         | Value                                          |
+| ---------------- | ---------------------------------------------- |
+| **HEP**          | `HEP-CORE-0003`                                |
+| **Title**        | Cross-Platform RAII File Locking (FileLock)    |
+| **Author**       | Quan Qing, AI assistant                        |
+| **Status**       | Implementation Ready                           |
+| **Category**     | Core                                           |
+| **Created**      | 2026-01-30                                     |
+| **Updated**      | 2026-02-12                                     |
+| **C++-Standard** | C++20                                           |
+
+---
+
+## Implementation status
+
+All described APIs are implemented in `src/include/utils/file_lock.hpp` and `src/utils/file_lock.cpp`. Two-layer locking (intra-process registry + OS `flock`/`LockFileEx`), RAII, `try_lock` returning `std::optional<FileLock>`, and timeout constructors are in use. For current plan and priorities, see `docs/DATAHUB_TODO.md`.
+
+---
 
 ## Abstract
 
@@ -136,19 +144,21 @@ classDiagram
 
 ### FileLock Class
 
-| Method | Description |
-|--------|-------------|
-| `GetLifecycleModule()` | ModuleDef for LifecycleManager |
-| `lifecycle_initialized()` | Check if module is initialized |
-| `get_expected_lock_fullname_for(path, type)` | Predict canonical lock file path |
-| `FileLock(path, type, mode)` | Construct and acquire; Blocking or NonBlocking |
-| `FileLock(path, type, timeout)` | Construct and acquire with timeout |
-| `try_lock(path, type, mode)` | Factory; returns `optional<FileLock>` |
-| `try_lock(path, type, timeout)` | Factory with timeout |
-| `valid()` | True if lock is held |
-| `error_code()` | Error from failed acquisition |
-| `get_locked_resource_path()` | Path of protected resource |
-| `get_canonical_lock_file_path()` | Canonical path of `.lock` file |
+| Method | Signature / return | Description |
+|--------|--------------------|-------------|
+| `GetLifecycleModule` | `static ModuleDef GetLifecycleModule()` | ModuleDef for LifecycleManager |
+| `lifecycle_initialized` | `static bool lifecycle_initialized() noexcept` | True if FileLock module is initialized |
+| `get_expected_lock_fullname_for` | `static path get_expected_lock_fullname_for(path, ResourceType) noexcept` | Predict canonical lock file path; empty path on failure |
+| `FileLock(path, type, mode)` | `explicit FileLock(path, ResourceType, LockMode = Blocking) noexcept` | Construct and acquire; Blocking or NonBlocking |
+| `FileLock(path, type, timeout)` | `explicit FileLock(path, ResourceType, chrono::milliseconds) noexcept` | Construct and acquire with timeout |
+| `try_lock` | `static optional<FileLock> try_lock(path, type, mode) noexcept` | Factory; returns optional with valid lock or nullopt |
+| `try_lock` | `static optional<FileLock> try_lock(path, type, timeout) noexcept` | Factory with timeout |
+| `valid` | `bool valid() const noexcept` | True if lock is held |
+| `error_code` | `std::error_code error_code() const noexcept` | Error from failed acquisition; empty if valid |
+| `get_locked_resource_path` | `optional<path> get_locked_resource_path() const noexcept` | Path of protected resource if valid; else empty optional |
+| `get_canonical_lock_file_path` | `optional<path> get_canonical_lock_file_path() const noexcept` | Canonical path of `.lock` file if valid; else empty optional |
+
+**Move semantics:** `FileLock` is movable (transfer of ownership); copy is deleted.
 
 ---
 

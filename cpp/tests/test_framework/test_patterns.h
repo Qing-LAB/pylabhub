@@ -178,12 +178,15 @@ class IsolatedProcessTest : public ::testing::Test
      *
      * @param proc                    Worker to wait on
      * @param expected_stderr_substrings  Optional: strings that must appear in stderr
+     * @param allow_expected_logger_errors If true, do not assert absence of "ERROR" in stderr
+     *        (for tests that intentionally trigger ERROR-level logs, e.g. timeout paths).
      */
     void ExpectWorkerOk(helper::WorkerProcess &proc,
-                        std::vector<std::string> expected_stderr_substrings = {})
+                        std::vector<std::string> expected_stderr_substrings = {},
+                        bool allow_expected_logger_errors = false)
     {
         proc.wait_for_exit();
-        helper::expect_worker_ok(proc, expected_stderr_substrings);
+        helper::expect_worker_ok(proc, expected_stderr_substrings, allow_expected_logger_errors);
     }
 
     /**

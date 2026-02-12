@@ -81,25 +81,17 @@ This review examined the actual implementation of all PyLabHub modules to:
 
 ### Implementation Analysis
 
-#### 1. AtomicGuard (Header-only: `utils/atomic_guard.hpp`)
+#### 1. InProcessSpinState + SpinGuard (Header-only: `utils/in_process_spin_state.hpp`)
 
-**Design Pattern**: Stateless guard with authoritative state in AtomicOwner
+**Design Pattern**: State owner (InProcessSpinState) + move-only guard (SpinGuard) with token-based ownership. Replaces former AtomicGuard.
 
-✅ **Key features verified**:
-- Token-based ownership (non-zero `uint64_t`, 0 = free)
-- Move-only semantics (no copy)
-- Stateless guard (queries owner for truth)
-- Debug mode concurrent access detection (`access_flag_`)
+✅ **Key features verified** (see `test_layer1_base/test_spinlock.cpp`, suite `InProcessSpinStateTest`):
+- Token-based ownership (non-zero token, 0 = free); token generated per guard
+- Move-only semantics (no copy); handoff between threads
+- Guard holds state pointer + token; release/detach behavior
+- Concurrent acquire stress, move-assignment stress, transfer between threads
 
-**Memory ordering**:
-- `acquire`/`release` for lock/unlock (correct for cross-thread visibility)
-- `relaxed` for token generation (correctness verified)
-
-🔍 **Test implications**:
-- Must test move semantics (move constructor, move assignment)
-- Must test attach/detach behavior
-- Must test concurrent access detection in debug mode
-- Must test token uniqueness across many guards
+**Test coverage parity** with former AtomicGuard: basic acquire/release, RAII, try_lock timeout, move/handoff, self-move, detach-then-reuse, concurrent stress, producer/consumer pairs.
 
 #### 2. RecursionGuard (Header-only: `utils/recursion_guard.hpp`)
 
@@ -131,8 +123,7 @@ This review examined the actual implementation of all PyLabHub modules to:
 ### Test Coverage Recommendations
 
 **Priority 1 - Critical**:
-- [ ] AtomicGuard: Test token-based ownership model
-- [ ] AtomicGuard: Test move semantics (critical for SlotRWState)
+- [x] SpinGuard/InProcessSpinState: Token-based ownership, move semantics (test_spinlock.cpp; critical for SlotRWState)
 - [ ] RecursionGuard: Test recursion detection (critical for Lifecycle)
 
 **Priority 2 - Important**:
@@ -538,9 +529,9 @@ Legend:
 
 ### Multi-Thread Scenarios
 
-1. **AtomicGuard Contention**:
-   - Multiple threads try to acquire same AtomicOwner
-   - Verify exclusivity
+1. **In-process spin state contention** (covered by test_spinlock.cpp):
+   - Multiple threads acquire/release same InProcessSpinState; move-assignment stress; handoff between threads
+   - Verify exclusivity and thread-safe failure reporting
 
 2. **Lifecycle Concurrent Initialization**:
    - Multiple threads call `InitializeApp()` concurrently

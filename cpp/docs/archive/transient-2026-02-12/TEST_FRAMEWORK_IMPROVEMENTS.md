@@ -17,7 +17,7 @@ The original `test_pylabhub_utils/` test suite overused multi-process testing (P
 **Examples:**
 - `FileLockTest.InvalidResourcePath` - error handling without I/O
 - `LifecycleTest.ModuleDef_RejectsNullName` - API validation
-- Guard tests (AtomicGuard, RecursionGuard, ScopeGuard)
+- Guard tests (SpinGuard/InProcessSpinState, RecursionGuard, ScopeGuard)
 
 **Benefits:**
 - Fastest execution

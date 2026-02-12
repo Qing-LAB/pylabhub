@@ -16,10 +16,13 @@
  *
  * Usage Scenarios:
  * - SharedSpinLock: ExponentialBackoff (contention rare, yield quickly)
- * - SlotRWState: ExponentialBackoff (high throughput, adaptive)
+ * - InProcessSpinState: ExponentialBackoff (token-mode spin loops)
+ * - SlotRWState / data_block: backoff() (writer/reader acquisition)
  * - FileLock: ExponentialBackoff (I/O latency varies)
  * - MessageHub: ExponentialBackoff (network reconnect)
  * - Unit Tests: NoBackoff (fast test execution)
+ *
+ * @see docs/UTILS_FUNDAMENTAL_FACILITIES.md — reuse and separation of backoff, state, guards.
  *
  * @see HEP-CORE-0002-DataHub-FINAL.md Section 4.2 (SlotRWState coordination)
  */

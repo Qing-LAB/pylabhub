@@ -134,6 +134,19 @@ project(pylabhub-cpp VERSION 1.2 LANGUAGES C CXX)
 
 ---
 
+## 7. Shared memory and ABI compatibility
+
+For **shared memory structures** (e.g. `SharedMemoryHeader`, DataBlock layout), follow these rules so layout changes are traceable and ABI-stable:
+
+- **No magic numbers:** Use named constants (e.g. `detail::MAX_CONSUMER_HEARTBEATS`) for array sizes and layout; no hardcoded `8`, `256`, etc. in structure definitions.
+- **Version association:** Layout constants live in a `detail` namespace with version (e.g. `HEADER_VERSION_MAJOR`, `HEADER_VERSION_MINOR`). Changing pool sizes or field order is an ABI-breaking change; bump major version and document migration.
+- **Static assertions:** Add `static_assert(sizeof(SharedMemoryHeader) == 4096, ...)` and similar for critical sizes so layout drift is caught at compile time.
+- **Size calculation comments:** Document how reserved/padding bytes are computed so future changes can be audited.
+
+See the source in `src/include/utils/data_block.hpp` (and related headers) for the canonical layout constants and assertions.
+
+---
+
 ## See Also
 
 - [README_CMake_Design.md](README_CMake_Design.md) — Build system architecture

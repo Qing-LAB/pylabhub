@@ -70,6 +70,7 @@ include(GNUInstallDirs)
 if(PYLABHUB_ENABLE_DEBUG_MESSAGES)
   add_compile_definitions(PYLABHUB_ENABLE_DEBUG_MESSAGES)
 endif()
+add_compile_definitions(PLH_RECURSION_GUARD_MAX_DEPTH=${PLH_RECURSION_GUARD_MAX_DEPTH})
 
 # --- 3.2. Global Setup and Helper Modules ---
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
@@ -109,6 +110,7 @@ message(STATUS "PYLABHUB_ENABLE_CLANG_TIDY = ${PYLABHUB_ENABLE_CLANG_TIDY}")
 message(STATUS "STRESS_TEST_LEVEL = ${STRESS_TEST_LEVEL}")
 message(STATUS "PYLABHUB_LOGGER_COMPILE_LEVEL = ${PYLABHUB_LOGGER_COMPILE_LEVEL}")
 message(STATUS "PYLABHUB_ENABLE_DEBUG_MESSAGES = ${PYLABHUB_ENABLE_DEBUG_MESSAGES}")
+message(STATUS "PLH_RECURSION_GUARD_MAX_DEPTH = ${PLH_RECURSION_GUARD_MAX_DEPTH}")
 message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")

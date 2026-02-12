@@ -1,8 +1,8 @@
-# HEP-core-0002: Data Exchange Hub — Final Unified Specification
+# HEP-CORE-0002: Data Exchange Hub — Final Unified Specification
 
 | Property         | Value                                           |
 | ---------------- | ----------------------------------------------- |
-| **HEP**          | `core-0002`                                     |
+| **HEP**          | `HEP-CORE-0002`                                 |
 | **Title**        | Data Exchange Hub — High-Performance IPC Framework |
 | **Author**       | Quan Qing, AI assistant                         |
 | **Status**       | Implementation Ready                            |
@@ -28,6 +28,13 @@ This is the **authoritative, implementation-ready specification** for the Data E
 - Synchronization model proven
 - Memory ordering correct
 - ABI stability ensured
+
+### Implementation status (sync with DATAHUB_TODO)
+
+Implementation status and priorities are tracked in **`docs/DATAHUB_TODO.md`** (single execution plan). Summary:
+
+- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle), MessageHub lifecycle and no-broker paths, Layer 3 tests (slot protocol, error handling, recovery, policy tests, high-load integrity).
+- **Not yet implemented / in progress:** Broker schema registry (1.4), schema versioning (1.5), full MessageHub Phase C/D integration, optional integrity repair path, some DataBlockMutex reintegration and factory behavior. For any section in this HEP that describes functionality not yet in code, consider it **not yet implemented** and sync with **`docs/DATAHUB_TODO.md`** for the current plan and next steps.
 
 ---
 
@@ -271,6 +278,7 @@ graph LR
   - Sensor calibration data (transform matrices, coefficients)
   - Multi-channel synchronization (counters for frame ID matching)
   - Application state (statistics, diagnostics, flags)
+- **Initialization:** Creator path populates flexible zone info from config; attacher path populates it only when `expected_config` is provided (detailed flow archived in `docs/archive/transient-2026-02-12/FLEXIBLE_ZONE_INITIALIZATION.md`).
 
 **TABLE 2: Fixed Buffer Chain (CoarseGrained)**
 - **Purpose:** Frames, samples, payloads, bulk data transfer
@@ -437,6 +445,8 @@ sequenceDiagram
 ├────────────────────────────────────────────────────┤ +4096
 │ SlotRWState Array                                  │
 │ (ring_buffer_capacity × 48 bytes, cache-aligned)   │
+│ When enable_checksum: followed by SlotChecksums     │
+│ (per-slot 33-byte entries), then Flexible Zone.    │
 │ ┌────────────────────────────────────────────────┐ │
 │ │ SlotRWState[0]:                                │ │
 │ │   atomic<uint64_t> write_lock (PID)            │ │
@@ -444,7 +454,7 @@ sequenceDiagram
 │ │   atomic<uint8_t> slot_state                   │ │
 │ │   atomic<uint8_t> writer_waiting               │ │
 │ │   atomic<uint64_t> write_generation            │ │
-│ │   padding[36]                                  │ │
+│ │   padding[24]                                  │ │
 │ ├────────────────────────────────────────────────┤ │
 │ │ SlotRWState[1], [2], ... [capacity-1]          │ │
 │ └────────────────────────────────────────────────┘ │
@@ -493,12 +503,13 @@ struct SharedMemoryHeader {
     uint8_t padding_sec[28];        // Align to cache line
 
     // === Ring Buffer Configuration ===
-    DataBlockPolicy policy;         // Single/DoubleBuffer/RingBuffer
-    uint32_t unit_block_size;       // Bytes per slot (power of 2)
-    uint32_t ring_buffer_capacity;  // Number of slots
-    size_t flexible_zone_size;      // Total TABLE 1 size
-    bool enable_checksum;           // BLAKE2b checksums enabled
-    ChecksumPolicy checksum_policy; // Manual or Enforced
+    DataBlockPolicy policy;             // Single/DoubleBuffer/RingBuffer
+    ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
+    uint32_t unit_block_size;           // Bytes per slot (power of 2)
+    uint32_t ring_buffer_capacity;     // Number of slots
+    size_t flexible_zone_size;         // Total TABLE 1 size
+    bool enable_checksum;               // BLAKE2b checksums enabled
+    ChecksumPolicy checksum_policy;     // Manual or Enforced
 
     // === Ring Buffer State (Hot Path) ===
     std::atomic<uint64_t> write_index;   // Next slot to write (producer)
@@ -595,7 +606,7 @@ struct SlotRWState {
     std::atomic<uint64_t> write_generation;  // Incremented on each commit
 
     // === Padding ===
-    uint8_t padding[36];  // Pad to 48 bytes
+    uint8_t padding[24];  // Pad to 48 bytes total (match code: data_block.hpp)
 };
 
 static_assert(sizeof(SlotRWState) == 48, "SlotRWState must be 48 bytes");
@@ -636,6 +647,27 @@ stateDiagram-v2
         Waiting for reader_count = 0
     end note
 ```
+
+#### 3.3.1 ConsumerSyncPolicy (reader advancement and writer backpressure)
+
+How readers advance and when the writer may overwrite slots is determined by **ConsumerSyncPolicy** (stored in `SharedMemoryHeader::consumer_sync_policy`).
+
+| Policy | Readers | read_index / positions | Writer backpressure |
+|--------|---------|------------------------|----------------------|
+| **Latest_only** | Any number | No shared read_index; each reader follows `commit_index` only (latest committed slot). | Writer never blocks on readers; older slots may be overwritten. |
+| **Single_reader** | One consumer only | One shared `read_index` (tail); consumer reads in order. | Writer blocks when `(write_index - read_index) >= capacity`. |
+| **Sync_reader** | Multiple consumers | Per-consumer next-read position in `reserved_header`; `read_index = min(positions)`. | Writer blocks when ring full; iterator blocks until slowest reader has consumed. |
+
+```
+                    Latest_only              Single_reader              Sync_reader
+  Writer     commit_index (latest)     write_index, read_index    write_index, min(positions)
+  Readers    read commit_index only    one read_index, in order   per-consumer positions
+  Backpressure  none                   (write-read)>=cap → block   ring full → block
+```
+
+- **Latest_only:** Best for “latest value” semantics; no ordering guarantee across consumers.
+- **Single_reader:** One consumer, FIFO; writer blocks when ring is full.
+- **Sync_reader:** Multiple consumers; all advance in lockstep; writer blocks when ring full; new consumers “join at latest” (see DATAHUB_TODO and implementation).
 
 ### 3.4 Data Buffer Layout (Fixed Slots)
 

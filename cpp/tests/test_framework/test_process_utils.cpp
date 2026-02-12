@@ -436,7 +436,8 @@ const std::string &WorkerProcess::get_stderr() const
 }
 
 void expect_worker_ok(const WorkerProcess &proc,
-                      const std::vector<std::string> &expected_stderr_substrings)
+                      const std::vector<std::string> &expected_stderr_substrings,
+                      bool allow_expected_logger_errors)
 {
     using ::testing::HasSubstr;
     using ::testing::Not;
@@ -459,19 +460,21 @@ void expect_worker_ok(const WorkerProcess &proc,
     }
 
     const auto &stderr_out = proc.get_stderr();
-    if (expected_stderr_substrings.empty())
+    const bool skip_error_check =
+        allow_expected_logger_errors || !expected_stderr_substrings.empty();
+
+    if (!skip_error_check)
     {
         EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
-        EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
-        EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
-        EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
     }
-    else
+    // Always forbid FATAL, PANIC, and worker assertion failure.
+    EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
+    EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
+    EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
+
+    for (const auto &substr : expected_stderr_substrings)
     {
-        for (const auto &substr : expected_stderr_substrings)
-        {
-            EXPECT_THAT(stderr_out, HasSubstr(substr));
-        }
+        EXPECT_THAT(stderr_out, HasSubstr(substr));
     }
 }
 

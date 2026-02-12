@@ -6,6 +6,11 @@
  * The lock state (SharedSpinLockState) lives in a shared memory segment; this
  * module does not allocate that memory. Callers place the state in any
  * shared-memory layout (e.g. DataBlock header, or a standalone shm segment).
+ *
+ * Layout: Same 32-byte state is used by in-process token mode (see
+ * utils/in_process_spin_state.hpp). Spin loops use utils::ExponentialBackoff.
+ * For organization and fundamental facilities, see docs/SPINLOCK_HEADER_AND_SOURCE_LAYOUT.md
+ * and docs/UTILS_FUNDAMENTAL_FACILITIES.md.
  */
 #include "pylabhub_utils_export.h"
 #include "plh_platform.hpp"
@@ -23,6 +28,9 @@ namespace pylabhub::hub
 /**
  * @struct SharedSpinLockState
  * @brief Represents the atomic state of a shared spin-lock residing in shared memory.
+ *
+ * Same 32-byte layout for in-process (token mode) and cross-process (pid/tid mode).
+ * Initialize with init_spinlock_state() so both DataBlock and in-process lock use the same logic.
  */
 struct SharedSpinLockState
 {
@@ -32,6 +40,22 @@ struct SharedSpinLockState
     std::atomic<uint32_t> recursion_count{0};
     uint8_t padding[4];
 };
+
+/**
+ * Initialize one spinlock state to "free" (all four fields zero).
+ * Use for: shared memory (DataBlock header, shm segments) and in-process (InProcessSpinState).
+ * Call before first use of SharedSpinLock or InProcessSpinState on this state.
+ * No-op if state is null. Thread-safe for distinct state pointers.
+ */
+inline void init_spinlock_state(SharedSpinLockState *state) noexcept
+{
+    if (!state)
+        return;
+    state->owner_pid.store(0, std::memory_order_release);
+    state->owner_tid.store(0, std::memory_order_release);
+    state->generation.store(0, std::memory_order_release);
+    state->recursion_count.store(0, std::memory_order_release);
+}
 
 /**
  * @class SharedSpinLock
@@ -96,6 +120,11 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
  *
  * Automatically locks the mutex on construction and unlocks it on destruction.
  * Does not support recursive locking from a different thread than the owner.
+ *
+ * Exception safety: If lock() throws in the constructor, the guard is not
+ * constructed and its destructor is not run, so unlock() is never called
+ * without a prior successful lock. The destructor may throw only if the
+ * current thread is not the owner (misuse); see docs/GUARD_RACE_AND_UB_ANALYSIS.md.
  */
 class PYLABHUB_UTILS_EXPORT SharedSpinLockGuard
 {

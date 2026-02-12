@@ -1,13 +1,21 @@
-| Property       | Value                                        |
-| -------------- | -------------------------------------------- |
-| **HEP**        | `core-0004`                                  |
-| **Title**      | High-Performance Asynchronous Logger         |
-| **Author**     | Quan Qing, AI assistant                      |
-| **Status**     | Draft                                        |
-| **Category**   | Core                                         |
-| **Created**    | 2026-01-30                                   |
-| **Updated**    | 2026-02-06                                   |
-| **C++-Standard** | C++20                                        |
+| Property         | Value                                          |
+| ---------------- | ---------------------------------------------- |
+| **HEP**          | `HEP-CORE-0004`                                |
+| **Title**        | High-Performance Asynchronous Logger           |
+| **Author**       | Quan Qing, AI assistant                        |
+| **Status**       | Implementation Ready                           |
+| **Category**     | Core                                           |
+| **Created**      | 2026-01-30                                     |
+| **Updated**      | 2026-02-12                                     |
+| **C++-Standard** | C++20                                           |
+
+---
+
+## Implementation status
+
+All described APIs and sinks are implemented in `src/include/utils/logger.hpp`, `src/utils/logger.cpp`, and `src/utils/logger_sinks/`. Async queue, sync variants, sink abstraction (Console, File, RotatingFile, Syslog, EventLog), and lifecycle integration are in use. For current plan and priorities, see `docs/DATAHUB_TODO.md`.
+
+---
 
 ## Abstract
 
@@ -193,19 +201,19 @@ All six levels have sync variants: `LOGGER_TRACE_SYNC`, `LOGGER_DEBUG_SYNC`, `LO
 | `set_console()` | Switch to stderr (default) |
 | `set_logfile(utf8_path)` | Switch to file |
 | `set_logfile(utf8_path, use_flock)` | Switch to file with optional flock (POSIX) |
-| `set_rotating_logfile(path, max_size, max_files, ec)` | Rotating file sink |
+| `set_rotating_logfile(path, max_size, max_files, ec)` | Rotating file sink; returns bool, errors in `ec` |
 | `set_rotating_logfile(..., use_flock, ec)` | With explicit flock |
 | `set_syslog(ident, option, facility)` | Syslog (POSIX only) |
 | `set_eventlog(source_name)` | Windows Event Log (Windows only) |
 | `shutdown()` | Blocking; flush and stop worker |
 | `flush()` | Block until queue drained |
 | `set_level(lvl)` | Minimum level to process |
-| `level()` | Current level |
-| `set_max_queue_size(size)` | Queue capacity |
+| `level()` | Current level (getter) |
+| `set_max_queue_size(size)` | Set queue capacity |
 | `get_max_queue_size()` | Current capacity |
 | `get_total_dropped_since_sink_switch()` | Accumulated dropped messages since last sink switch |
-| `set_write_error_callback(cb)` | Callback on sink write error |
-| `set_log_sink_messages_enabled(bool)` | Enable/disable sink switch messages |
+| `set_write_error_callback(cb)` | Callback on sink write error (runs on dedicated thread) |
+| `set_log_sink_messages_enabled(bool)` | Enable/disable sink switch log messages |
 
 ### Log Levels
 

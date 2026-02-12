@@ -19,7 +19,7 @@ This document provides clear guidance on choosing the appropriate test pattern f
 
 **Example scenarios:**
 - Testing `FileLock::try_lock()` API with invalid paths
-- Testing guard classes (AtomicGuard, RecursionGuard, ScopeGuard)
+- Testing guard classes (SpinGuard/InProcessSpinState, RecursionGuard, ScopeGuard)
 - Testing utility functions (format strings, conversions)
 - Testing data structure APIs without I/O
 

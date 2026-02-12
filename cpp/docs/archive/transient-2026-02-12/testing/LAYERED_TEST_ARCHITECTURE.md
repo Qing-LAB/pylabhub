@@ -43,7 +43,7 @@ This document proposes a complete restructuring of the PyLabHub test suite to mi
 **Modules**:
 - `utils/format_tools.hpp`: Formatting utilities (formattable concepts, format helpers)
 - `utils/debug_info.hpp`: Stack traces, debug symbols
-- `utils/atomic_guard.hpp`: RAII atomic boolean guard
+- `utils/in_process_spin_state.hpp`: In-process spin state + SpinGuard (token-mode, replaces former AtomicGuard)
 - `utils/recursion_guard.hpp`: Reentrant call detection
 - `utils/scope_guard.hpp`: RAII cleanup actions
 - `utils/module_def.hpp`: Lifecycle module registration interface
@@ -107,7 +107,7 @@ This document proposes a complete restructuring of the PyLabHub test suite to mi
 **Purpose**: Tests for `pylabhub-basic` (Layer 0 + Layer 1)
 **Current Tests**:
 - ✅ `test_platform.cpp` - Platform utilities
-- ✅ `test_atomicguard.cpp` - AtomicGuard RAII
+- ✅ `test_spinlock.cpp` - InProcessSpinState + SpinGuard (token-mode spin lock)
 - ✅ `test_recursionguard.cpp` - RecursionGuard
 - ✅ `test_scopeguard.cpp` - ScopeGuard RAII
 - ✅ `test_formattable.cpp` - Format tools
@@ -169,7 +169,7 @@ tests/
 │   ├── CMakeLists.txt
 │   ├── test_format_tools.cpp               # Formatting utilities
 │   ├── test_debug_info.cpp                 # Stack traces, debug symbols
-│   ├── test_atomic_guard.cpp               # AtomicGuard RAII
+│   ├── test_spinlock.cpp                  # InProcessSpinState + SpinGuard
 │   ├── test_recursion_guard.cpp            # RecursionGuard
 │   ├── test_scope_guard.cpp                # ScopeGuard RAII
 │   └── test_module_def.cpp                 # ModuleDef interface
@@ -290,13 +290,15 @@ tests/
 - ✅ Stack trace includes current function name
 - ✅ Debug symbol resolution (if available)
 
-#### test_atomic_guard.cpp (RENAME from test_atomicguard.cpp)
-**Tests**:
-- ✅ Constructor sets flag to true
-- ✅ Destructor resets flag to false
-- ✅ `is_set()` returns correct state
-- ✅ Non-copyable, non-movable
-- ✅ Thread safety: concurrent guards on same atomic
+#### test_spinlock.cpp (InProcessSpinState + SpinGuard; replaces former AtomicGuard tests)
+**Tests** (parity with old AtomicGuard coverage):
+- ✅ Basic acquire/release, RAII, token persistence
+- ✅ SpinGuard alias, explicit release, try_lock timeout (RaiiAcquireFailure)
+- ✅ Concurrent acquire stress
+- ✅ Move semantics, move-active-guard, self-move-assignment, detach-then-try_lock reuse
+- ✅ Concurrent move-assignment stress (thread-safe failure reporting)
+- ✅ Transfer between threads (single handoff, heavy handoff)
+- ✅ Many concurrent producer/consumer pairs
 
 #### test_recursion_guard.cpp (RENAME from test_recursionguard.cpp)
 **Tests**:
