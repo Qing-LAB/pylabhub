@@ -1,10 +1,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include "plh_slot_diagnostics.hpp"
-#include "plh_slot_recovery.hpp"
-#include "plh_integrity_validator.hpp"
-#include "plh_recovery_api.hpp"
+#include "utils/slot_diagnostics.hpp"
+#include "utils/slot_recovery.hpp"
+#include "utils/integrity_validator.hpp"
+#include "utils/recovery_api.hpp"
 
 void print_usage()
 {

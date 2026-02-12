@@ -121,6 +121,17 @@ TEST_F(JsonConfigTest, InitAndCreate)
 }
 
 /**
+ * @brief Tests that init() with an empty path fails and sets error_code.
+ */
+TEST_F(JsonConfigTest, InitWithEmptyPathFails)
+{
+    JsonConfig cfg;
+    std::error_code ec;
+    ASSERT_FALSE(cfg.init(fs::path(), false, &ec));
+    ASSERT_TRUE(ec);
+}
+
+/**
  * @brief Tests initialization with a non-existent file when `createIfMissing` is false.
  * Verifies that `init()` succeeds and the in-memory representation is an empty
  * object, even if the file does not exist on disk.

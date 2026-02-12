@@ -17,9 +17,12 @@ message(STATUS "** Configuring Layer 3 (DataHub) tests...")
 add_executable(test_layer3_datahub
     test_schema_blds.cpp
     workers/schema_blds_workers.cpp
-
-    # Schema validation (deferred — requires DataBlock/MessageHub)
-    # test_schema_validation.cpp
+    test_schema_validation.cpp
+    workers/schema_validation_workers.cpp
+    test_recovery_api.cpp
+    workers/recovery_workers.cpp
+    test_slot_protocol.cpp
+    workers/slot_protocol_workers.cpp
 
     # DataBlock tests (deferred — API migration in progress)
     # test_datablock_mutex.cpp         # workers/datablock_management_mutex_workers.cpp
@@ -44,10 +47,7 @@ target_link_libraries(test_layer3_datahub
 target_compile_features(test_layer3_datahub PRIVATE cxx_std_20)
 target_compile_definitions(test_layer3_datahub PRIVATE LOGGER_COMPILE_LEVEL=0)
 
-if(PYLABHUB_SANITIZER_FLAGS_SET)
-    target_compile_options(test_layer3_datahub PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
-    target_link_libraries(test_layer3_datahub PRIVATE pylabhub::sanitizer_flags)
-endif()
+pylabhub_ensure_sanitizer_for_executable(test_layer3_datahub)
 
 # Ensure pylabhub-utils is staged (soname symlink in stage-debug/lib/) before
 # test discovery tries to load it via RPATH ($ORIGIN/../lib).
@@ -64,4 +64,4 @@ gtest_discover_tests(test_layer3_datahub
 )
 
 message(STATUS "** Layer 3 (DataHub) tests configured.")
-message(STATUS "  - test_layer3_datahub (schema_blds)")
+message(STATUS "  - test_layer3_datahub (schema_blds, schema_validation, recovery_api, slot_protocol)")

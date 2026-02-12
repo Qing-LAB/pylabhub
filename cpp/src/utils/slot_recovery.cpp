@@ -1,4 +1,4 @@
-#include "plh_slot_recovery.hpp"
+#include "utils/slot_recovery.hpp"
 
 namespace pylabhub::hub
 {

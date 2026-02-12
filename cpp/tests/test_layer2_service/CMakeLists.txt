@@ -84,6 +84,38 @@ gtest_discover_tests(test_layer2_backoff_strategy
 )
 
 # ============================================================================
+# Test: SharedSpinLock (foundational for DataBlock; Part 0 of test plan)
+# ============================================================================
+
+add_executable(test_layer2_shared_memory_spinlock
+    test_shared_memory_spinlock.cpp
+    workers/spinlock_workers.cpp
+)
+
+target_include_directories(test_layer2_shared_memory_spinlock PRIVATE workers)
+
+target_link_libraries(test_layer2_shared_memory_spinlock
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        GTest::gmock
+)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_shared_memory_spinlock
+    SUITE_NAME "Layer2_SharedMemorySpinlock"
+)
+layer2_require_staged_utils(test_layer2_shared_memory_spinlock)
+
+gtest_discover_tests(test_layer2_shared_memory_spinlock
+    PROPERTIES
+        LABELS "layer2;service;spinlock"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # CRITICAL Test: Crypto Utils (blocks schema validation)
 # ============================================================================
 

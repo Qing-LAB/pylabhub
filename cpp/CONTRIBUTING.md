@@ -146,9 +146,19 @@ Always link against the namespaced `ALIAS` targets, not the concrete target name
 
 **Why?** This provides an abstraction layer. The underlying target `pylabhub-utils` could be renamed or changed, but the `pylabhub::utils` alias will remain stable for all consumers.
 
+### 6. Cross-Platform in Review and Design
+
+**Cross-platform is integrated into review and design**, not only into implementation. All supported platforms (Windows, Linux, macOS, FreeBSD) must be considered when designing APIs, writing reviews, and planning tests. Platform-specific code belongs in the platform layer (`plh_platform.hpp` / `platform.cpp`); higher layers use a single, documented semantics. When adding features or tests, document any platform-specific behavior and ensure the test plan runs on every supported platform. See `docs/DATAHUB_TODO.md` § Cross-Platform and Behavioral Consistency and the critical review §2.3.
+
 ---
 
 ## Coding Style & Conventions
+
+### Public API and header layout
+
+**`plh_*` prefix is reserved for top-level umbrella headers only.** Headers in `src/include/` whose names start with `plh_` (e.g. `plh_datahub.hpp`, `plh_service.hpp`, `plh_platform.hpp`, `plh_base.hpp`) are the highest-level entry points that pull in multiple modules or layers. Do not use the `plh_` prefix for single-purpose or module-specific headers.
+
+**Module and feature APIs** live under subdirectories such as `src/include/utils/` and use names that reflect the module (e.g. `utils/recovery_api.hpp`, `utils/data_block.hpp`, `utils/slot_diagnostics.hpp`). When adding new public APIs (e.g. for DataHub, recovery, or diagnostics), place them under the appropriate module directory and only expose a `plh_*` header if it is genuinely an umbrella that aggregates several modules for the public API.
 
 ### C++ Standard
 

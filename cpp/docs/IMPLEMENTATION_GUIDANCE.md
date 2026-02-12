@@ -107,18 +107,18 @@ src/
 │   ├── plh_base.hpp               # Layer 1 umbrella
 │   ├── plh_service.hpp            # Layer 2 umbrella
 │   ├── plh_datahub.hpp            # Layer 3 umbrella
-│   ├── plh_recovery_api.hpp       # P8 Recovery C API
-│   ├── plh_slot_diagnostics.hpp   # P8 Diagnostics API
+│   ├── utils/recovery_api.hpp       # P8 Recovery C API
+│   ├── utils/slot_diagnostics.hpp   # P8 Diagnostics API
 │   └── utils/
 │       ├── data_block.hpp         # Main DataBlock API
 │       ├── message_hub.hpp        # Broker communication
-│       ├── datablock_spinlock.hpp # SharedSpinLock
+│       ├── shared_memory_spinlock.hpp # SharedSpinLock
 │       ├── slot_rw_coordinator.h  # C API for SlotRWState
 │       └── slot_rw_access.hpp     # C++ template wrappers
 └── utils/
     ├── data_block.cpp             # DataBlock implementation
     ├── message_hub.cpp            # MessageHub implementation
-    ├── datablock_spinlock.cpp     # SharedSpinLock implementation
+    ├── shared_memory_spinlock.cpp     # SharedSpinLock implementation
     ├── datablock_recovery.cpp     # P8 Recovery implementation
     ├── slot_diagnostics.cpp       # P8 Diagnostics implementation
     ├── slot_recovery.cpp          # P8 Recovery operations
@@ -134,7 +134,7 @@ src/
 set(UTILS_SOURCES
   # ... existing sources ...
   data_block.cpp
-  datablock_spinlock.cpp
+  shared_memory_spinlock.cpp
   datablock_recovery.cpp
   slot_diagnostics.cpp
   slot_recovery.cpp
@@ -332,6 +332,10 @@ auto consumer = find_datablock_consumer(hub, "sensor_data", secret);
 ```
 
 ### RAII for Slot Access
+
+**Lifetime contract:** Slot handles hold pointers into shared memory. Release or destroy all
+SlotWriteHandle and SlotConsumeHandle instances *before* destroying the DataBlockProducer or
+DataBlockConsumer. Otherwise the handle destructor accesses freed memory (use-after-free).
 
 ```cpp
 // Primitive API (manual)

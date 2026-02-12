@@ -1,5 +1,25 @@
 #pragma once
 
+/**
+ * @file recovery_api.hpp
+ * @brief C-style API for DataBlock error recovery and diagnostics.
+ *
+ * This API provides a set of functions to diagnose and recover from common
+ * failure scenarios in shared memory DataBlocks, such as crashed producers or
+ * consumers. Implemented in data_block_recovery.cpp.
+ *
+ * ## Error Codes Reference
+ *
+ * **Diagnostics (datablock_diagnose_slot, datablock_diagnose_all_slots):**
+ * - 0   Success
+ * - -1  Invalid arguments (null pointer)
+ * - -2  Internal error (open failed, etc.)
+ * - -3  Invalid slot_index (out of bounds)
+ * - -4  Runtime error during DataBlock access
+ * - -5  Unexpected/general error
+ *
+ * **Recovery operations:** Return RecoveryResult enum (see below).
+ */
 #include "pylabhub_utils_export.h"
 #include <cstddef>
 #include <cstdint>
@@ -9,15 +29,6 @@
 extern "C"
 {
 #endif
-
-    /**
-     * @file plh_recovery_api.hpp
-     * @brief Defines the C-style API for DataBlock error recovery and diagnostics.
-     *
-     * This API provides a set of functions to diagnose and recover from common
-     * failure scenarios in shared memory DataBlocks, such as crashed producers or
-     * consumers.
-     */
 
     /**
      * @brief Diagnostic information for a single data slot.

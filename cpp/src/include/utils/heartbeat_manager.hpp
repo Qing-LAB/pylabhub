@@ -1,5 +1,5 @@
 /**
- * @file plh_heartbeat_manager.hpp
+ * @file heartbeat_manager.hpp
  * @brief C++ wrapper for consumer heartbeat management.
  */
 #pragma once

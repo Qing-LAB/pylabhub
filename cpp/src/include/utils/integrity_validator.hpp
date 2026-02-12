@@ -1,11 +1,11 @@
 /**
- * @file plh_integrity_validator.hpp
+ * @file integrity_validator.hpp
  * @brief C++ wrapper for DataBlock integrity validation.
  */
 #pragma once
 
 #include "pylabhub_utils_export.h"
-#include "plh_recovery_api.hpp"
+#include "utils/recovery_api.hpp"
 #include <string>
 
 namespace pylabhub::hub

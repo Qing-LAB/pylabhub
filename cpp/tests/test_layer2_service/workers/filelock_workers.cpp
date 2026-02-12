@@ -371,6 +371,15 @@ int try_lock_nonblocking(const std::string &resource_path_str)
         Logger::GetLifecycleModule());
 }
 
+int use_without_lifecycle_aborts()
+{
+    // No LifecycleGuard - FileLock module not initialized.
+    // Creating FileLock should PLH_PANIC and abort.
+    std::filesystem::path path("/tmp/pylabhub_filelock_no_lifecycle.lock");
+    FileLock lock(path, ResourceType::File, LockMode::NonBlocking);
+    return 1;  // Should not reach here
+}
+
 } // namespace filelock
 } // namespace pylabhub::tests::worker
 
@@ -414,6 +423,8 @@ struct FileLockWorkerRegistrar
                     return test_multithreaded_non_blocking(argv[2]);
                 if (scenario == "try_lock_nonblocking" && argc > 2)
                     return try_lock_nonblocking(argv[2]);
+                if (scenario == "use_without_lifecycle_aborts")
+                    return use_without_lifecycle_aborts();
                 fmt::print(stderr, "ERROR: Unknown filelock scenario '{}'\n", scenario);
                 return 1;
             });

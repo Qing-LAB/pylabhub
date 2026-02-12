@@ -71,12 +71,13 @@ class PYLABHUB_UTILS_EXPORT MessageHub
 
     /**
      * @brief Sends a message to the broker and waits for a response.
-     * @param channel The channel name.
-     * @param message The message content.
+     * @param message_type First frame (e.g. "REG_REQ", "DISC_REQ").
+     * @param json_payload Second frame (JSON body).
      * @param timeout_ms Timeout for waiting for a response.
-     * @return The response message as a string, or std::nullopt on failure or timeout.
+     * @return The response payload (last frame) as a string, or std::nullopt on failure or timeout.
      */
-    std::optional<std::string> send_message(const std::string &channel, const std::string &message,
+    std::optional<std::string> send_message(const std::string &message_type,
+                                            const std::string &json_payload,
                                             int timeout_ms = 5000);
 
     /**

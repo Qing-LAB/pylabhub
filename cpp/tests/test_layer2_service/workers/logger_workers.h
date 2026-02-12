@@ -193,6 +193,12 @@ int test_rotating_file_sink(const std::string &base_log_path, size_t max_file_si
  */
 int test_queue_full_and_message_dropping(const std::string &log_path);
 
+/**
+ * @brief Worker that uses Logger (set_logfile) without lifecycle initialized.
+ * Expected to abort.
+ */
+int use_without_lifecycle_aborts();
+
 } // namespace logger
 
 } // namespace pylabhub::tests::worker

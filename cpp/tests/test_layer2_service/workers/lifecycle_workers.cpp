@@ -230,6 +230,46 @@ int pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_abo
 }
 
 // ============================================================================
+// Init/finalize idempotency and is_finalized
+// ============================================================================
+
+int pylabhub::tests::worker::lifecycle::test_init_idempotency()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    // Second call to InitializeApp should be idempotent (no-op)
+    InitializeApp();
+    if (!IsAppInitialized())
+        return 2;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_finalize_idempotency()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    // Manual FinalizeApp; guard destructor will call it again (idempotent)
+    FinalizeApp();
+    // Destructor runs when guard goes out of scope - FinalizeApp again
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_is_finalized_flag()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    if (IsAppFinalized())
+        return 2;  // Should not be finalized yet
+    FinalizeApp();
+    if (!IsAppFinalized())
+        return 3;
+    return 0;
+}
+
+// ============================================================================
 // Dynamic Lifecycle Workers
 // ============================================================================
 
@@ -769,6 +809,12 @@ struct LifecycleWorkerRegistrar
                     return test_static_circular_dependency_aborts();
                 if (scenario == "test_static_elaborate_indirect_cycle_aborts")
                     return test_static_elaborate_indirect_cycle_aborts();
+                if (scenario == "test_init_idempotency")
+                    return test_init_idempotency();
+                if (scenario == "test_finalize_idempotency")
+                    return test_finalize_idempotency();
+                if (scenario == "test_is_finalized_flag")
+                    return test_is_finalized_flag();
                 if (scenario == "dynamic.register_before_init_fail")
                     return dynamic_register_before_init_fail();
                 if (scenario == "dynamic.load_unload")

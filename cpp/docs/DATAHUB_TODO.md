@@ -3,6 +3,24 @@
 **Last Updated:** 2026-02-10
 **Priority Legend:** 🔴 Critical | 🟡 High | 🟢 Medium | 🔵 Low
 
+**Rationale documents (do not duplicate here):**
+- **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
+- **Critical review & design:** `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` — design decisions, integrity policy, flexible zone semantics. **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
+
+---
+
+## Recent completions (2026-02-11)
+
+- **Recovery/diagnostics tests**: test_recovery_api.cpp + recovery_workers for heartbeat_manager, integrity_validator, recovery_api (datablock_is_process_alive), slot_diagnostics, slot_recovery. Workers run with Logger+CryptoUtils+MessageHub lifecycle; create DataBlock, exercise APIs; ExpectWorkerOk with expected_stderr_substrings (MessageHub logs "Not connected" at ERROR when no broker). SlotDiagnostics::is_valid() implementation added.
+- **FileLock test cleanup**: GetTempLockPath pre-cleanup fixed to use `get_expected_lock_fullname_for` instead of incorrect `.lock.` prefix.
+- **base_file_sink.cpp**: Fixed (void)m_use_flock → (void)use_flock for correct unused-parameter suppression on Windows.
+- **plh_heartbeat_manager.hpp** – Moved to utils/heartbeat_manager.hpp (per plh_* convention).
+- **Recovery error codes** – Documented in recovery_api.hpp: diagnose return values (0, -1..-5), RecoveryResult enum.
+- **release_write_slot** – Documented in data_block.hpp: when it returns false (invalid handle, checksum update failure); idempotent behavior.
+- **Slot handle lifetime contract** – Documented in data_block.hpp, data_block.cpp, DATAHUB_DATABLOCK_CRITICAL_REVIEW.md, IMPLEMENTATION_GUIDANCE.md: release or destroy all SlotWriteHandle/SlotConsumeHandle before destroying producer/consumer; otherwise use-after-free.
+- **DataBlockLayout** – Centralized offset/layout calculation in data_block.cpp: DataBlockLayout struct with from_config/from_header, slot_checksum_base(), validate(); creator/attacher/checksum/diagnostic handle use it. New test LayoutWithChecksumAndFlexibleZoneSucceeds.
+- **Slot checksum layout** – Fixed overlap: layout is now Header | SlotRWStates | SlotChecksums | FlexibleZone | StructuredData when enable_checksum; checksum impl uses correct offset; ChecksumUpdateVerifySucceeds test re-enabled.
+
 ---
 
 ## Recent completions (2026-02-10)
@@ -11,7 +29,74 @@
 - **Platform**: `pylabhub::platform::is_process_alive(uint64_t)` and `monotonic_time_ns()` in place; `SharedSpinLock::is_process_alive()` removed; callers use platform. `monotonic_time_ns()` uses `std::chrono::steady_clock`.
 - **Slot RW C API**: Full C API in `data_block.cpp` (`slot_rw_acquire_write`, `slot_rw_commit`, `slot_rw_release_write`, `slot_rw_acquire_read`, `slot_rw_validate_read`, `slot_rw_release_read`, metrics/reset) with optional `SharedMemoryHeader*` for metrics.
 - **Recovery/diagnostics**: CMake re-enabled `data_block_recovery`, `slot_diagnostics`, `slot_recovery`, `heartbeat_manager`, `integrity_validator`. Public `DataBlockDiagnosticHandle` and `open_datablock_for_diagnostic()`; recovery uses them instead of internal `DataBlock`. `datablock_validate_integrity` and related calls fixed (MessageHub reference, `shared_secret` uint64_t, RecoveryResult logging).
-- **MessageHub**: `zmq::recv_multipart` return value checked to fix `-Wunused-result`.
+- **MessageHub**: `zmq::recv_multipart` return value checked to fix `-Wunused-result`; header `send_message` signature aligned with implementation (message_type, json_payload).
+- **Recovery/diagnostics headers**: Moved from top-level `plh_*` to `utils/` (recovery_api.hpp, slot_diagnostics.hpp, slot_recovery.hpp, integrity_validator.hpp). `plh_*` prefix reserved for umbrella headers only (see CONTRIBUTING.md).
+- **Duplication/redundancy**: Removed get_current_pid wrapper in data_block; spinlock and recovery use platform monotonic time; recovery uses open_for_recovery() and set_recovery_timestamp(); spinlock header comment and includes fixed.
+- **Cross-platform**: Documented in DATAHUB_DATABLOCK_CRITICAL_REVIEW.md §2.3.
+
+---
+
+## Remaining plan (summary)
+
+Use this list to track what’s left; details live in the sections below and in the rationale documents above. **Testing and MessageHub:** rationale and phased plan are in `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` (refer to it; do not duplicate there).
+
+### API and documentation
+- [x] **release_write_slot** – Documented in data_block.hpp: returns false if handle invalid or checksum update failed; idempotent (already-released returns true).
+- [x] **Slot handle lifetime contract** – Documented in data_block.hpp and data_block.cpp: release or destroy all SlotWriteHandle/SlotConsumeHandle before destroying producer/consumer; otherwise use-after-free.
+- [x] **Recovery error codes** – Added to `utils/recovery_api.hpp`: diagnose 0, -1..-5; RecoveryResult enum documented inline.
+- [ ] **DataBlockMutex** – When reintegrating: decide factory vs direct ctor and document exception vs optional/expected.
+
+### Functionality and design (review + agree)
+- [ ] **DataBlockMutex not used by DataBlock** – Reintegrate for control zone (spinlock alloc, etc.) when DataHub integration is done; see DataBlockMutex follow-ups below.
+- [ ] **Consumer flexible_zone_info** – Document that it’s only populated when using factory with expected_config; enforce or clarify for flexible-zone-by-name access.
+- [ ] **Integrity repair path** – Optional: low-level repair using only DataBlockDiagnosticHandle (no full producer/consumer) to avoid broker lifecycle side effects.
+
+### DataBlockMutex follow-ups (on integration)
+- [ ] **pthread_mutex_destroy** – Intentionally omitted (documented in destructor); no change unless design changes.
+- [ ] **Constructor exception behavior** – Revisit when integrating; consider factory returning std::optional or std::expected.
+
+### Phase 1 (schema)
+- [ ] **1.4 Broker schema registry** – Broker stores schema_hash, schema_version, schema_name; DISC_RESP includes them; optional GET_SCHEMA API.
+- [ ] **1.5 Schema versioning policy** – Compatibility rules, optional is_schema_compatible(), migration docs.
+
+### Phase 2 (verify / complete)
+- [ ] **2.1 Slot RW C API** – Verify existing implementation matches TODO and HEP; update checklist if already done.
+- [ ] **2.2 Template wrappers** – with_typed_write/with_typed_read; type safety checks.
+- [ ] **2.3 Transaction guards** – WriteTransactionGuard, ReadTransactionGuard; exception safety.
+
+### Phase 3 and later
+- [ ] **3.x Factory/lifecycle** – Create DataBlockMutex for control zone when reintegrating; align with Phase 3 priorities in DATAHUB_TODO.
+- [ ] **Testing** – Run same tests on all supported platforms; avoid platform-only skip.
+- [ ] **Deployment** – Per DATAHUB_TODO deployment phase.
+
+### Foundational APIs used by DataBlock (rationale & coverage: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 0)
+- [x] **Platform shm_* tests** – Added in test_layer0_platform/test_platform_shm.cpp: create, attach (same process), read/write, close, unlink; portable names; SHM_CREATE_UNLINK_FIRST. (Rationale: doc Part 0.)
+- [x] **SharedSpinLock tests** – Added in test_layer2_service/test_shared_memory_spinlock.cpp: try_lock_for, lock/unlock, timeout, recursion, SharedSpinLockGuard(Owning), two-thread mutual exclusion with state in shm. (Rationale: doc Part 0. Zombie reclaim: covered indirectly via platform is_process_alive; optional multi-process spinlock test later.)
+- **Already covered:** Platform (get_pid, monotonic_time_ns, elapsed_time_ns, is_process_alive) in test_platform_core; Backoff in test_backoff_strategy; Crypto (BLAKE2b, verify) in test_crypto_utils; Lifecycle in test_lifecycle; Schema BLDS in test_schema_blds.
+
+### DataHub protocol testing (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 1)
+- [ ] **Phase A – Protocol/API correctness** – Flexible zone empty span when no zones; checksum false when zone undefined; config/agreement (consumer with/without expected_config); [x] schema store/validate/mismatch (test_schema_validation). See doc Part 1.1 and 1.4.
+- [ ] **Phase B – Slot protocol in one process** – In-process producer + consumer; acquire write, write+commit, acquire consume, read; checksum update/verify; optional diagnostic handle. See doc Part 1.2 and 1.4.
+- [ ] **Phase C – MessageHub and broker** – MessageHub unit behavior (disconnect, parse errors); with broker: register_producer, discover_producer, one write/read. See doc Part 1.1, 1.2, 1.4.
+- [ ] **Phase D – Concurrency and multi-process** – Concurrent readers; writer timeout; TOCTTOU and wrap-around; zombie reclaim; DataBlockMutex. See doc Part 1.3 and 1.4.
+- [ ] **Recovery scenario tests** – Beyond smoke tests: zombie lock reclaim (process crash while holding lock, another process reclaims); datablock_validate_integrity against corrupted block (detect/repair); datablock_diagnose_slot against genuinely stuck slot (is_stuck correctly identified).
+- [x] **Test infrastructure** – enable test_schema_validation in CMake; converted to IsolatedProcessTest + schema_validation_workers (schema match / mismatch). DataBlockTestFixture, test broker: future. See doc Part 1.5.
+
+### MessageHub follow-ups (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 2)
+- [ ] **MessageHub JSON safety** – Non-throwing or guarded JSON parse in register_producer/discover_producer; use .contains()/.value() for optional keys to avoid throws on missing fields.
+- [ ] **MessageHub receive helper** – Extract shared recv path (poll, recv_multipart, size check, last frame) into private helper to remove duplication between send_message and receive_message.
+- [ ] **MessageHub [[nodiscard]] and docs** – Add [[nodiscard]] to send_message, receive_message, discover_producer, connect, register_producer; document broker contract (REG_REQ/DISC_REQ, JSON shape) in one place.
+- [ ] **register_consumer** – Implement when broker protocol for consumer registration is defined; add tests.
+
+### Optional code split (when useful)
+- [x] **DataBlockLayout** – Centralized layout calculation (DataBlockLayout struct, from_config/from_header, stored in DataBlock, used by creator/attacher/checksum/diagnostic handle). Debug validate() asserts invariants.
+- [ ] **Header schema** – Move get_shared_memory_header_schema_info / validate_header_layout_hash to dedicated TU (e.g. data_block_header_schema.cpp) for clear schema/layout boundary.
+- [ ] **Slot RW TU** – Move acquire_write/commit_write/… and C wrappers to data_block_slot_rw.cpp to shrink data_block.cpp.
+- [ ] **Factory TU** – Move create_datablock_producer_impl, find_datablock_consumer_impl to data_block_factory.cpp.
+- [ ] **Checksum TU** – Optional; move checksum helpers to data_block_checksum.cpp with header/buffer-only interface for repair without full producer.
+
+### Other
+- [x] **plh_heartbeat_manager.hpp** – Moved to utils/heartbeat_manager.hpp (per plh_* convention).
 
 ---
 
@@ -23,14 +108,14 @@
 | **P9 Design** | ✅ Complete | 100% | Done |
 | **Core Implementation** | 🟡 In Progress | 30% | Week 2-3 |
 | **P9 Implementation** | ⏳ Not Started | 0% | Week 1 |
-| **Testing** | ⏳ Not Started | 0% | Week 4 |
+| **Testing** | 🟡 Planned | 0% | Week 4 (plan: docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md) |
 | **Deployment** | ⏳ Not Started | 0% | Week 5 |
 
 ---
 
 ## Cross-Platform and Behavioral Consistency
 
-**Principle:** All DataHub behavior must be **consistent across platforms** (Windows, Linux, macOS, FreeBSD). Platform-specific code belongs only in the platform layer; higher layers use a single, documented semantics.
+**Principle:** Cross-platform is **integrated into review and design**, not only into implementation. Every feature, API, and test plan must consider all supported platforms (Windows, Linux, macOS, FreeBSD). All DataHub behavior must be **consistent across platforms**. Platform-specific code belongs only in the platform layer; higher layers use a single, documented semantics.
 
 ### Rules
 
@@ -99,7 +184,7 @@
 
 - [x] **Create `src/include/utils/backoff_strategy.hpp`** (✅ already implemented)
   - Done: Header-only with `ExponentialBackoff`, `ConstantBackoff`, `NoBackoff`, `AggressiveBackoff`, and `backoff(iteration)`.
-  - Used by: `data_block.cpp` (pylabhub::utils::backoff), `data_block_spinlock.cpp` (ExponentialBackoff).
+  - Used by: `data_block.cpp` (pylabhub::utils::backoff), `shared_memory_spinlock.cpp` (ExponentialBackoff).
   - Benefits: Reusable for all spin loops (FileLock could adopt later)
 
 **Status (2026-02-10)**: Phase 0 platform refactoring complete. `shm_*` API in place; `data_block.cpp`, `open_datablock_for_diagnostic`, and `data_block_mutex.cpp` all use platform shm_* API.

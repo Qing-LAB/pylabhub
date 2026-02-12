@@ -8,7 +8,7 @@
  * See docs/hep/hep-core-0002-data-hub.md for complete design specification.
  */
 #include "pylabhub_utils_export.h"
-#include "data_block_spinlock.hpp" // Will contain SharedSpinLockState and SharedSpinLock
+#include "shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
 #include "schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
 #include <functional>
@@ -375,6 +375,12 @@ struct DataBlockSlotIteratorImpl;
 /**
  * @struct FlexibleZoneInfo
  * @brief Runtime information for a flexible zone.
+ *
+ * Flexible zone semantics: A zone is **undefined** until the producer supplies a definition
+ * (flexible_zone_configs) and the consumer agrees (expected_config). Until then, no access
+ * is granted: flexible_zone_span() returns an empty span, and checksum update/verify return
+ * false. Do not read or write flexible zone data until the zone is defined and both sides
+ * have agreed on layout.
  */
 struct FlexibleZoneInfo
 {
@@ -386,6 +392,12 @@ struct FlexibleZoneInfo
 /**
  * @class SlotWriteHandle
  * @brief Primitive write handle for a single data slot (producer).
+ *
+ * @par Lifetime contract
+ * The handle holds pointers into the DataBlock's shared memory. You must release or destroy
+ * all SlotWriteHandle instances (via release_write_slot or handle destruction) before
+ * destroying the DataBlockProducer. Destroying the producer while handles exist causes
+ * use-after-free.
  */
 class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 {
@@ -404,7 +416,8 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 
     /** @brief Mutable view of the slot buffer. */
     std::span<std::byte> buffer_span();
-    /** @brief Mutable view of the flexible zone. */
+    /** @brief Mutable view of the flexible zone. Empty if zone is undefined or index invalid
+     * (see FlexibleZoneInfo). */
     std::span<std::byte> flexible_zone_span(size_t flexible_zone_idx = 0);
 
     /** @brief Copy into slot buffer with bounds check. */
@@ -426,6 +439,12 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 /**
  * @class SlotConsumeHandle
  * @brief Primitive read handle for a single data slot (consumer).
+ *
+ * @par Lifetime contract
+ * The handle holds pointers into the DataBlock's shared memory. You must release or destroy
+ * all SlotConsumeHandle instances (via release_consume_slot or handle destruction) before
+ * destroying the DataBlockConsumer or DataBlockProducer. Destroying the consumer or producer
+ * while handles exist causes use-after-free.
  */
 class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 {
@@ -444,7 +463,8 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 
     /** @brief Read-only view of the slot buffer. */
     std::span<const std::byte> buffer_span() const;
-    /** @brief Read-only view of the flexible zone. */
+    /** @brief Read-only view of the flexible zone. Empty if zone undefined or index invalid
+     * (see FlexibleZoneInfo). */
     std::span<const std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) const;
 
     /** @brief Copy out of slot buffer with bounds check. */
@@ -531,11 +551,9 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     uint32_t spinlock_count() const;
 
     // ─── Flexible Zone Access ───
+    // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
     template <typename T> T &flexible_zone(size_t index)
     {
-        // Implementation will check index and type size against FlexibleZoneInfo
-        // For now, this is a placeholder. Real implementation in .cpp
-        // For now, just reinterpret_cast from flexible_zone_span(index).data()
         std::span<std::byte> span = flexible_zone_span(index);
         if (span.size() < sizeof(T))
         {
@@ -543,19 +561,28 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
         }
         return *reinterpret_cast<T *>(span.data());
     }
+    /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
     std::span<std::byte> flexible_zone_span(size_t index = 0);
 
     // ─── Checksum API (BLAKE2b via libsodium; stored in control zone) ───
-    /** Compute BLAKE2b of flexible zone, store in header. Returns true on success. */
+    /** Compute BLAKE2b of flexible zone, store in header. Returns false if zone undefined. */
     bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0);
     /** Compute BLAKE2b of data slot at index, store in header. Slot layout:
      * structured_buffer_size/ring_capacity. */
     bool update_checksum_slot(size_t slot_index);
 
     // ─── Primitive Data Transfer API ───
-    /** Acquire a slot for writing; returns nullptr on timeout. */
+    /** Acquire a slot for writing; returns nullptr on timeout.
+     * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle). */
     std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = 0);
-    /** Release a previously acquired slot; returns false if checksum verification failed. */
+    /**
+     * @brief Release a previously acquired slot.
+     * @return true on success. Returns false if:
+     *   - handle is invalid (default-constructed or moved-from)
+     *   - checksum update failed (when ChecksumPolicy::EnforceOnRelease and enable_checksum;
+     *     slot was committed but BLAKE2b update failed)
+     * Idempotent: calling again on an already-released handle returns true.
+     */
     bool release_write_slot(SlotWriteHandle &handle);
 
     // ─── Broker and Health Management ───
@@ -590,10 +617,9 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     uint32_t spinlock_count() const;
 
     // ─── Flexible Zone Access ───
+    // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
     template <typename T> const T &flexible_zone(size_t index) const
     {
-        // Implementation will check index and type size against FlexibleZoneInfo
-        // For now, this is a placeholder. Real implementation in .cpp
         std::span<const std::byte> span = flexible_zone_span(index);
         if (span.size() < sizeof(T))
         {
@@ -601,10 +627,11 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
         }
         return *reinterpret_cast<const T *>(span.data());
     }
+    /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
     std::span<const std::byte> flexible_zone_span(size_t index = 0) const;
 
     // ─── Checksum API (BLAKE2b; verify stored checksum matches computed) ───
-    /** Returns true if stored checksum matches computed BLAKE2b of flexible zone. */
+    /** Returns true if stored checksum matches computed BLAKE2b; false if zone undefined. */
     bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const;
     /** Returns true if stored checksum matches computed BLAKE2b of data slot. */
     bool verify_checksum_slot(size_t slot_index) const;
@@ -619,7 +646,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     void unregister_heartbeat(int slot);
 
     // ─── Primitive Data Transfer API ───
-    /** Acquire the next slot for reading; returns nullptr on timeout. */
+    /** Acquire the next slot for reading; returns nullptr on timeout.
+     * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle). */
     std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = 0);
     /** Acquire a specific slot by ID for reading; returns nullptr on timeout or if slot not
      * available. */

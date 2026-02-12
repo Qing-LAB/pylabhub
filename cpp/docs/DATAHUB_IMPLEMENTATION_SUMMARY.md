@@ -65,7 +65,7 @@ The current DataHub implementation has several helper functions that should be *
 **Move from DataHub → Platform**:
 
 ```cpp
-// BEFORE (in datablock_spinlock.cpp, data_block.cpp)
+// BEFORE (in shared_memory_spinlock.cpp, data_block.cpp)
 static bool is_process_alive(uint64_t pid) { /* ... */ }
 static uint64_t now_ns() { /* ... */ }
 static void* shm_open_wrapper(...) { /* ... */ }
@@ -172,7 +172,7 @@ Timeout reporting should live in the module where the timeout occurs (e.g. data_
 3. Review existing code:
    - `src/include/utils/data_block.hpp` (API surface)
    - `src/utils/data_block.cpp` (partial implementation)
-   - `src/utils/datablock_spinlock.cpp` (SharedSpinLock)
+   - `src/utils/shared_memory_spinlock.cpp` (SharedSpinLock)
 
 ### Step 2: Start with Phase 0 (Refactoring)
 

@@ -796,7 +796,7 @@
 - Split test_datablock.cpp into 3 files (6h)
 
 ### Phase 6: Layer 3 (DataHub) Advanced - 8 hours
-- Create test_data_block_spinlock.cpp (NEW, 4h)
+- Create test_shared_memory_spinlock.cpp (NEW, 4h)
 - Create test_data_block_ringbuffer.cpp (NEW, 2h)
 - Create test_data_block_checksum.cpp (NEW, 2h)
 

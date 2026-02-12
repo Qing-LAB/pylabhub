@@ -68,7 +68,7 @@ This document proposes a complete restructuring of the PyLabHub test suite to mi
 - `utils/data_block.hpp`: Shared memory IPC (DataBlock, transactions, ring buffers)
   - Supporting headers:
     - `utils/data_block_mutex.hpp`: OS-backed control zone locks
-    - `utils/datablock_spinlock.hpp`: PID-based user-space spin locks
+    - `utils/shared_memory_spinlock.hpp`: PID-based user-space spin locks
     - `utils/slot_rw_coordinator.h`: C interface for slot coordination
     - `utils/slot_rw_access.hpp`: C++ template wrappers for slot access
 
@@ -76,21 +76,21 @@ This document proposes a complete restructuring of the PyLabHub test suite to mi
 **Status**: API defined, implementation incomplete
 **Should be**: Organized into a future `plh_recovery.hpp` umbrella (Layer 3.5)
 **Modules**:
-- `plh_recovery_api.hpp`: C-style recovery API (diagnostics, slot reset, zombie cleanup)
-- `plh_slot_diagnostics.hpp`: C++ wrapper for slot diagnostics
-- `plh_slot_recovery.hpp`: C++ wrapper for slot recovery
-- `plh_heartbeat_manager.hpp`: C++ RAII heartbeat registration
-- `plh_integrity_validator.hpp`: C++ integrity validation wrapper
+- `utils/recovery_api.hpp`: C-style recovery API (diagnostics, slot reset, zombie cleanup)
+- `utils/slot_diagnostics.hpp`: C++ wrapper for slot diagnostics
+- `utils/slot_recovery.hpp`: C++ wrapper for slot recovery
+- `utils/heartbeat_manager.hpp`: C++ RAII heartbeat registration
+- `utils/integrity_validator.hpp`: C++ integrity validation wrapper
 
 **Recommendation**: Create `plh_recovery.hpp` umbrella header for P10+ implementation:
 ```cpp
 #pragma once
 #include "plh_datahub.hpp"
-#include "plh_recovery_api.hpp"        // C interface
-#include "plh_slot_diagnostics.hpp"    // C++ diagnostics
-#include "plh_slot_recovery.hpp"       // C++ recovery
-#include "plh_heartbeat_manager.hpp"   // RAII heartbeat
-#include "plh_integrity_validator.hpp" // Integrity checks
+#include "utils/recovery_api.hpp"        // C interface
+#include "utils/slot_diagnostics.hpp"    // C++ diagnostics
+#include "utils/slot_recovery.hpp"       // C++ recovery
+#include "utils/heartbeat_manager.hpp"   // RAII heartbeat
+#include "utils/integrity_validator.hpp" // Integrity checks
 ```
 
 ---
@@ -196,7 +196,7 @@ tests/
 │   ├── test_json_config.cpp                # JSON configuration
 │   ├── test_message_hub.cpp                # Service discovery
 │   ├── test_datablock_mutex.cpp            # Control zone OS locks
-│   ├── test_datablock_spinlock.cpp         # User-space PID locks
+│   ├── test_shared_memory_spinlock.cpp         # User-space PID locks
 │   ├── test_datablock_core.cpp             # DataBlock creation, memory layout
 │   ├── test_datablock_slot_coordination.cpp # Slot acquire/release, RW locks
 │   ├── test_datablock_transactions.cpp     # Transaction API (guards, lambdas)
@@ -462,7 +462,7 @@ tests/
 - ✅ Test lock timeout behavior
 - ✅ Multi-process lock contention
 
-#### test_datablock_spinlock.cpp (NEW)
+#### test_shared_memory_spinlock.cpp (NEW)
 **Tests**: User-space PID-based spin locks
 **Tests**:
 - ✅ `SharedSpinLock::try_lock()` succeeds when free
@@ -871,7 +871,7 @@ gtest_discover_tests(test_layer2_service
 1. ✅ Migrate `test_json_config.cpp`
 2. ✅ Migrate `test_message_hub.cpp`
 3. ✅ Create `test_datablock_mutex.cpp` (rename + verify)
-4. ✅ Create `test_datablock_spinlock.cpp` (NEW)
+4. ✅ Create `test_shared_memory_spinlock.cpp` (NEW)
 5. ✅ Create `test_datablock_core.cpp` (split from test_datablock.cpp)
 6. ✅ Fix API issues in all tests
 

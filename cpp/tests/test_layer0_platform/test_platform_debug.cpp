@@ -16,7 +16,7 @@
 #include <gmock/gmock.h>
 #include <cstring>
 
-#if defined(PYLABHUB_PLATFORM_POSIX)
+#if defined(PYLABHUB_IS_POSIX)
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
