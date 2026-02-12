@@ -328,3 +328,31 @@ message(STATUS "  - test_layer2_filelock           (multi-process IPC)")
 message(STATUS "  - test_layer2_filelock_singleprocess (pure API)")
 message(STATUS "  - test_layer2_logger             (multi-process)")
 message(STATUS "  - test_layer2_jsonconfig         (multi-process)")
+
+# SlotRWCoordinator is a pure C API over SlotRWState + SharedMemoryHeader.
+# The dedicated test below exercises it in isolation (no DataBlock / shm),
+# so higher-level tests can rely on a verified lower layer.
+
+add_executable(test_layer2_slot_rw_coordinator
+    test_slot_rw_coordinator.cpp
+)
+
+target_link_libraries(test_layer2_slot_rw_coordinator
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_slot_rw_coordinator
+    SUITE_NAME "Layer2_SlotRWCoordinator"
+)
+layer2_require_staged_utils(test_layer2_slot_rw_coordinator)
+
+gtest_discover_tests(test_layer2_slot_rw_coordinator
+    PROPERTIES
+        LABELS "layer2;service;slotrw"
+        TIMEOUT 60
+)

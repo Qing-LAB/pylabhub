@@ -125,6 +125,13 @@ TEST_F(SlotProtocolTest, HighLoadSingleReaderIntegrity)
     ExpectWorkerOk(proc, {"[SlotTest:HighLoadSingleReader] ok"});
 }
 
+TEST_F(SlotProtocolTest, WriterTimeoutMetricsSplit)
+{
+    auto proc = SpawnWorker("slot_protocol.writer_timeout_metrics_split", {});
+    // All assertions are inside the worker; success is exit code 0.
+    ExpectWorkerOk(proc, {});
+}
+
 TEST_F(SlotProtocolTest, CrossProcessDataExchangeWriterThenReaderVerifiesContent)
 {
     // Verifies offset, format, and that both processes see the same data:

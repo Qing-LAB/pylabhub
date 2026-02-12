@@ -122,7 +122,14 @@ SlotAcquireResult acquire_write(SlotRWState *rw, SharedMemoryHeader *header, int
                                   static_cast<uint64_t>(timeout_ms))
         {
             if (header)
+            {
                 header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                header->writer_lock_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                LOGGER_ERROR(
+                    "DataBlock acquire_write: timeout while waiting for write_lock. "
+                    "pid={}, current_owner_pid={}",
+                    my_pid, expected_lock);
+            }
             return SLOT_ACQUIRE_TIMEOUT;
         }
         backoff(iteration++);
@@ -150,7 +157,14 @@ SlotAcquireResult acquire_write(SlotRWState *rw, SharedMemoryHeader *header, int
             rw->write_lock.store(
                 0, std::memory_order_release); // Release the lock before returning timeout
             if (header)
+            {
                 header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                header->writer_reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                LOGGER_ERROR(
+                    "DataBlock acquire_write: timeout while waiting for readers to drain. "
+                    "pid={}, reader_count={} (possible zombie reader).",
+                    my_pid, readers);
+            }
             return SLOT_ACQUIRE_TIMEOUT;
         }
 
@@ -2391,6 +2405,10 @@ extern "C"
             return -1;
         out_metrics->writer_timeout_count =
             shared_memory_header->writer_timeout_count.load(std::memory_order_relaxed);
+        out_metrics->writer_lock_timeout_count =
+            shared_memory_header->writer_lock_timeout_count.load(std::memory_order_relaxed);
+        out_metrics->writer_reader_timeout_count =
+            shared_memory_header->writer_reader_timeout_count.load(std::memory_order_relaxed);
         out_metrics->writer_blocked_total_ns =
             shared_memory_header->writer_blocked_total_ns.load(std::memory_order_relaxed);
         out_metrics->write_lock_contention =
@@ -2453,6 +2471,8 @@ extern "C"
         if (!shared_memory_header)
             return -1;
         shared_memory_header->writer_timeout_count.store(0, std::memory_order_release);
+        shared_memory_header->writer_lock_timeout_count.store(0, std::memory_order_release);
+        shared_memory_header->writer_reader_timeout_count.store(0, std::memory_order_release);
         shared_memory_header->writer_blocked_total_ns.store(0, std::memory_order_release);
         shared_memory_header->write_lock_contention.store(0, std::memory_order_release);
         shared_memory_header->write_generation_wraps.store(0, std::memory_order_release);

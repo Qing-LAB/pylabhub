@@ -695,9 +695,29 @@ The Data Exchange Hub uses **two distinct synchronization primitives** for diffe
 | **SlotRWState** | Data access coordination | Per-slot atomic state | 50-200ns | PID-based best-effort |
 | **SharedSpinLock** | Flexible zone protection | User atomics (optional) | ~100ns | PID-based best-effort |
 
-### 4.2 SlotRWState Coordination (Core Data Path)
+### 4.2 SlotRWState / SlotRWCoordinator (Core Data Path)
 
-This is the **critical path** for all data transfers.
+This is the **critical path** for all data transfers and is implemented as a
+three-layer abstraction:
+
+1. **C++ core helpers** in `data_block.cpp` (`acquire_write`, `commit_write`,
+   `release_write`, `acquire_read`, `validate_read`, `release_read`) that
+   operate directly on `SlotRWState` and `SharedMemoryHeader`.
+2. **C ABI layer** in `slot_rw_coordinator.h` / `data_block.cpp` providing
+   `extern "C"` functions:
+   - `slot_rw_acquire_write`, `slot_rw_commit`, `slot_rw_release_write`
+   - `slot_rw_acquire_read`, `slot_rw_validate_read`, `slot_rw_release_read`
+   - `slot_rw_get_metrics`, `slot_rw_reset_metrics`,
+     `slot_acquire_result_string`
+   This layer is the stable, language-agnostic interface used by higher-level
+   components and future bindings.
+3. **C++ RAII / template helpers** at Layer 2+ (transaction guards,
+   `with_*` helpers) built on top of the primitive C++/C API.
+
+All call sites (DataBlock, transaction guards, tests, future bindings) must
+use this SlotRWCoordinator path rather than re-implementing their own state
+machines. This ensures one **single source of truth** for the slot protocol,
+metrics, and memory ordering.
 
 #### 4.2.1 Writer Acquisition Flow
 
