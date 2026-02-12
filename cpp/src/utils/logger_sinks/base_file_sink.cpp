@@ -31,7 +31,7 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
     // On Windows, the file sharing mode specified in `CreateFileW` (third param)
     // governs inter-process access. Unlike POSIX, there is no direct equivalent
     // to an advisory `flock`. The `use_flock` parameter is therefore ignored.
-    (void)m_use_flock; // Prevent unused parameter warning on Windows
+    (void)use_flock; // Prevent unused parameter warning on Windows
     std::wstring wpath = pylabhub::format_tools::win32_to_long_path(m_path);
     if (wpath.empty())
     {

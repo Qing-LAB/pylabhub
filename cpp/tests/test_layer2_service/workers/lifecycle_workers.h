@@ -18,6 +18,11 @@ int load_module_overflow_returns_false();
 int unload_module_null_returns_false();
 int unload_module_overflow_returns_false();
 
+// --- Init/finalize idempotency and is_finalized ---
+int test_init_idempotency();
+int test_finalize_idempotency();
+int test_is_finalized_flag();
+
 // --- Dynamic Lifecycle Workers ---
 int dynamic_register_before_init_fail();
 int dynamic_load_unload();

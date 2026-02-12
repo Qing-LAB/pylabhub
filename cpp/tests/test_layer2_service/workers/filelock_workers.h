@@ -88,6 +88,12 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str);
 
 int try_lock_nonblocking(const std::string &resource_path_str);
 
+/**
+ * @brief Worker that creates FileLock without lifecycle initialized.
+ * Expected to abort with PLH_PANIC.
+ */
+int use_without_lifecycle_aborts();
+
 } // namespace filelock
 
 } // namespace pylabhub::tests::worker

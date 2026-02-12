@@ -87,16 +87,16 @@ gtest_discover_tests(test_layer0_platform_debug
 )
 
 # ============================================================================
-# Test: Platform Sanitizers
+# Test: Platform Shared Memory (shm_create, shm_attach, shm_close, shm_unlink)
 # ============================================================================
 
-set(TEST_PLATFORM_SANITIZERS_SOURCES
-    test_platform_sanitizers.cpp
+set(TEST_PLATFORM_SHM_SOURCES
+    test_platform_shm.cpp
 )
 
-add_executable(test_layer0_platform_sanitizers ${TEST_PLATFORM_SANITIZERS_SOURCES})
+add_executable(test_layer0_platform_shm ${TEST_PLATFORM_SHM_SOURCES})
 
-target_link_libraries(test_layer0_platform_sanitizers
+target_link_libraries(test_layer0_platform_shm
     PRIVATE
         pylabhub::utils
         pylabhub::test_framework
@@ -105,6 +105,34 @@ target_link_libraries(test_layer0_platform_sanitizers
         GTest::gmock
 )
 
+pylabhub_register_test_for_staging(
+    TARGET test_layer0_platform_shm
+    SUITE_NAME "Layer0_Platform_Shm"
+)
+layer0_require_staged_utils(test_layer0_platform_shm)
+
+gtest_discover_tests(test_layer0_platform_shm
+    PROPERTIES
+        LABELS "layer0;platform;shm"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: Platform Sanitizers
+# ============================================================================
+
+add_executable(test_layer0_platform_sanitizers test_platform_sanitizers.cpp)
+
+target_link_libraries(test_layer0_platform_sanitizers
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_sanitizers)
+
 # Register for staging
 pylabhub_register_test_for_staging(
     TARGET test_layer0_platform_sanitizers
@@ -112,14 +140,15 @@ pylabhub_register_test_for_staging(
 )
 layer0_require_staged_utils(test_layer0_platform_sanitizers)
 
-# Register with CTest
+# Register with CTest (tests assert on stderr content only, not exit code)
 gtest_discover_tests(test_layer0_platform_sanitizers
     PROPERTIES
         LABELS "layer0;platform;sanitizer"
-        TIMEOUT 60  # Sanitizer tests may take longer
+        TIMEOUT 60
 )
 
 message(STATUS "Layer 0 (Platform) tests configured successfully")
 message(STATUS "  - test_layer0_platform_core")
 message(STATUS "  - test_layer0_platform_debug")
+message(STATUS "  - test_layer0_platform_shm")
 message(STATUS "  - test_layer0_platform_sanitizers")

@@ -1,11 +1,11 @@
 /**
- * @file plh_slot_diagnostics.hpp
- * @brief C++ wrapper for slot diagnostic functions.
+ * @file slot_diagnostics.hpp
+ * @brief C++ wrapper for DataBlock slot diagnostic functions.
  */
 #pragma once
 
 #include "pylabhub_utils_export.h"
-#include "plh_recovery_api.hpp"
+#include "utils/recovery_api.hpp"
 #include <string>
 
 namespace pylabhub::hub

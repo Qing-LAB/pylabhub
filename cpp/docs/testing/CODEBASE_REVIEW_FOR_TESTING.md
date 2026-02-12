@@ -172,7 +172,7 @@ This review examined the actual implementation of all PyLabHub modules to:
 
 **Code location usage**:
 - `data_block.cpp`: Uses `pylabhub::utils::backoff()` (defaults to ExponentialBackoff)
-- `data_block_spinlock.cpp`: Uses `ExponentialBackoff` explicitly
+- `shared_memory_spinlock.cpp`: Uses `ExponentialBackoff` explicitly
 
 #### 2. Crypto Utils (`utils/crypto_utils.hpp/cpp`)
 
@@ -322,7 +322,7 @@ SchemaInfo generate_schema_info(const std::string& name, const SchemaVersion& ve
 - Must test SchemaVersion packing/unpacking
 - Must test SchemaInfo matching
 
-#### 2. DataBlock Core (`utils/data_block.hpp/cpp`, `utils/data_block_spinlock.hpp/cpp`)
+#### 2. DataBlock Core (`utils/data_block.hpp/cpp`, `utils/shared_memory_spinlock.hpp/cpp`)
 
 **Design**: Shared memory IPC with lock-free coordination
 
@@ -599,7 +599,7 @@ std::atomic<uint64_t> schema_mismatch_count;  // P9.2
    ```
    ✅ Correct: seq_cst fence forces visibility for TOCTTOU mitigation
 
-3. **SharedSpinLock** (data_block_spinlock.cpp:47-80):
+3. **SharedSpinLock** (shared_memory_spinlock.cpp:47-80):
    ```cpp
    owner_pid.compare_exchange_weak(expected, my_pid,
        std::memory_order_acquire,  // Success

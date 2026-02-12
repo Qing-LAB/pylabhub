@@ -342,7 +342,7 @@ After CRITICAL tests pass:
    - test_data_block.cpp (fix/enhance)
    - test_data_block_schema.cpp (NEW for P9.2)
    - test_data_block_mutex.cpp (migrate)
-   - test_data_block_spinlock.cpp (migrate)
+   - test_shared_memory_spinlock.cpp (migrate)
 
 2. **Multi-process DataBlock tests**:
    - Producer/consumer IPC

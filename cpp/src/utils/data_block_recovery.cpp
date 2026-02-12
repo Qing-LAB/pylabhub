@@ -1,10 +1,11 @@
-#include "plh_recovery_api.hpp"
+#include "utils/recovery_api.hpp"
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
 #include "utils/logger.hpp"
 #include "utils/message_hub.hpp"
 
 #include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,6 +16,46 @@ static uint8_t map_slot_state(pylabhub::hub::SlotRWState::SlotState state)
     return static_cast<uint8_t>(state);
 }
 
+// Shared context for recovery APIs: holds handle and header to avoid repeating open/validation.
+struct RecoveryContext
+{
+    std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle;
+    pylabhub::hub::SharedMemoryHeader *header{nullptr};
+    std::string shm_name;
+};
+
+// Opens datablock for diagnosis; logs and returns nullopt on failure. Use in all recovery C APIs.
+static std::optional<RecoveryContext> open_for_recovery(const char *shm_name_cstr)
+{
+    if (!shm_name_cstr)
+    {
+        LOGGER_ERROR("recovery: Invalid arguments (null shm_name).");
+        return std::nullopt;
+    }
+    std::string shm_name = shm_name_cstr;
+    auto handle = pylabhub::hub::open_datablock_for_diagnostic(shm_name);
+    if (!handle)
+    {
+        LOGGER_ERROR("recovery: Failed to open '{}' for diagnosis.", shm_name);
+        return std::nullopt;
+    }
+    pylabhub::hub::SharedMemoryHeader *header = handle->header();
+    if (!header)
+    {
+        LOGGER_ERROR("recovery: Failed to get header for '{}'.", shm_name);
+        return std::nullopt;
+    }
+    return RecoveryContext{std::move(handle), header, std::move(shm_name)};
+}
+
+// Store platform monotonic timestamp (ns) into header->last_error_timestamp_ns. Used after recovery actions.
+static void set_recovery_timestamp(pylabhub::hub::SharedMemoryHeader *header)
+{
+    if (header)
+        header->last_error_timestamp_ns.store(pylabhub::platform::monotonic_time_ns(),
+                                              std::memory_order_release);
+}
+
 // Implementation of datablock_diagnose_slot
 extern "C"
 {
@@ -22,28 +63,16 @@ extern "C"
     PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name_cstr,
                                                       uint32_t slot_index, SlotDiagnostic *out)
     {
-        if (!shm_name_cstr || !out)
+        if (!out)
         {
             LOGGER_ERROR("datablock_diagnose_slot: Invalid arguments (null pointer).");
             return -1; // Invalid arguments
         }
-
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_diagnose_slot: Failed to open '{}' for diagnosis.", shm_name);
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return -2; // Internal error
-        }
 
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_diagnose_slot: Failed to get header for '{}'.", shm_name);
-            return -2; // Internal error
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
         if (slot_index >= ring_buffer_capacity)
         {
@@ -52,12 +81,12 @@ extern "C"
             return -3; // Invalid index
         }
 
-        pylabhub::hub::SlotRWState *rw_state = handle->slot_rw_state(slot_index);
+        pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
         if (!rw_state)
         {
             LOGGER_ERROR(
                 "datablock_diagnose_slot: Failed to get slot_rw_state for slot {} in '{}'.",
-                slot_index, shm_name);
+                slot_index, ctx->shm_name);
             return -2;
         }
 
@@ -97,13 +126,13 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_diagnose_slot: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_diagnose_slot: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return -4; // Runtime error during DataBlock access
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_diagnose_slot: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_diagnose_slot: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return -5; // General unexpected error
         }
@@ -115,33 +144,19 @@ extern "C"
                                                            SlotDiagnostic *out_array,
                                                            size_t array_capacity, size_t *out_count)
     {
-        if (!shm_name_cstr || !out_array || !out_count)
+        if (!out_array || !out_count)
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Invalid arguments (null pointer).");
             return -1; // Invalid arguments
         }
-
-        std::string shm_name = shm_name_cstr;
         *out_count = 0; // Initialize count
-
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_diagnose_all_slots: Failed to open '{}' for diagnosis.",
-                         shm_name);
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return -2;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_diagnose_all_slots: Failed to get header for '{}'.", shm_name);
-            return -2;
-        }
 
         try
         {
-            uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
+            uint32_t ring_buffer_capacity = ctx->header->ring_buffer_capacity;
 
             for (uint32_t i = 0; i < ring_buffer_capacity; ++i)
             {
@@ -153,7 +168,7 @@ extern "C"
                         // Log error but continue with other slots if possible
                         LOGGER_ERROR("datablock_diagnose_all_slots: Failed to diagnose slot {} for "
                                      "'{}'. Error code: {}.",
-                                     i, shm_name, result);
+                                     i, ctx->shm_name, result);
                     }
                     else
                     {
@@ -171,13 +186,13 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_diagnose_all_slots: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_diagnose_all_slots: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return -4; // Runtime error during DataBlock access
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return -5; // General unexpected error
         }
@@ -193,28 +208,11 @@ extern "C"
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_slot(const char *shm_name_cstr,
                                                                     uint32_t slot_index, bool force)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_force_reset_slot: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_force_reset_slot: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_force_reset_slot: Failed to get header for '{}'.", shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
             uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
@@ -225,12 +223,12 @@ extern "C"
                 return RECOVERY_INVALID_SLOT;
             }
 
-            pylabhub::hub::SlotRWState *rw_state = handle->slot_rw_state(slot_index);
+            pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
             if (!rw_state)
             {
                 LOGGER_ERROR(
                     "datablock_force_reset_slot: Failed to get slot_rw_state for slot {} in '{}'.",
-                    slot_index, shm_name);
+                    slot_index, ctx->shm_name);
                 return RECOVERY_FAILED;
             }
 
@@ -266,7 +264,7 @@ extern "C"
 
             LOGGER_WARN("RECOVERY: Resetting slot {} in '{}'. State before: {{lock={}, readers={}, "
                         "state={}}}.",
-                        slot_index, shm_name, current_write_lock, current_reader_count,
+                        slot_index, ctx->shm_name, current_write_lock, current_reader_count,
                         map_slot_state(current_slot_state));
 
             rw_state->write_lock.store(0, std::memory_order_release);
@@ -276,23 +274,19 @@ extern "C"
             rw_state->writer_waiting.store(0, std::memory_order_release);
 
             header->recovery_actions_count.fetch_add(1, std::memory_order_relaxed);
-            header->last_error_timestamp_ns.store(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::high_resolution_clock::now().time_since_epoch())
-                    .count(),
-                std::memory_order_release); // Use release order
+            set_recovery_timestamp(header);
 
-            LOGGER_WARN("RECOVERY: Slot {} in '{}' reset to FREE.", slot_index, shm_name);
+            LOGGER_WARN("RECOVERY: Slot {} in '{}' reset to FREE.", slot_index, ctx->shm_name);
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_slot: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_force_reset_slot: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_slot: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_force_reset_slot: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
@@ -303,29 +297,11 @@ extern "C"
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_all_slots(const char *shm_name_cstr,
                                                                          bool force)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Failed to get header for '{}'.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         RecoveryResult overall_result = RECOVERY_SUCCESS;
 
         try
@@ -333,7 +309,7 @@ extern "C"
             uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
 
             LOGGER_WARN("RECOVERY: Attempting to force reset ALL {} slots in '{}'. Force flag: {}.",
-                        ring_buffer_capacity, shm_name, force ? "TRUE" : "FALSE");
+                        ring_buffer_capacity, ctx->shm_name, force ? "TRUE" : "FALSE");
 
             for (uint32_t i = 0; i < ring_buffer_capacity; ++i)
             {
@@ -342,7 +318,7 @@ extern "C"
                 {
                     LOGGER_ERROR("datablock_force_reset_all_slots: Failed to reset slot {} in "
                                  "'{}'. Result: {}.",
-                                 i, shm_name, static_cast<int>(result));
+                                 i, ctx->shm_name, static_cast<int>(result));
                     if (overall_result == RECOVERY_SUCCESS)
                     {
                         overall_result = result;
@@ -352,19 +328,19 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_force_reset_all_slots: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_force_reset_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
 
         LOGGER_WARN("RECOVERY: Completed force reset of all slots in '{}'. Overall result: {}.",
-                    shm_name, static_cast<int>(overall_result));
+                    ctx->shm_name, static_cast<int>(overall_result));
         return overall_result;
     }
 
@@ -372,29 +348,11 @@ extern "C"
                                                                           uint32_t slot_index,
                                                                           bool force)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_release_zombie_readers: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_release_zombie_readers: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_release_zombie_readers: Failed to get header for '{}'.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
             uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
@@ -406,12 +364,12 @@ extern "C"
                 return RECOVERY_INVALID_SLOT;
             }
 
-            pylabhub::hub::SlotRWState *rw_state = handle->slot_rw_state(slot_index);
+            pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
             if (!rw_state)
             {
                 LOGGER_ERROR("datablock_release_zombie_readers: Failed to get slot_rw_state for "
                              "slot {} in '{}'.",
-                             slot_index, shm_name);
+                             slot_index, ctx->shm_name);
                 return RECOVERY_FAILED;
             }
 
@@ -440,7 +398,7 @@ extern "C"
 
             LOGGER_WARN("RECOVERY: Releasing zombie readers for slot {} in '{}'. State before: "
                         "{{readers={}, state={}}}. Force: {}.",
-                        slot_index, shm_name, current_reader_count,
+                        slot_index, ctx->shm_name, current_reader_count,
                         map_slot_state(current_slot_state), force);
 
             rw_state->reader_count.store(0, std::memory_order_release);
@@ -452,25 +410,21 @@ extern "C"
             }
 
             header->recovery_actions_count.fetch_add(1, std::memory_order_relaxed);
-            header->last_error_timestamp_ns.store(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::high_resolution_clock::now().time_since_epoch())
-                    .count(),
-                std::memory_order_release); // Use release order
+            set_recovery_timestamp(header);
 
             LOGGER_WARN("RECOVERY: Zombie readers for slot {} in '{}' released.", slot_index,
-                        shm_name);
+                        ctx->shm_name);
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_readers: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_release_zombie_readers: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("datablock_release_zombie_readers: Unexpected error for '{}': {}",
-                         shm_name, ex.what());
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
 
@@ -480,29 +434,11 @@ extern "C"
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_writer(const char *shm_name_cstr,
                                                                          uint32_t slot_index)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_release_zombie_writer: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_release_zombie_writer: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_release_zombie_writer: Failed to get header for '{}'.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
             uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
@@ -514,12 +450,12 @@ extern "C"
                 return RECOVERY_INVALID_SLOT;
             }
 
-            pylabhub::hub::SlotRWState *rw_state = handle->slot_rw_state(slot_index);
+            pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
             if (!rw_state)
             {
                 LOGGER_ERROR("datablock_release_zombie_writer: Failed to get slot_rw_state for "
                              "slot {} in '{}'.",
-                             slot_index, shm_name);
+                             slot_index, ctx->shm_name);
                 return RECOVERY_FAILED;
             }
 
@@ -541,7 +477,7 @@ extern "C"
             }
 
             LOGGER_WARN("RECOVERY: Releasing zombie writer for slot {} in '{}'. PID {}.",
-                        slot_index, shm_name, current_write_lock_pid);
+                        slot_index, ctx->shm_name, current_write_lock_pid);
 
             rw_state->write_lock.store(0, std::memory_order_release);
             rw_state->slot_state.store(pylabhub::hub::SlotRWState::SlotState::FREE,
@@ -549,24 +485,20 @@ extern "C"
             rw_state->writer_waiting.store(0, std::memory_order_release);
 
             header->recovery_actions_count.fetch_add(1, std::memory_order_relaxed);
-            header->last_error_timestamp_ns.store(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::high_resolution_clock::now().time_since_epoch())
-                    .count(),
-                std::memory_order_release); // Use release order
+            set_recovery_timestamp(header);
 
             LOGGER_WARN("RECOVERY: Zombie writer for slot {} in '{}' released.", slot_index,
-                        shm_name);
+                        ctx->shm_name);
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_writer: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_release_zombie_writer: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_writer: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_release_zombie_writer: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
@@ -576,32 +508,14 @@ extern "C"
 
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_cleanup_dead_consumers(const char *shm_name_cstr)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_cleanup_dead_consumers: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_cleanup_dead_consumers: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_cleanup_dead_consumers: Failed to get header for '{}'.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
-            LOGGER_INFO("RECOVERY: Starting cleanup of dead consumers in '{}'.", shm_name);
+            LOGGER_INFO("RECOVERY: Starting cleanup of dead consumers in '{}'.", ctx->shm_name);
 
             int cleaned_count = 0;
             for (size_t i = 0; i < pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS; ++i)
@@ -625,26 +539,22 @@ extern "C"
             if (cleaned_count > 0)
             {
                 header->recovery_actions_count.fetch_add(cleaned_count, std::memory_order_relaxed);
-                header->last_error_timestamp_ns.store(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::high_resolution_clock::now().time_since_epoch())
-                        .count(),
-                    std::memory_order_release); // Use release order
+                set_recovery_timestamp(header);
             }
 
             LOGGER_INFO("RECOVERY: Finished cleanup. Removed {} dead consumers from '{}'.",
-                        cleaned_count, shm_name);
+                        cleaned_count, ctx->shm_name);
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_cleanup_dead_consumers: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_cleanup_dead_consumers: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("datablock_cleanup_dead_consumers: Unexpected error for '{}': {}",
-                         shm_name, ex.what());
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
 
@@ -654,34 +564,17 @@ extern "C"
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(const char *shm_name_cstr,
                                                                       bool repair)
     {
-        if (!shm_name_cstr)
-        {
-            LOGGER_ERROR("datablock_validate_integrity: Invalid arguments (null shm_name).");
+        auto ctx = open_for_recovery(shm_name_cstr);
+        if (!ctx)
             return RECOVERY_FAILED;
-        }
 
-        std::string shm_name = shm_name_cstr;
-        std::unique_ptr<pylabhub::hub::DataBlockDiagnosticHandle> handle =
-            pylabhub::hub::open_datablock_for_diagnostic(shm_name);
-        if (!handle)
-        {
-            LOGGER_ERROR("datablock_validate_integrity: Failed to open '{}' for diagnosis.",
-                         shm_name);
-            return RECOVERY_FAILED;
-        }
-        pylabhub::hub::SharedMemoryHeader *header = handle->header();
-        if (!header)
-        {
-            LOGGER_ERROR("datablock_validate_integrity: Failed to get header for '{}'.", shm_name);
-            return RECOVERY_FAILED;
-        }
-
+        pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         RecoveryResult overall_result = RECOVERY_SUCCESS;
 
         try
         {
             LOGGER_INFO("INTEGRITY_CHECK: Starting integrity validation for '{}'. Repair mode: {}.",
-                        shm_name, repair ? "ON" : "OFF");
+                        ctx->shm_name, repair ? "ON" : "OFF");
 
             // 1. Magic Number
             if (!pylabhub::hub::detail::is_header_magic_valid(&header->magic_number,
@@ -708,7 +601,7 @@ extern "C"
 
             // 3. Build expected config from header for consumer/producer calls
             pylabhub::hub::DataBlockConfig expected_config;
-            expected_config.name = shm_name;
+            expected_config.name = ctx->shm_name;
             expected_config.ring_buffer_capacity = header->ring_buffer_capacity;
             if (header->unit_block_size == 4096u)
                 expected_config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
@@ -729,44 +622,44 @@ extern "C"
             if (header->enable_checksum)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer(
-                    pylabhub::hub::MessageHub::get_instance(), shm_name, expected_config.shared_secret,
+                    pylabhub::hub::MessageHub::get_instance(), ctx->shm_name, expected_config.shared_secret,
                     expected_config);
 
                 if (!consumer)
                 {
                     LOGGER_ERROR("INTEGRITY_CHECK: Could not create a consumer to verify checksums "
                                  "for '{}'.",
-                                 shm_name);
+                                 ctx->shm_name);
                     return RECOVERY_FAILED;
                 }
 
                 // Flexible zone checksums
                 for (size_t i = 0; i < expected_config.flexible_zone_configs.size(); ++i)
                 {
-                    if (!consumer->verify_checksum_flexible_zone(i))
-                    { // Pass index
-                        LOGGER_WARN(
-                            "INTEGRITY_CHECK: Flexible zone {} checksum is invalid for '{}'.", i,
-                            shm_name);
+                        if (!consumer->verify_checksum_flexible_zone(i))
+                        { // Pass index
+                            LOGGER_WARN(
+                                "INTEGRITY_CHECK: Flexible zone {} checksum is invalid for '{}'.", i,
+                                ctx->shm_name);
                         if (repair)
                         {
                             LOGGER_WARN("REPAIR: Attempting to recalculate flexible zone {} "
                                         "checksum for '{}'.",
-                                        i, shm_name);
+                                        i, ctx->shm_name);
                             auto producer = pylabhub::hub::create_datablock_producer(
-                                pylabhub::hub::MessageHub::get_instance(), shm_name,
+                                pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
                                 expected_config.policy, expected_config); // Removed schema_instance
                             if (producer && producer->update_checksum_flexible_zone(i))
                             { // Pass index
                                 LOGGER_WARN("REPAIR: Successfully recalculated flexible zone {} "
                                             "checksum for '{}'.",
-                                            i, shm_name);
+                                            i, ctx->shm_name);
                             }
                             else
                             {
                                 LOGGER_ERROR("REPAIR: Failed to recalculate flexible zone {} "
                                              "checksum for '{}'.",
-                                             i, shm_name);
+                                             i, ctx->shm_name);
                                 overall_result = RECOVERY_FAILED;
                             }
                         }
@@ -787,27 +680,27 @@ extern "C"
                         if (!consumer->verify_checksum_slot(i))
                         {
                             LOGGER_WARN("INTEGRITY_CHECK: Slot {} checksum is invalid for '{}'.", i,
-                                        shm_name);
+                                        ctx->shm_name);
                             if (repair)
                             {
                                 LOGGER_WARN("REPAIR: Attempting to recalculate checksum for slot "
                                             "{} in '{}'.",
-                                            i, shm_name);
+                                            i, ctx->shm_name);
                                 auto producer = pylabhub::hub::create_datablock_producer(
-                                    pylabhub::hub::MessageHub::get_instance(), shm_name,
+                                    pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
                                     expected_config.policy,
                                     expected_config); // Removed schema_instance
                                 if (producer && producer->update_checksum_slot(i))
                                 {
                                     LOGGER_WARN("REPAIR: Successfully recalculated checksum for "
                                                 "slot {} in '{}'.",
-                                                i, shm_name);
+                                                i, ctx->shm_name);
                                 }
                                 else
                                 {
                                     LOGGER_ERROR("REPAIR: Failed to recalculate checksum for slot "
                                                  "{} in '{}'.",
-                                                 i, shm_name);
+                                                 i, ctx->shm_name);
                                     overall_result = RECOVERY_FAILED;
                                 }
                             }
@@ -820,18 +713,18 @@ extern "C"
                 }
             }
 
-            LOGGER_INFO("INTEGRITY_CHECK: Finished for '{}'. Overall result: {}.", shm_name,
+            LOGGER_INFO("INTEGRITY_CHECK: Finished for '{}'. Overall result: {}.", ctx->shm_name,
                         static_cast<int>(overall_result));
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_validate_integrity: Runtime error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_validate_integrity: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_validate_integrity: Unexpected error for '{}': {}", shm_name,
+            LOGGER_ERROR("datablock_validate_integrity: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
             return RECOVERY_FAILED;
         }

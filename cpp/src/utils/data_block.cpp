@@ -34,12 +34,6 @@ static constexpr uint16_t DATABLOCK_VERSION_MAJOR = HEADER_VERSION_MAJOR;
 static constexpr uint16_t DATABLOCK_VERSION_MINOR = HEADER_VERSION_MINOR;
 static constexpr uint64_t INVALID_SLOT_ID = std::numeric_limits<uint64_t>::max();
 
-// Helper function to get current PID
-uint64_t get_current_pid()
-{
-    return pylabhub::platform::get_pid();
-}
-
 // === SlotRWState Coordination Logic ===
 // Note: backoff() is now provided by pylabhub::utils::backoff() from backoff_strategy.hpp
 
@@ -47,7 +41,7 @@ uint64_t get_current_pid()
 SlotAcquireResult acquire_write(SlotRWState *rw, SharedMemoryHeader *header, int timeout_ms)
 {
     auto start_time = pylabhub::platform::monotonic_time_ns();
-    uint64_t my_pid = get_current_pid();
+    uint64_t my_pid = pylabhub::platform::get_pid();
     int iteration = 0;
 
     while (true)
@@ -222,6 +216,84 @@ void release_read(SlotRWState *rw, SharedMemoryHeader *header)
 } // namespace
 
 // ============================================================================
+// DataBlockLayout - Centralized layout calculation (single source of truth)
+// ============================================================================
+struct DataBlockLayout
+{
+    size_t slot_rw_state_offset = 0;
+    size_t slot_rw_state_size = 0;
+    size_t slot_checksum_offset = 0;
+    size_t slot_checksum_size = 0;
+    size_t flexible_zone_offset = 0;
+    size_t flexible_zone_size = 0;
+    size_t structured_buffer_offset = 0;
+    size_t structured_buffer_size = 0;
+    size_t total_size = 0;
+
+    static DataBlockLayout from_config(const DataBlockConfig &config)
+    {
+        DataBlockLayout L;
+        L.slot_rw_state_offset = sizeof(SharedMemoryHeader);
+        L.slot_rw_state_size = config.ring_buffer_capacity * sizeof(SlotRWState);
+        L.slot_checksum_size = config.enable_checksum
+                                  ? (config.ring_buffer_capacity * detail::SLOT_CHECKSUM_ENTRY_SIZE)
+                                  : 0;
+        L.slot_checksum_offset = L.slot_rw_state_offset + L.slot_rw_state_size;
+        L.flexible_zone_size = config.total_flexible_zone_size();
+        L.flexible_zone_offset = L.slot_checksum_offset + L.slot_checksum_size;
+        L.structured_buffer_size = config.structured_buffer_size();
+        L.structured_buffer_offset = L.flexible_zone_offset + L.flexible_zone_size;
+        L.total_size = L.structured_buffer_offset + L.structured_buffer_size;
+        return L;
+    }
+
+    static DataBlockLayout from_header(const SharedMemoryHeader *h)
+    {
+        DataBlockLayout L;
+        if (!h)
+            return L;
+        uint32_t cap = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
+        L.slot_rw_state_offset = sizeof(SharedMemoryHeader);
+        L.slot_rw_state_size = cap * sizeof(SlotRWState);
+        L.slot_checksum_size =
+            h->enable_checksum ? (cap * detail::SLOT_CHECKSUM_ENTRY_SIZE) : 0;
+        L.slot_checksum_offset = L.slot_rw_state_offset + L.slot_rw_state_size;
+        L.flexible_zone_size = h->flexible_zone_size;
+        L.flexible_zone_offset = L.slot_checksum_offset + L.slot_checksum_size;
+        L.structured_buffer_size = cap * h->unit_block_size;
+        L.structured_buffer_offset = L.flexible_zone_offset + L.flexible_zone_size;
+        L.total_size = L.structured_buffer_offset + L.structured_buffer_size;
+        return L;
+    }
+
+    char *slot_checksum_base(char *segment_base) const
+    {
+        return segment_base + slot_checksum_offset;
+    }
+    const char *slot_checksum_base(const char *segment_base) const
+    {
+        return segment_base + slot_checksum_offset;
+    }
+
+#if !defined(NDEBUG)
+    bool validate() const
+    {
+        if (slot_rw_state_offset != sizeof(SharedMemoryHeader))
+            return false;
+        if (slot_checksum_offset != slot_rw_state_offset + slot_rw_state_size)
+            return false;
+        if (flexible_zone_offset != slot_checksum_offset + slot_checksum_size)
+            return false;
+        if (structured_buffer_offset != flexible_zone_offset + flexible_zone_size)
+            return false;
+        if (total_size != structured_buffer_offset + structured_buffer_size)
+            return false;
+        return true;
+    }
+#endif
+};
+
+// ============================================================================
 // DataBlock - Internal helper
 // ============================================================================
 class DataBlock
@@ -230,13 +302,11 @@ class DataBlock
     DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_is_creator(true)
     {
-        // 1. Calculate total shared memory size
-        size_t slot_rw_state_array_size = config.ring_buffer_capacity * sizeof(SlotRWState);
-        size_t total_flexible_zone_size = config.total_flexible_zone_size(); // Using new helper
-        size_t structured_buffer_total_size = config.structured_buffer_size();
-
-        m_size = sizeof(SharedMemoryHeader) + slot_rw_state_array_size + total_flexible_zone_size +
-                 structured_buffer_total_size;
+        m_layout = DataBlockLayout::from_config(config);
+        m_size = m_layout.total_size;
+#if !defined(NDEBUG)
+        assert(m_layout.validate() && "DataBlockLayout invariant violated");
+#endif
 
 #if defined(PYLABHUB_IS_POSIX)
         pylabhub::platform::shm_unlink(m_name.c_str()); // Ensure it's not already existing
@@ -274,7 +344,7 @@ class DataBlock
         m_header->policy = config.policy;
         m_header->unit_block_size = static_cast<uint32_t>(to_bytes(config.unit_block_size));
         m_header->ring_buffer_capacity = config.ring_buffer_capacity;
-        m_header->flexible_zone_size = total_flexible_zone_size;
+        m_header->flexible_zone_size = m_layout.flexible_zone_size;
         m_header->enable_checksum = config.enable_checksum;
         m_header->checksum_policy = config.checksum_policy;
 
@@ -342,9 +412,9 @@ class DataBlock
             m_header->spinlock_states[i].generation.store(0, std::memory_order_release);
         }
 
-        // 3. Initialize SlotRWState array
+        // 3. Initialize SlotRWState array (using layout)
         m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
-            reinterpret_cast<char *>(m_shm.base) + sizeof(SharedMemoryHeader));
+            reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
 
         for (uint32_t i = 0; i < config.ring_buffer_capacity; ++i)
         {
@@ -356,10 +426,11 @@ class DataBlock
             m_slot_rw_states_array[i].write_generation.store(0, std::memory_order_release);
         }
 
-        // 4. Calculate pointers for flexible zones and structured data buffer
+        // 4. Set pointers from layout
         m_flexible_data_zone =
-            reinterpret_cast<char *>(m_slot_rw_states_array) + slot_rw_state_array_size;
-        m_structured_data_buffer = m_flexible_data_zone + total_flexible_zone_size;
+            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
+        m_structured_data_buffer =
+            reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
         // Populate flexible zone info map
         size_t current_offset = 0;
@@ -446,14 +517,17 @@ class DataBlock
                                      std::to_string(m_size));
         }
 
-        // Calculate pointers for SlotRWState array, flexible zones and structured data buffer
+        // Calculate pointers from layout (single source of truth)
+        m_layout = DataBlockLayout::from_header(m_header);
+#if !defined(NDEBUG)
+        assert(m_layout.validate() && "DataBlockLayout invariant violated");
+#endif
         m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
-            reinterpret_cast<char *>(m_shm.base) + sizeof(SharedMemoryHeader));
-
-        size_t slot_rw_state_array_size = m_header->ring_buffer_capacity * sizeof(SlotRWState);
+            reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
         m_flexible_data_zone =
-            reinterpret_cast<char *>(m_slot_rw_states_array) + slot_rw_state_array_size;
-        m_structured_data_buffer = m_flexible_data_zone + m_header->flexible_zone_size;
+            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
+        m_structured_data_buffer =
+            reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
         // Populate flexible zone info map (this is tricky for consumer as it doesn't have config)
         // This will be handled in a factory function with expected_config.
@@ -540,12 +614,14 @@ class DataBlock
     {
         return m_flexible_zone_info;
     }
+    const DataBlockLayout &layout() const { return m_layout; }
 
   private:
     std::string m_name;
     bool m_is_creator;
     pylabhub::platform::ShmHandle m_shm{};
     size_t m_size = 0; // Cached from m_shm.size for convenience
+    DataBlockLayout m_layout{};
 
     SharedMemoryHeader *m_header = nullptr;
     SlotRWState *m_slot_rw_states_array = nullptr; // New member
@@ -620,9 +696,10 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
     char *buf = block->structured_data_buffer();
     if (!buf)
         return false;
-    char *slot_checksum_base = reinterpret_cast<char *>(h) + sizeof(SharedMemoryHeader);
+    char *base = reinterpret_cast<char *>(block->segment());
+    char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
     uint8_t *slot_checksum = reinterpret_cast<uint8_t *>(
-        slot_checksum_base + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
+        slot_checksum_base_ptr + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
     std::atomic<uint8_t> *slot_valid =
         reinterpret_cast<std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
     const void *slot_data = buf + slot_index * slot_size;
@@ -677,9 +754,10 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
     uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
     if (slot_index >= slot_count)
         return false;
-    const char *slot_checksum_base = reinterpret_cast<const char *>(h) + sizeof(SharedMemoryHeader);
+    const char *base = reinterpret_cast<const char *>(block->segment());
+    const char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
     const uint8_t *slot_checksum = reinterpret_cast<const uint8_t *>(
-        slot_checksum_base + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
+        slot_checksum_base_ptr + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
     const std::atomic<uint8_t> *slot_valid =
         reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
     if (slot_valid->load(std::memory_order_acquire) != 1)
@@ -826,8 +904,9 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
                                             detail::DATABLOCK_MAGIC_NUMBER))
             return nullptr;
         impl->ring_buffer_capacity = impl->header_ptr->ring_buffer_capacity;
+        DataBlockLayout layout = DataBlockLayout::from_header(impl->header_ptr);
         impl->slot_rw_states = reinterpret_cast<SlotRWState *>(
-            reinterpret_cast<char *>(impl->m_shm.base) + sizeof(SharedMemoryHeader));
+            reinterpret_cast<char *>(impl->m_shm.base) + layout.slot_rw_state_offset);
         return std::unique_ptr<DataBlockDiagnosticHandle>(
             new DataBlockDiagnosticHandle(std::move(impl)));
     }
@@ -842,6 +921,17 @@ bool DataBlockProducer::update_checksum_flexible_zone(size_t flexible_zone_idx)
     return pImpl && pImpl->dataBlock
                ? update_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
                : false;
+}
+
+std::span<std::byte> DataBlockProducer::flexible_zone_span(size_t index)
+{
+    if (!pImpl || !pImpl->dataBlock || index >= pImpl->flexible_zones_info.size())
+        return {};
+    const auto &zone_info = pImpl->flexible_zones_info[index];
+    char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+    if (!flexible_zone_base || zone_info.size == 0)
+        return {};
+    return {reinterpret_cast<std::byte *>(flexible_zone_base + zone_info.offset), zone_info.size};
 }
 
 bool DataBlockProducer::update_checksum_slot(size_t slot_index)
@@ -1124,6 +1214,10 @@ bool DataBlockSlotIterator::is_valid() const
 // ============================================================================
 // Slot Handles (Primitive Data Transfer API) - Implementations
 // ============================================================================
+// Lifetime contract: SlotWriteHandle and SlotConsumeHandle hold pointers into the
+// DataBlock's shared memory. Callers must release or destroy all handles before
+// destroying the DataBlockProducer or DataBlockConsumer. Otherwise the handle
+// destructor will access freed memory (use-after-free).
 namespace
 {
 bool release_write_handle(SlotWriteHandleImpl &impl)
@@ -1409,6 +1503,18 @@ bool DataBlockConsumer::verify_checksum_flexible_zone(size_t flexible_zone_idx) 
     return pImpl && pImpl->dataBlock
                ? verify_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
                : false;
+}
+
+std::span<const std::byte> DataBlockConsumer::flexible_zone_span(size_t index) const
+{
+    if (!pImpl || !pImpl->dataBlock || index >= pImpl->flexible_zones_info.size())
+        return {};
+    const auto &zone_info = pImpl->flexible_zones_info[index];
+    const char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
+    if (!flexible_zone_base || zone_info.size == 0)
+        return {};
+    return {reinterpret_cast<const std::byte *>(flexible_zone_base + zone_info.offset),
+            zone_info.size};
 }
 
 bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const

@@ -17,6 +17,13 @@
 #include <atomic>
 #include <cstring>
 
+#if PYLABHUB_IS_POSIX
+#include <unistd.h>
+#include <sys/wait.h>
+#elif defined(PYLABHUB_PLATFORM_WIN64)
+#include <cstdlib>
+#endif
+
 using namespace pylabhub::platform;
 using namespace ::testing;
 using namespace std::chrono_literals;
@@ -189,40 +196,72 @@ TEST(PlatformCoreTest, IsProcessAlive_UnlikelyPID)
     EXPECT_FALSE(alive) << "Extremely large PID should be considered not alive";
 }
 
-#if defined(PYLABHUB_PLATFORM_POSIX)
 /**
- * POSIX-specific test: Verify errno handling in is_process_alive()
+ * Test is_process_alive() correctly detects alive then dead transition.
  *
- * On POSIX, is_process_alive() uses kill(pid, 0):
- * - Returns true if kill() succeeds (process exists, we have permission)
- * - Returns true if errno == EPERM (process exists, but we lack permission)
- * - Returns false if errno == ESRCH (process doesn't exist)
+ * Spawns a child process, verifies it is alive, signals it to exit (POSIX) or
+ * terminates it (Windows), waits for it, then verifies it is detected as dead.
+ * Uses pipe sync on POSIX and CreateProcess+TerminateProcess on Windows.
  */
-TEST(PlatformCoreTest, POSIX_IsProcessAlive_DetectsDeadProcess)
+TEST(PlatformCoreTest, IsProcessAlive_DetectsAliveThenDeadProcess)
 {
-    // PID 1 should always exist on POSIX (init/systemd)
-    EXPECT_TRUE(is_process_alive(1)) << "PID 1 (init) should always be alive on POSIX";
+#if PYLABHUB_IS_POSIX
+    int pipefd[2];
+    ASSERT_EQ(pipe(pipefd), 0) << "pipe() failed";
 
-    // Test a definitely invalid PID
-    EXPECT_FALSE(is_process_alive(UINT64_MAX)) << "Invalid PID should be detected as dead";
-}
-#endif
+    pid_t child_pid = fork();
+    ASSERT_GE(child_pid, 0) << "fork() failed";
 
-#if defined(PYLABHUB_PLATFORM_WIN64)
-/**
- * Windows-specific test: Verify zombie detection logic
- *
- * On Windows, is_process_alive() uses OpenProcess() + GetExitCodeProcess():
- * - Returns true if GetExitCodeProcess returns STILL_ACTIVE
- * - Returns false otherwise
- */
-TEST(PlatformCoreTest, Windows_IsProcessAlive_DetectsDeadProcess)
-{
-    // Test an unlikely PID
-    EXPECT_FALSE(is_process_alive(UINT64_MAX))
-        << "Invalid PID should be detected as dead on Windows";
-}
+    if (child_pid == 0)
+    {
+        close(pipefd[1]);
+        char c;
+        (void)read(pipefd[0], &c, 1);
+        close(pipefd[0]);
+        _exit(0);
+    }
+
+    close(pipefd[0]);
+    uint64_t pid = static_cast<uint64_t>(child_pid);
+
+    EXPECT_TRUE(is_process_alive(pid)) << "Child process should be alive (blocking on read)";
+
+    close(pipefd[1]);
+
+    int status = 0;
+    ASSERT_EQ(waitpid(child_pid, &status, 0), child_pid) << "waitpid failed";
+    ASSERT_TRUE(WIFEXITED(status)) << "Child should exit normally";
+
+    EXPECT_FALSE(is_process_alive(pid)) << "Child process should be detected as dead after exit";
+
+#elif defined(PYLABHUB_PLATFORM_WIN64)
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    pi.hProcess = INVALID_HANDLE_VALUE;
+    pi.hThread = INVALID_HANDLE_VALUE;
+
+    char cmdline[] = "cmd.exe /c ping 127.0.0.1 -n 6 >nul";
+    BOOL ok = CreateProcessA(nullptr, cmdline, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+    ASSERT_TRUE(ok) << "CreateProcess failed";
+
+    uint64_t pid = static_cast<uint64_t>(pi.dwProcessId);
+
+    EXPECT_TRUE(is_process_alive(pid)) << "Child process should be alive";
+
+    TerminateProcess(pi.hProcess, 0);
+    DWORD wait = WaitForSingleObject(pi.hProcess, 5000);
+    ASSERT_EQ(wait, WAIT_OBJECT_0) << "WaitForSingleObject failed or timed out";
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    EXPECT_FALSE(is_process_alive(pid)) << "Child process should be detected as dead after exit";
+
+#else
+    GTEST_SKIP() << "Platform not supported";
 #endif
+}
 
 /**
  * Test get_executable_name() with full path

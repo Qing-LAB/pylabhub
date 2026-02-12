@@ -320,6 +320,18 @@ TEST_F(LoggerTest, SetRotatingLogfileFailure)
 #endif
 }
 
+/**
+ * @brief Tests that Logger aborts when used (set_logfile) without lifecycle initialized.
+ */
+TEST_F(LoggerTest, UseWithoutLifecycleAborts)
+{
+    WorkerProcess proc(g_self_exe_path, "logger.use_without_lifecycle_aborts", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    EXPECT_THAT(proc.get_stderr(),
+                ::testing::HasSubstr("before the Logger module was"));
+}
+
 /// Delegates the QueueFullAndMessageDropping test logic to a worker process.
 TEST_F(LoggerTest, QueueFullAndMessageDropping)
 {
