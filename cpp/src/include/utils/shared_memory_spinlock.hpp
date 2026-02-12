@@ -1,7 +1,11 @@
 #pragma once
 /**
- * @file data_header_sync_primitives.hpp
- * @brief Shared memory spin-lock for DataBlock coordination.
+ * @file shared_memory_spinlock.hpp
+ * @brief Spinlock abstraction over a region of shared memory (cross-process).
+ *
+ * The lock state (SharedSpinLockState) lives in a shared memory segment; this
+ * module does not allocate that memory. Callers place the state in any
+ * shared-memory layout (e.g. DataBlock header, or a standalone shm segment).
  */
 #include "pylabhub_utils_export.h"
 #include "plh_platform.hpp"
@@ -13,16 +17,6 @@
 #include <chrono>
 #include <thread>
 
-#if defined(PYLABHUB_IS_POSIX)
-#include <fcntl.h>    // For shm_open, O_CREAT, O_RDWR
-#include <pthread.h>  // For pthread_mutex_t (if used in future in SharedSpinLock)
-#include <sys/mman.h> // For mmap, munmap
-#include <sys/stat.h> // For mode constants (S_IRUSR, S_IWUSR)
-#include <unistd.h>   // For ftruncate, close, getpid
-#include <errno.h>    // For ESRCH
-#include <signal.h>   // For kill
-#endif
-
 namespace pylabhub::hub
 {
 
@@ -33,9 +27,10 @@ namespace pylabhub::hub
 struct SharedSpinLockState
 {
     std::atomic<uint64_t> owner_pid{0};
+    std::atomic<uint64_t> owner_tid{0};
     std::atomic<uint64_t> generation{0};
     std::atomic<uint32_t> recursion_count{0};
-    uint8_t padding[12];
+    uint8_t padding[4];
 };
 
 /**
@@ -56,7 +51,7 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
     /**
      * @brief Constructs a SharedSpinLock.
      * @param state A pointer to the SharedSpinLockState struct in shared memory.
-     * @param name A name for logging/error reporting (typically the DataBlock name + lock index).
+     * @param name A name for logging/error reporting (e.g. segment name + lock index).
      */
     SharedSpinLock(SharedSpinLockState *state, const std::string &name);
 

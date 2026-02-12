@@ -376,6 +376,18 @@ TEST_F(FileLockTest, TryLockPattern)
     } // main_lock is released here
 }
 
+/**
+ * @brief Tests that FileLock aborts when used without lifecycle initialized.
+ */
+TEST_F(FileLockTest, UseWithoutLifecycleAborts)
+{
+    WorkerProcess proc(g_self_exe_path, "filelock.use_without_lifecycle_aborts", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_NE(proc.wait_for_exit(), 0);
+    EXPECT_THAT(proc.get_stderr(),
+                ::testing::HasSubstr("FileLock created before its module was initialized"));
+}
+
 TEST_F(FileLockTest, InvalidResourcePath)
 {
     // A path containing a null character is invalid on most filesystems.

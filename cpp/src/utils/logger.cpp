@@ -255,7 +255,7 @@ struct Logger::Impl
     ~Impl();
     void start_worker();
     void worker_loop();
-    void enqueue_command(Command &&cmd);
+    bool enqueue_command(Command &&cmd);
     void reject_command_due_to_shutdown(Command &cmd);
     void shutdown();
 
@@ -284,7 +284,8 @@ struct Logger::Impl
     std::atomic<bool> shutdown_completed_{false};             // Size: 1 byte
     std::atomic<bool> m_log_sink_messages_enabled_{true};     // Size: 1 byte
     std::atomic<bool> m_was_dropping{false};                  // Size: 1 byte
-    std::atomic<size_t> m_messages_dropped{0};                // Size: 8 bytes (on x64)
+    std::atomic<size_t> m_messages_dropped{0};                // Batch counter for summary; exchange(0) when processed
+    std::atomic<size_t> m_total_dropped_since_sink_switch{0}; // Accumulated total; reset on sink switch
 };
 
 Logger::Impl::Impl() : sink_(std::make_unique<ConsoleSink>())
@@ -330,12 +331,12 @@ void Logger::Impl::reject_command_due_to_shutdown(Command &cmd)
         cmd);
 }
 
-void Logger::Impl::enqueue_command(Command &&cmd)
+bool Logger::Impl::enqueue_command(Command &&cmd)
 {
     if (shutdown_requested_.load(std::memory_order_relaxed))
     {
         reject_command_due_to_shutdown(cmd);
-        return;
+        return false;
     }
 
     {
@@ -343,53 +344,52 @@ void Logger::Impl::enqueue_command(Command &&cmd)
         if (shutdown_requested_.load(std::memory_order_acquire))
         {
             reject_command_due_to_shutdown(cmd);
-            return;
+            return false;
         }
 
         const size_t current_queue_size = queue_.size();
         const size_t max_queue_size_soft = m_max_queue_size;
-        const size_t max_queue_size_hard = m_max_queue_size * 2; // Hard limit for all commands
+        const size_t max_queue_size_hard = m_max_queue_size * 2;
 
-        // Check 1: Hard limit reached. Drop ALL messages (including control commands).
         if (current_queue_size >= max_queue_size_hard)
         {
             m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
+            m_total_dropped_since_sink_switch.fetch_add(1, std::memory_order_relaxed);
             if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
             {
                 m_dropping_since = std::chrono::system_clock::now();
             }
-            reject_command_due_to_shutdown(cmd); // Reject promise if applicable
-            return;
+            reject_command_due_to_shutdown(cmd);
+            return false;
         }
 
-        // Check 2: Soft limit reached, and it's a LogMessage. Drop only LogMessages.
         if (current_queue_size >= max_queue_size_soft && std::holds_alternative<LogMessage>(cmd))
         {
             m_messages_dropped.fetch_add(1, std::memory_order_relaxed);
+            m_total_dropped_since_sink_switch.fetch_add(1, std::memory_order_relaxed);
             if (!m_was_dropping.exchange(true, std::memory_order_relaxed))
             {
                 m_dropping_since = std::chrono::system_clock::now();
             }
-            // LogMessages don't have promises, so no need to call reject_command_due_to_shutdown.
-            return;
+            return false;
         }
 
-        // Enqueue: Below soft limit, or it's a control message below the hard limit.
         queue_.emplace_back(std::move(cmd));
     }
     cv_.notify_one();
+    return true;
 }
 
 void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue;
-    std::optional<LogMessage> recovery_message;
-    bool create_recovery_msg = false;
-    size_t dropped_count = 0;
-    std::chrono::system_clock::time_point dropping_since;
 
     while (true)
     {
+        bool was_dropping = false;
+        size_t dropped_count = 0;
+        double dropping_duration_s = 0.0;
+
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
@@ -397,11 +397,14 @@ void Logger::Impl::worker_loop()
 
             if (m_was_dropping.exchange(false, std::memory_order_relaxed))
             {
+                was_dropping = true;
                 dropped_count = m_messages_dropped.exchange(0, std::memory_order_relaxed);
                 if (dropped_count > 0)
                 {
-                    dropping_since = m_dropping_since;
-                    create_recovery_msg = true;
+                    dropping_duration_s =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(
+                            std::chrono::system_clock::now() - m_dropping_since)
+                            .count();
                 }
             }
 
@@ -411,28 +414,24 @@ void Logger::Impl::worker_loop()
             }
         }
 
-        if (create_recovery_msg)
+        // Per user suggestion, log a preliminary warning immediately if dropping occurred.
+        // This provides immediate context to the developer reading the logs.
+        if (was_dropping && dropped_count > 0)
         {
-            const auto now = std::chrono::system_clock::now();
-            const auto duration =
-                std::chrono::duration_cast<std::chrono::duration<double>>(now - dropping_since)
-                    .count();
-
-            recovery_message.emplace(
-                LogMessage{.timestamp = now,
-                           .process_id = pylabhub::platform::get_pid(),
-                           .thread_id = pylabhub::platform::get_native_thread_id(),
-                           .level = static_cast<int>(Logger::Level::L_WARNING),
-                           .body = make_buffer("Logger dropped {} messages over {:.2f}s due to "
-                                               "full queue",
-                                               dropped_count, duration)});
-            create_recovery_msg = false; // Reset flag
+            std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
+            if (sink_)
+            {
+                sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_WARNING),
+                                        .body = make_buffer(
+                                            "Overflow detected when processing the queue. Messages may have been dropped in the following batch.")},
+                             Sink::ASYNC_WRITE);
+            }
         }
 
         // --- Find last SetSinkCommand ---
-        // Optimization: If multiple sink changes were requested in a single batch,
-        // only the final one needs to be executed. We find its index here and
-        // will ignore any others during processing.
         ssize_t last_set_sink_idx = -1;
         for (ssize_t i = static_cast<ssize_t>(local_queue.size()) - 1; i >= 0; --i)
         {
@@ -443,26 +442,14 @@ void Logger::Impl::worker_loop()
             }
         }
 
+        // --- Process the dequeued batch ---
         for (ssize_t i = 0; i < static_cast<ssize_t>(local_queue.size()); ++i)
         {
             try
             {
-                // If a recovery message was generated, log it before the first real message.
-                if (recovery_message)
-                {
-                    std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
-                    if (sink_)
-                    {
-                        sink_->write(*recovery_message, Sink::ASYNC_WRITE);
-                    }
-                    recovery_message.reset();
-                }
-
-                // Fast path: LogMessage (very common) — use get_if to avoid heavyweight
-                // template dispatch.
+                // Fast path: LogMessage
                 if (auto *msg = std::get_if<LogMessage>(&local_queue[i]))
                 {
-                    // Write message if level allows.
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                     if (sink_ &&
                         msg->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
@@ -480,14 +467,10 @@ void Logger::Impl::worker_loop()
 
                         if constexpr (std::is_same_v<T, SetSinkCommand>)
                         {
-                            // Only process the last SetSinkCommand. Others are fulfilled (false).
                             if (i != last_set_sink_idx)
                             {
                                 promise_set_safe(arg.promise, false);
                             }
-                            // If it is the last one, we defer actual sink switching until after
-                            // the batch. We do not fulfill the promise here; the deferred handler
-                            // will set it true/false.
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
                         {
@@ -525,35 +508,39 @@ void Logger::Impl::worker_loop()
                                                                std::memory_order_relaxed);
                             promise_set_safe(arg.promise, true);
                         }
-                        else
-                        {
-                            // Unknown command type: ignore (shouldn't happen).
-                        }
                     },
                     local_queue[i]);
             }
             catch (const std::exception &e)
             {
-                // Preserve original behavior: post via error_callback_.
                 if (error_callback_)
                 {
                     auto cb = error_callback_;
                     auto msg = fmt::format("Logger worker error: {}", e.what());
                     callback_dispatcher_.post([cb, msg]() { cb(msg); });
                 }
-                // If the item was a command carrying a promise, we could optionally set
-                // exception on it. But we only do that if we can access it safely — otherwise
-                // swallow to keep shutdown robust.
             }
         }
 
         // --- Post-loop actions ---
-        if (recovery_message)
+
+        // Log the detailed summary warning message after the main batch is processed.
+        if (was_dropping && dropped_count > 0)
         {
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
             if (sink_)
-                sink_->write(*recovery_message, Sink::ASYNC_WRITE);
-            recovery_message.reset();
+            {
+                sink_->write(
+                    LogMessage{
+                        .timestamp = std::chrono::system_clock::now(),
+                        .process_id = pylabhub::platform::get_pid(),
+                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                        .level = static_cast<int>(Logger::Level::L_WARNING),
+                        .body = make_buffer(
+                            "Summary: At this point in time, the Logger dropped {} messages over {:.2f}s due to full queue.",
+                            dropped_count, dropping_duration_s)},
+                    Sink::ASYNC_WRITE);
+            }
         }
 
         if (last_set_sink_idx != -1)
@@ -578,6 +565,7 @@ void Logger::Impl::worker_loop()
                             Sink::ASYNC_WRITE);
                         sink_->flush();
                     }
+                    m_total_dropped_since_sink_switch.store(0, std::memory_order_relaxed);
                     sink_ = std::move(sink_cmd->new_sink);
                     if (sink_)
                     {
@@ -592,6 +580,7 @@ void Logger::Impl::worker_loop()
                 }
                 else
                 {
+                    m_total_dropped_since_sink_switch.store(0, std::memory_order_relaxed);
                     sink_ = std::move(sink_cmd->new_sink);
                 }
                 promise_set_safe(sink_cmd->promise, true);
@@ -603,14 +592,9 @@ void Logger::Impl::worker_loop()
         if (shutdown_requested_.load() && (g_logger_state.load() == LoggerState::ShuttingDown ||
                                            g_logger_state.load() == LoggerState::Shutdown))
         {
-            // Lock the queue to check for any messages that might have arrived
-            // after the last local_queue.swap(queue_).
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (!queue_.empty())
             {
-                // If there are still items in the queue, it means they were enqueued
-                // after the last processing cycle. Unlock and continue to the next iteration
-                // to process them. The cv_.wait predicate will ensure we don't block.
                 PLH_DEBUG(
                     "Logger worker found {} messages in queue during shutdown. Reprocessing...",
                     queue_.size());
@@ -618,7 +602,6 @@ void Logger::Impl::worker_loop()
                 continue;      // Go back to the top of the while(true) loop to process these items.
             }
 
-            // If we reach here, shutdown is requested and the queue is truly empty.
             PLH_DEBUG("Logger worker thread shutting down.");
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
             if (sink_)
@@ -896,11 +879,11 @@ size_t Logger::get_max_queue_size() const
     return pImpl ? pImpl->m_max_queue_size : 0;
 }
 
-size_t Logger::get_dropped_message_count() const
+size_t Logger::get_total_dropped_since_sink_switch() const
 {
-    if (!logger_is_loggable("Logger::get_dropped_message_count"))
+    if (!logger_is_loggable("Logger::get_total_dropped_since_sink_switch"))
         return 0;
-    return pImpl ? pImpl->m_messages_dropped.load(std::memory_order_relaxed) : 0;
+    return pImpl ? pImpl->m_total_dropped_since_sink_switch.load(std::memory_order_relaxed) : 0;
 }
 
 void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
@@ -939,52 +922,68 @@ bool Logger::should_log(Level lvl) const noexcept
            static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
-void Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
+bool Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
-        return;
+        return false;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                          .process_id = pylabhub::platform::get_pid(),
-                                          .thread_id = pylabhub::platform::get_native_thread_id(),
-                                          .level = static_cast<int>(lvl),
-                                          .body = std::move(body)});
+        return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                                 .process_id = pylabhub::platform::get_pid(),
+                                                 .thread_id =
+                                                     pylabhub::platform::get_native_thread_id(),
+                                                 .level = static_cast<int>(lvl),
+                                                 .body = std::move(body)});
     }
+    return false;
 }
 
-void Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
+bool Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
-        return;
+        return false;
     if (pImpl)
     {
-        pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                          .process_id = pylabhub::platform::get_pid(),
-                                          .thread_id = pylabhub::platform::get_native_thread_id(),
-                                          .level = static_cast<int>(lvl),
-                                          .body = make_buffer("{}", std::move(body_str))});
+        return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                                 .process_id = pylabhub::platform::get_pid(),
+                                                 .thread_id =
+                                                     pylabhub::platform::get_native_thread_id(),
+                                                 .level = static_cast<int>(lvl),
+                                                 .body = make_buffer("{}", std::move(body_str))});
     }
+    return false;
 }
 
-void Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
+bool Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
-        return;
+        return false;
     if (pImpl)
     {
         std::lock_guard<std::mutex> sink_lock(pImpl->m_sink_mutex);
         if (pImpl->sink_ && static_cast<int>(lvl) >=
                                 static_cast<int>(pImpl->level_.load(std::memory_order_relaxed)))
         {
-            pImpl->sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                           .process_id = pylabhub::platform::get_pid(),
-                                           .thread_id = pylabhub::platform::get_native_thread_id(),
-                                           .level = static_cast<int>(lvl),
-                                           .body = std::move(body)},
-                                Sink::SYNC_WRITE);
+            try
+            {
+                pImpl->sink_->write(
+                    LogMessage{.timestamp = std::chrono::system_clock::now(),
+                               .process_id = pylabhub::platform::get_pid(),
+                               .thread_id = pylabhub::platform::get_native_thread_id(),
+                               .level = static_cast<int>(lvl),
+                               .body = std::move(body)},
+                    Sink::SYNC_WRITE);
+                return true;
+            }
+            catch (...)
+            {
+                // Cannot log here, as it could lead to infinite recursion.
+                // Simply return false to indicate failure.
+                return false;
+            }
         }
     }
+    return false;
 }
 
 // C-style callbacks for the ABI-safe lifecycle API.

@@ -371,7 +371,7 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 | Problem | Solution |
 |---------|----------|
 | "Logger method called before initialization" | Include `Logger::GetLifecycleModule()` in `LifecycleGuard` |
-| Messages dropped | Increase `set_max_queue_size()`; check `get_dropped_message_count()` |
+| Messages dropped | Increase `set_max_queue_size()`; check `get_total_dropped_since_sink_switch()` |
 | Hangs on shutdown | Check custom sink for blocking I/O; reduce shutdown timeout |
 
 ### FileLock

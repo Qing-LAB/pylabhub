@@ -57,13 +57,22 @@ class FileLockSingleProcessTest : public ::testing::Test
         {
             try
             {
-                if (fs::exists(p))
-                    fs::remove(p);
+                // Try to remove both possible lock file types since we don't store the type.
+                auto file_lock_path = FileLock::get_expected_lock_fullname_for(p, ResourceType::File);
+                if (fs::exists(file_lock_path))
+                    fs::remove(file_lock_path);
 
-                // Also try to remove .lock file
-                auto lock_file = p.parent_path() / (".lock." + p.filename().string());
-                if (fs::exists(lock_file))
-                    fs::remove(lock_file);
+                auto dir_lock_path = FileLock::get_expected_lock_fullname_for(p, ResourceType::Directory);
+                if (fs::exists(dir_lock_path))
+                    fs::remove(dir_lock_path);
+
+                if (fs::exists(p))
+                {
+                    if (fs::is_directory(p))
+                        fs::remove_all(p);
+                    else
+                        fs::remove(p);
+                }
             }
             catch (...)
             {
@@ -77,15 +86,17 @@ class FileLockSingleProcessTest : public ::testing::Test
         auto p = fs::temp_directory_path() / ("pylabhub_filelock_sp_" + test_name + ".txt");
         paths_to_clean_.push_back(p);
 
-        // Ensure clean state
+        // Ensure clean state: remove resource and lock files from previous runs
         try
         {
             if (fs::exists(p))
                 fs::remove(p);
-
-            auto lock_file = p.parent_path() / (".lock." + p.filename().string());
-            if (fs::exists(lock_file))
-                fs::remove(lock_file);
+            auto file_lock = FileLock::get_expected_lock_fullname_for(p, ResourceType::File);
+            if (fs::exists(file_lock))
+                fs::remove(file_lock);
+            auto dir_lock = FileLock::get_expected_lock_fullname_for(p, ResourceType::Directory);
+            if (fs::exists(dir_lock))
+                fs::remove(dir_lock);
         }
         catch (...)
         {
@@ -309,6 +320,62 @@ TEST_F(FileLockSingleProcessTest, SequentialAcquireRelease)
         ASSERT_TRUE(lock.valid()) << "Iteration " << i << " failed to acquire";
         // Lock released at end of scope
     }
+}
+
+/**
+ * @brief Tests get_expected_lock_fullname_for returns correct path format.
+ */
+TEST_F(FileLockSingleProcessTest, GetExpectedLockFullnameFor)
+{
+    auto file_path = GetTempLockPath("get_expected_file");
+    auto dir_path = fs::temp_directory_path() / "pylabhub_test_get_expected_dir";
+    paths_to_clean_.push_back(dir_path);
+    fs::create_directories(dir_path);
+
+    auto file_lock_path = FileLock::get_expected_lock_fullname_for(file_path, ResourceType::File);
+    EXPECT_FALSE(file_lock_path.empty());
+    EXPECT_TRUE(file_lock_path.generic_string().find(".lock") != std::string::npos)
+        << "File lock should contain .lock";
+    EXPECT_EQ(file_lock_path.generic_string().find(".dir.lock"), std::string::npos)
+        << "File lock should NOT contain .dir.lock";
+
+    auto dir_lock_path =
+        FileLock::get_expected_lock_fullname_for(dir_path, ResourceType::Directory);
+    EXPECT_FALSE(dir_lock_path.empty());
+    EXPECT_TRUE(dir_lock_path.generic_string().find(".dir.lock") != std::string::npos)
+        << "Directory lock should contain .dir.lock";
+}
+
+/**
+ * @brief Tests get_locked_resource_path and get_canonical_lock_file_path when lock is valid.
+ */
+TEST_F(FileLockSingleProcessTest, GetLockedResourceAndCanonicalLockPath)
+{
+    auto resource_path = GetTempLockPath("path_getters");
+    FileLock lock(resource_path, ResourceType::File);
+    ASSERT_TRUE(lock.valid());
+
+    auto locked_path = lock.get_locked_resource_path();
+    ASSERT_TRUE(locked_path.has_value());
+    EXPECT_FALSE(locked_path->empty());
+
+    auto canonical_lock_path = lock.get_canonical_lock_file_path();
+    ASSERT_TRUE(canonical_lock_path.has_value());
+    EXPECT_FALSE(canonical_lock_path->empty());
+    EXPECT_TRUE(canonical_lock_path->generic_string().find(".lock") != std::string::npos);
+}
+
+/**
+ * @brief Tests get_locked_resource_path and get_canonical_lock_file_path return empty when invalid.
+ */
+TEST_F(FileLockSingleProcessTest, GetPathsReturnEmptyWhenInvalid)
+{
+    const char invalid_p[] = "invalid\0path.txt";
+    fs::path invalid_path(std::string_view(invalid_p, sizeof(invalid_p) - 1));
+    FileLock lock(invalid_path, ResourceType::File, LockMode::NonBlocking);
+    ASSERT_FALSE(lock.valid());
+    EXPECT_FALSE(lock.get_locked_resource_path().has_value());
+    EXPECT_FALSE(lock.get_canonical_lock_file_path().has_value());
 }
 
 // ============================================================================

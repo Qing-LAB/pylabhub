@@ -16,6 +16,7 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). AddressSanitizer supported on MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
 option(PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS "When using a static sanitizer library (e.g., libasan.a), force it to be linked into the project's shared libraries (like pylabhub-utils). Default is OFF, as it's often better to link the sanitizer into the final executable." OFF)
+option(PYLABHUB_SANITIZER_VERBOSE "When sanitizer runtime detection fails, print linker trace and save to build dir for debugging." OFF)
 
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)

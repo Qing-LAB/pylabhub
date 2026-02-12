@@ -146,7 +146,7 @@ classDiagram
         +flush()
         +set_level(lvl)
         +set_max_queue_size(size)
-        +get_dropped_message_count()
+        +get_total_dropped_since_sink_switch()
         +set_write_error_callback(cb)
     }
     class Sink {
@@ -203,7 +203,7 @@ All six levels have sync variants: `LOGGER_TRACE_SYNC`, `LOGGER_DEBUG_SYNC`, `LO
 | `level()` | Current level |
 | `set_max_queue_size(size)` | Queue capacity |
 | `get_max_queue_size()` | Current capacity |
-| `get_dropped_message_count()` | Total dropped messages |
+| `get_total_dropped_since_sink_switch()` | Accumulated dropped messages since last sink switch |
 | `set_write_error_callback(cb)` | Callback on sink write error |
 | `set_log_sink_messages_enabled(bool)` | Enable/disable sink switch messages |
 

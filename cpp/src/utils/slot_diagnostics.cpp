@@ -1,4 +1,4 @@
-#include "plh_slot_diagnostics.hpp"
+#include "utils/slot_diagnostics.hpp"
 #include "utils/logger.hpp"
 
 namespace pylabhub::hub
@@ -57,6 +57,11 @@ bool SlotDiagnostics::is_stuck() const
 uint64_t SlotDiagnostics::get_stuck_duration_ms() const
 {
     return is_valid_ ? diag_data_.stuck_duration_ms : 0;
+}
+
+bool SlotDiagnostics::is_valid() const
+{
+    return is_valid_;
 }
 
 } // namespace pylabhub::hub

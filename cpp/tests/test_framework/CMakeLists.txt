@@ -32,8 +32,12 @@ target_link_libraries(pylabhub-test-framework
     pylabhub::third_party::gmock
 )
 
+# When sanitizer is enabled, the framework's code is instrumented. All test executables
+# that link this framework must also link the sanitizer runtime. We use PUBLIC so
+# consumers inherit the link dependency; otherwise they get undefined references
+# (e.g. __tsan_func_entry, __tsan_read8).
 if(PYLABHUB_SANITIZER_FLAGS_SET)
-  target_compile_options(pylabhub-test-framework PRIVATE $<TARGET_PROPERTY:pylabhub::sanitizer_flags,INTERFACE_COMPILE_OPTIONS>)
+  target_link_libraries(pylabhub-test-framework PUBLIC pylabhub::sanitizer_flags)
 endif()
 
 # Publicly expose this directory so consumers can find the helper headers.

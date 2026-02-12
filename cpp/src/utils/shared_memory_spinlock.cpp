@@ -1,4 +1,4 @@
-#include "utils/data_block_spinlock.hpp"
+#include "utils/shared_memory_spinlock.hpp"
 #include "plh_service.hpp" // For platform, logger, backoff_strategy
 
 namespace pylabhub::hub
@@ -31,19 +31,21 @@ uint64_t SharedSpinLock::get_current_thread_id()
 bool SharedSpinLock::try_lock_for(int timeout_ms)
 {
     uint64_t my_pid = get_current_pid();
+    uint64_t my_tid = get_current_thread_id();
 
     // Check if already owned (recursive case)
-    if (m_state->owner_pid.load(std::memory_order_relaxed) == my_pid)
+    if (m_state->owner_pid.load(std::memory_order_relaxed) == my_pid &&
+        m_state->owner_tid.load(std::memory_order_relaxed) == my_tid)
     { // Use relaxed as per spec
         m_state->recursion_count.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
-    auto start_time = std::chrono::high_resolution_clock::now();
+    uint64_t start_ns = pylabhub::platform::monotonic_time_ns();
     pylabhub::utils::ExponentialBackoff backoff_strategy;
     int iteration = 0;
 
-    // CAS loop with timeout
+    // CAS loop with timeout (use platform monotonic time for consistency with data_block)
     uint64_t expected_pid = 0;
     while (!m_state->owner_pid.compare_exchange_weak(
         expected_pid, my_pid, std::memory_order_acquire, std::memory_order_relaxed))
@@ -56,6 +58,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
             LOGGER_WARN("SharedSpinLock '{}': Detected dead owner PID {}. Force reclaiming.",
                         m_name, expected_pid);
             m_state->owner_pid.store(my_pid, std::memory_order_release);
+            m_state->owner_tid.store(my_tid, std::memory_order_release);
             m_state->recursion_count.store(1, std::memory_order_relaxed);
             m_state->generation.fetch_add(1, std::memory_order_relaxed);
             return true;
@@ -64,9 +67,8 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
         // Timeout check
         if (timeout_ms > 0)
         {
-            auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::high_resolution_clock::now() - start_time);
-            if (elapsed_time.count() >= timeout_ms)
+            uint64_t elapsed_ms = pylabhub::platform::elapsed_time_ns(start_ns) / 1'000'000;
+            if (elapsed_ms >= static_cast<uint64_t>(timeout_ms))
             {
                 return false; // Timeout
             }
@@ -76,6 +78,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
         backoff_strategy(iteration++); // Exponential backoff
     }
 
+    m_state->owner_tid.store(my_tid, std::memory_order_relaxed);
     m_state->recursion_count.store(1, std::memory_order_relaxed);
     return true;
 }
@@ -94,12 +97,16 @@ void SharedSpinLock::lock()
 void SharedSpinLock::unlock()
 {
     uint64_t current_pid = get_current_pid();
+    uint64_t current_tid = get_current_thread_id();
 
-    if (m_state->owner_pid.load(std::memory_order_acquire) != current_pid)
+    if (m_state->owner_pid.load(std::memory_order_acquire) != current_pid ||
+        m_state->owner_tid.load(std::memory_order_acquire) != current_tid)
     {
-        LOGGER_ERROR("SharedSpinLock '{}': Attempted to unlock by non-owner. Current owner PID {}, "
-                     "Caller PID {}.",
-                     m_name, m_state->owner_pid.load(std::memory_order_acquire), current_pid);
+        LOGGER_ERROR(
+            "SharedSpinLock '{}': Attempted to unlock by non-owner. Current owner PID:TID {}:{}, "
+            "Caller PID:TID {}:{}.",
+            m_name, m_state->owner_pid.load(std::memory_order_acquire),
+            m_state->owner_tid.load(std::memory_order_acquire), current_pid, current_tid);
         throw std::runtime_error("Attempted to unlock by non-owner.");
     }
 
@@ -112,12 +119,14 @@ void SharedSpinLock::unlock()
     // Release the lock
     m_state->recursion_count.store(0, std::memory_order_release);
     m_state->generation.fetch_add(1, std::memory_order_release); // Increment generation
+    m_state->owner_tid.store(0, std::memory_order_release);
     m_state->owner_pid.store(0, std::memory_order_release);      // Finally release ownership
 }
 
 bool SharedSpinLock::is_locked_by_current_process() const
 {
-    return m_state->owner_pid.load(std::memory_order_acquire) == get_current_pid();
+    return m_state->owner_pid.load(std::memory_order_acquire) == get_current_pid() &&
+           m_state->owner_tid.load(std::memory_order_acquire) == get_current_thread_id();
 }
 
 // ============================================================================

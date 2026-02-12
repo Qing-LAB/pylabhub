@@ -501,41 +501,83 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
         {
             fs::path log_path(log_path_str);
             Logger &logger = Logger::instance();
-            // Use a small queue size for this test to easily cause dropping
-            const size_t max_queue = 5; // Use a small, but not too small, queue size
+            const size_t max_queue = 5;
             logger.set_max_queue_size(max_queue);
-            ASSERT_TRUE(logger.set_logfile(log_path.string())); // Set logging to a temporary file
+            ASSERT_TRUE(logger.set_logfile(log_path.string()));
             logger.set_level(Logger::Level::L_INFO);
-            logger.set_log_sink_messages_enabled(false); // Disable sink switch messages for clarity
+            logger.set_log_sink_messages_enabled(false);
 
-            // Send a number of messages that will guarantee queue overflow
-            const int messages_to_send = max_queue * 2; // Send more messages than the queue can hold
-            for (int i = 0; i < messages_to_send; ++i)
+            // 1. Fill the queue deterministically until the logger starts dropping messages.
+            int messages_enqueued = 0;
+            int messages_dropped = 0;
+            // Loop more than enough times to ensure we trigger the drop.
+            for (int i = 0; i < 100; ++i)
             {
-                LOGGER_INFO("Message {}", i);
+                if (LOGGER_INFO("Message {}", i))
+                {
+                    messages_enqueued++;
+                }
+                else
+                {
+                    messages_dropped++;
+                }
             }
 
-            logger.flush(); // Ensure all buffered messages and recovery messages are written
-            logger.set_log_sink_messages_enabled(true); // Re-enable for subsequent tests
-            logger.set_max_queue_size(10000);           // Reset queue size to default
+            // We must have enqueued some, but not all, messages.
+            ASSERT_GT(messages_enqueued, 0);
+            ASSERT_EQ(messages_enqueued + messages_dropped, 100);
 
-            // Verify the log file contains the recovery message about dropped messages
+            // 1b. Assert get_total_dropped_since_sink_switch() matches our count
+            ASSERT_EQ(logger.get_total_dropped_since_sink_switch(),
+                      static_cast<size_t>(messages_dropped))
+                << "get_total_dropped_since_sink_switch() should match the number of dropped messages";
+
+            // 2. Flush the logger to ensure all enqueued messages and warnings are written.
+            logger.flush();
+
+            // 3. Verification
             std::string contents;
             ASSERT_TRUE(read_file_contents(log_path.string(), contents));
-            PLH_DEBUG("Log file contents for QueueFullAndMessageDropping test:\n{}", contents); // ADDED DEBUG LINE
-            EXPECT_NE(contents.find("Logger dropped"), std::string::npos)
-                << "Recovery message about dropped logs not found in file.";
+            PLH_DEBUG("Log file contents for QueueFullAndMessageDropping test:\n{}", contents);
 
-            // The total lines in file should be at most max_queue (messages accepted) + 1 (recovery message).
-            // We expect at least one message to be dropped.
-            size_t total_lines_in_file = count_lines(contents);
-            EXPECT_LE(total_lines_in_file, max_queue + 1)
-                << "Too many messages in the log, queue might not have overflown as expected.";
-            EXPECT_GT(contents.find("Logger dropped"), std::string::npos)
-                << "No recovery message found, queue might not have overflown.";
+            // 4a. Verify the preliminary "heads-up" warning exists.
+            ASSERT_NE(contents.find("Overflow detected"), std::string::npos)
+                << "The preliminary 'Overflow detected' warning was not found.";
 
+            // 4b. Verify the final "summary" warning exists.
+            std::string summary_substr = "Summary: At this point in time, the Logger dropped";
+            ASSERT_NE(contents.find(summary_substr), std::string::npos)
+                << "Final summary message about dropped logs not found in file.";
+
+            // 4c. Extract and sum all "Summary: ... dropped N" numbers (there may be multiple lines).
+            size_t reported_dropped_count = 0;
+            for (std::string::size_type pos = 0;
+                 (pos = contents.find(summary_substr, pos)) != std::string::npos;
+                 pos += summary_substr.length())
+            {
+                std::string::size_type num_pos = pos + summary_substr.length();
+                char *end_ptr = nullptr;
+                reported_dropped_count += std::strtoul(contents.c_str() + num_pos, &end_ptr, 10);
+            }
+            ASSERT_EQ(reported_dropped_count, static_cast<size_t>(messages_dropped))
+                << "The total of dropped messages reported in the summary lines is incorrect.";
+
+            // 4d. Count the number of actual INFO messages logged.
+            size_t logged_info_count = count_lines(contents, "Message ");
+            ASSERT_EQ(logged_info_count, messages_enqueued)
+                << "The number of logged INFO messages does not match the number successfully enqueued.";
         },
         "logger::test_queue_full_and_message_dropping", Logger::GetLifecycleModule());
+}
+
+int use_without_lifecycle_aborts()
+{
+    // No LifecycleGuard - Logger module not initialized.
+    // Calling set_logfile should PLH_PANIC and abort. If it returns instead,
+    // we must signal failure so the parent's ASSERT_NE(exit, 0) fails.
+    bool ok = Logger::instance().set_logfile("/tmp/pylabhub_logger_no_lifecycle.log");
+    (void)ok;
+    return 0;  // Should not reach here; if we do, implementation changed
 }
 
 } // namespace logger
@@ -594,6 +636,8 @@ struct LoggerWorkerRegistrar
                                                    static_cast<size_t>(std::stoul(argv[4])));
                 if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
                     return test_queue_full_and_message_dropping(argv[2]);
+                if (scenario == "use_without_lifecycle_aborts")
+                    return use_without_lifecycle_aborts();
                 fmt::print(stderr, "ERROR: Unknown logger scenario '{}'\n", scenario);
                 return 1;
             });

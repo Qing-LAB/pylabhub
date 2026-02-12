@@ -22,6 +22,44 @@ bool is_valid_z85_key(const std::string &key)
     // Z85-encoded 32-byte keys are 40 characters long.
     return key.length() == 40;
 }
+
+/** Encodes 32 raw bytes to a 64-char hex string for JSON-safe storage. */
+std::string hex_encode_schema_hash(const std::string &raw)
+{
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (unsigned char c : raw)
+    {
+        out += hex[(c >> 4) & 0x0F];
+        out += hex[c & 0x0F];
+    }
+    return out;
+}
+
+/** Decodes a 64-char hex string back to 32 bytes. Returns empty string on error. */
+std::string hex_decode_schema_hash(const std::string &hex_str)
+{
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    if (hex_str.size() != 64)
+        return {};
+    std::string out;
+    out.reserve(32);
+    for (size_t i = 0; i < 64; i += 2)
+    {
+        int hi = hex_val(hex_str[i]);
+        int lo = hex_val(hex_str[i + 1]);
+        if (hi < 0 || lo < 0)
+            return {};
+        out += static_cast<char>((hi << 4) | lo);
+    }
+    return out;
+}
 } // namespace
 
 // ============================================================================
@@ -250,7 +288,7 @@ bool MessageHub::register_producer(const std::string &channel, const ProducerInf
     request_payload["channel_name"] = channel;
     request_payload["shm_name"] = info.shm_name;
     request_payload["producer_pid"] = info.producer_pid;
-    request_payload["schema_hash"] = info.schema_hash;
+    request_payload["schema_hash"] = hex_encode_schema_hash(info.schema_hash);
     request_payload["schema_version"] = info.schema_version;
     // Add metadata based on DataBlockConfig if needed
 
@@ -297,7 +335,7 @@ std::optional<ConsumerInfo> MessageHub::discover_producer(const std::string &cha
 
     ConsumerInfo consumer_info;
     consumer_info.shm_name = response_json["shm_name"].get<std::string>();
-    consumer_info.schema_hash = response_json["schema_hash"].get<std::string>();
+    consumer_info.schema_hash = hex_decode_schema_hash(response_json["schema_hash"].get<std::string>());
     consumer_info.schema_version = response_json["schema_version"].get<uint32_t>();
     // Extract other metadata if available
 

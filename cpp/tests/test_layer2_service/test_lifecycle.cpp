@@ -46,6 +46,30 @@ TEST_F(LifecycleTest, IsInitializedFlag)
     // The test's main purpose is to check the flag, which is covered by the exit code.
 }
 
+// Test that InitializeApp is idempotent (safe to call multiple times).
+TEST_F(LifecycleTest, InitIdempotency)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_init_idempotency", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+}
+
+// Test that FinalizeApp is idempotent (safe to call multiple times).
+TEST_F(LifecycleTest, FinalizeIdempotency)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_finalize_idempotency", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+}
+
+// Test that the is_finalized flag works as expected.
+TEST_F(LifecycleTest, IsFinalizedFlag)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.test_is_finalized_flag", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0);
+}
+
 // Test that attempting to register a module after initialization aborts.
 // This requires running in a separate process.
 TEST_F(LifecycleTest, RegisterAfterInitAborts)

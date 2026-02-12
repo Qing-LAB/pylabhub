@@ -2,20 +2,22 @@
  * @file test_platform_sanitizers.cpp
  * @brief Layer 0 tests for sanitizer detection (TSan, ASan, UBSan)
  *
- * These tests verify that sanitizers are working correctly by intentionally
- * triggering detectable errors. Tests are conditionally compiled based on
- * which sanitizer is active.
+ * Run trigger code in a death-test subprocess via EXPECT_EXIT; pass iff
+ * captured stderr contains the expected sanitizer report. Exit code is ignored.
  *
- * Note: These tests use EXPECT_DEATH which spawns a subprocess, so the
- * sanitizer errors don't crash the main test process.
+ * We use plain regex strings (not HasSubstr) so GTest's death test applies
+ * ContainsRegex to the captured output. Set --gtest_death_test_style=threadsafe
+ * so the child is re-exec'd and its stderr is captured reliably (avoids
+ * unflushed buffers in the "fast" fork-only style).
  */
 #include "plh_platform.hpp"
+#include <cassert>
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
-#include <thread>
 #include <limits>
+#include <thread>
 
-using namespace ::testing;
+// Accept any exit code; we only care about stderr content
+static bool any_exit(int) { return true; }
 
 // ============================================================================
 // ThreadSanitizer (TSan) Tests
@@ -23,37 +25,17 @@ using namespace ::testing;
 
 #ifdef PYLABHUB_SANITIZER_IS_THREAD
 
-/**
- * Test TSan detects data races
- *
- * This test intentionally creates a data race by having two threads
- * increment a shared non-atomic variable without synchronization.
- */
 TEST(SanitizerTest, TSan_DetectsDataRace)
 {
-    auto data_race_func = []()
-    {
-        long shared_value = 0;
-
-        std::thread t1(
-            [&]()
-            {
-                for (int i = 0; i < 1000; ++i)
-                    shared_value++;
-            });
-
-        std::thread t2(
-            [&]()
-            {
-                for (int i = 0; i < 1000; ++i)
-                    shared_value++;
-            });
-
+    auto trigger = []() {
+        long v = 0;
+        std::thread t1([&] { for (int i = 0; i < 1000; ++i) v++; });
+        std::thread t2([&] { for (int i = 0; i < 1000; ++i) v++; });
         t1.join();
         t2.join();
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(data_race_func(), ".*ThreadSanitizer: data race.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "ThreadSanitizer: data race");
 }
 
 #endif // PYLABHUB_SANITIZER_IS_THREAD
@@ -64,84 +46,56 @@ TEST(SanitizerTest, TSan_DetectsDataRace)
 
 #ifdef PYLABHUB_SANITIZER_IS_ADDRESS
 
-/**
- * Test ASan detects heap buffer overflow (write)
- */
 TEST(SanitizerTest, ASan_DetectsHeapBufferOverflowWrite)
 {
-    auto overflow_func = []()
-    {
-        int *array = new int[10];
-        // Use volatile to prevent optimization
-        *(volatile int *)&array[100] = 0;
-        delete[] array;
+    auto trigger = []() {
+        int *a = new int[10];
+        *(volatile int *)&a[100] = 0;
+        delete[] a;
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-buffer-overflow");
 }
 
-/**
- * Test ASan detects heap buffer overflow (read)
- */
 TEST(SanitizerTest, ASan_DetectsHeapBufferOverflowRead)
 {
-    auto overflow_func = []()
-    {
-        int *array = new int[10];
-        int volatile x = array[100]; // Trigger overflow
-        (void)x;                     // Avoid unused variable warning
-        delete[] array;
+    auto trigger = []() {
+        int *a = new int[10];
+        (void)(volatile int)a[100];
+        delete[] a;
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(overflow_func(), ".*AddressSanitizer: heap-buffer-overflow.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-buffer-overflow");
 }
 
-/**
- * Test ASan detects heap-use-after-free
- */
 TEST(SanitizerTest, ASan_DetectsHeapUseAfterFree)
 {
-    auto use_after_free_func = []()
-    {
-        int *array = new int[10];
-        delete[] array;
-        int volatile x = array[5]; // Use after free
-        (void)x;
+    auto trigger = []() {
+        int *a = new int[10];
+        delete[] a;
+        (void)(volatile int)a[5];
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(use_after_free_func(), ".*AddressSanitizer: heap-use-after-free.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-use-after-free");
 }
 
-// Cross-platform no-inline attribute
 #if defined(_MSC_VER)
-#define PYLABHUB_NOINLINE __declspec(noinline)
+#define NOINLINE __declspec(noinline)
 #else
-#define PYLABHUB_NOINLINE __attribute__((noinline))
+#define NOINLINE __attribute__((noinline))
 #endif
 
-/**
- * Helper function to trigger stack buffer overflow
- * Must be no-inline to ensure distinct stack frame
- */
-PYLABHUB_NOINLINE
-static void trigger_stack_overflow()
-{
-    volatile char buf[256];
-    buf[0] = 1; // Use buffer to prevent optimization
-
-    // Write one byte past the end (most likely to hit ASan redzone)
-    volatile char *p = buf;
-    p[256] = 0;
-
-    asm volatile("" ::: "memory"); // Compiler barrier
-}
-
-/**
- * Test ASan detects stack buffer overflow
- */
 TEST(SanitizerTest, ASan_DetectsStackBufferOverflow)
 {
-    EXPECT_DEATH(trigger_stack_overflow(), ".*AddressSanitizer: stack-buffer-overflow.*\n");
+    NOINLINE static void trigger() {
+        volatile char buf[256];
+        buf[0] = 1;
+        volatile char *p = buf;
+        p[256] = 0;
+        (void)p;
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+    }
+    EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: stack-buffer-overflow");
 }
 
 #endif // PYLABHUB_SANITIZER_IS_ADDRESS
@@ -152,52 +106,34 @@ TEST(SanitizerTest, ASan_DetectsStackBufferOverflow)
 
 #ifdef PYLABHUB_SANITIZER_IS_UNDEFINED
 
-/**
- * Test UBSan detects signed integer overflow
- */
 TEST(SanitizerTest, UBSan_DetectsSignedIntegerOverflow)
 {
-    auto overflow_func = []()
-    {
-        // Use volatile to prevent compiler optimization
-        volatile int value = std::numeric_limits<int>::max();
-        value++;
+    auto trigger = []() {
+        volatile int v = std::numeric_limits<int>::max();
+        v++;
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(overflow_func(), ".*runtime error: signed integer overflow.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "runtime error: signed integer overflow");
 }
 
-/**
- * Test UBSan detects division by zero
- */
 TEST(SanitizerTest, UBSan_DetectsDivisionByZero)
 {
-    auto div_by_zero_func = []()
-    {
-        volatile int x = 42;
-        volatile int y = 0;
-        volatile int z = x / y;
-        (void)z;
+    auto trigger = []() {
+        volatile int x = 42, y = 0;
+        (void)(x / y);
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    EXPECT_DEATH(div_by_zero_func(), ".*runtime error: division by zero.*\n");
+    EXPECT_EXIT(trigger(), any_exit, "runtime error: division by zero");
 }
 
-/**
- * Test UBSan detects null pointer dereference
- */
 TEST(SanitizerTest, UBSan_DetectsNullPointerDereference)
 {
-    auto null_deref_func = []()
-    {
-        volatile int *ptr = nullptr;
-        volatile int x = *ptr;
-        (void)x;
+    auto trigger = []() {
+        volatile int *p = nullptr;
+        (void)*p;
+        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-
-    // UBSan detects this as a null pointer access
-    // Note: On some platforms, this might trigger a segfault before UBSan catches it
-    EXPECT_DEATH(null_deref_func(), ".*");
+    EXPECT_EXIT(trigger(), any_exit, "runtime error|null|SIGSEGV|signal");
 }
 
 #endif // PYLABHUB_SANITIZER_IS_UNDEFINED
@@ -209,9 +145,6 @@ TEST(SanitizerTest, UBSan_DetectsNullPointerDereference)
 #if !defined(PYLABHUB_SANITIZER_IS_THREAD) && !defined(PYLABHUB_SANITIZER_IS_ADDRESS) &&           \
     !defined(PYLABHUB_SANITIZER_IS_UNDEFINED)
 
-/**
- * When no sanitizer is active, provide a placeholder test
- */
 TEST(SanitizerTest, NoSanitizer_PlaceholderTest)
 {
     SUCCEED() << "No sanitizer active, skipping sanitizer detection tests";

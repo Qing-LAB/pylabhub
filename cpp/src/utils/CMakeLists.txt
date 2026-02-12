@@ -33,7 +33,7 @@ set(UTILS_SOURCES
   message_hub.cpp
   data_block.cpp
   data_block_mutex.cpp
-  data_block_spinlock.cpp
+  shared_memory_spinlock.cpp
   data_block_recovery.cpp
   slot_diagnostics.cpp
   slot_recovery.cpp

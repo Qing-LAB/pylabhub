@@ -11,6 +11,7 @@
 #include "plh_base.hpp"
 #include "pylabhub_version.h"
 #include <chrono>
+#include <limits>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -312,6 +313,14 @@ bool is_process_alive(uint64_t pid) noexcept
     return exitCode == STILL_ACTIVE;
 
 #else // POSIX systems
+    // Reject PIDs that don't fit in pid_t: UINT64_MAX truncates to -1, and
+    // kill(-1, 0) can succeed (signals all processes), which would incorrectly
+    // report "alive". Reject any pid > pid_t max.
+    const auto pid_max = static_cast<uint64_t>(std::numeric_limits<pid_t>::max());
+    if (pid > pid_max)
+    {
+        return false;
+    }
     // On POSIX, kill(pid, 0) checks for existence without sending a signal
     // Returns 0 on success (process exists), -1 on failure
     if (kill(static_cast<pid_t>(pid), 0) == 0)
