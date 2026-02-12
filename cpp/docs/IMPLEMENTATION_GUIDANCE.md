@@ -4,6 +4,8 @@
 **Last Updated:** 2026-02-09
 **Status:** Active Development Guide
 
+**Doc policy:** This is the **unified implementation guidance** for DataHub and related modules. Refer to this document during design and implementation (like a single "GEMINI.md"). **Execution order and checklist** live in **`docs/DATAHUB_TODO.md`**; do not duplicate priorities or roadmap here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
+
 ---
 
 ## Table of Contents
@@ -432,6 +434,8 @@ if (!lock.try_lock()) {
 
 ## Testing Strategy
 
+**Cross-references:** Test plan and Phase A–D rationale: **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**. Topic summary: **`docs/README/README_testing.md`**. Execution order and priorities: **`docs/DATAHUB_TODO.md`**.
+
 ### Test Organization
 
 ```
@@ -485,6 +489,10 @@ cmake -S . -B build -DPYLABHUB_USE_SANITIZER=Thread
 # Run tests
 ctest --test-dir build --output-on-failure
 ```
+
+### Test pattern choice and CTest vs direct execution
+
+Use one of three patterns: **(1) PureApiTest** — pure functions, no lifecycle; **(2) LifecycleManagedTest** — needs Logger/FileLock/etc. in one process, shared lifecycle; **(3) WorkerProcess** — multi-process (IPC, file locks across processes, or when a test finalizes lifecycle so later tests would break). When tests modify global/singleton state in a non-reversible way (e.g. finalize lifecycle), run them via **WorkerProcess** so each run is in a separate process. **CTest** runs each test in a separate process; **direct execution** of the test binary runs all tests in one process. If you rely on process isolation (e.g. lifecycle re-init), use CTest or design the test to use WorkerProcess. See **`docs/README/README_testing.md`** for multi-process flow and staging.
 
 ---
 

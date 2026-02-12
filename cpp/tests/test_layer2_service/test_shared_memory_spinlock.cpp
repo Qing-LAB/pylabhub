@@ -43,13 +43,7 @@ std::string unique_shm_name_spinlock()
 class SharedSpinLockTest : public ::testing::Test
 {
   protected:
-    void SetUp() override
-    {
-        state_.owner_pid.store(0, std::memory_order_release);
-        state_.owner_tid.store(0, std::memory_order_release);
-        state_.generation.store(0, std::memory_order_release);
-        state_.recursion_count.store(0, std::memory_order_release);
-    }
+    void SetUp() override { init_spinlock_state(&state_); }
 
     SharedSpinLockState state_{};
     const std::string name_{"test_spinlock"};
@@ -189,10 +183,7 @@ TEST(SharedSpinLockShmTest, TwoThreads_StateInShm_MutualExclusion)
         GTEST_SKIP() << "shm_create failed (e.g. CI); skip SharedSpinLock shm test";
     }
     auto *state = new (h.base) SharedSpinLockState();
-    state->owner_pid.store(0, std::memory_order_release);
-    state->owner_tid.store(0, std::memory_order_release);
-    state->generation.store(0, std::memory_order_release);
-    state->recursion_count.store(0, std::memory_order_release);
+    init_spinlock_state(state);
 
     std::atomic<int> counter{0};
     const int iterations = 50;
@@ -241,9 +232,7 @@ TEST(SharedSpinLockMultiProcessTest, MultiProcess_AcquireRelease)
         GTEST_SKIP() << "shm_create failed; skip multi-process test";
     }
     auto *state = new (h.base) SharedSpinLockState();
-    state->owner_pid.store(0, std::memory_order_release);
-    state->recursion_count.store(0, std::memory_order_release);
-    state->generation.store(0, std::memory_order_release);
+    init_spinlock_state(state);
 
     WorkerProcess proc(g_self_exe_path, "spinlock.multiprocess_acquire_release", {shm_name});
     ASSERT_TRUE(proc.valid());
@@ -269,9 +258,7 @@ TEST(SharedSpinLockMultiProcessTest, MultiProcess_ZombieReclaim)
         GTEST_SKIP() << "shm_create failed; skip multi-process test";
     }
     auto *state = new (h.base) SharedSpinLockState();
-    state->owner_pid.store(0, std::memory_order_release);
-    state->recursion_count.store(0, std::memory_order_release);
-    state->generation.store(0, std::memory_order_release);
+    init_spinlock_state(state);
 
     WorkerProcess proc(g_self_exe_path, "spinlock.zombie_hold_lock", {shm_name});
     ASSERT_TRUE(proc.valid());

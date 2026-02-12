@@ -19,14 +19,14 @@ macro(layer1_require_staged_utils target)
 endmacro()
 
 # ============================================================================
-# Test: AtomicGuard
+# Test: In-process spinlock (unified owner, token mode; replaces AtomicGuard)
 # ============================================================================
 
-add_executable(test_layer1_atomic_guard
-    test_atomicguard.cpp
+add_executable(test_layer1_spinlock
+    test_spinlock.cpp
 )
 
-target_link_libraries(test_layer1_atomic_guard
+target_link_libraries(test_layer1_spinlock
     PRIVATE
         pylabhub::utils
         pylabhub::test_framework
@@ -35,15 +35,15 @@ target_link_libraries(test_layer1_atomic_guard
 )
 
 pylabhub_register_test_for_staging(
-    TARGET test_layer1_atomic_guard
-    SUITE_NAME "Layer1_AtomicGuard"
+    TARGET test_layer1_spinlock
+    SUITE_NAME "Layer1_Spinlock"
 )
-layer1_require_staged_utils(test_layer1_atomic_guard)
+layer1_require_staged_utils(test_layer1_spinlock)
 
-gtest_discover_tests(test_layer1_atomic_guard
+gtest_discover_tests(test_layer1_spinlock
     PROPERTIES
-        LABELS "layer1;base;guard;atomic"
-        TIMEOUT 120  # Stress tests may take longer
+        LABELS "layer1;base;guard;spinlock"
+        TIMEOUT 120
 )
 
 # ============================================================================
@@ -131,7 +131,7 @@ gtest_discover_tests(test_layer1_format_tools
 )
 
 message(STATUS "Layer 1 (Base) tests configured successfully")
-message(STATUS "  - test_layer1_atomic_guard")
+message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
 message(STATUS "  - test_layer1_scope_guard")
 message(STATUS "  - test_layer1_format_tools")

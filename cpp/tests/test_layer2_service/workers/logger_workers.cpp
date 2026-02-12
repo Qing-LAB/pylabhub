@@ -507,7 +507,8 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
             logger.set_max_queue_size(max_queue);
             ASSERT_TRUE(logger.set_logfile(log_path.string()));
             logger.set_level(Logger::Level::L_INFO);
-            logger.set_log_sink_messages_enabled(false);
+            // Keep sink messages enabled so that set_console() below flushes the file sink
+            // before returning (worker flushes old sink when switching).
 
             // 1. Fill the queue deterministically until the logger starts dropping messages.
             int messages_enqueued = 0;
@@ -534,8 +535,12 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
                       static_cast<size_t>(messages_dropped))
                 << "get_total_dropped_since_sink_switch() should match the number of dropped messages";
 
-            // 2. Flush the logger to ensure all enqueued messages and warnings are written.
-            logger.flush();
+            // 2. Switch sink to console so the worker flushes the file sink before returning.
+            // With sink messages enabled, the worker flushes the old (file) sink when handling
+            // SetSinkCommand; the summary is written after the batch, so switching ensures
+            // it is included. Then we read the original log file (count_lines uses "Message "
+            // so sink switch lines do not affect the expected message count).
+            ASSERT_TRUE(logger.set_console());
 
             // 3. Verification
             std::string contents;

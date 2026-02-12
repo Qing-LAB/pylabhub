@@ -37,7 +37,7 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
-# Option to control load for racing-condition / stress tests (AtomicGuard, SlotRWCoordinator, high_load, FileLock, Logger, JsonConfig, etc.).
+# Option to control load for racing-condition / stress tests (InProcessSpinState/SpinGuard, SlotRWCoordinator, high_load, FileLock, Logger, JsonConfig, etc.).
 # Low: fewer threads, shorter duration (e.g. 10 s). High: more threads, longer duration (e.g. 30 s).
 set(STRESS_TEST_LEVEL_VALID "Low" "Medium" "High")
 set(STRESS_TEST_LEVEL "Low" CACHE STRING "Stress test level for racing-condition tests: Low (10s, fewer threads), Medium (20s), High (30s, more threads).")
@@ -51,6 +51,14 @@ if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
   option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" ON)
 else()
   option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" OFF)
+endif()
+
+# --- RecursionGuard max depth ---
+# Max recursion depth per thread for RecursionGuard. Exceeding this causes PLH_PANIC.
+# Configurable at configure time; passed as compile definition.
+set(PLH_RECURSION_GUARD_MAX_DEPTH 64 CACHE STRING "Max recursion depth for RecursionGuard; panic if exceeded (compile-time).")
+if(PLH_RECURSION_GUARD_MAX_DEPTH LESS 1 OR PLH_RECURSION_GUARD_MAX_DEPTH GREATER 1024)
+  message(FATAL_ERROR "PLH_RECURSION_GUARD_MAX_DEPTH must be between 1 and 1024, got ${PLH_RECURSION_GUARD_MAX_DEPTH}")
 endif()
 
 # --- Logger Compile-Time Level ---

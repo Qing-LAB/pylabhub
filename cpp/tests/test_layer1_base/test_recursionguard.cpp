@@ -8,7 +8,9 @@
  * per-object basis. The tests cover single-threaded recursion, independence between
  * objects, non-LIFO destruction order, and thread safety.
  */
+#include <array>
 #include <future>
+#include <memory>
 
 #include "plh_base.hpp"
 #include "gtest/gtest.h"
@@ -242,4 +244,22 @@ TEST(RecursionGuardTest, ThreadSafety)
 
     ASSERT_FALSE(other_thread_observed_recursing.load())
         << "Part 2: Other thread incorrectly observed recursion on a shared object.";
+}
+
+/**
+ * @brief Verifies that exceeding kMaxRecursionDepth panics (abort) instead of throwing.
+ */
+TEST(RecursionGuardTest, MaxDepthPanics)
+{
+    int key = 0;
+    EXPECT_DEATH(
+        {
+            std::array<std::unique_ptr<RecursionGuard>, pylabhub::basics::kMaxRecursionDepth + 1>
+                guards;
+            for (size_t i = 0; i <= pylabhub::basics::kMaxRecursionDepth; ++i)
+            {
+                guards[i] = std::make_unique<RecursionGuard>(&key);
+            }
+        },
+        "max recursion depth");
 }

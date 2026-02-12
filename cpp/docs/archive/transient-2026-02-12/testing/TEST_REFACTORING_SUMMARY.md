@@ -70,12 +70,11 @@ This refactoring ensures:
 
 ### Tests Migrated
 
-1. **test_atomicguard.cpp** (697 lines) - Migrated from test_pylabhub_corelib
-   - Token-based ownership model
-   - Move semantics
+1. **test_spinlock.cpp** (InProcessSpinStateTest) - Replaces former test_atomicguard.cpp (AtomicGuard removed)
+   - Token-based ownership (InProcessSpinState + SpinGuard)
+   - Move semantics, handoff, detach-then-reuse, self-move
    - RAII behavior
-   - Thread safety
-   - High-contention stress tests
+   - Concurrent stress, transfer between threads
 
 2. **test_recursionguard.cpp** (245 lines) - Migrated from test_pylabhub_corelib
    - Single-object recursion detection
@@ -92,10 +91,11 @@ This refactoring ensures:
 ### Build Configuration
 
 ```cmake
-# 3 separate test executables
-- test_layer1_atomic_guard
+# 4 test executables (Layer 1 base)
+- test_layer1_spinlock
 - test_layer1_recursion_guard
 - test_layer1_scope_guard
+- test_layer1_format_tools
 ```
 
 ### Coverage
@@ -380,7 +380,7 @@ tests/test_layer2_service/test_crypto_utils.cpp
 
 ### Migrated (Copied from test_pylabhub_corelib)
 ```
-tests/test_layer1_base/test_atomicguard.cpp
+tests/test_layer1_base/test_spinlock.cpp
 tests/test_layer1_base/test_recursionguard.cpp
 tests/test_layer1_base/test_scopeguard.cpp
 ```

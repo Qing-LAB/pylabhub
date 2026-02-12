@@ -31,7 +31,7 @@ Build outputs go to `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `i
 
 ### Dual Library Structure
 
-- **`pylabhub-basic`** (static, `pylabhub::basic`): Low-level, header-mostly utilities (atomic_guard, recursion_guard, scope_guard, platform detection). No external dependencies. Code here **cannot** depend on `pylabhub-utils`.
+- **`pylabhub-basic`** (static, `pylabhub::basic`): Low-level, header-mostly utilities (in-process spinlock/SpinGuard, recursion_guard, scope_guard, platform detection). No external dependencies. Code here **cannot** depend on `pylabhub-utils`.
 - **`pylabhub-utils`** (shared, `pylabhub::utils`): High-level utilities (Logger, FileLock, Lifecycle, JsonConfig, MessageHub, DataBlock). Depends on fmt, nlohmann_json, libzmq, libsodium, luajit.
 
 Always link against alias targets: `pylabhub::utils`, not `pylabhub-utils`.
@@ -41,7 +41,7 @@ Always link against alias targets: `pylabhub::utils`, not `pylabhub-utils`.
 Include one header per abstraction level — they handle all transitive includes:
 
 - **Layer 0** `plh_platform.hpp` — Platform detection macros, version API
-- **Layer 1** `plh_base.hpp` — Format tools, guards, module definitions
+- **Layer 1** `plh_base.hpp` — Format tools, in-process spinlock (SpinGuard), recursion/scope guards, module definitions
 - **Layer 2** `plh_service.hpp` — Lifecycle, FileLock, Logger
 - **Layer 3** `plh_datahub.hpp` — JsonConfig, MessageHub, DataBlock
 

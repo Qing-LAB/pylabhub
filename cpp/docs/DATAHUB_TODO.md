@@ -3,6 +3,8 @@
 **Last Updated:** 2026-02-12
 **Priority Legend:** 🔴 Critical | 🟡 High | 🟢 Medium | 🔵 Low
 
+**Doc policy:** This file is the **single source of truth** for execution. When tracking or executing the plan, update and follow this document. Other docs (test plan, HEP, critical review) provide rationale and detail; they do **not** override priorities or the checklist here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
+
 **Rationale documents (do not duplicate here):**
 - **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
 - **Critical review & design:** `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` — design decisions, integrity policy, flexible zone semantics. **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.

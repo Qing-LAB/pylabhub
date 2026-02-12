@@ -128,8 +128,14 @@ class WorkerProcess
  * robust check for success while allowing for legitimate debug output.
  *
  * @param proc The WorkerProcess instance to check.
+ * @param expected_stderr_substrings Optional: substrings that must appear in stderr.
+ *        When non-empty, the "no ERROR" check is skipped (scenario may expect ERROR logs).
+ * @param allow_expected_logger_errors When true, do not assert absence of "ERROR" in stderr.
+ *        Use for tests that intentionally trigger conditions logged at ERROR (e.g. timeouts).
+ *        FATAL, PANIC, and [WORKER FAILURE] are still forbidden.
  */
 void expect_worker_ok(const WorkerProcess &proc,
-                      const std::vector<std::string> &expected_stderr_substrings = {});
+                      const std::vector<std::string> &expected_stderr_substrings = {},
+                      bool allow_expected_logger_errors = false);
 
 } // namespace pylabhub::tests::helper
