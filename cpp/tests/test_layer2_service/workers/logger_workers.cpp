@@ -145,8 +145,9 @@ int test_multithread_stress(const std::string &log_path_str)
     return run_gtest_worker(
         [&]()
         {
-            const int THREADS = scaled_value(16, 4);
-            const int MSGS_PER_THREAD = scaled_value(200, 50);
+            // STRESS_TEST_LEVEL: Low=4 threads/50 msgs, Medium=10/125, High=16/200.
+            const int THREADS = get_stress_iterations(16, 4);
+            const int MSGS_PER_THREAD = get_stress_iterations(200, 50);
             ASSERT_TRUE(Logger::instance().set_logfile(log_path_str, true));
             std::vector<std::thread> threads;
 
@@ -328,7 +329,8 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
 
     fs::path chaos_log_path(log_path_str);
     std::atomic<bool> stop_flag(false);
-    const int DURATION_MS = scaled_value(1000, 250);
+    // STRESS_TEST_LEVEL: Low=10s, Medium=20s, High=30s (same as other stress tests).
+    const int DURATION_MS = get_stress_duration_sec() * 1000;
 
     auto worker_thread_fn = [&](auto fn)
     {

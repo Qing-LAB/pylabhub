@@ -166,6 +166,56 @@ std::string test_scale();
  */
 int scaled_value(int original, int small_value);
 
+#ifndef STRESS_TEST_LEVEL
+#define STRESS_TEST_LEVEL 0
+#endif
+
+/**
+ * @brief Stress test level (0=Low, 1=Medium, 2=High). Set by CMake STRESS_TEST_LEVEL.
+ */
+inline int get_stress_level() { return STRESS_TEST_LEVEL; }
+
+/**
+ * @brief Duration in seconds for stress tests. Low=10, Medium=20, High=30.
+ */
+inline int get_stress_duration_sec()
+{
+    return STRESS_TEST_LEVEL == 2 ? 30 : STRESS_TEST_LEVEL == 1 ? 20 : 10;
+}
+
+/**
+ * @brief Number of writer threads for stress tests. Low=2, Medium=4, High=6.
+ */
+inline int get_stress_num_writers()
+{
+    return STRESS_TEST_LEVEL == 2 ? 6 : STRESS_TEST_LEVEL == 1 ? 4 : 2;
+}
+
+/**
+ * @brief Number of reader threads for stress tests. Low=2, Medium=4, High=6.
+ */
+inline int get_stress_num_readers()
+{
+    return STRESS_TEST_LEVEL == 2 ? 6 : STRESS_TEST_LEVEL == 1 ? 4 : 2;
+}
+
+/**
+ * @brief Generic thread count for high-concurrency stress tests (e.g. AtomicGuard, FileLock).
+ * Low=4, Medium=16, High=64.
+ */
+inline int get_stress_num_threads()
+{
+    return STRESS_TEST_LEVEL == 2 ? 64 : STRESS_TEST_LEVEL == 1 ? 16 : 4;
+}
+
+/**
+ * @brief Iterations for level-based tests. Low=low_val, Medium=mid, High=high_val.
+ */
+inline int get_stress_iterations(int high_val, int low_val)
+{
+    return STRESS_TEST_LEVEL == 2 ? high_val : STRESS_TEST_LEVEL == 1 ? (high_val + low_val) / 2 : low_val;
+}
+
 /**
  * @brief A template function to wrap test logic for execution in a worker process.
  *

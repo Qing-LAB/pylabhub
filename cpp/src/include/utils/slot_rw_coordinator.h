@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "pylabhub_utils_export.h"
 
 // Forward declaration of the C++ SlotRWState struct
 // The C functions will operate on a pointer to this type,
@@ -35,18 +36,21 @@ extern "C"
      * @param timeout_ms Maximum time to wait in milliseconds. 0 for no timeout.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
+    PYLABHUB_UTILS_EXPORT
     SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms);
 
     /**
      * @brief Commits data written to a slot, making it visible to readers.
      * @param rw_state Pointer to the SlotRWState structure.
      */
+    PYLABHUB_UTILS_EXPORT
     void slot_rw_commit(pylabhub::hub::SlotRWState *rw_state);
 
     /**
      * @brief Releases a previously acquired write lock.
      * @param rw_state Pointer to the SlotRWState structure.
      */
+    PYLABHUB_UTILS_EXPORT
     void slot_rw_release_write(pylabhub::hub::SlotRWState *rw_state);
 
     // === Reader API ===
@@ -56,6 +60,7 @@ extern "C"
      * @param out_generation Pointer to a uint64_t to store the captured write generation.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
+    PYLABHUB_UTILS_EXPORT
     SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
                                            uint64_t *out_generation);
 
@@ -65,12 +70,14 @@ extern "C"
      * @param generation The write generation captured during acquire_read.
      * @return true if the slot is still valid, false if it was overwritten.
      */
+    PYLABHUB_UTILS_EXPORT
     bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation);
 
     /**
      * @brief Releases previously acquired read access to a slot.
      * @param rw_state Pointer to the SlotRWState structure.
      */
+    PYLABHUB_UTILS_EXPORT
     void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state);
 
     // === Metrics API ===
@@ -83,6 +90,8 @@ extern "C"
     typedef struct
     {
         uint64_t writer_timeout_count;
+        uint64_t writer_lock_timeout_count;
+        uint64_t writer_reader_timeout_count;
         uint64_t writer_blocked_total_ns;
         uint64_t write_lock_contention;
         uint64_t write_generation_wraps;
@@ -119,6 +128,7 @@ extern "C"
      * @param out_metrics Pointer to a DataBlockMetrics struct to fill.
      * @return 0 on success, -1 on error.
      */
+    PYLABHUB_UTILS_EXPORT
     int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
                             DataBlockMetrics *out_metrics);
 
@@ -127,6 +137,7 @@ extern "C"
      * @param shared_memory_header Pointer to the SharedMemoryHeader.
      * @return 0 on success, -1 on error.
      */
+    PYLABHUB_UTILS_EXPORT
     int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);
 
     // === Error Handling ===
@@ -135,6 +146,7 @@ extern "C"
      * @param result The SlotAcquireResult enum value.
      * @return A C-style string describing the result.
      */
+    PYLABHUB_UTILS_EXPORT
     const char *slot_acquire_result_string(SlotAcquireResult result);
 
 #ifdef __cplusplus

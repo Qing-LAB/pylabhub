@@ -45,4 +45,15 @@ target_include_directories(pylabhub-test-framework PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
 
+# STRESS_TEST_LEVEL (Low/Medium/High) from ToplevelOptions: propagate as 0/1/2 to all tests
+# that link this framework so racing-condition tests can use get_stress_*() consistently.
+if(STRESS_TEST_LEVEL STREQUAL "High")
+  set(_stress_level 2)
+elseif(STRESS_TEST_LEVEL STREQUAL "Medium")
+  set(_stress_level 1)
+else()
+  set(_stress_level 0)
+endif()
+target_compile_definitions(pylabhub-test-framework PUBLIC STRESS_TEST_LEVEL=${_stress_level})
+
 pylabhub_apply_standard_msvc_options(pylabhub-test-framework)

@@ -1,11 +1,24 @@
 # Data Exchange Hub - Implementation TODO
 
-**Last Updated:** 2026-02-10
+**Last Updated:** 2026-02-12
 **Priority Legend:** 🔴 Critical | 🟡 High | 🟢 Medium | 🔵 Low
 
 **Rationale documents (do not duplicate here):**
 - **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
 - **Critical review & design:** `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` — design decisions, integrity policy, flexible zone semantics. **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
+
+---
+
+## Recent completions (2026-02-12)
+
+- **ConsumerSyncPolicy** – Added `ConsumerSyncPolicy` enum (Latest_only, Single_reader, Sync_reader) to config and header. Implemented: Latest_only = read commit_index only; Single_reader = one shared read_index, consumer reads in order, writer blocks when (write_index - read_index) >= capacity; Sync_reader = per-consumer positions in reserved_header, read_index = min(positions), writer backpressure. Tests: policy_latest_only, policy_single_reader, policy_sync_reader.
+- **Slot-finding DRY** – Extracted `get_next_slot_to_read(header, last_seen, heartbeat_slot)` in data_block.cpp; both `DataBlockConsumer::acquire_consume_slot(int)` and `DataBlockSlotIterator::try_next(int)` use it. Single place for policy-based next-slot logic.
+- **Writer timeout diagnostics** – In `acquire_write`: on timeout waiting for write_lock, log "timeout while waiting for write_lock" with pid/owner; on timeout waiting for reader_count to drain, log "timeout while waiting for readers to drain (possible zombie reader)" with pid/reader_count. Library provides probes; recovery remains explicit (data_block_recovery, release_zombie_readers).
+- **DataBlockMutex try_lock_for** – Added `DataBlockMutex::try_lock_for(int timeout_ms)` (POSIX: pthread_mutex_timedlock + EOWNERDEAD handling; Windows: WaitForSingleObject with timeout). Zombie recoverer worker uses try_lock_for(5000) so test never hangs; on timeout logs and exits 1.
+- **ZombieOwnerRecovery under TSan** – Test skips when `__SANITIZE_THREAD__` (robust mutex EOWNERDEAD recovery triggers TSan false positive "unlock of unlocked mutex").
+- **MessageHub "Not connected"** – Downgraded to LOGGER_WARN so in-process tests without broker do not fail ExpectWorkerOk (no "ERROR" in stderr).
+- **High-load integrity test** – high_load_single_reader worker: Single_reader policy, ring capacity 4, scaled iterations (50k/5k); producer writes monotonic uint64_t, consumer asserts slot_id and payload in order. Test: HighLoadSingleReaderIntegrity.
+- **MessageHub Phase C groundwork (no-broker path)** – `test_message_hub.cpp` + `messagehub_workers.cpp` now cover lifecycle-only and **no-broker** behavior: connect/disconnect idempotence, send/receive when not connected, register_producer/discover_producer when broker is unavailable, and JSON-parse failure paths. These tests use the existing worker framework and Logger/Lifecycle modules; they exercise the C++20 pImpl design without introducing test-only hooks.
 
 ---
 
@@ -82,7 +95,12 @@ Use this list to track what’s left; details live in the sections below and in 
 - [x] **Phase A – Protocol/API correctness** – test_phase_a_protocol: flexible_zone_span empty when no zones / non-empty when zones; checksum false when no zones / true when valid; consumer without expected_config gets empty zones, with expected_config gets zones; [x] schema (test_schema_validation). See doc Part 1.1 and 1.4.
 - [x] **Phase B – Slot protocol in one process** – test_slot_protocol: write_read, checksum (Enforced), layout_smoke (checksum + flexible zone), diagnostic_handle. DataBlockLayout + slot checksum region fix. See doc Part 1.2 and 1.4.
 - [x] **DataBlock/slot error handling** – test_error_handling: recoverable failures return false/nullptr/empty (acquire timeout, wrong secret, invalid handle release, write/commit/read bounds, double-release idempotent, iterator try_next timeout). Ensures no segfault on expected error paths; unsafe/unrecoverable cases (e.g. handle used after producer destroyed) remain contract violations.
-- [ ] **Phase C – MessageHub and broker** – **Include tests for MessageHub and broker.** MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors); with broker: register_producer, discover_producer, one write/read. **Note:** Existing MessageHub-related test code (e.g. `workers/messagehub_workers.cpp`: lifecycle-only) may be outdated; reevaluate when implementing Phase C. See doc Part 1.1, 1.2, 1.4.
+- [x] **Writer timeout metrics split** – Added `writer_lock_timeout_count` and `writer_reader_timeout_count`; exposed via DataBlockMetrics and slot_rw_get_metrics/reset; new worker + test: writer_timeout_metrics_split.
+- [ ] **Phase C – MessageHub and broker** – **Complete tests for MessageHub and broker.**
+  - **C.0 No-broker behavior (DONE)** – `test_message_hub.cpp` + `messagehub_workers.cpp` cover: lifecycle init, connect/disconnect idempotence, send/receive when not connected, register_producer / discover_producer when broker is unavailable, and JSON parse/shape errors. These tests reuse the existing worker framework and Logger/Lifecycle modules and validate the C++20 pImpl design without any test-only hooks.
+  - **C.1 With-broker happy path** – Add workers + tests that start a minimal in-process broker (or dedicated test binary) implementing REG_REQ/DISC_REQ with the current JSON schema (including `shm_name`, `schema_hash`, `schema_version`). Verify: `register_producer` succeeds and persists state; `discover_producer` returns `ConsumerInfo` matching what was registered; one producer/consumer pair performs a single write/read through DataBlock using the discovered `shm_name` and schema fields.
+  - **C.2 Error and timeout paths with broker** – Tests for broker-side failures and timeouts: broker returns structured error JSON; broker not reachable; malformed responses. MessageHub must surface these via `std::optional` and logging, not process aborts. Reuse the test-broker fixture so no new production-only codepaths are added.
+  - **C.3 Schema metadata contract** – Tests that registration and discovery carry `schema_hash` and `schema_version` consistently end-to-end, and that DataBlock factories use the discovered schema fields as documented in the HEP and schema validation design.
 - [ ] **Phase D – Concurrency and multi-process** – Concurrent readers; writer timeout; TOCTTOU and wrap-around; zombie reclaim; DataBlockMutex. See doc Part 1.3 and 1.4.
 - [ ] **Recovery scenario tests** – **Deferred.** See “Recovery (deferred)” below. Beyond smoke we may want: zombie lock reclaim, datablock_validate_integrity on corrupted block, datablock_diagnose_slot stuck detection — after recovery policy is defined.
 - [x] **Test infrastructure** – enable test_schema_validation in CMake; converted to IsolatedProcessTest + schema_validation_workers (schema match / mismatch). DataBlockTestFixture, test broker: future. See doc Part 1.5.
@@ -102,6 +120,25 @@ Use this list to track what’s left; details live in the sections below and in 
 
 ### Other
 - [x] **plh_heartbeat_manager.hpp** – Moved to utils/heartbeat_manager.hpp (per plh_* convention).
+
+### Next step plan (immediate)
+
+```mermaid
+flowchart TD
+    A[Phase A/B: Protocol & slot tests ✅] --> B[Writer timeout metrics split ✅]
+    B --> C[Phase C: MessageHub + broker tests]
+    C --> D[Phase D: Concurrency & multi-process]
+    B --> S[Priority 1.4: Broker schema registry]
+    D --> R[Recovery scenarios (deferred)]
+```
+
+1. **Phase C – MessageHub + broker tests**
+   - Implement Phase C from `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`: MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors), and with broker: register_producer, discover_producer, one write/read.
+   - Reevaluate existing MessageHub workers (`test_layer3_datahub/workers/messagehub_workers.cpp` or equivalents) and update/replace to match current `message_hub.cpp` API and protocol.
+2. **Priority 1.4 – Broker schema registry**
+   - Define and implement broker-side registry behavior for `schema_hash`, `schema_version`, and `schema_name`; ensure DISC responses and any GET_SCHEMA-style API match the client expectations in `message_hub.cpp` and DataBlock create/find.
+3. **Phase D – Concurrency & multi-process**
+   - Add tests for concurrent readers, writer timeout behavior, TOCTTOU and wrap-around, zombie reclaim, and DataBlockMutex in multi-process scenarios, per Part 1.3 of the test plan.
 
 ### Recovery (deferred)
 
@@ -312,63 +349,25 @@ Recovery semantics need **further investigation** before we define and test them
 
 ---
 
-## Phase 2: Core SlotRWCoordinator Implementation (Week 2)
+## Phase 2: Core SlotRWCoordinator Abstraction (Week 2)
 
-### 🔴 PRIORITY 2.1: C API (Layer 0) - `slot_rw_coordinator.h`
+- ### 🔴 PRIORITY 2.1: C API (Layer 0) – stabilize abstraction and tests
+-
+- [x] **Define C result enum and metrics struct** – `slot_rw_coordinator.h` exposes `SlotAcquireResult` (`SLOT_ACQUIRE_OK`, `SLOT_ACQUIRE_TIMEOUT`, `SLOT_ACQUIRE_NOT_READY`, `SLOT_ACQUIRE_LOCKED`, `SLOT_ACQUIRE_ERROR`, `SLOT_ACQUIRE_INVALID_STATE`) and `DataBlockMetrics`, matching the design intent in HEP §4.2 and the header layout in `SharedMemoryHeader`.
+- [x] **Implement core C API over `SlotRWState`** – `data_block.cpp` implements:
+  - `slot_rw_acquire_write`, `slot_rw_commit`, `slot_rw_release_write`
+  - `slot_rw_acquire_read`, `slot_rw_validate_read`, `slot_rw_release_read`
+  - `slot_acquire_result_string`, `slot_rw_get_metrics`, `slot_rw_reset_metrics`  
+  These are thin `extern "C"` wrappers over the C++ helpers (`acquire_write`, `commit_write`, `release_write`, `acquire_read`, `validate_read`, `release_read`), using `pylabhub::platform::*` and `utils::backoff` only, so the slot protocol can be tested independently of `DataBlock`.
+- [x] **Layer-0 focused tests for SlotRWState** – `test_layer2_service/test_slot_rw_coordinator.cpp`:
+  - Allocates a single `SlotRWState` + synthetic `SharedMemoryHeader` in plain memory (no shm, no DataBlock).
+  - Exercises writer/reader acquisition, generation capture, wrap-around detection, and metrics `get/reset` purely via the C API.
+  - Verifies that core behaviour and metrics wiring are correct without involving `DataBlockProducer` / `DataBlockConsumer`.
+- [ ] **TU split and layering guardrails** – Move the C API and its helpers into a dedicated TU (see “Slot RW TU” below) so:
+  - Layer 0 (C API) depends only on `SlotRWState`, `SharedMemoryHeader`, `platform`, and `backoff`.
+  - Higher layers (`DataBlock`, transaction guards, typed access) depend *on* this API instead of reimplementing slot logic, making tests and future bindings reuse the same core behavior.
 
-- [ ] **Define C struct for result types**
-  ```c
-  typedef enum {
-      SLOT_ACQUIRED = 0,
-      SLOT_TIMEOUT = 1,
-      SLOT_NOT_READY = 2,
-      SLOT_RACE_DETECTED = 3
-  } SlotAcquireResult;
-  ```
-
-- [ ] **Implement writer acquisition**
-  ```c
-  SlotAcquireResult slot_rw_acquire_write(
-      SlotRWState* rw,
-      SharedMemoryHeader* header,
-      uint32_t slot_index,
-      int timeout_ms
-  );
-  ```
-
-- [ ] **Implement writer release**
-  ```c
-  void slot_rw_release_write(
-      SlotRWState* rw,
-      SharedMemoryHeader* header,
-      uint32_t slot_index,
-      bool did_commit
-  );
-  ```
-
-- [ ] **Implement reader acquisition (with double-check)**
-  ```c
-  SlotAcquireResult slot_rw_acquire_read(
-      SlotRWState* rw,
-      SharedMemoryHeader* header,
-      uint32_t slot_index,
-      int timeout_ms
-  );
-  ```
-
-- [ ] **Implement reader release**
-  ```c
-  void slot_rw_release_read(
-      SlotRWState* rw,
-      SharedMemoryHeader* header,
-      uint32_t slot_index
-  );
-  ```
-
-**Estimated Effort**: 3 days
-**Dependencies**: Phase 0 (backoff_strategy, platform utilities)
-**Testing**: Unit tests for each acquisition/release function
-**Reference**: Section 4.2 of HEP-CORE-0002-DataHub-FINAL.md
+**Goal:** treat SlotRWCoordinator as a **first-class lower layer** with its own tests and translation unit, so all higher-level tests (DataBlock, factories, MessageHub integration) benefit from a verified, reusable abstraction instead of ad-hoc per-call logic.
 
 ### 🟡 PRIORITY 2.2: C++ Template Wrappers (Layer 1.75) - `slot_rw_access.hpp`
 
@@ -393,25 +392,15 @@ Recovery semantics need **further investigation** before we define and test them
 **Testing**: Test typed access with various struct types
 **Reference**: Section 5.3 of HEP-CORE-0002-DataHub-FINAL.md
 
-### 🟡 PRIORITY 2.3: Transaction Guards (Layer 2) - Already Defined
+### 🟡 PRIORITY 2.3: Transaction Guards (Layer 2) – polish and test
 
-- [ ] **Complete implementation of `WriteTransactionGuard`**
-  - Constructor: Acquire write slot
-  - Destructor: Release write slot (commit if `commit()` was called)
-  - Methods: `commit()`, `abort()`, `slot()`, `operator bool()`
+- [x] **Implement `WriteTransactionGuard` / `ReadTransactionGuard`** – Guards are implemented in `data_block.cpp` with pImpl-safe semantics: acquire in ctor, release in dtor, move-only, `slot()` returning `std::optional` by reference, and `noexcept` destructors.
+- [ ] **Exception-safety tests and usage guidance** – Add targeted tests (e.g. `test_transaction_api.cpp`) that:
+  - Verify guards always release slots when lambdas throw (including nested exceptions).
+  - Confirm no exceptions escape guard destructors, and that `slot()` remains `noexcept` and safe to use across the shared-library boundary.
+  - Document recommended usage patterns in `DATAHUB_IMPLEMENTATION_SUMMARY.md` and the HEP (e.g. “prefer guards/with_* helpers over manual acquire/release in application code”).
 
-- [ ] **Complete implementation of `ReadTransactionGuard`**
-  - Constructor: Acquire read slot
-  - Destructor: Release read slot
-  - Methods: `slot()`, `operator bool()`
-
-- [ ] **Verify exception safety**
-  - Ensure slots are released even if lambda throws
-
-**Estimated Effort**: 1 day
-**Dependencies**: Priority 2.2 (template wrappers)
-**Testing**: Test exception paths in transaction lambdas
-**Reference**: Section 5.4 of HEP-CORE-0002-DataHub-FINAL.md
+**Goal:** make the guard layer the **default entry-point** for C++ callers, with strong exception-safety guarantees, so tests and examples can be written against a clean RAII abstraction instead of raw handle management.
 
 ---
 
