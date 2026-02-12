@@ -11,6 +11,10 @@
 
 ## Recent completions (2026-02-11)
 
+- **Test coverage summary** – Added “Current test coverage (Layer 3 DataHub)” to `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`: table mapping plan areas to tests/workers; gaps (Phase C, D, recovery scenario) noted.
+- **MessageHub JSON safety** – message_hub.cpp: register_producer and discover_producer use try/catch around json::parse; .contains("status")/"message" before access; discover_producer validates presence and types of shm_name, schema_hash, schema_version before .get<>(); missing/invalid fields return false/nullopt with log instead of throwing.
+- **DataBlock/slot error-handling tests**: test_error_handling.cpp + error_handling_workers: acquire_consume_slot timeout → nullptr, find_consumer wrong secret → nullptr, release_write_slot/release_consume_slot invalid handle → false, write/commit/read bounds → false, double release idempotent, slot_iterator try_next timeout → !ok. Ensures recoverable errors are handled without UB; contract violations (e.g. handle after destroy) remain documented.
+- **Phase B – Slot protocol tests**: test_slot_protocol (WriteReadSucceedsInProcess, ChecksumUpdateVerifySucceeds, LayoutWithChecksumAndFlexibleZoneSucceeds, DiagnosticHandleOpensAndAccessesHeader); all passing.
 - **Recovery/diagnostics tests**: test_recovery_api.cpp + recovery_workers for heartbeat_manager, integrity_validator, recovery_api (datablock_is_process_alive), slot_diagnostics, slot_recovery. Workers run with Logger+CryptoUtils+MessageHub lifecycle; create DataBlock, exercise APIs; ExpectWorkerOk with expected_stderr_substrings (MessageHub logs "Not connected" at ERROR when no broker). SlotDiagnostics::is_valid() implementation added.
 - **FileLock test cleanup**: GetTempLockPath pre-cleanup fixed to use `get_expected_lock_fullname_for` instead of incorrect `.lock.` prefix.
 - **base_file_sink.cpp**: Fixed (void)m_use_flock → (void)use_flock for correct unused-parameter suppression on Windows.
@@ -48,7 +52,7 @@ Use this list to track what’s left; details live in the sections below and in 
 
 ### Functionality and design (review + agree)
 - [ ] **DataBlockMutex not used by DataBlock** – Reintegrate for control zone (spinlock alloc, etc.) when DataHub integration is done; see DataBlockMutex follow-ups below.
-- [ ] **Consumer flexible_zone_info** – Document that it’s only populated when using factory with expected_config; enforce or clarify for flexible-zone-by-name access.
+- [ ] **Consumer flexible_zone_info (see docs/FLEXIBLE_ZONE_INITIALIZATION.md)** – Document that it’s only populated when using factory with expected_config; enforce or clarify for flexible-zone-by-name access.
 - [ ] **Integrity repair path** – Optional: low-level repair using only DataBlockDiagnosticHandle (no full producer/consumer) to avoid broker lifecycle side effects.
 
 ### DataBlockMutex follow-ups (on integration)
@@ -75,15 +79,16 @@ Use this list to track what’s left; details live in the sections below and in 
 - **Already covered:** Platform (get_pid, monotonic_time_ns, elapsed_time_ns, is_process_alive) in test_platform_core; Backoff in test_backoff_strategy; Crypto (BLAKE2b, verify) in test_crypto_utils; Lifecycle in test_lifecycle; Schema BLDS in test_schema_blds.
 
 ### DataHub protocol testing (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 1)
-- [ ] **Phase A – Protocol/API correctness** – Flexible zone empty span when no zones; checksum false when zone undefined; config/agreement (consumer with/without expected_config); [x] schema store/validate/mismatch (test_schema_validation). See doc Part 1.1 and 1.4.
-- [ ] **Phase B – Slot protocol in one process** – In-process producer + consumer; acquire write, write+commit, acquire consume, read; checksum update/verify; optional diagnostic handle. See doc Part 1.2 and 1.4.
-- [ ] **Phase C – MessageHub and broker** – MessageHub unit behavior (disconnect, parse errors); with broker: register_producer, discover_producer, one write/read. See doc Part 1.1, 1.2, 1.4.
+- [x] **Phase A – Protocol/API correctness** – test_phase_a_protocol: flexible_zone_span empty when no zones / non-empty when zones; checksum false when no zones / true when valid; consumer without expected_config gets empty zones, with expected_config gets zones; [x] schema (test_schema_validation). See doc Part 1.1 and 1.4.
+- [x] **Phase B – Slot protocol in one process** – test_slot_protocol: write_read, checksum (Enforced), layout_smoke (checksum + flexible zone), diagnostic_handle. DataBlockLayout + slot checksum region fix. See doc Part 1.2 and 1.4.
+- [x] **DataBlock/slot error handling** – test_error_handling: recoverable failures return false/nullptr/empty (acquire timeout, wrong secret, invalid handle release, write/commit/read bounds, double-release idempotent, iterator try_next timeout). Ensures no segfault on expected error paths; unsafe/unrecoverable cases (e.g. handle used after producer destroyed) remain contract violations.
+- [ ] **Phase C – MessageHub and broker** – **Include tests for MessageHub and broker.** MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors); with broker: register_producer, discover_producer, one write/read. **Note:** Existing MessageHub-related test code (e.g. `workers/messagehub_workers.cpp`: lifecycle-only) may be outdated; reevaluate when implementing Phase C. See doc Part 1.1, 1.2, 1.4.
 - [ ] **Phase D – Concurrency and multi-process** – Concurrent readers; writer timeout; TOCTTOU and wrap-around; zombie reclaim; DataBlockMutex. See doc Part 1.3 and 1.4.
-- [ ] **Recovery scenario tests** – Beyond smoke tests: zombie lock reclaim (process crash while holding lock, another process reclaims); datablock_validate_integrity against corrupted block (detect/repair); datablock_diagnose_slot against genuinely stuck slot (is_stuck correctly identified).
+- [ ] **Recovery scenario tests** – **Deferred.** See “Recovery (deferred)” below. Beyond smoke we may want: zombie lock reclaim, datablock_validate_integrity on corrupted block, datablock_diagnose_slot stuck detection — after recovery policy is defined.
 - [x] **Test infrastructure** – enable test_schema_validation in CMake; converted to IsolatedProcessTest + schema_validation_workers (schema match / mismatch). DataBlockTestFixture, test broker: future. See doc Part 1.5.
 
 ### MessageHub follow-ups (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 2)
-- [ ] **MessageHub JSON safety** – Non-throwing or guarded JSON parse in register_producer/discover_producer; use .contains()/.value() for optional keys to avoid throws on missing fields.
+- [x] **MessageHub JSON safety** – register_producer/discover_producer: parse in try/catch (return false/nullopt on parse exception); .contains("status")/"message" before access; discover_producer requires .contains() and type checks (is_string/is_number_unsigned) for shm_name, schema_hash, schema_version before .get<>().
 - [ ] **MessageHub receive helper** – Extract shared recv path (poll, recv_multipart, size check, last frame) into private helper to remove duplication between send_message and receive_message.
 - [ ] **MessageHub [[nodiscard]] and docs** – Add [[nodiscard]] to send_message, receive_message, discover_producer, connect, register_producer; document broker contract (REG_REQ/DISC_REQ, JSON shape) in one place.
 - [ ] **register_consumer** – Implement when broker protocol for consumer registration is defined; add tests.
@@ -97,6 +102,14 @@ Use this list to track what’s left; details live in the sections below and in 
 
 ### Other
 - [x] **plh_heartbeat_manager.hpp** – Moved to utils/heartbeat_manager.hpp (per plh_* convention).
+
+### Recovery (deferred)
+
+Recovery semantics need **further investigation** before we define and test them fully:
+
+- **Clear definition needed:** What should be **recovered** (e.g. stuck slot, orphaned lock) vs what should **fail** (e.g. corrupted header, unreachable producer), and what is the **correct protocol/policy** to enforce (when to reset, when to log-only, when to refuse).
+- **For now:** Keep recovery **simple**. Current smoke (test_recovery_api: heartbeat, integrity_validator, slot_diagnostics, slot_recovery, datablock_is_process_alive) stays; deeper recovery behavior and “recovery scenario” tests (zombie reclaim, corrupted block, stuck slot) are **left for later** once the above is defined.
+- Do not expand recovery logic or add recovery scenario tests until the policy (recover vs fail, protocol) is agreed and documented.
 
 ---
 

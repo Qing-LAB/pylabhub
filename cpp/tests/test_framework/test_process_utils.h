@@ -50,9 +50,12 @@ class WorkerProcess
      * @param exe_path The path to this executable (from g_self_exe_path).
      * @param mode The worker mode string (e.g., "filelock.nonblocking_acquire").
      * @param args A vector of additional string arguments for the worker.
+     * @param redirect_stderr_to_console If true, worker stderr goes to console.
+     * @param with_ready_signal If true, creates a pipe; child signals via PLH_TEST_READY_FD/HANDLE.
      */
     WorkerProcess(const std::string &exe_path, const std::string &mode,
-                  const std::vector<std::string> &args, bool redirect_stderr_to_console = false);
+                  const std::vector<std::string> &args, bool redirect_stderr_to_console = false,
+                  bool with_ready_signal = false);
     ~WorkerProcess();
 
     WorkerProcess(const WorkerProcess &) = delete;
@@ -90,7 +93,17 @@ class WorkerProcess
      */
     bool valid() const { return handle_ != NULL_PROC_HANDLE; }
 
+    /**
+     * @brief Blocks until the child signals "ready" via PLH_TEST_READY_FD (POSIX) or
+     * PLH_TEST_READY_HANDLE (Windows). Only valid when constructed with with_ready_signal=true.
+     * Call before wait_for_exit() when using SpawnWorkerWithReadySignal.
+     */
+    void wait_for_ready();
+
   private:
+    void init_with_ready_signal(const std::string &exe_path, const std::string &mode,
+                                const std::vector<std::string> &args,
+                                bool redirect_stderr_to_console);
     ProcessHandle handle_ = NULL_PROC_HANDLE;
     int exit_code_ = -1;
     fs::path stdout_path_;
@@ -99,6 +112,12 @@ class WorkerProcess
     mutable std::string stderr_content_;
     bool waited_ = false;
     bool redirect_stderr_to_console_ = false;
+    bool with_ready_signal_ = false;
+#if defined(PLATFORM_WIN64)
+    HANDLE ready_pipe_read_ = NULL;
+#else
+    int ready_pipe_read_ = -1;
+#endif
 };
 
 /**

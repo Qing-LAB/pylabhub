@@ -28,11 +28,56 @@ using pylabhub::hub::detail::HEADER_VERSION_MAJOR;
 using pylabhub::hub::detail::HEADER_VERSION_MINOR;
 using pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS;
 using pylabhub::hub::detail::MAX_SHARED_SPINLOCKS;
+using pylabhub::hub::detail::CONSUMER_READ_POSITIONS_OFFSET;
 
 // Use detail::DATABLOCK_MAGIC_NUMBER and detail::is_header_magic_valid from data_block.hpp
 static constexpr uint16_t DATABLOCK_VERSION_MAJOR = HEADER_VERSION_MAJOR;
 static constexpr uint16_t DATABLOCK_VERSION_MINOR = HEADER_VERSION_MINOR;
 static constexpr uint64_t INVALID_SLOT_ID = std::numeric_limits<uint64_t>::max();
+
+/// Sync_reader: pointer to the i-th consumer's next-read slot id in reserved_header.
+inline std::atomic<uint64_t> *consumer_next_read_slot_ptr(SharedMemoryHeader *h, size_t i)
+{
+    return reinterpret_cast<std::atomic<uint64_t> *>(h->reserved_header +
+                                                     CONSUMER_READ_POSITIONS_OFFSET) +
+           i;
+}
+
+/**
+ * Policy-based next slot to read. Single place for Latest_only / Single_reader / Sync_reader.
+ * Used by DataBlockConsumer::acquire_consume_slot and DataBlockSlotIterator::try_next.
+ * @return Next slot_id to try, or INVALID_SLOT_ID if none available yet.
+ */
+inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *h,
+                                      uint64_t last_seen_or_consumed_slot_id,
+                                      int heartbeat_slot)
+{
+    const ConsumerSyncPolicy policy = h->consumer_sync_policy;
+    if (policy == ConsumerSyncPolicy::Latest_only)
+    {
+        uint64_t next = h->commit_index.load(std::memory_order_acquire);
+        if (next == INVALID_SLOT_ID || next == last_seen_or_consumed_slot_id)
+            return INVALID_SLOT_ID;
+        return next;
+    }
+    if (policy == ConsumerSyncPolicy::Single_reader)
+    {
+        uint64_t next = h->read_index.load(std::memory_order_acquire);
+        if (h->commit_index.load(std::memory_order_acquire) < next)
+            return INVALID_SLOT_ID;
+        return next;
+    }
+    // Sync_reader
+    if (heartbeat_slot < 0 || heartbeat_slot >= static_cast<int>(MAX_CONSUMER_HEARTBEATS))
+        return INVALID_SLOT_ID;
+    uint64_t next =
+        consumer_next_read_slot_ptr(const_cast<SharedMemoryHeader *>(h),
+                                    static_cast<size_t>(heartbeat_slot))
+            ->load(std::memory_order_acquire);
+    if (h->commit_index.load(std::memory_order_acquire) < next)
+        return INVALID_SLOT_ID;
+    return next;
+}
 
 // === SlotRWState Coordination Logic ===
 // Note: backoff() is now provided by pylabhub::utils::backoff() from backoff_strategy.hpp
@@ -294,6 +339,36 @@ struct DataBlockLayout
 };
 
 // ============================================================================
+// Flexible zone info – single source of truth
+// ============================================================================
+// Rules:
+// 1. Layout comes from FlexibleZoneConfig list only; offset = sum of previous sizes.
+// 2. DataBlock (creator): populated in ctor from config via build_flexible_zone_info.
+// 3. DataBlock (attacher): populated only via set_flexible_zone_info_for_attach(configs)
+//    when the factory has expected_config (consumer must agree on zone layout).
+// 4. ProducerImpl/ConsumerImpl flexible_zones_info: built in factory from same config
+//    that created or validated the block. Use build_flexible_zone_info() for consistency.
+namespace
+{
+std::vector<FlexibleZoneInfo> build_flexible_zone_info(const std::vector<FlexibleZoneConfig> &configs)
+{
+    std::vector<FlexibleZoneInfo> out;
+    out.reserve(configs.size());
+    size_t offset = 0;
+    for (const auto &c : configs)
+    {
+        FlexibleZoneInfo info;
+        info.offset = offset;
+        info.size = c.size;
+        info.spinlock_index = c.spinlock_index;
+        out.push_back(info);
+        offset += c.size;
+    }
+    return out;
+}
+} // namespace
+
+// ============================================================================
 // DataBlock - Internal helper
 // ============================================================================
 class DataBlock
@@ -342,6 +417,7 @@ class DataBlock
         std::memset(m_header->schema_hash, 0, sizeof(m_header->schema_hash));
 
         m_header->policy = config.policy;
+        m_header->consumer_sync_policy = config.consumer_sync_policy;
         m_header->unit_block_size = static_cast<uint32_t>(to_bytes(config.unit_block_size));
         m_header->ring_buffer_capacity = config.ring_buffer_capacity;
         m_header->flexible_zone_size = m_layout.flexible_zone_size;
@@ -432,17 +508,15 @@ class DataBlock
         m_structured_data_buffer =
             reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
-        // Populate flexible zone info map
-        size_t current_offset = 0;
-        for (const auto &fz_config : config.flexible_zone_configs)
-        {
-            FlexibleZoneInfo info;
-            info.offset = current_offset;
-            info.size = fz_config.size;
-            info.spinlock_index = fz_config.spinlock_index;
-            m_flexible_zone_info[fz_config.name] = info; // Store by name for easy lookup
-            current_offset += fz_config.size;
-        }
+        // Populate flexible zone info map (single source: build_flexible_zone_info)
+        const auto &configs = config.flexible_zone_configs;
+        auto vec = build_flexible_zone_info(configs);
+        for (size_t i = 0; i < configs.size(); ++i)
+            m_flexible_zone_info[configs[i].name] = vec[i];
+
+        // Sync_reader: initialize per-consumer read positions in reserved_header
+        for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
+            consumer_next_read_slot_ptr(m_header, i)->store(0, std::memory_order_release);
 
         std::atomic_thread_fence(std::memory_order_release);
         m_header->magic_number.store(
@@ -613,6 +687,15 @@ class DataBlock
     const std::unordered_map<std::string, FlexibleZoneInfo> &flexible_zone_info() const
     {
         return m_flexible_zone_info;
+    }
+    /** Called by consumer factory when attaching with expected_config; populates zone map so
+     * verify_checksum_flexible_zone etc. work. Uses same build_flexible_zone_info as creator. */
+    void set_flexible_zone_info_for_attach(const std::vector<FlexibleZoneConfig> &configs)
+    {
+        m_flexible_zone_info.clear();
+        auto vec = build_flexible_zone_info(configs);
+        for (size_t i = 0; i < configs.size(); ++i)
+            m_flexible_zone_info[configs[i].name] = vec[i];
     }
     const DataBlockLayout &layout() const { return m_layout; }
 
@@ -806,6 +889,7 @@ struct SlotConsumeHandleImpl
     bool released = false;
     SlotRWState *rw_state = nullptr;  // New: Pointer to the SlotRWState for this slot
     uint64_t captured_generation = 0; // New: Captured generation for validation
+    int consumer_heartbeat_slot = -1; // For Sync_reader: which consumer slot to update on release
 };
 
 namespace
@@ -821,7 +905,7 @@ struct DataBlockProducerImpl
 {
     std::string name;
     std::unique_ptr<DataBlock> dataBlock;
-    ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
+    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
     std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
 };
 
@@ -848,9 +932,10 @@ struct DataBlockConsumerImpl
 {
     std::string name;
     std::unique_ptr<DataBlock> dataBlock;
-    ChecksumPolicy checksum_policy = ChecksumPolicy::EnforceOnRelease;
+    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
     uint64_t last_consumed_slot_id = INVALID_SLOT_ID;  // This field is still needed
     std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
+    int heartbeat_slot = -1; // For Sync_reader: index into consumer_heartbeats / read positions
 
     ~DataBlockConsumerImpl()
     {
@@ -951,8 +1036,28 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
 
     uint32_t slot_count = h->ring_buffer_capacity;
     if (slot_count == 0)
-    { // Should not happen with validation in constructor, but for safety
         return nullptr;
+
+    const ConsumerSyncPolicy policy = h->consumer_sync_policy;
+    if (policy == ConsumerSyncPolicy::Single_reader || policy == ConsumerSyncPolicy::Sync_reader)
+    {
+        auto start_time = pylabhub::platform::monotonic_time_ns();
+        int iteration = 0;
+        while (true)
+        {
+            uint64_t w = h->write_index.load(std::memory_order_acquire);
+            uint64_t r = h->read_index.load(std::memory_order_acquire);
+            if (w - r < static_cast<uint64_t>(slot_count))
+                break;
+            if (timeout_ms > 0 &&
+                pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
+                    static_cast<uint64_t>(timeout_ms))
+            {
+                h->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                return nullptr;
+            }
+            backoff(iteration++);
+        }
     }
 
     // Acquire a new slot ID (monotonically increasing)
@@ -1095,52 +1200,47 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
         return r;
     }
 
-    // --- Reader Acquisition Flow (similar to DataBlockConsumer::acquire_consume_slot) ---
+    const ConsumerSyncPolicy policy = h->consumer_sync_policy;
     auto start_time = pylabhub::platform::monotonic_time_ns();
     int iteration = 0;
-    uint64_t slot_id;
-    size_t slot_index;
-    SlotRWState *rw_state;
+    uint64_t slot_id = INVALID_SLOT_ID;
+    size_t slot_index = 0;
+    SlotRWState *rw_state = nullptr;
     uint64_t captured_generation = 0;
     SlotAcquireResult acquire_res;
 
     uint32_t slot_count = h->ring_buffer_capacity;
     if (slot_count == 0)
-    { // Should not happen with validation in constructor, but for safety
+    {
         r.error_code = 1;
         return r;
     }
 
+    const int heartbeat_slot =
+        (pImpl->owner != nullptr) ? pImpl->owner->heartbeat_slot : -1;
+
     while (true)
     {
-        slot_id = h->commit_index.load(std::memory_order_acquire);
+        const uint64_t next_to_read =
+            get_next_slot_to_read(h, pImpl->last_seen_slot_id, heartbeat_slot);
 
-        // Only try to acquire a slot if it's new and valid
-        if (slot_id != INVALID_SLOT_ID && slot_id != pImpl->last_seen_slot_id)
+        if (next_to_read != INVALID_SLOT_ID)
         {
-            slot_index = static_cast<size_t>(slot_id % slot_count);
+            slot_index = static_cast<size_t>(next_to_read % slot_count);
             rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
             if (!rw_state)
             {
-                // Should not happen, slot_rw_state throws on error
                 r.error_code = 3;
                 return r;
             }
-
             acquire_res = acquire_read(rw_state, h, &captured_generation);
             if (acquire_res == SLOT_ACQUIRE_OK)
             {
-                // Successfully acquired read lock, proceed to build handle
+                slot_id = next_to_read;
                 break;
             }
-            else if (acquire_res == SLOT_ACQUIRE_NOT_READY)
+            if (acquire_res != SLOT_ACQUIRE_NOT_READY)
             {
-                // Slot not ready (e.g., writer changed state), try again with same slot_id in next
-                // iteration Or potentially the producer hasn't committed yet. Continue polling.
-            }
-            else
-            {
-                // Other error or timeout from acquire_read
                 r.error_code = 3;
                 return r;
             }
@@ -1150,15 +1250,15 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
                                   static_cast<uint64_t>(timeout_ms))
         {
             h->reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
-            r.error_code = 2; // timeout
+            r.error_code = 2;
             return r;
         }
         backoff(iteration++);
     }
 
     auto impl = std::make_unique<SlotConsumeHandleImpl>();
-    impl->owner = pImpl->owner;         // Pass the consumer impl owner
-    impl->dataBlock = pImpl->dataBlock; // DataBlockSlotIteratorImpl has raw pointer
+    impl->owner = pImpl->owner;
+    impl->dataBlock = pImpl->dataBlock;
     impl->header = h;
     impl->slot_id = slot_id;
     impl->slot_index = slot_index;
@@ -1166,6 +1266,8 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
     impl->buffer_size = h->unit_block_size;
     impl->rw_state = rw_state;
     impl->captured_generation = captured_generation;
+    if (policy == ConsumerSyncPolicy::Sync_reader && pImpl->owner)
+        impl->consumer_heartbeat_slot = pImpl->owner->heartbeat_slot;
 
     r.next = SlotConsumeHandle(std::move(impl));
     r.ok = true;
@@ -1251,6 +1353,8 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
     if (impl.committed && impl.rw_state && impl.header)
     {
         commit_write(impl.rw_state, impl.header);
+        // Release write_lock so the slot can be reused on wrap-around (lap2+)
+        impl.rw_state->write_lock.store(0, std::memory_order_release);
     }
     else if (impl.rw_state)
     {
@@ -1309,6 +1413,37 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     else
     {
         ok = false; // Cannot release if state is invalid
+    }
+
+    // 4. Advance read position for Single_reader / Sync_reader
+    if (ok && impl.header)
+    {
+        SharedMemoryHeader *h = impl.header;
+        const ConsumerSyncPolicy policy = h->consumer_sync_policy;
+        const uint64_t next = impl.slot_id + 1;
+        if (policy == ConsumerSyncPolicy::Single_reader)
+        {
+            h->read_index.store(next, std::memory_order_release);
+        }
+        else if (policy == ConsumerSyncPolicy::Sync_reader && impl.consumer_heartbeat_slot >= 0 &&
+                 impl.consumer_heartbeat_slot < static_cast<int>(MAX_CONSUMER_HEARTBEATS))
+        {
+            consumer_next_read_slot_ptr(h, static_cast<size_t>(impl.consumer_heartbeat_slot))
+                ->store(next, std::memory_order_release);
+            // read_index = min of all consumer positions (only count registered slots)
+            uint64_t min_pos = next;
+            for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
+            {
+                if (h->consumer_heartbeats[i].consumer_id.load(std::memory_order_acquire) != 0)
+                {
+                    uint64_t p =
+                        consumer_next_read_slot_ptr(h, i)->load(std::memory_order_acquire);
+                    if (p < min_pos)
+                        min_pos = p;
+                }
+            }
+            h->read_index.store(min_pos, std::memory_order_release);
+        }
     }
 
     impl.released = true;
@@ -1385,7 +1520,7 @@ bool SlotWriteHandle::commit(size_t bytes_written)
     pImpl->bytes_written = bytes_written;
     pImpl->committed = true;
 
-    if (pImpl->owner && pImpl->owner->checksum_policy == ChecksumPolicy::Explicit)
+    if (pImpl->owner && pImpl->owner->checksum_policy == ChecksumPolicy::Manual)
     {
         pImpl->header->commit_index.store(pImpl->slot_id, std::memory_order_release);
     }
@@ -1530,57 +1665,58 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
 
     auto *h = pImpl->dataBlock->header();
     if (!h)
-    {
         return nullptr;
-    }
 
     uint32_t slot_count = h->ring_buffer_capacity;
     if (slot_count == 0)
-    { // Should not happen with validation in constructor, but for safety
         return nullptr;
-    }
 
-    // --- Reader Acquisition Flow ---
+    const ConsumerSyncPolicy policy = h->consumer_sync_policy;
     auto start_time = pylabhub::platform::monotonic_time_ns();
     int iteration = 0;
-    uint64_t slot_id;
-    size_t slot_index;
-    SlotRWState *rw_state;
+    uint64_t slot_id = INVALID_SLOT_ID;
+    size_t slot_index = 0;
+    SlotRWState *rw_state = nullptr;
     uint64_t captured_generation = 0;
     SlotAcquireResult acquire_res;
 
+    // Sync_reader: ensure registered and join-at-latest for new consumer
+    if (policy == ConsumerSyncPolicy::Sync_reader)
+    {
+        if (pImpl->heartbeat_slot < 0)
+        {
+            if (register_heartbeat() < 0)
+                return nullptr;
+            // Join at latest: start reading from current commit_index
+            uint64_t join_at = h->commit_index.load(std::memory_order_acquire);
+            if (join_at != INVALID_SLOT_ID)
+                consumer_next_read_slot_ptr(h, static_cast<size_t>(pImpl->heartbeat_slot))
+                    ->store(join_at, std::memory_order_release);
+            else
+                consumer_next_read_slot_ptr(h, static_cast<size_t>(pImpl->heartbeat_slot))
+                    ->store(0, std::memory_order_release);
+        }
+    }
+
     while (true)
     {
-        slot_id = h->commit_index.load(std::memory_order_acquire);
-        if (slot_id == INVALID_SLOT_ID || slot_id == pImpl->last_consumed_slot_id)
+        const uint64_t next_to_read =
+            get_next_slot_to_read(h, pImpl->last_consumed_slot_id, pImpl->heartbeat_slot);
+
+        if (next_to_read != INVALID_SLOT_ID)
         {
-            // No new slot available, continue polling
-        }
-        else
-        {
-            slot_index = static_cast<size_t>(slot_id % slot_count);
+            slot_index = static_cast<size_t>(next_to_read % slot_count);
             rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
             if (!rw_state)
-            {
-                // Should not happen, slot_rw_state throws on error
                 return nullptr;
-            }
-
             acquire_res = acquire_read(rw_state, h, &captured_generation);
             if (acquire_res == SLOT_ACQUIRE_OK)
             {
-                break; // Successfully acquired read lock
+                slot_id = next_to_read;
+                break;
             }
-            else if (acquire_res == SLOT_ACQUIRE_NOT_READY)
-            {
-                // Slot not ready (e.g., writer changed state), try again
-                // No need to log, acquire_read handles metrics for race
-            }
-            else
-            {
-                // Other error or timeout
+            if (acquire_res != SLOT_ACQUIRE_NOT_READY)
                 return nullptr;
-            }
         }
 
         if (timeout_ms > 0 && pylabhub::platform::elapsed_time_ns(start_time) / 1'000'000 >=
@@ -1596,7 +1732,6 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     const char *buf = pImpl->dataBlock->structured_data_buffer();
     if (!buf || slot_size == 0)
     {
-        // Release read lock if buffer is invalid before returning
         release_read(rw_state, h);
         return nullptr;
     }
@@ -1609,8 +1744,10 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     impl->slot_index = slot_index;
     impl->buffer_ptr = buf + slot_index * slot_size;
     impl->buffer_size = slot_size;
-    impl->rw_state = rw_state; // New: Pointer to the SlotRWState for this slot
-    impl->captured_generation = captured_generation; // New: Captured generation for validation
+    impl->rw_state = rw_state;
+    impl->captured_generation = captured_generation;
+    if (policy == ConsumerSyncPolicy::Sync_reader)
+        impl->consumer_heartbeat_slot = pImpl->heartbeat_slot;
 
     pImpl->last_consumed_slot_id = slot_id;
     return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(impl)));
@@ -1670,6 +1807,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     impl->buffer_size = slot_size;
     impl->rw_state = rw_state;
     impl->captured_generation = captured_generation;
+    if (h->consumer_sync_policy == ConsumerSyncPolicy::Sync_reader)
+        impl->consumer_heartbeat_slot = pImpl->heartbeat_slot;
 
     pImpl->last_consumed_slot_id = slot_id;
     return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(impl)));
@@ -1711,9 +1850,9 @@ int DataBlockConsumer::register_heartbeat()
                 expected, pid, std::memory_order_acq_rel))
         {
             header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
-            // Initialize last_heartbeat_ns here as well
             header->consumer_heartbeats[i].last_heartbeat_ns.store(
                 pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
+            pImpl->heartbeat_slot = static_cast<int>(i);
             return static_cast<int>(i);
         }
     }
@@ -1746,6 +1885,7 @@ void DataBlockConsumer::unregister_heartbeat(int slot)
             expected, 0, std::memory_order_acq_rel))
     {
         header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
+        pImpl->heartbeat_slot = -1;
     }
 }
 
@@ -1774,6 +1914,7 @@ pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info()
     ADD(schema_version, "u32");
     ADD(padding_sec, "u8[28]");
     ADD(policy, "u32");
+    ADD(consumer_sync_policy, "u32");
     ADD(unit_block_size, "u32");
     ADD(ring_buffer_capacity, "u32");
     ADD(flexible_zone_size, "u64");
@@ -1868,16 +2009,7 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
     impl->name = name;
     impl->dataBlock = std::make_unique<DataBlock>(name, config);
     impl->checksum_policy = config.checksum_policy;
-    size_t offset = 0;
-    for (const auto &c : config.flexible_zone_configs)
-    {
-        FlexibleZoneInfo info;
-        info.offset = offset;
-        info.size = c.size;
-        info.spinlock_index = c.spinlock_index;
-        impl->flexible_zones_info.push_back(info);
-        offset += c.size;
-    }
+    impl->flexible_zones_info = build_flexible_zone_info(config.flexible_zone_configs);
 
     auto *header = impl->dataBlock->header();
     if (header && schema_info)
@@ -1965,16 +2097,9 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
             LOGGER_WARN("[DataBlock:{}] Config mismatch during consumer attachment", name);
             return nullptr;
         }
-        size_t offset = 0;
-        for (const auto &c : expected_config->flexible_zone_configs)
-        {
-            FlexibleZoneInfo info;
-            info.offset = offset;
-            info.size = c.size;
-            info.spinlock_index = c.spinlock_index;
-            impl->flexible_zones_info.push_back(info);
-            offset += c.size;
-        }
+        const auto &configs = expected_config->flexible_zone_configs;
+        impl->flexible_zones_info = build_flexible_zone_info(configs);
+        impl->dataBlock->set_flexible_zone_info_for_attach(configs);
     }
 
     // Validate schema if provided

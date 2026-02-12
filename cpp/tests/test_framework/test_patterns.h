@@ -130,7 +130,25 @@ class IsolatedProcessTest : public ::testing::Test
                                       std::vector<std::string> args = {},
                                       bool redirect_stderr_to_console = false)
     {
-        return helper::WorkerProcess(g_self_exe_path, scenario, args, redirect_stderr_to_console);
+        return helper::WorkerProcess(g_self_exe_path, scenario, args, redirect_stderr_to_console,
+                                     false);
+    }
+
+    /**
+     * @brief Spawns a worker that signals "ready" via pipe when init is complete.
+     *
+     * The worker receives PLH_TEST_READY_FD (POSIX) or PLH_TEST_READY_HANDLE (Windows).
+     * Call signal_test_ready() from the worker when init is done; parent blocks on
+     * wait_for_ready() until then. Use for deterministic parent-child ordering without sleeps.
+     *
+     * @param scenario Worker mode string
+     * @param args     Additional arguments for the worker
+     * @return WorkerProcess handle; call wait_for_ready() before proceeding, then wait_for_exit()
+     */
+    helper::WorkerProcess SpawnWorkerWithReadySignal(const std::string &scenario,
+                                                      std::vector<std::string> args = {})
+    {
+        return helper::WorkerProcess(g_self_exe_path, scenario, args, false, true);
     }
 
     /**
@@ -151,7 +169,7 @@ class IsolatedProcessTest : public ::testing::Test
     {
         std::list<helper::WorkerProcess> workers;
         for (auto &[scenario, args] : scenarios)
-            workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console);
+            workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console, false);
         return workers;
     }
 

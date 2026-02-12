@@ -5,9 +5,10 @@
 #include <windows.h>
 #include <string> // For std::to_string
 #else
-#include <cerrno>  // For EBUSY, EOWNERDEAD
+#include <cerrno>  // For ETIMEDOUT, EOWNERDEAD
 #include <pthread.h>
-#include <string> // For std::to_string
+#include <string>  // For std::to_string
+#include <time.h>  // For clock_gettime, CLOCK_REALTIME
 #endif
 
 namespace pylabhub::hub
@@ -118,6 +119,28 @@ void DataBlockMutex::lock()
     }
 }
 
+bool DataBlockMutex::try_lock_for(int timeout_ms)
+{
+    if (m_mutex_handle == NULL)
+    {
+        throw std::runtime_error(
+            "Windows DataBlockMutex: Attempt to lock an invalid mutex handle for '" + m_name +
+            "'.");
+    }
+    DWORD ms = (timeout_ms <= 0) ? 0 : static_cast<DWORD>(timeout_ms);
+    DWORD wait_result = WaitForSingleObject(m_mutex_handle, ms);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED)
+    {
+        if (wait_result == WAIT_ABANDONED)
+            LOGGER_WARN("Windows DataBlockMutex: Mutex for '{}' was abandoned. Acquired.", m_name);
+        return true;
+    }
+    if (wait_result == WAIT_TIMEOUT)
+        return false;
+    throw std::runtime_error("Windows DataBlockMutex: Wait failed for '" + m_name +
+                             "'. Error: " + std::to_string(GetLastError()));
+}
+
 void DataBlockMutex::unlock()
 {
     if (m_mutex_handle == NULL)
@@ -205,6 +228,16 @@ DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory
         {
             res = pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
         }
+        if (res == 0)
+        {
+            // Workaround for Linux kernel robust-futex bug (lkml.org/lkml/2013/9/27/338):
+            // Without PTHREAD_PRIO_INHERIT, pthread_mutex_lock can block indefinitely instead
+            // of returning EOWNERDEAD when the owner dies. PI uses exit_pi_state_list() which
+            // handles wake-ups more reliably. Ignore ENOTSUP if the platform lacks PI support.
+#if defined(PTHREAD_PRIO_INHERIT)
+            (void)pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT);
+#endif
+        }
 
         if (res != 0)
         {
@@ -279,6 +312,57 @@ void DataBlockMutex::lock()
         throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_lock failed for '" + m_name +
                                  "'. Error: " + std::to_string(res));
     }
+}
+
+bool DataBlockMutex::try_lock_for(int timeout_ms)
+{
+    if (!m_base_shared_memory_address)
+    {
+        throw std::runtime_error(
+            "POSIX DataBlockMutex: Attempt to lock an uninitialized mutex for '" + m_name + "'.");
+    }
+    pthread_mutex_t *mutex_ptr = get_pthread_mutex();
+    if (timeout_ms <= 0)
+    {
+        int res = pthread_mutex_trylock(mutex_ptr);
+        if (res == 0)
+            return true;
+        if (res == EOWNERDEAD)
+        {
+            LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marked consistent.",
+                        m_name);
+            pthread_mutex_consistent(mutex_ptr);
+            return true;
+        }
+        if (res == EBUSY)
+            return false;
+        throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_trylock failed for '" +
+                                 m_name + "'. Error: " + std::to_string(res));
+    }
+    struct timespec abstime;
+    if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
+        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime failed for '" + m_name + "'.");
+    abstime.tv_sec += timeout_ms / 1000;
+    abstime.tv_nsec += static_cast<long>(timeout_ms % 1000) * 1'000'000;
+    if (abstime.tv_nsec >= 1'000'000'000L)
+    {
+        abstime.tv_sec += 1;
+        abstime.tv_nsec -= 1'000'000'000L;
+    }
+    int res = pthread_mutex_timedlock(mutex_ptr, &abstime);
+    if (res == 0)
+        return true;
+    if (res == EOWNERDEAD)
+    {
+        LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marked consistent.",
+                    m_name);
+        pthread_mutex_consistent(mutex_ptr);
+        return true;
+    }
+    if (res == ETIMEDOUT)
+        return false;
+    throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" + m_name +
+                             "'. Error: " + std::to_string(res));
 }
 
 void DataBlockMutex::unlock()

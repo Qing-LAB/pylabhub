@@ -315,6 +315,29 @@ Before implementing a new function:
 
 ---
 
+## Design: ChecksumPolicy and Flexible Zone Info
+
+### ChecksumPolicy (data_block.hpp)
+
+- **None**: No checksum enforcement.
+- **Manual**: Caller must call `update_checksum_*` / `verify_checksum_*` explicitly. Slot becomes visible to consumers on `commit()`.
+- **Enforced**: System automatically updates checksum on `release_write_slot` and verifies on `release_consume_slot`. Slot becomes visible only after release (after checksum is stored). Use when you want integrity without manual calls.
+
+Names are intentionally about *who* (Manual = you, Enforced = system) and *when* (Enforced = at slot release).
+
+### Flexible zone info initialization (data_block.cpp)
+
+**See:** `docs/FLEXIBLE_ZONE_INITIALIZATION.md` for flow charts, API→data-source matrix, and verification that no init path hangs in the air.
+
+- **Single source of truth**: Layout is derived only from `FlexibleZoneConfig` list; offset = sum of previous zone sizes. One helper `build_flexible_zone_info(configs)` builds the vector; all init paths use it.
+- **DataBlock (creator)**: Ctor populates `m_flexible_zone_info` from `config.flexible_zone_configs` via `build_flexible_zone_info`.
+- **DataBlock (attacher)**: Populated only via `set_flexible_zone_info_for_attach(configs)` when the consumer factory has `expected_config` (layout agreement).
+- **ProducerImpl / ConsumerImpl**: `flexible_zones_info` is always set in the factory from the same config that created or validated the block, using `build_flexible_zone_info(configs)`.
+
+Do not add ad-hoc offset loops elsewhere; add new call sites to the helper or to the two DataBlock paths above.
+
+---
+
 ## Maintenance
 
 ### Update TODO.md After Each Task
