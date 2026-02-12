@@ -200,7 +200,7 @@ inline int get_stress_num_readers()
 }
 
 /**
- * @brief Generic thread count for high-concurrency stress tests (e.g. AtomicGuard, FileLock).
+ * @brief Generic thread count for high-concurrency stress tests (e.g. SpinGuard, FileLock).
  * Low=4, Medium=16, High=64.
  */
 inline int get_stress_num_threads()

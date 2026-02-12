@@ -22,7 +22,7 @@ Common, robust utilities for C++ applications in scientific and laboratory envir
 | Layer | Header | Provides |
 |-------|--------|----------|
 | **0** | `plh_platform.hpp` | Platform detection (`PYLABHUB_PLATFORM_WIN64`, etc.), Windows headers, version API (`get_version_*`) |
-| **1** | `plh_base.hpp` | `format_tools`, `debug_info`, `atomic_guard`, `recursion_guard`, `scope_guard`, `module_def` |
+| **1** | `plh_base.hpp` | `format_tools`, `debug_info`, `in_process_spin_state` (InProcessSpinState, SpinGuard), `recursion_guard`, `scope_guard`, `module_def` |
 | **2** | `plh_service.hpp` | `lifecycle`, `file_lock`, `logger` |
 | **3** | `plh_datahub.hpp` | `json_config`, `message_hub`, `data_block` |
 
@@ -307,7 +307,7 @@ bool try_acquire_lock(pylabhub::utils::JsonConfig& config, const std::string& lo
 
 ### Recipe 8: Data Exchange Hub (Producer-Consumer)
 
-**Scenario:** High-throughput data streaming between processes. See [HEP core-0002](./hep/hep-core-0002-data-exchange-hub-framework.md) for full details.
+**Scenario:** High-throughput data streaming between processes. See [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) for full details.
 
 ```cpp
 // Producer
@@ -328,14 +328,14 @@ if (buf) { process(buf); consumer->end_consume(); }
 
 | Module | Purpose | HEP |
 |--------|---------|-----|
-| **Lifecycle** | Dependency-aware startup/shutdown; static & dynamic modules | [core-0001](./hep/hep-core-0001-hybrid-lifecycle-model.md) |
-| **Logger** | Async, thread-safe logging; sinks (console, file, syslog, eventlog) | [core-0004](./hep/hep-core-0004-async-logger.md) |
-| **FileLock** | Cross-platform RAII file/directory locking | [core-0003](./hep/hep-core-0003-cross-platform-filelock.md) |
+| **Lifecycle** | Dependency-aware startup/shutdown; static & dynamic modules | [HEP-CORE-0001](./hep/HEP-CORE-0001-hybrid-lifecycle-model.md) |
+| **Logger** | Async, thread-safe logging; sinks (console, file, syslog, eventlog) | [HEP-CORE-0004](./hep/HEP-CORE-0004-async-logger.md) |
+| **FileLock** | Cross-platform RAII file/directory locking | [HEP-CORE-0003](./hep/HEP-CORE-0003-cross-platform-filelock.md) |
 | **JsonConfig** | Thread/process-safe JSON config with atomic writes | — |
-| **DataBlock** | Shared-memory IPC for high-throughput streaming | [core-0002](./hep/hep-core-0002-data-exchange-hub-framework.md) |
+| **DataBlock** | Shared-memory IPC for high-throughput streaming | [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) |
 | **ScopeGuard** | RAII cleanup on scope exit | — |
 | **RecursionGuard** | Detect re-entrant calls (thread-local) | — |
-| **AtomicGuard** | Fast spinlock for critical sections | — |
+| **In-process spin state (SpinGuard)** | Token-mode spin state + guard for critical sections | — |
 
 ---
 
@@ -345,10 +345,11 @@ Hub Enhancement Proposals (HEPs) provide detailed technical design, API referenc
 
 | HEP | Title |
 |-----|-------|
-| [core-0001](./hep/hep-core-0001-hybrid-lifecycle-model.md) | Hybrid (Static & Dynamic) Module Lifecycle |
-| [core-0002](./hep/hep-core-0002-data-exchange-hub-framework.md) | Data Exchange Hub Framework |
-| [core-0003](./hep/hep-core-0003-cross-platform-filelock.md) | Cross-Platform RAII File Locking |
-| [core-0004](./hep/hep-core-0004-async-logger.md) | High-Performance Asynchronous Logger |
+| [HEP-CORE-0001](./hep/HEP-CORE-0001-hybrid-lifecycle-model.md) | Hybrid (Static & Dynamic) Module Lifecycle |
+| [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) | Data Exchange Hub Framework |
+| [HEP-CORE-0003](./hep/HEP-CORE-0003-cross-platform-filelock.md) | Cross-Platform RAII File Locking |
+| [HEP-CORE-0004](./hep/HEP-CORE-0004-async-logger.md) | High-Performance Asynchronous Logger |
+| [HEP-CORE-0005](./hep/HEP-CORE-0005-script-interface-framework.md) | Script Interface Framework (draft) |
 
 ---
 
@@ -430,7 +431,8 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 | DataBlock | `utils/data_block.hpp` |
 | ScopeGuard | `utils/scope_guard.hpp` |
 | RecursionGuard | `utils/recursion_guard.hpp` |
-| AtomicGuard | `utils/atomic_guard.hpp` |
+| In-process spin state (SpinGuard) | `utils/in_process_spin_state.hpp` |
+| SharedSpinLock (cross-process) | `utils/shared_memory_spinlock.hpp` |
 
 Each header contains inline documentation. For design rationale, sequence diagrams, and detailed API, see the [HEPs](./hep/).
 

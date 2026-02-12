@@ -1,6 +1,8 @@
+# HEP-CORE-0005: Script Interface Abstraction Framework
+
 | Property       | Value                                      |
 | -------------- | ------------------------------------------ |
-| **HEP**        | `core-0005`                                |
+| **HEP**        | `HEP-CORE-0005`                            |
 | **Title**      | Script Interface Abstraction Framework     |
 | **Author**     | Gemini CLI Agent                           |
 | **Status**     | Draft                                      |

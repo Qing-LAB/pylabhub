@@ -494,13 +494,9 @@ class DataBlock
             m_header->consumer_heartbeats[i].last_heartbeat_ns.store(0, std::memory_order_release);
         }
 
-        // Initialize SharedSpinLock States
+        // Initialize SharedSpinLock states (same factory logic as in-process spinlock)
         for (size_t i = 0; i < MAX_SHARED_SPINLOCKS; ++i)
-        {
-            m_header->spinlock_states[i].owner_pid.store(0, std::memory_order_release);
-            m_header->spinlock_states[i].recursion_count.store(0, std::memory_order_release);
-            m_header->spinlock_states[i].generation.store(0, std::memory_order_release);
-        }
+            init_spinlock_state(&m_header->spinlock_states[i]);
 
         // 3. Initialize SlotRWState array (using layout)
         m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
@@ -650,13 +646,10 @@ class DataBlock
                     expected_pid, 1, // Use 1 as "allocated but not locked" marker
                     std::memory_order_acq_rel, std::memory_order_relaxed))
             {
-                // Successfully claimed this spinlock slot
-                m_header->spinlock_states[i].generation.store(0, std::memory_order_release);
-                m_header->spinlock_states[i].recursion_count.store(0, std::memory_order_release);
+                // Successfully claimed this spinlock slot; reset to free state (same as factory)
+                init_spinlock_state(&m_header->spinlock_states[i]);
                 LOGGER_INFO("DataBlock '{}': Acquired spinlock slot {} for '{}'.", m_name, i,
                             debug_name);
-                // Reset to 0 so it's ready for actual locking
-                m_header->spinlock_states[i].owner_pid.store(0, std::memory_order_release);
                 return i;
             }
         }
@@ -674,9 +667,7 @@ class DataBlock
             LOGGER_WARN("DataBlock '{}': Releasing spinlock {} still held. Force releasing.",
                         m_name, index);
         }
-        m_header->spinlock_states[index].owner_pid.store(0, std::memory_order_release);
-        m_header->spinlock_states[index].generation.store(0, std::memory_order_release);
-        m_header->spinlock_states[index].recursion_count.store(0, std::memory_order_release);
+        init_spinlock_state(&m_header->spinlock_states[index]);
         LOGGER_INFO("DataBlock '{}': Released spinlock slot {}.", m_name, index);
     }
 

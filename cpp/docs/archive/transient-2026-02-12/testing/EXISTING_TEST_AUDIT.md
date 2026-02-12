@@ -71,41 +71,22 @@
 
 ---
 
-## Layer 1: Base Tests (test_pylabhub_corelib)
+## Layer 1: Base Tests (test_layer1_base)
 
-### test_atomicguard.cpp (697 lines) → test_layer1_base/test_atomic_guard.cpp
+### test_spinlock.cpp (InProcessSpinState + SpinGuard; replaces former test_atomicguard.cpp)
+
+**Status:** AtomicGuard and test_atomicguard.cpp were removed. InProcessSpinState + SpinGuard (header `in_process_spin_state.hpp`) provide equivalent behavior. **Test coverage parity** with the old AtomicGuard suite: `test_layer1_base/test_spinlock.cpp` (suite `InProcessSpinStateTest`) covers the same scenarios—basic acquire/release, RAII, move/handoff, detach-then-reuse, self-move, concurrent stress, and transfer between threads.
 
 **Current Coverage:**
-```cpp
-// Comprehensive tests:
-- Constructor/destructor behavior
-- is_set() state checking
-- Non-copyable, non-movable
-- Basic thread safety
-```
+- Basic acquire/release, RAII, token persistence, SpinGuard alias
+- Explicit release, try_lock timeout (RaiiAcquireFailure)
+- Concurrent acquire stress
+- Move semantics, move-active-guard, self-move-assignment, detach-then-try_lock reuse
+- Concurrent move-assignment stress (thread-safe failure reporting)
+- Transfer between threads (single handoff, heavy handoff)
+- Many concurrent producer/consumer pairs
 
-**Migration Plan:**
-- ✅ **Rename**: test_atomicguard.cpp → test_atomic_guard.cpp (consistency)
-- ✅ **Refactor**: Use PureApiTest pattern
-- ⚠️ **Enhance**: Add more concurrency tests
-
-**Coverage Gaps to Fill:**
-- ⚠️ Stress test: 1000 concurrent threads attempting guards
-- ⚠️ Nested scope behavior (multiple guards on same atomic)
-- ⚠️ Exception safety in destructor
-
-**Cross-Platform:** ✅ Already good (std::atomic is portable)
-
-**Concurrency Tests Needed:**
-- [ ] High contention scenario (many threads, few atomics)
-- [ ] Verification of mutual exclusion (only one thread holds guard)
-- [ ] Performance test (guard overhead vs raw atomic)
-
-**Test Pattern:** PureApiTest
-
-**Estimated Migration Effort:** 3 hours
-- 1h: Refactor to new pattern
-- 2h: Add enhanced concurrency tests
+**Test Pattern:** PureApiTest (Layer 1, staged utils). Executable: `test_layer1_spinlock`.
 
 ---
 
@@ -721,7 +702,7 @@
 | Module | Windows | Linux | macOS | FreeBSD | Notes |
 |--------|---------|-------|-------|---------|-------|
 | Platform | ⚠️ | ✅ | ⚠️ | ⚠️ | Process detection varies |
-| AtomicGuard | ✅ | ✅ | ✅ | ✅ | std::atomic portable |
+| SpinGuard / InProcessSpinState | ✅ | ✅ | ✅ | ✅ | Token mode, std::atomic portable |
 | RecursionGuard | ✅ | ✅ | ✅ | ✅ | thread_local C++11 |
 | ScopeGuard | ✅ | ✅ | ✅ | ✅ | RAII portable |
 | FormatTools | ⚠️ | ✅ | ✅ | ✅ | String encoding |
@@ -748,7 +729,7 @@
 | Module | Single Thread | Multi Thread | Multi Process | Notes |
 |--------|---------------|--------------|---------------|-------|
 | Platform | ✅ | ⚠️ Needs more | ⚠️ Needs more | Process liveness detection |
-| AtomicGuard | ✅ | ⚠️ Stress test | N/A | High contention scenarios |
+| SpinGuard / InProcessSpinState | ✅ | ✅ Stress test | N/A | test_spinlock.cpp: concurrent stress, handoff |
 | RecursionGuard | ✅ | ⚠️ Isolation | N/A | Thread-local verification |
 | ScopeGuard | ✅ | N/A | N/A | RAII is thread-local |
 | Lifecycle | ✅ | ⚠️ | ⚠️ | Guard conflicts? |

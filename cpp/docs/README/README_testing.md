@@ -22,7 +22,7 @@ This document outlines the architecture of the pyLabHub C++ test suite. Its goal
 Our test suite is built on three core principles:
 
 1.  **Clarity**: Test code should be as readable and well-organized as the production code it validates.
-2.  **Dependency Isolation**: Tests for `pylabhub-corelib` should not depend on `pylabhub-utils` when testing basic utilities (like `atomic_guard`, `recursion_guard`).
+2.  **Dependency Isolation**: Tests for base utilities (Layer 1) should not depend on full `pylabhub-utils` when testing foundational types (e.g. spin state/SpinGuard, `recursion_guard`, `scope_guard`).
 3.  **Speed**: A fast "inner loop" is critical. Developers must be able to run only the tests relevant to their changes without waiting for a full suite build.
 
 To achieve this, we use a **multiple-executable model**, where different test categories have their own dedicated test executables.
@@ -33,12 +33,13 @@ The test suite is composed of several distinct **CMake targets** located in the 
 
 | Target | Type | Contents | Purpose |
 |--------|------|----------|---------|
-| `pylabhub-test-framework` | Static Library | Shared test infrastructure (`test_entrypoint.cpp`, `test_process_utils.cpp`, `shared_test_helpers.cpp`) | Provides common functionality for all test executables |
-| `test_pylabhub_corelib` | Executable | Tests for basic utilities (`test_atomicguard.cpp`, `test_recursionguard.cpp`, `test_scopeguard.cpp`, `test_platform.cpp` — includes version API tests) | Tests that don't require `pylabhub-utils` |
-| `test_pylabhub_utils` | Executable | Tests for main utilities (`test_lifecycle.cpp`, `test_filelock.cpp`, `test_logger.cpp`, `test_messagehub.cpp`, `test_datablock.cpp`) | Tests for the full utility library; also acts as worker process for multi-process tests |
-| `test_misc` | Executable(s) | Miscellaneous test programs (`test_debug_output.cpp`) | Small standalone programs for debugging or isolated testing |
+| `pylabhub-test-framework` | Static Library | Shared test infrastructure (`test_entrypoint.cpp`, `test_process_utils.cpp`, `shared_test_helpers.cpp`) | Common functionality for all test executables |
+| **Layer 0** `test_layer0_platform` | Executable | Platform: `get_pid`, `monotonic_time_ns`, `is_process_alive`, `shm_*`, debug | Platform and version API |
+| **Layer 1** `test_layer1_*` | Executables | `test_spinlock`, `test_recursion_guard`, `test_scope_guard`, `test_formattable` (spin state, SpinGuard, RecursionGuard, ScopeGuard, format tools) | Base utilities; depend only on staged utils |
+| **Layer 2** `test_layer2_*` | Executables | Lifecycle, FileLock, Logger, JsonConfig, SharedSpinLock, CryptoUtils, Backoff, etc. (each test links only the workers it uses) | Service-layer tests; multi-process workers for FileLock, Logger, etc. |
+| **Layer 3** `test_layer3_datahub` | Executable | DataHub: schema BLDS/validation, recovery API, slot protocol, phase A, error handling, MessageHub, DataBlockMutex (single executable, multiple worker files) | DataBlock/MessageHub tests; acts as worker process for multi-process tests |
 
-This structure allows a developer working on `atomic_guard` to compile and run only `test_pylabhub_corelib`, resulting in a much faster development cycle (~2-3 seconds vs. ~30 seconds for full suite).
+This structure lets you build and run only the layer you need (e.g. `test_layer1_spinlock` or `test_layer3_datahub`) for a faster development cycle.
 
 ## 3. Quick Start: Running Tests
 
@@ -73,14 +74,17 @@ ctest -V
 ### Run Specific Test Suites
 
 ```bash
-# Run all tests in AtomicGuardTest suite
-ctest -R "^AtomicGuardTest"
+# Run all tests in InProcessSpinStateTest suite (spin state + SpinGuard)
+ctest -R "^InProcessSpinStateTest"
 
 # Run a single test case
-ctest -R "^AtomicGuardTest.BasicAcquireRelease$"
+ctest -R "^InProcessSpinStateTest.BasicAcquireRelease$"
 
 # Run all Lifecycle tests
 ctest -R "^LifecycleTest"
+
+# Run all DataHub tests (Layer 3)
+ctest -R "test_layer3_datahub"
 
 # Run all multi-process tests
 ctest -R "MultiProcess"
@@ -92,17 +96,20 @@ ctest -R "MultiProcess"
 # Navigate to staged test directory
 cd build/stage-debug/tests
 
-# Run specific test executable directly
-./test_pylabhub_corelib
+# Run Layer 0 (platform)
+./test_layer0_platform
 
-# Use GoogleTest filters
-./test_pylabhub_utils --gtest_filter=FileLockTest.*
+# Run Layer 2 service tests with filter
+./test_layer2_filelock --gtest_filter=FileLockTest.*
+
+# Run Layer 3 DataHub tests
+./test_layer3_datahub --gtest_filter=SlotProtocolTest.*
 
 # List available tests
-./test_pylabhub_utils --gtest_list_tests
+./test_layer3_datahub --gtest_list_tests
 
 # Run with repeat for stress testing
-./test_pylabhub_corelib --gtest_repeat=100 --gtest_filter=AtomicGuardTest.*
+./test_layer1_spinlock --gtest_repeat=100 --gtest_filter=InProcessSpinStateTest.*
 ```
 
 ### Practical Testing Workflows
@@ -138,14 +145,14 @@ ctest --output-junit results.xml --output-on-failure
 
 ## 9. A Deep Dive: How Multi-Process Testing Works
 
-The multi-process testing logic is a powerful pattern used for testing components like `pylabhub::utils::FileLock` and `JsonConfig`. The key idea is that a single test executable (e.g., `test_pylabhub_utils`) can act as both a **"Parent"** (the test runner) and a **"Worker"** (a child process spawned to perform a specific task).
+The multi-process testing logic is used for components like `pylabhub::utils::FileLock`, `JsonConfig`, and DataBlock. A test executable (e.g. `test_layer2_filelock` or `test_layer3_datahub`) can act as both a **"Parent"** (the test runner) and a **"Worker"** (a child process spawned to perform a specific task).
 
 **FileLock tests and `.lock` files:** Tests use `clear_lock_file()` to remove lock files *before* each test run, ensuring isolation. In production, `.lock` files are harmless if left on disk; the library does not remove them on shutdown. If cleanup is desired (e.g., after a crash), use an external script when nothing is running.
 
 This is managed by three key components in the `pylabhub-test-framework`:
 1.  **`test_entrypoint.cpp`**: Provides the `main()` function for test executables. It checks command-line arguments. If a "worker mode" argument is present, it calls a registered dispatcher. Otherwise, it runs GoogleTest (`RUN_ALL_TESTS()`).
 2.  **`test_process_utils.h`**: Provides the `WorkerProcess` RAII class, which is the primary tool for spawning and managing child processes. It handles argument passing, redirects the worker's stdout/stderr to files for inspection, and ensures the worker is terminated.
-3.  **`worker_dispatcher.cpp`** (inside `test_pylabhub_utils`): This file maps worker mode strings (e.g., `"filelock.nonblocking_acquire"`) to specific C++ worker functions. This is the router that tells the child process what code to execute.
+3.  **Worker dispatcher** (e.g. in each layer’s `workers/` and the test executable’s `main()`): Maps worker mode strings (e.g. `"filelock.nonblocking_acquire"`) to C++ worker functions so the child process runs the right code.
 
 ### Step-by-Step Execution Flow
 
@@ -154,11 +161,11 @@ This sequence diagram illustrates the flow for a multi-process `FileLock` test.
 ```mermaid
 sequenceDiagram
     participant CTest
-    participant Parent as test_pylabhub_utils (Parent)
-    participant Child as test_pylabhub_utils (Worker)
+    participant Parent as test_layer2_filelock (Parent)
+    participant Child as test_layer2_filelock (Worker)
 
     Note over CTest, Parent: Step 1: CTest runs the test executable.
-    CTest->>Parent: ./test_pylabhub_utils
+    CTest->>Parent: ./test_layer2_filelock
 
     Note over Parent: Step 2: Parent process starts.
     Parent->>Parent: main() in 'test_entrypoint.cpp' is called.<br/>No worker args found, so it calls RUN_ALL_TESTS().
@@ -166,14 +173,14 @@ sequenceDiagram
     Note over Parent: Step 3: GoogleTest runs a specific test case.
     Parent->>Parent: Executes TEST_F(FileLockTest, MultiProcessNonBlocking).
 
-    Note over Parent, Child: Step 4: The Parent spawns a Worker of itself.
-    Parent->>Child: Creates WorkerProcess("filelock.nonblocking_acquire").<br/>This calls fork/CreateProcess with the argument "filelock.nonblocking_acquire".
+    Note over Parent, Child: Step 4: The Parent spawns a worker process (same executable).
+    Parent->>Child: Creates WorkerProcess("filelock.nonblocking_acquire").<br/>fork/CreateProcess with worker argument.
 
     Note over Child: Step 5: Worker process starts.
     Child->>Child: main() in 'test_entrypoint.cpp' is called.<br/>Sees worker arg "filelock.nonblocking_acquire".
 
     Note over Child: Step 6: Worker dispatches to the correct function.
-    Child->>Child: main() calls dispatcher in 'worker_dispatcher.cpp'.<br/>Dispatcher calls worker::filelock::nonblocking_acquire().
+    Child->>Child: main() sees worker arg; dispatcher calls worker::filelock::nonblocking_acquire().
 
     Note over Child: Step 7: Worker executes test logic & exits.
     Child->>Child: The worker function runs its assertions and returns an exit code.
@@ -341,6 +348,18 @@ if (worker_name == "mylock.try_acquire") {
     return worker::mylock::try_acquire(args);
 }
 ```
+
+### Choosing a test pattern
+
+Use one of three patterns so tests are isolated and repeatable:
+
+| Pattern | When to use | Process model |
+|--------|----------------|----------------|
+| **PureApiTest** | Pure functions, no lifecycle/I/O | Single process, no shared state |
+| **LifecycleManagedTest** | Logger, FileLock, JsonConfig, in-process concurrency | Single process, shared lifecycle |
+| **WorkerProcess** | Multi-process (IPC, file locks between processes, or tests that finalize lifecycle) | Parent spawns worker; worker runs in separate process |
+
+For **FileLock** and **DataBlock** multi-process tests, use **WorkerProcess** and register workers in the test executable’s dispatcher. **CTest** runs each test in a separate process; running the test binary directly runs all tests in one process—prefer CTest or WorkerProcess when tests change global state. See **`docs/IMPLEMENTATION_GUIDANCE.md`** § Testing for CTest vs direct execution.
 
 ### Key Testing Patterns
 
@@ -577,20 +596,19 @@ See `PlatformTest.PrintStackTrace` in `tests/test_pylabhub_corelib/test_platform
 | Run tests with output | `ctest --output-on-failure` |
 | Run specific suite | `ctest -R "^MyTestSuite"` |
 | Run single test | `ctest -R "^MyTestSuite.SpecificTest$"` |
-| Run test executable directly | `./build/stage-debug/tests/test_pylabhub_utils` |
-| Filter tests in executable | `./test_pylabhub_utils --gtest_filter=MyTest.*` |
-| List available tests | `./test_pylabhub_utils --gtest_list_tests` |
-| Debug a test | `gdb ./test_pylabhub_utils` |
+| Run test executable directly | `./build/stage-debug/tests/test_layer3_datahub` (or `test_layer2_*`, etc.) |
+| Filter tests in executable | `./test_layer3_datahub --gtest_filter=MyTest.*` |
+| List available tests | `./test_layer3_datahub --gtest_list_tests` |
+| Debug a test | `gdb ./test_layer3_datahub` |
 
 ### Test File Locations
 
-| Component | Test File Location | Test Executable |
-|-----------|-------------------|-----------------|
-| `atomic_guard`, `recursion_guard`, `scope_guard` | `tests/test_pylabhub_corelib/` | `test_pylabhub_corelib` |
-| Platform utilities (debug, platform detection) | `tests/test_pylabhub_corelib/` | `test_pylabhub_corelib` |
-| `Lifecycle`, `FileLock`, `Logger`, `MessageHub` | `tests/test_pylabhub_utils/` | `test_pylabhub_utils` |
-| `JsonConfig`, `DataBlock` | `tests/test_pylabhub_utils/` | `test_pylabhub_utils` |
-| Debugging utilities | `tests/test_misc/` | Individual executables |
+| Component | Test File Location | Test Executable(s) |
+|-----------|-------------------|---------------------|
+| Platform (version, shm, is_process_alive, debug) | `tests/test_layer0_platform/` | `test_layer0_platform` |
+| SpinGuard, InProcessSpinState, RecursionGuard, ScopeGuard, format tools | `tests/test_layer1_base/` | `test_layer1_spinlock`, `test_layer1_recursion_guard`, `test_layer1_scope_guard`, `test_layer1_format_tools` |
+| Lifecycle, FileLock, Logger, JsonConfig, SharedSpinLock, CryptoUtils | `tests/test_layer2_service/` | `test_layer2_lifecycle`, `test_layer2_filelock`, `test_layer2_logger`, `test_layer2_shared_memory_spinlock`, etc. |
+| DataBlock, MessageHub, schema, recovery, slot protocol, error handling | `tests/test_layer3_datahub/` | `test_layer3_datahub` (single executable; use `--gtest_filter=*` to select suites) |
 
 ### GoogleTest Assertions
 
@@ -632,3 +650,5 @@ build/stage-debug/
 │   └── *.dll (Windows only)
 └── .stage_complete         # Marker file
 ```
+
+**Executable names:** Use `test_layer0_platform`, `test_layer1_spinlock` (and other layer1 targets), `test_layer2_*` (e.g. `test_layer2_filelock`, `test_layer2_logger`), and `test_layer3_datahub` for DataHub tests. Replace any legacy `test_pylabhub_utils` references in docs with the appropriate layer executable.

@@ -4,6 +4,8 @@
 
 **Cross-platform:** Test plan and review **integrate cross-platform by default.** All tests must be runnable and meaningful on every supported platform (Windows, Linux, macOS, FreeBSD). Platform-specific paths (e.g. platform shm_*, DataBlockMutex, is_process_alive) must have coverage and documented semantics; avoid “skip on platform X” unless justified and documented. See DATAHUB_TODO “Cross-Platform and Behavioral Consistency” and critical review §2.3.
 
+**Execution order and priorities** are defined in **`docs/DATAHUB_TODO.md`** (single execution plan). This document provides test rationale and Phase A–D detail; do not use it as a competing roadmap.
+
 ---
 
 ## Part 0: Foundational APIs Used by DataBlock (lower-layer modules)
@@ -108,6 +110,29 @@ Tests should be layered so that protocol and correctness are assured before addi
 
 4. **Phase D – Concurrency and multi-process**  
    - Concurrent readers; writer timeout; TOCTTOU and wrap-around; zombie reclaim; DataBlockMutex.
+
+**Phase B vs D – In-process vs cross-process:** Phase B tests in `test_slot_protocol.cpp` run producer and consumer in *one* process (one worker, two threads). That validates protocol and API but not real IPC. Phase D should add **multi-process** variants: producer in one process, consumer in another, for key scenarios (e.g. high load, writer blocks on reader, multiple rounds). Currently we have `CrossProcessDataExchangeWriterThenReaderVerifiesContent` (one write/read across two processes) and `ZombieWriterRecovery`; more cross-process tests are needed to cover real producer/consumer use.
+
+---
+
+### 1.4.1 Phase D checklist – path to completion
+
+| # | Item (from §1.3 + multi-process) | Priority | Status | Notes |
+|---|----------------------------------|----------|--------|--------|
+| D1 | **Writer acquisition** – timeout when readers hold; eventual success when readers drain | P1 | ✅ Done (in-process) | WriterBlocksOnReaderThenUnblocks, WriterTimeoutMetricsSplit. Cross-process variant optional. |
+| D2 | **Zombie writer reclaim** – writer process dies holding write_lock; new writer reclaims | P2 | ✅ Done | ZombieWriterRecovery (POSIX); two processes. |
+| D3 | **DataBlockMutex** – cross-process exclusion | P2 | ✅ Done | test_datablock_mutex.cpp: Creator/Attacher, ZombieOwnerRecovery. |
+| D4 | **Cross-process basic exchange** – one write, one read across two processes | P1 | ✅ Done | CrossProcessDataExchangeWriterThenReaderVerifiesContent. |
+| D5 | **Reader TOCTTOU** – slot state change between check and reader_count increment; reader gets NOT_READY and retries | P1 | ❌ Not done | Need test (in-process first) that triggers NOT_READY path and verifies retry. |
+| D6 | **Reader wrap-around** – validate_read fails when slot reused (generation mismatch) | P1 | ⚠️ Partial | Wrap-around exercised (high_contention_wrap_around, ring_buffer); add explicit assertion for generation mismatch if not covered. |
+| D7 | **Concurrent readers** – multiple consumers read same slot; same data; reader_count and release correct | P1 | ⚠️ Partial | Policy/single-reader tests exist; add explicit multi-reader test (in-process: 2+ consumers, one slot). |
+| D8 | **Cross-process high load** – producer in one process, consumer in another; many write/read rounds | P1 | ❌ Not done | New workers + test: e.g. producer writes N, consumer reads N (shared channel). |
+| D9 | **Cross-process writer blocks on reader** – reader process holds slot; writer process blocks then succeeds after reader releases | P1 | ❌ Not done | New workers + test: reader holds, writer times out then succeeds. |
+| D10 | **Cross-process multiple rounds** – several write/read cycles across two processes | P2 | ❌ Not done | Optional if D8 is substantial; else explicit “5 rounds” test. |
+
+**Count:** 4 done (D1–D4), 2 partial (D6–D7), **4 left to finish** (D5, D8, D9, D10; D6–D7 need completion/assertion). Recommended order: D5 (TOCTTOU) and D7 (concurrent readers) in-process, then D8 and D9 cross-process; D6 and D10 as needed.
+
+---
 
 **Part 1 – Cross-platform:** Run Phase A–D tests on every supported platform. Integration and multi-process tests (B–D) must cover Windows and at least one POSIX (Linux or macOS). Document platform-specific behavior (e.g. DataBlockMutex abandoned-owner, shm naming) in test or design docs; avoid silent skips.
 

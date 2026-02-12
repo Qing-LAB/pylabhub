@@ -1,9 +1,20 @@
 /**
  * @file test_slot_protocol.cpp
- * @brief Layer 3 DataHub Phase B – Slot protocol in one process.
+ * @brief Layer 3 DataHub Phase B – Slot protocol tests (in-process and cross-process).
  *
- * Tests acquire write, write+commit, acquire consume, read; checksum update/verify;
- * optional diagnostic handle.
+ * Test design:
+ * - **In-process (single worker):** Most tests spawn one worker process that runs both
+ *   producer and consumer logic in separate threads *in the same process*. That validates
+ *   slot protocol, locking, and API correctness without cross-process IPC. Shared memory
+ *   and SharedSpinLock are still used, but both sides share the same process.
+ * - **Cross-process (two workers):** Real producer/consumer use is two separate processes.
+ *   We must test that path explicitly. Currently:
+ *   - CrossProcessDataExchangeWriterThenReaderVerifiesContent: writer process creates,
+ *     writes, sleeps; reader process attaches and reads (one exchange).
+ *   - ZombieWriterRecovery: two processes (zombie writer, then reclaimer).
+ *   Additional multi-process tests (e.g. high load with producer in one process and
+ *   consumer in another, writer-blocks-on-reader across processes) should be added to
+ *   cover real IPC and cross-process locking; see DATAHUB_AND_MESSAGEHUB_TEST_PLAN Phase D.
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"
@@ -17,6 +28,8 @@ using namespace pylabhub::tests::helper;
 class SlotProtocolTest : public IsolatedProcessTest
 {
 };
+
+// --- In-process tests (one worker: producer and consumer threads in same process) ---
 
 TEST_F(SlotProtocolTest, WriteReadSucceedsInProcess)
 {
@@ -128,14 +141,16 @@ TEST_F(SlotProtocolTest, HighLoadSingleReaderIntegrity)
 TEST_F(SlotProtocolTest, WriterTimeoutMetricsSplit)
 {
     auto proc = SpawnWorker("slot_protocol.writer_timeout_metrics_split", {});
-    // All assertions are inside the worker; success is exit code 0.
-    ExpectWorkerOk(proc, {});
+    // Worker intentionally triggers write_lock and reader-drain timeouts; DataBlock logs those at ERROR.
+    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
 }
+
+// --- Cross-process tests (real IPC: producer and consumer in separate processes) ---
 
 TEST_F(SlotProtocolTest, CrossProcessDataExchangeWriterThenReaderVerifiesContent)
 {
     // Verifies offset, format, and that both processes see the same data:
-    // writer and reader run concurrently; writer creates and writes, reader attaches and reads.
+    // writer and reader run in separate processes; writer creates and writes, reader attaches and reads.
     // Writer sleeps so shm persists until reader attaches (producer must stay alive).
     std::string channel = make_test_channel_name("CrossProcess");
     auto workers = SpawnWorkers({
