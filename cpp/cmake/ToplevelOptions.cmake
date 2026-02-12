@@ -37,14 +37,15 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
-# Option to control the intensity of the atomic_guard stress tests
-set(VALID_STRESS_LEVELS "None" "Light" "Heavy")
-set(PYLABHUB_ATOMICGUARD_STRESS_LEVEL "Light" CACHE STRING "Set the stress level for atomic_guard tests. Valid values are: ${VALID_STRESS_LEVELS}")
-set_property(CACHE PYLABHUB_ATOMICGUARD_STRESS_LEVEL PROPERTY STRINGS ${VALID_STRESS_LEVELS})
-
-if(NOT PYLABHUB_ATOMICGUARD_STRESS_LEVEL IN_LIST VALID_STRESS_LEVELS)
-    message(FATAL_ERROR "Invalid value for PYLABHUB_ATOMICGUARD_STRESS_LEVEL: '${PYLABHUB_ATOMICGUARD_STRESS_LEVEL}'. Must be one of ${VALID_STRESS_LEVELS}")
+# Option to control load for racing-condition / stress tests (AtomicGuard, SlotRWCoordinator, high_load, FileLock, Logger, JsonConfig, etc.).
+# Low: fewer threads, shorter duration (e.g. 10 s). High: more threads, longer duration (e.g. 30 s).
+set(STRESS_TEST_LEVEL_VALID "Low" "Medium" "High")
+set(STRESS_TEST_LEVEL "Low" CACHE STRING "Stress test level for racing-condition tests: Low (10s, fewer threads), Medium (20s), High (30s, more threads).")
+set_property(CACHE STRESS_TEST_LEVEL PROPERTY STRINGS ${STRESS_TEST_LEVEL_VALID})
+if(NOT STRESS_TEST_LEVEL IN_LIST STRESS_TEST_LEVEL_VALID)
+    message(FATAL_ERROR "Invalid STRESS_TEST_LEVEL: '${STRESS_TEST_LEVEL}'. Must be one of ${STRESS_TEST_LEVEL_VALID}")
 endif()
+
 # Option to enable the PLH_DEBUG and PLH_DEBUG_RT macros.
 if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
   option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" ON)

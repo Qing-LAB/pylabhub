@@ -3,6 +3,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
+#include "utils/slot_rw_coordinator.h"
 #include "utils/logger.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -802,8 +803,8 @@ int high_load_single_reader()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            // Use scaled iterations so we can run longer in local dev and shorter in CI.
-            int iterations = scaled_value(50000, 5000);
+            // STRESS_TEST_LEVEL (Low/Medium/High) controls load: Low=5000, Medium=27500, High=50000.
+            int iterations = get_stress_iterations(50000, 5000);
             uint64_t expected = 0;
 
             for (int i = 0; i < iterations; ++i)
@@ -836,6 +837,103 @@ int high_load_single_reader()
             cleanup_test_datablock(channel);
         },
         "high_load_single_reader", logger_module(), crypto_module(), hub_module());
+}
+
+int writer_timeout_metrics_split()
+{
+    return run_gtest_worker(
+        []()
+        {
+            using namespace std::chrono_literals;
+
+            std::string channel = make_test_channel_name("WriterTimeoutMetricsSplit");
+            MessageHub &hub_ref = MessageHub::get_instance();
+
+            DataBlockConfig config{};
+            config.shared_secret = 99995;
+            config.ring_buffer_capacity = 1; // Single slot to force contention on same SlotRWState
+            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            auto diag = open_datablock_for_diagnostic(channel);
+            ASSERT_NE(diag, nullptr);
+            auto *header = diag->header();
+            ASSERT_NE(header, nullptr);
+
+            // Ensure metrics start from a clean slate using the C SlotRWCoordinator API.
+            ASSERT_EQ(slot_rw_reset_metrics(header), 0);
+
+            DataBlockMetrics metrics{};
+            // ---- 1) Lock-timeout path: writer times out while waiting for write_lock ----
+            std::atomic<bool> holder_acquired{false};
+
+            std::thread holder([&]() {
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                holder_acquired.store(true, std::memory_order_release);
+                std::this_thread::sleep_for(300ms);
+                EXPECT_TRUE(producer->release_write_slot(*wh));
+            });
+
+            // Wait until the holder has actually acquired the write slot.
+            for (int i = 0; i < 50 && !holder_acquired.load(std::memory_order_acquire); ++i)
+            {
+                std::this_thread::sleep_for(5ms);
+            }
+            ASSERT_TRUE(holder_acquired.load(std::memory_order_acquire))
+                << "holder should have acquired write slot";
+
+            // Second writer: should time out waiting for write_lock (no readers involved).
+            auto wh_timeout = producer->acquire_write_slot(100);
+            EXPECT_EQ(wh_timeout, nullptr) << "expected timeout while waiting for write_lock";
+
+            holder.join();
+
+            // Read metrics via the C API: expect exactly one writer timeout, attributed to lock timeout.
+            ASSERT_EQ(slot_rw_get_metrics(header, &metrics), 0);
+            EXPECT_EQ(metrics.writer_timeout_count, 1u);
+            EXPECT_EQ(metrics.writer_lock_timeout_count, 1u);
+            EXPECT_EQ(metrics.writer_reader_timeout_count, 0u);
+
+            // ---- 2) Reader-drain-timeout path: writer times out waiting for readers to drain ----
+            ASSERT_EQ(slot_rw_reset_metrics(header), 0);
+
+            // Produce one committed slot for the consumer to hold.
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh, nullptr);
+            uint64_t value = 42;
+            EXPECT_TRUE(wh->write(&value, sizeof(value)));
+            EXPECT_TRUE(wh->commit(sizeof(value)));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+
+            // Consumer acquires and holds the slot, keeping reader_count > 0.
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+
+            // Writer now acquires write_lock but should time out waiting for readers to drain.
+            auto wh_reader_timeout = producer->acquire_write_slot(100);
+            EXPECT_EQ(wh_reader_timeout, nullptr)
+                << "expected timeout while waiting for readers to drain";
+
+            // Release reader so the block can be cleaned up.
+            ch.reset();
+
+            ASSERT_EQ(slot_rw_get_metrics(header, &metrics), 0);
+            EXPECT_EQ(metrics.writer_timeout_count, 1u);
+            EXPECT_EQ(metrics.writer_lock_timeout_count, 0u);
+            EXPECT_EQ(metrics.writer_reader_timeout_count, 1u);
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "writer_timeout_metrics_split", logger_module(), crypto_module(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::slot_protocol
@@ -889,6 +987,8 @@ struct SlotProtocolWorkerRegistrar
                     return policy_sync_reader();
                 if (scenario == "high_load_single_reader")
                     return high_load_single_reader();
+                if (scenario == "writer_timeout_metrics_split")
+                    return writer_timeout_metrics_split();
                 fmt::print(stderr, "ERROR: Unknown slot_protocol scenario '{}'\n", scenario);
                 return 1;
             });

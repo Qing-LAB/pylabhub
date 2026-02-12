@@ -321,7 +321,9 @@ struct alignas(4096) SharedMemoryHeader
 
     // === Metrics Section (256 bytes) ===
     // Slot Coordination (64 bytes)
-    std::atomic<uint64_t> writer_timeout_count;
+    std::atomic<uint64_t> writer_timeout_count;        // Total writer timeouts (all causes)
+    std::atomic<uint64_t> writer_lock_timeout_count;   // Timeouts while waiting for write_lock
+    std::atomic<uint64_t> writer_reader_timeout_count; // Timeouts while waiting for readers to drain
     std::atomic<uint64_t> writer_blocked_total_ns;
     std::atomic<uint64_t> write_lock_contention;
     std::atomic<uint64_t> write_generation_wraps;
@@ -380,7 +382,11 @@ struct alignas(4096) SharedMemoryHeader
     } flexible_zone_checksums[detail::MAX_FLEXIBLE_ZONE_CHECKSUMS];
 
     // === Padding to 4096 bytes ===
-    uint8_t reserved_header[2344]; // 4096 - (offset up to here); exact size for 4KB total
+    // Note: Two uint64_t fields were added to the metrics section above
+    // (writer_lock_timeout_count, writer_reader_timeout_count). To keep
+    // the total header size exactly 4096 bytes, reserved_header is shrunk
+    // by 16 bytes.
+    uint8_t reserved_header[2328]; // 4096 - (offset up to here); exact size for 4KB total
 };
 constexpr size_t raw_size_SharedMemoryHeader =
     offsetof(SharedMemoryHeader, reserved_header) + sizeof(SharedMemoryHeader::reserved_header);

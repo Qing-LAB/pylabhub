@@ -8,6 +8,7 @@
  * RAII behavior, move semantics, thread safety, and high-contention scenarios.
  */
 #include "plh_base.hpp"
+#include "shared_test_helpers.h"
 #include <deque>
 #include <future>
 #include <random>
@@ -17,6 +18,8 @@
 using namespace std::chrono_literals;
 using pylabhub::basics::AtomicGuard;
 using pylabhub::basics::AtomicOwner;
+using pylabhub::tests::helper::get_stress_iterations;
+using pylabhub::tests::helper::get_stress_num_threads;
 
 namespace
 {
@@ -38,29 +41,7 @@ uint64_t get_seed()
 }
 } // namespace
 
-// Defines sizes for stress tests to allow for quick or thorough testing.
-#if ATOMICGUARD_STRESS_LEVEL == 2 // HEAVY
-static constexpr int THREAD_NUM = 64;
-static constexpr int ITER_NUM = 20000;
-#elif ATOMICGUARD_STRESS_LEVEL == 1 // LIGHT (default)
-static constexpr int THREAD_NUM = 32;
-static constexpr int ITER_NUM = 500;
-#else                               // ATOMICGUARD_STRESS_LEVEL == 0 or undefined, skip stress tests
-static constexpr int THREAD_NUM = 1; // Minimal threads, tests will be skipped.
-static constexpr int ITER_NUM = 1;   // Minimal iterations, tests will be skipped.
-#endif
-
 static constexpr int SLOT_NUM = 16;
-
-#if ATOMICGUARD_STRESS_LEVEL == 0
-#define SKIP_TEST_IF_LOW_STRESS_LEVEL                                                              \
-    do                                                                                             \
-    {                                                                                              \
-        GTEST_SKIP() << "Skipping stress test due to low ATOMICGUARD_STRESS_LEVEL.";               \
-    } while (0)
-#else
-#define SKIP_TEST_IF_LOW_STRESS_LEVEL ((void)0)
-#endif
 
 /**
  * @brief Tests the fundamental manual acquire and release behavior.
@@ -152,7 +133,8 @@ TEST(AtomicGuardTest, RaiiAcquireFailure)
  */
 TEST(AtomicGuardTest, ConcurrentAcquireStress)
 {
-    SKIP_TEST_IF_LOW_STRESS_LEVEL;
+    const int thread_num = get_stress_num_threads();
+    const int iter_num = get_stress_iterations(20000, 500);
 
     AtomicOwner owner;
     std::atomic<int> success_count{0};
@@ -160,13 +142,13 @@ TEST(AtomicGuardTest, ConcurrentAcquireStress)
     std::vector<std::thread> threads;
     uint64_t base_seed = get_seed();
 
-    for (int t = 0; t < THREAD_NUM; ++t)
+    for (int t = 0; t < thread_num; ++t)
     {
         threads.emplace_back(
-            [&owner, &success_count, t, base_seed]()
+            [&owner, &success_count, t, base_seed, iter_num]()
             {
                 std::mt19937_64 rng(base_seed + t); // Add 't' to vary seed slightly per thread
-                for (int i = 0; i < ITER_NUM; ++i)
+                for (int i = 0; i < iter_num; ++i)
                 {
                     AtomicGuard g(&owner);
                     if (g.acquire())
@@ -383,10 +365,8 @@ TEST(AtomicGuardTest, TransferBetweenThreads_SingleHandoff)
  */
 TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
 {
-    SKIP_TEST_IF_LOW_STRESS_LEVEL;
-
-    const int pairs = THREAD_NUM;
-    const int iters_per_pair = ITER_NUM;
+    const int pairs = get_stress_num_threads();
+    const int iters_per_pair = get_stress_iterations(20000, 500);
 
     std::vector<AtomicOwner> owners(pairs);
     std::vector<std::thread> workers;
@@ -473,12 +453,10 @@ TEST(AtomicGuardTest, TransferBetweenThreads_HeavyHandoff)
  */
 TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
 {
-    SKIP_TEST_IF_LOW_STRESS_LEVEL;
-
     AtomicOwner owner;
     const int SLOTS = SLOT_NUM;
-    const int THREADS = THREAD_NUM;
-    const int ITERS = ITER_NUM;
+    const int THREADS = get_stress_num_threads();
+    const int ITERS = get_stress_iterations(20000, 500);
 
     std::vector<AtomicGuard> slots;
     slots.reserve(SLOTS);
@@ -493,7 +471,7 @@ TEST(AtomicGuardTest, ConcurrentMoveAssignmentStress)
 
     uint64_t base_seed = get_seed(); // Get base seed once
 
-    for (int t = 0; t < THREAD_NUM; ++t)
+    for (int t = 0; t < THREADS; ++t)
     {
         threads.emplace_back(
             [&, t]()
@@ -583,11 +561,9 @@ TEST(AtomicGuardDeathTest, InvariantViolationsPanic)
  */
 TEST(AtomicGuardTest, ManyConcurrentProducerConsumerPairs)
 {
-    SKIP_TEST_IF_LOW_STRESS_LEVEL;
-
     AtomicOwner owner;
-    const int PAIRS = THREAD_NUM;
-    const int ITERS = ITER_NUM;
+    const int PAIRS = get_stress_num_threads();
+    const int ITERS = get_stress_iterations(20000, 500);
 
     // A simple channel for passing futures between a producer and a consumer.
     struct Channel
