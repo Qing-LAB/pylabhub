@@ -362,7 +362,7 @@ std::optional<ConsumerInfo> MessageHub::discover_producer(const std::string &cha
         return std::nullopt;
     }
 
-    ConsumerInfo consumer_info;
+    ConsumerInfo consumer_info{};
     consumer_info.shm_name = response_json["shm_name"].get<std::string>();
     consumer_info.schema_hash = hex_decode_schema_hash(response_json["schema_hash"].get<std::string>());
     consumer_info.schema_version = response_json["schema_version"].get<uint32_t>();

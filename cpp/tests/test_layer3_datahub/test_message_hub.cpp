@@ -56,3 +56,9 @@ TEST_F(MessageHubTest, DisconnectWhenNotConnectedIdempotent)
     auto proc = SpawnWorker("messagehub.disconnect_when_not_connected_idempotent", {});
     ExpectWorkerOk(proc, {});
 }
+
+TEST_F(MessageHubTest, WithBrokerHappyPath)
+{
+    auto proc = SpawnWorker("messagehub.with_broker_happy_path", {});
+    ExpectWorkerOk(proc, {});
+}

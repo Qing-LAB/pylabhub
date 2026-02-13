@@ -43,7 +43,7 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             DataBlockConfig config{};
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -69,7 +69,7 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             DataBlockConfig config{};
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -96,7 +96,7 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             DataBlockConfig config{};
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -123,7 +123,7 @@ int heartbeat_manager_registers_and_pulses()
             DataBlockConfig config{};
             config.shared_secret = 54321;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);

@@ -23,9 +23,10 @@
  *   ARRAY_TYPE := TYPE_ID "[" COUNT "]"
  *   STRUCT_HASH := "_" BLAKE2B_HEX
  *
- * When layout validation is required (e.g. SharedMemoryHeader protocol), members
- * include "@offset:size" so the hash reflects memory layout and producer/consumer
- * can verify identical ABI.
+ * Default practice: every member includes both MEMBER_NAME and TYPE_ID. When layout
+ * validation is required (e.g. SharedMemoryHeader protocol), also include
+ * "@offset:size" so the hash reflects memory layout and producer/consumer can
+ * verify identical ABI.
  *
  * Example (type-only): "timestamp_ns:u64;temperature:f32;pressure:f32;humidity:f32"
  * Example (with layout): "magic_number:u32@0:4;version_major:u16@4:2"
@@ -196,11 +197,11 @@ struct SchemaVersion
  */
 struct SchemaInfo
 {
-    std::string name;             ///< Schema name (e.g., "SensorHub.SensorData")
-    std::string blds;             ///< BLDS string representation
-    std::array<uint8_t, 32> hash; ///< BLAKE2b-256 hash of BLDS
-    SchemaVersion version;        ///< Semantic version
-    size_t struct_size;           ///< sizeof(T) for validation
+    std::string name;                       ///< Schema name (e.g., "SensorHub.SensorData")
+    std::string blds;                       ///< BLDS string representation
+    std::array<uint8_t, 32> hash{};         ///< BLAKE2b-256 hash of BLDS (zero-init)
+    SchemaVersion version;                  ///< Semantic version
+    size_t struct_size = 0;                 ///< sizeof(T) for validation
 
     /**
      * @brief Computes the BLAKE2b-256 hash of the BLDS string.
@@ -228,10 +229,16 @@ struct SchemaInfo
 // ============================================================================
 // Schema Builder (for manual schema construction)
 // ============================================================================
+//
+// Default practice: every schema entry must include both member name and field type
+// (type_id). For shared-memory / ABI validation, also include offset and size so the
+// hash reflects layout. Use the 4-argument add_member() for header/layout schemas.
+// ============================================================================
 
 /**
  * @brief Builder for constructing BLDS strings manually.
- * @details Used internally by schema generation macros.
+ * @details Used internally by schema generation macros. Every member must supply
+ *          both name and type_id; for layout validation also supply offset and size.
  */
 class BLDSBuilder
 {
@@ -239,9 +246,11 @@ class BLDSBuilder
     BLDSBuilder() = default;
 
     /**
-     * @brief Adds a member to the BLDS string (type only).
-     * @param name Member name.
-     * @param type_id BLDS type identifier (e.g., "u64", "f32[4]").
+     * @brief Adds a member with name and type only (no layout).
+     * @param name Member name (required).
+     * @param type_id BLDS type identifier, e.g. "u64", "f32[4]" (required).
+     * @details Produces "name:type_id". Prefer add_member(name, type_id, offset, size)
+     *          for shared-memory/ABI schemas so the hash includes layout.
      */
     void add_member(const std::string &name, const std::string &type_id)
     {
@@ -253,12 +262,13 @@ class BLDSBuilder
     }
 
     /**
-     * @brief Adds a member with layout (offset and size) for protocol/ABI validation.
-     * @param name Member name.
-     * @param type_id BLDS type identifier.
+     * @brief Adds a member with name, type, and layout (default for ABI/layout schemas).
+     * @param name Member name (required).
+     * @param type_id BLDS type identifier (required).
      * @param offset Byte offset of the member within the struct.
      * @param size Size in bytes of the member.
-     * @details Produces "name:type_id@offset:size" so the BLDS hash reflects memory layout.
+     * @details Produces "name:type_id@offset:size". Use this for SharedMemoryHeader
+     *          and any schema used for protocol/ABI validation.
      */
     void add_member(const std::string &name, const std::string &type_id, size_t offset, size_t size)
     {

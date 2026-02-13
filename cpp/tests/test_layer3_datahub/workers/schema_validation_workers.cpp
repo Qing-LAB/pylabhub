@@ -48,7 +48,7 @@ int consumer_connects_with_matching_schema()
             DataBlockConfig config{};
             config.shared_secret = 67890;
             config.ring_buffer_capacity = 1;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             TestSchemaV1 schema_v1{42, 'x'};
 
@@ -78,7 +78,7 @@ int consumer_fails_to_connect_with_mismatched_schema()
             DataBlockConfig config{};
             config.shared_secret = 67890;
             config.ring_buffer_capacity = 1;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             TestSchemaV1 schema_v1{42, 'x'};
             TestSchemaV2 schema_v2{42, 3.14};

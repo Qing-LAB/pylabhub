@@ -158,6 +158,44 @@ These are structural improvements; correctness does not depend on them.
 
 ---
 
+## 7. C API and test coverage review (2026-02-12)
+
+This section evaluates the **primitive C APIs** (Slot RW and Recovery/Diagnostics) and the tests built around them. MessageHub has no C API (C++ only); its public C++ API is the primitive for broker integration.
+
+### 7.1 Slot RW C API (`slot_rw_coordinator.h`)
+
+**Surface:** `slot_rw_acquire_write`, `slot_rw_commit`, `slot_rw_release_write`, `slot_rw_acquire_read`, `slot_rw_validate_read`, `slot_rw_release_read`, `slot_rw_get_metrics`, `slot_rw_reset_metrics`, `slot_acquire_result_string`; types `SlotAcquireResult`, `DataBlockMetrics`.
+
+**Tests:** Layer-0 isolation (`test_layer2_service/test_slot_rw_coordinator.cpp`): single `SlotRWState` + synthetic header in plain memory. Covers writer acquire/commit/release, reader acquire/validate/release, generation wrap-around, metrics get/reset, high-contention stress. Integration: DataBlock slot protocol and writer_timeout_metrics_split use the same protocol; slot_rw_get_metrics/reset exercised in slot_protocol_workers.
+
+**Gaps:** `slot_acquire_result_string` not directly asserted; explicit tests for SLOT_ACQUIRE_TIMEOUT / NOT_READY return codes could be added.
+
+**Conclusion:** Slot RW C API is **complete and correct**. Safe to treat as stable base for C++ abstraction.
+
+### 7.2 Recovery / diagnostics C API (`recovery_api.hpp`)
+
+**Surface:** `datablock_diagnose_slot`, `datablock_diagnose_all_slots`, `datablock_is_process_alive`, `datablock_force_reset_slot`, `datablock_force_reset_all_slots`, `datablock_release_zombie_readers`, `datablock_release_zombie_writer`, `datablock_cleanup_dead_consumers`, `datablock_validate_integrity`; types `SlotDiagnostic`, `RecoveryResult`.
+
+**Tests:** Via C++ wrappers (recovery_workers): is_process_alive, SlotDiagnostics (diagnose_slot), SlotRecovery (release_zombie_readers), IntegrityValidator (validate_integrity). Direct C API for force_reset, release_zombie_writer, cleanup_dead_consumers, diagnose_all_slots exercised by datablock_admin; no dedicated unit test per C function.
+
+**Conclusion:** Recovery C API is **complete and correctly specified**. Test coverage adequate for current policy; recovery-scenario tests deferred per DATAHUB_TODO.
+
+### 7.3 MessageHub (no C API)
+
+C++ only. No-broker tests in place; with-broker after C++ abstraction.
+
+### 7.4 Overall verdict
+
+| API            | Completeness | Test coverage        | Verdict |
+|----------------|-------------|----------------------|---------|
+| Slot RW C API  | Complete    | Strong               | **Stable base** for C++ layer. |
+| Recovery C API | Complete   | Adequate (wrappers)   | **Accepted**; add scenario tests when defined. |
+| MessageHub     | N/A (C++)   | No-broker covered    | Primitive for broker; build on C++ abstraction. |
+
+Proceed with C++ abstraction design and implementation on top of the C API; use C API directly only when performance or flexibility require it.
+
+---
+
 ## 8. Summary Table
 
 | Area                 | Assessment | Action |
@@ -172,6 +210,7 @@ These are structural improvements; correctness does not depend on them.
 | Checksum repair      | Heavy (full producer) | Optional: low-level repair using diagnostic handle only. |
 | shared_memory_spinlock.hpp | Comment and includes | Fixed; module renamed from data_block_spinlock to reflect shared-memory abstraction. |
 | Consumer flexible_zone_info | May be empty | Document; ensure factory path always sets it when flexible zones used. |
+| C API + test coverage       | Reviewed     | §7: Slot RW and Recovery C APIs complete and correct; tests adequate. Proceed with C++ abstraction. |
 
 ---
 

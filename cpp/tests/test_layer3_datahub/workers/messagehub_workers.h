@@ -14,4 +14,6 @@ int register_producer_when_not_connected_returns_false();
 int discover_producer_when_not_connected_returns_nullopt();
 /** disconnect() when not connected is idempotent (no crash). */
 int disconnect_when_not_connected_idempotent();
+/** Phase C.1: In-process broker; register_producer, discover_producer, create/find, one write/read. */
+int with_broker_happy_path();
 } // namespace pylabhub::tests::worker::messagehub

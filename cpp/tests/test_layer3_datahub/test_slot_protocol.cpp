@@ -55,6 +55,18 @@ TEST_F(SlotProtocolTest, LayoutWithChecksumAndFlexibleZoneSucceeds)
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
+TEST_F(SlotProtocolTest, LayoutChecksumValidatesAndTamperFails)
+{
+    auto proc = SpawnWorker("slot_protocol.layout_checksum", {});
+    ExpectWorkerOk(proc, {});
+}
+
+TEST_F(SlotProtocolTest, PhysicalLogicalUnitSizeUsedAndTested)
+{
+    auto proc = SpawnWorker("slot_protocol.physical_logical_unit_size", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
 TEST_F(SlotProtocolTest, RingBufferIterationContentVerified)
 {
     auto proc = SpawnWorker("slot_protocol.ring_buffer_iteration", {});

@@ -50,7 +50,8 @@ int main() {
     // Assume producer has written some data at slot_id 0
     try {
         pylabhub::hub::with_read_transaction(
-            *consumer, 0, 1000, [&](const pylabhub::hub::SlotConsumeHandle& slot) {
+            *consumer, 0, 1000, [&](pylabhub::hub::ReadTransactionContext& ctx) {
+                const auto& slot = ctx.slot();
                 SensorData data;
                 slot.read(&data, sizeof(SensorData));
                 std::cout << "with_read_transaction: Read sequence " << data.sequence_num 
