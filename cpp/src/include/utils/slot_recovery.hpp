@@ -34,20 +34,20 @@ class PYLABHUB_UTILS_EXPORT SlotRecovery
      * @param force If true, bypasses safety checks (e.g., if a live process holds a lock).
      * @return A `RecoveryResult` code indicating the outcome.
      */
-    RecoveryResult force_reset(bool force = false);
+    [[nodiscard]] RecoveryResult force_reset(bool force = false);
 
     /**
      * @brief Attempts to release readers that are presumed to be zombies.
      * @param force If true, clears the reader count regardless of other checks.
      * @return A `RecoveryResult` code indicating the outcome.
      */
-    RecoveryResult release_zombie_readers(bool force = false);
+    [[nodiscard]] RecoveryResult release_zombie_readers(bool force = false);
 
     /**
      * @brief Attempts to release a writer that is presumed to be a zombie.
      * @return A `RecoveryResult` code indicating the outcome.
      */
-    RecoveryResult release_zombie_writer();
+    [[nodiscard]] RecoveryResult release_zombie_writer();
 
   private:
     std::string shm_name_;

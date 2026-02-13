@@ -45,6 +45,8 @@ Implementation status and priorities are tracked in **`docs/DATAHUB_TODO.md`** (
 3. [Memory Layout and Data Structures](#3-memory-layout-and-data-structures)
 4. [Synchronization Model](#4-synchronization-model)
 5. [API Specification (All Layers)](#5-api-specification-all-layers)
+   - [5.5 Access API and Data Block Lifecycle](#55-access-api-and-data-block-lifecycle)
+   - [5.6 Helper Modules: Schema, Policy, Layout, and Config](#56-helper-modules-schema-policy-layout-and-config)
 6. [Control Plane Protocol](#6-control-plane-protocol)
 7. [Common Usage Patterns](#7-common-usage-patterns)
 8. [Error Handling and Recovery](#8-error-handling-and-recovery)
@@ -1517,6 +1519,173 @@ void consumer_main(DataBlockConsumer& consumer) {
 - ⚠️ Cross-iteration state (hold handle across loop iterations)
 - ⚠️ Custom coordination patterns
 - ⚠️ Embedded systems (-fno-exceptions)
+
+#### 5.2.1 Error reporting: C vs C++
+
+- **C-level API:** Errors are reported via **return codes** (or out-parameters). No exceptions. This respects C conventions and allows use from C, other languages, and environments where exceptions are not available. Examples: `slot_rw_acquire_write` returns `SlotAcquireResult`; recovery APIs return `int` (e.g. 0 = success, negative = error code).
+- **C++ wrapper:** The C++ layer may **throw** where that is the appropriate and idiomatic way to signal failure (e.g. config validation at creation, schema mismatch on attach, or acquisition failure in a transaction). Use exceptions for exceptional or contract-violation cases; do not overuse (e.g. avoid throwing on the hot path when a return code or optional suffices). A C++ wrapper over a C API may translate C error codes into exceptions when it improves correctness and usability (e.g. `create_datablock_producer` throwing `std::invalid_argument` on bad config).
+- **Summary:** C API → error codes; C++ → throw where appropriate, otherwise return/optional. Keep each layer consistent with its language and audience.
+
+### 5.5 Access API and Data Block Lifecycle
+
+This section describes the **access API** and how it relates to the shared-memory layout: creation and attach, slot operations, iterator, and diagnostics. Implementations must provide a **single point** where config is validated and the memory block is created; all other paths attach to existing blocks.
+
+#### 5.5.1 Creation (single point of access)
+
+- **Creator path:** The only way to create a new shared-memory block is via the **creator constructor** that takes `(name, config)`. No other code path may allocate or initialize the block.
+- **Config before memory:** Config is validated **before** any shared memory is created. If any required field is unset or invalid, creation fails and no memory is allocated. On the **C++** path this is reported by throwing (e.g. `std::invalid_argument`); a **C-level** creation API, if provided, would return an error code instead (see §5.2.1).
+- **Required config at create:** The following must be set explicitly; otherwise creation fails:
+  - **policy** — must not be Unset (use Single, DoubleBuffer, or RingBuffer).
+  - **consumer_sync_policy** — must not be Unset (use Latest_only, Single_reader, or Sync_reader).
+  - **physical_page_size** — allocation granularity (e.g. 4K, 4M); must be set.
+  - **ring_buffer_capacity** — number of slots (≥ 1); 0 is invalid.
+- **Layout derivation:** After validation, layout is derived from config (e.g. `DataBlockLayout::from_config(config)`): slot stride, slot count, flexible zone size, header layout checksum. Then the segment is allocated and the header is written. See §5.6.4.
+
+#### 5.5.2 Attach (consumer path)
+
+- **Attach path:** Consumers open an existing block by name (and optionally via broker discovery). They do **not** create memory; they map the existing segment and validate it.
+- **Layout validation:** On attach, the implementation validates the header (magic, version) and may verify a **layout checksum** computed from layout-defining header fields. This ensures the consumer’s view of slot stride, capacity, and flexible zone matches the producer.
+- **Optional expected_config:** When the consumer supplies an `expected_config`, the implementation checks that the attached header’s policy, capacity, slot size, etc. match. This avoids silent misuse when configs diverge.
+- **Schema validation:** If schema is used, the consumer validates that the header’s `schema_hash` (and optionally `schema_version`) matches the consumer’s expected schema before any data access. See §5.6.1.
+
+#### 5.5.3 Producer access API
+
+| Operation | Purpose | Relation to layout |
+|-----------|---------|--------------------|
+| **acquire_write_slot(timeout_ms)** | Reserve the next slot for writing; blocks until slot is free (and readers drained if needed). | Uses header `write_index`, `SlotRWState` array, and slot buffer base + `slot_index × slot_stride_bytes`. |
+| **buffer_span()** (on write handle) | Mutable view of the slot buffer. | Points into TABLE 2 at the acquired slot. |
+| **commit(bytes_written)** | Make the slot visible to consumers; advances commit index. | Updates `SlotRWState` (state → COMMITTED, generation), then `commit_index` in header (release ordering). |
+| **release_write_slot(handle)** | Release the write handle; under Enforced checksum policy, updates slot checksum before release. | Decrements writer refs; may write checksum into control zone; slot can be reused on wrap. |
+| **flexible_zone_span(index)** / **flexible_zone&lt;T&gt;(index)** | Access TABLE 1 (metadata). | Offsets derived from layout; valid only when zone is defined and agreed. |
+| **update_checksum_slot** / **update_checksum_flexible_zone** | Store BLAKE2b of slot or flexible zone in header. | Used when ChecksumPolicy is Manual; stored in header/control zone. |
+| **register_with_broker** / **check_consumer_health** | Discovery and liveness. | Broker optional; heartbeat in header `consumer_heartbeats[]`. |
+
+Lifetime: All write handles must be released or destroyed before destroying the producer; otherwise use-after-free.
+
+#### 5.5.4 Consumer access API
+
+| Operation | Purpose | Relation to layout |
+|-----------|--------|--------------------|
+| **get_commit_index()** (or equivalent) | Read the latest committed slot id (acquire ordering). | Header `commit_index`. |
+| **acquire_consume_slot(timeout_ms)** / **acquire_consume_slot(slot_id, timeout_ms)** | Reserve a slot for reading (next available or by id). | Uses `SlotRWState` and slot buffer base + `slot_index × slot_stride_bytes`. |
+| **buffer_span()** (on read handle) | Read-only view of the slot buffer. | TABLE 2 at the acquired slot. |
+| **validate_read()** | Check that the slot was not overwritten during read (wrap-around). | Compares captured `write_generation` with current value. |
+| **release_consume_slot(handle)** | Release the read handle; under Enforced checksum, verifies slot checksum. | Decrements reader count; may verify BLAKE2b. |
+| **flexible_zone_span(index)** / **flexible_zone&lt;T&gt;(index)** | Read TABLE 1. | Same layout-derived offsets as producer. |
+| **verify_checksum_slot** / **verify_checksum_flexible_zone** | Verify stored BLAKE2b. | When Manual, caller invokes; when Enforced, invoked on release. |
+| **register_heartbeat** / **update_heartbeat** / **unregister_heartbeat** | Liveness in header. | Header `consumer_heartbeats[]`. |
+
+Consumer is not thread-safe: use one consumer per thread or serialize access. All consume handles must be released before destroying the consumer.
+
+#### 5.5.5 Slot iterator (consumer)
+
+| Operation | Purpose | Relation to layout |
+|-----------|--------|--------------------|
+| **slot_iterator()** | Obtain an iterator over ring slots (consumer view). | Uses commit_index, read_index (or per-consumer position for Sync_reader), and capacity. |
+| **try_next(timeout_ms)** | Advance to next available slot; returns handle and ok flag. | Blocks until a slot is available or timeout; returns SlotConsumeHandle. |
+| **next(timeout_ms)** | Same as try_next but throws on timeout. | Convenience wrapper. |
+| **seek_latest()** | Set cursor to latest committed slot (no consumption). | Sets internal position to commit_index. |
+| **seek_to(slot_id)** | Set cursor so that next() returns slots after the given id. | Used for ordered or replay. |
+
+The iterator hides ring indices and commit_index/read_index; use it for the recommended consumer pattern (e.g. with_next_slot(iterator, timeout, lambda)).
+
+#### 5.5.6 Diagnostics and recovery
+
+| API / tool | Purpose | Relation to layout |
+|------------|--------|--------------------|
+| **open_datablock_for_diagnostic(name)** | Open block read-only for inspection/recovery. | Maps header + SlotRWState array + TABLE 1/2 via same layout. |
+| **diagnose** (e.g. CLI) | Report slot states, stuck writer/readers, heartbeat timeouts. | Reads header metrics and SlotRWState; interprets policy and consumer_sync_policy. |
+| **force_reset_slot** (e.g. CLI) | Clear zombie write lock or stuck state for a slot. | Only after PID liveness check; updates SlotRWState and optionally header. |
+| **auto_recover** (e.g. CLI) | Detect and fix zombie locks and dead consumer heartbeats. | Same as above; dry-run mode recommended first. |
+
+Diagnostics must never reset slots or clear heartbeats for processes that are still alive (PID liveness check required). See Section 8 and `docs/emergency_procedures.md`.
+
+---
+
+### 5.6 Helper Modules: Schema, Policy, Layout, and Config
+
+Correct use of the following **helper modules** is required for consistent layout, safe attach, and schema compatibility. They are specified here at a level that implementers can follow; C++-specific details live in the implementation (e.g. `schema_blds.hpp`, `data_block.hpp`, `IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`).
+
+#### 5.6.1 Schema (schema hash, version, BLDS)
+
+**Role:** The schema helper provides a **canonical description** of data layout (e.g. payload struct or header) and a **BLAKE2b-256 hash** stored in `SharedMemoryHeader.schema_hash[32]` and optionally a **schema version** in `schema_version`. This allows consumers to verify that they are reading data laid out the same way as the producer.
+
+**Structure:**
+- **SchemaInfo:** Holds a schema name, a BLDS string (see below), a 32-byte hash (BLAKE2b-256 of the BLDS), a semantic version, and optionally struct size. Implementations provide something equivalent (e.g. `SchemaInfo` in `schema_blds.hpp`).
+- **BLDS (Basic Layout Description String):** A string that describes members and types (e.g. `name:type_id` or `name:type_id@offset:size`). Same layout must produce the same BLDS so that the same hash is computed on both sides. For ABI/protocol validation, include offset and size so the hash reflects memory layout.
+- **schema_hash in header:** Set by the producer at block creation (or when schema is fixed). Consumers must validate that their expected schema hash matches the header before any data access; mismatch should fail attach or raise a schema validation error and increment `schema_mismatch_count` in the header.
+- **schema_version:** Optional; stored in header for compatibility rules (e.g. major = breaking, minor = backward-compatible). Validation rules (e.g. exact match vs. compatible) are implementation-defined.
+
+**Correct use:**
+1. **Producer (create):** If using schema, compute the schema for the payload (or header) using the schema helper (e.g. `generate_schema_info<T>(name, version)`), call `compute_hash()`, and write the 32-byte hash (and optionally packed version) into the header. Do not leave schema_hash zero if the consumer is expected to validate.
+2. **Consumer (attach):** Before reading any slot or flexible zone, compute the expected schema (same struct/descriptor as producer), compute its hash, and compare with `header.schema_hash`. If they differ, do not attach (or throw/fail and report schema mismatch). Use a single validation point (e.g. `validate_schema_hash(schema, header.schema_hash)`).
+3. **BLDS and macros:** For C++ structs, use the provided macros (e.g. `PYLABHUB_SCHEMA_BEGIN`, `PYLABHUB_SCHEMA_MEMBER`, `PYLABHUB_SCHEMA_END`) to generate BLDS. For header/protocol validation, use the form that includes offset and size so the hash is layout-sensitive. See Section 11 and `schema_blds.hpp`.
+
+**References:** Section 11 (Schema Validation), `docs/IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (compact view and mapping frequency).
+
+#### 5.6.2 Policy (DataBlockPolicy and ConsumerSyncPolicy)
+
+**Role:** Policy enums determine **buffer strategy** and **reader advancement / writer backpressure**. They are stored in the header and must be set **explicitly at creation**; there is no valid “default” that avoids a conscious choice.
+
+**DataBlockPolicy (buffer strategy):**
+- **Single:** One slot; producer overwrites; consumers see latest only. Capacity is 1.
+- **DoubleBuffer:** Two slots; producer alternates; consumers see stable frames. Capacity is 2.
+- **RingBuffer:** N slots; FIFO queue; producer blocks when full (backpressure). Capacity = N.
+- **Unset (sentinel):** Must not be stored in the header. If config has Unset at create time, creation fails. Stored values are 0/1/2 only.
+
+**ConsumerSyncPolicy (reader advancement and backpressure):**
+- **Latest_only:** No shared read_index; each consumer follows commit_index (latest committed). Writer never blocks on readers; older slots may be overwritten.
+- **Single_reader:** One consumer; one shared read_index; consumer reads in order; writer blocks when `(write_index - read_index) >= capacity`.
+- **Sync_reader:** Multiple consumers; per-consumer next-read positions; read_index = min(positions); iterator blocks until slowest reader has consumed; writer blocks when ring full.
+- **Unset (sentinel):** Must not be stored in the header. If config has Unset at create time, creation fails.
+
+**Correct use:**
+1. **At creation:** Always set both `config.policy` and `config.consumer_sync_policy` to a concrete value (not Unset). Creation must validate and fail if either is Unset. Failure is reported via exception in C++ (e.g. `std::invalid_argument`) or via error code in a C-level API (see §5.2.1).
+2. **At attach:** Consumers do not set policy; they read it from the header. When `expected_config` is used, the implementation should compare header policy and consumer_sync_policy to expected values and fail attach on mismatch.
+3. **Layout/behavior:** Policy affects how many slots exist and how write_index/commit_index/read_index are used; see Section 3.3.1 and the table in §3.3.1. Implement slot acquisition, iterator, and backpressure according to the chosen policies.
+
+**References:** Section 3.3.1, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
+
+#### 5.6.3 Config (DataBlockConfig and validation)
+
+**Role:** Config is the **input** to the single creation path. It carries all layout-defining and behavioral parameters. Validation must happen in one place before any memory is created.
+
+**Required fields (must be set; otherwise creation fails):**
+- **policy** — DataBlockPolicy (not Unset).
+- **consumer_sync_policy** — ConsumerSyncPolicy (not Unset).
+- **physical_page_size** — Allocation granularity (e.g. 4K, 4M).
+- **ring_buffer_capacity** — Number of slots (≥ 1).
+
+**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size), shared_secret (0 = generate or discovery), enable_checksum, checksum_policy, flexible_zone_configs. See implementation docs for full list.
+
+**Correct use:**
+1. **Producer:** Build a `DataBlockConfig` with all required fields set, then call the creator (e.g. factory that ultimately calls the creator constructor). Do not rely on implicit defaults for policy, consumer_sync_policy, physical_page_size, or ring_buffer_capacity.
+2. **Consumer:** When attaching with expected_config, pass a config that reflects what the consumer expects (policy, capacity, slot size, etc.). The implementation validates the attached header against this and fails attach on mismatch.
+3. **Tests and examples:** Always set required config explicitly so that failures are reproducible and semantics are clear.
+
+**References:** `IMPLEMENTATION_GUIDANCE.md` (§ Config validation and memory block setup), `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
+
+#### 5.6.4 Layout (DataBlockLayout and layout checksum)
+
+**Role:** Layout is **derived** from config (at create) or from the header (at attach). It provides slot stride, slot count, offsets to SlotRWState array, TABLE 1, TABLE 2, and the size of the full segment. There must be a **single derivation path** (e.g. `from_config` and `from_header`) so that all code uses the same layout.
+
+**Structure:**
+- **from_config(config):** Used on the creator path. Takes validated config and returns layout (slot stride = effective logical unit size, slot count = ring_buffer_capacity, flexible zone size, total size, etc.). No shared memory is touched.
+- **from_header(header):** Used on the attach path. Reads layout-defining fields from the mapped header (e.g. physical_page_size, logical_unit_size, ring_buffer_capacity, flexible_zone_size) and returns the same layout structure. Ensures consumer and producer use the same arithmetic for slot and zone offsets.
+- **Layout checksum:** A hash (e.g. BLAKE2b-256) of a **compact blob** of layout-defining values (fixed order, fixed types, e.g. little-endian u32/u64) is stored in the header (e.g. in reserved_header). On attach, the consumer recomputes this blob from the header and compares the hash. This detects corrupted or incompatible headers. The compact blob must not depend on struct padding or alignment; use explicit append_* primitives. See `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (§2–3).
+
+**Correct use:**
+1. **Creator:** After validating config, compute layout with `from_config(config)`, then compute segment size from layout, allocate, write header, then write layout checksum into the header.
+2. **Attacher:** Map the segment, read the header, compute layout with `from_header(header)`, then verify layout checksum. If verification fails, do not use the block. Use the derived layout for all slot and flexible-zone offsets.
+3. **Hot path:** Layout is not recomputed per slot; it is computed once per process (create or attach). Slot access is `structured_buffer_base + slot_index * slot_stride_bytes` and similar for TABLE 1.
+
+**References:** `IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (§4–5).
+
+#### 5.6.5 Checksum and flexible zone helpers
+
+**ChecksumPolicy:** When checksums are enabled (enable_checksum), either **Manual** (caller calls update/verify explicitly) or **Enforced** (system updates on write release and verifies on read release). Slot and flexible zone checksums are stored in the header/control zone. Correct use: for Manual, call update before release_write_slot and verify before or on release_consume_slot; for Enforced, the implementation does this automatically. See Section 10.2.
+
+**Flexible zones:** Defined by config (flexible_zone_configs) and agreed at attach when expected_config is provided. Access only after the zone is defined and validated; otherwise flexible_zone_span returns empty. Use flexible_zone&lt;T&gt;(index) only when the zone size is at least sizeof(T). See Section 2.2 (TABLE 1) and FlexibleZoneInfo in the implementation.
 
 ---
 

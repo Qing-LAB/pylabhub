@@ -37,7 +37,7 @@ DataBlock and related code depend on these lower-layer modules. **Their correctn
 
 - **DataBlock core:** Shared memory layout, header (SharedMemoryHeader), slot coordination (SlotRWState), writer/reader acquisition and commit/release, flexible zone layout and access (undefined until definition/agreement).
 - **Producer/Consumer API:** Create/find (with/without MessageHub), `flexible_zone_span` (producer, consumer, slot handles), checksum update/verify (flexible zone + slot), acquire/release write/consume slots.
-- **Protocol and agreement:** Producer config (flexible_zone_configs, ring capacity, unit_block_size, checksum), consumer expected_config and schema validation, shared secret discovery.
+- **Protocol and agreement:** Producer config (flexible_zone_configs, ring capacity, physical_page_size, slot stride, checksum), consumer expected_config and schema validation, shared secret discovery.
 - **Integrity and diagnostics:** Diagnostic handle (open_datablock_for_diagnostic), checksum verify/repair (current full path; lighter path is designed but not yet implemented).
 - **MessageHub:** Connect/disconnect, send_message/receive_message, register_producer, discover_producer, register_consumer (stub). Used by DataBlock create/find when broker is used.
 
@@ -224,7 +224,9 @@ Tests should be layered so that protocol and correctness are assured before addi
 | **Phase D – Concurrency / multi-process** | No | Not implemented. |
 | **Recovery scenario** | No | **Deferred.** Recovery policy (what to recover vs fail, protocol) needs definition first; see DATAHUB_TODO “Recovery (deferred)”. Zombie reclaim, corrupted block, stuck slot left for later. |
 
-**Gaps:** Phase C (MessageHub + broker; reevaluate existing messagehub_workers), Phase D (concurrency/multi-process), recovery scenario tests (deferred). Optional: DataBlockConfig ordering, header layout hash ABI mismatch (P2).
+**Config / schema / policy API:** All Layer 3 tests set the required config fields explicitly (policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity). Schema validation is covered by SchemaValidationTest (match and mismatch). Policy behavior is covered by SlotProtocolTest (Latest_only, Single_reader, Sync_reader, physical/logical unit size). **Optional gap:** Add a test that creating a producer with unset config (e.g. policy=Unset or ring_buffer_capacity=0) throws `std::invalid_argument` before any memory is created — confirms single-point validation.
+
+**Gaps:** Phase C (MessageHub + broker; reevaluate existing messagehub_workers), Phase D (concurrency/multi-process), recovery scenario tests (deferred). Optional: explicit config-failure test (see above), DataBlockConfig ordering, header layout hash ABI mismatch (P2).
 
 ---
 
