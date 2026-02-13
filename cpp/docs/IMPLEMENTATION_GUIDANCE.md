@@ -1,7 +1,7 @@
 # Data Exchange Hub - Implementation Guidance
 
-**Document Version:** 1.0
-**Last Updated:** 2026-02-09
+**Document Version:** 1.1
+**Last Updated:** 2026-02-13
 **Status:** Active Development Guide
 
 **Doc policy:** This is the **unified implementation guidance** for DataHub and related modules. Refer to this document during design and implementation (like a single "GEMINI.md"). **Execution order and checklist** live in **`docs/DATAHUB_TODO.md`**; do not duplicate priorities or roadmap here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
@@ -31,7 +31,7 @@ This document provides implementation guidance for the **Data Exchange Hub** (Da
 
 1. **Zero-copy IPC**: Shared memory for high-performance data transfer
 2. **ABI Stability**: All public classes use pImpl idiom for shared library compatibility
-3. **Layered API**: Three layers (C API, C++ wrappers, Transaction API) for different use cases
+3. **Layered API**: Three layers (C API, C++ wrappers, Transaction API) for different use cases. The **primitive C API** is the stable base; **C++ RAII/abstraction** (guards, with_typed_*) is the default for all higher-level design. Use the C API directly only when performance or flexibility critically require it (e.g. custom bindings, hot paths that cannot use exceptions).
 4. **Service Integration**: Leverage existing lifecycle, logger, and platform services
 5. **Memory Safety**: Atomic operations with correct memory ordering for ARM/x86
 
@@ -77,6 +77,19 @@ The Data Exchange Hub uses a **dual-chain** memory layout:
 2. **Atomic Coordination**: For hot path (slot access, flexible zone access)
    - SharedSpinLock: PID-based spinlock for flexible zones
    - SlotRWState: Writer-reader coordination for data slots
+
+### C++ Abstraction Layers (DataBlock)
+
+The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstraction** is the default for application code. Full design: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`**.
+
+| Layer   | Use for |
+|---------|--------|
+| **0 – C API** | C bindings, minimal deps, or when C++ layer cannot be used. |
+| **1 – C++ primitive** | `DataBlockProducer`/`Consumer`, `SlotWriteHandle`/`SlotConsumeHandle`, explicit acquire/release. Use when you need explicit lifetime control or non-throwing paths. |
+| **1.75 – Typed** | `SlotRWAccess::with_typed_write<T>` / `with_typed_read<T>` on raw `SlotRWState*` + buffer (e.g. from handle internals or diagnostic code). |
+| **2 – Transaction API** | **Recommended:** `with_write_transaction`, `with_read_transaction`, `with_next_slot`, `WriteTransactionGuard` / `ReadTransactionGuard`. RAII, exception-safe. |
+
+**Recommended usage:** Prefer Layer 2 (guards and with_*_transaction) for write/read; release or destroy all slot handles before destroying Producer/Consumer. Use C API directly only when performance or flexibility (e.g. custom bindings) require it.
 
 ---
 
@@ -349,9 +362,9 @@ if (slot) {
 }
 
 // Transaction API (RAII, recommended)
-with_write_transaction(*producer, timeout_ms, [&](SlotWriteHandle& slot) {
-    slot.write(data, size);
-    slot.commit(size);
+with_write_transaction(*producer, timeout_ms, [&](WriteTransactionContext& ctx) {
+    ctx.slot().write(data, size);
+    ctx.slot().commit(size);
 }); // Automatic release
 ```
 
@@ -468,9 +481,9 @@ TEST(DataBlockTest, ProducerConsumerBasic) {
     }
 
     // Parent: write data
-    with_write_transaction(*producer, 1000, [&](SlotWriteHandle& slot) {
-        slot.write(test_data, sizeof(test_data));
-        slot.commit(sizeof(test_data));
+    with_write_transaction(*producer, 1000, [&](WriteTransactionContext& ctx) {
+        ctx.slot().write(test_data, sizeof(test_data));
+        ctx.slot().commit(sizeof(test_data));
     });
 
     // Wait for child
@@ -489,6 +502,10 @@ cmake -S . -B build -DPYLABHUB_USE_SANITIZER=Thread
 # Run tests
 ctest --test-dir build --output-on-failure
 ```
+
+### Testing Async Callbacks
+
+When a component invokes a callback asynchronously (e.g. Logger’s `set_write_error_callback` via `CallbackDispatcher::post()`), do not assume it has run when `flush()` or similar returns. Use a `std::promise` set in the callback and `future.wait_for()` before asserting. See **Pitfall 9** in Common Pitfalls.
 
 ### Test pattern choice and CTest vs direct execution
 
@@ -580,6 +597,63 @@ struct DataBlockProducerImpl {
 };
 ```
 
+### Pitfall 6: Non-Deterministic Struct Initialization (Hashing/Checksum)
+
+**Problem**: Structs used in BLAKE2b or layout checksum have uninitialized padding; different runs produce different hashes, causing layout checksum validation to fail randomly.
+
+**Solution**: Value-initialize all structs that feed into hashing or comparison: use `T var{}` or `T var = {}`.
+
+```cpp
+// WRONG: Padding may contain garbage
+LayoutChecksumInput in;
+in.ring_buffer_capacity = header->ring_buffer_capacity;
+// ... BLAKE2b(in) - hash includes padding!
+
+// CORRECT: Zero-initialize (including padding)
+LayoutChecksumInput in{};
+in.ring_buffer_capacity = header->ring_buffer_capacity;
+```
+
+Apply to: LayoutChecksumInput, DataBlockLayout, FlexibleZoneInfo, SchemaInfo, any struct passed to crypto or memcmp.
+
+### Pitfall 7: Config/Schema Without Defaults
+
+**Problem**: `DataBlockConfig config{}` or partial initialization leaves `policy`, `ring_buffer_capacity`, etc. uninitialized; producer and consumer may disagree, causing layout checksum mismatch on attach.
+
+**Solution**: All config and schema types have sensible defaults. `DataBlockConfig`: `shared_secret=0`, `ring_buffer_capacity=1`, `policy=RingBuffer`, etc. Use `DataBlockConfig config{}` and set only required fields.
+
+### Pitfall 8: Test Atomic Variables Without Proper Ordering
+
+**Problem**: Cross-thread assertion on atomic: worker thread stores, main thread loads; without release/acquire, main may not see the store.
+
+**Solution**: Use `memory_order_release` on the storing thread, `memory_order_acquire` on the loading thread. If using `join()` before the load, synchronization is provided by join; otherwise explicit ordering is required.
+
+```cpp
+// Callback (worker thread) stores
+callback_count.fetch_add(1, std::memory_order_release);
+
+// Main thread loads (must wait for callback first - see Pitfall 9)
+ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
+```
+
+### Pitfall 9: Asserting on Async Callback Before It Runs
+
+**Problem**: Logger error callback is invoked via `callback_dispatcher_.post()` (async). Test asserts callback ran, but `flush()` does not wait for the dispatcher; assertion runs before callback.
+
+**Solution**: Have the callback signal completion (e.g. `promise.set_value()`); test waits on `future.wait_for()` before asserting.
+
+```cpp
+std::promise<void> callback_done;
+auto fut = callback_done.get_future();
+Logger::instance().set_write_error_callback([&](const std::string&) {
+    callback_count++;
+    callback_done.set_value();  // Signal completion
+});
+ASSERT_FALSE(Logger::instance().set_logfile("/"));  // Triggers callback
+ASSERT_EQ(fut.wait_for(2s), std::future_status::ready);  // Wait for async callback
+ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
+```
+
 ---
 
 ## Code Review Checklist
@@ -589,6 +663,8 @@ struct DataBlockProducerImpl {
 - [ ] All public classes use pImpl idiom
 - [ ] All public symbols use `PYLABHUB_UTILS_EXPORT`
 - [ ] Memory ordering is correct (acquire/release on ARM)
+- [ ] Structs used in hashing/checksum are value-initialized (`T var{}`)
+- [ ] Test atomics: use release/acquire for cross-thread visibility; use promise to wait for async callbacks before asserting
 - [ ] Errors are logged with LOGGER_ERROR/WARN
 - [ ] Metrics are updated on error paths
 - [ ] Tests cover multi-process scenarios
@@ -627,4 +703,5 @@ struct DataBlockProducerImpl {
 ---
 
 **Revision History**:
+- **v1.1** (2026-02-13): Added Pitfalls 6–9 (deterministic init, config defaults, test atomics, async callbacks); testing async callbacks; checklist updates.
 - **v1.0** (2026-02-09): Initial guidance document created for implementation phase

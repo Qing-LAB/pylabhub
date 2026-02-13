@@ -73,11 +73,11 @@ extern "C"
             return -2; // Internal error
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
-        uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
-        if (slot_index >= ring_buffer_capacity)
+        uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
+        if (slot_index >= slot_count)
         {
             LOGGER_ERROR("datablock_diagnose_slot: Invalid slot_index {} for capacity {}.",
-                         slot_index, ring_buffer_capacity);
+                         slot_index, slot_count);
             return -3; // Invalid index
         }
 
@@ -156,9 +156,9 @@ extern "C"
 
         try
         {
-            uint32_t ring_buffer_capacity = ctx->header->ring_buffer_capacity;
+            uint32_t slot_count = pylabhub::hub::detail::get_slot_count(ctx->header);
 
-            for (uint32_t i = 0; i < ring_buffer_capacity; ++i)
+            for (uint32_t i = 0; i < slot_count; ++i)
             {
                 if (*out_count < array_capacity)
                 {
@@ -215,11 +215,11 @@ extern "C"
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
-            uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
-            if (slot_index >= ring_buffer_capacity)
+            uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
+            if (slot_index >= slot_count)
             {
                 LOGGER_ERROR("datablock_force_reset_slot: Invalid slot_index {} for capacity {}.",
-                             slot_index, ring_buffer_capacity);
+                             slot_index, slot_count);
                 return RECOVERY_INVALID_SLOT;
             }
 
@@ -306,12 +306,12 @@ extern "C"
 
         try
         {
-            uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
+            uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
 
             LOGGER_WARN("RECOVERY: Attempting to force reset ALL {} slots in '{}'. Force flag: {}.",
-                        ring_buffer_capacity, ctx->shm_name, force ? "TRUE" : "FALSE");
+                        slot_count, ctx->shm_name, force ? "TRUE" : "FALSE");
 
-            for (uint32_t i = 0; i < ring_buffer_capacity; ++i)
+            for (uint32_t i = 0; i < slot_count; ++i)
             {
                 RecoveryResult result = datablock_force_reset_slot(shm_name_cstr, i, force);
                 if (result != RECOVERY_SUCCESS)
@@ -355,12 +355,12 @@ extern "C"
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
-            uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
-            if (slot_index >= ring_buffer_capacity)
+            uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
+            if (slot_index >= slot_count)
             {
                 LOGGER_ERROR(
                     "datablock_release_zombie_readers: Invalid slot_index {} for capacity {}.",
-                    slot_index, ring_buffer_capacity);
+                    slot_index, slot_count);
                 return RECOVERY_INVALID_SLOT;
             }
 
@@ -441,12 +441,12 @@ extern "C"
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
         {
-            uint32_t ring_buffer_capacity = header->ring_buffer_capacity;
-            if (slot_index >= ring_buffer_capacity)
+            uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
+            if (slot_index >= slot_count)
             {
                 LOGGER_ERROR(
                     "datablock_release_zombie_writer: Invalid slot_index {} for capacity {}.",
-                    slot_index, ring_buffer_capacity);
+                    slot_index, slot_count);
                 return RECOVERY_INVALID_SLOT;
             }
 
@@ -599,26 +599,41 @@ extern "C"
                 // Cannot repair this.
             }
 
-            // 3. Build expected config from header for consumer/producer calls
-            pylabhub::hub::DataBlockConfig expected_config;
+            // 3. Layout checksum (segment layout-defining values)
+            if (!pylabhub::hub::validate_layout_checksum(header))
+            {
+                LOGGER_ERROR("INTEGRITY_CHECK: Layout checksum mismatch for '{}' (layout fields "
+                             "corrupt or tampered).",
+                             ctx->shm_name);
+                overall_result = RECOVERY_FAILED;
+            }
+
+            // 4. Build expected config from header for consumer/producer calls
+            pylabhub::hub::DataBlockConfig expected_config{};
             expected_config.name = ctx->shm_name;
             expected_config.ring_buffer_capacity = header->ring_buffer_capacity;
-            if (header->unit_block_size == 4096u)
-                expected_config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
-            else if (header->unit_block_size == 4194304u)
-                expected_config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4M;
-            else if (header->unit_block_size == 16777216u)
-                expected_config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size16M;
+            if (header->physical_page_size == 4096u)
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
+            else if (header->physical_page_size == 4194304u)
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4M;
+            else if (header->physical_page_size == 16777216u)
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size16M;
             else
-                expected_config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
+            // Header stores resolved bytes (>= physical); legacy 0 means use physical_page_size
+            expected_config.logical_unit_size =
+                (header->logical_unit_size != 0)
+                    ? static_cast<size_t>(header->logical_unit_size)
+                    : static_cast<size_t>(header->physical_page_size);
             expected_config.policy = header->policy;
+            expected_config.consumer_sync_policy = header->consumer_sync_policy;
             expected_config.enable_checksum = header->enable_checksum;
             expected_config.checksum_policy = header->checksum_policy;
             uint64_t secret = 0;
             std::memcpy(&secret, header->shared_secret, sizeof(secret));
             expected_config.shared_secret = secret;
 
-            // 4. Checksums
+            // 5. Checksums
             if (header->enable_checksum)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer(
@@ -672,10 +687,11 @@ extern "C"
 
                 // Slot checksums
                 uint64_t commit_idx = header->commit_index.load(std::memory_order_acquire);
-                for (uint32_t i = 0; i < header->ring_buffer_capacity; ++i)
+                uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
+                for (uint32_t i = 0; i < slot_count; ++i)
                 {
                     // Only check committed slots up to commit_index
-                    if (i <= (commit_idx % header->ring_buffer_capacity))
+                    if (i <= (commit_idx % slot_count))
                     {
                         if (!consumer->verify_checksum_slot(i))
                         {

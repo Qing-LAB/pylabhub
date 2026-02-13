@@ -32,7 +32,7 @@ int main() {
     pylabhub::hub::DataBlockConfig config;
     config.shared_secret = shared_secret;
     config.flexible_zone_size = 0; // No flexible zone for this example
-    config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K; // 4KB per slot
+    config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K; // 4KB page size
     config.ring_buffer_capacity = 2; // Double buffer for stable writes
     config.enable_checksum = true;
     config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
@@ -61,8 +61,9 @@ int main() {
 
     try {
         pylabhub::hub::with_write_transaction(
-            *producer, 1000, [&](pylabhub::hub::SlotWriteHandle& slot) {
+            *producer, 1000, [&](pylabhub::hub::WriteTransactionContext& ctx) {
                 // Write data to the slot buffer
+                auto& slot = ctx.slot();
                 auto buffer_span = slot.buffer_span();
                 if (buffer_span.size() < sizeof(SensorData)) {
                     throw std::runtime_error("Slot buffer too small for SensorData");
@@ -86,10 +87,10 @@ int main() {
     };
     try {
         pylabhub::hub::with_write_transaction(
-            *producer, 1000, [&](pylabhub::hub::SlotWriteHandle& slot) {
-                auto buffer_span = slot.buffer_span();
+            *producer, 1000, [&](pylabhub::hub::WriteTransactionContext& ctx) {
+                auto buffer_span = ctx.slot().buffer_span();
                 std::memcpy(buffer_span.data(), &data_exception, sizeof(SensorData));
-                slot.commit(sizeof(SensorData));
+                ctx.slot().commit(sizeof(SensorData));
                 std::cout << "with_write_transaction: About to throw, data should not commit." << std::endl;
                 throw std::runtime_error("Simulated network error during post-write processing");
             });

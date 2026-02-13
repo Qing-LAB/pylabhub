@@ -29,7 +29,7 @@ int flexible_zone_span_empty_when_no_zones()
             DataBlockConfig config{};
             config.shared_secret = 50001;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             // No flexible_zone_configs
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -69,7 +69,7 @@ int flexible_zone_span_non_empty_when_zones_defined()
             DataBlockConfig config{};
             config.shared_secret = 50002;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.flexible_zone_configs.push_back({"zone0", 256, -1});
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -113,7 +113,7 @@ int checksum_flexible_zone_false_when_no_zones()
             DataBlockConfig config{};
             config.shared_secret = 50003;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = true;
             // No flexible_zone_configs
 
@@ -144,7 +144,7 @@ int checksum_flexible_zone_true_when_valid()
             DataBlockConfig config{};
             config.shared_secret = 50004;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = true;
             config.flexible_zone_configs.push_back({"zone0", 128, -1});
 
@@ -178,7 +178,7 @@ int consumer_without_expected_config_gets_empty_zones()
             DataBlockConfig config{};
             config.shared_secret = 50005;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.flexible_zone_configs.push_back({"zone0", 64, -1});
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -208,7 +208,7 @@ int consumer_with_expected_config_gets_zones()
             DataBlockConfig config{};
             config.shared_secret = 50006;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.flexible_zone_configs.push_back({"zone0", 128, -1});
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -244,7 +244,7 @@ int structured_flex_zone_data_passes()
             DataBlockConfig config{};
             config.shared_secret = 50007;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.flexible_zone_configs.push_back({"meta", sizeof(FrameMeta), -1});
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -277,7 +277,7 @@ int error_flex_zone_type_too_large_throws()
             DataBlockConfig config{};
             config.shared_secret = 50008;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.flexible_zone_configs.push_back({"zone0", 8, -1}); // only 8 bytes
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -303,7 +303,7 @@ int error_checksum_flex_zone_fails_after_tampering()
             DataBlockConfig config{};
             config.shared_secret = 50009;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = true;
             config.flexible_zone_configs.push_back({"zone0", 64, -1});
 

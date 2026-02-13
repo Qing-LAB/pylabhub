@@ -1,11 +1,20 @@
 // tests/test_layer3_datahub/workers/messagehub_workers.cpp
-// Phase C – MessageHub unit tests (no broker required).
+// Phase C – MessageHub unit tests (no broker and with in-process broker).
 #include "messagehub_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <cppzmq/zmq.hpp>
+#include <cppzmq/zmq_addon.hpp>
+#include <cstring>
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -97,6 +106,164 @@ int disconnect_when_not_connected_idempotent()
         logger_module(), crypto_module(), hub_module());
 }
 
+// -----------------------------------------------------------------------------
+// Phase C.1 – In-process minimal broker (REG_REQ / DISC_REQ, CurveZMQ)
+// -----------------------------------------------------------------------------
+struct TestBrokerState
+{
+    std::string endpoint;
+    std::string server_public_z85;
+    std::atomic<bool> ready{false};
+    std::atomic<bool> stop{false};
+    std::mutex registry_mutex;
+    std::map<std::string, nlohmann::json> registry; // channel_name -> {shm_name, schema_hash, schema_version}
+};
+
+static void run_test_broker(TestBrokerState &state)
+{
+    zmq::context_t ctx(1);
+    zmq::socket_t router(ctx, zmq::socket_type::router);
+
+    char server_public[41];
+    char server_secret[41];
+    if (zmq_curve_keypair(server_public, server_secret) != 0)
+    {
+        return;
+    }
+    state.server_public_z85.assign(server_public, 40);
+
+    router.set(zmq::sockopt::curve_server, 1);
+    router.set(zmq::sockopt::curve_secretkey, std::string(server_secret, 40));
+    router.set(zmq::sockopt::curve_publickey, state.server_public_z85);
+
+    router.bind("tcp://127.0.0.1:0");
+    std::string bound = router.get(zmq::sockopt::last_endpoint);
+    state.endpoint = bound;
+    state.ready.store(true, std::memory_order_release);
+
+    while (!state.stop.load(std::memory_order_acquire))
+    {
+        std::vector<zmq::message_t> msgs;
+        auto result = zmq::recv_multipart(router, std::back_inserter(msgs),
+                                         zmq::recv_flags::dontwait);
+        if (!result || msgs.size() < 3)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+        zmq::message_t &identity = msgs[0];
+        std::string msg_type = msgs[1].to_string();
+        std::string json_str = msgs[2].to_string();
+
+        if (msg_type == "REG_REQ")
+        {
+            nlohmann::json req = nlohmann::json::parse(json_str);
+            std::string channel = req.value("channel_name", "");
+            if (!channel.empty())
+            {
+                nlohmann::json entry;
+                entry["shm_name"] = req.value("shm_name", "");
+                entry["schema_hash"] = req.value("schema_hash", "");
+                entry["schema_version"] = req.value("schema_version", 0);
+                std::lock_guard<std::mutex> lock(state.registry_mutex);
+                state.registry[channel] = std::move(entry);
+            }
+            nlohmann::json resp;
+            resp["status"] = "success";
+            std::string resp_str = resp.dump();
+            zmq::send_multipart(router, std::vector<zmq::const_buffer>{
+                                            zmq::buffer(identity.data(), identity.size()),
+                                            zmq::buffer("REG_RESP"), zmq::buffer(resp_str)});
+        }
+        else if (msg_type == "DISC_REQ")
+        {
+            nlohmann::json req = nlohmann::json::parse(json_str);
+            std::string channel = req.value("channel_name", "");
+            nlohmann::json resp;
+            {
+                std::lock_guard<std::mutex> lock(state.registry_mutex);
+                auto it = state.registry.find(channel);
+                if (it != state.registry.end())
+                {
+                    resp["status"] = "success";
+                    resp["shm_name"] = it->second["shm_name"];
+                    resp["schema_hash"] = it->second["schema_hash"];
+                    resp["schema_version"] = it->second["schema_version"];
+                }
+                else
+                {
+                    resp["status"] = "error";
+                    resp["message"] = "channel not found";
+                }
+            }
+            std::string resp_str = resp.dump();
+            zmq::send_multipart(router, std::vector<zmq::const_buffer>{
+                                            zmq::buffer(identity.data(), identity.size()),
+                                            zmq::buffer("DISC_RESP"), zmq::buffer(resp_str)});
+        }
+    }
+}
+
+int with_broker_happy_path()
+{
+    return run_gtest_worker(
+        []()
+        {
+            TestBrokerState broker_state;
+            std::thread broker_thread(run_test_broker, std::ref(broker_state));
+            while (!broker_state.ready.load(std::memory_order_acquire))
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+            std::string channel = make_test_channel_name("MessageHubBroker");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            EXPECT_TRUE(hub_ref.connect(broker_state.endpoint, broker_state.server_public_z85))
+                << "MessageHub connect to in-process broker failed";
+
+            DataBlockConfig config{};
+            config.shared_secret = 0x123456789ABCDEF0ULL;
+            config.ring_buffer_capacity = 4;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer =
+                create_datablock_producer(hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr) << "create_datablock_producer failed (register should succeed with broker)";
+
+            const char payload[] = "with_broker_happy_path payload";
+            const size_t payload_len = sizeof(payload);
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+            EXPECT_TRUE(write_handle->write(payload, payload_len));
+            EXPECT_TRUE(write_handle->commit(payload_len));
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+            std::optional<ConsumerInfo> info = hub_ref.discover_producer(channel);
+            ASSERT_TRUE(info.has_value()) << "discover_producer should return ConsumerInfo when broker has registration";
+            EXPECT_EQ(info->shm_name, channel);
+            EXPECT_EQ(info->schema_version, 0u);
+
+            auto consumer = find_datablock_consumer(hub_ref, info->shm_name, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr) << "find_datablock_consumer with discovered shm_name must succeed";
+
+            auto consume_handle = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(consume_handle, nullptr);
+            std::string read_buf(payload_len, '\0');
+            EXPECT_TRUE(consume_handle->read(read_buf.data(), payload_len));
+            EXPECT_EQ(std::memcmp(read_buf.data(), payload, payload_len), 0)
+                << "read data must match written data";
+
+            consume_handle.reset();
+            producer.reset();
+            consumer.reset();
+            hub_ref.disconnect();
+            broker_state.stop.store(true, std::memory_order_release);
+            broker_thread.join();
+            cleanup_test_datablock(channel);
+        },
+        "messagehub.with_broker_happy_path",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::messagehub
 
 namespace
@@ -128,6 +295,8 @@ struct MessageHubWorkerRegistrar
                     return discover_producer_when_not_connected_returns_nullopt();
                 if (scenario == "disconnect_when_not_connected_idempotent")
                     return disconnect_when_not_connected_idempotent();
+                if (scenario == "with_broker_happy_path")
+                    return with_broker_happy_path();
                 fmt::print(stderr, "ERROR: Unknown messagehub scenario '{}'\n", scenario);
                 return 1;
             });

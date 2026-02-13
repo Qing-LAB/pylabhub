@@ -12,15 +12,16 @@
 #include "schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
 #include <functional>
-#include <stdexcept>
+#include <memory>
 #include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <variant>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <span>
-#include <string>
 #include "slot_rw_coordinator.h" // Include C interface header
 #include "slot_rw_access.hpp"    // Include Layer 1.75 template wrappers
 
@@ -64,6 +65,10 @@ inline constexpr size_t SLOT_CHECKSUM_ENTRY_SIZE = 33; // 32 hash + 1 valid byte
 inline constexpr size_t HEADER_LAYOUT_HASH_OFFSET = 0;
 /** Size in bytes of the header layout hash (BLAKE2b-256). */
 inline constexpr size_t HEADER_LAYOUT_HASH_SIZE = 32;
+/** Offset within reserved_header[] where segment layout checksum is stored (layout-defining values). */
+inline constexpr size_t LAYOUT_CHECKSUM_OFFSET = 32;
+/** Size in bytes of the layout checksum (BLAKE2b-256). */
+inline constexpr size_t LAYOUT_CHECKSUM_SIZE = 32;
 /** Offset in reserved_header[] for Sync_reader per-consumer next-read slot ids (8 * uint64_t). */
 inline constexpr size_t CONSUMER_READ_POSITIONS_OFFSET = 64;
 
@@ -80,6 +85,7 @@ inline bool is_header_magic_valid(const std::atomic<uint32_t> *magic_ptr,
 {
     return magic_ptr && magic_ptr->load(std::memory_order_acquire) == expected;
 }
+
 } // namespace detail
 
 // Forward declarations
@@ -122,9 +128,9 @@ constexpr size_t raw_size_SlotRWState =
 static_assert(raw_size_SlotRWState == 48, "SlotRWState must be 48 bytes");
 static_assert(alignof(SlotRWState) >= 64, "SlotRWState should be cache-line aligned");
 
-/** Unit block size for structured data buffer. Simplifies bookkeeping; may waste memory. */
+/** Physical page size for allocation. Each slot is aligned to page boundaries. */
 
-enum class DataBlockUnitSize : uint32_t
+enum class DataBlockPageSize : uint32_t
 
 {
 
@@ -136,9 +142,9 @@ enum class DataBlockUnitSize : uint32_t
 
 };
 
-/** Return byte size for DataBlockUnitSize */
+/** Return byte size for DataBlockPageSize */
 
-inline size_t to_bytes(DataBlockUnitSize u)
+inline size_t to_bytes(DataBlockPageSize u)
 
 {
 
@@ -214,7 +220,7 @@ struct FlexibleZoneConfig
 
     std::string name;
 
-    size_t size;
+    size_t size = 0;
 
     int spinlock_index = -1; // -1 means no dedicated spinlock
 };
@@ -233,13 +239,22 @@ struct DataBlockConfig
 
     std::string name;
 
-    uint64_t shared_secret; // This will be generated internally, but needed for discovery
+    /** 0 = generate random; non-zero = use for discovery/capability. */
+    uint64_t shared_secret = 0;
 
-    DataBlockUnitSize unit_block_size = DataBlockUnitSize::Size4K;
+    /** Physical page size (allocation granularity, e.g. 4K page). */
+    DataBlockPageSize physical_page_size = DataBlockPageSize::Size4K;
+    /**
+     * Logical slot size (bytes per ring-buffer slot). Must be >= physical_page_size and a multiple
+     * of physical_page_size. 0 at config input means "use physical" (resolved to physical_page_size).
+     * Stored value is always >= physical_page_size (never 0).
+     */
+    size_t logical_unit_size = 0;
 
-    uint32_t ring_buffer_capacity; // Slot count: 1=Single, 2=Double, N=RingBuffer
+    /** Slot count: 1=Single, 2=Double, N=RingBuffer (effective >= 1). */
+    uint32_t ring_buffer_capacity = 1;
 
-    DataBlockPolicy policy;
+    DataBlockPolicy policy = DataBlockPolicy::RingBuffer;
 
     ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
 
@@ -265,15 +280,19 @@ struct DataBlockConfig
         return total;
     }
 
-    /** Computed: slot_count * unit_block_size. slot_count = max(1, ring_buffer_capacity). */
-
-    size_t structured_buffer_size() const
-
+    /** Effective logical unit size (slot stride in bytes). 0 at config means use physical_page_size. */
+    size_t effective_logical_unit_size() const
     {
+        if (logical_unit_size != 0)
+            return logical_unit_size;
+        return to_bytes(physical_page_size);
+    }
 
+    /** Total structured buffer size (slot_count * effective_logical). slot_count >= 1, so at least one logical unit fits. */
+    size_t structured_buffer_size() const
+    {
         uint32_t slots = (ring_buffer_capacity > 0) ? ring_buffer_capacity : 1u;
-
-        return slots * to_bytes(unit_block_size);
+        return slots * effective_logical_unit_size();
     }
 };
 
@@ -307,7 +326,8 @@ struct alignas(4096) SharedMemoryHeader
     // === Ring Buffer Configuration ===
     DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
     ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
-    uint32_t unit_block_size;             // Bytes per slot (power of 2)
+    uint32_t physical_page_size;          // Physical page size (bytes); allocation granularity
+    uint32_t logical_unit_size;           // Logical slot size (bytes); always >= physical_page_size (legacy 0 = use physical)
     uint32_t ring_buffer_capacity;        // Number of slots
     size_t flexible_zone_size;      // Total TABLE 1 size
     bool enable_checksum;           // BLAKE2b checksums enabled
@@ -382,17 +402,100 @@ struct alignas(4096) SharedMemoryHeader
     } flexible_zone_checksums[detail::MAX_FLEXIBLE_ZONE_CHECKSUMS];
 
     // === Padding to 4096 bytes ===
-    // Note: Two uint64_t fields were added to the metrics section above
-    // (writer_lock_timeout_count, writer_reader_timeout_count). To keep
-    // the total header size exactly 4096 bytes, reserved_header is shrunk
-    // by 16 bytes.
-    uint8_t reserved_header[2328]; // 4096 - (offset up to here); exact size for 4KB total
+    // reserved_header size chosen so total header is exactly 4KB.
+    uint8_t reserved_header[2320]; // 4096 - (offset up to here); exact size for 4KB total
 };
 constexpr size_t raw_size_SharedMemoryHeader =
     offsetof(SharedMemoryHeader, reserved_header) + sizeof(SharedMemoryHeader::reserved_header);
 static_assert(raw_size_SharedMemoryHeader == 4096, "Header must be exactly 4KB");
 static_assert(alignof(SharedMemoryHeader) >= 4096,
               "SharedMemoryHeader should be page-border aligned");
+
+/**
+ * Schema field list for SharedMemoryHeader — canonical order and types for schema hash.
+ * Use as: PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP) with OP(member, type_id) defined.
+ * Each entry supplies both name (member) and type (type_id); default practice for schema.
+ * Kept next to the struct so fields/types stay correlated; .cpp uses this to build SchemaInfo.
+ * (Four trailing fields have dynamic type_id and are added in .cpp after this list.)
+ */
+#define PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP)                                      \
+    /* Identification and Versioning */                                                      \
+    OP(magic_number, "u32")                                                                   \
+    OP(version_major, "u16")                                                                  \
+    OP(version_minor, "u16")                                                                  \
+    OP(total_block_size, "u64")                                                               \
+    /* Security */                                                                            \
+    OP(shared_secret, "u8[64]")                                                               \
+    OP(schema_hash, "u8[32]")                                                                 \
+    OP(schema_version, "u32")                                                                 \
+    OP(padding_sec, "u8[28]")                                                                 \
+    /* Ring Buffer Configuration */                                                           \
+    OP(policy, "u32")                                                                         \
+    OP(consumer_sync_policy, "u32")                                                          \
+    OP(physical_page_size, "u32")                                                             \
+    OP(logical_unit_size, "u32")                                                               \
+    OP(ring_buffer_capacity, "u32")                                                           \
+    OP(flexible_zone_size, "u64")                                                             \
+    OP(enable_checksum, "b")                                                                   \
+    OP(checksum_policy, "u32")                                                                \
+    /* Ring Buffer State (Hot Path) */                                                         \
+    OP(write_index, "u64")                                                                    \
+    OP(commit_index, "u64")                                                                   \
+    OP(read_index, "u64")                                                                     \
+    OP(active_consumer_count, "u32")                                                           \
+    /* Metrics: Slot Coordination */                                                          \
+    OP(writer_timeout_count, "u64")                                                           \
+    OP(writer_lock_timeout_count, "u64")                                                      \
+    OP(writer_reader_timeout_count, "u64")                                                    \
+    OP(writer_blocked_total_ns, "u64")                                                         \
+    OP(write_lock_contention, "u64")                                                          \
+    OP(write_generation_wraps, "u64")                                                          \
+    OP(reader_not_ready_count, "u64")                                                          \
+    OP(reader_race_detected, "u64")                                                           \
+    OP(reader_validation_failed, "u64")                                                        \
+    OP(reader_peak_count, "u64")                                                               \
+    OP(reader_timeout_count, "u64")                                                           \
+    /* Metrics: Error Tracking */                                                             \
+    OP(last_error_timestamp_ns, "u64")                                                        \
+    OP(last_error_code, "u32")                                                                 \
+    OP(error_sequence, "u32")                                                                  \
+    OP(slot_acquire_errors, "u64")                                                             \
+    OP(slot_commit_errors, "u64")                                                             \
+    OP(checksum_failures, "u64")                                                               \
+    OP(zmq_send_failures, "u64")                                                               \
+    OP(zmq_recv_failures, "u64")                                                               \
+    OP(zmq_timeout_count, "u64")                                                              \
+    OP(recovery_actions_count, "u64")                                                          \
+    OP(schema_mismatch_count, "u64")                                                          \
+    OP(reserved_errors, "u64[2]")                                                             \
+    /* Metrics: Heartbeat */                                                                   \
+    OP(heartbeat_sent_count, "u64")                                                            \
+    OP(heartbeat_failed_count, "u64")                                                          \
+    OP(last_heartbeat_ns, "u64")                                                               \
+    OP(reserved_hb, "u64")                                                                     \
+    /* Metrics: Performance */                                                                \
+    OP(total_slots_written, "u64")                                                            \
+    OP(total_slots_read, "u64")                                                                \
+    OP(total_bytes_written, "u64")                                                             \
+    OP(total_bytes_read, "u64")                                                                \
+    OP(uptime_seconds, "u64")                                                                  \
+    OP(creation_timestamp_ns, "u64")                                                          \
+    OP(reserved_perf, "u64[2]")                                                                \
+    /* (consumer_heartbeats, spinlock_states, flexible_zone_checksums, reserved_header: dynamic type_id in .cpp) */
+
+namespace detail
+{
+/** Effective logical slot size from header (bytes per slot). Legacy: 0 in header means use physical_page_size. */
+inline uint32_t get_slot_stride_bytes(const SharedMemoryHeader *h) noexcept
+{
+    return h && h->logical_unit_size != 0 ? h->logical_unit_size : (h ? h->physical_page_size : 0u);
+}
+/** Effective slot count from header (single place for "capacity 0 means 1" convention). */
+inline uint32_t get_slot_count(const SharedMemoryHeader *h) noexcept
+{
+    return h && h->ring_buffer_capacity > 0 ? h->ring_buffer_capacity : 1u;
+}
+} // namespace detail
 
 // Forward declarations for slot handles (primitive data transfer API)
 struct SlotWriteHandleImpl;
@@ -501,6 +604,8 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
     bool verify_checksum_slot() const;
     /** @brief Verify checksum for flexible zone (if enabled). */
     bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const;
+    /** @brief Returns true if the slot is still valid (generation not overwritten). */
+    bool validate_read() const;
 
   private:
     friend class DataBlockConsumer;
@@ -708,13 +813,44 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 };
 
 /**
+ * Transaction context and guards
+ * ------------------------------
+ * with_write_transaction / with_read_transaction pass a context object to the
+ * lambda so the lambda can access slot, flexible_zone(i), slot_id, and (read)
+ * validate_read() from one object. Option C: always pass context; use ctx.slot()
+ * for the handle.
+ * Guards are noexcept on accessors; with_* may throw on acquisition failure.
+ */
+
+/** Context passed to the lambda in with_write_transaction. Non-owning; valid only during the call. */
+struct WriteTransactionContext
+{
+    SlotWriteHandle *slot_ptr = nullptr;
+    SlotWriteHandle &slot() { return *slot_ptr; }
+    std::span<std::byte> flexible_zone(size_t index = 0) { return slot().flexible_zone_span(index); }
+    uint64_t slot_id() const { return slot_ptr ? slot_ptr->slot_id() : 0; }
+    size_t slot_index() const { return slot_ptr ? slot_ptr->slot_index() : 0; }
+};
+
+/** Context passed to the lambda in with_read_transaction. Non-owning; valid only during the call. */
+struct ReadTransactionContext
+{
+    const SlotConsumeHandle *slot_ptr = nullptr;
+    const SlotConsumeHandle &slot() const { return *slot_ptr; }
+    std::span<const std::byte> flexible_zone(size_t index = 0) const
+    {
+        return slot().flexible_zone_span(index);
+    }
+    bool validate_read() const { return slot_ptr ? slot_ptr->validate_read() : false; }
+    uint64_t slot_id() const { return slot_ptr ? slot_ptr->slot_id() : 0; }
+};
+
+/**
  * Transaction guards and exception policy (dynamic library)
  * --------------------------------------------------------
  * For ABI stability and safe use across the shared-library boundary, these APIs
  * avoid throwing from accessors. slot() is noexcept and returns std::optional;
  * "no slot" is std::nullopt, so callers can handle failure without exceptions.
- * Exceptions thrown across the DLL/SO boundary can be problematic (different
- * runtimes, unwinding), so the guard accessors are explicitly no-throw.
  * with_write_transaction / with_read_transaction may throw from the caller's
  * func or on acquisition failure; that is documented and acceptable for
  * application-level error handling.
@@ -773,19 +909,15 @@ class PYLABHUB_UTILS_EXPORT ReadTransactionGuard
 /**
  * @brief Executes a write transaction on a DataBlock producer.
  *
- * This function acquires a write slot, executes the provided function with the
- * slot handle, and automatically releases the slot upon completion, even if
- * an exception is thrown.
+ * Acquires a write slot and invokes func(WriteTransactionContext&). The context
+ * exposes slot(), flexible_zone(i), slot_id(), slot_index(). The slot is released
+ * when the function returns or when an exception is thrown.
  *
- * @tparam Func A callable that takes a `SlotWriteHandle&`.
- * @param producer The `DataBlockProducer` to operate on.
- * @param timeout_ms The timeout in milliseconds to acquire a write slot.
- * @param func The function to execute with the acquired slot.
- * @return The return value of the provided function.
+ * @tparam Func A callable that takes a `WriteTransactionContext&`.
  */
 template <typename Func>
 auto with_write_transaction(DataBlockProducer &producer, int timeout_ms, Func &&func)
-    -> std::invoke_result_t<Func, SlotWriteHandle &>
+    -> std::invoke_result_t<Func, WriteTransactionContext &>
 {
     WriteTransactionGuard guard(producer, timeout_ms);
     auto opt = guard.slot();
@@ -793,26 +925,23 @@ auto with_write_transaction(DataBlockProducer &producer, int timeout_ms, Func &&
     {
         throw std::runtime_error("Failed to acquire write slot in transaction");
     }
-    return std::invoke(std::forward<Func>(func), opt->get());
+    WriteTransactionContext ctx;
+    ctx.slot_ptr = &opt->get();
+    return std::invoke(std::forward<Func>(func), ctx);
 }
 
 /**
  * @brief Executes a read transaction on a DataBlock consumer for a specific slot ID.
  *
- * This function acquires a specific slot for reading, executes the provided
- * function with the slot handle, and automatically releases the slot upon
- * completion.
+ * Acquires the slot for reading and invokes func(ReadTransactionContext&). The
+ * context exposes slot(), flexible_zone(i), validate_read(), slot_id(). The slot
+ * is released when the function returns or when an exception is thrown.
  *
- * @tparam Func A callable that takes a `const SlotConsumeHandle&`.
- * @param consumer The `DataBlockConsumer` to operate on.
- * @param slot_id The ID of the slot to read.
- * @param timeout_ms The timeout in milliseconds to acquire the slot.
- * @param func The function to execute with the acquired slot.
- * @return The return value of the provided function.
+ * @tparam Func A callable that takes a `ReadTransactionContext&`.
  */
 template <typename Func>
 auto with_read_transaction(DataBlockConsumer &consumer, uint64_t slot_id, int timeout_ms,
-                           Func &&func) -> std::invoke_result_t<Func, const SlotConsumeHandle &>
+                           Func &&func) -> std::invoke_result_t<Func, ReadTransactionContext &>
 {
     ReadTransactionGuard guard(consumer, slot_id, timeout_ms);
     auto opt = guard.slot();
@@ -820,7 +949,61 @@ auto with_read_transaction(DataBlockConsumer &consumer, uint64_t slot_id, int ti
     {
         throw std::runtime_error("Failed to acquire consume slot in transaction");
     }
-    return std::invoke(std::forward<Func>(func), opt->get());
+    ReadTransactionContext ctx;
+    ctx.slot_ptr = &opt->get();
+    return std::invoke(std::forward<Func>(func), ctx);
+}
+
+/**
+ * @brief Typed write transaction: acquire slot, invoke func(T&), commit sizeof(T).
+ *
+ * Enforces memory structure for the ring-buffer slot: T must be trivially copyable,
+ * sizeof(T) <= slot buffer size, and buffer must be suitably aligned for T.
+ */
+template <typename T, typename Func>
+auto with_typed_write(DataBlockProducer &producer, int timeout_ms, Func &&func)
+    -> std::invoke_result_t<Func, T &>
+{
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "T must be trivially copyable for shared-memory slot access");
+    return with_write_transaction(producer, timeout_ms, [&](WriteTransactionContext &ctx) {
+        std::span<std::byte> buf = ctx.slot().buffer_span();
+        if (buf.size() < sizeof(T))
+        {
+            throw std::runtime_error("Slot buffer too small for type T");
+        }
+        auto *ptr = buf.data();
+        if (reinterpret_cast<uintptr_t>(ptr) % alignof(T) != 0)
+        {
+            throw std::runtime_error("Slot buffer alignment insufficient for type T");
+        }
+        T &ref = *reinterpret_cast<T *>(ptr);
+        auto result = std::invoke(std::forward<Func>(func), ref);
+        ctx.slot().commit(sizeof(T));
+        return result;
+    });
+}
+
+/**
+ * @brief Typed read transaction: acquire slot, invoke func(const T&).
+ *
+ * Enforces memory structure: T must be trivially copyable, sizeof(T) <= slot buffer size.
+ */
+template <typename T, typename Func>
+auto with_typed_read(DataBlockConsumer &consumer, uint64_t slot_id, int timeout_ms, Func &&func)
+    -> std::invoke_result_t<Func, const T &>
+{
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "T must be trivially copyable for shared-memory slot access");
+    return with_read_transaction(consumer, slot_id, timeout_ms, [&](ReadTransactionContext &ctx) {
+        std::span<const std::byte> buf = ctx.slot().buffer_span();
+        if (buf.size() < sizeof(T))
+        {
+            throw std::runtime_error("Slot buffer too small for type T");
+        }
+        const T &ref = *reinterpret_cast<const T *>(buf.data());
+        return std::invoke(std::forward<Func>(func), ref);
+    });
 }
 
 /**
@@ -949,10 +1132,20 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *schema_info);
 
+// ============================================================================
+// Memory model: layout and validation API (single control surface)
+// ============================================================================
+// All layout/segment validation entry points live here. Access to layout
+// information (slot stride, offsets) is internal and goes through DataBlockLayout;
+// these functions are used at creation, attach, and integrity validation.
+// ============================================================================
+
 /**
  * @brief Returns schema info for SharedMemoryHeader including layout (offset/size per member).
  * @details Used for protocol checking: producer stores the layout hash in the header,
  *          consumer validates that its header layout matches (same ABI).
+ *          The schema is the canonical source for header field names: every header
+ *          member is listed there; struct and docs should use the same names.
  * @return SchemaInfo with BLDS encoding member names, types, offsets and sizes.
  */
 PYLABHUB_UTILS_EXPORT pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info();
@@ -965,6 +1158,11 @@ PYLABHUB_UTILS_EXPORT pylabhub::schema::SchemaInfo get_shared_memory_header_sche
  * incompatibility).
  */
 PYLABHUB_UTILS_EXPORT void validate_header_layout_hash(const SharedMemoryHeader *header);
+
+/** Store layout checksum in header (call at segment creation after header is written). */
+PYLABHUB_UTILS_EXPORT void store_layout_checksum(SharedMemoryHeader *header);
+/** Validate layout checksum; returns true if stored checksum matches recomputed from header. */
+PYLABHUB_UTILS_EXPORT bool validate_layout_checksum(const SharedMemoryHeader *header);
 
 /** @deprecated Use DataBlockProducer. Kept for compatibility. */
 using IDataBlockProducer = DataBlockProducer;

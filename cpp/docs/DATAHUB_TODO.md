@@ -1,6 +1,6 @@
 # Data Exchange Hub - Implementation TODO
 
-**Last Updated:** 2026-02-12
+**Last Updated:** 2026-02-13
 **Priority Legend:** 🔴 Critical | 🟡 High | 🟢 Medium | 🔵 Low
 
 **Doc policy:** This file is the **single source of truth** for execution. When tracking or executing the plan, update and follow this document. Other docs (test plan, HEP, critical review) provide rationale and detail; they do **not** override priorities or the checklist here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
@@ -8,6 +8,18 @@
 **Rationale documents (do not duplicate here):**
 - **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
 - **Critical review & design:** `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` — design decisions, integrity policy, flexible zone semantics. **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
+
+**Design / implementation strategy:** Primitive C API is the stable base; C++ RAII/abstraction (transaction guards, with_typed_write/with_typed_read) is the default for all higher-level design. Use the C API directly only when performance or flexibility critically require it.
+
+---
+
+## Recent completions (2026-02-13)
+
+- **Deterministic initialization** – All structs used in hashing or comparison (LayoutChecksumInput, DataBlockLayout, FlexibleZoneInfo, SchemaInfo, DataBlockConfig in recovery, SharedMemoryHeader placement-new, BLDSBuilder, ProducerInfo, ConsumerInfo, NextResult, SlotAcquireResult) use value-initialization `{}` to zero padding and avoid non-deterministic layout checksum or hash inputs.
+- **Config and schema defaults** – DataBlockConfig: `shared_secret=0`, `ring_buffer_capacity=1`, `policy=RingBuffer`. FlexibleZoneConfig: `size=0`. SchemaInfo: `hash{}`, `struct_size=0`. Enables safe `DataBlockConfig config{}` with only required fields set; no surprises when filling partial config.
+- **Logger test ReentrantErrorCallback** – Error callback runs asynchronously via CallbackDispatcher; test now uses `std::promise` for callback to signal completion before asserting, avoiding race where assertion ran before callback.
+- **Test atomic memory ordering** – logger_workers: `callback_count` and `stop_flag` use release/acquire for cross-thread visibility; messagehub_workers: explicit `memory_order_release` on ready/stop stores for consistency with acquire loads. See IMPLEMENTATION_GUIDANCE.md § Testing and § Atomic variables.
+- **Schema validation test** – ConsumerConnectsWithMatchingSchema no longer fails on layout checksum mismatch; config defaults ensure producer and consumer configs match when using minimal `DataBlockConfig config{}`.
 
 ---
 
@@ -21,6 +33,7 @@
 - **MessageHub "Not connected"** – Downgraded to LOGGER_WARN so in-process tests without broker do not fail ExpectWorkerOk (no "ERROR" in stderr).
 - **High-load integrity test** – high_load_single_reader worker: Single_reader policy, ring capacity 4, scaled iterations (50k/5k); producer writes monotonic uint64_t, consumer asserts slot_id and payload in order. Test: HighLoadSingleReaderIntegrity.
 - **MessageHub Phase C groundwork (no-broker path)** – `test_message_hub.cpp` + `messagehub_workers.cpp` now cover lifecycle-only and **no-broker** behavior: connect/disconnect idempotence, send/receive when not connected, register_producer/discover_producer when broker is unavailable, and JSON-parse failure paths. These tests use the existing worker framework and Logger/Lifecycle modules; they exercise the C++20 pImpl design without introducing test-only hooks.
+- **Memory model: single control surface** – DataBlockLayout is the single source for access (slot stride, offsets); all slot/region access uses `layout().slot_stride()` where a DataBlock exists. Validation: header layout hash + layout checksum + config match via `validate_attach_layout_and_config`; public layout/validation API grouped in `data_block.hpp` (get_shared_memory_header_schema_info, validate_header_layout_hash, store_layout_checksum, validate_layout_checksum). Design: DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.10.
 
 ---
 
@@ -79,9 +92,9 @@ Use this list to track what’s left; details live in the sections below and in 
 - [ ] **1.5 Schema versioning policy** – Compatibility rules, optional is_schema_compatible(), migration docs.
 
 ### Phase 2 (verify / complete)
-- [ ] **2.1 Slot RW C API** – Verify existing implementation matches TODO and HEP; update checklist if already done.
-- [ ] **2.2 Template wrappers** – with_typed_write/with_typed_read; type safety checks.
-- [ ] **2.3 Transaction guards** – WriteTransactionGuard, ReadTransactionGuard; exception safety.
+- [x] **2.1 Slot RW C API** – Verified: slot_rw_acquire_write/commit/release_write, slot_rw_acquire_read/validate_read/release_read, SlotAcquireResult, DataBlockMetrics, slot_rw_get_metrics/reset, slot_acquire_result_string in `slot_rw_coordinator.h` and `data_block.cpp`; Layer-0 tests in `test_slot_rw_coordinator.cpp`. C API is complete and correct per HEP §4.2; use it as stable base. Use C++ abstraction for all higher-level design.
+- [ ] **2.2 Template wrappers** – with_typed_write/with_typed_read (DataBlockProducer/Consumer overloads if needed); type/size checks; align with slot_rw_access.hpp where present.
+- [ ] **2.3 Transaction guards** – WriteTransactionGuard, ReadTransactionGuard already implemented; add exception-safety tests and usage guidance so guards are the default entry-point.
 
 ### Phase 3 and later
 - [ ] **3.x Factory/lifecycle** – Create DataBlockMutex for control zone when reintegrating; align with Phase 3 priorities in DATAHUB_TODO.
@@ -125,22 +138,30 @@ Use this list to track what’s left; details live in the sections below and in 
 
 ### Next step plan (immediate)
 
+**Ordering:** Confirm C API (2.1) ✅ → **C++ abstraction (2.2, 2.3)** → then broker and other top structures. Design all top structures (broker integration, Phase C tests, etc.) against the C++ RAII/abstraction layer unless performance or flexibility critically require the C API.
+
 ```mermaid
 flowchart TD
     A[Phase A/B: Protocol & slot tests ✅] --> B[Writer timeout metrics split ✅]
-    B --> C[Phase C: MessageHub + broker tests]
+    B --> C1[2.1 C API verified ✅]
+    C1 --> C2[2.2 / 2.3 C++ abstraction]
+    C2 --> C[Phase C: MessageHub + broker]
     C --> D[Phase D: Concurrency & multi-process]
-    B --> S[Priority 1.4: Broker schema registry]
+    C2 --> M[DataBlockMutex reintegration]
     D --> R[Recovery scenarios (deferred)]
 ```
 
-1. **Phase C – MessageHub + broker tests**
-   - Implement Phase C from `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`: MessageHub unit behavior (connect/disconnect, send/receive when disconnected, parse errors), and with broker: register_producer, discover_producer, one write/read.
-   - Reevaluate existing MessageHub workers (`test_layer3_datahub/workers/messagehub_workers.cpp` or equivalents) and update/replace to match current `message_hub.cpp` API and protocol.
-2. **Priority 1.4 – Broker schema registry**
-   - Define and implement broker-side registry behavior for `schema_hash`, `schema_version`, and `schema_name`; ensure DISC responses and any GET_SCHEMA-style API match the client expectations in `message_hub.cpp` and DataBlock create/find.
-3. **Phase D – Concurrency & multi-process**
-   - Add tests for concurrent readers, writer timeout behavior, TOCTTOU and wrap-around, zombie reclaim, and DataBlockMutex in multi-process scenarios, per Part 1.3 of the test plan.
+1. **Phase 2 – C++ abstraction (current priority)**  
+   Design and rationale: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`**. C API baseline: **`docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`** §7.
+   - **2.2** – Ensure with_typed_write/with_typed_read are the preferred typed API (slot_rw_access.hpp exists; add DataBlockProducer/Consumer-facing overloads if needed; type/size checks).
+   - **2.3** – Add exception-safety tests for WriteTransactionGuard/ReadTransactionGuard; document usage (prefer guards and with_* over manual acquire/release) in IMPLEMENTATION_GUIDANCE or HEP.
+   - **Layout checksum and validation** – Per DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.8: layout is checksum protected and linked to the segment; validation of any object (Producer/Consumer/access state/integrity) must include validation of the associated layout. Implement when building the detail access state and integrity APIs.
+   - **Layout API and tests** – Exposed API for layout: init (from_config/from_header), update (N/A – layout is immutable after creation/attach), validation (layout checksum compute/verify, validate_layout_checksum(header), include in datablock_validate_integrity). Tests: layout offset calculation (from_config and from_header produce correct offsets/sizes; validate() invariants); layout checksum (compute matches stored at creation; verify fails on tampered header; attach and integrity validation include layout checksum).
+   - **Ring-buffer data units abstraction** – Enforce memory structure for slot (ring-buffer) data: Producer/Consumer-facing `with_typed_write<T>` / `with_typed_read<T>` that acquire slot and invoke func(T&) / func(const T&) with type/size checks (sizeof(T) <= unit_block_size, alignment). Access to slot buffer only through this typed API or the existing buffer_span() with documented contract; optional wrapper that restricts to a single struct type per block (see DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.2, §5.6).
+   - Then design Phase C (broker), Phase D, and DataBlockMutex reintegration **on top of** this C++ layer.
+2. **Phase C – MessageHub + broker tests** (after 2.2/2.3)
+   - Implement Phase C using the C++ abstraction: with broker, register_producer, discover_producer, one write/read via guards or with_typed_* where appropriate.
+3. **Priority 1.4 – Broker schema registry** and **Phase D – Concurrency & multi-process** as in sections above.
 
 ### Recovery (deferred)
 
@@ -371,9 +392,27 @@ Recovery semantics need **further investigation** before we define and test them
 
 **Goal:** treat SlotRWCoordinator as a **first-class lower layer** with its own tests and translation unit, so all higher-level tests (DataBlock, factories, MessageHub integration) benefit from a verified, reusable abstraction instead of ad-hoc per-call logic.
 
+### C++ abstraction implementation plan (layout, context, ring-buffer typed)
+
+Reference: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`** (§4.6–4.9, §5).
+
+- [ ] **Layout – exposed API and checksum**
+  - **Init:** Keep `DataBlockLayout::from_config` / `from_header`; add layout checksum compute (BLAKE2b over layout-defining header fields) and store in `reserved_header` at creation. Document reserved offset (e.g. `LAYOUT_CHECKSUM_OFFSET`, 32 bytes).
+  - **Update:** Layout is immutable after creation/attach; no update API.
+  - **Validation:** `validate_layout_checksum(header)` – recompute from header, compare to stored; call from attach path (via `validate_attach_layout_and_config`) and from `datablock_validate_integrity`. All layout/validation entry points are in one place in the API (data_block.hpp “Memory model: layout and validation API”); see design §4.8 and §4.10.
+- [ ] **Layout – tests**
+  - Offset calculation: tests that `DataBlockLayout::from_config` and `from_header` produce correct offsets/sizes (slot_rw_state, slot_checksum, flexible_zone, structured_buffer, total_size); `validate()` invariants hold in Debug.
+  - Layout checksum: test that checksum computed at creation matches stored value; test that verify fails when header layout fields are tampered; test that consumer attach and `datablock_validate_integrity` include layout checksum verification.
+- [ ] **Detail access state (§4.7)**
+  - Single `detail::DataBlockAccessState` (or similar) filled at init with layout, base pointers, constants (ring_capacity, unit_block_size), flexible_zone_info table. Context and handles hold const reference; no repeated layout math in hot path.
+- [ ] **Transaction context (§4.6)**
+  - `WriteTransactionContext` / `ReadTransactionContext` passed to with_* lambdas; expose `slot()`, `metrics()`, `config()`, `flexible_zone(i)`, (read) `validate_read()`. Switch `with_write_transaction` / `with_read_transaction` to invoke `func(WriteTransactionContext&)` / `func(ReadTransactionContext&)` with `ctx.slot()` for handle access (Option C).
+- [ ] **Ring-buffer data units abstraction (enforcing memory structure)**
+  - Producer/Consumer-facing `with_typed_write<T>(producer, timeout_ms, func)` and `with_typed_read<T>(consumer, slot_id, timeout_ms, func)`: acquire slot, check `sizeof(T) <= slot_buffer_size` and alignment, invoke `func(T&)` / `func(const T&)` over the slot buffer. Optional: document that slot buffer access is via `buffer_span()` or typed API only (no raw pointer bypass). Tests: typed write/read with struct types; size/alignment failure paths.
+
 ### 🟡 PRIORITY 2.2: C++ Template Wrappers (Layer 1.75) - `slot_rw_access.hpp`
 
-- [ ] **Implement `with_typed_write<T>`**
+- [ ] **Implement `with_typed_write<T>`** (see "Ring-buffer data units abstraction" above – Producer/Consumer-facing overloads)
   ```cpp
   template <typename T, typename Func>
   auto with_typed_write(DataBlockProducer& producer, int timeout_ms, Func&& func);
@@ -391,8 +430,8 @@ Recovery semantics need **further investigation** before we define and test them
 
 **Estimated Effort**: 1 day
 **Dependencies**: Priority 2.1 (C API)
-**Testing**: Test typed access with various struct types
-**Reference**: Section 5.3 of HEP-CORE-0002-DataHub-FINAL.md
+**Testing**: Test typed access with various struct types; layout tests as above
+**Reference**: Section 5.3 of HEP-CORE-0002-DataHub-FINAL.md, DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.2, §5.6
 
 ### 🟡 PRIORITY 2.3: Transaction Guards (Layer 2) – polish and test
 

@@ -36,17 +36,15 @@ pylabhub::utils::LifecycleGuard app(
 );
 
 pylabhub::hub::MessageHub hub;
-pylabhub::hub::DataBlockConfig config{
-    .name = "my_channel",
-    .shared_secret = 0,
-    .unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K,
-    .ring_buffer_capacity = 4,
-    .policy = pylabhub::hub::DataBlockPolicy::RingBuffer,
-    .consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Single_reader,
-    .enable_checksum = true,
-    .checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced,
-    .flexible_zone_configs = {}
-};
+pylabhub::hub::DataBlockConfig config{};
+config.name = "my_channel";
+config.shared_secret = 0;
+config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
+config.ring_buffer_capacity = 4;
+config.policy = pylabhub::hub::DataBlockPolicy::RingBuffer;
+config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Single_reader;
+config.enable_checksum = true;
+config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
 
 auto producer = pylabhub::hub::create_datablock_producer(hub, config.name, config.policy, config);
 if (auto slot = producer->acquire_write_slot(5000)) {
@@ -71,6 +69,8 @@ if (consumer) {
     }
 }
 ```
+
+**Config defaults:** `DataBlockConfig config{}` has sensible defaults; set only the fields you need. See **IMPLEMENTATION_GUIDANCE.md** Pitfall 7 and **RAII_LAYER_USAGE_EXAMPLE.md** for details.
 
 **Policies:** `DataBlockPolicy` (Single, DoubleBuffer, RingBuffer); `ConsumerSyncPolicy` (Latest_only, Single_reader, Sync_reader); `ChecksumPolicy` (Manual, Enforced). See **HEP-CORE-0002** for layout, protocol, and recovery.
 

@@ -1,6 +1,7 @@
 #include "plh_service.hpp" // Includes crypto_utils, logger, lifecycle
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
+#include "utils/deterministic_checksum.hpp"
 #include "utils/message_hub.hpp"
 #include "utils/data_block_mutex.hpp"
 #include <cstddef>
@@ -237,7 +238,7 @@ SlotAcquireResult acquire_read(SlotRWState *rw, SharedMemoryHeader *header,
 }
 
 // 4.2.4 Reader Validation (Wrap-Around Detection)
-bool validate_read(SlotRWState *rw, SharedMemoryHeader *header, uint64_t captured_gen)
+bool validate_read_impl(SlotRWState *rw, SharedMemoryHeader *header, uint64_t captured_gen)
 {
     // Check if slot was overwritten during read
     uint64_t current_gen = rw->write_generation.load(std::memory_order_acquire);
@@ -275,7 +276,13 @@ void release_read(SlotRWState *rw, SharedMemoryHeader *header)
 } // namespace
 
 // ============================================================================
-// DataBlockLayout - Centralized layout calculation (single source of truth)
+// DataBlockLayout – single control surface for memory model
+// ============================================================================
+// All layout, sizes, and derived access (slot stride, offsets) come from this struct.
+// Populated once at init from config (creator) or from header (attacher). All access
+// (slot buffer pointer/size, checksum region, flexible zone) uses layout only.
+// Validation entry points: validate_header_layout_hash (ABI); validate_attach_layout_and_config
+// (layout checksum + optional config match); used by find_datablock_consumer_impl and recovery.
 // ============================================================================
 struct DataBlockLayout
 {
@@ -288,18 +295,28 @@ struct DataBlockLayout
     size_t structured_buffer_offset = 0;
     size_t structured_buffer_size = 0;
     size_t total_size = 0;
+    /** Slot stride (bytes per slot). Single source for slot buffer pointer arithmetic. */
+    size_t slot_stride_bytes_ = 0;
+    /** Physical page size (bytes). Allocation granularity. */
+    size_t physical_page_size_bytes = 0;
+    /** Effective slot count (single source; 0 capacity treated as 1). */
+    uint32_t slot_count = 0;
 
     static DataBlockLayout from_config(const DataBlockConfig &config)
     {
-        DataBlockLayout L;
+        DataBlockLayout L{};
+        L.slot_count =
+            (config.ring_buffer_capacity > 0) ? config.ring_buffer_capacity : 1u;
         L.slot_rw_state_offset = sizeof(SharedMemoryHeader);
-        L.slot_rw_state_size = config.ring_buffer_capacity * sizeof(SlotRWState);
+        L.slot_rw_state_size = L.slot_count * sizeof(SlotRWState);
         L.slot_checksum_size = config.enable_checksum
-                                  ? (config.ring_buffer_capacity * detail::SLOT_CHECKSUM_ENTRY_SIZE)
+                                  ? (L.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
                                   : 0;
         L.slot_checksum_offset = L.slot_rw_state_offset + L.slot_rw_state_size;
         L.flexible_zone_size = config.total_flexible_zone_size();
         L.flexible_zone_offset = L.slot_checksum_offset + L.slot_checksum_size;
+        L.slot_stride_bytes_ = config.effective_logical_unit_size();
+        L.physical_page_size_bytes = to_bytes(config.physical_page_size);
         L.structured_buffer_size = config.structured_buffer_size();
         L.structured_buffer_offset = L.flexible_zone_offset + L.flexible_zone_size;
         L.total_size = L.structured_buffer_offset + L.structured_buffer_size;
@@ -308,22 +325,31 @@ struct DataBlockLayout
 
     static DataBlockLayout from_header(const SharedMemoryHeader *h)
     {
-        DataBlockLayout L;
+        DataBlockLayout L{};
         if (!h)
             return L;
-        uint32_t cap = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
+        L.slot_count = detail::get_slot_count(h);
         L.slot_rw_state_offset = sizeof(SharedMemoryHeader);
-        L.slot_rw_state_size = cap * sizeof(SlotRWState);
+        L.slot_rw_state_size = L.slot_count * sizeof(SlotRWState);
         L.slot_checksum_size =
-            h->enable_checksum ? (cap * detail::SLOT_CHECKSUM_ENTRY_SIZE) : 0;
+            h->enable_checksum ? (L.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE) : 0;
         L.slot_checksum_offset = L.slot_rw_state_offset + L.slot_rw_state_size;
         L.flexible_zone_size = h->flexible_zone_size;
         L.flexible_zone_offset = L.slot_checksum_offset + L.slot_checksum_size;
-        L.structured_buffer_size = cap * h->unit_block_size;
+        L.slot_stride_bytes_ = static_cast<size_t>(detail::get_slot_stride_bytes(h));
+        L.physical_page_size_bytes = static_cast<size_t>(h->physical_page_size);
+        L.structured_buffer_size = L.slot_count * L.slot_stride_bytes_;
         L.structured_buffer_offset = L.flexible_zone_offset + L.flexible_zone_size;
         L.total_size = L.structured_buffer_offset + L.structured_buffer_size;
         return L;
     }
+
+    /** Slot buffer stride (bytes per slot). Use for all slot buffer pointer arithmetic. */
+    size_t slot_stride_bytes() const { return slot_stride_bytes_; }
+    /** Physical page size (bytes). Allocation granularity. */
+    size_t physical_page_size() const { return physical_page_size_bytes; }
+    /** Effective slot count. Use this for all slot index bounds; do not read header directly. */
+    uint32_t slot_count_value() const { return slot_count; }
 
     char *slot_checksum_base(char *segment_base) const
     {
@@ -371,7 +397,7 @@ std::vector<FlexibleZoneInfo> build_flexible_zone_info(const std::vector<Flexibl
     size_t offset = 0;
     for (const auto &c : configs)
     {
-        FlexibleZoneInfo info;
+        FlexibleZoneInfo info{};
         info.offset = offset;
         info.size = c.size;
         info.spinlock_index = c.spinlock_index;
@@ -411,8 +437,8 @@ class DataBlock
                                      "'. Error: " + std::to_string(errno));
 #endif
         }
-        // Placement new for SharedMemoryHeader (value-initializes; do not memset non-trivials)
-        m_header = new (m_shm.base) SharedMemoryHeader();
+        // Placement new for SharedMemoryHeader (value-initialize for deterministic layout; zero padding)
+        m_header = new (m_shm.base) SharedMemoryHeader{};
 
         // 2. Initialize SharedMemoryHeader fields
         m_header->version_major = DATABLOCK_VERSION_MAJOR;
@@ -432,7 +458,30 @@ class DataBlock
 
         m_header->policy = config.policy;
         m_header->consumer_sync_policy = config.consumer_sync_policy;
-        m_header->unit_block_size = static_cast<uint32_t>(to_bytes(config.unit_block_size));
+        m_header->physical_page_size = static_cast<uint32_t>(to_bytes(config.physical_page_size));
+        {
+            const size_t physical = to_bytes(config.physical_page_size);
+            const size_t logical = config.effective_logical_unit_size();
+            if (config.logical_unit_size != 0 && config.logical_unit_size < physical)
+            {
+                LOGGER_ERROR("DataBlock '{}': logical_unit_size ({}) must be >= physical_page_size ({}); "
+                             "there is no case where logical < physical.",
+                             m_name, config.logical_unit_size, physical);
+                throw std::invalid_argument("logical_unit_size must be >= physical_page_size");
+            }
+            if (config.logical_unit_size != 0 && (config.logical_unit_size % physical != 0))
+            {
+                LOGGER_ERROR("DataBlock '{}': logical_unit_size ({}) must be a multiple of physical_page_size ({})",
+                             m_name, config.logical_unit_size, physical);
+                throw std::invalid_argument("logical_unit_size must be a multiple of physical_page_size");
+            }
+            if (logical > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+            {
+                throw std::invalid_argument("logical_unit_size exceeds maximum storable in header");
+            }
+            // Always store resolved bytes; never 0 (0 at config input means use physical).
+            m_header->logical_unit_size = static_cast<uint32_t>(logical);
+        }
         m_header->ring_buffer_capacity = config.ring_buffer_capacity;
         m_header->flexible_zone_size = m_layout.flexible_zone_size;
         m_header->enable_checksum = config.enable_checksum;
@@ -502,7 +551,7 @@ class DataBlock
         m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
             reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
 
-        for (uint32_t i = 0; i < config.ring_buffer_capacity; ++i)
+        for (uint32_t i = 0; i < m_layout.slot_count_value(); ++i)
         {
             m_slot_rw_states_array[i].write_lock.store(0, std::memory_order_release);
             m_slot_rw_states_array[i].reader_count.store(0, std::memory_order_release);
@@ -537,6 +586,8 @@ class DataBlock
         pylabhub::schema::SchemaInfo header_schema = get_shared_memory_header_schema_info();
         std::memcpy(m_header->reserved_header + detail::HEADER_LAYOUT_HASH_OFFSET,
                     header_schema.hash.data(), detail::HEADER_LAYOUT_HASH_SIZE);
+        // Store layout checksum (segment layout-defining values; validated on attach and integrity)
+        store_layout_checksum(m_header);
 
         LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, m_size);
     }
@@ -682,7 +733,7 @@ class DataBlock
 
     SlotRWState *slot_rw_state(size_t index) const
     {
-        if (!m_header || index >= m_header->ring_buffer_capacity)
+        if (!m_header || index >= m_layout.slot_count_value())
         {
             throw std::out_of_range("SlotRWState index " + std::to_string(index) +
                                     " out of range or header invalid.");
@@ -736,9 +787,9 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, size_t flexible
 {
     if (!block || !block->header())
         return false;
-    auto *h = block->header();
-    if (!h->enable_checksum) // Use enable_checksum
+    if (block->layout().slot_checksum_size == 0)
         return false;
+    auto *h = block->header();
 
     // Get the FlexibleZoneInfo from the block's flexible_zone_info map
     if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
@@ -772,13 +823,12 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
 {
     if (!block || !block->header())
         return false;
-    auto *h = block->header();
-    if (!h->enable_checksum)
+    if (block->layout().slot_checksum_size == 0)
         return false;
-    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
-    if (slot_index >= slot_count)
+    if (slot_index >= block->layout().slot_count_value())
         return false;
-    size_t slot_size = h->unit_block_size;
+    // Slot data pointer: step size = logical (slot_stride_bytes), so ring iteration uses logical size.
+    const size_t slot_size = block->layout().slot_stride_bytes();
     if (slot_size == 0)
         return false;
     char *buf = block->structured_data_buffer();
@@ -801,9 +851,9 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block, size_t fl
 {
     if (!block || !block->header())
         return false;
-    auto *h = block->header();
-    if (!h->enable_checksum) // Use enable_checksum
+    if (block->layout().slot_checksum_size == 0)
         return false;
+    auto *h = block->header();
 
     // Get the FlexibleZoneInfo from the block's flexible_zone_info map
     if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
@@ -836,11 +886,9 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
 {
     if (!block || !block->header())
         return false;
-    auto *h = block->header();
-    if (!h->enable_checksum)
+    if (block->layout().slot_checksum_size == 0)
         return false;
-    uint32_t slot_count = (h->ring_buffer_capacity > 0) ? h->ring_buffer_capacity : 1u;
-    if (slot_index >= slot_count)
+    if (slot_index >= block->layout().slot_count_value())
         return false;
     const char *base = reinterpret_cast<const char *>(block->segment());
     const char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
@@ -850,7 +898,8 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
         reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
     if (slot_valid->load(std::memory_order_acquire) != 1)
         return false;
-    size_t slot_size = h->unit_block_size;
+    // Step size for slot data = logical (slot_stride_bytes).
+    const size_t slot_size = block->layout().slot_stride_bytes();
     if (slot_size == 0)
         return false;
     const char *buf = block->structured_data_buffer();
@@ -993,8 +1042,8 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
         if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
                                             detail::DATABLOCK_MAGIC_NUMBER))
             return nullptr;
-        impl->ring_buffer_capacity = impl->header_ptr->ring_buffer_capacity;
         DataBlockLayout layout = DataBlockLayout::from_header(impl->header_ptr);
+        impl->ring_buffer_capacity = layout.slot_count_value();
         impl->slot_rw_states = reinterpret_cast<SlotRWState *>(
             reinterpret_cast<char *>(impl->m_shm.base) + layout.slot_rw_state_offset);
         return std::unique_ptr<DataBlockDiagnosticHandle>(
@@ -1039,7 +1088,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     if (!h)
         return nullptr;
 
-    uint32_t slot_count = h->ring_buffer_capacity;
+    const uint32_t slot_count = pImpl->dataBlock->layout().slot_count_value();
     if (slot_count == 0)
         return nullptr;
 
@@ -1084,9 +1133,10 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         return nullptr;
     }
 
-    size_t slot_size = h->unit_block_size;
+    // Ring-buffer iteration step is logical slot size (slot_stride_bytes), not physical.
+    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes();
     char *buf = pImpl->dataBlock->structured_data_buffer();
-    if (!buf || slot_size == 0)
+    if (!buf || slot_stride_bytes == 0)
     {
         // Release write lock if buffer is invalid before returning
         rw_state->write_lock.store(0, std::memory_order_release);
@@ -1099,8 +1149,8 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     impl->header = h;
     impl->slot_id = slot_id;
     impl->slot_index = slot_index;
-    impl->buffer_ptr = buf + slot_index * slot_size;
-    impl->buffer_size = slot_size;
+    impl->buffer_ptr = buf + slot_index * slot_stride_bytes; // step size = logical
+    impl->buffer_size = slot_stride_bytes;
     impl->rw_state = rw_state; // New: Pointer to the SlotRWState for this slot
     // flexible_ptr and flexible_size are no longer directly used in SlotWriteHandleImpl
     return std::unique_ptr<SlotWriteHandle>(new SlotWriteHandle(std::move(impl)));
@@ -1149,7 +1199,7 @@ bool DataBlockProducer::register_with_broker(MessageHub &hub, const std::string 
     {
         return false;
     }
-    ProducerInfo info;
+    ProducerInfo info{};
     info.shm_name = pImpl->name;
     info.producer_pid = pylabhub::platform::get_pid();
     info.schema_hash.assign(reinterpret_cast<const char *>(pImpl->dataBlock->header()->schema_hash),
@@ -1190,7 +1240,7 @@ DataBlockSlotIterator::operator=(DataBlockSlotIterator &&other) noexcept = defau
 
 DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms)
 {
-    NextResult r;
+    NextResult r{};
     r.ok = false;
     r.error_code = 0;
     if (!pImpl || !pImpl->dataBlock)
@@ -1212,9 +1262,9 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
     size_t slot_index = 0;
     SlotRWState *rw_state = nullptr;
     uint64_t captured_generation = 0;
-    SlotAcquireResult acquire_res;
+    SlotAcquireResult acquire_res{};
 
-    uint32_t slot_count = h->ring_buffer_capacity;
+    const uint32_t slot_count = pImpl->dataBlock->layout().slot_count_value();
     if (slot_count == 0)
     {
         r.error_code = 1;
@@ -1267,8 +1317,9 @@ DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms
     impl->header = h;
     impl->slot_id = slot_id;
     impl->slot_index = slot_index;
-    impl->buffer_ptr = pImpl->dataBlock->structured_data_buffer() + slot_index * h->unit_block_size;
-    impl->buffer_size = h->unit_block_size;
+    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
+    impl->buffer_ptr = pImpl->dataBlock->structured_data_buffer() + slot_index * slot_stride_bytes;
+    impl->buffer_size = slot_stride_bytes;
     impl->rw_state = rw_state;
     impl->captured_generation = captured_generation;
     if (policy == ConsumerSyncPolicy::Sync_reader && pImpl->owner)
@@ -1382,7 +1433,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     // 1. Validate captured generation to detect wrap-around (if reader was pre-empted)
     if (impl.rw_state && impl.header)
     {
-        if (!validate_read(impl.rw_state, impl.header, impl.captured_generation))
+        if (!validate_read_impl(impl.rw_state, impl.header, impl.captured_generation))
         {
             ok = false; // Validation failed (slot overwritten or corrupted)
         }
@@ -1622,6 +1673,13 @@ bool SlotConsumeHandle::verify_checksum_flexible_zone(size_t index) const
     return verify_checksum_flexible_zone_impl(pImpl->dataBlock, index);
 }
 
+bool SlotConsumeHandle::validate_read() const
+{
+    if (!pImpl || !pImpl->rw_state)
+        return false;
+    return validate_read_impl(pImpl->rw_state, pImpl->header, pImpl->captured_generation);
+}
+
 // ============================================================================
 // DataBlockConsumer
 // ============================================================================
@@ -1672,7 +1730,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     if (!h)
         return nullptr;
 
-    uint32_t slot_count = h->ring_buffer_capacity;
+    const uint32_t slot_count = pImpl->dataBlock->layout().slot_count_value();
     if (slot_count == 0)
         return nullptr;
 
@@ -1683,7 +1741,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     size_t slot_index = 0;
     SlotRWState *rw_state = nullptr;
     uint64_t captured_generation = 0;
-    SlotAcquireResult acquire_res;
+    SlotAcquireResult acquire_res{};
 
     // Sync_reader: ensure registered and join-at-latest for new consumer
     if (policy == ConsumerSyncPolicy::Sync_reader)
@@ -1733,9 +1791,9 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         backoff(iteration++);
     }
 
-    size_t slot_size = h->unit_block_size;
+    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
     const char *buf = pImpl->dataBlock->structured_data_buffer();
-    if (!buf || slot_size == 0)
+    if (!buf || slot_stride_bytes == 0)
     {
         release_read(rw_state, h);
         return nullptr;
@@ -1747,8 +1805,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     impl->header = h;
     impl->slot_id = slot_id;
     impl->slot_index = slot_index;
-    impl->buffer_ptr = buf + slot_index * slot_size;
-    impl->buffer_size = slot_size;
+    impl->buffer_ptr = buf + slot_index * slot_stride_bytes;
+    impl->buffer_size = slot_stride_bytes;
     impl->rw_state = rw_state;
     impl->captured_generation = captured_generation;
     if (policy == ConsumerSyncPolicy::Sync_reader)
@@ -1768,7 +1826,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     if (!h)
         return nullptr;
 
-    uint32_t slot_count = h->ring_buffer_capacity;
+    const uint32_t slot_count = pImpl->dataBlock->layout().slot_count_value();
     if (slot_count == 0)
         return nullptr;
 
@@ -1794,9 +1852,9 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     if (acquire_res != SLOT_ACQUIRE_OK)
         return nullptr;
 
-    size_t slot_size = h->unit_block_size;
+    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
     const char *buf = pImpl->dataBlock->structured_data_buffer();
-    if (!buf || slot_size == 0)
+    if (!buf || slot_stride_bytes == 0)
     {
         release_read(rw_state, h);
         return nullptr;
@@ -1808,8 +1866,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     impl->header = h;
     impl->slot_id = slot_id;
     impl->slot_index = slot_index;
-    impl->buffer_ptr = buf + slot_index * slot_size;
-    impl->buffer_size = slot_size;
+    impl->buffer_ptr = buf + slot_index * slot_stride_bytes;
+    impl->buffer_size = slot_stride_bytes;
     impl->rw_state = rw_state;
     impl->captured_generation = captured_generation;
     if (h->consumer_sync_policy == ConsumerSyncPolicy::Sync_reader)
@@ -1897,6 +1955,12 @@ void DataBlockConsumer::unregister_heartbeat(int slot)
 // ============================================================================
 // SharedMemoryHeader schema (layout + protocol check)
 // ============================================================================
+//
+// Canonical rule: the schema field list lives next to SharedMemoryHeader in
+// data_block.hpp (PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS). Update that
+// list and the struct together so names, order, and types stay in one place.
+// This .cpp only expands the list and adds the four fields with dynamic type_id.
+// ============================================================================
 
 pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info()
 {
@@ -1904,74 +1968,35 @@ pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info()
     using pylabhub::schema::SchemaInfo;
     using pylabhub::schema::SchemaVersion;
 
-    BLDSBuilder b;
-    // All members with offset and size so hash reflects ABI layout
-#define ADD(member, type_id)                                                                       \
-    b.add_member(#member, type_id, offsetof(SharedMemoryHeader, member),                           \
-                 sizeof(SharedMemoryHeader::member))
+    BLDSBuilder b{};
+    // Header defines the list: PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP) expands to
+    //   OP(magic_number,"u32") OP(version_major,"u16") ... for every header field.
+    // We define OP here: for each (member, type_id) call add_member(name, type_id, offset, size).
+    // So the single line below expands to many b.add_member(...) calls in struct order.
+#define PYLABHUB_ADD_SCHEMA_FIELD(member, type_id)                                            \
+    b.add_member(#member, type_id, offsetof(SharedMemoryHeader, member),                     \
+                 sizeof(SharedMemoryHeader::member));
+    PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(PYLABHUB_ADD_SCHEMA_FIELD);
+#undef PYLABHUB_ADD_SCHEMA_FIELD
+    // Trailing fields: type_id depends on constants (must stay in same order as struct)
+    b.add_member("consumer_heartbeats",
+                 "ConsumerHeartbeat[" + std::to_string(detail::MAX_CONSUMER_HEARTBEATS) + "]",
+                 offsetof(SharedMemoryHeader, consumer_heartbeats),
+                 sizeof(SharedMemoryHeader::consumer_heartbeats));
+    b.add_member("spinlock_states",
+                 "SharedSpinLockState[" + std::to_string(detail::MAX_SHARED_SPINLOCKS) + "]",
+                 offsetof(SharedMemoryHeader, spinlock_states),
+                 sizeof(SharedMemoryHeader::spinlock_states));
+    b.add_member("flexible_zone_checksums",
+                 "FlexibleZoneChecksumEntry[" + std::to_string(detail::MAX_FLEXIBLE_ZONE_CHECKSUMS) + "]",
+                 offsetof(SharedMemoryHeader, flexible_zone_checksums),
+                 sizeof(SharedMemoryHeader::flexible_zone_checksums));
+    b.add_member("reserved_header",
+                 "u8[" + std::to_string(sizeof(SharedMemoryHeader::reserved_header)) + "]",
+                 offsetof(SharedMemoryHeader, reserved_header),
+                 sizeof(SharedMemoryHeader::reserved_header));
 
-    ADD(magic_number, "u32");
-    ADD(version_major, "u16");
-    ADD(version_minor, "u16");
-    ADD(total_block_size, "u64");
-    ADD(shared_secret, "u8[64]");
-    ADD(schema_hash, "u8[32]");
-    ADD(schema_version, "u32");
-    ADD(padding_sec, "u8[28]");
-    ADD(policy, "u32");
-    ADD(consumer_sync_policy, "u32");
-    ADD(unit_block_size, "u32");
-    ADD(ring_buffer_capacity, "u32");
-    ADD(flexible_zone_size, "u64");
-    ADD(enable_checksum, "b");
-    ADD(checksum_policy, "u32");
-    ADD(write_index, "u64");
-    ADD(commit_index, "u64");
-    ADD(read_index, "u64");
-    ADD(active_consumer_count, "u32");
-    ADD(writer_timeout_count, "u64");
-    ADD(writer_blocked_total_ns, "u64");
-    ADD(write_lock_contention, "u64");
-    ADD(write_generation_wraps, "u64");
-    ADD(reader_not_ready_count, "u64");
-    ADD(reader_race_detected, "u64");
-    ADD(reader_validation_failed, "u64");
-    ADD(reader_peak_count, "u64");
-    ADD(reader_timeout_count, "u64");
-    ADD(last_error_timestamp_ns, "u64");
-    ADD(last_error_code, "u32");
-    ADD(error_sequence, "u32");
-    ADD(slot_acquire_errors, "u64");
-    ADD(slot_commit_errors, "u64");
-    ADD(checksum_failures, "u64");
-    ADD(zmq_send_failures, "u64");
-    ADD(zmq_recv_failures, "u64");
-    ADD(zmq_timeout_count, "u64");
-    ADD(recovery_actions_count, "u64");
-    ADD(schema_mismatch_count, "u64");
-    ADD(reserved_errors, "u64[2]");
-    ADD(heartbeat_sent_count, "u64");
-    ADD(heartbeat_failed_count, "u64");
-    ADD(last_heartbeat_ns, "u64");
-    ADD(reserved_hb, "u64");
-    ADD(total_slots_written, "u64");
-    ADD(total_slots_read, "u64");
-    ADD(total_bytes_written, "u64");
-    ADD(total_bytes_read, "u64");
-    ADD(uptime_seconds, "u64");
-    ADD(creation_timestamp_ns, "u64");
-    ADD(reserved_perf, "u64[2]");
-    ADD(consumer_heartbeats,
-        "ConsumerHeartbeat[" + std::to_string(detail::MAX_CONSUMER_HEARTBEATS) + "]");
-    ADD(spinlock_states,
-        "SharedSpinLockState[" + std::to_string(detail::MAX_SHARED_SPINLOCKS) + "]");
-    ADD(flexible_zone_checksums,
-        "FlexibleZoneChecksumEntry[" + std::to_string(detail::MAX_FLEXIBLE_ZONE_CHECKSUMS) + "]");
-    ADD(reserved_header, "u8[" + std::to_string(sizeof(SharedMemoryHeader::reserved_header)) + "]");
-
-#undef ADD
-
-    SchemaInfo info;
+    SchemaInfo info{};
     info.name = "pylabhub.hub.SharedMemoryHeader";
     info.version = SchemaVersion{detail::HEADER_VERSION_MAJOR, detail::HEADER_VERSION_MINOR, 0};
     info.struct_size = sizeof(SharedMemoryHeader);
@@ -1997,6 +2022,93 @@ void validate_header_layout_hash(const SharedMemoryHeader *header)
             "(offset/size).",
             expected.hash, actual_hash);
     }
+}
+
+// ============================================================================
+// Layout checksum (segment layout-defining values; see DATAHUB_CPP_ABSTRACTION_DESIGN §4.8)
+// ============================================================================
+namespace
+{
+/** Layout checksum input: fixed order so producer and consumer hash the same bytes.
+ *  Order: ring_buffer_capacity(4), physical_page_size(4), logical_unit_size(4),
+ *  flexible_zone_size(8), enable_checksum(1), policy(1), consumer_sync_policy(1), reserved(1). */
+constexpr size_t LAYOUT_CHECKSUM_INPUT_BYTES = 24u;
+
+inline void layout_checksum_fill(uint8_t *buf, const SharedMemoryHeader *header)
+{
+    if (!buf || !header)
+        return;
+    using pylabhub::utils::append_le_u32;
+    using pylabhub::utils::append_le_u64;
+    using pylabhub::utils::append_u8;
+    size_t off = 0;
+    append_le_u32(buf, off, header->ring_buffer_capacity);
+    append_le_u32(buf, off, header->physical_page_size);
+    append_le_u32(buf, off, header->logical_unit_size);
+    append_le_u64(buf, off, static_cast<uint64_t>(header->flexible_zone_size));
+    append_u8(buf, off, header->enable_checksum ? 1 : 0);
+    append_u8(buf, off, static_cast<uint8_t>(header->policy));
+    append_u8(buf, off, static_cast<uint8_t>(header->consumer_sync_policy));
+    append_u8(buf, off, 0); // reserved
+    assert(off == LAYOUT_CHECKSUM_INPUT_BYTES);
+}
+} // namespace
+
+void store_layout_checksum(SharedMemoryHeader *header)
+{
+    if (!header)
+        return;
+    std::array<uint8_t, LAYOUT_CHECKSUM_INPUT_BYTES> buf{};
+    layout_checksum_fill(buf.data(), header);
+    uint8_t *out = header->reserved_header + detail::LAYOUT_CHECKSUM_OFFSET;
+    if (!pylabhub::crypto::compute_blake2b(out, buf.data(), buf.size()))
+    {
+        LOGGER_ERROR("[DataBlock] store_layout_checksum: compute_blake2b failed; storing zeros.");
+        std::memset(out, 0, detail::LAYOUT_CHECKSUM_SIZE);
+    }
+}
+
+bool validate_layout_checksum(const SharedMemoryHeader *header)
+{
+    if (!header)
+        return false;
+    std::array<uint8_t, LAYOUT_CHECKSUM_INPUT_BYTES> buf{};
+    layout_checksum_fill(buf.data(), header);
+    std::array<uint8_t, 32> computed;
+    if (!pylabhub::crypto::compute_blake2b(computed.data(), buf.data(), buf.size()))
+        return false;
+    const uint8_t *stored = header->reserved_header + detail::LAYOUT_CHECKSUM_OFFSET;
+    return std::memcmp(computed.data(), stored, detail::LAYOUT_CHECKSUM_SIZE) == 0;
+}
+
+/** Single control surface for attach validation: layout checksum + optional config match.
+ *  Call after validate_header_layout_hash(header). Returns false if layout checksum fails
+ *  or if expected_config is non-null and header does not match it. */
+static bool validate_attach_layout_and_config(const SharedMemoryHeader *header,
+                                              const DataBlockConfig *expected_config)
+{
+    if (!validate_layout_checksum(header))
+    {
+        LOGGER_WARN("[DataBlock] Layout checksum validation failed during consumer attachment.");
+        return false;
+    }
+    if (!expected_config)
+        return true;
+    const bool flex_ok = header->flexible_zone_size == expected_config->total_flexible_zone_size();
+    const bool cap_ok = header->ring_buffer_capacity == expected_config->ring_buffer_capacity;
+    const bool page_ok =
+        header->physical_page_size == static_cast<uint32_t>(to_bytes(expected_config->physical_page_size));
+    const bool stride_ok = detail::get_slot_stride_bytes(header) ==
+                           static_cast<uint32_t>(expected_config->effective_logical_unit_size());
+    const bool checksum_ok = header->enable_checksum == expected_config->enable_checksum;
+    if (!flex_ok || !cap_ok || !page_ok || !stride_ok || !checksum_ok)
+    {
+        LOGGER_WARN("[DataBlock] Config mismatch during consumer attachment: flex_zone={}, cap={}, "
+                    "page={}, stride={}, checksum={}",
+                    flex_ok, cap_ok, page_ok, stride_ok, checksum_ok);
+        return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -2037,7 +2149,7 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
         header->schema_version = 0;
     }
 
-    ProducerInfo pinfo;
+    ProducerInfo pinfo{};
     pinfo.shm_name = name;
     pinfo.producer_pid = pylabhub::platform::get_pid();
     pinfo.schema_hash.assign(reinterpret_cast<const char *>(header->schema_hash), 32);
@@ -2090,18 +2202,15 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
                     name);
         return nullptr;
     }
-
-    // Validate config if provided
+    // Validate layout checksum + config (single control surface: see validate_attach_layout_and_config)
+    if (!validate_attach_layout_and_config(header, expected_config))
+    {
+        LOGGER_WARN("[DataBlock:{}] Layout checksum or config mismatch during consumer attachment.",
+                    name);
+        return nullptr;
+    }
     if (expected_config)
     {
-        if (header->flexible_zone_size != expected_config->total_flexible_zone_size() ||
-            header->ring_buffer_capacity != expected_config->ring_buffer_capacity ||
-            header->unit_block_size != static_cast<uint32_t>(expected_config->unit_block_size) ||
-            header->enable_checksum != expected_config->enable_checksum)
-        {
-            LOGGER_WARN("[DataBlock:{}] Config mismatch during consumer attachment", name);
-            return nullptr;
-        }
         const auto &configs = expected_config->flexible_zone_configs;
         impl->flexible_zones_info = build_flexible_zone_info(configs);
         impl->dataBlock->set_flexible_zone_info_for_attach(configs);
@@ -2157,7 +2266,7 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
     }
 
     header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
-    ConsumerInfo cinfo;
+    ConsumerInfo cinfo{};
     cinfo.shm_name = name;
     cinfo.schema_hash.assign(reinterpret_cast<const char *>(header->schema_hash), 32);
     cinfo.schema_version = header->schema_version;
@@ -2359,7 +2468,7 @@ extern "C"
     {
         if (!rw_state)
             return false;
-        return validate_read(rw_state, nullptr, generation);
+        return validate_read_impl(rw_state, nullptr, generation);
     }
 
     void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state)
