@@ -30,7 +30,7 @@ int acquire_consume_slot_timeout_returns_null()
             DataBlockConfig config{};
             config.shared_secret = 60001;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -58,7 +58,7 @@ int find_consumer_wrong_secret_returns_null()
             DataBlockConfig config{};
             config.shared_secret = 60002;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -83,7 +83,7 @@ int release_write_slot_invalid_handle_returns_false()
             DataBlockConfig config{};
             config.shared_secret = 60003;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -108,7 +108,7 @@ int release_consume_slot_invalid_handle_returns_false()
             DataBlockConfig config{};
             config.shared_secret = 60004;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -136,7 +136,7 @@ int write_bounds_return_false()
             DataBlockConfig config{};
             config.shared_secret = 60005;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -168,7 +168,7 @@ int commit_bounds_return_false()
             DataBlockConfig config{};
             config.shared_secret = 60006;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -195,7 +195,7 @@ int read_bounds_return_false()
             DataBlockConfig config{};
             config.shared_secret = 60007;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -236,7 +236,7 @@ int double_release_write_slot_idempotent()
             DataBlockConfig config{};
             config.shared_secret = 60008;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -263,7 +263,7 @@ int slot_iterator_try_next_timeout_returns_not_ok()
             DataBlockConfig config{};
             config.shared_secret = 60009;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);

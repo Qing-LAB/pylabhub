@@ -30,9 +30,9 @@ struct SlotFixture
 
     SlotFixture()
     {
-        // Minimal sane initialization: capacity = 1, unit_block_size != 0.
+        // Minimal sane initialization: capacity = 1, physical_page_size != 0.
         header.ring_buffer_capacity = 1;
-        header.unit_block_size = static_cast<uint32_t>(to_bytes(DataBlockUnitSize::Size4K));
+        header.physical_page_size = static_cast<uint32_t>(to_bytes(DataBlockPageSize::Size4K));
         header.writer_timeout_count.store(0, std::memory_order_relaxed);
         header.writer_lock_timeout_count.store(0, std::memory_order_relaxed);
         header.writer_reader_timeout_count.store(0, std::memory_order_relaxed);

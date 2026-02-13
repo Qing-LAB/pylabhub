@@ -64,6 +64,7 @@ Keep topic-specific design or analysis in **designated files** with **consistent
 | Topic | Location | Notes |
 |-------|----------|--------|
 | DataHub design / critical review | `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` | Referenced from DATAHUB_TODO. |
+| DataHub C++ abstraction layer | `docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md` | Layer map, patterns, alignment with C API. Merge into IMPLEMENTATION_GUIDANCE/HEP when stable. |
 | Emergency / procedures | `docs/emergency_procedures.md` | Operational guidance; keep. |
 
 **Archived (2026-02-12):** Spinlock/guards, flexible zone flow, FileLock test patterns, versioning/ABI detail, test pattern/CTest docs, and testing supporting material were merged into IMPLEMENTATION_GUIDANCE, README_Versioning, README_testing, or HEP, then moved to **`docs/archive/transient-2026-02-12/`**. See that folder’s README for the list.

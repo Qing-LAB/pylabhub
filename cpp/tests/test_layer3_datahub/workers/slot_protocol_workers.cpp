@@ -36,7 +36,7 @@ int write_read_succeeds_in_process()
             DataBlockConfig config{};
             config.shared_secret = 11111;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -87,7 +87,7 @@ int structured_slot_data_passes()
             DataBlockConfig config{};
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -129,7 +129,7 @@ int ring_buffer_iteration_content_verified()
             DataBlockConfig config{};
             config.shared_secret = 66666;
             config.ring_buffer_capacity = kRingCapacity;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -205,7 +205,7 @@ int writer_blocks_on_reader_then_unblocks()
             DataBlockConfig config{};
             config.shared_secret = 77777;
             config.ring_buffer_capacity = kRingCapacity;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -293,7 +293,7 @@ int checksum_update_verify_succeeds()
             DataBlockConfig config{};
             config.shared_secret = 22222;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = true;
             config.checksum_policy = ChecksumPolicy::Enforced;
 
@@ -338,7 +338,7 @@ int layout_with_checksum_and_flexible_zone_succeeds()
             DataBlockConfig config{};
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 4;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = true;
             config.checksum_policy = ChecksumPolicy::Enforced;
             config.flexible_zone_configs.push_back({"zone0", 128, -1});
@@ -392,7 +392,7 @@ int cross_process_writer(int argc, char **argv)
             DataBlockConfig config{};
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -432,7 +432,7 @@ int cross_process_reader(int argc, char **argv)
             DataBlockConfig config{};
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Let writer create and write
@@ -457,6 +457,205 @@ int cross_process_reader(int argc, char **argv)
         "cross_process_reader", logger_module(), crypto_module(), hub_module());
 }
 
+int layout_checksum_validates_and_tamper_fails()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SlotProtocolLayoutChecksum");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.shared_secret = 77777;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.enable_checksum = false;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+
+            auto diag = open_datablock_for_diagnostic(channel);
+            ASSERT_NE(diag, nullptr);
+            SharedMemoryHeader *header = diag->header();
+            ASSERT_NE(header, nullptr);
+
+            EXPECT_TRUE(pylabhub::hub::validate_layout_checksum(header))
+                << "Layout checksum should match after creation";
+
+            // Tamper layout-defining field; checksum should fail
+            uint32_t saved_cap = header->ring_buffer_capacity;
+            header->ring_buffer_capacity = saved_cap + 1;
+            EXPECT_FALSE(pylabhub::hub::validate_layout_checksum(header))
+                << "Layout checksum must fail after tampering ring_buffer_capacity";
+            header->ring_buffer_capacity = saved_cap; // restore for cleanup
+
+            // Tamper logical_unit_size; checksum should fail
+            uint32_t saved_logical = header->logical_unit_size;
+            header->logical_unit_size = saved_logical + 1;
+            EXPECT_FALSE(pylabhub::hub::validate_layout_checksum(header))
+                << "Layout checksum must fail after tampering logical_unit_size";
+            header->logical_unit_size = saved_logical;
+
+            producer.reset();
+            diag.reset();
+            cleanup_test_datablock(channel);
+        },
+        "layout_checksum_validates_and_tamper_fails", logger_module(), crypto_module(), hub_module());
+}
+
+int physical_logical_unit_size_used_and_tested()
+{
+    return run_gtest_worker(
+        []()
+        {
+            constexpr uint32_t kPhysical = 4096u; // Size4K
+            constexpr uint32_t kLogicalExplicit = 8192u;
+
+            std::string channel = make_test_channel_name("SlotProtocolPhysLogical");
+            MessageHub &hub_ref = MessageHub::get_instance();
+
+            // --- 1. logical_unit_size = 0 at config: resolved to physical (4K); header stores 4096 ---
+            {
+                DataBlockConfig config{};
+                config.shared_secret = 11111;
+                config.ring_buffer_capacity = 2;
+                config.physical_page_size = DataBlockPageSize::Size4K;
+                config.logical_unit_size = 0; // use physical
+                config.enable_checksum = false;
+
+                auto producer = create_datablock_producer(hub_ref, channel,
+                                                          DataBlockPolicy::RingBuffer, config);
+                ASSERT_NE(producer, nullptr);
+
+                auto diag = open_datablock_for_diagnostic(channel);
+                ASSERT_NE(diag, nullptr);
+                const SharedMemoryHeader *header = diag->header();
+                ASSERT_NE(header, nullptr);
+                EXPECT_EQ(header->physical_page_size, kPhysical);
+                EXPECT_EQ(header->logical_unit_size, kPhysical)
+                    << "When logical_unit_size is 0 at config, header stores resolved physical (never 0)";
+
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                EXPECT_EQ(wh->buffer_span().size(), kPhysical)
+                    << "Slot buffer size must equal physical when logical_unit_size is 0";
+                const char payload[] = "phys";
+                EXPECT_TRUE(wh->write(payload, sizeof(payload)));
+                EXPECT_TRUE(wh->commit(sizeof(payload)));
+                producer->release_write_slot(*wh);
+
+                auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+                ASSERT_NE(consumer, nullptr);
+                auto rh = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(rh, nullptr);
+                EXPECT_EQ(rh->buffer_span().size(), kPhysical)
+                    << "Consumer slot size must equal physical when logical_unit_size is 0";
+                rh.reset();
+                consumer.reset();
+                producer.reset();
+                diag.reset();
+                cleanup_test_datablock(channel);
+            }
+
+            // --- 2. logical_unit_size = 8192 (multiple of physical): slot stride = 8192 ---
+            {
+                DataBlockConfig config{};
+                config.shared_secret = 22222;
+                config.ring_buffer_capacity = 2;
+                config.physical_page_size = DataBlockPageSize::Size4K;
+                config.logical_unit_size = kLogicalExplicit;
+                config.enable_checksum = false;
+
+                auto producer = create_datablock_producer(hub_ref, channel,
+                                                          DataBlockPolicy::RingBuffer, config);
+                ASSERT_NE(producer, nullptr);
+
+                auto diag = open_datablock_for_diagnostic(channel);
+                ASSERT_NE(diag, nullptr);
+                const SharedMemoryHeader *header = diag->header();
+                ASSERT_NE(header, nullptr);
+                EXPECT_EQ(header->physical_page_size, kPhysical);
+                EXPECT_EQ(header->logical_unit_size, kLogicalExplicit);
+
+                auto wh = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh, nullptr);
+                EXPECT_EQ(wh->buffer_span().size(), kLogicalExplicit)
+                    << "Slot buffer size must equal logical_unit_size when set";
+                const char payload2[] = "logical";
+                EXPECT_TRUE(wh->write(payload2, sizeof(payload2)));
+                EXPECT_TRUE(wh->commit(sizeof(payload2)));
+                producer->release_write_slot(*wh);
+
+                DataBlockConfig expected_config = config;
+                auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret,
+                                                       expected_config);
+                ASSERT_NE(consumer, nullptr);
+                auto rh = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(rh, nullptr);
+                EXPECT_EQ(rh->buffer_span().size(), kLogicalExplicit)
+                    << "Consumer slot size must match producer logical_unit_size";
+                rh.reset();
+                consumer.reset();
+                producer.reset();
+                diag.reset();
+                cleanup_test_datablock(channel);
+            }
+
+            // --- 3. Ring iteration step = logical: two slots with distinct content (logical 8192) ---
+            {
+                DataBlockConfig config{};
+                config.shared_secret = 33333;
+                config.ring_buffer_capacity = 2;
+                config.physical_page_size = DataBlockPageSize::Size4K;
+                config.logical_unit_size = kLogicalExplicit;
+                config.enable_checksum = false;
+
+                auto producer = create_datablock_producer(hub_ref, channel,
+                                                          DataBlockPolicy::RingBuffer, config);
+                ASSERT_NE(producer, nullptr);
+
+                const char payload_s0[] = "slot0";
+                const char payload_s1[] = "slot1";
+                auto wh0 = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh0, nullptr);
+                EXPECT_TRUE(wh0->write(payload_s0, sizeof(payload_s0)));
+                EXPECT_TRUE(wh0->commit(sizeof(payload_s0)));
+                producer->release_write_slot(*wh0);
+
+                auto wh1 = producer->acquire_write_slot(5000);
+                ASSERT_NE(wh1, nullptr);
+                EXPECT_TRUE(wh1->write(payload_s1, sizeof(payload_s1)));
+                EXPECT_TRUE(wh1->commit(sizeof(payload_s1)));
+                producer->release_write_slot(*wh1);
+
+                DataBlockConfig expected_config = config;
+                auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret,
+                                                       expected_config);
+                ASSERT_NE(consumer, nullptr);
+                auto rh0 = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(rh0, nullptr);
+                char read0[sizeof(payload_s0)];
+                EXPECT_TRUE(rh0->read(read0, sizeof(read0)));
+                EXPECT_EQ(std::memcmp(read0, payload_s0, sizeof(payload_s0)), 0)
+                    << "Slot 0 content must match (ring iteration step = logical)";
+                rh0.reset();
+
+                auto rh1 = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(rh1, nullptr);
+                char read1[sizeof(payload_s1)];
+                EXPECT_TRUE(rh1->read(read1, sizeof(read1)));
+                EXPECT_EQ(std::memcmp(read1, payload_s1, sizeof(payload_s1)), 0)
+                    << "Slot 1 content must match (ring iteration step = logical)";
+                rh1.reset();
+
+                consumer.reset();
+                producer.reset();
+                cleanup_test_datablock(channel);
+            }
+        },
+        "physical_logical_unit_size_used_and_tested", logger_module(), crypto_module(), hub_module());
+}
+
 int diagnostic_handle_opens_and_accesses_header()
 {
     return run_gtest_worker(
@@ -467,7 +666,7 @@ int diagnostic_handle_opens_and_accesses_header()
             DataBlockConfig config{};
             config.shared_secret = 33333;
             config.ring_buffer_capacity = 2;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -479,7 +678,9 @@ int diagnostic_handle_opens_and_accesses_header()
             const SharedMemoryHeader *header = diag->header();
             ASSERT_NE(header, nullptr);
             EXPECT_EQ(header->ring_buffer_capacity, 2u);
-            EXPECT_EQ(header->unit_block_size, static_cast<uint32_t>(DataBlockUnitSize::Size4K));
+            EXPECT_EQ(header->physical_page_size, static_cast<uint32_t>(DataBlockPageSize::Size4K));
+            EXPECT_EQ(header->logical_unit_size, static_cast<uint32_t>(DataBlockPageSize::Size4K))
+                << "Default config does not set logical_unit_size; header stores resolved physical (never 0)";
 
             const SlotRWState *rw0 = diag->slot_rw_state(0);
             ASSERT_NE(rw0, nullptr);
@@ -502,7 +703,7 @@ int high_contention_wrap_around()
             DataBlockConfig config{};
             config.shared_secret = 88888;
             config.ring_buffer_capacity = kRingCapacity;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -588,7 +789,7 @@ int zombie_writer_acquire_then_exit(int argc, char **argv)
             DataBlockConfig config{};
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1; // Single slot so same physical slot reused
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -623,7 +824,7 @@ int zombie_writer_reclaimer(int argc, char **argv)
             DataBlockConfig config{};
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Let zombie exit
@@ -654,7 +855,7 @@ int policy_latest_only()
             DataBlockConfig config{};
             config.shared_secret = 99991;
             config.ring_buffer_capacity = 4;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
 
@@ -697,7 +898,7 @@ int policy_single_reader()
             DataBlockConfig config{};
             config.shared_secret = 99992;
             config.ring_buffer_capacity = 4;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
 
@@ -743,7 +944,7 @@ int policy_sync_reader()
             DataBlockConfig config{};
             config.shared_secret = 99993;
             config.ring_buffer_capacity = 4;
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Sync_reader;
 
@@ -793,7 +994,7 @@ int high_load_single_reader()
             DataBlockConfig config{};
             config.shared_secret = 99994;
             config.ring_buffer_capacity = 4; // small ring to force frequent wrap-around
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
 
@@ -852,7 +1053,7 @@ int writer_timeout_metrics_split()
             DataBlockConfig config{};
             config.shared_secret = 99995;
             config.ring_buffer_capacity = 1; // Single slot to force contention on same SlotRWState
-            config.unit_block_size = DataBlockUnitSize::Size4K;
+            config.physical_page_size = DataBlockPageSize::Size4K;
             config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -963,6 +1164,10 @@ struct SlotProtocolWorkerRegistrar
                     return checksum_update_verify_succeeds();
                 if (scenario == "layout_smoke")
                     return layout_with_checksum_and_flexible_zone_succeeds();
+                if (scenario == "layout_checksum")
+                    return layout_checksum_validates_and_tamper_fails();
+                if (scenario == "physical_logical_unit_size")
+                    return physical_logical_unit_size_used_and_tested();
                 if (scenario == "ring_buffer_iteration")
                     return ring_buffer_iteration_content_verified();
                 if (scenario == "writer_blocks_on_reader_then_unblocks")

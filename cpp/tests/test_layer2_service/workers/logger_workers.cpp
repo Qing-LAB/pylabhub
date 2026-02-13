@@ -7,6 +7,7 @@
  * various features of the Logger, including multi-process and multi-threaded
  * logging, lifecycle management, and error handling.
  */
+#include <atomic>
 #include <future>
 
 #include "logger_workers.h"
@@ -243,20 +244,26 @@ int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_lo
     // This test requires a sink that is guaranteed to fail.
     // On POSIX, we can point it to a directory, which fails to open as a file.
 #if !defined(PLATFORM_WIN64)
-            std::atomic<int> callback_count = 0;
+            std::atomic<int> callback_count{0};
+            std::promise<void> callback_done;
+            auto callback_done_future = callback_done.get_future();
+
             Logger::instance().set_write_error_callback(
                 [&](const std::string &err_msg)
                 {
-                    callback_count++;
+                    callback_count.fetch_add(1, std::memory_order_release);
                     // Re-entrant log call inside the error callback. This should not deadlock.
                     LOGGER_SYSTEM("Log from error callback: {}", err_msg);
+                    callback_done.set_value(); // Signal that callback ran (it's invoked async by dispatcher)
                 });
 
             // Set log file to a directory to cause a write error.
             ASSERT_FALSE(Logger::instance().set_logfile("/"));
-            Logger::instance().flush(); // Ensure the error is processed by the background thread.
+            // Error callback is invoked asynchronously via CallbackDispatcher - wait for it.
+            ASSERT_EQ(callback_done_future.wait_for(2s), std::future_status::ready)
+                << "Error callback was not invoked within timeout";
 
-            ASSERT_GE(callback_count.load(), 1);
+            ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 #else
             // Cannot guarantee a write failure on Windows in the same way.
             GTEST_SUCCESS_("Windows does not have a simple equivalent of writing to a directory to "
@@ -334,7 +341,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
 
     auto worker_thread_fn = [&](auto fn)
     {
-        while (!stop_flag.load(std::memory_order_relaxed))
+        while (!stop_flag.load(std::memory_order_acquire))
             fn();
     };
 
@@ -376,7 +383,7 @@ int test_concurrent_lifecycle_chaos(const std::string &log_path_str)
 
     // Finalize while threads are running
     LifecycleManager::instance().finalize(std::source_location::current());
-    stop_flag.store(true); // Signal threads to stop
+    stop_flag.store(true, std::memory_order_release); // Signal threads to stop
 
     for (auto &t : threads)
         t.join();

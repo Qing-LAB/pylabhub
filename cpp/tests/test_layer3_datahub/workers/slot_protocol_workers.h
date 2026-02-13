@@ -8,6 +8,10 @@ int write_read_succeeds_in_process();
 int structured_slot_data_passes();
 int checksum_update_verify_succeeds();
 int layout_with_checksum_and_flexible_zone_succeeds();
+/** Layout checksum: valid after creation; fails after tampering layout-defining header fields. */
+int layout_checksum_validates_and_tamper_fails();
+/** Physical vs logical unit size: logical_unit_size 0 => slot size = physical; when set, slot size = logical. */
+int physical_logical_unit_size_used_and_tested();
 int diagnostic_handle_opens_and_accesses_header();
 
 /** Iterate ring-buffer units: write N distinct frames, read N and verify content per slot. */
