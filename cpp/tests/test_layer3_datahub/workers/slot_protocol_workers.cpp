@@ -34,6 +34,8 @@ int write_read_succeeds_in_process()
             std::string channel = make_test_channel_name("SlotProtocol");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 11111;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -85,6 +87,8 @@ int structured_slot_data_passes()
             std::string channel = make_test_channel_name("SlotProtocolStructured");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -127,6 +131,8 @@ int ring_buffer_iteration_content_verified()
             MessageHub &hub_ref = MessageHub::get_instance();
             constexpr uint32_t kRingCapacity = 4;
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 66666;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -203,6 +209,8 @@ int writer_blocks_on_reader_then_unblocks()
             // Single slot so writer and reader contend for the same slot (writer waits for reader_count to drain)
             constexpr uint32_t kRingCapacity = 1;
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 77777;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -247,7 +255,7 @@ int writer_blocks_on_reader_then_unblocks()
                 writer_timed_out.store(wh == nullptr, std::memory_order_release);
                 if (wh)
                 {
-                    producer->release_write_slot(*wh);
+                    EXPECT_TRUE(producer->release_write_slot(*wh));
                 }
                 else
                 {
@@ -261,9 +269,9 @@ int writer_blocks_on_reader_then_unblocks()
                 {
                     LOGGER_INFO("{}", "[SlotTest:Producer] acquire_write(2000) ok after reader released");
                     SlotPayload second{2, 20};
-                    wh->write(&second, sizeof(second));
-                    wh->commit(sizeof(second));
-                    producer->release_write_slot(*wh);
+                    EXPECT_TRUE(wh->write(&second, sizeof(second)));
+                    EXPECT_TRUE(wh->commit(sizeof(second)));
+                    EXPECT_TRUE(producer->release_write_slot(*wh));
                     LOGGER_INFO("{}", "[SlotTest:Producer] second write committed");
                 }
             });
@@ -291,6 +299,8 @@ int checksum_update_verify_succeeds()
             std::string channel = make_test_channel_name("SlotProtocolChecksum");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 22222;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -336,6 +346,8 @@ int layout_with_checksum_and_flexible_zone_succeeds()
             std::string channel = make_test_channel_name("SlotProtocolLayout");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -390,6 +402,8 @@ int cross_process_writer(int argc, char **argv)
         {
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -430,6 +444,8 @@ int cross_process_reader(int argc, char **argv)
         {
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -465,6 +481,8 @@ int layout_checksum_validates_and_tamper_fails()
             std::string channel = make_test_channel_name("SlotProtocolLayoutChecksum");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 77777;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -517,6 +535,8 @@ int physical_logical_unit_size_used_and_tested()
             // --- 1. logical_unit_size = 0 at config: resolved to physical (4K); header stores 4096 ---
             {
                 DataBlockConfig config{};
+                config.policy = DataBlockPolicy::RingBuffer;
+                config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
                 config.shared_secret = 11111;
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
@@ -542,7 +562,7 @@ int physical_logical_unit_size_used_and_tested()
                 const char payload[] = "phys";
                 EXPECT_TRUE(wh->write(payload, sizeof(payload)));
                 EXPECT_TRUE(wh->commit(sizeof(payload)));
-                producer->release_write_slot(*wh);
+                EXPECT_TRUE(producer->release_write_slot(*wh));
 
                 auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
                 ASSERT_NE(consumer, nullptr);
@@ -560,6 +580,8 @@ int physical_logical_unit_size_used_and_tested()
             // --- 2. logical_unit_size = 8192 (multiple of physical): slot stride = 8192 ---
             {
                 DataBlockConfig config{};
+                config.policy = DataBlockPolicy::RingBuffer;
+                config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
                 config.shared_secret = 22222;
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
@@ -584,7 +606,7 @@ int physical_logical_unit_size_used_and_tested()
                 const char payload2[] = "logical";
                 EXPECT_TRUE(wh->write(payload2, sizeof(payload2)));
                 EXPECT_TRUE(wh->commit(sizeof(payload2)));
-                producer->release_write_slot(*wh);
+                EXPECT_TRUE(producer->release_write_slot(*wh));
 
                 DataBlockConfig expected_config = config;
                 auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret,
@@ -604,6 +626,8 @@ int physical_logical_unit_size_used_and_tested()
             // --- 3. Ring iteration step = logical: two slots with distinct content (logical 8192) ---
             {
                 DataBlockConfig config{};
+                config.policy = DataBlockPolicy::RingBuffer;
+                config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader; // read in order (slot0 then slot1)
                 config.shared_secret = 33333;
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
@@ -620,13 +644,13 @@ int physical_logical_unit_size_used_and_tested()
                 ASSERT_NE(wh0, nullptr);
                 EXPECT_TRUE(wh0->write(payload_s0, sizeof(payload_s0)));
                 EXPECT_TRUE(wh0->commit(sizeof(payload_s0)));
-                producer->release_write_slot(*wh0);
+                EXPECT_TRUE(producer->release_write_slot(*wh0));
 
                 auto wh1 = producer->acquire_write_slot(5000);
                 ASSERT_NE(wh1, nullptr);
                 EXPECT_TRUE(wh1->write(payload_s1, sizeof(payload_s1)));
                 EXPECT_TRUE(wh1->commit(sizeof(payload_s1)));
-                producer->release_write_slot(*wh1);
+                EXPECT_TRUE(producer->release_write_slot(*wh1));
 
                 DataBlockConfig expected_config = config;
                 auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret,
@@ -664,6 +688,8 @@ int diagnostic_handle_opens_and_accesses_header()
             std::string channel = make_test_channel_name("SlotProtocolDiag");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 33333;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -701,6 +727,8 @@ int high_contention_wrap_around()
             // Ring capacity 1: reader holds the only slot; writer blocks until reader releases
             constexpr uint32_t kRingCapacity = 1;
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 88888;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -747,9 +775,9 @@ int high_contention_wrap_around()
                 {
                     LOGGER_INFO("{}", "[SlotTest:Producer] writer unblocked after R1 released");
                     SlotPayload p1{1, 1};
-                    wh->write(&p1, sizeof(p1));
-                    wh->commit(sizeof(p1));
-                    producer->release_write_slot(*wh);
+                    EXPECT_TRUE(wh->write(&p1, sizeof(p1)));
+                    EXPECT_TRUE(wh->commit(sizeof(p1)));
+                    EXPECT_TRUE(producer->release_write_slot(*wh));
                 }
             });
 
@@ -787,6 +815,8 @@ int zombie_writer_acquire_then_exit(int argc, char **argv)
         {
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1; // Single slot so same physical slot reused
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -798,8 +828,10 @@ int zombie_writer_acquire_then_exit(int argc, char **argv)
             auto wh = producer->acquire_write_slot(5000);
             ASSERT_NE(wh.get(), nullptr);
             SlotPayload p{1, 1};
-            wh->write(&p, sizeof(p));
-            wh->commit(sizeof(p));
+            // NODISCARD: We intentionally do not check write/commit return — process exits immediately
+            // without release to simulate zombie writer; see NODISCARD_DECISIONS.md.
+            (void)wh->write(&p, sizeof(p));
+            (void)wh->commit(sizeof(p));
             // Do NOT release; exit without destructors so write_lock stays held
             _exit(0);
         },
@@ -822,6 +854,8 @@ int zombie_writer_reclaimer(int argc, char **argv)
         {
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -836,8 +870,8 @@ int zombie_writer_reclaimer(int argc, char **argv)
             ASSERT_NE(wh.get(), nullptr) << "Reclaimer should acquire after zombie exit (force reclaim)";
             LOGGER_INFO("{}", "[SlotTest:Producer] zombie writer reclaimed, write ok");
             SlotPayload p{2, 2};
-            wh->write(&p, sizeof(p));
-            wh->commit(sizeof(p));
+            EXPECT_TRUE(wh->write(&p, sizeof(p)));
+            EXPECT_TRUE(wh->commit(sizeof(p)));
             EXPECT_TRUE(producer->release_write_slot(*wh));
             producer.reset();
             cleanup_test_datablock(channel);
@@ -853,6 +887,8 @@ int policy_latest_only()
             std::string channel = make_test_channel_name("PolicyLatestOnly");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99991;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -896,6 +932,8 @@ int policy_single_reader()
             std::string channel = make_test_channel_name("PolicySingleReader");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99992;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -942,6 +980,8 @@ int policy_sync_reader()
             std::string channel = make_test_channel_name("PolicySyncReader");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99993;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -992,6 +1032,8 @@ int high_load_single_reader()
             std::string channel = make_test_channel_name("PolicySingleReaderHighLoad");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99994;
             config.ring_buffer_capacity = 4; // small ring to force frequent wrap-around
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -1051,6 +1093,8 @@ int writer_timeout_metrics_split()
             MessageHub &hub_ref = MessageHub::get_instance();
 
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 99995;
             config.ring_buffer_capacity = 1; // Single slot to force contention on same SlotRWState
             config.physical_page_size = DataBlockPageSize::Size4K;

@@ -27,6 +27,8 @@ int flexible_zone_span_empty_when_no_zones()
             std::string channel = make_test_channel_name("PhaseA_NoZones");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50001;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -67,6 +69,8 @@ int flexible_zone_span_non_empty_when_zones_defined()
             std::string channel = make_test_channel_name("PhaseA_WithZones");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50002;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -111,6 +115,8 @@ int checksum_flexible_zone_false_when_no_zones()
             std::string channel = make_test_channel_name("PhaseA_ChecksumNoZones");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50003;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -142,6 +148,8 @@ int checksum_flexible_zone_true_when_valid()
             std::string channel = make_test_channel_name("PhaseA_ChecksumValid");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50004;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -176,6 +184,8 @@ int consumer_without_expected_config_gets_empty_zones()
             std::string channel = make_test_channel_name("PhaseA_NoExpectedConfig");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50005;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -206,6 +216,8 @@ int consumer_with_expected_config_gets_zones()
             std::string channel = make_test_channel_name("PhaseA_WithExpectedConfig");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50006;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -242,6 +254,8 @@ int structured_flex_zone_data_passes()
             std::string channel = make_test_channel_name("PhaseA_StructuredFlex");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50007;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -275,6 +289,8 @@ int error_flex_zone_type_too_large_throws()
             std::string channel = make_test_channel_name("PhaseA_ErrorTooSmall");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50008;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -301,6 +317,8 @@ int error_checksum_flex_zone_fails_after_tampering()
             std::string channel = make_test_channel_name("PhaseA_ChecksumTamper");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 50009;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;

@@ -19,7 +19,7 @@ DataBlockConfig config{};
 config.name = "my_datablock";
 config.shared_secret = 0x12345678;
 config.ring_buffer_capacity = 4;
-config.unit_block_size = DataBlockUnitSize::Size4K;
+config.physical_page_size = DataBlockPageSize::Size4K;
 config.policy = DataBlockPolicy::RingBuffer;
 config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
 config.enable_checksum = true;
@@ -34,21 +34,21 @@ auto producer = create_datablock_producer(hub, config.name, config.policy, confi
 
 // --- Consumer (attacher) ---
 // expected_config MUST match producer's config (flexible_zone_size, ring_buffer_capacity,
-// unit_block_size, enable_checksum). Layout checksum in header is validated on attach.
+// physical_page_size, enable_checksum). Layout checksum in header is validated on attach.
 DataBlockConfig expected_config = config;  // same layout
 auto consumer = find_datablock_consumer(hub, config.name, config.shared_secret, expected_config);
 ```
 
-**Config defaults:** `DataBlockConfig config{}` has sensible defaults (`shared_secret=0`, `ring_buffer_capacity=1`, `policy=RingBuffer`, `enable_checksum=false`, etc.). Set only the fields you need; avoid partial initialization surprises. Same for `FlexibleZoneConfig` and `SchemaInfo`.
+**Config:** `DataBlockConfig` requires **explicit** layout- and mode-critical fields (fail at create if unset): **policy**, **consumer_sync_policy**, **physical_page_size** (Size4K/Size4M/Size16M), and **ring_buffer_capacity** (≥ 1). This avoids memory corruption and sync bugs from silent defaults or producer/consumer mismatch. Other fields have sensible defaults (`shared_secret=0`, `logical_unit_size=0` = use physical, `enable_checksum=false`, etc.). Same for `FlexibleZoneConfig` and `SchemaInfo`.
 
 **What is stored/verified at init:**
 
-- **Layout checksum** (BLAKE2b of layout-defining header fields: ring_buffer_capacity, unit_block_size, logical_unit_size, flexible_zone_size, enable_checksum, policy, consumer_sync_policy) is stored in the segment header at creation. On consumer attach and integrity validation, it is recomputed and compared — mismatch means refuse attach or report integrity failure.
+- **Layout checksum** (BLAKE2b of layout-defining header fields: ring_buffer_capacity, physical_page_size, logical_unit_size, flexible_zone_size, enable_checksum, policy, consumer_sync_policy) is stored in the segment header at creation. On consumer attach and integrity validation, it is recomputed and compared — mismatch means refuse attach or report integrity failure.
 - **Schema hash** (optional): When using schema-aware `create_datablock_producer<Schema>(...)` and `find_datablock_consumer<Schema>(...)`, a BLDS schema hash is stored in the header and validated on consumer attach. This applies to the **overall data schema**, not per-zone or per-slot type mapping.
 
 **Physical vs logical slot size:**
 
-- **Invariant: logical ≥ physical always.** Physical is `unit_block_size` (allocation granularity). Logical is the slot stride and `buffer_span().size()`. Set `logical_unit_size = 0` to mean “use physical” (logical = physical). If set, `logical_unit_size` must be a multiple of physical (and thus ≥ physical). There is no case where logical < physical.
+- **Invariant: logical ≥ physical always.** Physical is `physical_page_size` (allocation granularity). Logical is the slot stride and `buffer_span().size()`. Set `logical_unit_size = 0` to mean “use physical” (logical = physical). If set, `logical_unit_size` must be a multiple of physical (and thus ≥ physical). There is no case where logical < physical.
 - **Invariant: logical ≤ total structured buffer.** Total buffer = slot_count × effective_logical; slot_count is at least 1, so there is always at least one logical unit (logical ≤ total buffer).
 
 **Access and validation (single control surface):**
@@ -224,7 +224,7 @@ int main() {
     config.name = "example_block";
     config.shared_secret = 0xDEADBEEF;
     config.ring_buffer_capacity = 4;
-    config.unit_block_size = DataBlockUnitSize::Size4K;
+    config.physical_page_size = DataBlockPageSize::Size4K;
     config.flexible_zone_configs.push_back({"meta", sizeof(Zone0Meta), -1});
 
     auto producer = create_datablock_producer(hub, config.name,

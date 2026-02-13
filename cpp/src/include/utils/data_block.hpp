@@ -5,7 +5,13 @@
  *
  * Design: Single shared-memory block, counters/flags, slot iterator.
  * All public classes use pImpl for ABI stability.
- * See docs/hep/hep-core-0002-data-hub.md for complete design specification.
+ * See docs/hep/HEP-CORE-0002-DataHub-FINAL.md for complete design specification.
+ *
+ * @par Lifecycle
+ * create_datablock_producer() and find_datablock_consumer() require the Data Exchange Hub
+ * module to be initialized. In main(), create a LifecycleGuard with
+ * pylabhub::hub::GetLifecycleModule() (and typically Logger, CryptoUtils). See hubshell.cpp
+ * or docs/IMPLEMENTATION_GUIDANCE.md.
  */
 #include "pylabhub_utils_export.h"
 #include "shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
@@ -17,6 +23,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <variant>
 #include <atomic>
@@ -94,11 +101,18 @@ struct DataBlockProducerImpl;
 struct DataBlockConsumerImpl;
 struct DataBlockDiagnosticHandleImpl;
 
-// 48 bytes per slot, cache-aligned
+/**
+ * @struct SlotRWState
+ * @brief Per-slot coordination state in shared memory (48 bytes, cache-aligned).
+ *
+ * ABI-sensitive: layout and size must match C API and recovery tools.
+ * write_lock is PID-based; 0 means free. Reader path uses double-check (TOCTTOU
+ * mitigation); see acquire_read and HEP-CORE-0002.
+ */
 struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
 {
     // === Writer Coordination ===
-    std::atomic<uint64_t> write_lock; // PID-based exclusive lock (0 = free)
+    std::atomic<uint64_t> write_lock; ///< PID-based exclusive lock (0 = free)
 
     // === Reader Coordination ===
     std::atomic<uint32_t> reader_count; // Active readers (multi-reader)
@@ -129,17 +143,12 @@ static_assert(raw_size_SlotRWState == 48, "SlotRWState must be 48 bytes");
 static_assert(alignof(SlotRWState) >= 64, "SlotRWState should be cache-line aligned");
 
 /** Physical page size for allocation. Each slot is aligned to page boundaries. */
-
 enum class DataBlockPageSize : uint32_t
-
 {
-
+    Unset = 0,       // Sentinel: must not be stored in header; config must set explicitly
     Size4K = 4096u,
-
     Size4M = 4194304u,
-
     Size16M = 16777216u
-
 };
 
 /** Return byte size for DataBlockPageSize */
@@ -160,15 +169,11 @@ inline size_t to_bytes(DataBlockPageSize u)
  */
 
 enum class DataBlockPolicy
-
 {
-
-    Single,
-
-    DoubleBuffer,
-
-    RingBuffer
-
+    Single = 0,
+    DoubleBuffer = 1,
+    RingBuffer = 2,
+    Unset = 255 // Sentinel: must not be stored in header; config must set Single/DoubleBuffer/RingBuffer
 };
 
 /**
@@ -202,9 +207,10 @@ enum class ChecksumPolicy
  */
 enum class ConsumerSyncPolicy
 {
-    Latest_only,  // Reader follows latest committed only; writer can overwrite
-    Single_reader,// One consumer, one read_index; read in order; writer blocks when full
-    Sync_reader   // Multi-consumer; read_index = min(positions); writer blocks when full
+    Latest_only = 0,  // Reader follows latest committed only; writer can overwrite
+    Single_reader = 1, // One consumer, one read_index; read in order; writer blocks when full
+    Sync_reader = 2,   // Multi-consumer; read_index = min(positions); writer blocks when full
+    Unset = 255        // Sentinel: must not be stored in header; config must set one of the above
 };
 
 /**
@@ -242,8 +248,8 @@ struct DataBlockConfig
     /** 0 = generate random; non-zero = use for discovery/capability. */
     uint64_t shared_secret = 0;
 
-    /** Physical page size (allocation granularity, e.g. 4K page). */
-    DataBlockPageSize physical_page_size = DataBlockPageSize::Size4K;
+    /** Physical page size (allocation granularity). Must be set explicitly (no default). */
+    DataBlockPageSize physical_page_size = DataBlockPageSize::Unset;
     /**
      * Logical slot size (bytes per ring-buffer slot). Must be >= physical_page_size and a multiple
      * of physical_page_size. 0 at config input means "use physical" (resolved to physical_page_size).
@@ -251,12 +257,14 @@ struct DataBlockConfig
      */
     size_t logical_unit_size = 0;
 
-    /** Slot count: 1=Single, 2=Double, N=RingBuffer (effective >= 1). */
-    uint32_t ring_buffer_capacity = 1;
+    /** Slot count: 1=Single, 2=Double, N=RingBuffer. Must be set explicitly (>= 1); 0 = unset, will fail at create. */
+    uint32_t ring_buffer_capacity = 0;
 
-    DataBlockPolicy policy = DataBlockPolicy::RingBuffer;
+    /** Buffer policy. Must be set explicitly (no default). */
+    DataBlockPolicy policy = DataBlockPolicy::Unset;
 
-    ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+    /** Consumer sync policy. Must be set explicitly (no default). */
+    ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Unset;
 
     bool enable_checksum = false; // BLAKE2b checksums in control zone (flexible zone + slots)
 
@@ -533,32 +541,32 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 {
   public:
     SlotWriteHandle();
-    ~SlotWriteHandle();
+    ~SlotWriteHandle() noexcept;
     SlotWriteHandle(SlotWriteHandle &&other) noexcept;
     SlotWriteHandle &operator=(SlotWriteHandle &&other) noexcept;
     SlotWriteHandle(const SlotWriteHandle &) = delete;
     SlotWriteHandle &operator=(const SlotWriteHandle &) = delete;
 
     /** @brief Slot index within the ring buffer. */
-    size_t slot_index() const;
+    size_t slot_index() const noexcept;
     /** @brief Monotonic slot id (write_index value). */
-    uint64_t slot_id() const;
+    uint64_t slot_id() const noexcept;
 
     /** @brief Mutable view of the slot buffer. */
-    std::span<std::byte> buffer_span();
+    std::span<std::byte> buffer_span() noexcept;
     /** @brief Mutable view of the flexible zone. Empty if zone is undefined or index invalid
      * (see FlexibleZoneInfo). */
-    std::span<std::byte> flexible_zone_span(size_t flexible_zone_idx = 0);
+    std::span<std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) noexcept;
 
     /** @brief Copy into slot buffer with bounds check. */
-    bool write(const void *src, size_t len, size_t offset = 0);
+    [[nodiscard]] bool write(const void *src, size_t len, size_t offset = 0) noexcept;
     /** @brief Commit written data; makes it visible to consumers. */
-    bool commit(size_t bytes_written);
+    [[nodiscard]] bool commit(size_t bytes_written) noexcept;
 
     /** @brief Update checksum for this slot (if enabled). */
-    bool update_checksum_slot();
+    [[nodiscard]] bool update_checksum_slot() noexcept;
     /** @brief Update checksum for flexible zone (if enabled). */
-    bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0);
+    [[nodiscard]] bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0) noexcept;
 
   private:
     friend class DataBlockProducer;
@@ -580,32 +588,32 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 {
   public:
     SlotConsumeHandle();
-    ~SlotConsumeHandle();
+    ~SlotConsumeHandle() noexcept;
     SlotConsumeHandle(SlotConsumeHandle &&other) noexcept;
     SlotConsumeHandle &operator=(SlotConsumeHandle &&other) noexcept;
     SlotConsumeHandle(const SlotConsumeHandle &) = delete;
     SlotConsumeHandle &operator=(const SlotConsumeHandle &) = delete;
 
     /** @brief Slot index within the ring buffer. */
-    size_t slot_index() const;
+    size_t slot_index() const noexcept;
     /** @brief Monotonic slot id (commit_index value). */
-    uint64_t slot_id() const;
+    uint64_t slot_id() const noexcept;
 
     /** @brief Read-only view of the slot buffer. */
-    std::span<const std::byte> buffer_span() const;
+    std::span<const std::byte> buffer_span() const noexcept;
     /** @brief Read-only view of the flexible zone. Empty if zone undefined or index invalid
      * (see FlexibleZoneInfo). */
-    std::span<const std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) const;
+    std::span<const std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) const noexcept;
 
     /** @brief Copy out of slot buffer with bounds check. */
-    bool read(void *dst, size_t len, size_t offset = 0) const;
+    [[nodiscard]] bool read(void *dst, size_t len, size_t offset = 0) const noexcept;
 
     /** @brief Verify checksum for this slot (if enabled). */
-    bool verify_checksum_slot() const;
+    [[nodiscard]] bool verify_checksum_slot() const noexcept;
     /** @brief Verify checksum for flexible zone (if enabled). */
-    bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const;
+    [[nodiscard]] bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const noexcept;
     /** @brief Returns true if the slot is still valid (generation not overwritten). */
-    bool validate_read() const;
+    [[nodiscard]] bool validate_read() const noexcept;
 
   private:
     friend class DataBlockConsumer;
@@ -626,24 +634,24 @@ class PYLABHUB_UTILS_EXPORT DataBlockSlotIterator
     struct NextResult;
 
     DataBlockSlotIterator();
-    ~DataBlockSlotIterator();
+    ~DataBlockSlotIterator() noexcept;
     DataBlockSlotIterator(DataBlockSlotIterator &&other) noexcept;
     DataBlockSlotIterator &operator=(DataBlockSlotIterator &&other) noexcept;
     DataBlockSlotIterator(const DataBlockSlotIterator &) = delete;
     DataBlockSlotIterator &operator=(const DataBlockSlotIterator &) = delete;
 
     /** @brief Advance to next available slot; returns ok=false on timeout. */
-    NextResult try_next(int timeout_ms = 0);
+    [[nodiscard]] NextResult try_next(int timeout_ms = 0) noexcept;
     /** @brief Advance to next available slot; throws on timeout. */
     SlotConsumeHandle next(int timeout_ms = 0);
 
     /** @brief Set cursor to latest committed slot (no consumption). */
-    void seek_latest();
+    void seek_latest() noexcept;
     /** @brief Set cursor to a specific slot id (next() returns newer). */
-    void seek_to(uint64_t slot_id);
+    void seek_to(uint64_t slot_id) noexcept;
 
-    uint64_t last_slot_id() const;
-    bool is_valid() const;
+    uint64_t last_slot_id() const noexcept;
+    [[nodiscard]] bool is_valid() const noexcept;
 
   private:
     friend class DataBlockConsumer;
@@ -667,7 +675,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 {
   public:
     DataBlockProducer();
-    ~DataBlockProducer();
+    ~DataBlockProducer() noexcept;
     DataBlockProducer(DataBlockProducer &&other) noexcept;
     DataBlockProducer &operator=(DataBlockProducer &&other) noexcept;
     DataBlockProducer(const DataBlockProducer &) = delete;
@@ -675,12 +683,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 
     // ─── Shared Spinlock API ───
     /** Acquire spinlock by index; returns owning guard. Throws if index invalid. */
-    std::unique_ptr<SharedSpinLockGuardOwning> acquire_spinlock(size_t index,
+    [[nodiscard]] std::unique_ptr<SharedSpinLockGuardOwning> acquire_spinlock(size_t index,
                                                                 const std::string &debug_name = "");
     /** Get SharedSpinLock for direct use by index. */
     SharedSpinLock get_spinlock(size_t index);
     /** Total number of spinlocks (MAX_SHARED_SPINLOCKS). */
-    uint32_t spinlock_count() const;
+    uint32_t spinlock_count() const noexcept;
 
     // ─── Flexible Zone Access ───
     // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
@@ -694,19 +702,19 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
         return *reinterpret_cast<T *>(span.data());
     }
     /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
-    std::span<std::byte> flexible_zone_span(size_t index = 0);
+    std::span<std::byte> flexible_zone_span(size_t index = 0) noexcept;
 
     // ─── Checksum API (BLAKE2b via libsodium; stored in control zone) ───
     /** Compute BLAKE2b of flexible zone, store in header. Returns false if zone undefined. */
-    bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0);
+    [[nodiscard]] bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0) noexcept;
     /** Compute BLAKE2b of data slot at index, store in header. Slot layout:
      * structured_buffer_size/ring_capacity. */
-    bool update_checksum_slot(size_t slot_index);
+    [[nodiscard]] bool update_checksum_slot(size_t slot_index) noexcept;
 
     // ─── Primitive Data Transfer API ───
     /** Acquire a slot for writing; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle). */
-    std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = 0);
+    [[nodiscard]] std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = 0) noexcept;
     /**
      * @brief Release a previously acquired slot.
      * @return true on success. Returns false if:
@@ -715,13 +723,19 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      *     slot was committed but BLAKE2b update failed)
      * Idempotent: calling again on an already-released handle returns true.
      */
-    bool release_write_slot(SlotWriteHandle &handle);
+    [[nodiscard]] bool release_write_slot(SlotWriteHandle &handle) noexcept;
 
     // ─── Broker and Health Management ───
-    /** @brief Registers the producer with the broker. */
-    bool register_with_broker(MessageHub &hub, const std::string &channel_name);
+    /** @brief Registers the producer with the broker.
+     * If passing this producer's name as @p channel_name, use logical_name(name()) so the broker uses the logical channel name. */
+    [[nodiscard]] bool register_with_broker(MessageHub &hub, const std::string &channel_name);
     /** @brief Checks the health of registered consumers and cleans up dead ones. */
-    void check_consumer_health();
+    void check_consumer_health() noexcept;
+
+    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
+     * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
+     * or a generated id "producer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
+    [[nodiscard]] const std::string &name() const noexcept;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockProducer(std::unique_ptr<DataBlockProducerImpl> impl);
@@ -745,7 +759,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 {
   public:
     DataBlockConsumer();
-    ~DataBlockConsumer();
+    ~DataBlockConsumer() noexcept;
     DataBlockConsumer(DataBlockConsumer &&other) noexcept;
     DataBlockConsumer &operator=(DataBlockConsumer &&other) noexcept;
     DataBlockConsumer(const DataBlockConsumer &) = delete;
@@ -753,7 +767,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 
     // ─── Shared Spinlock API ───
     SharedSpinLock get_spinlock(size_t index);
-    uint32_t spinlock_count() const;
+    uint32_t spinlock_count() const noexcept;
 
     // ─── Flexible Zone Access ───
     // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
@@ -767,18 +781,18 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
         return *reinterpret_cast<const T *>(span.data());
     }
     /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
-    std::span<const std::byte> flexible_zone_span(size_t index = 0) const;
+    std::span<const std::byte> flexible_zone_span(size_t index = 0) const noexcept;
 
     // ─── Checksum API (BLAKE2b; verify stored checksum matches computed) ───
     /** Returns true if stored checksum matches computed BLAKE2b; false if zone undefined. */
-    bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const;
+    [[nodiscard]] bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const noexcept;
     /** Returns true if stored checksum matches computed BLAKE2b of data slot. */
-    bool verify_checksum_slot(size_t slot_index) const;
+    [[nodiscard]] bool verify_checksum_slot(size_t slot_index) const noexcept;
 
     // --- Heartbeat Management ---
     /** @brief Registers the consumer in the heartbeat table. Returns the slot index or -1 on
      * failure. */
-    int register_heartbeat();
+    [[nodiscard]] int register_heartbeat();
     /** @brief Updates the heartbeat for the given slot. */
     void update_heartbeat(int slot);
     /** @brief Unregisters the consumer from the heartbeat table. */
@@ -788,22 +802,28 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** Acquire the next slot for reading; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle).
      * @note Single-threaded: do not call from multiple threads on the same consumer instance. */
-    std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = 0);
+    [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = 0) noexcept;
     /** Acquire a specific slot by ID for reading; returns nullptr on timeout or if slot not
      * available. */
-    std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(uint64_t slot_id, int timeout_ms);
+    [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(uint64_t slot_id,
+                                                                          int timeout_ms) noexcept;
     /** Release a previously acquired slot; returns false if checksum verification failed. */
-    bool release_consume_slot(SlotConsumeHandle &handle);
+    [[nodiscard]] bool release_consume_slot(SlotConsumeHandle &handle) noexcept;
 
     /** Iterator for ring-buffer slots (consumer view). */
     DataBlockSlotIterator slot_iterator();
 
     // ─── Broker Discovery ───
     /** @brief Discovers a producer via the broker and attaches as a consumer. */
-    static std::unique_ptr<DataBlockConsumer> discover(MessageHub &hub,
+    [[nodiscard]] static std::unique_ptr<DataBlockConsumer> discover(MessageHub &hub,
                                                        const std::string &channel_name,
                                                        uint64_t shared_secret,
                                                        const DataBlockConfig &expected_config);
+
+    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
+     * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
+     * or a generated id "consumer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
+    [[nodiscard]] const std::string &name() const noexcept;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockConsumer(std::unique_ptr<DataBlockConsumerImpl> impl);
@@ -841,7 +861,10 @@ struct ReadTransactionContext
     {
         return slot().flexible_zone_span(index);
     }
-    bool validate_read() const { return slot_ptr ? slot_ptr->validate_read() : false; }
+    [[nodiscard]] bool validate_read() const noexcept
+    {
+        return slot_ptr ? slot_ptr->validate_read() : false;
+    }
     uint64_t slot_id() const { return slot_ptr ? slot_ptr->slot_id() : 0; }
 };
 
@@ -869,9 +892,9 @@ class PYLABHUB_UTILS_EXPORT WriteTransactionGuard
     WriteTransactionGuard(const WriteTransactionGuard &) = delete;
     WriteTransactionGuard &operator=(const WriteTransactionGuard &) = delete;
     ~WriteTransactionGuard() noexcept;
-    explicit operator bool() const noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept;
     /** Returns optional reference to the held slot; std::nullopt if no slot. Never throws. */
-    std::optional<std::reference_wrapper<SlotWriteHandle>> slot() noexcept;
+    [[nodiscard]] std::optional<std::reference_wrapper<SlotWriteHandle>> slot() noexcept;
     void commit();
     void abort() noexcept;
 
@@ -896,9 +919,9 @@ class PYLABHUB_UTILS_EXPORT ReadTransactionGuard
     ReadTransactionGuard(const ReadTransactionGuard &) = delete;
     ReadTransactionGuard &operator=(const ReadTransactionGuard &) = delete;
     ~ReadTransactionGuard() noexcept;
-    explicit operator bool() const noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept;
     /** Returns optional reference to the held slot; std::nullopt if no slot. Never throws. */
-    std::optional<std::reference_wrapper<const SlotConsumeHandle>> slot() const noexcept;
+    [[nodiscard]] std::optional<std::reference_wrapper<const SlotConsumeHandle>> slot() const noexcept;
 
   private:
     DataBlockConsumer *consumer_;
@@ -979,7 +1002,12 @@ auto with_typed_write(DataBlockProducer &producer, int timeout_ms, Func &&func)
         }
         T &ref = *reinterpret_cast<T *>(ptr);
         auto result = std::invoke(std::forward<Func>(func), ref);
-        ctx.slot().commit(sizeof(T));
+        if (!ctx.slot().commit(sizeof(T)))
+        {
+            throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
+                                    std::to_string(ctx.slot_id()) + ", slot_index=" +
+                                    std::to_string(ctx.slot_index()) + ")");
+        }
         return result;
     });
 }
@@ -1063,7 +1091,7 @@ auto with_next_slot(DataBlockSlotIterator &iterator, int timeout_ms, Func &&lamb
 class PYLABHUB_UTILS_EXPORT DataBlockDiagnosticHandle
 {
   public:
-    ~DataBlockDiagnosticHandle();
+    ~DataBlockDiagnosticHandle() noexcept;
     DataBlockDiagnosticHandle(DataBlockDiagnosticHandle &&) noexcept;
     DataBlockDiagnosticHandle &operator=(DataBlockDiagnosticHandle &&) noexcept;
     DataBlockDiagnosticHandle(const DataBlockDiagnosticHandle &) = delete;
@@ -1080,33 +1108,45 @@ class PYLABHUB_UTILS_EXPORT DataBlockDiagnosticHandle
 };
 
 /** Opens an existing DataBlock by name for read-only diagnostics. Returns nullptr on failure. */
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
 open_datablock_for_diagnostic(const std::string &name);
 
-// ─── Factory Functions ───
+/** @brief Returns the logical name (part before any runtime suffix) for comparison/lookup.
+ * Producer/Consumer name() may append a suffix " | pid:<pid>-<idx>"; for channel or broker
+ * comparison use this. See docs/NAME_CONVENTIONS.md. */
+inline std::string_view logical_name(std::string_view full_name) noexcept
+{
+    constexpr std::string_view suffix_marker(" | pid:");
+    const auto pos = full_name.find(suffix_marker);
+    if (pos == std::string_view::npos)
+        return full_name;
+    return full_name.substr(0, pos);
+}
+
+// ─── Factory Functions (require LifecycleGuard with GetLifecycleModule() in main()) ───
 template <typename Schema>
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
 create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
                           const DataBlockConfig &config, const Schema &schema_instance);
 
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
 create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
                           const DataBlockConfig &config);
 
 template <typename Schema>
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                         const DataBlockConfig &expected_config, const Schema &schema_instance);
 
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                         const DataBlockConfig &expected_config);
 
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret);
 
 /** Overload: validate version and config on attach. Returns nullptr if inconsistent. */
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                         const DataBlockConfig &expected_config);
 
@@ -1117,7 +1157,7 @@ find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t share
  * @brief Internal: Creates producer with optional schema storage.
  * @param schema_info If non-null, stores schema hash and version in SharedMemoryHeader.
  */
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
 create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
                                const DataBlockConfig &config,
                                const pylabhub::schema::SchemaInfo *schema_info);
@@ -1127,7 +1167,7 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
  * @param expected_config If non-null, validates against stored config.
  * @param schema_info If non-null, validates against stored schema hash.
  */
-PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *schema_info);
@@ -1162,7 +1202,7 @@ PYLABHUB_UTILS_EXPORT void validate_header_layout_hash(const SharedMemoryHeader 
 /** Store layout checksum in header (call at segment creation after header is written). */
 PYLABHUB_UTILS_EXPORT void store_layout_checksum(SharedMemoryHeader *header);
 /** Validate layout checksum; returns true if stored checksum matches recomputed from header. */
-PYLABHUB_UTILS_EXPORT bool validate_layout_checksum(const SharedMemoryHeader *header);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool validate_layout_checksum(const SharedMemoryHeader *header);
 
 /** @deprecated Use DataBlockProducer. Kept for compatibility. */
 using IDataBlockProducer = DataBlockProducer;
@@ -1201,7 +1241,7 @@ using IDataBlockConsumer = DataBlockConsumer;
  * );
  */
 template <typename Schema>
-std::unique_ptr<DataBlockProducer>
+[[nodiscard]] std::unique_ptr<DataBlockProducer>
 create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
                           const DataBlockConfig &config, const Schema &schema_instance)
 {
@@ -1237,7 +1277,7 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
  * );
  */
 template <typename Schema>
-std::unique_ptr<DataBlockConsumer>
+[[nodiscard]] std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                         const DataBlockConfig &expected_config, const Schema &schema_instance)
 {

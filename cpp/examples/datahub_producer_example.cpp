@@ -4,9 +4,11 @@
 #include <thread>
 #include <numeric> // For std::iota
 
+#include "plh_datahub.hpp"
+#include "utils/lifecycle.hpp"
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
-#include "utils/logger.hpp" // Assuming a logger is available
+#include "utils/logger.hpp"
 
 // Define a sample data structure
 struct SensorData {
@@ -17,9 +19,13 @@ struct SensorData {
     uint32_t sequence_num;
 };
 
-int main() {
-    // Initialize logging (if available)
-    // pylabhub::utils::logger::init_logger();
+int main()
+{
+    // LifecycleGuard initializes Logger, CryptoUtils, and Data Exchange Hub (required for DataBlock).
+    pylabhub::utils::LifecycleGuard lifecycle(pylabhub::utils::MakeModDefList(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::hub::GetLifecycleModule()));
 
     const std::string channel_name = "sensor_data_channel";
     const uint64_t shared_secret = 0xBAD5ECRET; // Example secret
@@ -30,6 +36,8 @@ int main() {
     std::cout << "--- Producer Application Starting ---" << std::endl;
 
     pylabhub::hub::DataBlockConfig config;
+    config.policy = pylabhub::hub::DataBlockPolicy::DoubleBuffer;
+    config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Latest_only;
     config.shared_secret = shared_secret;
     config.flexible_zone_size = 0; // No flexible zone for this example
     config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K; // 4KB page size

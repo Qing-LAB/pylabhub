@@ -39,7 +39,7 @@ pylabhub::hub::MessageHub hub;
 pylabhub::hub::DataBlockConfig config{};
 config.name = "my_channel";
 config.shared_secret = 0;
-config.unit_block_size = pylabhub::hub::DataBlockUnitSize::Size4K;
+config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
 config.ring_buffer_capacity = 4;
 config.policy = pylabhub::hub::DataBlockPolicy::RingBuffer;
 config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Single_reader;
@@ -70,7 +70,7 @@ if (consumer) {
 }
 ```
 
-**Config defaults:** `DataBlockConfig config{}` has sensible defaults; set only the fields you need. See **IMPLEMENTATION_GUIDANCE.md** Pitfall 7 and **RAII_LAYER_USAGE_EXAMPLE.md** for details.
+**Config:** Layout- and mode-critical parameters must be set explicitly (producer creation fails otherwise): `policy`, `consumer_sync_policy`, `physical_page_size`, `ring_buffer_capacity` (≥ 1). Config is validated **before** any memory creation in a single place: the DataBlock creator constructor. See **IMPLEMENTATION_GUIDANCE.md** § "Config validation and memory block setup" and **RAII_LAYER_USAGE_EXAMPLE.md**.
 
 **Policies:** `DataBlockPolicy` (Single, DoubleBuffer, RingBuffer); `ConsumerSyncPolicy` (Latest_only, Single_reader, Sync_reader); `ChecksumPolicy` (Manual, Enforced). See **HEP-CORE-0002** for layout, protocol, and recovery.
 

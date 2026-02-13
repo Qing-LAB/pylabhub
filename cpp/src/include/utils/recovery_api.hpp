@@ -25,6 +25,12 @@
 #include <cstdint>
 #include <stdbool.h>
 
+#if defined(__cplusplus) && __cplusplus >= 201703L
+#define PYLABHUB_NODISCARD [[nodiscard]]
+#else
+#define PYLABHUB_NODISCARD
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -68,8 +74,9 @@ extern "C"
      * @param out Pointer to a SlotDiagnostic struct to be filled.
      * @return 0 on success, non-zero on error.
      */
-    PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name, uint32_t slot_index,
-                                                      SlotDiagnostic *out);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name,
+                                                                          uint32_t slot_index,
+                                                                          SlotDiagnostic *out);
 
     /**
      * @brief Gets diagnostic information for all slots in a DataBlock.
@@ -79,17 +86,17 @@ extern "C"
      * @param out_count Pointer to a size_t that will store the number of slots written.
      * @return 0 on success, non-zero on error.
      */
-    PYLABHUB_UTILS_EXPORT int datablock_diagnose_all_slots(const char *shm_name,
-                                                           SlotDiagnostic *out_array,
-                                                           size_t array_capacity,
-                                                           size_t *out_count);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_all_slots(const char *shm_name,
+                                                                               SlotDiagnostic *out_array,
+                                                                               size_t array_capacity,
+                                                                               size_t *out_count);
 
     /**
      * @brief Checks if a process with the given PID is currently alive.
      * @param pid The process ID to check.
      * @return True if the process is alive, false otherwise.
      */
-    PYLABHUB_UTILS_EXPORT bool datablock_is_process_alive(uint64_t pid);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT bool datablock_is_process_alive(uint64_t pid);
 
     // --- Recovery Operations ---
 
@@ -101,9 +108,8 @@ extern "C"
      * @param force If true, bypasses safety checks (e.g., if a live process holds a lock).
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_slot(const char *shm_name,
-                                                                    uint32_t slot_index,
-                                                                    bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_slot(
+        const char *shm_name, uint32_t slot_index, bool force);
 
     /**
      * @brief Forcefully resets the state of all slots in a DataBlock.
@@ -112,8 +118,8 @@ extern "C"
      * @param force If true, bypasses safety checks for each slot.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_all_slots(const char *shm_name,
-                                                                         bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_all_slots(
+        const char *shm_name, bool force);
 
     /**
      * @brief Releases readers that are presumed to be zombies (i.e., dead processes).
@@ -122,9 +128,8 @@ extern "C"
      * @param force If true, clears the reader count regardless of other checks.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_readers(const char *shm_name,
-                                                                          uint32_t slot_index,
-                                                                          bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_readers(
+        const char *shm_name, uint32_t slot_index, bool force);
 
     /**
      * @brief Releases a writer that is presumed to be a zombie (i.e., a dead process).
@@ -132,15 +137,16 @@ extern "C"
      * @param slot_index The physical index of the slot to clean up.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_writer(const char *shm_name,
-                                                                         uint32_t slot_index);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_writer(
+        const char *shm_name, uint32_t slot_index);
 
     /**
      * @brief Scans the consumer heartbeat table and cleans up any dead consumers.
      * @param shm_name The name of the shared memory DataBlock.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_cleanup_dead_consumers(const char *shm_name);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_cleanup_dead_consumers(
+        const char *shm_name);
 
     /**
      * @brief Validates the integrity of the DataBlock's control structures and checksums.
@@ -148,8 +154,8 @@ extern "C"
      * @param repair If true, attempts to recalculate invalid checksums.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(const char *shm_name,
-                                                                      bool repair);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(
+        const char *shm_name, bool repair);
 
 #ifdef __cplusplus
 }

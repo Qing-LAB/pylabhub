@@ -215,12 +215,12 @@ struct SchemaInfo
     /**
      * @brief Checks if this schema matches another (by hash comparison).
      */
-    bool matches(const SchemaInfo &other) const { return hash == other.hash; }
+    [[nodiscard]] bool matches(const SchemaInfo &other) const { return hash == other.hash; }
 
     /**
      * @brief Checks if this schema matches a stored hash.
      */
-    bool matches_hash(const std::array<uint8_t, 32> &other_hash) const
+    [[nodiscard]] bool matches_hash(const std::array<uint8_t, 32> &other_hash) const
     {
         return hash == other_hash;
     }

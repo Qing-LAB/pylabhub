@@ -415,9 +415,10 @@ void do_hub_shutdown(const char *arg)
 pylabhub::utils::ModuleDef GetLifecycleModule()
 {
     pylabhub::utils::ModuleDef module("pylabhub::hub::DataExchangeHub");
+    module.add_dependency("CryptoUtils");         // libsodium for checksums/schema hash; init order
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_hub_startup);
-    module.set_shutdown(&do_hub_shutdown, 5000); // Add 5000ms timeout
+    module.set_shutdown(&do_hub_shutdown, 5000);  // 5000ms timeout
     module.set_as_persistent(true);
     return module;
 }

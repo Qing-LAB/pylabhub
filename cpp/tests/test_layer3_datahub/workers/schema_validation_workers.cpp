@@ -46,6 +46,8 @@ int consumer_connects_with_matching_schema()
             std::string channel = make_test_channel_name("SchemaValidation");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 67890;
             config.ring_buffer_capacity = 1;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -76,6 +78,8 @@ int consumer_fails_to_connect_with_mismatched_schema()
             std::string channel = make_test_channel_name("SchemaValidationMismatch");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 67890;
             config.ring_buffer_capacity = 1;
             config.physical_page_size = DataBlockPageSize::Size4K;

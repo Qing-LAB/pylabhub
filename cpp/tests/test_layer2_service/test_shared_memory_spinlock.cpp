@@ -187,7 +187,7 @@ TEST(SharedSpinLockShmTest, TwoThreads_StateInShm_MutualExclusion)
 
     std::atomic<int> counter{0};
     const int iterations = 50;
-    std::thread a([state, &counter, iterations]() {
+    std::thread a([state, &counter]() {
         SharedSpinLock lock(state, "shm_a");
         for (int i = 0; i < iterations; ++i)
         {
@@ -198,7 +198,7 @@ TEST(SharedSpinLockShmTest, TwoThreads_StateInShm_MutualExclusion)
             lock.unlock();
         }
     });
-    std::thread b([state, &counter, iterations]() {
+    std::thread b([state, &counter]() {
         SharedSpinLock lock(state, "shm_b");
         for (int i = 0; i < iterations; ++i)
         {

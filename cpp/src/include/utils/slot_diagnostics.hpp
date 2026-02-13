@@ -33,7 +33,7 @@ class PYLABHUB_UTILS_EXPORT SlotDiagnostics
      * @brief Refreshes the diagnostic data from shared memory.
      * @return true on success, false if the slot could not be diagnosed.
      */
-    bool refresh();
+    [[nodiscard]] bool refresh();
 
     /** @return The monotonic ID of the slot. */
     uint64_t get_slot_id() const;
@@ -46,11 +46,11 @@ class PYLABHUB_UTILS_EXPORT SlotDiagnostics
     /** @return The number of active readers. */
     uint32_t get_reader_count() const;
     /** @return A heuristic guess on whether the slot is stuck. */
-    bool is_stuck() const;
+    [[nodiscard]] bool is_stuck() const;
     /** @return The approximate duration in milliseconds the slot has been stuck. */
     uint64_t get_stuck_duration_ms() const;
     /** @return True if the diagnostic data is valid. */
-    bool is_valid() const;
+    [[nodiscard]] bool is_valid() const;
 
   private:
     std::string shm_name_;

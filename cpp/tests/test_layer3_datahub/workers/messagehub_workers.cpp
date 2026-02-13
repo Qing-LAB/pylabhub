@@ -220,6 +220,8 @@ int with_broker_happy_path()
                 << "MessageHub connect to in-process broker failed";
 
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 0x123456789ABCDEF0ULL;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
