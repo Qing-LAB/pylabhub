@@ -6,9 +6,11 @@
 #include <optional>
 #include <monostate> // For std::monostate with optional
 
+#include "plh_datahub.hpp"
+#include "utils/lifecycle.hpp"
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
-#include "utils/logger.hpp" // Assuming a logger is available
+#include "utils/logger.hpp"
 
 // Define a sample data structure (must match producer)
 struct SensorData {
@@ -19,9 +21,13 @@ struct SensorData {
     uint32_t sequence_num;
 };
 
-int main() {
-    // Initialize logging (if available)
-    // pylabhub::utils::logger::init_logger();
+int main()
+{
+    // LifecycleGuard initializes Logger, CryptoUtils, and Data Exchange Hub (required for DataBlock).
+    pylabhub::utils::LifecycleGuard lifecycle(pylabhub::utils::MakeModDefList(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::hub::GetLifecycleModule()));
 
     const std::string channel_name = "sensor_data_channel";
     const uint64_t shared_secret = 0xBAD5ECRET; // Example secret (must match producer)

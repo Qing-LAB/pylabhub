@@ -41,6 +41,8 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             std::string channel = make_test_channel_name("IntegrityValidator");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -67,6 +69,8 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             std::string channel = make_test_channel_name("SlotDiagnostics");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -94,6 +98,8 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             std::string channel = make_test_channel_name("SlotRecovery");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 12345;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -121,6 +127,8 @@ int heartbeat_manager_registers_and_pulses()
             std::string channel = make_test_channel_name("HeartbeatManager");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 54321;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;

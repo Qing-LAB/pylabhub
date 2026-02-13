@@ -64,8 +64,13 @@ Keep topic-specific design or analysis in **designated files** with **consistent
 | Topic | Location | Notes |
 |-------|----------|--------|
 | DataHub design / critical review | `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` | Referenced from DATAHUB_TODO. |
+| DataHub policy & config (explicit required, single point) | `docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` | Rationale for fail-if-unset params; which params are required; reference from IMPLEMENTATION_GUIDANCE and DATAHUB_TODO. |
 | DataHub C++ abstraction layer | `docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md` | Layer map, patterns, alignment with C API. Merge into IMPLEMENTATION_GUIDANCE/HEP when stable. |
 | Emergency / procedures | `docs/emergency_procedures.md` | Operational guidance; keep. |
+| Code review | `docs/CODE_REVIEW_GUIDANCE.md` | Instructions for thorough/critical review: first pass, higher-level requirements, test integration. Draft; refine with discussion. |
+| Code quality / refactoring | `docs/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md` | Duplication, redundancy, obsolete code; C++20/layer design; refactor targets; naming/comments; Doxygen gaps; actionable priorities. |
+| [[nodiscard]] exceptions | `docs/NODISCARD_DECISIONS.md` | Call sites that intentionally do not check a [[nodiscard]] return; rationale and discussion. |
+| Name conventions | `docs/NAME_CONVENTIONS.md` | DataBlock producer/consumer display name format, suffix ` \| pid:...`, and logical_name() for comparison. |
 
 **Archived (2026-02-12):** Spinlock/guards, flexible zone flow, FileLock test patterns, versioning/ABI detail, test pattern/CTest docs, and testing supporting material were merged into IMPLEMENTATION_GUIDANCE, README_Versioning, README_testing, or HEP, then moved to **`docs/archive/transient-2026-02-12/`**. See that folder’s README for the list.
 
@@ -88,3 +93,6 @@ When creating **new** organizing or guidance docs, place them in a designated fi
 - **DataHub design spec?** → **`docs/hep/HEP-CORE-0002-DataHub-FINAL.md`** (and status sync with DATAHUB_TODO)
 - **Test plan and Phase D detail?** → **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** (priorities still in DATAHUB_TODO)
 - **Topic summary (DataHub, testing, utils, CMake, versioning)?** → **`docs/README/README_DataHub.md`**, **`docs/README/README_testing.md`**, **`docs/README/README_utils.md`**, etc.
+- **How to review code (first pass, design, tests)?** → **`docs/CODE_REVIEW_GUIDANCE.md`**
+- **Duplication, refactoring, Doxygen, code quality?** → **`docs/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**
+- **Where do we intentionally not check [[nodiscard]] returns?** → **`docs/NODISCARD_DECISIONS.md`**

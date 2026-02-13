@@ -12,6 +12,9 @@
 
 1. [Overview](#overview)
 2. [Architecture Principles](#architecture-principles)
+   - [Error reporting: C vs C++](#error-reporting-c-vs-c)
+   - [Explicit noexcept where the public API does not throw](#explicit-noexcept-where-the-public-api-does-not-throw)
+   - [Config validation and memory block setup](#config-validation-and-memory-block-setup-single-point-of-access)
 3. [Codebase Structure](#codebase-structure)
 4. [Integration with Existing Services](#integration-with-existing-services)
 5. [ABI Stability Guidelines](#abi-stability-guidelines)
@@ -65,7 +68,7 @@ The Data Exchange Hub uses a **dual-chain** memory layout:
 │  - Cache-aligned coordination metadata                     │
 └────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────┐
-│ TABLE 2: Data Slots (unit_block_size × N slots)            │
+│ TABLE 2: Data Slots (slot_stride_bytes × N slots)         │
 │  - Fixed-size ring buffer slots                            │
 │  - Protected by SlotRWState                                │
 └────────────────────────────────────────────────────────────┘
@@ -90,6 +93,56 @@ The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstra
 | **2 – Transaction API** | **Recommended:** `with_write_transaction`, `with_read_transaction`, `with_next_slot`, `WriteTransactionGuard` / `ReadTransactionGuard`. RAII, exception-safe. |
 
 **Recommended usage:** Prefer Layer 2 (guards and with_*_transaction) for write/read; release or destroy all slot handles before destroying Producer/Consumer. Use C API directly only when performance or flexibility (e.g. custom bindings) require it.
+
+### Error reporting: C vs C++
+
+- **C API:** Report errors via **return codes** (or out-parameters). No exceptions. C has no exceptions; callers from C or other languages expect 0/success or non-zero/error. Example: `slot_rw_acquire_write` returns `SlotAcquireResult`; recovery APIs return `int` (e.g. 0 = success, negative = error).
+- **C++ wrapper:** May **throw** where that is the appropriate, idiomatic way to signal failure (e.g. config validation at creation, schema mismatch on attach). Use exceptions for exceptional or contract-violation cases; do not overuse (e.g. hot path can use return/optional). The C++ layer may translate C error codes into exceptions when it improves usability.
+- **Summary:** C → error codes; C++ → throw where appropriate. Each layer follows its language conventions.
+
+### Explicit noexcept where the public API does not throw
+
+Mark as **`noexcept`** any public API that is **not supposed to throw** and whose implementation does not throw. This makes the contract explicit and allows optimizations (e.g. move on exception paths). Do **not** mark functions that can throw (e.g. config validation, acquisition failure that throws, or calls into code that may throw).
+
+**Recommendation:**
+
+| Category | Mark `noexcept` | Do not mark |
+|----------|-----------------|-------------|
+| **Destructors** | All DataBlock-related destructors (~SlotWriteHandle, ~SlotConsumeHandle, ~DataBlockProducer, ~DataBlockConsumer, ~DataBlockSlotIterator, ~DataBlockDiagnosticHandle, transaction guards). Destructors must not throw; explicit `noexcept` enforces that. | — |
+| **Simple accessors** | slot_index(), slot_id(), buffer_span(), flexible_zone_span() on handles; last_slot_id(), is_valid() on iterator; spinlock_count() on producer/consumer. They only read state or return empty span. | flexible_zone\<T\>(index) (throws if zone too small). |
+| **Bool-returning / result-returning (no throw)** | write(), read(), commit(), update_checksum_*, verify_checksum_*, validate_read() on handles; release_write_slot(), release_consume_slot(); seek_latest(), seek_to(); try_next() (returns NextResult); check_consumer_health(). Implementation returns false/empty/result and does not throw. | — |
+| **Acquisition / registration** | acquire_write_slot(), acquire_consume_slot() (return nullptr on failure; implementation does not throw). | acquire_spinlock() (throws out_of_range), next() (throws on timeout), commit() on WriteTransactionGuard (throws on invalid state). |
+| **Constructors / factories** | Move constructors and move assignment (already noexcept). | Creator/attach constructors, create_* / find_* (throw or return nullptr). |
+
+If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::terminate` if the function ever throws.
+
+### Config validation and memory block setup (single point of access)
+
+**Rule:** Config must be checked **before** any creation or operation on memory blocks. All memory-block parameters must be explicitly set from agreed specs. There is a **single point** where config is validated and the memory block is set up, so when things go wrong we know where to look.
+
+**Single point of access:** The **DataBlock creator constructor** `DataBlock(const std::string &name, const DataBlockConfig &config)` in `data_block.cpp` is the only code path that creates a new shared-memory block. It:
+
+1. **Validates config first** (before any allocation): on the C++ path, throws `std::invalid_argument` if any of the following are unset or invalid (a C-level creation API, if added, would return an error code instead):
+   - `config.policy` (must not be `DataBlockPolicy::Unset`)
+   - `config.consumer_sync_policy` (must not be `ConsumerSyncPolicy::Unset`)
+   - `config.physical_page_size` (must not be `DataBlockPageSize::Unset`)
+   - `config.ring_buffer_capacity` (must be ≥ 1; 0 means unset and fails)
+   - `config.logical_unit_size` (if set: must be ≥ physical and a multiple of physical)
+2. **Then** builds `DataBlockLayout::from_config(config)` and computes size.
+3. **Then** calls `shm_create` and only after that writes the header and layout checksum.
+
+**Public entry points:** All producer creation goes through `create_datablock_producer` → `create_datablock_producer_impl` → `DataBlock(name, config)`. Consumer attach does not create memory; it opens existing with `DataBlock(name)` and validates layout (and optionally `expected_config`) in `find_datablock_consumer_impl` via `validate_attach_layout_and_config`. So the **single point** for “config checked before any memory creation” is the DataBlock creator constructor.
+
+**Required explicit parameters (no silent defaults):** To avoid memory corruption and sync bugs, the following must be set explicitly on `DataBlockConfig` before creating a producer; otherwise creation fails at the single point above.
+
+| Parameter | Sentinel / invalid | Stored in header |
+|-----------|--------------------|------------------|
+| `policy` | `DataBlockPolicy::Unset` | 0/1/2 (Single/DoubleBuffer/RingBuffer) |
+| `consumer_sync_policy` | `ConsumerSyncPolicy::Unset` | 0/1/2 (Latest_only/Single_reader/Sync_reader) |
+| `physical_page_size` | `DataBlockPageSize::Unset` | 4096 / 4M / 16M |
+| `ring_buffer_capacity` | `0` (unset) | ≥ 1 |
+
+**Rationale and full parameter table:** See **`docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`** (§1 and “Other parameters: fail if not set”).
 
 ---
 
@@ -200,19 +253,24 @@ pylabhub::utils::ModuleDef GetLifecycleModule() {
 } // namespace pylabhub::hub
 ```
 
-**Usage in application**:
+**Usage in application**: Create a `LifecycleGuard` in main() with every module your application uses. The guard initializes them in dependency order and shuts them down in reverse order.
 
 ```cpp
+#include "plh_datahub.hpp"
+
 int main() {
-    pylabhub::utils::LifecycleGuard lifecycle(
-        pylabhub::utils::MakeModDefList(
-            pylabhub::utils::Logger::GetLifecycleModule(),
-            pylabhub::hub::GetLifecycleModule()
-        )
-    );
-    // DataHub is now initialized and ready to use
+    pylabhub::utils::LifecycleGuard app_lifecycle(pylabhub::utils::MakeModDefList(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::utils::FileLock::GetLifecycleModule(),
+        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::hub::GetLifecycleModule(),
+        pylabhub::utils::JsonConfig::GetLifecycleModule()
+    ));
+    // create_datablock_producer / find_datablock_consumer may now be used
 }
 ```
+
+**DataBlock / MessageHub**: `create_datablock_producer()` and `find_datablock_consumer()` throw if the Data Exchange Hub module is not initialized. Include `pylabhub::hub::GetLifecycleModule()` (and typically `CryptoUtils`, `Logger`) in your guard. See **`src/hubshell.cpp`** for a full template.
 
 ### 2. Logger Integration
 
@@ -387,6 +445,8 @@ header->commit_index = write_idx; // no memory barrier (too weak)
 ---
 
 ## Error Handling Strategy
+
+**See also:** [Error reporting: C vs C++](#error-reporting-c-vs-c) and [Explicit noexcept where the public API does not throw](#explicit-noexcept-where-the-public-api-does-not-throw) in Architecture Principles for the C/C++ error convention and when to mark APIs `noexcept`.
 
 ### Exception Policy
 
@@ -616,11 +676,11 @@ in.ring_buffer_capacity = header->ring_buffer_capacity;
 
 Apply to: LayoutChecksumInput, DataBlockLayout, FlexibleZoneInfo, SchemaInfo, any struct passed to crypto or memcmp.
 
-### Pitfall 7: Config/Schema Without Defaults
+### Pitfall 7: Config parameters that can cause corruption must be set explicitly
 
-**Problem**: `DataBlockConfig config{}` or partial initialization leaves `policy`, `ring_buffer_capacity`, etc. uninitialized; producer and consumer may disagree, causing layout checksum mismatch on attach.
+**Problem**: Layout- and mode-critical parameters (`policy`, `consumer_sync_policy`, `physical_page_size`, `ring_buffer_capacity`) must not be left unset or mismatched; otherwise producer/consumer can get wrong layout or sync behavior → memory corruption or sync bugs.
 
-**Solution**: All config and schema types have sensible defaults. `DataBlockConfig`: `shared_secret=0`, `ring_buffer_capacity=1`, `policy=RingBuffer`, etc. Use `DataBlockConfig config{}` and set only required fields.
+**Solution**: These four parameters have **no valid default**; they use sentinels (`Unset` or `0`) and **producer creation fails** (throws `std::invalid_argument`) if any are unset. Always set them explicitly on `DataBlockConfig` before calling `create_datablock_producer`. Consumer attach validates layout (and optional `expected_config`) in one place: `validate_attach_layout_and_config`. See § "Config validation and memory block setup" above and `docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
 
 ### Pitfall 8: Test Atomic Variables Without Proper Ordering
 
@@ -703,5 +763,6 @@ ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 ---
 
 **Revision History**:
+- **v1.2** (2026-02-13): Added § "Config validation and memory block setup (single point of access)": config checked before any memory creation; single point is DataBlock creator constructor; required explicit parameters table. Updated Pitfall 7 to explicit required params (fail if unset). TABLE 2 caption: slot_stride_bytes.
 - **v1.1** (2026-02-13): Added Pitfalls 6–9 (deterministic init, config defaults, test atomics, async callbacks); testing async callbacks; checklist updates.
 - **v1.0** (2026-02-09): Initial guidance document created for implementation phase

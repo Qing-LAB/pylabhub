@@ -96,7 +96,9 @@ int not_consuming_proxy()
 
             // Create a transaction proxy and let it go out of scope without being consumed.
             // This should trigger the destructor's warning message in a debug build.
-            cfg.transaction();
+            // NODISCARD: We intentionally do not consume the proxy (no .read()/.write()) to
+            // exercise the "proxy not consumed" warning; see docs/NODISCARD_DECISIONS.md.
+            (void)cfg.transaction();
         },
         "jsonconfig::not_consuming_proxy", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());

@@ -37,7 +37,7 @@ class PYLABHUB_UTILS_EXPORT IntegrityValidator
      *               recalculating invalid checksums.
      * @return A `RecoveryResult` code indicating the outcome.
      */
-    RecoveryResult validate(bool repair = false);
+    [[nodiscard]] RecoveryResult validate(bool repair = false);
 
   private:
     std::string shm_name_;

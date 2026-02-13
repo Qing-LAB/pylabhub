@@ -5,6 +5,12 @@
 #include <stdbool.h>
 #include "pylabhub_utils_export.h"
 
+#if defined(__cplusplus) && __cplusplus >= 201703L
+#define PYLABHUB_NODISCARD [[nodiscard]]
+#else
+#define PYLABHUB_NODISCARD
+#endif
+
 // Forward declaration of the C++ SlotRWState struct
 // The C functions will operate on a pointer to this type,
 // with the expectation that the C++ implementation will cast it.
@@ -36,7 +42,7 @@ extern "C"
      * @param timeout_ms Maximum time to wait in milliseconds. 0 for no timeout.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
-    PYLABHUB_UTILS_EXPORT
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms);
 
     /**
@@ -60,7 +66,7 @@ extern "C"
      * @param out_generation Pointer to a uint64_t to store the captured write generation.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
-    PYLABHUB_UTILS_EXPORT
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
                                            uint64_t *out_generation);
 
@@ -70,7 +76,7 @@ extern "C"
      * @param generation The write generation captured during acquire_read.
      * @return true if the slot is still valid, false if it was overwritten.
      */
-    PYLABHUB_UTILS_EXPORT
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation);
 
     /**
@@ -128,7 +134,7 @@ extern "C"
      * @param out_metrics Pointer to a DataBlockMetrics struct to fill.
      * @return 0 on success, -1 on error.
      */
-    PYLABHUB_UTILS_EXPORT
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
                             DataBlockMetrics *out_metrics);
 
@@ -137,7 +143,7 @@ extern "C"
      * @param shared_memory_header Pointer to the SharedMemoryHeader.
      * @return 0 on success, -1 on error.
      */
-    PYLABHUB_UTILS_EXPORT
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);
 
     // === Error Handling ===

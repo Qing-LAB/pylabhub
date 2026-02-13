@@ -28,6 +28,8 @@ int acquire_consume_slot_timeout_returns_null()
             std::string channel = make_test_channel_name("ErrTimeout");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60001;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -56,6 +58,8 @@ int find_consumer_wrong_secret_returns_null()
             std::string channel = make_test_channel_name("ErrWrongSecret");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60002;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -81,6 +85,8 @@ int release_write_slot_invalid_handle_returns_false()
             std::string channel = make_test_channel_name("ErrReleaseWrite");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60003;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -106,6 +112,8 @@ int release_consume_slot_invalid_handle_returns_false()
             std::string channel = make_test_channel_name("ErrReleaseConsume");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60004;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -134,6 +142,8 @@ int write_bounds_return_false()
             std::string channel = make_test_channel_name("ErrWriteBounds");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60005;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -166,6 +176,8 @@ int commit_bounds_return_false()
             std::string channel = make_test_channel_name("ErrCommitBounds");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60006;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -193,6 +205,8 @@ int read_bounds_return_false()
             std::string channel = make_test_channel_name("ErrReadBounds");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60007;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -234,6 +248,8 @@ int double_release_write_slot_idempotent()
             std::string channel = make_test_channel_name("ErrDoubleRelease");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60008;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -261,6 +277,8 @@ int slot_iterator_try_next_timeout_returns_not_ok()
             std::string channel = make_test_channel_name("ErrIteratorTimeout");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.shared_secret = 60009;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
