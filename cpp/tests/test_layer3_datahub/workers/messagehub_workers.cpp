@@ -225,7 +225,6 @@ int with_broker_happy_path()
             config.shared_secret = 0x123456789ABCDEF0ULL;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer =
                 create_datablock_producer(hub_ref, channel, DataBlockPolicy::RingBuffer, config);

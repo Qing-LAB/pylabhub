@@ -266,7 +266,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      *          been initialized.
      */
     explicit JsonConfig(const std::filesystem::path &configFile, bool createIfMissing = false,
-                        std::error_code *ec = nullptr) noexcept;
+                        std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Destructor.
@@ -336,7 +336,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @return `true` on success, `false` on failure.
      */
     bool init(const std::filesystem::path &configFile, bool createIfMissing = false,
-              std::error_code *ec = nullptr) noexcept;
+              std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Discards in-memory changes and reloads the configuration from disk.
@@ -347,7 +347,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return `true` on success, `false` on failure.
      */
-    bool reload(std::error_code *ec = nullptr) noexcept;
+    bool reload(std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Forcibly writes the current in-memory state to the disk.
@@ -359,7 +359,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return `true` on success, `false` on failure.
      */
-    bool overwrite(std::error_code *ec = nullptr) noexcept;
+    bool overwrite(std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Gets the path to the configuration file.
@@ -389,7 +389,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @return A `TransactionProxy` object. This is an rvalue and must be consumed immediately.
      */
     [[nodiscard]] TransactionProxy transaction(AccessFlags flags = AccessFlags::Default,
-                                               std::error_code *ec = nullptr) noexcept;
+                                               std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Manually releases a transaction record.
@@ -400,7 +400,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return `true` on success, `false` if the ID is not found.
      */
-    bool release_transaction(TxId id, std::error_code *ec = nullptr) noexcept;
+    bool release_transaction(TxId id, std::error_code *err_code = nullptr) noexcept;
 
     /**
      * @brief Acquires a manual shared (read) lock.
@@ -412,7 +412,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return An `std::optional<ReadLock>` containing the lock if successful.
      */
-    std::optional<ReadLock> lock_for_read(std::error_code *ec) const noexcept;
+    std::optional<ReadLock> lock_for_read(std::error_code *err_code) const noexcept;
 
     /**
      * @brief Acquires a manual exclusive (write) lock.
@@ -424,22 +424,22 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
      * @param ec Optional. A `std::error_code` to receive any errors.
      * @return An `std::optional<WriteLock>` containing the lock if successful.
      */
-    std::optional<WriteLock> lock_for_write(std::error_code *ec) noexcept;
+    std::optional<WriteLock> lock_for_write(std::error_code *err_code) noexcept;
 
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 
     // Internal I/O helpers (implemented in .cpp; safe for ABI)
-    bool private_load_from_disk_unsafe(std::error_code *ec) noexcept;
+    bool private_load_from_disk_unsafe(std::error_code *err_code) noexcept;
     bool private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
-                                       std::error_code *ec) noexcept;
-    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &j,
-                                  std::error_code *ec) noexcept;
+                                       std::error_code *err_code) noexcept;
+    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &json_snapshot,
+                                  std::error_code *err_code) noexcept;
 
     // NEW: private helper to clear/set dirty without exposing Impl.
     // Must be implemented in json_config.cpp (it will touch pImpl->dirty).
-    void private_set_dirty_unsafe_(bool v) noexcept;
+    void private_set_dirty_unsafe_(bool value) noexcept;
 
     // Transaction bookkeeping record (internal only)
     class Transaction
@@ -467,7 +467,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     TxId d_next_txid = 1;
 
     // helpers
-    Transaction *create_transaction_internal(std::error_code *ec) noexcept;
+    Transaction *create_transaction_internal(std::error_code *err_code) noexcept;
     void destroy_transaction_internal(TxId id) noexcept;
     Transaction *find_transaction_locked(TxId id) noexcept;
 
@@ -863,7 +863,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
          * @param ec Optional. A `std::error_code` to receive any errors.
          * @return `true` on success, `false` on failure.
          */
-        bool commit(std::error_code *ec = nullptr) noexcept;
+        bool commit(std::error_code *err_code = nullptr) noexcept;
         WriteLock(const WriteLock &) = delete;
         WriteLock &operator=(const WriteLock &) = delete;
 

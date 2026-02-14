@@ -22,8 +22,8 @@
 #include <string>
 #include <string_view>
 
-#include <fmt/chrono.h>
 #include <fmt/format.h>
+#include <fmt/chrono.h>
 
 #include "utils/format_tools.hpp"
 #include "utils/debug_info.hpp"

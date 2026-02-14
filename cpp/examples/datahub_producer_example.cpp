@@ -42,7 +42,6 @@ int main()
     config.flexible_zone_size = 0; // No flexible zone for this example
     config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K; // 4KB page size
     config.ring_buffer_capacity = 2; // Double buffer for stable writes
-    config.enable_checksum = true;
     config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
 
     std::unique_ptr<pylabhub::hub::DataBlockProducer> producer;

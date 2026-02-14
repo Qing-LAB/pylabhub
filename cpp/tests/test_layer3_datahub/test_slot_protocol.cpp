@@ -157,6 +157,42 @@ TEST_F(SlotProtocolTest, WriterTimeoutMetricsSplit)
     ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
 }
 
+TEST_F(SlotProtocolTest, DataBlockPolicySingleBufferSmoke)
+{
+    auto proc = SpawnWorker("slot_protocol.policy_single_buffer_smoke", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(SlotProtocolTest, DataBlockPolicyDoubleBufferSmoke)
+{
+    auto proc = SpawnWorker("slot_protocol.policy_double_buffer_smoke", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(SlotProtocolTest, ChecksumPolicyManual)
+{
+    auto proc = SpawnWorker("slot_protocol.checksum_manual_policy", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(SlotProtocolTest, PhysicalPageSize4MSmoke)
+{
+    auto proc = SpawnWorker("slot_protocol.physical_page_size_4m_smoke", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(SlotProtocolTest, FlexibleZoneMultiZones)
+{
+    auto proc = SpawnWorker("slot_protocol.flexible_zone_multi_zones", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(SlotProtocolTest, FlexibleZoneWithSpinlock)
+{
+    auto proc = SpawnWorker("slot_protocol.flexible_zone_with_spinlock", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
 // --- Cross-process tests (real IPC: producer and consumer in separate processes) ---
 
 TEST_F(SlotProtocolTest, CrossProcessDataExchangeWriterThenReaderVerifiesContent)

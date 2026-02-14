@@ -1,6 +1,16 @@
 #ifndef PYLABHUB_SLOT_RW_COORDINATOR_H
 #define PYLABHUB_SLOT_RW_COORDINATOR_H
 
+/**
+ * @file slot_rw_coordinator.h
+ * @brief C API for slot-level read/write coordination (SlotRWState).
+ *
+ * **Thread safety:** This C API does **not** provide any internal locking.
+ * Locking and multithread safety are entirely the caller's responsibility.
+ * Use a single thread per SlotRWState, or implement external synchronization
+ * (e.g. mutex) when calling these functions from multiple threads. The C++
+ * DataBlockProducer/DataBlockConsumer wrap this layer and are thread-safe.
+ */
 #include <stdint.h>
 #include <stdbool.h>
 #include "pylabhub_utils_export.h"
@@ -93,8 +103,19 @@ extern "C"
     struct SharedMemoryHeader;
     }
 
+    /**
+     * @brief Snapshot of DataBlock metrics and key state (read-only surface).
+     * All metric/state reads should go through slot_rw_get_metrics() or datablock_get_metrics().
+     * total_slots_written is the commit count (0 = no commits yet). commit_index and slot_count
+     * are state used e.g. by integrity validation; they are not reset by slot_rw_reset_metrics.
+     */
     typedef struct
     {
+        /* State snapshot (not reset by reset_metrics) */
+        uint64_t commit_index;  /**< Last committed slot id (monotonic). */
+        uint32_t slot_count;    /**< Ring buffer capacity (number of slots). */
+        uint32_t _reserved_metrics_pad;
+        /* Metrics (reset by slot_rw_reset_metrics) */
         uint64_t writer_timeout_count;
         uint64_t writer_lock_timeout_count;
         uint64_t writer_reader_timeout_count;
@@ -105,7 +126,6 @@ extern "C"
         uint64_t reader_race_detected;
         uint64_t reader_validation_failed;
         uint64_t reader_peak_count;
-        // Add other metrics as needed from SharedMemoryHeader
         uint64_t last_error_timestamp_ns;
         uint32_t last_error_code;
         uint32_t error_sequence;
@@ -120,7 +140,7 @@ extern "C"
         uint64_t heartbeat_sent_count;
         uint64_t heartbeat_failed_count;
         uint64_t last_heartbeat_ns;
-        uint64_t total_slots_written;
+        uint64_t total_slots_written;  /**< Total commits so far (0 = no commits yet). */
         uint64_t total_slots_read;
         uint64_t total_bytes_written;
         uint64_t total_bytes_read;
@@ -145,6 +165,18 @@ extern "C"
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);
+
+    /**
+     * @brief Lightweight accessors for single values (one load each). Use instead of full
+     * slot_rw_get_metrics() when only one or a few values are needed (e.g. "has any commit?").
+     * @return 0 if header is null or invalid; otherwise the stored value.
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
+    uint64_t slot_rw_get_total_slots_written(const pylabhub::hub::SharedMemoryHeader *header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
+    uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
+    uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header);
 
     // === Error Handling ===
     /**

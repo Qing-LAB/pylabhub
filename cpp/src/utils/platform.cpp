@@ -39,8 +39,8 @@
 #include <dlfcn.h>    // For dladdr
 #include <execinfo.h> // For backtrace, backtrace_symbols
 #include <unistd.h>
-#include <errno.h>  // For ESRCH
-#include <signal.h> // For kill
+#include <cerrno>   // For ESRCH
+#include <csignal>  // For kill
 #include <fcntl.h>  // For O_CREAT, O_RDWR
 #include <sys/mman.h> // For mmap, munmap
 #include <sys/stat.h> // For fstat
@@ -55,9 +55,6 @@
 #include <limits.h>      // PATH_MAX
 #include <mach-o/dyld.h> // _NSGetExecutablePath
 #endif
-
-#include "fmt/core.h"
-#include "fmt/format.h"
 
 namespace pylabhub::platform
 {
@@ -148,7 +145,9 @@ std::string get_executable_name(bool include_path) noexcept
             buf.resize(buf.size() * 2);
             count = readlink("/proc/self/exe", buf.data(), buf.size());
             if (count == -1)
+            {
                 return "unknown_linux";
+            }
         }
         full_path.assign(buf.data(), static_cast<size_t>(count));
 
@@ -466,75 +465,97 @@ void shm_unlink(const char * /*name*/)
 
 #else // POSIX
 
+namespace
+{
+constexpr int kShmModeRw = 0666;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- API order matches header; size/flags types differ at call sites
 ShmHandle shm_create(const char *name, size_t size, unsigned flags)
 {
-    ShmHandle h{};
-    if (!name || size == 0)
-        return h;
+    ShmHandle handle{};
+    if (name == nullptr || size == 0)
+    {
+        return handle;
+    }
     if ((flags & SHM_CREATE_UNLINK_FIRST) != 0)
+    {
         ::shm_unlink(name);
+    }
     int open_flags = O_CREAT | O_RDWR;
     if ((flags & SHM_CREATE_EXCLUSIVE) != 0)
-        open_flags |= O_EXCL;
-    int fd = shm_open(name, open_flags, 0666);
-    if (fd == -1)
-        return h;
-    if (ftruncate(fd, static_cast<off_t>(size)) == -1)
     {
-        close(fd);
-        shm_unlink(name);
-        return h;
+        open_flags |= O_EXCL;
     }
-    void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int shm_fd = shm_open(name, open_flags, kShmModeRw);
+    if (shm_fd == -1)
+    {
+        return handle;
+    }
+    if (ftruncate(shm_fd, static_cast<off_t>(size)) == -1)
+    {
+        close(shm_fd);
+        shm_unlink(name);
+        return handle;
+    }
+    void *base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (base == MAP_FAILED)
     {
-        close(fd);
+        close(shm_fd);
         shm_unlink(name);
-        return h;
+        return handle;
     }
-    h.base = base;
-    h.size = size;
-    h.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(fd));
-    return h;
+    handle.base = base;
+    handle.size = size;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- store fd in opaque for close(); ShmHandle ABI
+    handle.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(shm_fd));
+    return handle;
 }
 
 ShmHandle shm_attach(const char *name)
 {
-    ShmHandle h{};
-    if (!name)
-        return h;
-    int fd = shm_open(name, O_RDWR, 0666);
-    if (fd == -1)
-        return h;
-    struct stat st;
-    if (fstat(fd, &st) == -1)
+    ShmHandle handle{};
+    if (name == nullptr)
     {
-        close(fd);
-        return h;
+        return handle;
     }
-    size_t size = static_cast<size_t>(st.st_size);
-    void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int shm_fd = shm_open(name, O_RDWR, kShmModeRw);
+    if (shm_fd == -1)
+    {
+        return handle;
+    }
+    struct stat stat_buf;
+    if (fstat(shm_fd, &stat_buf) == -1)
+    {
+        close(shm_fd);
+        return handle;
+    }
+    auto seg_size = static_cast<size_t>(stat_buf.st_size);
+    void *base = mmap(nullptr, seg_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (base == MAP_FAILED)
     {
-        close(fd);
-        return h;
+        close(shm_fd);
+        return handle;
     }
-    h.base = base;
-    h.size = size;
-    h.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(fd));
-    return h;
+    handle.base = base;
+    handle.size = seg_size;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- store fd in opaque for close(); ShmHandle ABI
+    handle.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(shm_fd));
+    return handle;
 }
 
 void shm_close(ShmHandle *handle)
 {
-    if (!handle)
+    if (handle == nullptr)
+    {
         return;
-    if (handle->base && handle->size > 0)
+    }
+    if (handle->base != nullptr && handle->size > 0)
     {
         munmap(handle->base, handle->size);
         handle->base = nullptr;
     }
-    if (handle->opaque)
+    if (handle->opaque != nullptr)
     {
         close(static_cast<int>(reinterpret_cast<intptr_t>(handle->opaque)));
         handle->opaque = nullptr;
@@ -544,8 +565,10 @@ void shm_close(ShmHandle *handle)
 
 void shm_unlink(const char *name)
 {
-    if (name)
+    if (name != nullptr)
+    {
         ::shm_unlink(name);
+    }
 }
 
 #endif

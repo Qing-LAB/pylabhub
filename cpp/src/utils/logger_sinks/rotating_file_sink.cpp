@@ -6,8 +6,9 @@
 namespace pylabhub::utils
 {
 
-RotatingFileSink::RotatingFileSink(std::filesystem::path base_filepath, size_t max_file_size_bytes,
-                                   size_t max_backup_files, bool use_flock)
+RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
+                                   size_t max_file_size_bytes, size_t max_backup_files,  // NOLINT(bugprone-easily-swappable-parameters) order: size then count
+                                   bool use_flock)
     : m_max_file_size_bytes(max_file_size_bytes > 0 ? max_file_size_bytes : 1),
       m_max_backup_files(max_backup_files), m_current_size_bytes(0)
 {
@@ -23,15 +24,12 @@ RotatingFileSink::RotatingFileSink(std::filesystem::path base_filepath, size_t m
     }
 }
 
-RotatingFileSink::~RotatingFileSink()
-{
-    // BaseFileSink destructor will handle closing the file.
-}
-
 void RotatingFileSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
 {
     if (!is_open())
+    {
         return;
+    }
 
     // Check if rotation is needed *before* writing the new message.
     if (m_current_size_bytes >= m_max_file_size_bytes)
@@ -39,7 +37,9 @@ void RotatingFileSink::write(const LogMessage &msg, Sink::WRITE_MODE mode)
         rotate();
         // After rotation, we might not have a valid file handle if opening the new file failed.
         if (!is_open())
+        {
             return;
+        }
     }
 
     auto formatted_message = pylabhub::utils::Sink::format_logmsg(msg, mode);
@@ -58,23 +58,24 @@ std::string RotatingFileSink::description() const
                        m_max_file_size_bytes, m_max_backup_files);
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- rotation steps and recovery branches
 void RotatingFileSink::rotate()
 {
     auto base_path = path();
     close();
 
-    std::error_code ec;
+    std::error_code err_code;
 
     // 1. Remove the oldest backup file, if it exists.
     std::filesystem::path oldest_backup(base_path.string() + "." +
                                         std::to_string(m_max_backup_files));
     if (m_max_backup_files > 0 && std::filesystem::exists(oldest_backup))
     {
-        std::filesystem::remove(oldest_backup, ec);
-        if (ec)
+        std::filesystem::remove(oldest_backup, err_code);
+        if (err_code)
         {
             PLH_DEBUG("Logger Error: Failed to remove oldest backup '{}': {}",
-                      oldest_backup.string(), ec.message());
+                      oldest_backup.string(), err_code.message());
             // Recovery attempt: Try to re-open the original file to continue logging
             // without losing further messages, even though rotation failed.
             try
@@ -97,11 +98,11 @@ void RotatingFileSink::rotate()
         if (std::filesystem::exists(current_backup))
         {
             std::filesystem::path next_backup(base_path.string() + "." + std::to_string(i + 1));
-            std::filesystem::rename(current_backup, next_backup, ec);
-            if (ec)
+            std::filesystem::rename(current_backup, next_backup, err_code);
+            if (err_code)
             {
                 PLH_DEBUG("Logger Error: Failed to rename backup '{}' to '{}': {}",
-                          current_backup.string(), next_backup.string(), ec.message());
+                          current_backup.string(), next_backup.string(), err_code.message());
                 // Recovery attempt: Try to re-open the original file.
                 try
                 {
@@ -121,11 +122,11 @@ void RotatingFileSink::rotate()
     if (m_max_backup_files > 0 && std::filesystem::exists(base_path))
     {
         std::filesystem::path first_backup(base_path.string() + ".1");
-        std::filesystem::rename(base_path, first_backup, ec);
-        if (ec)
+        std::filesystem::rename(base_path, first_backup, err_code);
+        if (err_code)
         {
             PLH_DEBUG("Logger Error: Failed to rename base log file to '{}': {}",
-                      first_backup.string(), ec.message());
+                      first_backup.string(), err_code.message());
             // Recovery attempt: Try to re-open the original file.
             try
             {
@@ -141,11 +142,11 @@ void RotatingFileSink::rotate()
     }
     else if (std::filesystem::exists(base_path))
     {
-        std::filesystem::remove(base_path, ec);
-        if (ec)
+        std::filesystem::remove(base_path, err_code);
+        if (err_code)
         {
             PLH_DEBUG("Logger Error: Failed to remove base log file '{}': {}", base_path.string(),
-                      ec.message());
+                      err_code.message());
             // Recovery attempt: Try to re-open the original file.
             try
             {
@@ -165,12 +166,13 @@ void RotatingFileSink::rotate()
     {
         open(base_path, m_use_flock);
         m_current_size_bytes = 0; // Reset size for the new file.
+        constexpr int kSystemLevel = 5; // L_SYSTEM
         auto formatted_message = pylabhub::utils::Sink::format_logmsg(
             LogMessage{
                 .timestamp = std::chrono::system_clock::now(),
                 .process_id = pylabhub::platform::get_pid(),
                 .thread_id = pylabhub::platform::get_native_thread_id(),
-                .level = 5, // L_SYSTEM
+                .level = kSystemLevel,
                 .body = pylabhub::format_tools::make_buffer("--- Log rotated successfully ---"),
             },
             Sink::ASYNC_WRITE);

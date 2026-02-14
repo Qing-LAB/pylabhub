@@ -33,8 +33,10 @@ This is the **authoritative, implementation-ready specification** for the Data E
 
 Implementation status and priorities are tracked in **`docs/DATAHUB_TODO.md`** (single execution plan). Summary:
 
-- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle), MessageHub lifecycle and no-broker paths, Layer 3 tests (slot protocol, error handling, recovery, policy tests, high-load integrity).
+- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle), MessageHub lifecycle and no-broker paths, Layer 3 tests (slot protocol, error handling, recovery, policy tests, high-load integrity). **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses recursive mutex). **Producer heartbeat** is stored in `reserved_header` at a fixed offset; updated on commit and via `producer->update_heartbeat()`. Liveness uses **heartbeat-first**: if heartbeat is fresh the writer is considered alive, else `is_process_alive(pid)` is used (e.g. for zombie reclaim). **Layer 1.75** (standalone `SlotRWAccess` / `slot_rw_access.hpp`) has been **removed**; typed access is via **Producer/Consumer** `with_typed_write<T>` and `with_typed_read<T>` in `data_block.hpp`. The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers must ensure multithread safety.
 - **Not yet implemented / in progress:** Broker schema registry (1.4), schema versioning (1.5), full MessageHub Phase C/D integration, optional integrity repair path, some DataBlockMutex reintegration and factory behavior. For any section in this HEP that describes functionality not yet in code, consider it **not yet implemented** and sync with **`docs/DATAHUB_TODO.md`** for the current plan and next steps.
+
+Design rationale and critical review (cross-platform, API consistency, flexible zone, integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**, **DATAHUB_CPP_ABSTRACTION_DESIGN**, and **DATAHUB_POLICY_AND_SCHEMA_ANALYSIS**; key content has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder’s README for the merge map).
 
 ---
 
@@ -447,7 +449,7 @@ sequenceDiagram
 ├────────────────────────────────────────────────────┤ +4096
 │ SlotRWState Array                                  │
 │ (ring_buffer_capacity × 48 bytes, cache-aligned)   │
-│ When enable_checksum: followed by SlotChecksums     │
+│ SlotChecksums (always present; checksum_type)       │
 │ (per-slot 33-byte entries), then Flexible Zone.    │
 │ ┌────────────────────────────────────────────────┐ │
 │ │ SlotRWState[0]:                                │ │
@@ -510,7 +512,7 @@ struct SharedMemoryHeader {
     uint32_t unit_block_size;           // Bytes per slot (power of 2)
     uint32_t ring_buffer_capacity;     // Number of slots
     size_t flexible_zone_size;         // Total TABLE 1 size
-    bool enable_checksum;               // BLAKE2b checksums enabled
+    uint8_t checksum_type;              // ChecksumType; mandatory (BLAKE2b)
     ChecksumPolicy checksum_policy;     // Manual or Enforced
 
     // === Ring Buffer State (Hot Path) ===
@@ -1076,27 +1078,23 @@ meta->last_timestamp_ns = now();
 graph TB
     L3[Layer 3: Script Bindings<br/>Python/Lua<br/>Productivity Mode]
     L2[Layer 2: Transaction API<br/>with_write_transaction<br/>RAII Safety]
-    L175[Layer 1.75: Template Wrappers<br/>with_typed_write&lt;T&gt;<br/>Type-Safe Zero-Cost]
-    L15[Layer 1.5: C++ Wrappers<br/>SlotWriteGuard<br/>RAII + Exceptions]
-    L1[Layer 1: Primitive API<br/>acquire_write_slot<br/>Manual Control]
+    L15[Layer 1.5: C++ Wrappers<br/>SlotWriteGuard / SlotConsumeHandle<br/>RAII + Exceptions]
+    L1[Layer 1: Primitive API<br/>Producer/Consumer<br/>with_typed_write/read&lt;T&gt;]
     L0[Layer 0: C Interface<br/>slot_rw_acquire_write<br/>ABI-Stable Cross-Language]
 
     L3 --> L2
-    L2 --> L175
-    L175 --> L15
+    L2 --> L15
     L15 --> L1
     L1 --> L0
 
     L3 -.GC Managed.-> GC[Garbage Collection]
     L2 -.RAII.-> SCOPE[Scope-Based Cleanup]
-    L175 -.Inline.-> COMPILE[Compile-Time Optimized]
     L15 -.Exception Safe.-> EX[Exception Handling]
-    L1 -.Manual.-> USER[User Responsibility]
-    L0 -.ABI.-> DYN[Dynamic Library]
+    L1 -.Thread-Safe.-> MUTEX[Internal Mutex]
+    L0 -.ABI, no lock.-> DYN[User-Managed Locking]
 
     style L3 fill:#2a4a2a
     style L2 fill:#3a3a2a
-    style L175 fill:#4a2a2a
     style L15 fill:#5a2a2a
     style L1 fill:#6a2a2a
     style L0 fill:#7a2a2a
@@ -1210,166 +1208,43 @@ void consumer_read(SlotRWState* rw_state, void* slot_buffer, size_t buffer_size)
 }
 ```
 
-### 5.3 Layer 1.75: Template Wrappers (Zero-Cost Type-Safe)
+### 5.3 Layer 1.75: Template Wrappers — Removed (Use Producer/Consumer)
 
-**Purpose:** Type-safe, zero-overhead abstraction with compile-time checks
+**Status:** The standalone **Layer 1.75** header `slot_rw_access.hpp` and class **SlotRWAccess** have been **removed**. Type-safe, zero-overhead typed access is provided by **DataBlockProducer** and **DataBlockConsumer** in `data_block.hpp` via `with_typed_write<T>` and `with_typed_read<T>`.
 
-**Header:** `pylabhub/slot_rw_access.hpp`
+**Current API (Layer 1):**
 
-```cpp
-#ifndef PYLABHUB_SLOT_RW_ACCESS_HPP
-#define PYLABHUB_SLOT_RW_ACCESS_HPP
-
-#include <functional>
-#include <pylabhub/slot_rw_coordinator.h>
-
-namespace pylabhub {
-
-class SlotRWAccess {
-public:
-    // === Type-Safe Write Access ===
-    template <typename T, typename Func>
-    static auto with_typed_write(
-        SlotRWState* rw_state,
-        void* buffer,
-        size_t buffer_size,
-        Func&& func,
-        int timeout_ms = 100
-    ) -> std::invoke_result_t<Func, T&>
-    {
-        // Compile-time checks
-        static_assert(std::is_trivially_copyable_v<T>,
-            "Type T must be trivially copyable for shared memory");
-
-        if (buffer_size < sizeof(T)) {
-            throw std::runtime_error("Buffer too small for type T");
-        }
-
-        // Acquire write access
-        SlotAcquireResult res = slot_rw_acquire_write(rw_state, timeout_ms);
-        if (res != SLOT_ACQUIRE_OK) {
-            throw std::runtime_error(slot_acquire_result_string(res));
-        }
-
-        // RAII guard ensures release
-        struct Guard {
-            SlotRWState* rw;
-            bool committed = false;
-            ~Guard() {
-                if (committed) {
-                    slot_rw_commit(rw);
-                }
-                slot_rw_release_write(rw);
-            }
-        } guard{rw_state};
-
-        // Invoke user lambda with typed reference
-        T& data = *reinterpret_cast<T*>(buffer);
-        auto result = std::invoke(std::forward<Func>(func), data);
-
-        guard.committed = true;  // Auto-commit on success
-        return result;
-    }
-
-    // === Type-Safe Read Access ===
-    template <typename T, typename Func>
-    static auto with_typed_read(
-        SlotRWState* rw_state,
-        const void* buffer,
-        size_t buffer_size,
-        Func&& func,
-        bool validate_generation = true
-    ) -> std::invoke_result_t<Func, const T&>
-    {
-        static_assert(std::is_trivially_copyable_v<T>,
-            "Type T must be trivially copyable for shared memory");
-
-        if (buffer_size < sizeof(T)) {
-            throw std::runtime_error("Buffer too small for type T");
-        }
-
-        // Acquire read access
-        uint64_t generation = 0;
-        SlotAcquireResult res = slot_rw_acquire_read(rw_state, &generation);
-        if (res != SLOT_ACQUIRE_OK) {
-            throw std::runtime_error(slot_acquire_result_string(res));
-        }
-
-        // RAII guard ensures release
-        struct Guard {
-            SlotRWState* rw;
-            uint64_t gen;
-            bool validate;
-            ~Guard() {
-                if (validate && !slot_rw_validate_read(rw, gen)) {
-                    // Log validation failure (data was overwritten)
-                }
-                slot_rw_release_read(rw);
-            }
-        } guard{rw_state, generation, validate_generation};
-
-        // Invoke user lambda with typed const reference
-        const T& data = *reinterpret_cast<const T*>(buffer);
-        return std::invoke(std::forward<Func>(func), data);
-    }
-};
-
-} // namespace pylabhub
-
-#endif // PYLABHUB_SLOT_RW_ACCESS_HPP
+```mermaid
+classDiagram
+    DataBlockProducer --> SlotWriteHandle : acquires
+    DataBlockConsumer --> SlotConsumeHandle : acquires
+    DataBlockProducer : with_typed_write~T~(timeout, func)
+    DataBlockConsumer : with_typed_read~T~(slot_id, func)
 ```
 
-**Usage Example:**
+**Usage (typed write/read on Producer/Consumer):**
 ```cpp
-#include <pylabhub/slot_rw_access.hpp>
+#include <pylabhub/data_block.hpp>
 
-struct SensorData {
-    uint64_t timestamp_ns;
-    float temperature;
-    float pressure;
-    float humidity;
-};
+struct SensorData { uint64_t timestamp_ns; float temperature; float pressure; float humidity; };
 
-// Producer: Type-safe write
-void write_sensor_data(SlotRWState* rw_state, void* buffer, size_t size) {
-    using namespace pylabhub;
+// Producer: type-safe write (replaces SlotRWAccess::with_typed_write)
+producer->with_typed_write<SensorData>(100, [&](SensorData& data) {
+    data.timestamp_ns = get_timestamp();
+    data.temperature = sensor.read_temperature();
+    data.pressure = sensor.read_pressure();
+    data.humidity = sensor.read_humidity();
+});
 
-    SlotRWAccess::with_typed_write<SensorData>(
-        rw_state, buffer, size,
-        [&](SensorData& data) {
-            data.timestamp_ns = get_timestamp();
-            data.temperature = sensor.read_temperature();
-            data.pressure = sensor.read_pressure();
-            data.humidity = sensor.read_humidity();
-            // Auto-commit on lambda exit
-        },
-        /*timeout_ms=*/100
-    );
-}
-
-// Consumer: Type-safe read with validation
-void read_sensor_data(SlotRWState* rw_state, const void* buffer, size_t size) {
-    using namespace pylabhub;
-
-    SlotRWAccess::with_typed_read<SensorData>(
-        rw_state, buffer, size,
-        [&](const SensorData& data) {
-            process_temperature(data.temperature);
-            process_pressure(data.pressure);
-            process_humidity(data.humidity);
-            // Auto-release on lambda exit
-        },
-        /*validate_generation=*/true  // Detect wrap-around
-    );
-}
+// Consumer: type-safe read (replaces SlotRWAccess::with_typed_read)
+consumer->with_typed_read<SensorData>(slot_id, [&](const SensorData& data) {
+    process_temperature(data.temperature);
+    process_pressure(data.pressure);
+    process_humidity(data.humidity);
+}, /*validate_generation=*/true);
 ```
 
-**Benefits:**
-- ✅ **Type-Safe:** Compile-time type checking, no casts in user code
-- ✅ **Zero-Overhead:** Inline templates, no runtime function calls
-- ✅ **RAII Guaranteed:** Impossible to forget release
-- ✅ **Exception-Safe:** Guard cleanup even on exceptions
-- ✅ **Readable:** Clean lambda syntax, minimal boilerplate
+**Benefits (unchanged):** Type-safe, zero-overhead, RAII, exception-safe. Producer/Consumer also provide internal mutex (thread-safe); see implementation status and §5.5.
 
 ### 5.4 Layer 2: Transaction API (Recommended for Applications)
 
@@ -1575,7 +1450,7 @@ Lifetime: All write handles must be released or destroyed before destroying the 
 | **verify_checksum_slot** / **verify_checksum_flexible_zone** | Verify stored BLAKE2b. | When Manual, caller invokes; when Enforced, invoked on release. |
 | **register_heartbeat** / **update_heartbeat** / **unregister_heartbeat** | Liveness in header. | Header `consumer_heartbeats[]`. |
 
-Consumer is not thread-safe: use one consumer per thread or serialize access. All consume handles must be released before destroying the consumer.
+Consumer is **thread-safe** (internal recursive mutex). All consume handles must be released before destroying the consumer.
 
 #### 5.5.5 Slot iterator (consumer)
 
@@ -1656,7 +1531,7 @@ Correct use of the following **helper modules** is required for consistent layou
 - **physical_page_size** — Allocation granularity (e.g. 4K, 4M).
 - **ring_buffer_capacity** — Number of slots (≥ 1).
 
-**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size), shared_secret (0 = generate or discovery), enable_checksum, checksum_policy, flexible_zone_configs. See implementation docs for full list.
+**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size), shared_secret (0 = generate or discovery), checksum_policy, flexible_zone_configs. checksum_type is mandatory (default BLAKE2b). See implementation docs for full list.
 
 **Correct use:**
 1. **Producer:** Build a `DataBlockConfig` with all required fields set, then call the creator (e.g. factory that ultimately calls the creator constructor). Do not rely on implicit defaults for policy, consumer_sync_policy, physical_page_size, or ring_buffer_capacity.
@@ -1683,7 +1558,7 @@ Correct use of the following **helper modules** is required for consistent layou
 
 #### 5.6.5 Checksum and flexible zone helpers
 
-**ChecksumPolicy:** When checksums are enabled (enable_checksum), either **Manual** (caller calls update/verify explicitly) or **Enforced** (system updates on write release and verifies on read release). Slot and flexible zone checksums are stored in the header/control zone. Correct use: for Manual, call update before release_write_slot and verify before or on release_consume_slot; for Enforced, the implementation does this automatically. See Section 10.2.
+**ChecksumPolicy:** Checksum storage is always present (checksum_type). Either **Manual** (caller calls update/verify explicitly) or **Enforced** (system updates on write release and verifies on read release). Slot and flexible zone checksums are stored in the header/control zone. Correct use: for Manual, call update before release_write_slot and verify before or on release_consume_slot; for Enforced, the implementation does this automatically. See Section 10.2.
 
 **Flexible zones:** Defined by config (flexible_zone_configs) and agreed at attach when expected_config is provided. Access only after the zone is defined and validated; otherwise flexible_zone_span returns empty. Use flexible_zone&lt;T&gt;(index) only when the zone size is at least sizeof(T). See Section 2.2 (TABLE 1) and FlexibleZoneInfo in the implementation.
 
@@ -1762,7 +1637,7 @@ All messages use **JSON over ZeroMQ REQ-REP**.
     "unit_block_size": 4096,
     "ring_buffer_capacity": 8,
     "policy": "RingBuffer",
-    "enable_checksum": true,
+    "checksum_type": "BLAKE2b",
     "flexible_zone_count": 2,
     "producer_hostname": "lab-workstation-01"
   }
@@ -2008,6 +1883,17 @@ void DataBlockProducer::check_consumer_health() {
 - ✅ Producer detects dead consumers immediately
 - ✅ Automatic cleanup via PID liveness checks
 
+**Producer (writer) heartbeat and liveness:** The **producer heartbeat** is stored in the block’s `reserved_header` at a fixed offset (e.g. `PRODUCER_HEARTBEAT_OFFSET`). It is updated on every `release_write_slot` (after `commit_write`) and can be refreshed when idle via `producer->update_heartbeat()`. **Writer liveness** uses a **heartbeat-first** policy: `is_writer_alive(header, pid)` returns true if the stored heartbeat for that PID is fresh; otherwise it falls back to `is_process_alive(pid)`. This is used when acquiring a write slot (zombie reclaim) and in recovery/diagnostics. The following flow summarizes the decision:
+
+```mermaid
+flowchart LR
+    A[Check writer PID] --> B{Heartbeat fresh?}
+    B -->|yes| C[Alive]
+    B -->|no| D[is_process_alive]
+    D --> C
+    D --> E[Dead, reclaim]
+```
+
 ### 6.5 MessageHub Thread Safety Implementation
 
 **Design Decision (from P2):** Internal mutex protecting all ZeroMQ socket operations.
@@ -2151,7 +2037,7 @@ DataBlockConfig config{
     .unit_block_size = 4096,              // 4 KB per slot
     .ring_buffer_capacity = 1,            // Single buffer (latest value)
     .policy = DataBlockPolicy::Single,    // Overwrite old data
-    .enable_checksum = true,
+    .checksum_type = ChecksumType::BLAKE2b,
     .checksum_policy = ChecksumPolicy::Manual,
     .flexible_zone_configs = {
         {
@@ -2320,7 +2206,7 @@ DataBlockConfig config{
     .unit_block_size = 6'220'800,         // 1920×1080×3 bytes
     .ring_buffer_capacity = 2,            // Double buffer
     .policy = DataBlockPolicy::DoubleBuffer,
-    .enable_checksum = true,
+    .checksum_type = ChecksumType::BLAKE2b,
     .checksum_policy = ChecksumPolicy::Enforced,  // Integrity critical
     .flexible_zone_configs = {
         {
@@ -2500,7 +2386,7 @@ DataBlockConfig config{
     .unit_block_size = 4096,
     .ring_buffer_capacity = 64,           // 64-slot FIFO queue
     .policy = DataBlockPolicy::RingBuffer,
-    .enable_checksum = false,             // Performance priority
+    .checksum_policy = ChecksumPolicy::None,  // No enforcement; storage still present
     .checksum_policy = ChecksumPolicy::Manual,
     .flexible_zone_configs = {
         {

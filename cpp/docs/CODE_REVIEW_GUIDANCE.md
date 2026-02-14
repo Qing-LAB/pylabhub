@@ -2,7 +2,7 @@
 
 **Purpose:** Instructions for thorough and critical code review: what to check first, higher-level requirements, and test integration after review. This document is a **draft framework**; improve it with additional discussion and project-specific learnings.
 
-**Doc policy:** This guidance complements **`docs/IMPLEMENTATION_GUIDANCE.md`** (implementation patterns and checklist) and **`docs/DOC_STRUCTURE.md`** (documentation layout). Execution plan and priorities live in **`docs/DATAHUB_TODO.md`**. For test rationale and phase detail, see **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**.
+**Doc policy:** This guidance is part of the documentation structure (**`docs/DOC_STRUCTURE.md`** §2.5). It complements **`docs/IMPLEMENTATION_GUIDANCE.md`** (implementation patterns and checklist). Execution plan and priorities live in **`docs/DATAHUB_TODO.md`**. For test rationale and phase detail, see **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**. Review findings and follow-ups are recorded in a report; when completed, the report is archived (see DOC_STRUCTURE §8). Latest: **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`** (2026-02-13).
 
 ---
 
@@ -29,7 +29,7 @@ Reviewers should know where code and scripts live, how the build is organized, a
 | What to do next / roadmap | **`docs/DATAHUB_TODO.md`** |
 | How to implement / patterns / checklist | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
 | Doc structure and naming | **`docs/DOC_STRUCTURE.md`** |
-| DataHub design spec | **`docs/hep/HEP-CORE-0002-DataHub-FINAL.md`** (and other HEPs in `docs/hep/`) |
+| DataHub design spec | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (and other HEPs in `docs/HEP/`) |
 | Test plan and Phase A–D | **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** |
 | Topic summaries | **`docs/README/`** (e.g. README_DataHub.md, README_testing.md, README_CMake_Design.md) |
 
@@ -59,13 +59,19 @@ Reviewers should know where code and scripts live, how the build is organized, a
 | Area | Location | Notes |
 |------|----------|--------|
 | **Public headers** | `cpp/src/include/` | Layered umbrella headers: `plh_platform.hpp`, `plh_base.hpp`, `plh_service.hpp`, `plh_datahub.hpp`. Utils under `utils/`. |
-| **Library source** | `cpp/src/utils/` (and other `src/` subdirs) | Implementation (`.cpp`) for `pylabhub-utils`; **do not modify `third_party/`** unless instructed. |
+| **Library source** | `cpp/src/utils/` (and other `src/` subdirs) | Implementation (`.cpp`) for `pylabhub-utils`. |
 | **Tests** | `cpp/tests/` | `test_framework/` (shared infra), `test_layer0_platform/`, `test_layer1_base/`, `test_layer2_service/`, `test_layer3_datahub/`. |
 | **Examples** | `cpp/examples/` | e.g. `datahub_producer_example.cpp`. |
 | **Scripts / tools** | `cpp/tools/` | e.g. `format.sh` for code formatting. |
 | **CMake** | Root and per-directory `CMakeLists.txt`, `cmake/` helpers | Cross-reference before proposing build changes. |
 
-### 1.4 Conventions (CLAUDE.md)
+### 1.4 Review Scope: Focus on Our Own Code
+
+- **Focus review on our own code.** The main codebase lives under **`src/`**: public headers in `src/include/`, library implementation in `src/utils/` and other `src/` subdirs, plus `tests/`, `examples/`, and `tools/`. Review changes there for correctness, style, and alignment with IMPLEMENTATION_GUIDANCE and DATAHUB_TODO.
+- **`third_party/` is upstream code.** It is mainly submodules or vendored upstream projects; we **do not modify their source** (no patches, no edits inside third_party except as below). Treat third_party as read-only for review purposes unless a specific exception is agreed.
+- **Exception: integration only.** The only changes we make in or around third_party are **CMake scripts** that integrate those dependencies into our build: **`third_party/CMakeLists.txt`** and the **`third_party/cmake/`** subdirectory. Review those integration scripts when build or dependency behavior is in scope; do not review or change the upstream code inside third_party itself.
+
+### 1.5 Conventions (CLAUDE.md)
 
 - **Style:** `.clang-format` (LLVM-based, 4-space indent, 100-char lines, Allman braces). `.clang-tidy` with Clang treats warnings as errors.
 - **Layered includes:** Prefer one umbrella header per layer; they pull in transitive includes.
@@ -107,11 +113,11 @@ Do these before deep design or concurrency review. They catch common issues and 
 
 ### 2.6 Code Quality and Maintainability (common practice)
 
-Reviewers should routinely check the following; see **`docs/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`** for detailed patterns and priorities.
+Reviewers should routinely check the following; see **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring and (archived) **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`** for detailed patterns and priorities.
 
 - [ ] **Duplication and redundancy:** No repeated blocks that could be a shared helper (e.g. timeout/backoff, handle construction, buffer pointer calculation). Obsolete or deprecated code is either removed or clearly marked and tracked.
 - [ ] **Layered design and abstraction:** Public API follows the intended layers (e.g. DataBlock: prefer transaction API; C API only where justified). Common tasks are abstracted; no unnecessary bypass of abstraction.
-- [ ] **Refactoring opportunities:** Where the same logic appears in multiple places, consider extracting a common function and document in CODE_QUALITY_AND_REFACTORING_ANALYSIS if deferred.
+- [ ] **Refactoring opportunities:** Where the same logic appears in multiple places, consider extracting a common function; if deferred, note in IMPLEMENTATION_GUIDANCE § Deferred refactoring or DATAHUB_TODO.
 - [ ] **Naming and consistency:** Variable names are consistent (e.g. `slot_index` vs `slot_id`); comments match the code; no misleading or stale comments.
 - [ ] **Developer-friendly comments:** High-risk or subtle areas are commented (e.g. TOCTTOU, zombie reclaim, single-point creation, ABI-sensitive layout). Things that need attention are called out.
 - [ ] **Doxygen and public API:** Public classes and public API functions have Doxygen (`@brief`, `@param`, `@return` as appropriate). Lifetime and thread-safety notes where relevant.
@@ -159,7 +165,7 @@ After the first pass, check design and project-specific requirements. Use IMPLEM
 - [ ] **Hot path:** No unnecessary exceptions or heavy work in hot paths.
 - [ ] **Atomics:** Relaxed ordering only where safe; backoff for spin loops; no unnecessary barriers.
 
-Use the **Code Review Checklist** in **`docs/IMPLEMENTATION_GUIDANCE.md`** (Before Submitting PR, Design Review, Performance Review) as the authoritative project checklist; this section summarizes and situates it. For duplication, refactoring opportunities, Doxygen gaps, and developer-facing comments, see **`docs/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**.
+Use the **Code Review Checklist** in **`docs/IMPLEMENTATION_GUIDANCE.md`** (Before Submitting PR, Design Review, Performance Review) as the authoritative project checklist; this section summarizes and situates it. For duplication, refactoring opportunities, Doxygen gaps, and developer-facing comments, see **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring and the archived **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**.
 
 ---
 
@@ -196,6 +202,7 @@ Details: **`docs/README/README_testing.md`**; test plan and phases: **`docs/test
 - [ ] **New behavior covered:** New or modified behavior has corresponding tests (unit or integration as appropriate).
 - [ ] **No regressions:** Existing tests that touch the changed area still pass; no unnecessary disable or skip without a documented reason.
 - [ ] **Cross-platform:** Tests are run (or documented as skipped) on all supported platforms where applicable; no silent platform-only assumptions.
+- [ ] **Test-fix reasoning:** When reviewing fixes for failing tests, apply the discipline in IMPLEMENTATION_GUIDANCE § “Responding to test failures”: verify whether the failure revealed a bug or a flawed test; avoid tweaking tests to pass without scrutiny, and avoid changing production code just to satisfy incorrect test expectations.
 
 ---
 

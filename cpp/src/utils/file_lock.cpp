@@ -25,6 +25,12 @@ using namespace pylabhub::platform;
 // Module-level flag to indicate if the FileLock has been initialized.
 static std::atomic<bool> g_filelock_initialized{false};
 
+namespace
+{
+constexpr int kLockFileMode = 0644;
+constexpr int kFileLockShutdownTimeoutMs = 2000;
+}
+
 static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
     try
@@ -106,53 +112,55 @@ struct FileLockImpl
 #endif
 };
 
-void FileLock::FileLockImplDeleter::operator()(FileLockImpl *p)
+void FileLock::FileLockImplDeleter::operator()(FileLockImpl *ptr)
 {
-    if (!p)
+    if (ptr == nullptr)
+    {
         return;
+    }
 
-    if (p->valid)
+    if (ptr->valid)
     {
         // This is noisy, so keep it at TRACE level
         // LOGGER_DEBUG("FileLock: Releasing lock for '{}'", p->path.string());
     }
 
-    if (p->valid)
+    if (ptr->valid)
     {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        if (p->handle)
+        if (ptr->handle != nullptr)
         {
             OVERLAPPED ov = {};
-            UnlockFileEx((HANDLE)p->handle, 0, 1, 0, &ov);
-            CloseHandle((HANDLE)p->handle);
-            p->handle = nullptr;
+            UnlockFileEx((HANDLE)ptr->handle, 0, 1, 0, &ov);
+            CloseHandle((HANDLE)ptr->handle);
+            ptr->handle = nullptr;
         }
 #else
-        if (p->fd != -1)
+        if (ptr->fd != -1)
         {
             // Release using flock (kernel advisory whole-file unlock)
             // Best-effort: ignore errors on unlock/close path.
-            flock(p->fd, LOCK_UN);
-            ::close(p->fd);
-            p->fd = -1;
+            flock(ptr->fd, LOCK_UN);
+            ::close(ptr->fd);
+            ptr->fd = -1;
         }
 #endif
     }
 
-    if (p->proc_state)
+    if (ptr->proc_state != nullptr)
     {
-        std::lock_guard<std::mutex> lg(g_proc_registry_mtx);
-        if (--p->proc_state->owners == 0)
+        std::lock_guard<std::mutex> lock_guard(g_proc_registry_mtx);
+        if (--ptr->proc_state->owners == 0)
         {
-            p->proc_state->cv.notify_all();
-            if (p->proc_state->waiters == 0)
+            ptr->proc_state->cv.notify_all();
+            if (ptr->proc_state->waiters == 0)
             {
-                g_proc_locks.erase(p->lock_key);
+                g_proc_locks.erase(ptr->lock_key);
             }
         }
     }
 
-    delete p;
+    delete ptr;
 }
 
 // Forward declarations
@@ -166,27 +174,28 @@ static std::error_code ensure_lock_directory(FileLockImpl *pImpl);
 static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
                              std::optional<std::chrono::milliseconds> timeout);
 
-std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesystem::path &target,
+std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesystem::path &path,
                                                                ResourceType type) noexcept
 {
     try
     {
         // A path containing a null character or other control characters is invalid.
-        for (const auto &c : target.native())
+        constexpr int kFirstControlCharLimit = 32;
+        for (const auto &path_char : path.native())
         {
-            if (c >= 0 && c < 32)
+            if (path_char >= 0 && path_char < kFirstControlCharLimit)
             {
                 return {};
             }
         }
 
         std::filesystem::path canonical_target;
-        std::error_code ec;
-        canonical_target = std::filesystem::canonical(target, ec);
+        std::error_code err_code;
+        canonical_target = std::filesystem::canonical(path, err_code);
 
-        if (ec)
+        if (err_code)
         {
-            canonical_target = std::filesystem::absolute(target).lexically_normal();
+            canonical_target = std::filesystem::absolute(path).lexically_normal();
         }
 
         if (type == ResourceType::Directory)
@@ -201,12 +210,9 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
             fname += ".dir.lock";
             return parent / fname;
         }
-        else
-        {
-            auto p = canonical_target;
-            p += ".lock";
-            return p;
-        }
+        auto lock_path = canonical_target;
+        lock_path += ".lock";
+        return lock_path;
     }
     catch (...)
     {
@@ -215,30 +221,50 @@ std::filesystem::path FileLock::get_expected_lock_fullname_for(const std::filesy
     }
 }
 
+// -----------------------------------------------------------------------------
+// Exception and panic contract (pImpl-safe, no accidental termination)
+// -----------------------------------------------------------------------------
+// - All public APIs (constructors, try_lock) are noexcept. No exceptions propagate.
+// - Allocation: we use new (std::nothrow). On OOM, direct ctors leave pImpl nullptr
+//   (valid() false); try_lock returns std::nullopt. Callers must check valid() or
+//   optional and handle failure (e.g. JsonConfig returns false and error_code).
+// - Lifecycle: direct constructors call PLH_PANIC (abort) if the FileLock module
+//   was not initialized via LifecycleManager. This is intentional programmer-error
+//   handling. try_lock returns nullopt instead so it remains non-fatal.
+// - Lock acquisition failure (timeout, already held, etc.) is never an exception;
+//   it is reported via valid() false or try_lock returning nullopt.
+// -----------------------------------------------------------------------------
+
 // Public Methods
 FileLock::FileLock(const std::filesystem::path &path, ResourceType type, LockMode mode) noexcept
-    : pImpl(new FileLockImpl)
+    : pImpl(new (std::nothrow) FileLockImpl)
 {
     if (!lifecycle_initialized())
     {
         PLH_PANIC("FATAL: FileLock created before its module was initialized via LifecycleManager. "
                   "Aborting.");
     }
-    pImpl->path = path;
-    open_and_lock(pImpl.get(), type, mode, std::nullopt);
+    if (pImpl != nullptr)
+    {
+        pImpl->path = path;
+        open_and_lock(pImpl.get(), type, mode, std::nullopt);
+    }
 }
 
 FileLock::FileLock(const std::filesystem::path &path, ResourceType type,
                    std::chrono::milliseconds timeout) noexcept
-    : pImpl(new FileLockImpl)
+    : pImpl(new (std::nothrow) FileLockImpl)
 {
     if (!lifecycle_initialized())
     {
         PLH_PANIC("FATAL: FileLock created before its module was initialized via LifecycleManager. "
                   "Aborting.");
     }
-    pImpl->path = path;
-    open_and_lock(pImpl.get(), type, LockMode::Blocking, timeout);
+    if (pImpl != nullptr)
+    {
+        pImpl->path = path;
+        open_and_lock(pImpl.get(), type, LockMode::Blocking, timeout);
+    }
 }
 
 FileLock::~FileLock() = default;
@@ -293,7 +319,11 @@ std::optional<FileLock> FileLock::try_lock(const std::filesystem::path &path, Re
     }
 
     FileLock lock; // Use private constructor
-    lock.pImpl.reset(new FileLockImpl);
+    lock.pImpl.reset(new (std::nothrow) FileLockImpl);
+    if (lock.pImpl == nullptr)
+    {
+        return std::nullopt; // Allocation failure; report as lock unavailable
+    }
     lock.pImpl->path = path;
 
     open_and_lock(lock.pImpl.get(), type, mode, std::nullopt);
@@ -314,7 +344,11 @@ std::optional<FileLock> FileLock::try_lock(const std::filesystem::path &path, Re
     }
 
     FileLock lock; // Use private constructor
-    lock.pImpl.reset(new FileLockImpl);
+    lock.pImpl.reset(new (std::nothrow) FileLockImpl);
+    if (lock.pImpl == nullptr)
+    {
+        return std::nullopt; // Allocation failure; report as lock unavailable
+    }
     lock.pImpl->path = path;
 
     open_and_lock(lock.pImpl.get(), type, LockMode::Blocking, timeout);
@@ -330,19 +364,25 @@ std::optional<FileLock> FileLock::try_lock(const std::filesystem::path &path, Re
 static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
                           std::optional<std::chrono::milliseconds> timeout)
 {
-    if (!pImpl)
+    if (pImpl == nullptr)
+    {
         return;
+    }
     pImpl->valid = false;
     pImpl->ec.clear();
 
     if (!prepare_lock_path(pImpl, type))
-        return;
-    if (!acquire_process_local_lock(pImpl, mode, timeout))
-        return;
-
-    if (auto ec = ensure_lock_directory(pImpl); ec)
     {
-        pImpl->ec = ec;
+        return;
+    }
+    if (!acquire_process_local_lock(pImpl, mode, timeout))
+    {
+        return;
+    }
+
+    if (auto err_code = ensure_lock_directory(pImpl); err_code)
+    {
+        pImpl->ec = err_code;
         rollback_process_local_lock(pImpl);
         return;
     }
@@ -368,6 +408,7 @@ static bool prepare_lock_path(FileLockImpl *pImpl, ResourceType type)
     return true;
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- blocking vs non-blocking and waiter logic
 static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
                                        std::optional<std::chrono::milliseconds> timeout)
 {
@@ -405,15 +446,19 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
             struct ScopedWaiter
             {
                 std::shared_ptr<ProcLockState> s;
-                ScopedWaiter(std::shared_ptr<ProcLockState> state) : s(state)
+                explicit ScopedWaiter(std::shared_ptr<ProcLockState> state) : s(std::move(state))
                 {
-                    if (s)
+                    if (s != nullptr)
+                    {
                         s->waiters++;
+                    }
                 }
                 ~ScopedWaiter()
                 {
-                    if (s)
+                    if (s != nullptr)
+                    {
                         s->waiters--;
+                    }
                 }
             } waiter_guard(state_ref);
 
@@ -450,7 +495,7 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
 
 static void rollback_process_local_lock(FileLockImpl *pImpl)
 {
-    std::lock_guard<std::mutex> lg(g_proc_registry_mtx);
+    std::lock_guard<std::mutex> lock_guard(g_proc_registry_mtx);
     if (pImpl->proc_state)
     {
         if (--pImpl->proc_state->owners == 0)
@@ -577,8 +622,8 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     open_flags |= O_NOFOLLOW;
 #endif
 
-    int fd = ::open(os_path.c_str(), open_flags, 0644);
-    if (fd == -1)
+    int lock_fd = ::open(os_path.c_str(), open_flags, kLockFileMode);
+    if (lock_fd == -1)
     {
         // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback,
         // we could retry without O_NOFOLLOW. For now, treat ELOOP as an error (safer).
@@ -587,66 +632,67 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     }
 #ifndef O_CLOEXEC
     // set FD_CLOEXEC manually if O_CLOEXEC not available
-    int flags = fcntl(fd, F_GETFD);
+    int flags = fcntl(lock_fd, F_GETFD);
     if (flags != -1)
     {
-        fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+        fcntl(lock_fd, F_SETFD, flags | FD_CLOEXEC);
     }
 #endif
 
     auto guard = pylabhub::basics::make_scope_guard(
         [&]()
         {
-            if (!pImpl->valid && fd != -1)
-                ::close(fd);
+            if (!pImpl->valid && lock_fd != -1)
+            {
+                ::close(lock_fd);
+            }
         });
 
     // If purely blocking with no timeout, just perform flock blocking call directly
     if (mode == LockMode::Blocking && !timeout)
     {
-        PLH_DEBUG("PID {} - Attempting blocking flock(fd={}, LOCK_EX) for {}", getpid(), fd,
+        PLH_DEBUG("PID {} - Attempting blocking flock(fd={}, LOCK_EX) for {}", getpid(), lock_fd,
                   os_path.string());
-        if (flock(fd, LOCK_EX) == 0)
+        if (flock(lock_fd, LOCK_EX) == 0)
         {
-            PLH_DEBUG("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(), fd,
-                      os_path.string());
-            pImpl->fd = fd;
+            PLH_DEBUG("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(),
+                      lock_fd, os_path.string());
+            pImpl->fd = lock_fd;
             pImpl->valid = true;
             return true;
         }
-        else
-        {
-            int err = errno;
-            PLH_DEBUG("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
-                      os_path.string(), std::strerror(err));
-            pImpl->ec = std::error_code(err, std::generic_category());
-            return false;
-        }
+        int err = errno;
+        PLH_DEBUG("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), lock_fd,
+                  os_path.string(), std::strerror(err));
+        pImpl->ec = std::error_code(err, std::generic_category());
+        return false;
     }
 
     // Timed or Non-blocking acquisition: try flock with LOCK_NB and poll until timeout if
     // necessary.
     std::chrono::steady_clock::time_point start_time;
     if (timeout)
+    {
         start_time = std::chrono::steady_clock::now();
+    }
 
     int flock_op = LOCK_EX | LOCK_NB;
 
     while (true)
     {
         PLH_DEBUG("PID {} - Attempting non-blocking flock(fd={}, LOCK_EX | LOCK_NB) for {}",
-                  getpid(), fd, os_path.string());
-        if (flock(fd, flock_op) == 0)
+                  getpid(), lock_fd, os_path.string());
+        if (flock(lock_fd, flock_op) == 0)
         {
             PLH_DEBUG("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(),
-                      fd, os_path.string());
-            pImpl->fd = fd;
+                      lock_fd, os_path.string());
+            pImpl->fd = lock_fd;
             pImpl->valid = true;
             return true;
         }
 
         int err = errno;
-        PLH_DEBUG("PID {} - Non-blocking flock(fd={}) failed for {}. Error: {}", getpid(), fd,
+        PLH_DEBUG("PID {} - Non-blocking flock(fd={}) failed for {}. Error: {}", getpid(), lock_fd,
                   os_path.string(), std::strerror(err));
         // Busy/resource unavailable errors: EWOULDBLOCK or EAGAIN indicate lock is held by someone
         // else.
@@ -669,7 +715,6 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         }
 
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
-        continue;
     }
 
 #endif
@@ -699,7 +744,7 @@ ModuleDef FileLock::GetLifecycleModule()
 {
     ModuleDef module("pylabhub::utils::FileLock");
     module.set_startup(&do_filelock_startup);
-    module.set_shutdown(&do_filelock_shutdown, 2000);
+    module.set_shutdown(&do_filelock_shutdown, kFileLockShutdownTimeoutMs);
     return module;
 }
 

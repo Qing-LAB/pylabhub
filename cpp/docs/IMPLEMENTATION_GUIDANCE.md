@@ -15,20 +15,24 @@
    - [Error reporting: C vs C++](#error-reporting-c-vs-c)
    - [Explicit noexcept where the public API does not throw](#explicit-noexcept-where-the-public-api-does-not-throw)
    - [Config validation and memory block setup](#config-validation-and-memory-block-setup-single-point-of-access)
-3. [Codebase Structure](#codebase-structure)
-4. [Integration with Existing Services](#integration-with-existing-services)
-5. [ABI Stability Guidelines](#abi-stability-guidelines)
-6. [Memory Management Patterns](#memory-management-patterns)
-7. [Error Handling Strategy](#error-handling-strategy)
-8. [Testing Strategy](#testing-strategy)
-9. [Common Pitfalls and Solutions](#common-pitfalls-and-solutions)
-10. [Code Review Checklist](#code-review-checklist)
+3. [DataBlock API, Concurrency, and Protocol](#datablock-api-concurrency-and-protocol)
+   - [Structured buffer alignment](#structured-buffer-alignment)
+   - [Unified metrics and state API](#unified-metrics-and-state-api)
+   - [Facility access (checksum, magic, schema, config)](#facility-access-checksum-magic-schema-config)
+4. [Codebase Structure](#codebase-structure)
+5. [Integration with Existing Services](#integration-with-existing-services)
+6. [ABI Stability Guidelines](#abi-stability-guidelines)
+7. [Memory Management Patterns](#memory-management-patterns)
+8. [Error Handling Strategy](#error-handling-strategy)
+9. [Testing Strategy](#testing-strategy)
+10. [Common Pitfalls and Solutions](#common-pitfalls-and-solutions)
+11. [Code Review Checklist](#code-review-checklist)
 
 ---
 
 ## Overview
 
-This document provides implementation guidance for the **Data Exchange Hub** (DataBlock) module within the `pylabhub::utils` library. The design specification is in `docs/hep/HEP-CORE-0002-DataHub-FINAL.md`.
+This document provides implementation guidance for the **Data Exchange Hub** (DataBlock) module within the `pylabhub::utils` library. The design specification is in `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`.
 
 ### Design Philosophy
 
@@ -83,16 +87,22 @@ The Data Exchange Hub uses a **dual-chain** memory layout:
 
 ### C++ Abstraction Layers (DataBlock)
 
-The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstraction** is the default for application code. Full design: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`**.
+The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstraction** is the default for application code. The layer map below consolidates the design formerly in **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`** (archived in **`docs/archive/transient-2026-02-13/`**).
 
 | Layer   | Use for |
 |---------|--------|
 | **0 – C API** | C bindings, minimal deps, or when C++ layer cannot be used. |
 | **1 – C++ primitive** | `DataBlockProducer`/`Consumer`, `SlotWriteHandle`/`SlotConsumeHandle`, explicit acquire/release. Use when you need explicit lifetime control or non-throwing paths. |
-| **1.75 – Typed** | `SlotRWAccess::with_typed_write<T>` / `with_typed_read<T>` on raw `SlotRWState*` + buffer (e.g. from handle internals or diagnostic code). |
-| **2 – Transaction API** | **Recommended:** `with_write_transaction`, `with_read_transaction`, `with_next_slot`, `WriteTransactionGuard` / `ReadTransactionGuard`. RAII, exception-safe. |
+| **2 – Transaction API** | **Recommended:** `with_write_transaction`, `with_read_transaction`, `with_typed_write<T>`, `with_typed_read<T>`, `with_next_slot`, `WriteTransactionGuard` / `ReadTransactionGuard`. RAII, exception-safe, **thread-safe** (Producer/Consumer use internal mutex). |
 
 **Recommended usage:** Prefer Layer 2 (guards and with_*_transaction) for write/read; release or destroy all slot handles before destroying Producer/Consumer. Use C API directly only when performance or flexibility (e.g. custom bindings) require it.
+
+**Transaction API usage (default entry-point):**
+
+- **Prefer guards and with_***: Use `with_write_transaction`, `with_read_transaction`, `with_typed_write<T>`, `with_typed_read<T>`, or `WriteTransactionGuard` / `ReadTransactionGuard` over manual `acquire_write_slot` / `acquire_consume_slot` and `release_*` in application code. The transaction API ensures slots are released on return or when exceptions propagate.
+- **Thread safety:** `DataBlockProducer` and `DataBlockConsumer` are **thread-safe**: an internal mutex protects slot acquire/release, heartbeat, and related APIs. Multiple threads may share one producer or one consumer; only one slot/context is active at a time per handle. The **C API** (slot_rw_coordinator.h, recovery_api) does not provide locking; multithread safety is the caller's responsibility.
+- **Exception safety:** When a lambda passed to `with_write_transaction` or `with_read_transaction` throws, the guard destructor runs during stack unwinding and releases the slot. No explicit cleanup is needed. See `test_transaction_api.cpp` for exception-safety tests.
+- **Guards for explicit control:** Use `WriteTransactionGuard` / `ReadTransactionGuard` when you need to check `guard.slot()` before proceeding, call `commit()` or `abort()` explicitly, or handle acquisition failure without exceptions. Guards are move-only and have `noexcept` destructors.
 
 ### Error reporting: C vs C++
 
@@ -111,7 +121,7 @@ Mark as **`noexcept`** any public API that is **not supposed to throw** and whos
 | **Destructors** | All DataBlock-related destructors (~SlotWriteHandle, ~SlotConsumeHandle, ~DataBlockProducer, ~DataBlockConsumer, ~DataBlockSlotIterator, ~DataBlockDiagnosticHandle, transaction guards). Destructors must not throw; explicit `noexcept` enforces that. | — |
 | **Simple accessors** | slot_index(), slot_id(), buffer_span(), flexible_zone_span() on handles; last_slot_id(), is_valid() on iterator; spinlock_count() on producer/consumer. They only read state or return empty span. | flexible_zone\<T\>(index) (throws if zone too small). |
 | **Bool-returning / result-returning (no throw)** | write(), read(), commit(), update_checksum_*, verify_checksum_*, validate_read() on handles; release_write_slot(), release_consume_slot(); seek_latest(), seek_to(); try_next() (returns NextResult); check_consumer_health(). Implementation returns false/empty/result and does not throw. | — |
-| **Acquisition / registration** | acquire_write_slot(), acquire_consume_slot() (return nullptr on failure; implementation does not throw). | acquire_spinlock() (throws out_of_range), next() (throws on timeout), commit() on WriteTransactionGuard (throws on invalid state). |
+| **Acquisition / registration** | acquire_write_slot(), acquire_consume_slot() (return nullptr on failure; implementation does not throw). | acquire_spinlock() (throws out_of_range), get_spinlock() (throws if invalid or index out of range), next() (throws on timeout), commit() on WriteTransactionGuard (throws on invalid state). |
 | **Constructors / factories** | Move constructors and move assignment (already noexcept). | Creator/attach constructors, create_* / find_* (throw or return nullptr). |
 
 If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::terminate` if the function ever throws.
@@ -141,8 +151,143 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 | `consumer_sync_policy` | `ConsumerSyncPolicy::Unset` | 0/1/2 (Latest_only/Single_reader/Sync_reader) |
 | `physical_page_size` | `DataBlockPageSize::Unset` | 4096 / 4M / 16M |
 | `ring_buffer_capacity` | `0` (unset) | ≥ 1 |
+| `checksum_type` | `ChecksumType::Unset` | BLAKE2b (0); mandatory |
 
-**Rationale and full parameter table:** See **`docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`** (§1 and “Other parameters: fail if not set”).
+**Rationale and full parameter table:** Full analysis was in **`docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`**; merged here and archived in **`docs/archive/transient-2026-02-13/`** (§1 and “Other parameters: fail if not set”).
+
+### Policy and Schema Separation of Concerns
+
+**Rule:** Each policy and schema parameter controls **one single aspect** of the protocol. Changing one parameter must not affect unrelated behavior. Index/buffer management, checksum, consumer sync, and layout are independent.
+
+| Parameter | Single aspect it controls | Must NOT affect |
+|-----------|---------------------------|-----------------|
+| **DataBlockPolicy** (Single/DoubleBuffer/RingBuffer) | Buffer structure (layout, slot count derived from `ring_buffer_capacity`). Validation only in creation. | Checksum, consumer sync, index advancement |
+| **ConsumerSyncPolicy** (Latest_only/Single_reader/Sync_reader) | How readers advance: `get_next_slot_to_read`, writer backpressure, `read_index` advancement on release | Checksum, buffer layout, commit_index advancement |
+| **ChecksumPolicy** (None/Manual/Enforced) | Who runs update/verify and when. Manual = caller calls explicitly; Enforced = system does in release | Index advancement (`commit_index`, slot visibility), buffer layout, consumer sync |
+| **checksum_type** (ChecksumType) | Algorithm (BLAKE2b). Always present; no opt-out. | Index/buffer logic, ChecksumPolicy |
+| **FlexibleZoneConfig** | Flexible zone layout (size, spinlock index) | Slot buffer, checksum, sync |
+| **Schema** (version, hash) | Validation on attach | Protocol logic |
+
+**Code locations (policy usage):**
+
+- **Buffer/index management:** `commit_write()`, `acquire_write()`, `acquire_read()`, `release_write_handle()`, `release_consume_handle()` steps 3–4 — no `ChecksumPolicy` branching. `commit_index` is advanced only in `commit_write()` during release.
+- **ConsumerSyncPolicy:** `get_next_slot_to_read()`, producer backpressure (Single/Sync), read_index advancement in `release_consume_handle()` step 4, Sync_reader heartbeat registration.
+- **ChecksumPolicy:** Only in `release_write_handle()` (update_checksum_*) and `release_consume_handle()` (verify_checksum_*). Condition: `checksum_policy != None` (checksum storage is always present).
+- **DataBlockPolicy:** Config validation; layout uses `ring_buffer_capacity` for slot_count. No hot-path branching on policy value.
+
+**Anti-pattern (the bug we fixed):** Do not branch index or visibility logic on `ChecksumPolicy`. Previously, Manual had `commit_index.store(slot_id)` in `SlotWriteHandle::commit()`, which conflicted with `commit_write()`’s `fetch_add(1)` and broke slot visibility. Fix: remove the Manual-specific store; index advancement is buffer-managed only.
+
+### Structured buffer alignment
+
+**Why alignment was wrong in the first place:** The segment layout is a **packed** sequence: Header | SlotRWStates | SlotChecksums | FlexibleZone | **StructuredData**. The start of the structured data region was set to "right after" the flexible zone with **no padding**. So `structured_buffer_offset = flexible_zone_offset + flexible_zone_size` (e.g. 4258). That offset is not 8-byte aligned, so the first byte of slot 0 was misaligned for types with `alignof(T) == 8` (e.g. `uint64_t`).
+
+**Physical page size vs. alignment:** `physical_page_size` and `logical_unit_size` (slot stride) control **slot size** and allocation granularity, not the **offset** of the structured region inside the segment. The segment base is page-aligned from the OS; the **start of the structured region** is an offset into that segment. That offset was never rounded up for alignment, so it inherited the misalignment of the preceding regions.
+
+**User-provided structure:** `with_typed_write<T>` / `with_typed_read<T>` give the user a `T&` over the slot buffer. For that to be valid, the slot pointer must be aligned to `alignof(T)`. So we align the **start** of the structured buffer so that every slot (at `base + structured_buffer_offset + i * slot_stride_bytes`) satisfies the type's alignment. We enforce a single constant: **structured buffer start is aligned to 8** in both `from_config` and `from_header`: `structured_buffer_offset = align_up(after_flexible, 8)`. No branches; creator and attacher use the same formula. Usable space is unchanged: `structured_buffer_size = slot_count * slot_stride_bytes`; we only add 0--7 bytes of padding **before** the structured region so that both raw access and typed mapping see an aligned base. Blocks created with the old packed layout (no padding) are layout-incompatible.
+
+### Unified metrics and state API
+
+**Rule:** All reads of metrics and key state (commit count, which slots to validate) go through the **C API** so that every layer (C++, recovery, scripts, bindings) sees the same behavior and the same surface.
+
+| Surface | Use |
+|--------|-----|
+| **Read** | `slot_rw_get_metrics(SharedMemoryHeader*, DataBlockMetrics*)` (when you have a header), or `datablock_get_metrics(const char* shm_name, DataBlockMetrics*)` (by name; opens, reads, closes). |
+| **Lightweight (single values)** | When you only need one or a few values (e.g. "has any commit?"), use **`slot_rw_get_total_slots_written(header)`**, **`slot_rw_get_commit_index(header)`**, **`slot_rw_get_slot_count(header)`** — one load each instead of a full snapshot (~30+ loads). Use these inside datablock/recovery paths to avoid the cost of a full get_metrics. |
+| **Reset** | `slot_rw_reset_metrics(SharedMemoryHeader*)` or `datablock_reset_metrics(const char* shm_name)`. Only metric counters are reset; **state** (`commit_index`, `slot_count` in the snapshot) is **not** reset. |
+| **DataBlockMetrics** | Defined in `slot_rw_coordinator.h`. Includes **state snapshot** fields: `commit_index`, `slot_count` (read-only; not reset). And **metrics**: e.g. `total_slots_written` (commit count, 0 = no commits yet), timeouts, errors, bytes. |
+
+**Semantics:**
+
+- **`total_slots_written`** is incremented on every successful commit in `commit_write()`. Use **`total_slots_written == 0`** to mean "no commits yet" (e.g. integrity validator skips slot checksum verification when there are no committed slots). Do not rely on `commit_index == sentinel` for "no commits" (wrap-after-2^64 commits would collide).
+- **Integrity validator** and any code that needs "has any commit" or "which slots to check" must call `slot_rw_get_metrics` (or `datablock_get_metrics`) and use `m.total_slots_written`, `m.commit_index`, `m.slot_count` instead of reading the header directly.
+- **C++:** `DataBlockProducer::get_metrics(DataBlockMetrics&)`, `reset_metrics()`, and `DataBlockConsumer::get_metrics(DataBlockMetrics&)`, `reset_metrics()` delegate to the C API; no direct header access for metrics from application code.
+
+**Do not:** Read or write metric/state fields directly from `SharedMemoryHeader` in recovery, admin, or application code. Use the C API (or C++ wrappers) so the contract is single and all layers benefit.
+
+### Facility access (checksum, magic, schema, config)
+
+Access to checksum, magic, schema, and config should go through the **C API or C++ API** where available; avoid exposing raw `SharedMemoryHeader` layout to callers.
+
+| Facility | Current status | Public API / note |
+|----------|----------------|-------------------|
+| **Metrics / state** | Unified | `slot_rw_get_metrics`, `datablock_get_metrics`, `datablock_reset_metrics`; C++ `get_metrics()`, `reset_metrics()`. Do not read header metric/state fields directly. |
+| **Layout checksum** | Internal | `validate_layout_checksum(header)` is used inside attach and validation paths. Not exposed as a standalone C call by name; callers use attach or `datablock_validate_integrity`. |
+| **Slot / flexible zone checksums** | Via Producer/Consumer or recovery | C++: `Producer::update_checksum_slot`, `Consumer::verify_checksum_slot`, etc. Integrity validator opens a consumer and uses these. No direct header checksum layout access from public code. |
+| **Magic number** | Hidden | Used inside `open_datablock_for_diagnostic` and `datablock_validate_integrity`. Not part of public API; do not expose magic value or header field. |
+| **Schema (hash, version)** | C++ only | `get_shared_memory_header_schema_info()` (C++) when a handle exists. No name-based C API yet; optional future: `datablock_get_schema_info(shm_name, ...)`. |
+| **Config (policy, capacity, etc.)** | Internal / attach | Built from header in `validate_attach_layout_and_config` and in recovery (expected_config). No standalone C "get config by name" yet; optional future if needed. |
+
+**Principle:** Prefer C API (or C++ wrappers) for any facility that callers need; keep `SharedMemoryHeader` layout and raw field access out of the public contract so that all layers above (C++, Python, admin) benefit from a single, stable surface.
+
+---
+
+## DataBlock API, Concurrency, and Protocol
+
+This section documents the current API layers, class relationships, thread-safety model, and protocol behavior (including heartbeat and liveness). It reflects the removal of Layer 1.75 (SlotRWAccess) and the addition of internal mutex protection on Producer/Consumer.
+
+### API Layers and Thread-Safety
+
+```mermaid
+flowchart TB
+    subgraph Cpp["C++ API (thread-safe)"]
+        L2["Layer 2: Transaction API"]
+        L1["Layer 1: Primitive API"]
+    end
+    subgraph CAPI["C API (user-managed locking)"]
+        L0["Layer 0: C API"]
+    end
+    L2 --> L1
+    L1 --> L0
+```
+
+**Design points:** C++ Producer/Consumer are **thread-safe** (internal mutex). C API does **not** provide locking; multithread safety is the caller's responsibility.
+
+### Class and Handle Relationships
+
+```mermaid
+classDiagram
+    DataBlockProducer --> SlotWriteHandle : acquires
+    DataBlockConsumer --> SlotConsumeHandle : acquires
+    DataBlockConsumer --> DataBlockSlotIterator : slot_iterator
+    DataBlockSlotIterator --> SlotConsumeHandle : try_next
+```
+
+**Lifetime:** Release or destroy all slot handles (and finish iterator use) **before** destroying Producer/Consumer.
+
+### Write Path and Producer Heartbeat
+
+On **release_write_slot**, the implementation: (1) commits the write (`commit_write`), (2) updates **producer heartbeat** in `reserved_header` (PID + monotonic timestamp), (3) releases the slot write lock. Call `producer->update_heartbeat()` when idle. **Liveness:** `is_writer_alive(header, pid)` returns true if heartbeat is fresh for that PID; otherwise falls back to `is_process_alive(pid)` (used in acquire_write zombie reclaim and recovery).
+
+### Read Path and Consumer Heartbeat
+
+Consumer acquire/release and iterator advance are protected by the same (recursive) mutex. For Sync_reader, slot release updates `consumer_heartbeats[i].last_heartbeat_ns`. Call `consumer->update_heartbeat(slot)` when idle.
+
+### Liveness: Heartbeat-First vs PID Check
+
+```mermaid
+flowchart LR
+    A[Check writer pid] --> B{Heartbeat fresh?}
+    B -->|yes| C[Alive]
+    B -->|no| D[is_process_alive]
+    D --> C
+    D --> E[Dead, reclaim]
+```
+
+### Layer 1.75 Removed
+
+**SlotRWAccess** (`slot_rw_access.hpp`) has been **removed**. Use `with_typed_write<T>` and `with_typed_read<T>` on Producer/Consumer in `data_block.hpp`. C API remains; locking is user-managed.
+
+### Example: Transaction API
+
+```cpp
+with_write_transaction(*producer, 5000, [](WriteTransactionContext& ctx) {
+    ctx.slot().get().write(&payload, sizeof(payload));
+    ctx.slot().get().commit(sizeof(payload));
+});
+auto result = consumer->slot_iterator().try_next(1000);
+if (result.ok && result.next)
+    consumer->release_consume_slot(*result.next);
+```
 
 ---
 
@@ -181,8 +326,7 @@ src/
 │       ├── data_block.hpp         # Main DataBlock API
 │       ├── message_hub.hpp        # Broker communication
 │       ├── shared_memory_spinlock.hpp # SharedSpinLock
-│       ├── slot_rw_coordinator.h  # C API for SlotRWState
-│       └── slot_rw_access.hpp     # C++ template wrappers
+│       └── slot_rw_coordinator.h  # C API for SlotRWState (lock/multithread safety is user-managed)
 └── utils/
     ├── data_block.cpp             # DataBlock implementation
     ├── message_hub.cpp            # MessageHub implementation
@@ -571,6 +715,15 @@ When a component invokes a callback asynchronously (e.g. Logger’s `set_write_e
 
 Use one of three patterns: **(1) PureApiTest** — pure functions, no lifecycle; **(2) LifecycleManagedTest** — needs Logger/FileLock/etc. in one process, shared lifecycle; **(3) WorkerProcess** — multi-process (IPC, file locks across processes, or when a test finalizes lifecycle so later tests would break). When tests modify global/singleton state in a non-reversible way (e.g. finalize lifecycle), run them via **WorkerProcess** so each run is in a separate process. **CTest** runs each test in a separate process; **direct execution** of the test binary runs all tests in one process. If you rely on process isolation (e.g. lifecycle re-init), use CTest or design the test to use WorkerProcess. See **`docs/README/README_testing.md`** for multi-process flow and staging.
 
+### Responding to test failures
+
+When a test fails, **scrutinize before coding**:
+
+1. **Classify the failure:** Is this a **logic or design flaw in the test** (wrong assertion, incorrect protocol usage, wrong expectations), or does it **reveal a bug in the implementation**?
+2. **Prefer discovering bugs:** If the test follows the agreed protocol and design (HEP, DATAHUB_TODO, IMPLEMENTATION_GUIDANCE), favor the hypothesis that it has revealed a bug. Do **not** tweak the test merely to produce SUCCESS — use the failure as an opportunity to review and challenge the code.
+3. **Verify test correctness:** On the other hand, test conditions must be correct. Do **not** change the codebase just to satisfy a test; if the test’s expectations or protocol usage are wrong, fix the test, not the implementation.
+4. **Reason first:** Any problem shown by tests needs careful reasoning — trace the protocol, verify invariants, and check edge cases — before applying code changes. Avoid quick “make it pass” edits.
+
 ---
 
 ## Common Pitfalls and Solutions
@@ -680,7 +833,7 @@ Apply to: LayoutChecksumInput, DataBlockLayout, FlexibleZoneInfo, SchemaInfo, an
 
 **Problem**: Layout- and mode-critical parameters (`policy`, `consumer_sync_policy`, `physical_page_size`, `ring_buffer_capacity`) must not be left unset or mismatched; otherwise producer/consumer can get wrong layout or sync behavior → memory corruption or sync bugs.
 
-**Solution**: These four parameters have **no valid default**; they use sentinels (`Unset` or `0`) and **producer creation fails** (throws `std::invalid_argument`) if any are unset. Always set them explicitly on `DataBlockConfig` before calling `create_datablock_producer`. Consumer attach validates layout (and optional `expected_config`) in one place: `validate_attach_layout_and_config`. See § "Config validation and memory block setup" above and `docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
+**Solution**: These four parameters have **no valid default**; they use sentinels (`Unset` or `0`) and **producer creation fails** (throws `std::invalid_argument`) if any are unset. Always set them explicitly on `DataBlockConfig` before calling `create_datablock_producer`. Consumer attach validates layout (and optional `expected_config`) in one place: `validate_attach_layout_and_config`. See § "Config validation and memory block setup" above; full policy analysis archived in **`docs/archive/transient-2026-02-13/`**.
 
 ### Pitfall 8: Test Atomic Variables Without Proper Ordering
 
@@ -718,6 +871,8 @@ ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 
 ## Code Review Checklist
 
+For the **full review process** (first pass, higher-level requirements, test integration), use **`docs/CODE_REVIEW_GUIDANCE.md`**. The checklist below is the implementation-side list used when submitting a PR; CODE_REVIEW_GUIDANCE defines the complete workflow and what reviewers should check.
+
 ### Before Submitting PR
 
 - [ ] All public classes use pImpl idiom
@@ -752,9 +907,32 @@ ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 
 ---
 
+## Deferred refactoring (from code quality analysis)
+
+Refactoring and documentation actions from the 2026-02-13 code-quality analysis have been completed. Summary:
+
+| Priority | Status | Action |
+|----------|--------|--------|
+| P1 | Done | Timeout: `spin_elapsed_ms_exceeded` already used in spin loops. |
+| P1 | Done | SlotConsumeHandleImpl factory: `make_slot_consume_handle_impl`; used from three call sites. |
+| P2 | Done | Slot-buffer helper: `slot_buffer_ptr`; used in all handle construction paths. |
+| P2 | Done | Validation helper: `get_header_and_slot_count`; used in acquire paths and try_next. |
+| P2 | Done | Doxygen: DataBlockPageSize, to_bytes, SharedMemoryHeader, with_*_transaction; SlotRWState. |
+| P2 | Done | High-risk comments: TOCTTOU, zombie reclaim, single-point ctor, Sync_reader offset, validate_read_impl, release checksum. |
+| P3 | Done | TODOs tracked in DATAHUB_TODO and in-code "Not yet implemented" comments. |
+| P3 | Optional | "Lifetime" and "Thread safety" subsections in file or here; trim Doxygen where needed. |
+
+Full analysis (duplication, layering, naming, [[nodiscard]], logger usage, action details) is in **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**. Review findings and follow-ups (2026-02-13) are in **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`**.
+
+**Flexible zone and integrity:** Flexible zone access is valid only after definition and agreement (producer config + consumer expected_config). Integrity repair currently uses full producer/consumer; a lighter path (diagnostic-only verify/repair) is planned. Design rationale was in **DATAHUB_DESIGN_DISCUSSION.md** (archived). **Cross-platform:** DataBlock, spinlock, and recovery use only `plh_platform` APIs; detailed platform table was in **DATAHUB_DATABLOCK_CRITICAL_REVIEW.md** (archived).
+
+---
+
 ## References
 
-- **Design Specification**: `docs/hep/HEP-CORE-0002-DataHub-FINAL.md`
+- **Design Specification**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
+- **Documentation structure**: `docs/DOC_STRUCTURE.md` (execution plan, implementation and review guidance, topic docs)
+- **Code review process**: `docs/CODE_REVIEW_GUIDANCE.md` (full review workflow; 2026-02-13 findings archived in `docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`)
 - **Build System**: `CLAUDE.md`
 - **Lifecycle Pattern**: `src/include/utils/lifecycle.hpp`
 - **Logger Usage**: `src/include/utils/logger.hpp`
@@ -763,6 +941,8 @@ ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 ---
 
 **Revision History**:
+- **v1.4** (2026-02-13): Merged and archived CODE_QUALITY_AND_REFACTORING_ANALYSIS and CODE_REVIEW_REPORT. § Deferred refactoring now self-contained with completion status; full analysis and report in docs/archive/transient-2026-02-13/. References updated to point to archive.
+- **v1.3** (2026-02-13): Merged transient design docs: added § Deferred refactoring (from CODE_QUALITY_AND_REFACTORING_ANALYSIS); updated config and C++ layer references to point to archive. Design rationale (critical review, design discussion, policy/schema, abstraction layer) consolidated here; originals moved to docs/archive/transient-2026-02-13/.
 - **v1.2** (2026-02-13): Added § "Config validation and memory block setup (single point of access)": config checked before any memory creation; single point is DataBlock creator constructor; required explicit parameters table. Updated Pitfall 7 to explicit required params (fail if unset). TABLE 2 caption: slot_stride_bytes.
 - **v1.1** (2026-02-13): Added Pitfalls 6–9 (deterministic init, config defaults, test atomics, async callbacks); testing async callbacks; checklist updates.
 - **v1.0** (2026-02-09): Initial guidance document created for implementation phase

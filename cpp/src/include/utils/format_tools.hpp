@@ -31,14 +31,14 @@ PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time
  * It handles whitespace around separators and assignment symbols.
  *
  * @param keyword The key to search for.
- * @param input The string_view to parse.
  * @param separator The character separating key-value pairs.
+ * @param input The string_view to parse.
  * @param assignment_symbol The character separating a key from its value.
  * @return An std::optional<std::string> containing the value if found,
  *         otherwise std::nullopt.
  */
 PYLABHUB_UTILS_EXPORT std::optional<std::string>
-extract_value_from_string(std::string_view keyword, std::string_view input, char separator = ';',
+extract_value_from_string(std::string_view keyword, char separator, std::string_view input,
                           char assignment_symbol = '=');
 
 /**

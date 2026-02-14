@@ -16,5 +16,7 @@ int integrity_validator_validate_succeeds_on_created_datablock();
 int slot_diagnostics_refresh_succeeds_on_created_datablock();
 int slot_recovery_release_zombie_readers_on_empty_slot();
 int heartbeat_manager_registers_and_pulses();
+int producer_update_heartbeat_explicit_succeeds();
+int producer_heartbeat_and_is_writer_alive();
 
 } // namespace pylabhub::tests::worker::recovery

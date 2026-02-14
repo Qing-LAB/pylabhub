@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <future>
@@ -43,7 +44,7 @@ namespace pylabhub::utils
 {
 
 // Represents the lifecycle state of the logger.
-enum class LoggerState
+enum class LoggerState : std::uint8_t
 {
     Uninitialized,
     Initialized,
@@ -69,10 +70,12 @@ static bool logger_is_loggable(const char *function_name)
 
 namespace
 {
+constexpr int kTempFileMode = 0600;
+
 // Helper to synchronously check if a directory is writable.
-bool check_directory_is_writable(const std::filesystem::path &dir, std::error_code &ec)
+bool check_directory_is_writable(const std::filesystem::path &dir, std::error_code &err_code)
 {
-    ec.clear();
+    err_code.clear();
     try
     {
         auto temp_file_path =
@@ -83,7 +86,7 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
         if (wpath.empty())
         {
-            ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            err_code = std::make_error_code(std::errc::no_such_file_or_directory);
             return false;
         }
 
@@ -92,25 +95,25 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
                                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
         if (h == INVALID_HANDLE_VALUE)
         {
-            ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+            err_code = std::error_code(static_cast<int>(GetLastError()), std::system_category());
             return false;
         }
         CloseHandle(h); // The file is deleted automatically on close.
 #else
-        int fd = ::open(temp_file_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-        if (fd == -1)
+        int file_fd = ::open(temp_file_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, kTempFileMode);
+        if (file_fd == -1)
         {
-            ec = std::error_code(errno, std::generic_category());
+            err_code = std::error_code(errno, std::generic_category());
             return false;
         }
-        ::close(fd);
+        ::close(file_fd);
         ::unlink(temp_file_path.c_str()); // Clean up the temporary file immediately.
 #endif
         return true;
     }
     catch (...)
     {
-        ec = std::make_error_code(std::errc::invalid_argument);
+        err_code = std::make_error_code(std::errc::invalid_argument);
         return false;
     }
 }
@@ -130,13 +133,15 @@ class CallbackDispatcher
 
     ~CallbackDispatcher() { shutdown(); }
 
-    void post(std::function<void()> fn)
+    void post(std::function<void()> callback)
     {
         if (shutdown_requested_.load(std::memory_order_relaxed))
-            return;
         {
-            std::lock_guard<std::mutex> lg(mutex_);
-            queue_.push_back(std::move(fn));
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock_guard(mutex_);
+            queue_.push_back(std::move(callback));
         }
         cv_.notify_one();
     }
@@ -159,24 +164,23 @@ class CallbackDispatcher
     {
         for (;;)
         {
-            std::function<void()> fn;
+            std::function<void()> task;
             {
-                std::unique_lock<std::mutex> ul(mutex_);
-                cv_.wait(ul, [this] { return shutdown_requested_.load() || !queue_.empty(); });
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return shutdown_requested_.load() || !queue_.empty(); });
                 if (shutdown_requested_.load() && queue_.empty())
                 {
                     return;
                 }
-                fn = std::move(queue_.front());
+                task = std::move(queue_.front());
                 queue_.pop_front();
             }
             try
             {
-                fn();
+                task();
             }
-            catch (...)
+            catch (...)  // NOLINT(bugprone-empty-catch) -- exceptions in user callbacks are swallowed
             {
-                // Exceptions in user callbacks are caught and swallowed.
             }
         }
     }
@@ -219,32 +223,36 @@ using Command = std::variant<LogMessage, SetSinkCommand, SinkCreationErrorComman
                              SetErrorCallbackCommand, SetLogSinkMessagesCommand>;
 
 // --- Promise Helper Functions ---
-template <typename T> void promise_set_safe(const std::shared_ptr<std::promise<T>> &p, T value)
+template <typename T>
+void promise_set_safe(const std::shared_ptr<std::promise<T>> &promise_ptr, T value)
 {
-    if (!p)
+    if (promise_ptr == nullptr)
+    {
         return;
+    }
     try
     {
-        p->set_value(std::move(value));
+        promise_ptr->set_value(std::move(value));
     }
-    catch (...)
+    catch (...)  // NOLINT(bugprone-empty-catch) -- Promise already satisfied or broken; swallow to avoid std::terminate
     {
-        // Promise already satisfied or broken - swallow to avoid std::terminate.
     }
 }
 
 template <typename T>
-void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &p, std::exception_ptr ep)
+void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &promise_ptr,
+                               std::exception_ptr exception_ptr)
 {
-    if (!p)
+    if (promise_ptr == nullptr)
+    {
         return;
+    }
     try
     {
-        p->set_exception(ep);
+        promise_ptr->set_exception(exception_ptr);
     }
-    catch (...)
+    catch (...)  // NOLINT(bugprone-empty-catch) -- swallow to avoid std::terminate
     {
-        // swallow
     }
 }
 
@@ -268,7 +276,8 @@ struct Logger::Impl
     std::thread worker_thread_; // Size: depends on implementation (e.g., 8 bytes on x64 for pointer
                                 // to thread data)
     std::unique_ptr<Sink> sink_;    // Size: pointer (8 bytes)
-    size_t m_max_queue_size{10000}; // Size: 8 bytes (on x64)
+    static constexpr size_t kDefaultMaxQueueSize = 10000;
+    size_t m_max_queue_size{kDefaultMaxQueueSize}; // Size: 8 bytes (on x64)
     std::chrono::system_clock::time_point
         m_dropping_since;        // Size: depends on implementation (e.g., 8 bytes for duration)
     std::vector<Command> queue_; // Size: 24 bytes (on x64 for pointer, size, capacity)
@@ -311,6 +320,7 @@ void Logger::Impl::start_worker()
     }
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- keep as member for consistency
 void Logger::Impl::reject_command_due_to_shutdown(Command &cmd)
 {
     std::visit(
@@ -380,6 +390,7 @@ bool Logger::Impl::enqueue_command(Command &&cmd)
     return true;
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- command dispatch and shutdown handling
 void Logger::Impl::worker_loop()
 {
     std::vector<Command> local_queue;
@@ -474,11 +485,11 @@ void Logger::Impl::worker_loop()
                         }
                         else if constexpr (std::is_same_v<T, SinkCreationErrorCommand>)
                         {
-                            if (error_callback_)
+                            if (error_callback_ != nullptr)
                             {
-                                auto cb = error_callback_;
-                                callback_dispatcher_.post([cb, msg = arg.error_message]()
-                                                          { cb(msg); });
+                                auto error_cb = error_callback_;
+                                callback_dispatcher_.post([error_cb, msg = arg.error_message]()
+                                                          { error_cb(msg); });
                             }
                             else
                             {
@@ -513,11 +524,11 @@ void Logger::Impl::worker_loop()
             }
             catch (const std::exception &e)
             {
-                if (error_callback_)
+                if (error_callback_ != nullptr)
                 {
-                    auto cb = error_callback_;
+                    auto error_cb = error_callback_;
                     auto msg = fmt::format("Logger worker error: {}", e.what());
-                    callback_dispatcher_.post([cb, msg]() { cb(msg); });
+                    callback_dispatcher_.post([error_cb, msg]() { error_cb(msg); });
                 }
             }
         }
@@ -657,7 +668,9 @@ bool Logger::lifecycle_initialized() noexcept
 bool Logger::set_console()
 {
     if (!logger_is_loggable("Logger::set_console"))
+    {
         return false;
+    }
     try
     {
         auto promise = std::make_shared<std::promise<bool>>();
@@ -684,7 +697,9 @@ bool Logger::set_logfile(const std::string &utf8_path)
 bool Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 {
     if (!logger_is_loggable("Logger::set_logfile"))
+    {
         return false;
+    }
     try
     {
         auto promise = std::make_shared<std::promise<bool>>();
@@ -706,22 +721,24 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock)
 
 bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
                                   size_t max_file_size_bytes, size_t max_backup_files,
-                                  std::error_code &ec) noexcept
+                                  std::error_code &err_code) noexcept
 {
     // Call the full overload with flocking enabled by default.
-    return set_rotating_logfile(base_filepath, max_file_size_bytes, max_backup_files, true, ec);
+    return set_rotating_logfile(base_filepath, max_file_size_bytes, max_backup_files, true,
+                               err_code);
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws reported via err_code
 bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
                                   size_t max_file_size_bytes, size_t max_backup_files,
-                                  bool use_flock, std::error_code &ec) noexcept
+                                  bool use_flock, std::error_code &err_code) noexcept
 {
     if (!logger_is_loggable("Logger::set_rotating_logfile"))
     {
-        ec = std::make_error_code(std::errc::not_supported);
+        err_code = std::make_error_code(std::errc::not_supported);
         return false;
     }
-    ec.clear();
+    err_code.clear();
 
     try
     {
@@ -734,14 +751,14 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
         {
             if (!std::filesystem::exists(parent_dir))
             {
-                std::filesystem::create_directories(parent_dir, ec);
-                if (ec)
+                std::filesystem::create_directories(parent_dir, err_code);
+                if (err_code)
                 {
                     return false;
                 }
             }
             // 3. Check for writability using the new native helper.
-            if (!check_directory_is_writable(parent_dir, ec))
+            if (!check_directory_is_writable(parent_dir, err_code))
             {
                 return false;
             }
@@ -759,7 +776,7 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
     {
         auto promise_err = std::make_shared<std::promise<bool>>();
         auto future_err = promise_err->get_future();
-        ec = std::make_error_code(std::errc::invalid_argument);
+        err_code = std::make_error_code(std::errc::invalid_argument);
         // Also enqueue an error message so it appears in the previous log sink if possible.
         pImpl->enqueue_command(SinkCreationErrorCommand{
             fmt::format("Failed to set rotating log file: {}", e.what()), promise_err});
@@ -771,14 +788,16 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
 bool Logger::set_syslog(const char *ident, int option, int facility)
 {
     if (!logger_is_loggable("Logger::set_syslog"))
+    {
         return false;
+    }
 #if !defined(PLATFORM_WIN64)
     try
     {
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
         pImpl->enqueue_command(SetSinkCommand{
-            std::make_unique<SyslogSink>(ident ? ident : "", option, facility), promise});
+            std::make_unique<SyslogSink>(ident != nullptr ? ident : "", option, facility), promise});
         return future.get();
     }
     catch (const std::exception &e)
@@ -797,10 +816,13 @@ bool Logger::set_syslog(const char *ident, int option, int facility)
     return false;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- keep as member for API consistency
 bool Logger::set_eventlog(const wchar_t *source_name)
 {
     if (!logger_is_loggable("Logger::set_eventlog"))
+    {
         return false;
+    }
 #ifdef PYLABHUB_PLATFORM_WIN64
     try
     {
@@ -831,18 +853,24 @@ void Logger::shutdown()
     {
         return;
     }
-    if (pImpl)
+    if (pImpl != nullptr)
+    {
         pImpl->shutdown();
+    }
 }
 
 void Logger::flush()
 {
     if (!logger_is_loggable("Logger::flush"))
+    {
         return;
+    }
     // This check is needed to prevent a deadlock where enqueue_command does nothing
     // because shutdown has started, and we wait on the future forever.
     if (pImpl->shutdown_requested_.load())
+    {
         return;
+    }
     auto promise = std::make_shared<std::promise<bool>>();
     auto future = promise->get_future();
     pImpl->enqueue_command(FlushCommand{promise});
@@ -852,49 +880,65 @@ void Logger::flush()
 void Logger::set_level(Level lvl)
 {
     if (!logger_is_loggable("Logger::set_level"))
+    {
         return;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
+    {
         pImpl->level_.store(lvl, std::memory_order_relaxed);
+    }
 }
 
 Logger::Level Logger::level() const
 {
     if (!logger_is_loggable("Logger::level"))
+    {
         return Level::L_INFO;
+    }
     return pImpl ? pImpl->level_.load(std::memory_order_relaxed) : Level::L_INFO;
 }
 
 void Logger::set_max_queue_size(size_t max_size)
 {
     if (!logger_is_loggable("Logger::set_max_queue_size"))
+    {
         return;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
+    {
         pImpl->m_max_queue_size = (max_size > 0) ? max_size : 1;
+    }
 }
 
 size_t Logger::get_max_queue_size() const
 {
     if (!logger_is_loggable("Logger::get_max_queue_size"))
+    {
         return 0;
+    }
     return pImpl ? pImpl->m_max_queue_size : 0;
 }
 
 size_t Logger::get_total_dropped_since_sink_switch() const
 {
     if (!logger_is_loggable("Logger::get_total_dropped_since_sink_switch"))
+    {
         return 0;
+    }
     return pImpl ? pImpl->m_total_dropped_since_sink_switch.load(std::memory_order_relaxed) : 0;
 }
 
-void Logger::set_write_error_callback(std::function<void(const std::string &)> cb)
+void Logger::set_write_error_callback(std::function<void(const std::string &)> callback)
 {
     if (!logger_is_loggable("Logger::set_write_error_callback"))
+    {
         return;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
     {
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
-        pImpl->enqueue_command(SetErrorCallbackCommand{std::move(cb), promise});
+        pImpl->enqueue_command(SetErrorCallbackCommand{std::move(callback), promise});
         (void)future.get();
     }
 }
@@ -902,8 +946,10 @@ void Logger::set_write_error_callback(std::function<void(const std::string &)> c
 void Logger::set_log_sink_messages_enabled(bool enabled)
 {
     if (!logger_is_loggable("Logger::set_log_sink_messages_enabled"))
+    {
         return;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
     {
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
@@ -916,17 +962,22 @@ bool Logger::should_log(Level lvl) const noexcept
 {
     const auto state = g_logger_state.load(std::memory_order_acquire);
     if (state != LoggerState::Initialized)
+    {
         return false;
+    }
 
     return pImpl &&
            static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and documented
 bool Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+    {
         return false;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
     {
         return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
                                                  .process_id = pylabhub::platform::get_pid(),
@@ -938,11 +989,14 @@ bool Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
     return false;
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and documented
 bool Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+    {
         return false;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
     {
         return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
                                                  .process_id = pylabhub::platform::get_pid(),
@@ -957,8 +1011,10 @@ bool Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 bool Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
+    {
         return false;
-    if (pImpl)
+    }
+    if (pImpl != nullptr)
     {
         std::lock_guard<std::mutex> sink_lock(pImpl->m_sink_mutex);
         if (pImpl->sink_ && static_cast<int>(lvl) >=
@@ -1007,12 +1063,14 @@ void do_logger_shutdown(const char *arg)
         Logger::instance().shutdown();
         // Logger should set g_logger_state to Shutdown when the worker thread exits.
 
+        constexpr int kShutdownPollIterations = 50;
+        constexpr int kShutdownPollIntervalMs = 100;
         int count = 0;
         // Wait up to 5 seconds for shutdown to complete.
-        while (count < 50 &&
+        while (count < kShutdownPollIterations &&
                g_logger_state.load(std::memory_order_acquire) != LoggerState::Shutdown)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(kShutdownPollIntervalMs));
             count++;
         }
         if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Shutdown)
@@ -1028,7 +1086,8 @@ ModuleDef Logger::GetLifecycleModule()
     ModuleDef module("pylabhub::utils::Logger");
     // Using the no-argument overloads now.
     module.set_startup(&do_logger_startup);
-    module.set_shutdown(&do_logger_shutdown, 5000 /*ms timeout*/);
+    constexpr int kLoggerShutdownTimeoutMs = 5000;
+    module.set_shutdown(&do_logger_shutdown, kLoggerShutdownTimeoutMs);
     return module;
 }
 

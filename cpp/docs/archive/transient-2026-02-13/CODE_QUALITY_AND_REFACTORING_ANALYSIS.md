@@ -49,7 +49,7 @@ The same block that fills a `SlotConsumeHandleImpl` (owner, dataBlock, header, s
 - `DataBlockConsumer::acquire_consume_slot()` (overload, ~1823–1835)
 - `DataBlockSlotIterator::try_next` (~1334–1346)
 
-**Recommendation:** Extract a single factory function, e.g. `std::unique_ptr<SlotConsumeHandleImpl> make_slot_consume_handle_impl(...)` (or fill a struct in a helper), and call it from all three sites. Reduces copy-paste and keeps handle construction consistent.
+**Status:** ✅ Implemented. `make_slot_consume_handle_impl(...)` in anonymous namespace; used from `DataBlockSlotIterator::try_next`, `DataBlockConsumer::acquire_consume_slot(uint64_t slot_id, ...)`, and `DataBlockConsumer::acquire_consume_slot(int timeout_ms)`.
 
 ### 1.3 Buffer pointer calculation
 
@@ -57,7 +57,7 @@ The same block that fills a `SlotConsumeHandleImpl` (owner, dataBlock, header, s
 
 The expression `buf + slot_index * slot_stride_bytes` (or equivalent with `structured_data_buffer()`) appears in at least four places (write handle creation, consume handle creation in two paths, iterator try_next).
 
-**Recommendation:** Add an inline helper, e.g. `slot_buffer_ptr(char* base, size_t slot_index, size_t slot_stride_bytes)` in the same translation unit, or a method on a layout/block helper. Use it everywhere to compute the slot buffer pointer.
+**Status:** ✅ Implemented. `slot_buffer_ptr(base, slot_index, slot_stride_bytes)` (char* and const char* overloads) in `data_block.cpp`; used in write handle creation and all three consume handle paths (via factory).
 
 ### 1.4 Producer/consumer pre-acquisition validation
 
@@ -67,7 +67,7 @@ Both `acquire_write_slot` and `acquire_consume_slot` (and iterator paths) repeat
 
 - Check `!pImpl || !pImpl->dataBlock` then `!header()` then `slot_count == 0`.
 
-**Recommendation:** Add a small validation helper that returns `(header, slot_count)` or null/invalid, so each acquisition path does one call and then uses the result. Reduces repetition and keeps validation rules in one place.
+**Status:** ✅ Implemented. `get_header_and_slot_count(DataBlock*)` returns `std::pair<SharedMemoryHeader*, uint32_t>`; used in `acquire_write_slot`, both `acquire_consume_slot` overloads, and `try_next`.
 
 ### 1.5 Obsolete / deprecated and TODO items
 
@@ -75,8 +75,8 @@ Both `acquire_write_slot` and `acquire_consume_slot` (and iterator paths) repeat
 |------|----------|--------|
 | `DataBlockProducer` / `DataBlockConsumer` type aliases | `data_block.hpp` ~1165–1168 | Already marked `@deprecated`; keep until callers migrate, then remove. |
 | `logical_unit_size` “legacy 0” | `data_block.hpp` ~324, `data_block_recovery.cpp` ~623 | Comment is clear; ensure all readers treat 0 as “use physical.” Consider a single shared comment (e.g. in header) and reference it in recovery. |
-| TODO: `stuck_duration_ms` | `data_block_recovery.cpp` ~114 | Either implement (e.g. timestamp at acquire) or document as “not yet implemented” and track in DATAHUB_TODO. |
-| TODO: consumer registration to broker | `message_hub.cpp` ~378 | Track in DATAHUB_TODO; add short comment that protocol is not yet defined. |
+| TODO: `stuck_duration_ms` | `data_block_recovery.cpp` ~114 | Done: tracked in DATAHUB_TODO; in-code "Not yet implemented" comment. |
+| TODO: consumer registration to broker | `message_hub.cpp` ~378 | Done: tracked in DATAHUB_TODO; in-code "Not yet implemented" comment. |
 | Deprecated JsonConfig API | `json_config.hpp` ~396 | Already documented; remove when no longer used. |
 
 No large blocks of commented-out or `#if 0` code were found; the codebase is clean in that regard.
@@ -245,17 +245,18 @@ See **CODE_REVIEW_GUIDANCE.md** §2.6 and §2.7 for review checklist items.
 
 | Priority | Category | Action |
 |----------|----------|--------|
-| P1 | Refactor | Add timeout-check helper and use it in all spin loops in `data_block.cpp`. |
-| P1 | Refactor | Extract SlotConsumeHandleImpl construction into one factory; use from all three call sites. |
-| P2 | Refactor | Add slot-buffer-pointer helper; use in all handle construction paths. |
-| P2 | Refactor | Add producer/consumer validation helper (pImpl, dataBlock, header, slot_count). |
-| P2 | Docs | Add Doxygen to `SlotRWState`, `SharedMemoryHeader`, `DataBlockConfig` members, `to_bytes`, and transaction/with_* functions. |
-| P2 | Comments | Add high-risk/s subtle comments: TOCTTOU in reader path, zombie reclaim, single-point creation, Sync_reader reserved_header offset. |
-| P3 | Cleanup | Resolve or document TODOs (stuck_duration_ms, consumer registration); trim Doxygen formatting in a few structs. |
+| P1 | Refactor | ✅ Timeout helper: `spin_elapsed_ms_exceeded` already used everywhere. |
+| P1 | Refactor | ✅ SlotConsumeHandleImpl factory: `make_slot_consume_handle_impl`; used from three call sites. |
+| P2 | Refactor | ✅ Slot-buffer-pointer: `slot_buffer_ptr`; used in all handle construction paths. |
+| P2 | Refactor | ✅ Validation helper: `get_header_and_slot_count`; used in acquire_write_slot, acquire_consume_slot (both), try_next. |
+| P2 | Docs | ✅ Doxygen: DataBlockPageSize (@enum), to_bytes (@brief/@return), SharedMemoryHeader (ABI note), with_write_transaction/with_read_transaction (@param/@return/@throws). SlotRWState already had @struct. |
+| P2 | Comments | ✅ High-risk comments: TOCTTOU (reader path), zombie reclaim, single-point DataBlock ctor, Sync_reader consumer_next_read_slot_ptr, validate_read_impl generation, release_write_handle checksum. |
+| P3 | Cleanup | ✅ TODOs tracked in DATAHUB_TODO and in-code "Not yet implemented" comments. |
 | P3 | Docs | Optional: “Lifetime” and “Thread safety” subsections in file or IMPLEMENTATION_GUIDANCE. |
 
 **Revision History**
 
+- **v1.3** (2026-02-13): Marked §1.1–§1.4 and §1.5 TODOs as implemented or tracked. Updated §9 Action Summary with completion status for P1/P2 refactors, Doxygen, comments, and P3 cleanup.
 - **v1.2** (2026-02-13): Added §8 Logger usage (hot vs cold path, context, checksum/validation); added name() to Producer/Consumer; enriched guard/broker/release/SlotDiagnostics/with_typed_write logs with name, slot_id, slot_index and hints; renumbered Action Summary to §9.
 - **v1.1** (2026-02-13): Added §7 [[nodiscard]] and return-value handling; broker registration now checks return and logs on failure; renumbered Action Summary to §8.
 - **v1.0** (2026-02-13): Initial analysis (duplication, layering, refactoring, naming, comments, Doxygen, action summary).

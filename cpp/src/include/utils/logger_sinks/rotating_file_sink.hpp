@@ -24,10 +24,11 @@ class RotatingFileSink : public Sink, private BaseFileSink
      * "app.2.log").
      * @param use_flock If true, enables inter-process locking on POSIX systems.
      */
-    RotatingFileSink(std::filesystem::path base_filepath, size_t max_file_size_bytes,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- API order: size then count
+    RotatingFileSink(const std::filesystem::path &base_filepath, size_t max_file_size_bytes,
                      size_t max_backup_files, bool use_flock);
 
-    ~RotatingFileSink() override;
+    ~RotatingFileSink() override = default;
 
     // --- Sink Interface ---
     void write(const LogMessage &msg, Sink::WRITE_MODE mode) override;

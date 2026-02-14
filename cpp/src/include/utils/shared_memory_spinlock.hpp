@@ -77,7 +77,7 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
      * @param state A pointer to the SharedSpinLockState struct in shared memory.
      * @param name A name for logging/error reporting (e.g. segment name + lock index).
      */
-    SharedSpinLock(SharedSpinLockState *state, const std::string &name);
+    SharedSpinLock(SharedSpinLockState *state, std::string name);
 
     /**
      * @brief Acquires the spin-lock, blocking if necessary.

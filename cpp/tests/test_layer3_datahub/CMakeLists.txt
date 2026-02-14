@@ -29,6 +29,8 @@ add_executable(test_layer3_datahub
     workers/error_handling_workers.cpp
     test_message_hub.cpp
     workers/messagehub_workers.cpp
+    test_transaction_api.cpp
+    workers/transaction_api_workers.cpp
     test_datablock_mutex.cpp
     workers/datablock_management_mutex_workers.cpp
 )
@@ -63,4 +65,4 @@ gtest_discover_tests(test_layer3_datahub
 )
 
 message(STATUS "** Layer 3 (DataHub) tests configured.")
-message(STATUS "  - test_layer3_datahub (schema_blds, schema_validation, recovery_api, slot_protocol, phase_a_protocol, error_handling, message_hub)")
+message(STATUS "  - test_layer3_datahub (schema_blds, schema_validation, recovery_api, slot_protocol, phase_a_protocol, error_handling, message_hub, transaction_api)")

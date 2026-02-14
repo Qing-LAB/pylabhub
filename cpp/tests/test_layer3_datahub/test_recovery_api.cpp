@@ -46,3 +46,15 @@ TEST_F(RecoveryApiTest, HeartbeatManager_RegistersAndPulses)
     auto proc = SpawnWorker("recovery.heartbeat_manager_registers", {});
     ExpectWorkerOk(proc, {"opened by consumer"});
 }
+
+TEST_F(RecoveryApiTest, ProducerUpdateHeartbeat_ExplicitSucceeds)
+{
+    auto proc = SpawnWorker("recovery.producer_update_heartbeat_explicit", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(RecoveryApiTest, ProducerHeartbeat_AndIsWriterAlive)
+{
+    auto proc = SpawnWorker("recovery.producer_heartbeat_and_is_writer_alive", {});
+    ExpectWorkerOk(proc);
+}

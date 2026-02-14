@@ -22,28 +22,28 @@ config.ring_buffer_capacity = 4;
 config.physical_page_size = DataBlockPageSize::Size4K;
 config.policy = DataBlockPolicy::RingBuffer;
 config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-config.enable_checksum = true;
+// checksum_type defaults to BLAKE2b; always present
 config.checksum_policy = ChecksumPolicy::Enforced;
 
 // Flexible zone: define layout by (name, size) per zone.
 // Size must match your struct; you are responsible for consistency.
 config.flexible_zone_configs.push_back({"metadata", sizeof(MyMetadataStruct), -1});
-config.flexible_zone_configs.push_back({"aux", sizeof(MyAuxStruct), 0});  // spinlock 0
+config.flexible_zone_configs.push_back({"aux", sizeof(MyAuxStruct), 0});  // spinlock index 0
 
 auto producer = create_datablock_producer(hub, config.name, config.policy, config);
 
 // --- Consumer (attacher) ---
 // expected_config MUST match producer's config (flexible_zone_size, ring_buffer_capacity,
-// physical_page_size, enable_checksum). Layout checksum in header is validated on attach.
+// physical_page_size, checksum_type). Layout checksum in header is validated on attach.
 DataBlockConfig expected_config = config;  // same layout
 auto consumer = find_datablock_consumer(hub, config.name, config.shared_secret, expected_config);
 ```
 
-**Config:** `DataBlockConfig` requires **explicit** layout- and mode-critical fields (fail at create if unset): **policy**, **consumer_sync_policy**, **physical_page_size** (Size4K/Size4M/Size16M), and **ring_buffer_capacity** (≥ 1). This avoids memory corruption and sync bugs from silent defaults or producer/consumer mismatch. Other fields have sensible defaults (`shared_secret=0`, `logical_unit_size=0` = use physical, `enable_checksum=false`, etc.). Same for `FlexibleZoneConfig` and `SchemaInfo`.
+**Config:** `DataBlockConfig` requires **explicit** layout- and mode-critical fields (fail at create if unset): **policy**, **consumer_sync_policy**, **physical_page_size** (Size4K/Size4M/Size16M), and **ring_buffer_capacity** (≥ 1). Checksum is mandatory (`checksum_type` defaults to BLAKE2b). Other fields have sensible defaults (`shared_secret=0`, `logical_unit_size=0` = use physical). Same for `FlexibleZoneConfig` and `SchemaInfo`.
 
 **What is stored/verified at init:**
 
-- **Layout checksum** (BLAKE2b of layout-defining header fields: ring_buffer_capacity, physical_page_size, logical_unit_size, flexible_zone_size, enable_checksum, policy, consumer_sync_policy) is stored in the segment header at creation. On consumer attach and integrity validation, it is recomputed and compared — mismatch means refuse attach or report integrity failure.
+- **Layout checksum** (BLAKE2b of layout-defining header fields: ring_buffer_capacity, physical_page_size, logical_unit_size, flexible_zone_size, checksum_type, policy, consumer_sync_policy) is stored in the segment header at creation. On consumer attach and integrity validation, it is recomputed and compared — mismatch means refuse attach or report integrity failure.
 - **Schema hash** (optional): When using schema-aware `create_datablock_producer<Schema>(...)` and `find_datablock_consumer<Schema>(...)`, a BLDS schema hash is stored in the header and validated on consumer attach. This applies to the **overall data schema**, not per-zone or per-slot type mapping.
 
 **Physical vs logical slot size:**
@@ -101,6 +101,29 @@ with_read_transaction(*consumer, slot_id, 5000, [](ReadTransactionContext& ctx) 
 ```
 
 **Current limitation:** The layout (zone count, sizes) is enforced and checksum-protected. The **interpretation** (which struct type you use for each zone) is **not** stored or verified. You must ensure `sizeof(MyMetadataStruct)` matches the config and that producer and consumer agree on the struct layout. A future `with_typed_flexible_zone<T>(ctx, zone_index, func)` could add type checks and optionally schema verification.
+
+**Flexible zone with spinlock:** When a zone has `spinlock_index >= 0` in config, use `get_spinlock(index)` to protect concurrent access. Both producer and consumer can acquire the same spinlock by index:
+
+```cpp
+// Config: zone uses spinlock index 0
+config.flexible_zone_configs.push_back({"aux", sizeof(MyAuxStruct), 0});
+
+// Producer: lock, write zone, unlock
+SharedSpinLock sl_prod = producer->get_spinlock(0);
+sl_prod.lock();
+std::span<std::byte> z0 = producer->flexible_zone_span(0);
+std::memcpy(z0.data(), &my_data, sizeof(my_data));
+sl_prod.unlock();
+
+// Consumer: lock, read zone, unlock
+SharedSpinLock sl_cons = consumer->get_spinlock(0);
+sl_cons.lock();
+std::span<const std::byte> cz0 = consumer->flexible_zone_span(0);
+// ... read ...
+sl_cons.unlock();
+```
+
+Use `spinlock_count()` to get the number of available spinlocks (typically 8). Throws `std::runtime_error` if producer/consumer is invalid; `std::out_of_range` if index >= spinlock_count.
 
 ---
 
@@ -272,7 +295,35 @@ int main() {
 
 ---
 
-## 7. Gap vs Your Supposition
+## 7. Thread safety
+
+**DataBlockProducer** and **DataBlockConsumer** are **thread-safe**: slot acquire/release, heartbeat updates, and iterator use are protected by an internal mutex (producer: `std::mutex`; consumer: `std::recursive_mutex`). You may call `acquire_write_slot`, `with_write_transaction`, `slot_iterator().try_next`, `release_consume_slot`, and `update_heartbeat` from multiple threads. Release or destroy all slot handles (and finish iterator use) **before** destroying the producer or consumer.
+
+**Typical write path (sequence):** Application → Producer lock → acquire write slot → (optional) update producer heartbeat on commit → release write slot → unlock. The following diagram summarizes the sequence for a single `with_write_transaction`:
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Prod as DataBlockProducer
+    participant Slot as SlotWriteHandle
+
+    App->>Prod: with_write_transaction(timeout, lambda)
+    Prod->>Prod: lock(mutex)
+    Prod->>Prod: acquire_write_slot(timeout)
+    Prod->>Slot: (hold handle)
+    Prod->>Prod: unlock(mutex)
+    App->>Slot: lambda(ctx) → write / commit
+    App->>Prod: (lambda returns)
+    Prod->>Prod: lock(mutex)
+    Prod->>Slot: commit_write(); update_heartbeat(); release
+    Prod->>Prod: unlock(mutex)
+```
+
+**Read path:** Similarly, the consumer locks around acquire/release and iterator advance; for Sync_reader, releasing a consume slot updates that consumer’s heartbeat in the header.
+
+---
+
+## 8. Gap vs Your Supposition
 
 You supposed: *"when datablock is initialized with mapping structure info, schema/fingerprint is built, and during use within the with_* block, the type is checked against actual use."*
 

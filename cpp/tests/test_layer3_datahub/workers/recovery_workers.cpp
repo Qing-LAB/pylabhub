@@ -153,6 +153,77 @@ int heartbeat_manager_registers_and_pulses()
         "heartbeat_manager_registers_and_pulses", logger_module(), crypto_module(), hub_module());
 }
 
+int producer_update_heartbeat_explicit_succeeds()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("ProducerHeartbeat");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 65432;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+
+            producer->update_heartbeat();
+            producer->update_heartbeat();
+
+            producer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "producer_update_heartbeat_explicit_succeeds", logger_module(), crypto_module(), hub_module());
+}
+
+int producer_heartbeat_and_is_writer_alive()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("ProducerHeartbeatIsWriterAlive");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 76543;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+
+            const uint64_t my_pid = pylabhub::platform::get_pid();
+
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+            const char payload[] = "heartbeat-test";
+            EXPECT_TRUE(write_handle->write(payload, sizeof(payload)));
+            EXPECT_TRUE(write_handle->commit(sizeof(payload)));
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+            auto diag = open_datablock_for_diagnostic(channel);
+            ASSERT_NE(diag, nullptr);
+            const SharedMemoryHeader *header = diag->header();
+            ASSERT_NE(header, nullptr);
+
+            EXPECT_TRUE(is_writer_alive(header, my_pid))
+                << "is_writer_alive(header, my_pid) should be true after commit (heartbeat fresh)";
+            EXPECT_TRUE(is_writer_alive(header, my_pid))
+                << "is_writer_alive idempotent";
+
+            producer.reset();
+            diag.reset();
+            cleanup_test_datablock(channel);
+        },
+        "producer_heartbeat_and_is_writer_alive", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::recovery
 
 namespace
@@ -182,6 +253,10 @@ struct RecoveryWorkerRegistrar
                     return slot_recovery_release_zombie_readers_on_empty_slot();
                 if (scenario == "heartbeat_manager_registers")
                     return heartbeat_manager_registers_and_pulses();
+                if (scenario == "producer_update_heartbeat_explicit")
+                    return producer_update_heartbeat_explicit_succeeds();
+                if (scenario == "producer_heartbeat_and_is_writer_alive")
+                    return producer_heartbeat_and_is_writer_alive();
                 fmt::print(stderr, "ERROR: Unknown recovery scenario '{}'\n", scenario);
                 return 1;
             });

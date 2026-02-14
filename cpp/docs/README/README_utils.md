@@ -307,7 +307,7 @@ bool try_acquire_lock(pylabhub::utils::JsonConfig& config, const std::string& lo
 
 ### Recipe 8: Data Exchange Hub (Producer-Consumer)
 
-**Scenario:** High-throughput data streaming between processes. See [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) for full details.
+**Scenario:** High-throughput data streaming between processes. See [HEP-CORE-0002](../HEP/HEP-CORE-0002-DataHub-FINAL.md) for full details.
 
 ```cpp
 // Producer
@@ -328,11 +328,11 @@ if (buf) { process(buf); consumer->end_consume(); }
 
 | Module | Purpose | HEP |
 |--------|---------|-----|
-| **Lifecycle** | Dependency-aware startup/shutdown; static & dynamic modules | [HEP-CORE-0001](./hep/HEP-CORE-0001-hybrid-lifecycle-model.md) |
-| **Logger** | Async, thread-safe logging; sinks (console, file, syslog, eventlog) | [HEP-CORE-0004](./hep/HEP-CORE-0004-async-logger.md) |
-| **FileLock** | Cross-platform RAII file/directory locking | [HEP-CORE-0003](./hep/HEP-CORE-0003-cross-platform-filelock.md) |
+| **Lifecycle** | Dependency-aware startup/shutdown; static & dynamic modules | [HEP-CORE-0001](../HEP/HEP-CORE-0001-hybrid-lifecycle-model.md) |
+| **Logger** | Async, thread-safe logging; sinks (console, file, syslog, eventlog) | [HEP-CORE-0004](../HEP/HEP-CORE-0004-async-logger.md) |
+| **FileLock** | Cross-platform RAII file/directory locking | [HEP-CORE-0003](../HEP/HEP-CORE-0003-cross-platform-filelock.md) |
 | **JsonConfig** | Thread/process-safe JSON config with atomic writes | — |
-| **DataBlock** | Shared-memory IPC for high-throughput streaming | [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) |
+| **DataBlock** | Shared-memory IPC for high-throughput streaming | [HEP-CORE-0002](../HEP/HEP-CORE-0002-DataHub-FINAL.md) |
 | **ScopeGuard** | RAII cleanup on scope exit | — |
 | **RecursionGuard** | Detect re-entrant calls (thread-local) | — |
 | **In-process spin state (SpinGuard)** | Token-mode spin state + guard for critical sections | — |
@@ -345,11 +345,11 @@ Hub Enhancement Proposals (HEPs) provide detailed technical design, API referenc
 
 | HEP | Title |
 |-----|-------|
-| [HEP-CORE-0001](./hep/HEP-CORE-0001-hybrid-lifecycle-model.md) | Hybrid (Static & Dynamic) Module Lifecycle |
-| [HEP-CORE-0002](./hep/HEP-CORE-0002-DataHub-FINAL.md) | Data Exchange Hub Framework |
-| [HEP-CORE-0003](./hep/HEP-CORE-0003-cross-platform-filelock.md) | Cross-Platform RAII File Locking |
-| [HEP-CORE-0004](./hep/HEP-CORE-0004-async-logger.md) | High-Performance Asynchronous Logger |
-| [HEP-CORE-0005](./hep/HEP-CORE-0005-script-interface-framework.md) | Script Interface Framework (draft) |
+| [HEP-CORE-0001](../HEP/HEP-CORE-0001-hybrid-lifecycle-model.md) | Hybrid (Static & Dynamic) Module Lifecycle |
+| [HEP-CORE-0002](../HEP/HEP-CORE-0002-DataHub-FINAL.md) | Data Exchange Hub Framework |
+| [HEP-CORE-0003](../HEP/HEP-CORE-0003-cross-platform-filelock.md) | Cross-Platform RAII File Locking |
+| [HEP-CORE-0004](../HEP/HEP-CORE-0004-async-logger.md) | High-Performance Asynchronous Logger |
+| [HEP-CORE-0005](../HEP/HEP-CORE-0005-script-interface-framework.md) | Script Interface Framework (draft) |
 
 ---
 
@@ -434,7 +434,7 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 | In-process spin state (SpinGuard) | `utils/in_process_spin_state.hpp` |
 | SharedSpinLock (cross-process) | `utils/shared_memory_spinlock.hpp` |
 
-Each header contains inline documentation. For design rationale, sequence diagrams, and detailed API, see the [HEPs](./hep/).
+Each header contains inline documentation. For design rationale, sequence diagrams, and detailed API, see the [HEPs](../HEP/).
 
 ---
 

@@ -26,7 +26,7 @@ class PYLABHUB_UTILS_EXPORT SlotRecovery
      * @param shm_name The name of the shared memory DataBlock.
      * @param slot_index The physical index of the slot to perform recovery on.
      */
-    SlotRecovery(const std::string &shm_name, uint32_t slot_index);
+    SlotRecovery(std::string shm_name, uint32_t slot_index);
 
     /**
      * @brief Forcefully resets the slot's state to FREE.
