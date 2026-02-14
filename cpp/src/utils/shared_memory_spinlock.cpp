@@ -8,10 +8,15 @@ namespace pylabhub::hub
 // SharedSpinLock Implementation
 // ============================================================================
 
-SharedSpinLock::SharedSpinLock(SharedSpinLockState *state, const std::string &name)
-    : m_state(state), m_name(name)
+namespace
 {
-    if (!m_state)
+constexpr uint64_t kNsPerMs = 1'000'000;
+}
+
+SharedSpinLock::SharedSpinLock(SharedSpinLockState *state, std::string name)
+    : m_state(state), m_name(std::move(name))
+{
+    if (m_state == nullptr)
     {
         LOGGER_ERROR("SharedSpinLock '{}': Initialized with a null SharedSpinLockState.", m_name);
         throw std::invalid_argument("SharedSpinLockState cannot be null.");
@@ -67,7 +72,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
         // Timeout check
         if (timeout_ms > 0)
         {
-            uint64_t elapsed_ms = pylabhub::platform::elapsed_time_ns(start_ns) / 1'000'000;
+            uint64_t elapsed_ms = pylabhub::platform::elapsed_time_ns(start_ns) / kNsPerMs;
             if (elapsed_ms >= static_cast<uint64_t>(timeout_ms))
             {
                 return false; // Timeout
@@ -138,6 +143,7 @@ SharedSpinLockGuard::SharedSpinLockGuard(SharedSpinLock &lock) : m_lock(lock)
     m_lock.lock();
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) -- unlock() may throw; required by RAII contract
 SharedSpinLockGuard::~SharedSpinLockGuard()
 {
     m_lock.unlock();

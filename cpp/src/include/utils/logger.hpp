@@ -203,7 +203,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
                                             size_t max_file_size_bytes, size_t max_backup_files,
-                                            std::error_code &ec) noexcept;
+                                            std::error_code &err_code) noexcept;
 
     /**
      * @brief Overload for set_rotating_logfile with explicit flocking behavior.
@@ -212,7 +212,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
                                             size_t max_file_size_bytes, size_t max_backup_files,
-                                            bool use_flock, std::error_code &ec) noexcept;
+                                            bool use_flock, std::error_code &err_code) noexcept;
 
     /**
      * @brief Asynchronously switches logging to syslog (POSIX only). This is a no-op on Windows.
@@ -292,7 +292,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      *
      * @param cb A function taking a const std::string& containing the error message.
      */
-    void set_write_error_callback(std::function<void(const std::string &)> cb);
+    void set_write_error_callback(std::function<void(const std::string &)> callback);
 
     /**
      * @brief Asynchronously enables or disables logging of internal sink switching messages.

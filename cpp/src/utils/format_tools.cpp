@@ -1,7 +1,5 @@
 // format_tools.cpp
-#include "plh_platform.hpp"
-#include "utils/format_tools.hpp"
-#include <fmt/chrono.h>
+#include "plh_base.hpp"
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <chrono>
@@ -159,47 +157,47 @@ std::string ws2s(const std::wstring &w)
 #else
 
 // POSIX stubs (not used on POSIX)
-std::wstring win32_to_long_path(const std::filesystem::path &)
+std::wstring win32_to_long_path([[maybe_unused]] const std::filesystem::path &path)
 {
-    return std::wstring();
+    return {};
 }
 
 std::wstring win32_make_unique_suffix()
 {
-    return std::wstring();
+    return {};
 }
 
-std::wstring s2ws([[maybe_unused]] const std::string &s)
+std::wstring s2ws([[maybe_unused]] const std::string &str)
 {
-    return std::wstring();
+    return {};
 }
 
-std::string ws2s([[maybe_unused]] const std::wstring &w)
+std::string ws2s([[maybe_unused]] const std::wstring &wstr)
 {
-    return std::string();
+    return {};
 }
 
 #endif
 
 // Helper to trim whitespace from both ends of a string_view.
 // It's defined in an anonymous namespace to limit its scope to this file.
-constexpr std::string_view trim_whitespace(std::string_view s) noexcept
+constexpr std::string_view trim_whitespace(std::string_view str) noexcept
 {
     constexpr std::string_view whitespace = " \t\n\r\f\v";
 
-    auto first = s.find_first_not_of(whitespace);
+    auto first = str.find_first_not_of(whitespace);
     if (first == std::string_view::npos)
     {
         // all whitespace
-        return s.substr(0, 0);
+        return str.substr(0, 0);
     }
-    auto last = s.find_last_not_of(whitespace);
+    auto last = str.find_last_not_of(whitespace);
     // substr takes (pos, count). last >= first so count = last-first+1
-    return s.substr(first, last - first + 1);
+    return str.substr(first, last - first + 1);
 }
 
-std::optional<std::string> extract_value_from_string(std::string_view keyword,
-                                                     std::string_view input, char separator,
+std::optional<std::string> extract_value_from_string(std::string_view keyword, char separator,
+                                                     std::string_view input,
                                                      char assignment_symbol)
 {
     std::string_view::size_type start = 0;

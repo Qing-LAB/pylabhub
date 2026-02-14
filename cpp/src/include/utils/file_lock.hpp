@@ -56,6 +56,11 @@
  *     all implementation details, including platform-specific handles and internal
  *     locking primitives, ensuring a stable ABI for the shared library.
  *
+ * 7.  **No exceptions from public API**: All constructors and try_lock are noexcept.
+ *     Lock failure and allocation failure are reported via valid() false or
+ *     std::nullopt. The only fatal path is programmer error: using a direct
+ *     constructor before the FileLock lifecycle module is initialized (PLH_PANIC).
+ *
  * **Usage**
  *
  * `FileLock` is a lifecycle-managed utility. Its module must be initialized

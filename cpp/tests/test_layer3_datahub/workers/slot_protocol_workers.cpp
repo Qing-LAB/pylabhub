@@ -39,7 +39,6 @@ int write_read_succeeds_in_process()
             config.shared_secret = 11111;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -92,7 +91,6 @@ int structured_slot_data_passes()
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -136,7 +134,6 @@ int ring_buffer_iteration_content_verified()
             config.shared_secret = 66666;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -214,7 +211,6 @@ int writer_blocks_on_reader_then_unblocks()
             config.shared_secret = 77777;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -304,7 +300,6 @@ int checksum_update_verify_succeeds()
             config.shared_secret = 22222;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = true;
             config.checksum_policy = ChecksumPolicy::Enforced;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -351,7 +346,6 @@ int layout_with_checksum_and_flexible_zone_succeeds()
             config.shared_secret = 44444;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = true;
             config.checksum_policy = ChecksumPolicy::Enforced;
             config.flexible_zone_configs.push_back({"zone0", 128, -1});
 
@@ -407,7 +401,6 @@ int cross_process_writer(int argc, char **argv)
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -449,7 +442,6 @@ int cross_process_reader(int argc, char **argv)
             config.shared_secret = 55555;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Let writer create and write
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
@@ -486,7 +478,6 @@ int layout_checksum_validates_and_tamper_fails()
             config.shared_secret = 77777;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -541,7 +532,6 @@ int physical_logical_unit_size_used_and_tested()
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
                 config.logical_unit_size = 0; // use physical
-                config.enable_checksum = false;
 
                 auto producer = create_datablock_producer(hub_ref, channel,
                                                           DataBlockPolicy::RingBuffer, config);
@@ -586,7 +576,6 @@ int physical_logical_unit_size_used_and_tested()
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
                 config.logical_unit_size = kLogicalExplicit;
-                config.enable_checksum = false;
 
                 auto producer = create_datablock_producer(hub_ref, channel,
                                                           DataBlockPolicy::RingBuffer, config);
@@ -632,7 +621,6 @@ int physical_logical_unit_size_used_and_tested()
                 config.ring_buffer_capacity = 2;
                 config.physical_page_size = DataBlockPageSize::Size4K;
                 config.logical_unit_size = kLogicalExplicit;
-                config.enable_checksum = false;
 
                 auto producer = create_datablock_producer(hub_ref, channel,
                                                           DataBlockPolicy::RingBuffer, config);
@@ -732,7 +720,6 @@ int high_contention_wrap_around()
             config.shared_secret = 88888;
             config.ring_buffer_capacity = kRingCapacity;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -820,7 +807,6 @@ int zombie_writer_acquire_then_exit(int argc, char **argv)
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1; // Single slot so same physical slot reused
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -859,13 +845,12 @@ int zombie_writer_reclaimer(int argc, char **argv)
             config.shared_secret = 99999;
             config.ring_buffer_capacity = 1;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Let zombie exit
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
-            // Should succeed via force reclaim (is_process_alive(zombie_pid)==false)
+            // Should succeed via force reclaim (is_writer_alive(header, zombie_pid)==false; heartbeat stale, PID dead)
             auto wh = producer->acquire_write_slot(5000);
             ASSERT_NE(wh.get(), nullptr) << "Reclaimer should acquire after zombie exit (force reclaim)";
             LOGGER_INFO("{}", "[SlotTest:Producer] zombie writer reclaimed, write ok");
@@ -892,7 +877,6 @@ int policy_latest_only()
             config.shared_secret = 99991;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -937,7 +921,6 @@ int policy_single_reader()
             config.shared_secret = 99992;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -985,7 +968,6 @@ int policy_sync_reader()
             config.shared_secret = 99993;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Sync_reader;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -1037,7 +1019,6 @@ int high_load_single_reader()
             config.shared_secret = 99994;
             config.ring_buffer_capacity = 4; // small ring to force frequent wrap-around
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
 
             auto producer = create_datablock_producer(hub_ref, channel,
@@ -1098,7 +1079,6 @@ int writer_timeout_metrics_split()
             config.shared_secret = 99995;
             config.ring_buffer_capacity = 1; // Single slot to force contention on same SlotRWState
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.enable_checksum = false;
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -1181,6 +1161,294 @@ int writer_timeout_metrics_split()
         "writer_timeout_metrics_split", logger_module(), crypto_module(), hub_module());
 }
 
+int policy_single_buffer_smoke()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicySingleBuffer");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::Single;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 88881;
+            config.ring_buffer_capacity = 1;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::Single, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            const char first[] = "first";
+            const char second[] = "second";
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh, nullptr);
+            EXPECT_TRUE(wh->write(first, sizeof(first)));
+            EXPECT_TRUE(wh->commit(sizeof(first)));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            std::string read1(sizeof(first), '\0');
+            EXPECT_TRUE(ch->read(read1.data(), sizeof(first)));
+            EXPECT_EQ(std::memcmp(read1.data(), first, sizeof(first)), 0) << "read first";
+            ch.reset();
+
+            wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh, nullptr);
+            EXPECT_TRUE(wh->write(second, sizeof(second)));
+            EXPECT_TRUE(wh->commit(sizeof(second)));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+
+            ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            std::string read2(sizeof(second), '\0');
+            EXPECT_TRUE(ch->read(read2.data(), sizeof(second)));
+            EXPECT_EQ(std::memcmp(read2.data(), second, sizeof(second)), 0) << "read overwritten second";
+            ch.reset();
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "policy_single_buffer_smoke", logger_module(), crypto_module(), hub_module());
+}
+
+int policy_double_buffer_smoke()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PolicyDoubleBuffer");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::DoubleBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+            config.shared_secret = 88882;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::DoubleBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            SlotPayload frame_a{0xAAAAAAAA, 111};
+            SlotPayload frame_b{0xBBBBBBBB, 222};
+            auto wh_a = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh_a, nullptr);
+            EXPECT_TRUE(wh_a->write(&frame_a, sizeof(frame_a)));
+            EXPECT_TRUE(wh_a->commit(sizeof(frame_a)));
+            EXPECT_TRUE(producer->release_write_slot(*wh_a));
+
+            auto wh_b = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh_b, nullptr);
+            EXPECT_TRUE(wh_b->write(&frame_b, sizeof(frame_b)));
+            EXPECT_TRUE(wh_b->commit(sizeof(frame_b)));
+            EXPECT_TRUE(producer->release_write_slot(*wh_b));
+
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            EXPECT_EQ(ch->slot_id(), 0u) << "Single_reader: first slot";
+            SlotPayload read_a{};
+            EXPECT_TRUE(ch->read(&read_a, sizeof(read_a)));
+            EXPECT_EQ(read_a.id, frame_a.id);
+            EXPECT_EQ(read_a.value, frame_a.value);
+            ch.reset();
+
+            ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            EXPECT_EQ(ch->slot_id(), 1u) << "Single_reader: second slot";
+            SlotPayload read_b{};
+            EXPECT_TRUE(ch->read(&read_b, sizeof(read_b)));
+            EXPECT_EQ(read_b.id, frame_b.id);
+            EXPECT_EQ(read_b.value, frame_b.value);
+            ch.reset();
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "policy_double_buffer_smoke", logger_module(), crypto_module(), hub_module());
+}
+
+int checksum_manual_policy()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("ChecksumManual");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 88883;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.checksum_policy = ChecksumPolicy::Manual;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            const char payload[] = "manual checksum payload";
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh, nullptr);
+            EXPECT_TRUE(wh->write(payload, sizeof(payload)));
+            EXPECT_TRUE(wh->update_checksum_slot()) << "Manual: producer must update before commit";
+            EXPECT_TRUE(wh->commit(sizeof(payload)));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            EXPECT_TRUE(ch->verify_checksum_slot()) << "Manual: consumer must verify before read";
+            std::string read_buf(sizeof(payload), '\0');
+            EXPECT_TRUE(ch->read(read_buf.data(), sizeof(payload)));
+            EXPECT_EQ(std::memcmp(read_buf.data(), payload, sizeof(payload)), 0);
+            ch.reset();
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "checksum_manual_policy", logger_module(), crypto_module(), hub_module());
+}
+
+int physical_page_size_4m_smoke()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("PhysicalPage4M");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 88884;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4M;
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            SlotPayload written{0x4D345934, 4096};
+            auto wh = producer->acquire_write_slot(5000);
+            ASSERT_NE(wh, nullptr);
+            EXPECT_TRUE(wh->write(&written, sizeof(written)));
+            EXPECT_TRUE(wh->commit(sizeof(written)));
+            EXPECT_TRUE(producer->release_write_slot(*wh));
+
+            auto ch = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(ch, nullptr);
+            SlotPayload read{};
+            EXPECT_TRUE(ch->read(&read, sizeof(read)));
+            EXPECT_EQ(read.id, written.id);
+            EXPECT_EQ(read.value, written.value);
+            ch.reset();
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "physical_page_size_4m_smoke", logger_module(), crypto_module(), hub_module());
+}
+
+int flexible_zone_multi_zones()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("FlexZoneMulti");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 88885;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.flexible_zone_configs.push_back({"zone0", 64, -1});
+            config.flexible_zone_configs.push_back({"zone1", 64, -1});
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            const char data0[] = "zone0-data";
+            const char data1[] = "zone1-data";
+            std::span<std::byte> z0 = producer->flexible_zone_span(0);
+            std::span<std::byte> z1 = producer->flexible_zone_span(1);
+            ASSERT_GE(z0.size(), sizeof(data0));
+            ASSERT_GE(z1.size(), sizeof(data1));
+            std::memcpy(z0.data(), data0, sizeof(data0));
+            std::memcpy(z1.data(), data1, sizeof(data1));
+
+            std::span<const std::byte> cz0 = consumer->flexible_zone_span(0);
+            std::span<const std::byte> cz1 = consumer->flexible_zone_span(1);
+            ASSERT_GE(cz0.size(), sizeof(data0));
+            ASSERT_GE(cz1.size(), sizeof(data1));
+            EXPECT_EQ(std::memcmp(cz0.data(), data0, sizeof(data0)), 0) << "zone0 content";
+            EXPECT_EQ(std::memcmp(cz1.data(), data1, sizeof(data1)), 0) << "zone1 content";
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "flexible_zone_multi_zones", logger_module(), crypto_module(), hub_module());
+}
+
+int flexible_zone_with_spinlock()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("FlexZoneSpinlock");
+            MessageHub &hub_ref = MessageHub::get_instance();
+            DataBlockConfig config{};
+            config.policy = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret = 88886;
+            config.ring_buffer_capacity = 2;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.flexible_zone_configs.push_back({"zone0", 64, 0}); // spinlock index 0
+
+            auto producer = create_datablock_producer(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            ASSERT_NE(consumer, nullptr);
+
+            const char payload[] = "spinlock-protected";
+            SharedSpinLock sl_prod = producer->get_spinlock(0);
+            sl_prod.lock();
+            std::span<std::byte> z0 = producer->flexible_zone_span(0);
+            ASSERT_GE(z0.size(), sizeof(payload));
+            std::memcpy(z0.data(), payload, sizeof(payload));
+            sl_prod.unlock();
+
+            SharedSpinLock sl_cons = consumer->get_spinlock(0);
+            sl_cons.lock();
+            std::span<const std::byte> cz0 = consumer->flexible_zone_span(0);
+            ASSERT_GE(cz0.size(), sizeof(payload));
+            EXPECT_EQ(std::memcmp(cz0.data(), payload, sizeof(payload)), 0) << "zone with spinlock";
+            sl_cons.unlock();
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "flexible_zone_with_spinlock", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::slot_protocol
 
 namespace
@@ -1238,6 +1506,18 @@ struct SlotProtocolWorkerRegistrar
                     return high_load_single_reader();
                 if (scenario == "writer_timeout_metrics_split")
                     return writer_timeout_metrics_split();
+                if (scenario == "policy_single_buffer_smoke")
+                    return policy_single_buffer_smoke();
+                if (scenario == "policy_double_buffer_smoke")
+                    return policy_double_buffer_smoke();
+                if (scenario == "checksum_manual_policy")
+                    return checksum_manual_policy();
+                if (scenario == "physical_page_size_4m_smoke")
+                    return physical_page_size_4m_smoke();
+                if (scenario == "flexible_zone_multi_zones")
+                    return flexible_zone_multi_zones();
+                if (scenario == "flexible_zone_with_spinlock")
+                    return flexible_zone_with_spinlock();
                 fmt::print(stderr, "ERROR: Unknown slot_protocol scenario '{}'\n", scenario);
                 return 1;
             });

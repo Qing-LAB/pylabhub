@@ -3,7 +3,7 @@
 namespace pylabhub::hub
 {
 
-IntegrityValidator::IntegrityValidator(const std::string &shm_name) : shm_name_(shm_name) {}
+IntegrityValidator::IntegrityValidator(std::string shm_name) : shm_name_(std::move(shm_name)) {}
 
 RecoveryResult IntegrityValidator::validate(bool repair)
 {

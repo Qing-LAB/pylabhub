@@ -5,7 +5,7 @@
  *
  * Design: Single shared-memory block, counters/flags, slot iterator.
  * All public classes use pImpl for ABI stability.
- * See docs/hep/HEP-CORE-0002-DataHub-FINAL.md for complete design specification.
+ * See docs/HEP/HEP-CORE-0002-DataHub-FINAL.md for complete design specification.
  *
  * @par Lifecycle
  * create_datablock_producer() and find_datablock_consumer() require the Data Exchange Hub
@@ -29,8 +29,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include "slot_rw_coordinator.h" // Include C interface header
-#include "slot_rw_access.hpp"    // Include Layer 1.75 template wrappers
+#include "slot_rw_coordinator.h" // Include C interface header (lock/multithread safety is user-managed at C API level)
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -78,6 +77,10 @@ inline constexpr size_t LAYOUT_CHECKSUM_OFFSET = 32;
 inline constexpr size_t LAYOUT_CHECKSUM_SIZE = 32;
 /** Offset in reserved_header[] for Sync_reader per-consumer next-read slot ids (8 * uint64_t). */
 inline constexpr size_t CONSUMER_READ_POSITIONS_OFFSET = 64;
+/** Offset in reserved_header[] for producer heartbeat: producer_id (uint64_t), producer_last_heartbeat_ns (uint64_t). */
+inline constexpr size_t PRODUCER_HEARTBEAT_OFFSET = 128;
+/** Staleness threshold: if (now - last_heartbeat_ns) > this, heartbeat is stale; fall back to is_process_alive. */
+inline constexpr uint64_t PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS = 5'000'000'000ULL; // 5 seconds
 
 /** DataBlock shared memory header magic number ('PLHB'). */
 inline constexpr uint32_t DATABLOCK_MAGIC_NUMBER = 0x504C4842;
@@ -94,6 +97,10 @@ inline bool is_header_magic_valid(const std::atomic<uint32_t> *magic_ptr,
 }
 
 } // namespace detail
+
+/** Returns true if writer (pid) is alive. Uses producer heartbeat if fresh; otherwise is_process_alive.
+ * Use for liveness checks: only fall back to PID check when heartbeat is missing or stale. */
+PYLABHUB_UTILS_EXPORT bool is_writer_alive(const SharedMemoryHeader *header, uint64_t pid) noexcept;
 
 // Forward declarations
 class MessageHub;
@@ -142,17 +149,19 @@ constexpr size_t raw_size_SlotRWState =
 static_assert(raw_size_SlotRWState == 48, "SlotRWState must be 48 bytes");
 static_assert(alignof(SlotRWState) >= 64, "SlotRWState should be cache-line aligned");
 
-/** Physical page size for allocation. Each slot is aligned to page boundaries. */
+/** @enum DataBlockPageSize
+ *  @brief Physical page size for allocation. Each slot is aligned to page boundaries.
+ *  Unset is a sentinel; must not be stored in header; config must set explicitly. */
 enum class DataBlockPageSize : uint32_t
 {
-    Unset = 0,       // Sentinel: must not be stored in header; config must set explicitly
+    Unset = 0,       ///< Sentinel: must not be stored in header
     Size4K = 4096u,
     Size4M = 4194304u,
     Size16M = 16777216u
 };
 
-/** Return byte size for DataBlockPageSize */
-
+/** @brief Return byte size for DataBlockPageSize (e.g. 4096 for Size4K).
+ *  @return Size in bytes; 0 for Unset. */
 inline size_t to_bytes(DataBlockPageSize u)
 
 {
@@ -177,20 +186,27 @@ enum class DataBlockPolicy
 };
 
 /**
+ * @enum ChecksumType
+ * @brief Algorithm used for slot and flexible-zone checksums. Always one active.
+ */
+enum class ChecksumType
+{
+    BLAKE2b = 0,
+    Unset = 255 // Sentinel: must not be stored; config must set BLAKE2b (or future algorithm)
+};
+
+/**
  * @enum ChecksumPolicy
- * @brief When checksums are enabled (enable_checksum), who runs update/verify and when.
+ * @brief When to run update/verify. Checksum storage is always present (ChecksumType).
  *
- * - None: No checksum enforcement (update/verify are no-ops or optional).
+ * - None: No enforcement (update/verify are no-ops or optional).
  * - Manual: Caller must call update_checksum_* and verify_checksum_* explicitly.
- *   Slot becomes visible to consumers on commit().
- * - Enforced: System automatically updates checksum on release_write_slot and
- *   verifies on release_consume_slot. Slot becomes visible only after release
- *   (after checksum is stored). Use this when you want integrity without manual calls.
+ * - Enforced: System automatically updates on release_write_slot and verifies on release_consume_slot.
  */
 enum class ChecksumPolicy
 {
     None,    // No checksum enforcement
-    Manual,  // User calls update/verify explicitly; slot visible on commit()
+    Manual,  // User calls update/verify explicitly
     Enforced // Automatic update on write release, verify on consume release
 };
 
@@ -266,8 +282,10 @@ struct DataBlockConfig
     /** Consumer sync policy. Must be set explicitly (no default). */
     ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Unset;
 
-    bool enable_checksum = false; // BLAKE2b checksums in control zone (flexible zone + slots)
+    /** Checksum algorithm. Always present; default BLAKE2b. */
+    ChecksumType checksum_type = ChecksumType::BLAKE2b;
 
+    /** When to update/verify checksums. */
     ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
 
     std::vector<FlexibleZoneConfig> flexible_zone_configs;
@@ -316,6 +334,8 @@ struct DataBlockConfig
 
  * handing over to it (old block remains valid until all consumers detach).
 
+ * Layout is ABI-sensitive (4KB alignment). See HEP-CORE-0002.
+
  */
 struct alignas(4096) SharedMemoryHeader
 {
@@ -338,7 +358,7 @@ struct alignas(4096) SharedMemoryHeader
     uint32_t logical_unit_size;           // Logical slot size (bytes); always >= physical_page_size (legacy 0 = use physical)
     uint32_t ring_buffer_capacity;        // Number of slots
     size_t flexible_zone_size;      // Total TABLE 1 size
-    bool enable_checksum;           // BLAKE2b checksums enabled
+    uint8_t checksum_type;          // ChecksumType; always present (BLAKE2b)
     ChecksumPolicy checksum_policy;
 
     // === Ring Buffer State (Hot Path) ===
@@ -444,7 +464,7 @@ static_assert(alignof(SharedMemoryHeader) >= 4096,
     OP(logical_unit_size, "u32")                                                               \
     OP(ring_buffer_capacity, "u32")                                                           \
     OP(flexible_zone_size, "u64")                                                             \
-    OP(enable_checksum, "b")                                                                   \
+    OP(checksum_type, "u8")                                                                     \
     OP(checksum_policy, "u32")                                                                \
     /* Ring Buffer State (Hot Path) */                                                         \
     OP(write_index, "u64")                                                                    \
@@ -670,6 +690,12 @@ struct DataBlockSlotIterator::NextResult
 /**
  * @class DataBlockProducer
  * @brief Producer handle for a DataBlock. ABI-stable via pImpl.
+ *
+ * @par Thread Safety
+ * DataBlockProducer is **thread-safe**: slot acquire/release, update_heartbeat,
+ * check_consumer_health, and register_with_broker are protected by an internal mutex.
+ * Multiple threads may share one producer; only one context (e.g. one write slot) is
+ * active at a time per producer.
  */
 class PYLABHUB_UTILS_EXPORT DataBlockProducer
 {
@@ -719,7 +745,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @brief Release a previously acquired slot.
      * @return true on success. Returns false if:
      *   - handle is invalid (default-constructed or moved-from)
-     *   - checksum update failed (when ChecksumPolicy::Enforced and enable_checksum);
+     *   - checksum update failed (when ChecksumPolicy::Enforced);
      *     slot was committed but BLAKE2b update failed)
      * Idempotent: calling again on an already-released handle returns true.
      */
@@ -731,6 +757,19 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     [[nodiscard]] bool register_with_broker(MessageHub &hub, const std::string &channel_name);
     /** @brief Checks the health of registered consumers and cleans up dead ones. */
     void check_consumer_health() noexcept;
+
+    /** @brief Updates producer heartbeat (PID and monotonic timestamp). Call explicitly when idle, or
+     * rely on automatic update on slot commit. Used for liveness: is_process_alive is only checked
+     * when heartbeat is missing or stale. */
+    void update_heartbeat() noexcept;
+
+    /** @brief Last committed slot id (commit_index). Returns 0 if producer is invalid. */
+    [[nodiscard]] uint64_t last_slot_id() const noexcept;
+
+    /** @brief Fills metrics and state snapshot via C API (slot_rw_get_metrics). Returns -1 on error. */
+    [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
+    /** @brief Resets metrics via C API (slot_rw_reset_metrics). State (e.g. commit_index) is not reset. Returns -1 on error. */
+    [[nodiscard]] int reset_metrics() noexcept;
 
     /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
      * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
@@ -749,11 +788,10 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
  * @brief Consumer handle for a DataBlock. ABI-stable via pImpl.
  *
  * @par Thread Safety
- * DataBlockConsumer is **not** thread-safe. Do not call acquire_consume_slot(),
- * acquire_consume_slot(slot_id), release_consume_slot(), slot_iterator(), or other
- * methods that mutate internal state from more than one thread concurrently.
- * Use a single consumer thread, or create one DataBlockConsumer per thread with
- * explicit coordination for slot distribution. See docs/testing/TEST_PROCESS_SYNC_DESIGN.md.
+ * DataBlockConsumer is **thread-safe**: slot acquire/release, slot_iterator(),
+ * register_heartbeat, update_heartbeat, and unregister_heartbeat are protected by
+ * an internal recursive mutex. Multiple threads may share one consumer; only one
+ * context (e.g. one consume slot or iterator advance) is active at a time per consumer.
  */
 class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 {
@@ -824,6 +862,11 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
      * or a generated id "consumer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
     [[nodiscard]] const std::string &name() const noexcept;
+
+    /** @brief Fills metrics and state snapshot via C API (slot_rw_get_metrics). Returns -1 on error. */
+    [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
+    /** @brief Resets metrics via C API (slot_rw_reset_metrics). State (e.g. commit_index) is not reset. Returns -1 on error. */
+    [[nodiscard]] int reset_metrics() noexcept;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockConsumer(std::unique_ptr<DataBlockConsumerImpl> impl);
@@ -936,6 +979,11 @@ class PYLABHUB_UTILS_EXPORT ReadTransactionGuard
  * exposes slot(), flexible_zone(i), slot_id(), slot_index(). The slot is released
  * when the function returns or when an exception is thrown.
  *
+ * @param producer The DataBlock producer.
+ * @param timeout_ms Timeout in milliseconds for slot acquisition; 0 = no wait.
+ * @param func Callable taking WriteTransactionContext&; may throw.
+ * @return The return value of func.
+ * @throws std::runtime_error on acquisition failure.
  * @tparam Func A callable that takes a `WriteTransactionContext&`.
  */
 template <typename Func>
@@ -960,6 +1008,12 @@ auto with_write_transaction(DataBlockProducer &producer, int timeout_ms, Func &&
  * context exposes slot(), flexible_zone(i), validate_read(), slot_id(). The slot
  * is released when the function returns or when an exception is thrown.
  *
+ * @param consumer The DataBlock consumer.
+ * @param slot_id Slot ID to read.
+ * @param timeout_ms Timeout in milliseconds for slot acquisition; 0 = no wait.
+ * @param func Callable taking ReadTransactionContext&; may throw.
+ * @return The return value of func.
+ * @throws std::runtime_error on acquisition failure.
  * @tparam Func A callable that takes a `ReadTransactionContext&`.
  */
 template <typename Func>
@@ -1001,14 +1055,27 @@ auto with_typed_write(DataBlockProducer &producer, int timeout_ms, Func &&func)
             throw std::runtime_error("Slot buffer alignment insufficient for type T");
         }
         T &ref = *reinterpret_cast<T *>(ptr);
-        auto result = std::invoke(std::forward<Func>(func), ref);
-        if (!ctx.slot().commit(sizeof(T)))
+        if constexpr (std::is_void_v<std::invoke_result_t<Func, T &>>)
         {
-            throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
-                                    std::to_string(ctx.slot_id()) + ", slot_index=" +
-                                    std::to_string(ctx.slot_index()) + ")");
+            std::invoke(std::forward<Func>(func), ref);
+            if (!ctx.slot().commit(sizeof(T)))
+            {
+                throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
+                                        std::to_string(ctx.slot_id()) + ", slot_index=" +
+                                        std::to_string(ctx.slot_index()) + ")");
+            }
         }
-        return result;
+        else
+        {
+            auto result = std::invoke(std::forward<Func>(func), ref);
+            if (!ctx.slot().commit(sizeof(T)))
+            {
+                throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
+                                        std::to_string(ctx.slot_id()) + ", slot_index=" +
+                                        std::to_string(ctx.slot_index()) + ")");
+            }
+            return result;
+        }
     });
 }
 

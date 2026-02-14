@@ -74,7 +74,7 @@ bool compute_blake2b(uint8_t *out, const void *data, size_t len) noexcept
         return false;
     }
 
-    if (!out || !data)
+    if (out == nullptr || data == nullptr)
     {
         LOGGER_ERROR("[CryptoUtils] compute_blake2b: null pointer argument");
         return false;
@@ -118,21 +118,21 @@ bool verify_blake2b(const uint8_t *stored, const void *data, size_t len) noexcep
         return false;
     }
 
-    if (!stored || !data)
+    if (stored == nullptr || data == nullptr)
     {
         LOGGER_ERROR("[CryptoUtils] verify_blake2b: null pointer argument");
         return false;
     }
 
     // Compute hash of data
-    uint8_t computed[BLAKE2B_HASH_BYTES];
-    if (!compute_blake2b(computed, data, len))
+    std::array<uint8_t, BLAKE2B_HASH_BYTES> computed{};
+    if (!compute_blake2b(computed.data(), data, len))
     {
         return false;
     }
 
     // Constant-time comparison (timing-attack resistant)
-    int cmp = sodium_memcmp(stored, computed, BLAKE2B_HASH_BYTES);
+    int cmp = sodium_memcmp(stored, computed.data(), BLAKE2B_HASH_BYTES);
 
     return (cmp == 0);
 }
@@ -158,7 +158,7 @@ void generate_random_bytes(uint8_t *out, size_t len) noexcept
         return;
     }
 
-    if (!out)
+    if (out == nullptr)
     {
         LOGGER_ERROR("[CryptoUtils] generate_random_bytes: null output pointer");
         return;
@@ -175,9 +175,14 @@ uint64_t generate_random_u64() noexcept
     return value;
 }
 
-std::array<uint8_t, 64> generate_shared_secret() noexcept
+namespace
 {
-    std::array<uint8_t, 64> secret{};
+constexpr size_t kSharedSecretBytes = 64;
+}
+
+std::array<uint8_t, kSharedSecretBytes> generate_shared_secret() noexcept
+{
+    std::array<uint8_t, kSharedSecretBytes> secret{};
     generate_random_bytes(secret.data(), secret.size());
     return secret;
 }
@@ -230,7 +235,8 @@ pylabhub::utils::ModuleDef GetLifecycleModule()
 {
     pylabhub::utils::ModuleDef module("CryptoUtils");
     module.set_startup(crypto_startup);
-    module.set_shutdown(crypto_shutdown, 1000); // 1 second timeout
+    constexpr int kShutdownTimeoutMs = 1000; // 1 second
+    module.set_shutdown(crypto_shutdown, kShutdownTimeoutMs);
     // No dependencies - CryptoUtils is a foundational module
     return module;
 }

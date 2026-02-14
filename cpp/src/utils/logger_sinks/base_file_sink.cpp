@@ -14,6 +14,11 @@
 namespace pylabhub::utils
 {
 
+namespace
+{
+constexpr int kLogFileMode = 0644;
+}
+
 BaseFileSink::BaseFileSink() = default;
 
 BaseFileSink::~BaseFileSink()
@@ -48,7 +53,7 @@ void BaseFileSink::open(const std::filesystem::path &path, bool use_flock)
                                 "CreateFileW failed for log file");
     }
 #else
-    m_fd = ::open(m_path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+    m_fd = ::open(m_path.c_str(), O_WRONLY | O_APPEND | O_CREAT, kLogFileMode);
     if (m_fd == -1)
     {
         throw std::system_error(errno, std::generic_category(), "open failed for log file");
@@ -77,7 +82,9 @@ void BaseFileSink::close()
 void BaseFileSink::fwrite(const std::string &content)
 {
     if (!is_open())
+    {
         return;
+    }
 
 #ifdef PYLABHUB_PLATFORM_WIN64
     DWORD bytes_written = 0;
@@ -113,7 +120,9 @@ void BaseFileSink::fwrite(const std::string &content)
 void BaseFileSink::fflush()
 {
     if (!is_open())
+    {
         return;
+    }
 
 #ifdef PYLABHUB_PLATFORM_WIN64
     FlushFileBuffers(m_file_handle);
@@ -125,7 +134,9 @@ void BaseFileSink::fflush()
 size_t BaseFileSink::size() const
 {
     if (!is_open())
+    {
         return 0;
+    }
 
     try
     {

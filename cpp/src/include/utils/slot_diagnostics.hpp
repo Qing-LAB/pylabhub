@@ -27,7 +27,7 @@ class PYLABHUB_UTILS_EXPORT SlotDiagnostics
      * @param shm_name The name of the shared memory DataBlock.
      * @param slot_index The physical index of the slot to diagnose.
      */
-    SlotDiagnostics(const std::string &shm_name, uint32_t slot_index);
+    SlotDiagnostics(std::string shm_name, uint32_t slot_index);
 
     /**
      * @brief Refreshes the diagnostic data from shared memory.

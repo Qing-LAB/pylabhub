@@ -67,6 +67,6 @@ Uses GoogleTest. Multi-process IPC tests spawn child worker processes coordinate
 
 - **Do not modify** anything under `third_party/` unless explicitly instructed.
 - Documentation in `docs/` is treated as code — update it when changing design patterns or behavior.
-- HEP documents (`docs/hep/`) are the authoritative design specifications for each component.
+- HEP documents (`docs/HEP/`) are the authoritative design specifications for each component.
 - Code style: `.clang-format` (LLVM-based, 4-space indent, 100-char lines, Allman braces). `.clang-tidy` runs automatically with Clang and treats warnings as errors.
 - Cross-reference `CMakeLists.txt` files and `cmake/` helpers before proposing build changes.
