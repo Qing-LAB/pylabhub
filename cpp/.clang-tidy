@@ -7,15 +7,9 @@ Checks: >-
   -*,clang-analyzer-*,bugprone-*,performance-*,modernize-*,readability-*,
   -readability-identifier-naming,-modernize-use-trailing-return-type
 
-WarningsAsErrors:
-  - "clang-analyzer-*"
-  - "bugprone-argument-comment"
-  - "bugprone-assert-side-effect"
-  - "bugprone-bad-signal-to-kill-thread"
-  - "bugprone-copy-constructor-init"
-  - "bugprone-dangling-handle"
-  - "bugprone-suspicious-string-compare"
+# Comma-separated string; clang-tidy does not accept a YAML list here.
+WarningsAsErrors: 'clang-analyzer-*,bugprone-argument-comment,bugprone-assert-side-effect,bugprone-bad-signal-to-kill-thread,bugprone-copy-constructor-init,bugprone-dangling-handle,bugprone-suspicious-string-compare'
 
-HeaderFilterRegex: '(src|include|tests)/.*'
-AnalyzeTemporaryDtors: true
+# Only emit diagnostics for our code; exclude third_party submodules (fmt, nlohmann, zmq, etc.).
+HeaderFilterRegex: '^(?!.*third_party).*$'
 ...

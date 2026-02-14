@@ -3,8 +3,8 @@
 namespace pylabhub::hub
 {
 
-SlotRecovery::SlotRecovery(const std::string &shm_name, uint32_t slot_index)
-    : shm_name_(shm_name), slot_index_(slot_index)
+SlotRecovery::SlotRecovery(std::string shm_name, uint32_t slot_index)
+    : shm_name_(std::move(shm_name)), slot_index_(slot_index)
 {
 }
 

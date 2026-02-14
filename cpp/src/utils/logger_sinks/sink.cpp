@@ -9,19 +9,25 @@ const char *Sink::level_to_string_internal(int lvl)
 {
     // A C-style switch on int is used here to avoid a hard dependency on logger.hpp
     // for the Logger::Level enum, keeping this header self-contained.
+    constexpr int kTraceLevel = 0;
+    constexpr int kDebugLevel = 1;
+    constexpr int kInfoLevel = 2;
+    constexpr int kWarnLevel = 3;
+    constexpr int kErrorLevel = 4;
+    constexpr int kSystemLevel = 5;
     switch (lvl)
     {
-    case 0:
+    case kTraceLevel:
         return "TRACE";
-    case 1:
+    case kDebugLevel:
         return "DEBUG";
-    case 2:
+    case kInfoLevel:
         return "INFO";
-    case 3:
+    case kWarnLevel:
         return "WARN";
-    case 4:
+    case kErrorLevel:
         return "ERROR";
-    case 5:
+    case kSystemLevel:
         return "SYSTEM";
     default:
         return "UNK";
@@ -38,12 +44,9 @@ std::string Sink::format_logmsg(const LogMessage &msg, Sink::WRITE_MODE mode)
                            level_to_string_internal(msg.level), time_str, msg.process_id,
                            msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
     }
-    else
-    {
-        return fmt::format("[LOGGER_SYNC] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n",
-                           level_to_string_internal(msg.level), time_str, msg.process_id,
-                           msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
-    }
+    return fmt::format("[LOGGER_SYNC] [{:<6}] [{}] [PID:{:5} TID:{:5}] {}\n",
+                       level_to_string_internal(msg.level), time_str, msg.process_id,
+                       msg.thread_id, std::string_view(msg.body.data(), msg.body.size()));
 }
 
 } // namespace pylabhub::utils

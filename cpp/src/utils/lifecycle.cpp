@@ -34,6 +34,7 @@
 
 #include "utils/lifecycle.hpp"
 #include "utils/module_def.hpp"
+#include <cstdint>      // For std::uint8_t
 #include <cstring>      // For strnlen
 #include <fmt/ranges.h> // For fmt::join on vectors
 #include <future>       // For std::async, std::future
@@ -59,7 +60,9 @@ void validate_module_name_cstr(const char *name, bool allow_null, const char *pa
     if (name == nullptr)
     {
         if (allow_null)
+        {
             return;
+        }
         throw std::invalid_argument(std::string("Lifecycle: ") + param_name + " must not be null.");
     }
     const size_t len = strnlen(name, pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN + 1);
@@ -109,7 +112,7 @@ ModuleDef::ModuleDef(ModuleDef &&other) noexcept = default;
 ModuleDef &ModuleDef::operator=(ModuleDef &&other) noexcept = default;
 void ModuleDef::add_dependency(const char *dependency_name)
 {
-    if (pImpl && dependency_name)
+    if (pImpl != nullptr && dependency_name != nullptr)
     {
         validate_module_name_cstr(dependency_name, false, "dependency name");
         pImpl->def.dependencies.emplace_back(dependency_name);
@@ -117,15 +120,19 @@ void ModuleDef::add_dependency(const char *dependency_name)
 }
 void ModuleDef::set_startup(LifecycleCallback startup_func)
 {
-    if (pImpl && startup_func)
+    if (pImpl != nullptr && startup_func != nullptr)
+    {
         pImpl->def.startup = [startup_func]() { startup_func(nullptr); };
+    }
 }
 void ModuleDef::set_startup(LifecycleCallback startup_func, const char *data, size_t len)
 {
-    if (pImpl && startup_func)
+    if (pImpl != nullptr && startup_func != nullptr)
     {
         if (len > MAX_CALLBACK_PARAM_STRLEN)
+        {
             throw std::length_error("Lifecycle: Startup argument length exceeds MAX_LEN.");
+        }
         std::string arg_str(data, len);
         pImpl->def.startup = [startup_func, arg = std::move(arg_str)]()
         { startup_func(arg.c_str()); };
@@ -133,21 +140,25 @@ void ModuleDef::set_startup(LifecycleCallback startup_func, const char *data, si
 }
 void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms)
 {
-    if (pImpl && shutdown_func)
+    if (pImpl != nullptr && shutdown_func != nullptr)
     {
         pImpl->def.shutdown.func = [shutdown_func]() { shutdown_func(nullptr); };
         pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
     }
 }
-void ModuleDef::set_shutdown(LifecycleCallback s, unsigned int t, const char *d, size_t l)
+void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms,
+                             const char *data, size_t data_len)
 {
-    if (pImpl && s)
+    if (pImpl != nullptr && shutdown_func != nullptr)
     {
-        if (l > MAX_CALLBACK_PARAM_STRLEN)
+        if (data_len > MAX_CALLBACK_PARAM_STRLEN)
+        {
             throw std::length_error("Lifecycle: Shutdown argument length exceeds MAX_LEN.");
-        std::string arg(d, l);
-        pImpl->def.shutdown.func = [s, a = std::move(arg)]() { s(a.c_str()); };
-        pImpl->def.shutdown.timeout = std::chrono::milliseconds(t);
+        }
+        std::string arg_str(data, data_len);
+        pImpl->def.shutdown.func = [shutdown_func, arg_copy = std::move(arg_str)]()
+        { shutdown_func(arg_copy.c_str()); };
+        pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
     }
 }
 
@@ -168,7 +179,7 @@ class LifecycleManagerImpl
     {
     }
 
-    enum class ModuleStatus
+    enum class ModuleStatus : std::uint8_t
     {
         Registered,
         Initializing,
@@ -177,7 +188,7 @@ class LifecycleManagerImpl
         Shutdown,
         FailedShutdown
     };
-    enum class DynamicModuleStatus
+    enum class DynamicModuleStatus : std::uint8_t
     {
         UNLOADED,
         LOADING,
@@ -217,17 +228,23 @@ class LifecycleManagerImpl
     void finalize(std::source_location loc = std::source_location::current());
     bool loadModule(const char *name, std::source_location loc = std::source_location::current());
     bool unloadModule(const char *name, std::source_location loc = std::source_location::current());
-    bool is_initialized() const { return m_is_initialized.load(std::memory_order_acquire); }
-    bool is_finalized() const { return m_is_finalized.load(std::memory_order_acquire); }
+    [[nodiscard]] bool is_initialized() const
+    {
+        return m_is_initialized.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool is_finalized() const
+    {
+        return m_is_finalized.load(std::memory_order_acquire);
+    }
 
   private:
     // --- Private Helper Methods ---
     void recalculateReferenceCounts();
     void buildStaticGraph();
-    std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
+    static std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
     void unloadModuleInternal(InternalGraphNode &node);
-    void shutdownModuleWithTimeout(InternalGraphNode &mod, std::string &debug_info);
+    static void shutdownModuleWithTimeout(InternalGraphNode &mod, std::string &debug_info);
     void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
 
     // --- Member Variables ---
@@ -243,13 +260,20 @@ class LifecycleManagerImpl
     std::vector<InternalGraphNode *> m_shutdown_order;
 };
 
+namespace
+{
+constexpr size_t kDebugInfoReserveBytes = 4096;
+}
+
 void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModuleDef def)
 {
     std::lock_guard<std::mutex> lock(m_registry_mutex);
     if (m_is_initialized.load(std::memory_order_acquire))
+    {
         PLH_PANIC("[PLH_LifeCycle]\nEXEC[{}]:PID[{}]\n  "
                   "    **  FATAL: register_module called after initialization.",
                   m_app_name, m_pid);
+    }
     m_registered_modules.push_back(std::move(def));
 }
 
@@ -283,7 +307,7 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
     PLH_DEBUG("-> registerDynamicModule: mutex locked for '{}'", def.name);
 
-    if (m_module_graph.count(def.name))
+    if (m_module_graph.contains(def.name))
     {
         PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
                   "    **  ERROR: Module '{}' is already registered.",
@@ -293,7 +317,7 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 
     for (const auto &dep_name : def.dependencies)
     {
-        if (m_module_graph.find(dep_name) == m_module_graph.end())
+        if (!m_module_graph.contains(dep_name))
         {
             PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
                       "    **  ERROR: Dependency '{}' for module '{}' not found.",
@@ -312,10 +336,10 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 
     for (const auto &dep_name : def.dependencies)
     {
-        auto it = m_module_graph.find(dep_name);
-        if (it != m_module_graph.end())
+        auto iter = m_module_graph.find(dep_name);
+        if (iter != m_module_graph.end())
         {
-            it->second.dependents.push_back(&node);
+            iter->second.dependents.push_back(&node);
         }
     }
     PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}] -> Registered dynamic module '{}'.", m_app_name, m_pid,
@@ -334,9 +358,11 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
 void LifecycleManagerImpl::initialize(std::source_location loc)
 {
     if (m_is_initialized.exchange(true, std::memory_order_acq_rel))
+    {
         return;
+    }
     std::string debug_info;
-    debug_info.reserve(4096);
+    debug_info.reserve(kDebugInfoReserveBytes);
 
     debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
                               "     **** initialize() triggered from {} ({}:{})\n"
@@ -347,9 +373,13 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
     {
         buildStaticGraph();
         std::vector<InternalGraphNode *> static_nodes;
-        for (auto &p : m_module_graph)
-            if (!p.second.is_dynamic)
-                static_nodes.push_back(&p.second);
+        for (auto &entry : m_module_graph)
+        {
+            if (!entry.second.is_dynamic)
+            {
+                static_nodes.push_back(&entry.second);
+            }
+        }
         m_startup_order = topologicalSort(static_nodes);
     }
     catch (const std::runtime_error &e)
@@ -367,7 +397,9 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
             debug_info += fmt::format("     -> Starting static module: '{}'...", mod->name);
             mod->status.store(ModuleStatus::Initializing, std::memory_order_release);
             if (mod->startup)
+            {
                 mod->startup();
+            }
             mod->status.store(ModuleStatus::Started, std::memory_order_release);
             debug_info += "done.\n";
         }
@@ -403,10 +435,12 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
 {
     if (!m_is_initialized.load(std::memory_order_acquire) ||
         m_is_finalized.exchange(true, std::memory_order_acq_rel))
+    {
         return;
+    }
 
     std::string debug_info;
-    debug_info.reserve(4096);
+    debug_info.reserve(kDebugInfoReserveBytes);
 
     debug_info +=
         fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
@@ -417,10 +451,15 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
 
     std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
     std::vector<InternalGraphNode *> loaded_dyn_nodes;
-    for (auto &p : m_module_graph)
-        if (p.second.is_dynamic &&
-            p.second.dynamic_status.load(std::memory_order_acquire) == DynamicModuleStatus::LOADED)
-            loaded_dyn_nodes.push_back(&p.second);
+    for (auto &entry : m_module_graph)
+    {
+        if (entry.second.is_dynamic &&
+            entry.second.dynamic_status.load(std::memory_order_acquire) ==
+                DynamicModuleStatus::LOADED)
+        {
+            loaded_dyn_nodes.push_back(&entry.second);
+        }
+    }
 
     if (!loaded_dyn_nodes.empty())
     {
@@ -468,13 +507,17 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
 bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc)
 {
     if (!is_initialized())
+    {
         PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
                   "     **** loadModule() called from {} ({}:{})\n"
                   "     **** FATAL: load_module called before initialization.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
-    if (!name)
+    }
+    if (name == nullptr)
+    {
         return false;
+    }
     try
     {
         validate_module_name_cstr(name, false, "load_module name");
@@ -508,8 +551,8 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
         return false;
     }
 
-    auto it = m_module_graph.find(name);
-    if (it == m_module_graph.end() || !it->second.is_dynamic)
+    auto iter = m_module_graph.find(name);
+    if (iter == m_module_graph.end() || !iter->second.is_dynamic)
     {
         PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
                   "     **** loadModule() called from {} ({}:{})\n"
@@ -520,7 +563,7 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
     }
 
     PLH_DEBUG("loadModule: starting internal load for '{}'", name);
-    bool result = loadModuleInternal(it->second);
+    bool result = loadModuleInternal(iter->second);
     PLH_DEBUG(
         "loadModule: internal load for '{}' finished with result: {}. Recalculating ref counts.",
         name, result);
@@ -562,14 +605,14 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
     for (const auto &dep_name : node.dependencies)
     {
         PLH_DEBUG("loadModuleInternal: checking dependency '{}' for '{}'", dep_name, node.name);
-        auto it = m_module_graph.find(dep_name);
-        if (it == m_module_graph.end())
+        auto iter = m_module_graph.find(dep_name);
+        if (iter == m_module_graph.end())
         {
             node.dynamic_status.store(DynamicModuleStatus::FAILED, std::memory_order_release);
             PLH_DEBUG("**** ERROR: Undefined dependency '{}' for module '{}'", dep_name, node.name);
             return false;
         }
-        auto &dep_node = it->second;
+        auto &dep_node = iter->second;
         if (dep_node.is_dynamic)
         {
             PLH_DEBUG("loadModuleInternal: recursing for dynamic dependency '{}'", dep_name);
@@ -595,7 +638,9 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
     try
     {
         if (node.startup)
+        {
             node.startup();
+        }
         node.dynamic_status.store(DynamicModuleStatus::LOADED, std::memory_order_release);
         PLH_DEBUG("loadModuleInternal: successfully loaded and started '{}'", node.name);
         return true;
@@ -619,13 +664,17 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
 bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location loc)
 {
     if (!is_initialized())
+    {
         PLH_PANIC("[PLH_LifeCycle] [{}]:PID[{}]\n"
                   "     **** unloadModule called from {} ({}:{})\n"
                   "     **** FATAL: unload_module called without initialization.",
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
-    if (!name)
+    }
+    if (name == nullptr)
+    {
         return false;
+    }
     try
     {
         validate_module_name_cstr(name, false, "unload_module name");
@@ -656,13 +705,13 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
         return false;
     }
 
-    auto it = m_module_graph.find(name);
-    if (it == m_module_graph.end() || !it->second.is_dynamic)
+    auto iter = m_module_graph.find(name);
+    if (iter == m_module_graph.end() || !iter->second.is_dynamic)
     {
         return false;
     }
 
-    InternalGraphNode &node_to_unload = it->second;
+    InternalGraphNode &node_to_unload = iter->second;
 
     if (node_to_unload.dynamic_status.load(std::memory_order_acquire) !=
         DynamicModuleStatus::LOADED)
@@ -780,8 +829,8 @@ void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
         {
             auto &dependents_list = dep_it->second.dependents;
             dependents_list.erase(std::remove_if(dependents_list.begin(), dependents_list.end(),
-                                                 [&](InternalGraphNode *p)
-                                                 { return p->name == node_name; }),
+                                                 [&](InternalGraphNode *node)
+                                                 { return node->name == node_name; }),
                                   dependents_list.end());
         }
     }
@@ -810,10 +859,10 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
             // 3. For each direct dependency...
             for (const auto &dep_name : source_node.dependencies)
             {
-                auto it = m_module_graph.find(dep_name);
-                if (it != m_module_graph.end())
+                auto iter = m_module_graph.find(dep_name);
+                if (iter != m_module_graph.end())
                 {
-                    InternalGraphNode &dep_node = it->second;
+                    InternalGraphNode &dep_node = iter->second;
                     // 4. If the dependency is a non-persistent dynamic module, increment its
                     // ref_count.
                     if (dep_node.is_dynamic && !dep_node.is_persistent)
@@ -829,7 +878,7 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
 void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod,
                                                      std::string &debug_info)
 {
-    const auto type_str = mod.is_dynamic ? "dynamic" : "static";
+    const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
     try
     {
         debug_info += fmt::format("     <- Shutting down {} module: '{}'...", type_str, mod.name);
@@ -882,21 +931,25 @@ void LifecycleManagerImpl::buildStaticGraph()
     std::lock_guard<std::mutex> lock(m_registry_mutex);
     for (const auto &def : m_registered_modules)
     {
-        if (m_module_graph.count(def.name))
+        if (m_module_graph.contains(def.name))
+        {
             throw std::runtime_error("Duplicate module name: " + def.name);
+        }
         m_module_graph.emplace(std::piecewise_construct, std::forward_as_tuple(def.name),
                                std::forward_as_tuple(def.name, def.startup, def.shutdown,
                                                      def.dependencies, false /*is_dynamic*/,
                                                      def.is_persistent));
     }
-    for (auto &p : m_module_graph)
+    for (auto &entry : m_module_graph)
     {
-        for (const auto &dep_name : p.second.dependencies)
+        for (const auto &dep_name : entry.second.dependencies)
         {
-            auto it = m_module_graph.find(dep_name);
-            if (it == m_module_graph.end())
+            auto iter = m_module_graph.find(dep_name);
+            if (iter == m_module_graph.end())
+            {
                 throw std::runtime_error("Undefined dependency: " + dep_name);
-            it->second.dependents.push_back(&p.second);
+            }
+            iter->second.dependents.push_back(&entry.second);
         }
     }
     m_registered_modules.clear();
@@ -915,32 +968,52 @@ LifecycleManagerImpl::topologicalSort(const std::vector<InternalGraphNode *> &no
 {
     std::vector<InternalGraphNode *> sorted_order;
     sorted_order.reserve(nodes.size());
-    std::vector<InternalGraphNode *> q;
+    std::vector<InternalGraphNode *> zero_degree_queue;
     std::map<InternalGraphNode *, size_t> in_degrees;
-    for (auto *n : nodes)
-        in_degrees[n] = 0;
-    for (auto *n : nodes)
-        for (auto *dep : n->dependents)
-            if (in_degrees.count(dep))
-                in_degrees[dep]++;
-    for (auto *n : nodes)
-        if (in_degrees[n] == 0)
-            q.push_back(n);
-    size_t head = 0;
-    while (head < q.size())
+    for (auto *node : nodes)
     {
-        InternalGraphNode *u = q[head++];
-        sorted_order.push_back(u);
-        for (InternalGraphNode *v : u->dependents)
-            if (in_degrees.count(v) && --in_degrees[v] == 0)
-                q.push_back(v);
+        in_degrees[node] = 0;
+    }
+    for (auto *node : nodes)
+    {
+        for (auto *dep : node->dependents)
+        {
+            if (in_degrees.contains(dep))
+            {
+                in_degrees[dep]++;
+            }
+        }
+    }
+    for (auto *node : nodes)
+    {
+        if (in_degrees[node] == 0)
+        {
+            zero_degree_queue.push_back(node);
+        }
+    }
+    size_t head = 0;
+    while (head < zero_degree_queue.size())
+    {
+        InternalGraphNode *current = zero_degree_queue[head++];
+        sorted_order.push_back(current);
+        for (InternalGraphNode *dependent : current->dependents)
+        {
+            if (in_degrees.contains(dependent) && --in_degrees[dependent] == 0)
+            {
+                zero_degree_queue.push_back(dependent);
+            }
+        }
     }
     if (sorted_order.size() != nodes.size())
     {
         std::vector<std::string> cycle_nodes;
-        for (auto const &[n, d] : in_degrees)
-            if (d > 0)
-                cycle_nodes.push_back(n->name);
+        for (auto const &[cycle_node, degree] : in_degrees)
+        {
+            if (degree > 0)
+            {
+                cycle_nodes.push_back(cycle_node->name);
+            }
+        }
         throw std::runtime_error("Circular dependency detected involving: " +
                                  fmt::format("{}", fmt::join(cycle_nodes, ", ")));
     }
@@ -951,7 +1024,9 @@ void LifecycleManagerImpl::printStatusAndAbort(const std::string &msg, const std
 {
     fmt::print(stderr, "\n\n[PLH_LifeCycle] FATAL: {}. Aborting.\n", msg);
     if (!mod.empty())
+    {
         fmt::print(stderr, "[PLH_LifeCycle] Module '{}' was point of failure.\n", mod);
+    }
     fmt::print(stderr, "\n--- Module Status ---\n");
     for (auto const &[name, node] : m_module_graph)
     {
@@ -972,13 +1047,17 @@ LifecycleManager &LifecycleManager::instance()
 }
 void LifecycleManager::register_module(ModuleDef &&def)
 {
-    if (def.pImpl)
+    if (def.pImpl != nullptr)
+    {
         pImpl->registerStaticModule(std::move(def.pImpl->def));
+    }
 }
 bool LifecycleManager::register_dynamic_module(ModuleDef &&def)
 {
-    if (def.pImpl)
+    if (def.pImpl != nullptr)
+    {
         return pImpl->registerDynamicModule(std::move(def.pImpl->def));
+    }
     return false;
 }
 void LifecycleManager::initialize(std::source_location loc)

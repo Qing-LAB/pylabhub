@@ -8,6 +8,10 @@
  * failure scenarios in shared memory DataBlocks, such as crashed producers or
  * consumers. Implemented in data_block_recovery.cpp.
  *
+ * **Thread safety:** The C recovery/diagnostic API does **not** provide internal
+ * locking. Locking and multithread safety are the caller's responsibility when
+ * invoking these functions from multiple threads.
+ *
  * ## Error Codes Reference
  *
  * **Diagnostics (datablock_diagnose_slot, datablock_diagnose_all_slots):**
@@ -21,6 +25,7 @@
  * **Recovery operations:** Return RecoveryResult enum (see below).
  */
 #include "pylabhub_utils_export.h"
+#include "utils/slot_rw_coordinator.h"
 #include <cstddef>
 #include <cstdint>
 #include <stdbool.h>
@@ -156,6 +161,24 @@ extern "C"
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(
         const char *shm_name, bool repair);
+
+    // --- Metrics (name-based; same surface as slot_rw_get_metrics / slot_rw_reset_metrics) ---
+
+    /**
+     * @brief Retrieves current metrics and state snapshot for a DataBlock by name.
+     * @param shm_name The name of the shared memory DataBlock.
+     * @param out_metrics Pointer to a DataBlockMetrics struct to fill (see slot_rw_coordinator.h).
+     * @return 0 on success, -1 on error (invalid args, open failed).
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_get_metrics(const char *shm_name,
+                                                                       DataBlockMetrics *out_metrics);
+
+    /**
+     * @brief Resets metrics for a DataBlock by name (state such as commit_index is not reset).
+     * @param shm_name The name of the shared memory DataBlock.
+     * @return 0 on success, -1 on error.
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_reset_metrics(const char *shm_name);
 
 #ifdef __cplusplus
 }

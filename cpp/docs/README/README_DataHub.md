@@ -10,10 +10,10 @@
 |------|----------|
 | **What to do next / checklist** | **`docs/DATAHUB_TODO.md`** (single execution plan) |
 | **How to implement / patterns** | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
-| **Design spec (authoritative)** | **`docs/hep/HEP-CORE-0002-DataHub-FINAL.md`** (implementation status there syncs with DATAHUB_TODO) |
+| **Design spec (authoritative)** | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (implementation status there syncs with DATAHUB_TODO) |
 | **What’s in the HEP / document guide** | This file (§ Document guide below) |
 | **Test plan and Phase A–D** | **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** (priorities in DATAHUB_TODO) |
-| **Design rationale / critical review** | `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` |
+| **Design rationale / critical review** | Merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals archived in **`docs/archive/transient-2026-02-13/`** (DATAHUB_DATABLOCK_CRITICAL_REVIEW, DATAHUB_DESIGN_DISCUSSION, DATAHUB_CPP_ABSTRACTION_DESIGN, DATAHUB_POLICY_AND_SCHEMA_ANALYSIS). Code quality/refactoring: **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring (summary); full analysis in **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**. |
 
 See **`docs/DOC_STRUCTURE.md`** for the full documentation layout.
 
@@ -43,7 +43,7 @@ config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
 config.ring_buffer_capacity = 4;
 config.policy = pylabhub::hub::DataBlockPolicy::RingBuffer;
 config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Single_reader;
-config.enable_checksum = true;
+config.checksum_type = ChecksumType::BLAKE2b;  // default; always present
 config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
 
 auto producer = pylabhub::hub::create_datablock_producer(hub, config.name, config.policy, config);
@@ -72,7 +72,11 @@ if (consumer) {
 
 **Config:** Layout- and mode-critical parameters must be set explicitly (producer creation fails otherwise): `policy`, `consumer_sync_policy`, `physical_page_size`, `ring_buffer_capacity` (≥ 1). Config is validated **before** any memory creation in a single place: the DataBlock creator constructor. See **IMPLEMENTATION_GUIDANCE.md** § "Config validation and memory block setup" and **RAII_LAYER_USAGE_EXAMPLE.md**.
 
+**Shared Spinlock API:** Use `get_spinlock(index)` on producer or consumer to obtain a `SharedSpinLock` for protecting flexible zone access when `FlexibleZoneConfig::spinlock_index >= 0`. Call `spinlock_count()` for the number of spinlocks (typically 8). See **RAII_LAYER_USAGE_EXAMPLE.md** §2 (Flexible zone with spinlock).
+
 **Policies:** `DataBlockPolicy` (Single, DoubleBuffer, RingBuffer); `ConsumerSyncPolicy` (Latest_only, Single_reader, Sync_reader); `ChecksumPolicy` (Manual, Enforced). See **HEP-CORE-0002** for layout, protocol, and recovery.
+
+**Thread safety:** **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses a recursive mutex). The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers must serialize or otherwise coordinate multithread access. See **IMPLEMENTATION_GUIDANCE.md** § "DataBlock API, Concurrency, and Protocol" and **HEP-CORE-0002** implementation status.
 
 **Tests:** Run **`test_layer3_datahub`** (e.g. `./test_layer3_datahub --gtest_filter=SlotProtocolTest.*`). See **README_testing.md** for the test layout.
 
@@ -80,7 +84,7 @@ if (consumer) {
 
 ## Document guide (what's in the DataHub spec)
 
-The **single authoritative spec** is **`docs/hep/HEP-CORE-0002-DataHub-FINAL.md`**. Summary of its structure:
+The **single authoritative spec** is **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`**. Summary of its structure:
 
 | Section | Content |
 |---------|---------|

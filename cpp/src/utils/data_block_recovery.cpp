@@ -1,4 +1,5 @@
 #include "utils/recovery_api.hpp"
+#include "utils/slot_rw_coordinator.h"
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
 #include "utils/logger.hpp"
@@ -16,6 +17,9 @@ static uint8_t map_slot_state(pylabhub::hub::SlotRWState::SlotState state)
     return static_cast<uint8_t>(state);
 }
 
+// C API error codes
+constexpr int kRecoveryErrorUnexpected = -5;
+
 // Shared context for recovery APIs: holds handle and header to avoid repeating open/validation.
 struct RecoveryContext
 {
@@ -27,7 +31,7 @@ struct RecoveryContext
 // Opens datablock for diagnosis; logs and returns nullopt on failure. Use in all recovery C APIs.
 static std::optional<RecoveryContext> open_for_recovery(const char *shm_name_cstr)
 {
-    if (!shm_name_cstr)
+    if (shm_name_cstr == nullptr)
     {
         LOGGER_ERROR("recovery: Invalid arguments (null shm_name).");
         return std::nullopt;
@@ -40,7 +44,7 @@ static std::optional<RecoveryContext> open_for_recovery(const char *shm_name_cst
         return std::nullopt;
     }
     pylabhub::hub::SharedMemoryHeader *header = handle->header();
-    if (!header)
+    if (header == nullptr)
     {
         LOGGER_ERROR("recovery: Failed to get header for '{}'.", shm_name);
         return std::nullopt;
@@ -51,9 +55,11 @@ static std::optional<RecoveryContext> open_for_recovery(const char *shm_name_cst
 // Store platform monotonic timestamp (ns) into header->last_error_timestamp_ns. Used after recovery actions.
 static void set_recovery_timestamp(pylabhub::hub::SharedMemoryHeader *header)
 {
-    if (header)
+    if (header != nullptr)
+    {
         header->last_error_timestamp_ns.store(pylabhub::platform::monotonic_time_ns(),
                                               std::memory_order_release);
+    }
 }
 
 // Implementation of datablock_diagnose_slot
@@ -63,14 +69,16 @@ extern "C"
     PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name_cstr,
                                                       uint32_t slot_index, SlotDiagnostic *out)
     {
-        if (!out)
+        if (out == nullptr)
         {
             LOGGER_ERROR("datablock_diagnose_slot: Invalid arguments (null pointer).");
             return -1; // Invalid arguments
         }
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return -2; // Internal error
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
@@ -82,7 +90,7 @@ extern "C"
         }
 
         pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
-        if (!rw_state)
+        if (rw_state == nullptr)
         {
             LOGGER_ERROR(
                 "datablock_diagnose_slot: Failed to get slot_rw_state for slot {} in '{}'.",
@@ -108,11 +116,10 @@ extern "C"
 
             if (out->write_lock != 0)
             { // If a process holds the write lock
-                if (!pylabhub::platform::is_process_alive(out->write_lock))
+                if (!pylabhub::hub::is_writer_alive(header, out->write_lock))
                 {
                     out->is_stuck = true;
-                    // TODO: Calculate stuck_duration_ms (requires timestamp when lock was acquired)
-                    // For now, assume a generic stuck state.
+                    // Not yet implemented: stuck_duration_ms requires timestamp when lock was acquired. See DATAHUB_TODO.
                 }
             }
             else if (out->reader_count > 0)
@@ -134,7 +141,7 @@ extern "C"
         {
             LOGGER_ERROR("datablock_diagnose_slot: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return -5; // General unexpected error
+            return kRecoveryErrorUnexpected; // General unexpected error
         }
 
         return 0; // Success
@@ -144,7 +151,7 @@ extern "C"
                                                            SlotDiagnostic *out_array,
                                                            size_t array_capacity, size_t *out_count)
     {
-        if (!out_array || !out_count)
+        if (out_array == nullptr || out_count == nullptr)
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Invalid arguments (null pointer).");
             return -1; // Invalid arguments
@@ -152,7 +159,9 @@ extern "C"
         *out_count = 0; // Initialize count
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return -2;
+        }
 
         try
         {
@@ -194,7 +203,7 @@ extern "C"
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return -5; // General unexpected error
+            return kRecoveryErrorUnexpected; // General unexpected error
         }
 
         return 0; // Success
@@ -210,7 +219,9 @@ extern "C"
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
@@ -224,7 +235,7 @@ extern "C"
             }
 
             pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
-            if (!rw_state)
+            if (rw_state == nullptr)
             {
                 LOGGER_ERROR(
                     "datablock_force_reset_slot: Failed to get slot_rw_state for slot {} in '{}'.",
@@ -237,7 +248,7 @@ extern "C"
             pylabhub::hub::SlotRWState::SlotState current_slot_state =
                 rw_state->slot_state.load(std::memory_order_acquire);
 
-            if (current_write_lock != 0 && pylabhub::platform::is_process_alive(current_write_lock))
+            if (current_write_lock != 0 && pylabhub::hub::is_writer_alive(header, current_write_lock))
             {
                 if (!force)
                 {
@@ -246,12 +257,9 @@ extern "C"
                                  slot_index, current_write_lock);
                     return RECOVERY_UNSAFE;
                 }
-                else
-                {
-                    LOGGER_WARN("datablock_force_reset_slot: FORCE resetting slot {} even though "
-                                "write lock is held by ALIVE process {}.",
-                                slot_index, current_write_lock);
-                }
+                LOGGER_WARN("datablock_force_reset_slot: FORCE resetting slot {} even though "
+                            "write lock is held by ALIVE process {}.",
+                            slot_index, current_write_lock);
             }
 
             if (current_reader_count > 0 && !force)
@@ -299,7 +307,9 @@ extern "C"
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         RecoveryResult overall_result = RECOVERY_SUCCESS;
@@ -350,7 +360,9 @@ extern "C"
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
@@ -365,7 +377,7 @@ extern "C"
             }
 
             pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
-            if (!rw_state)
+            if (rw_state == nullptr)
             {
                 LOGGER_ERROR("datablock_release_zombie_readers: Failed to get slot_rw_state for "
                              "slot {} in '{}'.",
@@ -379,7 +391,7 @@ extern "C"
                 rw_state->slot_state.load(std::memory_order_acquire);
 
             bool producer_is_alive = (current_write_lock_pid != 0) &&
-                                     pylabhub::platform::is_process_alive(current_write_lock_pid);
+                                     pylabhub::hub::is_writer_alive(header, current_write_lock_pid);
 
             if (current_reader_count == 0)
             {
@@ -436,7 +448,9 @@ extern "C"
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
@@ -451,7 +465,7 @@ extern "C"
             }
 
             pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
-            if (!rw_state)
+            if (rw_state == nullptr)
             {
                 LOGGER_ERROR("datablock_release_zombie_writer: Failed to get slot_rw_state for "
                              "slot {} in '{}'.",
@@ -468,7 +482,7 @@ extern "C"
                 return RECOVERY_NOT_STUCK;
             }
 
-            if (pylabhub::platform::is_process_alive(current_write_lock_pid))
+            if (pylabhub::hub::is_writer_alive(header, current_write_lock_pid))
             {
                 LOGGER_ERROR("datablock_release_zombie_writer: Slot {} write lock held by ALIVE "
                              "process {}. Cannot release.",
@@ -510,7 +524,9 @@ extern "C"
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         try
@@ -518,6 +534,7 @@ extern "C"
             LOGGER_INFO("RECOVERY: Starting cleanup of dead consumers in '{}'.", ctx->shm_name);
 
             int cleaned_count = 0;
+            // NOLINTNEXTLINE(modernize-loop-convert) -- index i required for compare_exchange_strong and logging
             for (size_t i = 0; i < pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS; ++i)
             {
                 uint64_t pid = header->consumer_heartbeats[i].consumer_id.load(
@@ -561,12 +578,15 @@ extern "C"
         return RECOVERY_SUCCESS;
     }
 
+    // NOLINTNEXTLINE(readability-function-cognitive-complexity) -- validation branches over many header/checksum cases
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(const char *shm_name_cstr,
                                                                       bool repair)
     {
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
+        {
             return RECOVERY_FAILED;
+        }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
         RecoveryResult overall_result = RECOVERY_SUCCESS;
@@ -612,14 +632,29 @@ extern "C"
             pylabhub::hub::DataBlockConfig expected_config{};
             expected_config.name = ctx->shm_name;
             expected_config.ring_buffer_capacity = header->ring_buffer_capacity;
-            if (header->physical_page_size == 4096u)
-                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
-            else if (header->physical_page_size == 4194304u)
-                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4M;
-            else if (header->physical_page_size == 16777216u)
+            constexpr uint32_t kPageSize4K = 4096U;
+            constexpr uint32_t kPageSize4M = 4194304U;
+            constexpr uint32_t kPageSize16M = 16777216U;
+            if (header->physical_page_size == kPageSize16M)
+            {
                 expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size16M;
-            else
+            }
+            else if (header->physical_page_size == kPageSize4M)
+            {
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4M;
+            }
+            else if (header->physical_page_size == kPageSize4K)
+            {
                 expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
+            }
+            else
+            {
+                // Unexpected page size (e.g. 0, 8K, 2M); default to 4K for recovery attempt
+                LOGGER_WARN("datablock_integrity_check: Unexpected physical_page_size {} for '{}'; "
+                            "defaulting to 4K for recovery.",
+                            header->physical_page_size, ctx->shm_name);
+                expected_config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
+            }
             // Header stores resolved bytes (>= physical); legacy 0 means use physical_page_size
             expected_config.logical_unit_size =
                 (header->logical_unit_size != 0)
@@ -627,14 +662,16 @@ extern "C"
                     : static_cast<size_t>(header->physical_page_size);
             expected_config.policy = header->policy;
             expected_config.consumer_sync_policy = header->consumer_sync_policy;
-            expected_config.enable_checksum = header->enable_checksum;
+            expected_config.checksum_type =
+                static_cast<pylabhub::hub::ChecksumType>(header->checksum_type);
             expected_config.checksum_policy = header->checksum_policy;
             uint64_t secret = 0;
             std::memcpy(&secret, header->shared_secret, sizeof(secret));
             expected_config.shared_secret = secret;
 
             // 5. Checksums
-            if (header->enable_checksum)
+            if (static_cast<pylabhub::hub::ChecksumType>(header->checksum_type) !=
+                pylabhub::hub::ChecksumType::Unset)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer(
                     pylabhub::hub::MessageHub::get_instance(), ctx->shm_name, expected_config.shared_secret,
@@ -685,17 +722,20 @@ extern "C"
                     }
                 }
 
-                // Slot checksums
-                uint64_t commit_idx = header->commit_index.load(std::memory_order_acquire);
-                uint32_t slot_count = pylabhub::hub::detail::get_slot_count(header);
-                for (uint32_t i = 0; i < slot_count; ++i)
+                // Slot checksums: use lightweight accessors (3 loads) instead of full get_metrics
+                const uint64_t total_written = slot_rw_get_total_slots_written(ctx->header);
+                if (total_written > 0)
                 {
-                    // Only check committed slots up to commit_index
-                    if (i <= (commit_idx % slot_count))
+                    const uint64_t commit_idx = slot_rw_get_commit_index(ctx->header);
+                    const uint32_t slot_count = slot_rw_get_slot_count(ctx->header);
+                    for (uint32_t i = 0; i < slot_count; ++i)
                     {
-                        if (!consumer->verify_checksum_slot(i))
+                        // Only check committed slots up to commit_index
+                        if (i <= (commit_idx % slot_count))
                         {
-                            LOGGER_WARN("INTEGRITY_CHECK: Slot {} checksum is invalid for '{}'.", i,
+                            if (!consumer->verify_checksum_slot(i))
+                            {
+                                LOGGER_WARN("INTEGRITY_CHECK: Slot {} checksum is invalid for '{}'.", i,
                                         ctx->shm_name);
                             if (repair)
                             {
@@ -724,6 +764,7 @@ extern "C"
                             {
                                 overall_result = RECOVERY_FAILED;
                             }
+                            }
                         }
                     }
                 }
@@ -745,5 +786,34 @@ extern "C"
             return RECOVERY_FAILED;
         }
         return overall_result;
+    }
+
+    int datablock_get_metrics(const char *shm_name, DataBlockMetrics *out_metrics)
+    {
+        if (shm_name == nullptr || out_metrics == nullptr)
+        {
+            return -1;
+        }
+        auto ctx = open_for_recovery(shm_name);
+        if (!ctx)
+        {
+            return -1;
+        }
+        int r = slot_rw_get_metrics(ctx->header, out_metrics);
+        return r;
+    }
+
+    int datablock_reset_metrics(const char *shm_name)
+    {
+        if (shm_name == nullptr)
+        {
+            return -1;
+        }
+        auto ctx = open_for_recovery(shm_name);
+        if (!ctx)
+        {
+            return -1;
+        }
+        return slot_rw_reset_metrics(ctx->header);
     }
 } // extern "C"

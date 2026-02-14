@@ -6,15 +6,21 @@
 **Doc policy:** This file is the **single source of truth** for execution. When tracking or executing the plan, update and follow this document. Other docs (test plan, HEP, critical review) provide rationale and detail; they do **not** override priorities or the checklist here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
 
 **Rationale documents (do not duplicate here):**
+- **Memory layout and re-mapping design:** `docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` — single flex zone (N×4K), compact control region, unified data region (flex + ring-buffer), broker-controlled structure re-mapping (flex zone and ring-buffer). Implementation deferred until broker is ready.
 - **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
-- **Critical review & design:** `docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`, `docs/DATAHUB_DESIGN_DISCUSSION.md` — design decisions, integrity policy, flexible zone semantics. **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
+- **Critical review & design:** Key content from DATAHUB_DATABLOCK_CRITICAL_REVIEW, DATAHUB_DESIGN_DISCUSSION, DATAHUB_CPP_ABSTRACTION_DESIGN, and DATAHUB_POLICY_AND_SCHEMA_ANALYSIS has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder's README). **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
 
 **Design / implementation strategy:** Primitive C API is the stable base; C++ RAII/abstraction (transaction guards, with_typed_write/with_typed_read) is the default for all higher-level design. Use the C API directly only when performance or flexibility critically require it.
 
 ---
 
+## Recent completions (2026-02-14)
+
+- **Unified metrics and state API** – Single C-level surface for metrics and key state: `DataBlockMetrics` (in `slot_rw_coordinator.h`) now includes state snapshot fields `commit_index`, `slot_count` plus all metric counters. `total_slots_written` is wired in `commit_write()` (commit count; 0 = no commits yet). Integrity validator uses `slot_rw_get_metrics()` and `total_slots_written == 0` to skip slot checks on freshly created blocks (no sentinel collision after 2^64 commits). Name-based C API: `datablock_get_metrics(shm_name, &m)`, `datablock_reset_metrics(shm_name)` in `recovery_api.hpp`. C++: `DataBlockProducer::get_metrics()`, `reset_metrics()`, `DataBlockConsumer::get_metrics()`, `reset_metrics()` wrap the C API. See IMPLEMENTATION_GUIDANCE.md § Unified metrics and state API.
+
 ## Recent completions (2026-02-13)
 
+- **Shared Spinlock API: get_spinlock and spinlock_count** – Implemented `DataBlockProducer::get_spinlock(size_t index)` and `DataBlockConsumer::get_spinlock(size_t index)` returning `SharedSpinLock` for direct lock/unlock of flexible zones. `spinlock_count()` returns the number of available spinlocks (MAX_SHARED_SPINLOCKS). Used by `flexible_zone_with_spinlock` test. See RAII_LAYER_USAGE_EXAMPLE.md §2 (Flexible zone with spinlock).
 - **Config validation before any memory creation** – Single point of access: **DataBlock creator constructor** `DataBlock(name, config)` in `data_block.cpp`. Config is validated first (policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity, logical_unit_size rules); only then is layout built and `shm_create` called. All producer creation goes through `create_datablock_producer` → this constructor. When things go wrong, look there. See IMPLEMENTATION_GUIDANCE.md § "Config validation and memory block setup".
 - **Explicit required parameters (no silent defaults)** – Layout- and mode-critical parameters must be set explicitly or producer creation fails: `policy`, `consumer_sync_policy`, `physical_page_size` (DataBlockPageSize::Unset = invalid), `ring_buffer_capacity` (0 = invalid, must be ≥ 1). Rationale: avoid memory corruption and sync bugs from silent defaults or producer/consumer mismatch. See `docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
 - **Deterministic initialization** – All structs used in hashing or comparison use value-initialization `{}` to avoid non-deterministic layout checksum or hash inputs.
@@ -52,7 +58,7 @@
 - **release_write_slot** – Documented in data_block.hpp: when it returns false (invalid handle, checksum update failure); idempotent behavior.
 - **Slot handle lifetime contract** – Documented in data_block.hpp, data_block.cpp, DATAHUB_DATABLOCK_CRITICAL_REVIEW.md, IMPLEMENTATION_GUIDANCE.md: release or destroy all SlotWriteHandle/SlotConsumeHandle before destroying producer/consumer; otherwise use-after-free.
 - **DataBlockLayout** – Centralized offset/layout calculation in data_block.cpp: DataBlockLayout struct with from_config/from_header, slot_checksum_base(), validate(); creator/attacher/checksum/diagnostic handle use it. New test LayoutWithChecksumAndFlexibleZoneSucceeds.
-- **Slot checksum layout** – Fixed overlap: layout is now Header | SlotRWStates | SlotChecksums | FlexibleZone | StructuredData when enable_checksum; checksum impl uses correct offset; ChecksumUpdateVerifySucceeds test re-enabled.
+- **Slot checksum layout** – Fixed overlap: layout is Header | SlotRWStates | SlotChecksums | FlexibleZone | StructuredData; checksum always present (checksum_type); checksum impl uses correct offset.
 
 ---
 
@@ -74,6 +80,8 @@
 Use this list to track what’s left; details live in the sections below and in the rationale documents above. **Testing and MessageHub:** rationale and phased plan are in `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` (refer to it; do not duplicate there).
 
 ### API and documentation
+- [ ] **Consumer registration to broker** – Not yet implemented: `MessageHub::register_consumer` is a stub; protocol for consumer registration not yet defined. See `message_hub.cpp` ~378. When implementing broker/channel lookup or discovery that compares producer/consumer names, use `logical_name(name())` per `docs/NAME_CONVENTIONS.md`.
+- [ ] **stuck_duration_ms in diagnostics** – Not yet implemented: `SlotDiagnostic::stuck_duration_ms` would require storing timestamp when lock was acquired. See `data_block_recovery.cpp` ~114; full analysis archived in `docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`.
 - [ ] **Config explicit-fail test (optional)** – Test that `create_datablock_producer` (or DataBlock constructor) throws `std::invalid_argument` when config has policy=Unset, consumer_sync_policy=Unset, physical_page_size=Unset, or ring_buffer_capacity=0; confirms single-point validation before any shm_create.
 - [x] **release_write_slot** – Documented in data_block.hpp: returns false if handle invalid or checksum update failed; idempotent (already-released returns true).
 - [x] **Slot handle lifetime contract** – Documented in data_block.hpp and data_block.cpp: release or destroy all SlotWriteHandle/SlotConsumeHandle before destroying producer/consumer; otherwise use-after-free.
@@ -95,7 +103,7 @@ Use this list to track what’s left; details live in the sections below and in 
 
 ### Phase 2 (verify / complete)
 - [x] **2.1 Slot RW C API** – Verified: slot_rw_acquire_write/commit/release_write, slot_rw_acquire_read/validate_read/release_read, SlotAcquireResult, DataBlockMetrics, slot_rw_get_metrics/reset, slot_acquire_result_string in `slot_rw_coordinator.h` and `data_block.cpp`; Layer-0 tests in `test_slot_rw_coordinator.cpp`. C API is complete and correct per HEP §4.2; use it as stable base. Use C++ abstraction for all higher-level design.
-- [ ] **2.2 Template wrappers** – with_typed_write/with_typed_read (DataBlockProducer/Consumer overloads if needed); type/size checks; align with slot_rw_access.hpp where present.
+- [x] **2.2 Template wrappers** – with_typed_write/with_typed_read (DataBlockProducer/Consumer overloads) implemented in data_block.hpp. Layer 1.75 (slot_rw_access.hpp) **removed** to avoid duplication.
 - [ ] **2.3 Transaction guards** – WriteTransactionGuard, ReadTransactionGuard already implemented; add exception-safety tests and usage guidance so guards are the default entry-point.
 
 ### Phase 3 and later
@@ -155,7 +163,7 @@ flowchart TD
 
 1. **Phase 2 – C++ abstraction (current priority)**  
    Design and rationale: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`**. C API baseline: **`docs/DATAHUB_DATABLOCK_CRITICAL_REVIEW.md`** §7.
-   - **2.2** – Ensure with_typed_write/with_typed_read are the preferred typed API (slot_rw_access.hpp exists; add DataBlockProducer/Consumer-facing overloads if needed; type/size checks).
+   - **2.2** – with_typed_write/with_typed_read are the preferred typed API (Layer 1.75 removed; Producer/Consumer overloads in data_block.hpp).
    - **2.3** – Add exception-safety tests for WriteTransactionGuard/ReadTransactionGuard; document usage (prefer guards and with_* over manual acquire/release) in IMPLEMENTATION_GUIDANCE or HEP.
    - **Layout checksum and validation** – Per DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.8: layout is checksum protected and linked to the segment; validation of any object (Producer/Consumer/access state/integrity) must include validation of the associated layout. Implement when building the detail access state and integrity APIs.
    - **Layout API and tests** – Exposed API for layout: init (from_config/from_header), update (N/A – layout is immutable after creation/attach), validation (layout checksum compute/verify, validate_layout_checksum(header), include in datablock_validate_integrity). Tests: layout offset calculation (from_config and from_header produce correct offsets/sizes; validate() invariants); layout checksum (compute matches stored at creation; verify fails on tampered header; attach and integrity validation include layout checksum).
@@ -412,28 +420,10 @@ Reference: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`** (§4.6–4.9, §5).
 - [ ] **Ring-buffer data units abstraction (enforcing memory structure)**
   - Producer/Consumer-facing `with_typed_write<T>(producer, timeout_ms, func)` and `with_typed_read<T>(consumer, slot_id, timeout_ms, func)`: acquire slot, check `sizeof(T) <= slot_buffer_size` and alignment, invoke `func(T&)` / `func(const T&)` over the slot buffer. Optional: document that slot buffer access is via `buffer_span()` or typed API only (no raw pointer bypass). Tests: typed write/read with struct types; size/alignment failure paths.
 
-### 🟡 PRIORITY 2.2: C++ Template Wrappers (Layer 1.75) - `slot_rw_access.hpp`
+### ~~PRIORITY 2.2: C++ Template Wrappers (Layer 1.75)~~ — DONE / REMOVED
 
-- [ ] **Implement `with_typed_write<T>`** (see "Ring-buffer data units abstraction" above – Producer/Consumer-facing overloads)
-  ```cpp
-  template <typename T, typename Func>
-  auto with_typed_write(DataBlockProducer& producer, int timeout_ms, Func&& func);
-  ```
-
-- [ ] **Implement `with_typed_read<T>`**
-  ```cpp
-  template <typename T, typename Func>
-  auto with_typed_read(DataBlockConsumer& consumer, uint64_t slot_id, int timeout_ms, Func&& func);
-  ```
-
-- [ ] **Add type safety checks**
-  - Verify `sizeof(T) <= slot_buffer_size`
-  - Verify alignment requirements
-
-**Estimated Effort**: 1 day
-**Dependencies**: Priority 2.1 (C API)
-**Testing**: Test typed access with various struct types; layout tests as above
-**Reference**: Section 5.3 of HEP-CORE-0002-DataHub-FINAL.md, DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.2, §5.6
+- [x] **Layer 1.75 (`slot_rw_access.hpp`) removed** – Redundant with C API; DataBlockProducer/Consumer provide `with_typed_write<T>` and `with_typed_read<T>` in data_block.hpp.
+- [x] **Producer/Consumer thread-safe** – Internal mutex (producer: std::mutex; consumer: std::recursive_mutex) protects slot acquire/release and related APIs. C API (slot_rw_coordinator.h, recovery_api) documents that **lock/multithread safety is user-managed**.
 
 ### 🟡 PRIORITY 2.3: Transaction Guards (Layer 2) – polish and test
 
@@ -593,8 +583,9 @@ Reference: **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`** (§4.6–4.9, §5).
   - Loop over all slots
   - Call `datablock_diagnose_slot()` for each
 
-- [ ] **Implement `datablock_is_process_alive()`**
-  - Delegate to `pylabhub::platform::is_process_alive()` (from Phase 0)
+- [x] **Implement `datablock_is_process_alive()`** (done)
+  - Delegates to `pylabhub::platform::is_process_alive()` (from Phase 0)
+  - Writer liveness uses `is_writer_alive(header, pid)` (heartbeat-first; falls back to `is_process_alive` when heartbeat missing/stale)
 
 **Estimated Effort**: 1 day
 **Dependencies**: Phase 0 (platform utilities), Priority 2.1 (SlotRWState)

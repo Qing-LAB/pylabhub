@@ -230,6 +230,80 @@ Tests should be layered so that protocol and correctness are assured before addi
 
 ---
 
+## Scenario coverage matrix
+
+Ensure tests cover all combinations of reader type, producer/buffer type, ring capacity, flexible zone, and policy types. Use this matrix when designing or reviewing tests.
+
+### 1. ConsumerSyncPolicy (reader type)
+
+| Policy         | Covered | Tests / notes |
+|----------------|---------|---------------|
+| Latest_only    | Yes     | Most tests; policy_latest_only, write_read, layout_smoke, transaction_api (most), phase_a, error_handling, recovery. |
+| Single_reader  | Yes     | policy_single_reader, high_load_single_reader, with_write_transaction_timeout, with_next_slot_iterator. |
+| Sync_reader    | Yes     | policy_sync_reader. |
+
+### 2. DataBlockPolicy (producer/buffer type)
+
+| Policy       | Covered | Tests / notes |
+|--------------|---------|---------------|
+| Single       | Yes     | policy_single_buffer_smoke: write, read, overwrite, read latest. |
+| DoubleBuffer | Yes     | policy_double_buffer_smoke: write two frames, read in order (Single_reader). |
+| RingBuffer   | Yes     | All other Layer 3 tests use RingBuffer. |
+
+### 3. Ring buffer capacity
+
+| Capacity | Covered | Tests / notes |
+|----------|---------|---------------|
+| 1        | Yes     | writer_blocks_on_reader, zombie_writer, with_write_transaction_timeout. |
+| 2        | Yes     | Most tests. |
+| 4        | Yes     | policy_*, ring_buffer_iteration, layout_smoke, with_next_slot_iterator, high_load_single_reader. |
+| &gt;4    | No      | Optional; low priority. |
+
+### 4. Physical page size
+
+| Size   | Covered | Tests / notes |
+|--------|---------|---------------|
+| Size4K | Yes     | Most tests use Size4K. |
+| Size4M | Yes     | physical_page_size_4m_smoke: layout and write/read. |
+| Size16M| No      | Optional; add if large-page use is expected. |
+
+### 5. Logical unit size
+
+| Setting              | Covered | Tests / notes |
+|----------------------|---------|---------------|
+| 0 (use physical)     | Yes     | physical_logical_unit_size_used_and_tested. |
+| Custom (multiple of physical) | Yes | physical_logical_unit_size_used_and_tested (8192). |
+
+### 6. Flexible zone
+
+| Scenario                     | Covered | Tests / notes |
+|-----------------------------|---------|---------------|
+| No zones                    | Yes     | flexible_zone_span_empty_when_no_zones, checksum_false_when_no_zones. |
+| Single zone (no spinlock)   | Yes     | flexible_zone_span_non_empty, checksum_true_when_valid, consumer with/without expected_config, structured_flex_zone_data_passes. |
+| Multiple zones              | Yes     | flexible_zone_multi_zones: zone0 and zone1; producer writes both, consumer reads both. |
+| Zone with spinlock (index 0+) | Yes   | flexible_zone_with_spinlock: zone with spinlock index 0; acquire/release and data access. |
+
+### 7. Checksum policy
+
+| Policy   | Covered | Tests / notes |
+|----------|---------|---------------|
+| None     | Yes     | Most tests (checksum_policy None; checksum storage always present). |
+| Manual   | Yes     | checksum_manual_policy: update_checksum_slot before commit, verify before read; slot visible on commit. |
+| Enforced | Yes     | layout_with_checksum_and_flexible_zone, ChecksumUpdateVerifySucceeds. |
+
+### 8. Cross-product gaps (recommended additions)
+
+| Gap | Priority | Status | Notes |
+|-----|----------|--------|-------|
+| DataBlockPolicy::Single | High | Done | policy_single_buffer_smoke |
+| DataBlockPolicy::DoubleBuffer | High | Done | policy_double_buffer_smoke |
+| ChecksumPolicy::Manual | Medium | Done | checksum_manual_policy |
+| DataBlockPageSize::Size4M | Medium | Done | physical_page_size_4m_smoke |
+| Multiple flexible zones (2+) | Medium | Done | flexible_zone_multi_zones |
+| Zone with spinlock index ≥ 0 | Low | Done | flexible_zone_with_spinlock |
+
+---
+
 ## Summary
 
 - **Tests:** Prioritize (1) flexible zone and checksum semantics (no access when undefined), (2) producer/consumer agreement and schema validation, (3) slot write/commit and read with checksums, (4) MessageHub behavior with or without broker, (5) concurrency and multi-process. Implement in phases: API correctness → single-process slot protocol → MessageHub/broker → concurrency/multi-process.

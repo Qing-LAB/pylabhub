@@ -17,7 +17,7 @@
  *   append_le_u32(buf, off, header->ring_buffer_capacity);
  *   append_le_u32(buf, off, header->physical_page_size);
  *   append_le_u64(buf, off, static_cast<uint64_t>(header->flexible_zone_size));
- *   append_u8(buf, off, header->enable_checksum ? 1 : 0);
+ *   append_u8(buf, off, header->checksum_type);
  *   // ... then: compute_blake2b(hash_out, buf, off);
  */
 #include <cstddef>

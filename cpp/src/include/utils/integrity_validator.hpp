@@ -26,7 +26,7 @@ class PYLABHUB_UTILS_EXPORT IntegrityValidator
      * @brief Constructs an integrity validator for a specific DataBlock.
      * @param shm_name The name of the shared memory DataBlock.
      */
-    explicit IntegrityValidator(const std::string &shm_name);
+    explicit IntegrityValidator(std::string shm_name);
 
     /**
      * @brief Validates the integrity of the DataBlock.

@@ -48,7 +48,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
      * @param is_creator True if this process is creating the mutex.
      * @throws std::runtime_error on mutex creation/opening failure.
      */
-    DataBlockMutex(const std::string &name, void *base_shared_memory_address,
+    DataBlockMutex(std::string name, void *base_shared_memory_address,
                    size_t offset_to_mutex_storage, bool is_creator);
 
     /**

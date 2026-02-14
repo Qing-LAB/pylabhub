@@ -5,6 +5,7 @@
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
 
+#include <array>
 #include <cassert>
 #include <vector>
 #include <atomic>
@@ -17,22 +18,29 @@ namespace pylabhub::hub
 // ============================================================================
 namespace
 {
+constexpr size_t kZ85KeyChars = 40;       // Z85-encoded 32-byte key length
+constexpr size_t kSchemaHashHexLen = 64; // hex length for 32 bytes
+constexpr size_t kSchemaHashBytes = 32;
+constexpr unsigned int kNibbleMask = 0x0FU;
+constexpr int kHexLetterOffset = 10; // 'a'-'f' and 'A'-'F' value offset
+constexpr size_t kZ85KeyBufSize = 41;    // 40 chars + null
+constexpr int kHubShutdownTimeoutMs = 5000;
+
 bool is_valid_z85_key(const std::string &key)
 {
-    // Z85-encoded 32-byte keys are 40 characters long.
-    return key.length() == 40;
+    return key.length() == kZ85KeyChars;
 }
 
 /** Encodes 32 raw bytes to a 64-char hex string for JSON-safe storage. */
 std::string hex_encode_schema_hash(const std::string &raw)
 {
-    static const char hex[] = "0123456789abcdef";
+    static const std::array<char, 17> kHexChars = {"0123456789abcdef"};
     std::string out;
-    out.reserve(64);
-    for (unsigned char c : raw)
+    out.reserve(kSchemaHashHexLen);
+    for (unsigned char byte : raw)
     {
-        out += hex[(c >> 4) & 0x0F];
-        out += hex[c & 0x0F];
+        out += kHexChars[(byte >> 4) & kNibbleMask];
+        out += kHexChars[byte & kNibbleMask];
     }
     return out;
 }
@@ -40,23 +48,36 @@ std::string hex_encode_schema_hash(const std::string &raw)
 /** Decodes a 64-char hex string back to 32 bytes. Returns empty string on error. */
 std::string hex_decode_schema_hash(const std::string &hex_str)
 {
-    auto hex_val = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    auto hex_val = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9')
+        {
+            return ch - '0';
+        }
+        if (ch >= 'a' && ch <= 'f')
+        {
+            return ch - 'a' + kHexLetterOffset;
+        }
+        if (ch >= 'A' && ch <= 'F')
+        {
+            return ch - 'A' + kHexLetterOffset;
+        }
         return -1;
     };
-    if (hex_str.size() != 64)
-        return {};
-    std::string out;
-    out.reserve(32);
-    for (size_t i = 0; i < 64; i += 2)
+    if (hex_str.size() != kSchemaHashHexLen)
     {
-        int hi = hex_val(hex_str[i]);
-        int lo = hex_val(hex_str[i + 1]);
-        if (hi < 0 || lo < 0)
+        return {};
+    }
+    std::string out;
+    out.reserve(kSchemaHashBytes);
+    for (size_t i = 0; i < kSchemaHashHexLen; i += 2)
+    {
+        int high_val = hex_val(hex_str[i]);
+        int low_val = hex_val(hex_str[i + 1]);
+        if (high_val < 0 || low_val < 0)
+        {
             return {};
-        out += static_cast<char>((hi << 4) | lo);
+        }
+        out += static_cast<char>((high_val << 4) | low_val);
     }
     return out;
 }
@@ -118,6 +139,7 @@ void MessageHub::disconnect()
     }
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- endpoint and server_key are semantically distinct
 bool MessageHub::connect(const std::string &endpoint, const std::string &server_key)
 {
     std::lock_guard<std::mutex> lock(pImpl->m_socket_mutex); // Protect socket operations
@@ -149,15 +171,15 @@ bool MessageHub::connect(const std::string &endpoint, const std::string &server_
     {
         // Generate client key pair using zmq_curve_keypair.
         // This abstracts away the direct libsodium calls and Z85 encoding.
-        char z85_public[41];
-        char z85_secret[41];
-        if (zmq_curve_keypair(z85_public, z85_secret) != 0)
+        std::array<char, kZ85KeyBufSize> z85_public{};
+        std::array<char, kZ85KeyBufSize> z85_secret{};
+        if (zmq_curve_keypair(z85_public.data(), z85_secret.data()) != 0)
         {
             LOGGER_ERROR("MessageHub: Failed to generate CurveZMQ key pair.");
             return false;
         }
-        pImpl->m_client_public_key_z85 = z85_public;
-        pImpl->m_client_secret_key_z85 = z85_secret;
+        pImpl->m_client_public_key_z85 = z85_public.data();
+        pImpl->m_client_secret_key_z85 = z85_secret.data();
 
         pImpl->m_socket.set(zmq::sockopt::curve_serverkey, server_key);
         pImpl->m_socket.set(zmq::sockopt::curve_publickey, pImpl->m_client_public_key_z85);
@@ -200,7 +222,7 @@ std::optional<std::string> MessageHub::send_message(const std::string &message_t
         std::vector<zmq::pollitem_t> items = {{pImpl->m_socket, 0, ZMQ_POLLIN, 0}};
         zmq::poll(items, std::chrono::milliseconds(timeout_ms));
 
-        if (!(items[0].revents & ZMQ_POLLIN))
+        if ((items[0].revents & ZMQ_POLLIN) == 0)
         {
             LOGGER_ERROR("MessageHub: Timeout waiting for broker response ({}ms).", timeout_ms);
             return std::nullopt;
@@ -247,7 +269,7 @@ std::optional<std::string> MessageHub::receive_message(int timeout_ms)
         std::vector<zmq::pollitem_t> items = {{pImpl->m_socket, 0, ZMQ_POLLIN, 0}};
         zmq::poll(items, std::chrono::milliseconds(timeout_ms));
 
-        if (!(items[0].revents & ZMQ_POLLIN))
+        if ((items[0].revents & ZMQ_POLLIN) == 0)
         {
             return std::nullopt; // Timeout or no message
         }
@@ -371,11 +393,12 @@ std::optional<ConsumerInfo> MessageHub::discover_producer(const std::string &cha
     return consumer_info;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- keep as member for API consistency
 bool MessageHub::register_consumer(const std::string &channel, const ConsumerInfo &info)
 {
     (void)channel;
     (void)info;
-    // TODO: Send consumer registration to broker when protocol is defined.
+    // Not yet implemented: consumer registration to broker when protocol is defined. See DATAHUB_TODO.
     return true;
 }
 
@@ -390,7 +413,7 @@ MessageHub &MessageHub::get_instance()
 // ============================================================================
 namespace
 {
-static std::atomic<bool> g_hub_initialized{false};
+std::atomic<bool> g_hub_initialized{false};
 
 void do_hub_startup(const char *arg)
 {
@@ -418,7 +441,7 @@ pylabhub::utils::ModuleDef GetLifecycleModule()
     module.add_dependency("CryptoUtils");         // libsodium for checksums/schema hash; init order
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_hub_startup);
-    module.set_shutdown(&do_hub_shutdown, 5000);  // 5000ms timeout
+    module.set_shutdown(&do_hub_shutdown, kHubShutdownTimeoutMs);
     module.set_as_persistent(true);
     return module;
 }

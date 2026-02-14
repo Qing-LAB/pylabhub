@@ -40,4 +40,17 @@ int policy_sync_reader();
 /** High-load integrity test for Single_reader policy (many write/read cycles). */
 int high_load_single_reader();
 
+/** DataBlockPolicy::Single smoke: write, read, overwrite, read latest. */
+int policy_single_buffer_smoke();
+/** DataBlockPolicy::DoubleBuffer smoke: write two frames, read in order. */
+int policy_double_buffer_smoke();
+/** ChecksumPolicy::Manual: caller update/verify explicitly; slot visibility same as Enforced (on release). */
+int checksum_manual_policy();
+/** DataBlockPageSize::Size4M smoke: layout and write/read. */
+int physical_page_size_4m_smoke();
+/** Multiple flexible zones (zone0, zone1): producer writes both, consumer reads both. */
+int flexible_zone_multi_zones();
+/** Flexible zone with spinlock index 0: acquire lock, write/read zone. */
+int flexible_zone_with_spinlock();
+
 } // namespace pylabhub::tests::worker::slot_protocol
