@@ -39,6 +39,7 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer1_base)
   add_subdirectory(test_layer2_service)
   add_subdirectory(test_layer3_datahub)
+  add_subdirectory(test_raii_layer)
 
   # Collect all test executables registered by the subdirectories
   get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)
