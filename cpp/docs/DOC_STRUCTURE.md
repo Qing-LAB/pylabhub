@@ -1,115 +1,212 @@
-# Documentation structure and usage
+# Documentation Structure and Categorization Guide
 
-**Purpose:** One execution plan, one implementation guidance, topic-based reference docs, and a single code-review process. Avoid fragmented or competing documents. Code review follows **`docs/CODE_REVIEW_GUIDANCE.md`**; review findings and follow-ups are archived when superseded (see §2.5 and §8).
+**Purpose:** This document serves as the **authoritative guide** for where information should be categorized, stored, and updated. It defines the documentation taxonomy and provides rules for maintaining, merging, and archiving documents. Use this as your reference whenever you need to:
+- Place new content in the correct location
+- Find canonical documents for a topic
+- Clean up and merge transient documents
+- Archive completed or superseded documents
 
-**Document update / clearance:** When a **document update or clearance** is requested, **always** (1) merge transient documents into the **standard documents** (e.g. IMPLEMENTATION_GUIDANCE, DATAHUB_TODO) and, where relevant, into **HEP** and **README** docs; (2) when all information has been confirmed and integrated, **move** the transient documents to **`docs/archive/`**. Do not leave duplicate or superseded content in active docs; archive the originals with a dated folder (e.g. `archive/transient-YYYY-MM-DD/`) and a README listing what was merged where.
-
----
-
-## 1. Single execution plan
-
-| Role | Document | Use |
-|------|----------|-----|
-| **Execution plan** | **`docs/DATAHUB_TODO.md`** | **THE** todo list and pathway. When tracking or executing the plan, update and follow this document only. It contains the checklist, priorities, design considerations, and next steps. Other docs (test plan, HEP, critical review) provide rationale and detail; they do **not** override priorities or the checklist here. |
-
-All “what to do next” and “what’s done / remaining” lives in **DATAHUB_TODO.md**. Do not maintain a separate roadmap or todo in other files; reference DATAHUB_TODO from other docs, not the other way around.
+**Note:** For historical changes and archive activities, see **`docs/DOC_ARCHIVE_LOG.md`**. This document focuses on **structure and process**, not change history.
 
 ---
 
-## 2. Single implementation guidance
+## 1. Documentation Taxonomy: Where Information Lives
+
+### 1.1 Execution plan (TODO system)
 
 | Role | Document | Use |
 |------|----------|-----|
-| **Implementation guidance** | **`docs/IMPLEMENTATION_GUIDANCE.md`** | **THE** reference during design and implementation (architecture, patterns, pitfalls, review checklist). Use it like a “GEMINI.md”: the one place to look for how to implement correctly. Execution order and checklist remain in DATAHUB_TODO.md. |
+| **Master TODO** | **`docs/TODO_MASTER.md`** | High-level execution plan and current sprint focus. References subtopic TODOs for detailed tracking. Keep this concise (< 100 lines). |
+| **Subtopic TODOs** | **`docs/todo/`** | Detailed task tracking for specific areas (memory layout, RAII layer, testing, etc.). Each subtopic TODO is self-contained with current focus, backlog, and recent completions. |
 
-Guidance that belongs in “how to implement” (patterns, testing approach, error handling, ABI) is merged or summarized here. Topic-specific READMEs (e.g. testing, DataHub) can summarize and link to this and to DATAHUB_TODO.
+**Guidelines:**
+- Master TODO provides strategic overview and current priorities
+- Subtopic TODOs contain detailed tasks, completions, and technical notes
+- Update subtopic TODOs as you work; update master TODO when priorities shift
+- Do not duplicate TODO information across documents
+- See `docs/todo/README.md` for the subtopic TODO system structure
 
-### 2.5 Code review guidance
+**Legacy**: `docs/DATAHUB_TODO.md` is the old monolithic TODO (847 lines). It should be refactored into the new system and archived.
+
+### 1.2 Single implementation guidance
 
 | Role | Document | Use |
 |------|----------|-----|
-| **Code review** | **`docs/CODE_REVIEW_GUIDANCE.md`** | **THE** reference when reviewing changes: first pass (build, style, includes, [[nodiscard]], exception specs), higher-level requirements (pImpl, lifecycle, concurrency), and test integration. Use it for every review; do not maintain a separate review checklist elsewhere. The checklist in IMPLEMENTATION_GUIDANCE (§ Code Review Checklist) is the implementation-side list; CODE_REVIEW_GUIDANCE is the full review process. |
+| **Implementation guidance** | **`docs/IMPLEMENTATION_GUIDANCE.md`** | **THE** reference during design and implementation (architecture, patterns, pitfalls, review checklist). Execution order and checklist remain in DATAHUB_TODO.md. |
+| **Code review** | **`docs/CODE_REVIEW_GUIDANCE.md`** | **THE** reference when reviewing changes: first pass (build, style, includes, [[nodiscard]], exception specs), higher-level requirements (pImpl, lifecycle, concurrency), test integration. Use for every review; do not maintain a separate review checklist elsewhere. |
 
-Review findings and follow-up actions from full codebase reviews are recorded in a report; when follow-ups are completed, the report is moved to **`docs/archive/`** (dated folder) and IMPLEMENTATION_GUIDANCE § Deferred refactoring / References point to the archive.
+Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and DATAHUB_TODO.
 
----
-
-## 3. HEP (design specifications)
+### 1.3 HEP (design specifications)
 
 | Location | Purpose |
 |----------|---------|
 | **`docs/HEP/`** | Authoritative design specs: HEP-CORE-0001 (lifecycle), HEP-CORE-0002 (DataHub), HEP-CORE-0003 (filelock), HEP-CORE-0004 (logger), HEP-CORE-0005 (script interface). |
 
-- **Keep style and diagrams clear and logical.**
-- **Sync with code:** Each HEP should have a short **implementation status** section (or table) that states what is implemented and what is not, with a pointer: *“For current plan and priorities, see `docs/DATAHUB_TODO.md`.”*
-- For **not-yet-implemented** sections in the HEP, add a note: *“Not yet implemented; see DATAHUB_TODO.md for plan and sync.”*
+- Keep style and diagrams clear and logical.
+- Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/DATAHUB_TODO.md`."*
+- For not-yet-implemented sections, add: *"Not yet implemented; see DATAHUB_TODO.md for plan and sync."*
 
----
-
-## 4. Topic summaries (README/)
+### 1.4 Topic summaries (README/)
 
 | Location | Purpose |
 |----------|---------|
-| **`docs/README/`** | Topic-specific summaries. Naming: **`README_<Topic>.md`**. Current: README_DataHub.md, README_testing.md, README_utils.md, README_CMake_Design.md, README_ThirdParty_CMake.md, README_Versioning.md. |
+| **`docs/README/`** | Topic-specific summaries. Naming: **`README_<Topic>.md`**. Examples: README.md (index), README_DataHub.md, README_testing.md, README_utils.md, README_CMake_Design.md, README_ThirdParty_CMake.md, README_Versioning.md. |
 
-- One README per major topic; **consistent naming:** `README_<Topic>.md` (e.g. README_DataHub, README_testing, README_utils, README_CMake_Design, README_Versioning). All topic READMEs live **only** under `docs/README/`; none in `docs/HEP/` or other subdirs.
-- Summarize design/pattern and point to the canonical plan (DATAHUB_TODO) and implementation guidance (IMPLEMENTATION_GUIDANCE) where relevant.
-- Use up-to-date information; when in doubt, prefer DATAHUB_TODO and code over stale README text.
+- One README per major topic; all topic READMEs live only under `docs/README/`.
+- Summarize design/pattern and point to DATAHUB_TODO and IMPLEMENTATION_GUIDANCE where relevant.
+- Prefer DATAHUB_TODO and code over stale README text.
 
----
-
-## 5. Testing documentation
+### 1.5 Testing documentation
 
 | Document | Role |
 |----------|------|
-| **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** | Test plan and Phase A–D rationale; Phase D checklist. **Execution order and priorities** are defined in **DATAHUB_TODO.md**; this doc provides test rationale and detailed test descriptions. |
-| Other files in `docs/testing/` | Supporting material (audit, refactoring summary, layered architecture, process sync design). Reference from the test plan or from DATAHUB_TODO; do not duplicate checklist or priorities here. |
+| **`docs/README/README_testing.md`** | Test suite architecture, how to run and add tests, **and** DataHub/MessageHub test plan (Phase A–D rationale, Phase D checklist, coverage). Execution order and priorities are in DATAHUB_TODO.md. MessageHub code review for DataHub integration is in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review. |
 
----
-
-## 6. Other design / analysis docs (by topic)
-
-Keep topic-specific design or analysis in **designated files** with **consistent, recognizable names**:
-
-| Topic | Location | Notes |
-|-------|----------|--------|
-| DataHub design / critical review | Merged into IMPLEMENTATION_GUIDANCE; originals in **`docs/archive/transient-2026-02-13/`** | DATAHUB_DATABLOCK_CRITICAL_REVIEW, DATAHUB_DESIGN_DISCUSSION. |
-| DataHub policy & config (explicit required, single point) | Merged into IMPLEMENTATION_GUIDANCE; original in **`docs/archive/transient-2026-02-13/`** | DATAHUB_POLICY_AND_SCHEMA_ANALYSIS. |
-| DataHub C++ abstraction layer | Merged into IMPLEMENTATION_GUIDANCE; original in **`docs/archive/transient-2026-02-13/`** | DATAHUB_CPP_ABSTRACTION_DESIGN (layer map, patterns). |
-| DataHub memory layout and re-mapping | **`docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`** | Single flex zone, 4K-aligned layout, broker-controlled structure re-mapping. To be merged into HEP/IMPLEMENTATION_GUIDANCE when implemented. |
-| Emergency / procedures | `docs/emergency_procedures.md` | Operational guidance; keep. |
-| Code review | `docs/CODE_REVIEW_GUIDANCE.md` | **THE** review process (see §2.5). Instructions for thorough/critical review: first pass, higher-level requirements, test integration. |
-| Code quality / refactoring | **Archived** `docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md` | Full analysis (duplication, refactor, Doxygen, etc.); IMPLEMENTATION_GUIDANCE § Deferred refactoring is the active summary with completion status. |
-| [[nodiscard]] exceptions | `docs/NODISCARD_DECISIONS.md` | Call sites that intentionally do not check a [[nodiscard]] return; rationale and discussion. |
-| Name conventions | `docs/NAME_CONVENTIONS.md` | DataBlock producer/consumer display name format, suffix ` \| pid:...`, and logical_name() for comparison. |
-| Code review report | **Archived** `docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md` | 2026-02-13 full review findings and follow-ups (all addressed). |
-
-**Archived (2026-02-12):** Spinlock/guards, flexible zone flow, FileLock test patterns, versioning/ABI detail, test pattern/CTest docs, and testing supporting material were merged into IMPLEMENTATION_GUIDANCE, README_Versioning, README_testing, or HEP, then moved to **`docs/archive/transient-2026-02-12/`**. See that folder’s README for the list.
-
-When creating **new** organizing or guidance docs, place them in a designated file by topic and use a **consistent naming** pattern (e.g. `README_<Topic>.md` in README/, or `*_design.md` / `*_review.md` under docs/).
-
----
-
-## 7. Archive
+### 1.6 Example code (usage examples)
 
 | Location | Purpose |
 |----------|---------|
-| **`docs/archive/`** | Superseded or historical docs (e.g. old HEP drafts, session summaries, consolidated TODOs from past dates). Do not use for current execution; reference only for history. |
+| **`cpp/examples/`** | Example code and usage documentation for the C++ stack (e.g. DataHub producer/consumer, schema, RAII layer). Not part of the default build. |
 
-**Merge-then-archive rule:** Transient or one-off docs (e.g. review reports, design notes, session summaries) must be **merged** into the standard docs (IMPLEMENTATION_GUIDANCE, DATAHUB_TODO, and where relevant HEP and README) before the originals are moved to archive. Only after all information is confirmed and integrated, move the transient documents to **`docs/archive/`** (use a dated subfolder and a README listing what was merged where). See **Document update / clearance** in the purpose paragraph above—this rule applies whenever a document update/clearance is requested.
+When you want to add or update **example code for usage** (standalone `.cpp` files or `.md` documentation with code snippets showing how to use the APIs), put it in **`cpp/examples/`**. This directory lives at the codebase level, not under `docs/`. 
+
+**Guidelines:**
+- Use `cpp/examples/` for runnable example code and API usage demonstrations
+- Use `cpp/examples/README.md` to index all examples with brief descriptions
+- Keep pure prose documentation in `docs/`; keep code-demonstrating examples in `cpp/examples/`
+- Examples are not part of the default build but should be maintained to stay current with API changes
+
+### 1.7 Transient code review (module-targeted)
+
+| Location | Purpose |
+|----------|---------|
+| **`docs/code_review/`** | **Transient** review comments and reports that target a **specific module** (e.g. DataHub, MessageHub, FileLock). These are working documents for in-progress reviews, not the general review process guidance. |
+
+**Guidelines:**
+- Use this directory for in-progress, module-specific code reviews
+- The general code review process is documented in **`docs/CODE_REVIEW_GUIDANCE.md`**
+- Name review documents clearly: `REVIEW_<Module>_YYYY-MM-DD.md`
+- Reference follow-up work in the relevant TODO documents (e.g., `DATAHUB_TODO.md`)
+- After the review is completed and addressed:
+  1. **Merge** relevant findings into core documents (IMPLEMENTATION_GUIDANCE, HEP, etc.)
+  2. **Move** the review document to **`docs/archive/`** in a dated folder
+  3. **Record** the activity in **`docs/DOC_ARCHIVE_LOG.md`**
+- Keep this directory clean—only active, in-progress reviews should remain here
+
+See **`docs/code_review/README.md`** for the complete lifecycle process.
+
+### 1.8 Tech draft (design and implementation drafts)
+
+| Location | Purpose |
+|----------|---------|
+| **`docs/tech_draft/`** | **Draft** design documents and implementation notes—ideas, exploration, options, and how-to-implement sketches that are not yet finalized or canonical. |
+
+**Guidelines:**
+- Use this directory for work-in-progress design and implementation notes
+- Prevents drafts from cluttering the root `docs/` directory or mixing with canonical documents (HEP, IMPLEMENTATION_GUIDANCE, README)
+- Recommended naming: `DRAFT_<Topic>_YYYY-MM.md`
+- When content is **agreed upon and finalized**:
+  1. **Merge** the content into the appropriate canonical document (HEP, IMPLEMENTATION_GUIDANCE, DATAHUB_TODO, or README)
+  2. **Move** the draft to **`docs/archive/`** in a dated folder
+  3. **Record** the activity in **`docs/DOC_ARCHIVE_LOG.md`**
+- Keep this directory for work in progress only
+
+See **`docs/tech_draft/README.md`** for the complete lifecycle process.
+
+### 1.9 Other design / analysis docs (by topic)
+
+Keep topic-specific design or analysis in **designated files** with **consistent, recognizable names**:
+
+| Topic | Location |
+|-------|----------|
+| DataHub design, critical review, policy, C++ abstraction, memory layout | **`docs/IMPLEMENTATION_GUIDANCE.md`** (and, for memory layout, **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** §3). |
+| Emergency procedures, naming conventions, [[nodiscard]] exceptions | **`docs/IMPLEMENTATION_GUIDANCE.md`** § Emergency Recovery, § Naming Conventions, § [[nodiscard]] Exception Sites |
+| Code review process | **`docs/CODE_REVIEW_GUIDANCE.md`** |
+
+When creating **new** organizing or guidance docs, place them in a designated file by topic and use a consistent naming pattern (e.g. `README_<Topic>.md` in README/, or `*_design.md` / `*_review.md` under docs/).
+
+### 1.10 Active working documents (temporary)
+
+Some documents may temporarily exist in the root `docs/` directory during active implementation work. These should be merged into canonical documents and archived once the work is complete:
+
+| Document | Purpose | Target for merging |
+|----------|---------|-------------------|
+| `DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` | Active design work for memory layout implementation | Merge into HEP-CORE-0002 §3 and IMPLEMENTATION_GUIDANCE when finalized |
+| `DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md` | Active design work for RAII layer implementation | Merge into IMPLEMENTATION_GUIDANCE when finalized |
+
+**Note:** Keep the root `docs/` directory clean. Active working documents should either move to `docs/tech_draft/` if still exploratory, or be merged into canonical documents promptly after implementation.
 
 ---
 
-## 8. Quick reference
+## 2. Document Lifecycle: Merging and Archiving Process
 
-- **Document update/clearance requested?** Merge transient docs into standard docs (IMPLEMENTATION_GUIDANCE, DATAHUB_TODO; HEP and README where relevant). When integrated, move originals to **`docs/archive/`** (dated folder + README). See purpose and §7.
+| Location | Purpose |
+|----------|---------|
+| **`docs/archive/`** | Superseded or historical documents (old HEP drafts, session summaries, consolidated TODOs, merged transient docs, completed code reviews). Reference only for history; do not use for current execution. |
 
-- **What to do next / what’s left?** → **`docs/DATAHUB_TODO.md`**
-- **How to implement / patterns / checklist?** → **`docs/IMPLEMENTATION_GUIDANCE.md`**
-- **DataHub design spec?** → **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (and status sync with DATAHUB_TODO)
-- **Test plan and Phase D detail?** → **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** (priorities still in DATAHUB_TODO)
-- **Topic summary (DataHub, testing, utils, CMake, versioning)?** → **`docs/README/README_DataHub.md`**, **`docs/README/README_testing.md`**, **`docs/README/README_utils.md`**, etc.
-- **How to review code (first pass, design, tests)?** → **`docs/CODE_REVIEW_GUIDANCE.md`** (see also §2.5)
-- **Review findings / follow-up actions from last full review?** → **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`** (2026-02-13; follow-ups done)
-- **Duplication, refactoring, Doxygen, code quality?** → **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring (summary); full analysis in **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**
-- **Where do we intentionally not check [[nodiscard]] returns?** → **`docs/NODISCARD_DECISIONS.md`**
+### 2.1 Archive Process
+
+**Principle:** Transient or one-off documents must be **merged** into canonical documents **before** archiving. Do not leave duplicate or superseded content in active documentation.
+
+**Standard workflow:**
+
+1. **Merge** transient document content into the appropriate canonical documents:
+   - Design content → HEP or IMPLEMENTATION_GUIDANCE
+   - Tasks and priorities → DATAHUB_TODO or relevant TODO
+   - Topic summaries → relevant README documents
+   - Test plans → README_testing.md
+
+2. **Move** the original transient document to **`docs/archive/`**:
+   - Create a dated subfolder: `archive/transient-YYYY-MM-DD/`
+   - Move all documents from that batch into the subfolder
+   - Add a `README.md` in the dated folder listing what was merged where (merge map)
+
+3. **Record** the activity in **`docs/DOC_ARCHIVE_LOG.md`**:
+   - Date of the archive batch
+   - Summary of what was archived
+   - Pointer to the archive folder and its README
+   - Optionally, copy or summarize the merge map
+
+### 2.2 Special Cases
+
+**Code review reports:** When a module-targeted review is completed and all follow-ups are addressed, move the review document from `docs/code_review/` to archive and record in DOC_ARCHIVE_LOG. Core findings should be merged into IMPLEMENTATION_GUIDANCE or other guidance documents.
+
+**Tech drafts:** When a design draft is finalized and merged into canonical documents (HEP, IMPLEMENTATION_GUIDANCE, etc.), move the draft from `docs/tech_draft/` to archive and record in DOC_ARCHIVE_LOG.
+
+---
+
+## 3. Quick Reference Guide
+
+Use this section for rapid lookup of where to find or place specific types of information.
+
+### 3.1 Finding Information
+
+| Looking for... | Go to... |
+|----------------|----------|
+| What to do next / what's left | **`docs/TODO_MASTER.md`** (high-level) or **`docs/todo/[topic]_TODO.md`** (detailed) |
+| How to implement / patterns / checklist | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
+| How to review code | **`docs/CODE_REVIEW_GUIDANCE.md`** |
+| DataHub design spec (incl. memory layout) | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** |
+| Memory layout implementation (active work) | **`docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`** |
+| RAII layer design (active work) | **`docs/DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md`** |
+| Test plan and Phase D detail | **`docs/README/README_testing.md`** |
+| Topic summary (DataHub, testing, utils, CMake, versioning) | **`docs/README/README_<Topic>.md`** |
+| Example code for usage (APIs, RAII, producer/consumer) | **`cpp/examples/`** |
+| Emergency recovery procedures | **`docs/IMPLEMENTATION_GUIDANCE.md`** § Emergency Recovery Procedures |
+| Naming conventions (DataBlock, logical_name) | **`docs/IMPLEMENTATION_GUIDANCE.md`** § Naming Conventions |
+| [[nodiscard]] intentional non-checks | **`docs/IMPLEMENTATION_GUIDANCE.md`** § [[nodiscard]] Exception Sites |
+| Archive history / what was merged when | **`docs/DOC_ARCHIVE_LOG.md`** |
+
+### 3.2 Placing New Information
+
+| Type of information | Where to put it |
+|---------------------|-----------------|
+| New task or priority | **`docs/TODO_MASTER.md`** (high-level) or appropriate **`docs/todo/[topic]_TODO.md`** |
+| Design pattern or implementation guidance | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
+| Formal design specification | **`docs/HEP/`** (create new HEP document) |
+| Topic summary or overview | **`docs/README/README_<Topic>.md`** |
+| Module-specific code review (in progress) | **`docs/code_review/`** |
+| Draft design or exploratory notes | **`docs/tech_draft/`** |
+| Usage examples (code) | **`cpp/examples/`** |
+| Completed work (superseded documents) | **`docs/archive/`** (with entry in DOC_ARCHIVE_LOG) |

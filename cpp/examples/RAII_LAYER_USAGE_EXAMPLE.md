@@ -25,10 +25,8 @@ config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
 // checksum_type defaults to BLAKE2b; always present
 config.checksum_policy = ChecksumPolicy::Enforced;
 
-// Flexible zone: define layout by (name, size) per zone.
-// Size must match your struct; you are responsible for consistency.
-config.flexible_zone_configs.push_back({"metadata", sizeof(MyMetadataStruct), -1});
-config.flexible_zone_configs.push_back({"aux", sizeof(MyAuxStruct), 0});  // spinlock index 0
+// Flexible zone: single zone, size must be N×4096. Use index 0 only.
+config.flex_zone_size = 4096;  // one zone; ensure sizeof(YourStruct) <= 4096
 
 auto producer = create_datablock_producer(hub, config.name, config.policy, config);
 
@@ -39,7 +37,7 @@ DataBlockConfig expected_config = config;  // same layout
 auto consumer = find_datablock_consumer(hub, config.name, config.shared_secret, expected_config);
 ```
 
-**Config:** `DataBlockConfig` requires **explicit** layout- and mode-critical fields (fail at create if unset): **policy**, **consumer_sync_policy**, **physical_page_size** (Size4K/Size4M/Size16M), and **ring_buffer_capacity** (≥ 1). Checksum is mandatory (`checksum_type` defaults to BLAKE2b). Other fields have sensible defaults (`shared_secret=0`, `logical_unit_size=0` = use physical). Same for `FlexibleZoneConfig` and `SchemaInfo`.
+**Config:** `DataBlockConfig` requires **explicit** layout- and mode-critical fields (fail at create if unset): **policy**, **consumer_sync_policy**, **physical_page_size** (Size4K/Size4M/Size16M), and **ring_buffer_capacity** (≥ 1). Checksum is mandatory (`checksum_type` defaults to BLAKE2b). Other fields have sensible defaults (`shared_secret=0`, `logical_unit_size=0` = use physical). **Flex zone:** set `flex_zone_size` (N×4096) for a single flexible zone; 0 = no flex zone.
 
 **What is stored/verified at init:**
 
@@ -48,19 +46,19 @@ auto consumer = find_datablock_consumer(hub, config.name, config.shared_secret, 
 
 **Physical vs logical slot size:**
 
-- **Invariant: logical ≥ physical always.** Physical is `physical_page_size` (allocation granularity). Logical is the slot stride and `buffer_span().size()`. Set `logical_unit_size = 0` to mean “use physical” (logical = physical). If set, `logical_unit_size` must be a multiple of physical (and thus ≥ physical). There is no case where logical < physical.
+- **Invariant: logical ≥ physical always.** Physical is `physical_page_size` (allocation granularity). Logical is the slot stride and `buffer_span().size()`. Set `logical_unit_size = 0` to mean "use physical" (logical = physical). If set, `logical_unit_size` must be a multiple of physical (and thus ≥ physical). There is no case where logical < physical.
 - **Invariant: logical ≤ total structured buffer.** Total buffer = slot_count × effective_logical; slot_count is at least 1, so there is always at least one logical unit (logical ≤ total buffer).
 
 **Access and validation (single control surface):**
 
 - **Access** to layout information (slot stride, region offsets) is internal: all slot and region pointers/sizes are derived from **DataBlockLayout** (one source). Application code uses handles and transaction context (`ctx.slot()`, `ctx.flexible_zone(i)`); it does not touch layout math.
-- **Validation** entry points are grouped in one place in the API: `validate_header_layout_hash` (ABI), `store_layout_checksum` / `validate_layout_checksum` (segment layout values). Attach runs header hash then layout checksum + config match; recovery/integrity use the same layout checksum. See DATAHUB_CPP_ABSTRACTION_DESIGN.md §4.10.
+- **Validation** entry points are grouped in one place in the API: `validate_header_layout_hash` (ABI), `store_layout_checksum` / `validate_layout_checksum` (segment layout values). Attach runs header hash then layout checksum + config match; recovery/integrity use the same layout checksum. See IMPLEMENTATION_GUIDANCE.md and HEP-CORE-0002 §3.
 
 ---
 
 ## 2. How Flexible Zone is Formatted/Mapped to a User Structure
 
-The flexible zone is configured by **size per zone** (via `FlexibleZoneConfig`). There is **no built-in type mapping** — you declare a struct, set `size = sizeof(YourStruct)` in config, and manually map bytes to your struct inside the transaction.
+The flexible zone is a **single region** of size `flex_zone_size` (N×4096). There is **no built-in type mapping** — you declare a struct, ensure `sizeof(YourStruct) <= flex_zone_size`, and manually map bytes to your struct inside the transaction. Use `flexible_zone_span(0)` or `ctx.flexible_zone(0)` only.
 
 ```cpp
 // User-defined struct for zone 0 (must be trivially copyable for shared memory)
@@ -71,8 +69,8 @@ struct MyMetadataStruct {
 };
 static_assert(std::is_trivially_copyable_v<MyMetadataStruct>);
 
-// Config: zone 0 size = sizeof(MyMetadataStruct)
-config.flexible_zone_configs.push_back({"metadata", sizeof(MyMetadataStruct), -1});
+// Config: single flex zone (size must be multiple of 4096)
+config.flex_zone_size = 4096;
 
 // Inside with_write_transaction: access zone 0 as MyMetadataStruct
 with_write_transaction(*producer, 5000, [](WriteTransactionContext& ctx) {
@@ -105,8 +103,8 @@ with_read_transaction(*consumer, slot_id, 5000, [](ReadTransactionContext& ctx) 
 **Flexible zone with spinlock:** When a zone has `spinlock_index >= 0` in config, use `get_spinlock(index)` to protect concurrent access. Both producer and consumer can acquire the same spinlock by index:
 
 ```cpp
-// Config: zone uses spinlock index 0
-config.flexible_zone_configs.push_back({"aux", sizeof(MyAuxStruct), 0});
+// Config: single flex zone; use get_spinlock(0) to protect access if needed
+config.flex_zone_size = 4096;
 
 // Producer: lock, write zone, unlock
 SharedSpinLock sl_prod = producer->get_spinlock(0);
@@ -248,7 +246,7 @@ int main() {
     config.shared_secret = 0xDEADBEEF;
     config.ring_buffer_capacity = 4;
     config.physical_page_size = DataBlockPageSize::Size4K;
-    config.flexible_zone_configs.push_back({"meta", sizeof(Zone0Meta), -1});
+    config.flex_zone_size = 4096;  // single zone; Zone0Meta must fit
 
     auto producer = create_datablock_producer(hub, config.name,
                                               DataBlockPolicy::RingBuffer, config);
@@ -319,7 +317,7 @@ sequenceDiagram
     Prod->>Prod: unlock(mutex)
 ```
 
-**Read path:** Similarly, the consumer locks around acquire/release and iterator advance; for Sync_reader, releasing a consume slot updates that consumer’s heartbeat in the header.
+**Read path:** Similarly, the consumer locks around acquire/release and iterator advance; for Sync_reader, releasing a consume slot updates that consumer's heartbeat in the header.
 
 ---
 
@@ -341,6 +339,6 @@ You supposed: *"when datablock is initialized with mapping structure info, schem
 A future design could:
 
 1. Store a type/schema fingerprint per flexible zone and per slot buffer at creation.
-2. In `with_typed_write<T>`, `with_typed_read<T>`, and a potential `with_typed_flexible_zone<T>`, verify that `T`’s fingerprint matches the stored one before allowing access.
+2. In `with_typed_write<T>`, `with_typed_read<T>`, and a potential `with_typed_flexible_zone<T>`, verify that `T`'s fingerprint matches the stored one before allowing access.
 
 That would give the end-to-end type safety you described.

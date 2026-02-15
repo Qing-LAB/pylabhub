@@ -14,6 +14,8 @@ This document outlines the architecture of the pyLabHub C++ test suite. Its goal
 ## Related Documents
 
 - [README_Versioning.md](README_Versioning.md) — Version scheme; version API tests live in `test_platform.cpp`
+- **`docs/DATAHUB_TODO.md`** — Execution order and priorities for DataHub; test checklist and Phase C/D items live there.
+- **`docs/IMPLEMENTATION_GUIDANCE.md`** — Testing strategy, test patterns, and **MessageHub code review** (DataHub integration).
 
 ---
 
@@ -582,6 +584,82 @@ However, there is a significant gotcha on **Windows** when testing functions tha
 For any test that validates the output of `pylabhub::debug::print_stack_trace`, do **not** use `StringCapture`. Instead, redirect `stderr` to a temporary file for the duration of the test. This avoids the blocking behavior of pipes and makes the test robust.
 
 See `PlatformTest.PrintStackTrace` in `tests/test_pylabhub_corelib/test_platform.cpp` for a canonical example of this file-based redirection.
+
+---
+
+## DataHub and MessageHub test plan (Phase A–D)
+
+**Purpose:** (1) Plan the tests required for DataBlock/DataHub implementation and protocol. (2) MessageHub code review for C++20, abstraction, and DataHub integration lives in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review.
+
+**Execution order and priorities** are in **`docs/DATAHUB_TODO.md`**. This section provides test rationale and Phase A–D detail; do not use it as a competing roadmap.
+
+**Cross-platform:** All tests must be runnable on every supported platform (Windows, Linux, macOS, FreeBSD). Avoid “skip on platform X” unless justified and documented.
+
+### Part 0: Foundational APIs used by DataBlock
+
+DataBlock depends on these; their correctness must be covered before relying on DataBlock behavior.
+
+| Foundation | Used by DataBlock for | Coverage |
+|------------|------------------------|----------|
+| Platform (get_pid, monotonic_time_ns, is_process_alive) | Writer/reader ownership, heartbeat, zombie reclaim | test_platform_core, test_platform_shm |
+| shm_create / shm_attach / shm_close / shm_unlink | Segment create/attach | test_platform_shm |
+| Backoff, Crypto (BLAKE2b), SharedSpinLock, Lifecycle, Schema BLDS | Spin loops, checksums, zone locking, header hash | test_backoff_strategy, test_crypto_utils, test_shared_memory_spinlock, test_schema_blds |
+
+### Part 1: DataBlock/DataHub test plan
+
+**Scope:** DataBlock core (layout, header, slot coordination, writer/reader acquire/commit/release, flexible zone); Producer/Consumer API (create/find, flexible_zone_span, checksum, acquire/release); protocol and agreement (config, expected_config, schema); integrity and diagnostics; MessageHub (connect, register_producer, discover_producer).
+
+**Phase A – Protocol/API correctness (no broker):** Flexible zone empty/non-empty (producer, consumer, slot handles); checksum false when no zones / true when valid; consumer with/without expected_config; schema store/validate and mismatch fails.
+
+**Phase B – Slot protocol in one process:** Create producer and consumer (same process); acquire write slot, write+commit; acquire consume slot, read; checksum update/verify; optional diagnostic handle.
+
+**Phase C – MessageHub and broker:** No-broker behavior (connect/disconnect, send/receive when disconnected, parse errors); with-broker: register_producer, discover_producer, one write/read; broker error/timeout paths; schema metadata contract.
+
+**Phase D – Concurrency and multi-process:** Writer acquisition timeout and eventual success; reader TOCTTOU and wrap-around; concurrent readers; zombie writer reclaim; DataBlockMutex; cross-process basic exchange and high load.
+
+### Phase D checklist (path to completion)
+
+| # | Item | Priority | Status |
+|---|------|----------|--------|
+| D1 | Writer acquisition – timeout when readers hold; success when readers drain | P1 | ✅ Done (in-process) |
+| D2 | Zombie writer reclaim | P2 | ✅ Done |
+| D3 | DataBlockMutex cross-process | P2 | ✅ Done |
+| D4 | Cross-process basic exchange (one write, one read) | P1 | ✅ Done |
+| D5 | Reader TOCTTOU retry path | P1 | ✅ Done |
+| D6 | Reader wrap-around (generation mismatch) | P1 | ⚠️ Partial |
+| D7 | Concurrent readers same slot | P1 | ✅ Done |
+| D8 | Cross-process high load (many write/read rounds) | P1 | ❌ Not done |
+| D9 | Cross-process writer blocks on reader | P1 | ❌ Not done |
+| D10 | Cross-process multiple rounds | P2 | ❌ Not done |
+
+**Remaining:** D6 (generation mismatch assertion), D8–D10 (cross-process). See **`docs/DATAHUB_TODO.md`** for current priorities.
+
+### Test infrastructure needs
+
+- **DataBlockTestFixture (or equivalent):** Create producer/consumer with given config (and optional schema); cleanup shm/handles.
+- **Broker for tests:** In-process mock or small broker for REG_REQ/DISC_REQ with shm_name, schema_hash, schema_version.
+- **Schema tests:** validate_header_layout_hash and consumer schema mismatch (test_schema_validation enabled in CMake).
+
+### Current test coverage (Layer 3 DataHub)
+
+| Plan area | Covered | Notes |
+|-----------|---------|--------|
+| Part 0 (foundations) | Yes | Platform shm, SharedSpinLock, Backoff, Crypto, Lifecycle, Schema BLDS |
+| Phase A – Protocol/API | Yes | test_phase_a_protocol, phase_a_workers, test_schema_validation |
+| Phase B – Slot protocol | Yes | test_slot_protocol, slot_protocol_workers |
+| Error handling | Yes | test_error_handling, error_handling_workers |
+| Recovery/diagnostics | Smoke | test_recovery_api, recovery_workers |
+| Phase C – MessageHub + broker | No | To be implemented |
+| Phase D – Concurrency / multi-process | Partial | D1–D5, D7 done; D6 partial; D8–D10 not done |
+| Recovery scenario | Deferred | Policy to be defined first |
+
+### Scenario coverage matrix (summary)
+
+Coverage exists for: **ConsumerSyncPolicy** (Latest_only, Single_reader, Sync_reader); **DataBlockPolicy** (Single, DoubleBuffer, RingBuffer); ring capacity 1–4; **Physical page size** (Size4K, Size4M); logical unit size 0 and custom; **Flexible zone** (no zones, single zone, zone with spinlock); **ChecksumPolicy** (None, Manual, Enforced). Optional gaps: ring capacity >4, Size16M.
+
+### Summary
+
+Prioritize: (1) flexible zone and checksum semantics (no access when undefined), (2) producer/consumer agreement and schema validation, (3) slot write/commit and read with checksums, (4) MessageHub with or without broker, (5) concurrency and multi-process. Implement in phases: API correctness → single-process slot protocol → MessageHub/broker → concurrency/multi-process. For MessageHub code review (header/impl alignment, C++20, abstraction, broker contract), see **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review.
 
 ---
 

@@ -7,7 +7,7 @@
 
 **Rationale documents (do not duplicate here):**
 - **Memory layout and re-mapping design:** `docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` — single flex zone (N×4K), compact control region, unified data region (flex + ring-buffer), broker-controlled structure re-mapping (flex zone and ring-buffer). Implementation deferred until broker is ready.
-- **Test plan & MessageHub review:** `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` — phased test plan (Phase A–D), test infrastructure needs, and MessageHub code review (C++20, abstraction, logic, DataHub integration). All rationale and descriptions for the testing and MessageHub items below live there. **Cross-platform is integrated:** tests and review consider all supported platforms.
+- **Test plan & MessageHub review:** Test plan (Phase A–D) and rationale: **`docs/README/README_testing.md`** § DataHub and MessageHub test plan. MessageHub code review (C++20, abstraction, logic, DataHub integration): **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review. **Cross-platform is integrated:** tests and review consider all supported platforms.
 - **Critical review & design:** Key content from DATAHUB_DATABLOCK_CRITICAL_REVIEW, DATAHUB_DESIGN_DISCUSSION, DATAHUB_CPP_ABSTRACTION_DESIGN, and DATAHUB_POLICY_AND_SCHEMA_ANALYSIS has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder's README). **Cross-platform is part of review/design:** behavior and APIs are defined and verified for Windows, Linux, macOS, FreeBSD; see “Cross-Platform and Behavioral Consistency” below.
 
 **Design / implementation strategy:** Primitive C API is the stable base; C++ RAII/abstraction (transaction guards, with_typed_write/with_typed_read) is the default for all higher-level design. Use the C API directly only when performance or flexibility critically require it.
@@ -16,11 +16,12 @@
 
 ## Recent completions (2026-02-14)
 
+- **Layout v2 integrity validator** – data_block_recovery.cpp: integrity check now handles `flex_zone_size` path (single zone at index 0). expected_config populated with flex_zone_size from header.
 - **Unified metrics and state API** – Single C-level surface for metrics and key state: `DataBlockMetrics` (in `slot_rw_coordinator.h`) now includes state snapshot fields `commit_index`, `slot_count` plus all metric counters. `total_slots_written` is wired in `commit_write()` (commit count; 0 = no commits yet). Integrity validator uses `slot_rw_get_metrics()` and `total_slots_written == 0` to skip slot checks on freshly created blocks (no sentinel collision after 2^64 commits). Name-based C API: `datablock_get_metrics(shm_name, &m)`, `datablock_reset_metrics(shm_name)` in `recovery_api.hpp`. C++: `DataBlockProducer::get_metrics()`, `reset_metrics()`, `DataBlockConsumer::get_metrics()`, `reset_metrics()` wrap the C API. See IMPLEMENTATION_GUIDANCE.md § Unified metrics and state API.
 
 ## Recent completions (2026-02-13)
 
-- **Shared Spinlock API: get_spinlock and spinlock_count** – Implemented `DataBlockProducer::get_spinlock(size_t index)` and `DataBlockConsumer::get_spinlock(size_t index)` returning `SharedSpinLock` for direct lock/unlock of flexible zones. `spinlock_count()` returns the number of available spinlocks (MAX_SHARED_SPINLOCKS). Used by `flexible_zone_with_spinlock` test. See RAII_LAYER_USAGE_EXAMPLE.md §2 (Flexible zone with spinlock).
+- **Shared Spinlock API: get_spinlock and spinlock_count** – Implemented `DataBlockProducer::get_spinlock(size_t index)` and `DataBlockConsumer::get_spinlock(size_t index)` returning `SharedSpinLock` for direct lock/unlock of flexible zones. `spinlock_count()` returns the number of available spinlocks (MAX_SHARED_SPINLOCKS). Used by `flexible_zone_with_spinlock` test. See `cpp/examples/RAII_LAYER_USAGE_EXAMPLE.md` §2 (Flexible zone with spinlock).
 - **Config validation before any memory creation** – Single point of access: **DataBlock creator constructor** `DataBlock(name, config)` in `data_block.cpp`. Config is validated first (policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity, logical_unit_size rules); only then is layout built and `shm_create` called. All producer creation goes through `create_datablock_producer` → this constructor. When things go wrong, look there. See IMPLEMENTATION_GUIDANCE.md § "Config validation and memory block setup".
 - **Explicit required parameters (no silent defaults)** – Layout- and mode-critical parameters must be set explicitly or producer creation fails: `policy`, `consumer_sync_policy`, `physical_page_size` (DataBlockPageSize::Unset = invalid), `ring_buffer_capacity` (0 = invalid, must be ≥ 1). Rationale: avoid memory corruption and sync bugs from silent defaults or producer/consumer mismatch. See `docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
 - **Deterministic initialization** – All structs used in hashing or comparison use value-initialization `{}` to avoid non-deterministic layout checksum or hash inputs.
@@ -46,7 +47,7 @@
 
 ## Recent completions (2026-02-11)
 
-- **Test coverage summary** – Added “Current test coverage (Layer 3 DataHub)” to `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`: table mapping plan areas to tests/workers; gaps (Phase C, D, recovery scenario) noted.
+- **Test coverage summary** – “Current test coverage (Layer 3 DataHub)” and Phase D checklist are in **`docs/README/README_testing.md`** § DataHub and MessageHub test plan; gaps (Phase C, D, recovery scenario) noted there.
 - **MessageHub JSON safety** – message_hub.cpp: register_producer and discover_producer use try/catch around json::parse; .contains("status")/"message" before access; discover_producer validates presence and types of shm_name, schema_hash, schema_version before .get<>(); missing/invalid fields return false/nullopt with log instead of throwing.
 - **DataBlock/slot error-handling tests**: test_error_handling.cpp + error_handling_workers: acquire_consume_slot timeout → nullptr, find_consumer wrong secret → nullptr, release_write_slot/release_consume_slot invalid handle → false, write/commit/read bounds → false, double release idempotent, slot_iterator try_next timeout → !ok. Ensures recoverable errors are handled without UB; contract violations (e.g. handle after destroy) remain documented.
 - **Phase B – Slot protocol tests**: test_slot_protocol (WriteReadSucceedsInProcess, ChecksumUpdateVerifySucceeds, LayoutWithChecksumAndFlexibleZoneSucceeds, DiagnosticHandleOpensAndAccessesHeader); all passing.
@@ -77,7 +78,7 @@
 
 ## Remaining plan (summary)
 
-Use this list to track what’s left; details live in the sections below and in the rationale documents above. **Testing and MessageHub:** rationale and phased plan are in `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` (refer to it; do not duplicate there).
+Use this list to track what’s left; details live in the sections below and in the rationale documents above. **Testing and MessageHub:** rationale and phased plan are in **`docs/README/README_testing.md`** § DataHub and MessageHub test plan; MessageHub review in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review (refer to them; do not duplicate here).
 
 ### API and documentation
 - [ ] **Consumer registration to broker** – Not yet implemented: `MessageHub::register_consumer` is a stub; protocol for consumer registration not yet defined. See `message_hub.cpp` ~378. When implementing broker/channel lookup or discovery that compares producer/consumer names, use `logical_name(name())` per `docs/NAME_CONVENTIONS.md`.
@@ -92,6 +93,9 @@ Use this list to track what’s left; details live in the sections below and in 
 - [ ] **DataBlockMutex not used by DataBlock** – Reintegrate for control zone (spinlock alloc, etc.) when DataHub integration is done; see DataBlockMutex follow-ups below.
 - [ ] **Consumer flexible_zone_info (see docs/FLEXIBLE_ZONE_INITIALIZATION.md)** – Document that it’s only populated when using factory with expected_config; enforce or clarify for flexible-zone-by-name access.
 - [ ] **Integrity repair path** – Optional: low-level repair using only DataBlockDiagnosticHandle (no full producer/consumer) to avoid broker lifecycle side effects.
+
+### Memory layout: final step (remove legacy completely)
+- [x] **Single memory structure only** – Per `docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` §4.4–4.5: layout version switch removed (single layout in `from_config`/`from_header`); `flexible_zone_configs`/`FlexibleZoneConfig`/`total_flexible_zone_size()` removed; only `flex_zone_size` and single flex zone (index 0). No legacy paths left.
 
 ### DataBlockMutex follow-ups (on integration)
 - [ ] **pthread_mutex_destroy** – Intentionally omitted (documented in destructor); no change unless design changes.
@@ -111,12 +115,12 @@ Use this list to track what’s left; details live in the sections below and in 
 - [ ] **Testing** – Run same tests on all supported platforms; avoid platform-only skip.
 - [ ] **Deployment** – Per DATAHUB_TODO deployment phase.
 
-### Foundational APIs used by DataBlock (rationale & coverage: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 0)
+### Foundational APIs used by DataBlock (rationale & coverage: `docs/README/README_testing.md` § DataHub and MessageHub test plan, Part 0)
 - [x] **Platform shm_* tests** – Added in test_layer0_platform/test_platform_shm.cpp: create, attach (same process), read/write, close, unlink; portable names; SHM_CREATE_UNLINK_FIRST. (Rationale: doc Part 0.)
 - [x] **SharedSpinLock tests** – Added in test_layer2_service/test_shared_memory_spinlock.cpp: try_lock_for, lock/unlock, timeout, recursion, SharedSpinLockGuard(Owning), two-thread mutual exclusion with state in shm. (Rationale: doc Part 0. Zombie reclaim: covered indirectly via platform is_process_alive; optional multi-process spinlock test later.)
 - **Already covered:** Platform (get_pid, monotonic_time_ns, elapsed_time_ns, is_process_alive) in test_platform_core; Backoff in test_backoff_strategy; Crypto (BLAKE2b, verify) in test_crypto_utils; Lifecycle in test_lifecycle; Schema BLDS in test_schema_blds.
 
-### DataHub protocol testing (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 1)
+### DataHub protocol testing (rationale & description: `docs/README/README_testing.md` § DataHub and MessageHub test plan, Part 1)
 - [x] **Phase A – Protocol/API correctness** – test_phase_a_protocol: flexible_zone_span empty when no zones / non-empty when zones; checksum false when no zones / true when valid; consumer without expected_config gets empty zones, with expected_config gets zones; [x] schema (test_schema_validation). See doc Part 1.1 and 1.4.
 - [x] **Phase B – Slot protocol in one process** – test_slot_protocol: write_read, checksum (Enforced), layout_smoke (checksum + flexible zone), diagnostic_handle. DataBlockLayout + slot checksum region fix. See doc Part 1.2 and 1.4.
 - [x] **DataBlock/slot error handling** – test_error_handling: recoverable failures return false/nullptr/empty (acquire timeout, wrong secret, invalid handle release, write/commit/read bounds, double-release idempotent, iterator try_next timeout). Ensures no segfault on expected error paths; unsafe/unrecoverable cases (e.g. handle used after producer destroyed) remain contract violations.
@@ -130,7 +134,7 @@ Use this list to track what’s left; details live in the sections below and in 
 - [ ] **Recovery scenario tests** – **Deferred.** See “Recovery (deferred)” below. Beyond smoke we may want: zombie lock reclaim, datablock_validate_integrity on corrupted block, datablock_diagnose_slot stuck detection — after recovery policy is defined.
 - [x] **Test infrastructure** – enable test_schema_validation in CMake; converted to IsolatedProcessTest + schema_validation_workers (schema match / mismatch). DataBlockTestFixture, test broker: future. See doc Part 1.5.
 
-### MessageHub follow-ups (rationale & description: `docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` Part 2)
+### MessageHub follow-ups (rationale & description: `docs/IMPLEMENTATION_GUIDANCE.md` § MessageHub code review)
 - [x] **MessageHub JSON safety** – register_producer/discover_producer: parse in try/catch (return false/nullopt on parse exception); .contains("status")/"message" before access; discover_producer requires .contains() and type checks (is_string/is_number_unsigned) for shm_name, schema_hash, schema_version before .get<>().
 - [ ] **MessageHub receive helper** – Extract shared recv path (poll, recv_multipart, size check, last frame) into private helper to remove duplication between send_message and receive_message.
 - [ ] **MessageHub [[nodiscard]] and docs** – Add [[nodiscard]] to send_message, receive_message, discover_producer, connect, register_producer; document broker contract (REG_REQ/DISC_REQ, JSON shape) in one place.
@@ -191,7 +195,7 @@ Recovery semantics need **further investigation** before we define and test them
 | **P9 Design** | ✅ Complete | 100% | Done |
 | **Core Implementation** | 🟡 In Progress | 30% | Week 2-3 |
 | **P9 Implementation** | ⏳ Not Started | 0% | Week 1 |
-| **Testing** | 🟡 Planned | 0% | Week 4 (plan: docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md) |
+| **Testing** | 🟡 Planned | 0% | Week 4 (plan: docs/README/README_testing.md § DataHub and MessageHub test plan) |
 | **Deployment** | ⏳ Not Started | 0% | Week 5 |
 
 ---
