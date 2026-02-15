@@ -48,18 +48,18 @@ std::string hex_encode_schema_hash(const std::string &raw)
 /** Decodes a 64-char hex string back to 32 bytes. Returns empty string on error. */
 std::string hex_decode_schema_hash(const std::string &hex_str)
 {
-    auto hex_val = [](char ch) -> int {
-        if (ch >= '0' && ch <= '9')
+    auto hex_val = [](char hex_char) -> int {
+        if (hex_char >= '0' && hex_char <= '9')
         {
-            return ch - '0';
+            return hex_char - '0';
         }
-        if (ch >= 'a' && ch <= 'f')
+        if (hex_char >= 'a' && hex_char <= 'f')
         {
-            return ch - 'a' + kHexLetterOffset;
+            return hex_char - 'a' + kHexLetterOffset;
         }
-        if (ch >= 'A' && ch <= 'F')
+        if (hex_char >= 'A' && hex_char <= 'F')
         {
-            return ch - 'A' + kHexLetterOffset;
+            return hex_char - 'A' + kHexLetterOffset;
         }
         return -1;
     };

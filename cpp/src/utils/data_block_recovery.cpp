@@ -799,8 +799,8 @@ extern "C"
         {
             return -1;
         }
-        int r = slot_rw_get_metrics(ctx->header, out_metrics);
-        return r;
+        int result_code = slot_rw_get_metrics(ctx->header, out_metrics);
+        return result_code;
     }
 
     int datablock_reset_metrics(const char *shm_name)

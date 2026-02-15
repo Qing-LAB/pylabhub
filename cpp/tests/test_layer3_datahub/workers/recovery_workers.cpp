@@ -200,12 +200,18 @@ int producer_heartbeat_and_is_writer_alive()
 
             const uint64_t my_pid = pylabhub::platform::get_pid();
 
-            auto write_handle = producer->acquire_write_slot(5000);
-            ASSERT_NE(write_handle, nullptr);
-            const char payload[] = "heartbeat-test";
-            EXPECT_TRUE(write_handle->write(payload, sizeof(payload)));
-            EXPECT_TRUE(write_handle->commit(sizeof(payload)));
-            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+            // IMPORTANT: Scope the write_handle to ensure it's destroyed before producer
+            // Pitfall 10: Handles reference the producer/consumer that created them.
+            // Destroying producer while handle is in scope causes use-after-free.
+            {
+                auto write_handle = producer->acquire_write_slot(5000);
+                ASSERT_NE(write_handle, nullptr);
+                const char payload[] = "heartbeat-test";
+                EXPECT_TRUE(write_handle->write(payload, sizeof(payload)));
+                EXPECT_TRUE(write_handle->commit(sizeof(payload)));
+                EXPECT_TRUE(producer->release_write_slot(*write_handle));
+                // write_handle destroyed here - BEFORE producer.reset()
+            }
 
             auto diag = open_datablock_for_diagnostic(channel);
             ASSERT_NE(diag, nullptr);

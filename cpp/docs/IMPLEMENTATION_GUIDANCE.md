@@ -1,32 +1,41 @@
 # Data Exchange Hub - Implementation Guidance
 
-**Document Version:** 1.1
-**Last Updated:** 2026-02-13
-**Status:** Active Development Guide
+**Purpose:** This document provides **implementation patterns, architectural principles, and best practices** for DataHub and related modules. Use this as your reference during design and implementation to ensure consistency, avoid common pitfalls, and follow established patterns.
 
-**Doc policy:** This is the **unified implementation guidance** for DataHub and related modules. Refer to this document during design and implementation (like a single "GEMINI.md"). **Execution order and checklist** live in **`docs/DATAHUB_TODO.md`**; do not duplicate priorities or roadmap here. See `docs/DOC_STRUCTURE.md` for the full documentation layout.
+**Scope:** This document focuses on **how to implement correctly** — language-level details, architecture patterns, concurrency rules, memory safety, and API design principles. It does NOT track execution order (see `DATAHUB_TODO.md`), historical changes (see `DOC_ARCHIVE_LOG.md`), or test plans (see `README/README_testing.md`).
+
+**Cross-references:** 
+- Design specifications → `docs/HEP/` (authoritative design specs)
+- Execution plan → `docs/DATAHUB_TODO.md` (what to do next, priorities)
+- Documentation structure → `docs/DOC_STRUCTURE.md` (where information belongs)
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Architecture Principles](#architecture-principles)
+2. [Coding Standards](#coding-standards)
+   - [Variable naming](#variable-naming)
+   - [Braces requirement](#braces-requirement)
+3. [Architecture Principles](#architecture-principles)
    - [Error reporting: C vs C++](#error-reporting-c-vs-c)
    - [Explicit noexcept where the public API does not throw](#explicit-noexcept-where-the-public-api-does-not-throw)
    - [Config validation and memory block setup](#config-validation-and-memory-block-setup-single-point-of-access)
-3. [DataBlock API, Concurrency, and Protocol](#datablock-api-concurrency-and-protocol)
+4. [DataBlock API, Concurrency, and Protocol](#datablock-api-concurrency-and-protocol)
    - [Structured buffer alignment](#structured-buffer-alignment)
    - [Unified metrics and state API](#unified-metrics-and-state-api)
    - [Facility access (checksum, magic, schema, config)](#facility-access-checksum-magic-schema-config)
-4. [Codebase Structure](#codebase-structure)
-5. [Integration with Existing Services](#integration-with-existing-services)
-6. [ABI Stability Guidelines](#abi-stability-guidelines)
-7. [Memory Management Patterns](#memory-management-patterns)
-8. [Error Handling Strategy](#error-handling-strategy)
-9. [Testing Strategy](#testing-strategy)
-10. [Common Pitfalls and Solutions](#common-pitfalls-and-solutions)
-11. [Code Review Checklist](#code-review-checklist)
+5. [Codebase Structure](#codebase-structure)
+6. [Integration with Existing Services](#integration-with-existing-services)
+7. [ABI Stability Guidelines](#abi-stability-guidelines)
+8. [Memory Management Patterns](#memory-management-patterns)
+9. [Error Handling Strategy](#error-handling-strategy)
+10. [Testing Strategy](#testing-strategy)
+11. [Common Pitfalls and Solutions](#common-pitfalls-and-solutions)
+12. [Emergency Recovery Procedures](#emergency-recovery-procedures)
+13. [Naming Conventions](#naming-conventions)
+14. [[[nodiscard]] Exception Sites](#nodiscard-exception-sites)
+15. [Code Review Checklist](#code-review-checklist)
 
 ---
 
@@ -41,6 +50,155 @@ This document provides implementation guidance for the **Data Exchange Hub** (Da
 3. **Layered API**: Three layers (C API, C++ wrappers, Transaction API) for different use cases. The **primitive C API** is the stable base; **C++ RAII/abstraction** (guards, with_typed_*) is the default for all higher-level design. Use the C API directly only when performance or flexibility critically require it (e.g. custom bindings, hot paths that cannot use exceptions).
 4. **Service Integration**: Leverage existing lifecycle, logger, and platform services
 5. **Memory Safety**: Atomic operations with correct memory ordering for ARM/x86
+
+---
+
+## Coding Standards
+
+This section defines coding standards and style guidelines that must be followed throughout the codebase. These rules help avoid lint warnings, prevent common bugs, and maintain consistency.
+
+### Variable Naming
+
+**Rule**: All variables, including transient/temporary variables, must have **meaningful names** that are **consistent with their purpose and function** in context.
+
+**Minimum length**: Variables must use **at least 3 characters** to avoid lint warnings and improve code readability.
+
+**Examples**:
+
+```cpp
+// BAD: Cryptic, too short, or meaningless
+int x;              // What does x represent?
+int i;              // Generic loop counter might be acceptable in very short loops only
+auto rc;            // Unclear: return code? reader count? 
+auto tmp;           // What kind of temporary?
+int a, b, c;        // No semantic meaning
+
+// GOOD: Meaningful, clear purpose
+int slot_index;
+int retry_count;
+auto result_code;
+auto temp_buffer;
+int slot_count, capacity, offset;
+```
+
+**Guidelines**:
+- **Loop variables**: Even loop counters should be meaningful when possible:
+  ```cpp
+  // BAD (in complex loops)
+  for (int i = 0; i < n; ++i) {
+      for (int j = 0; j < m; ++j) {
+          // What are i and j here?
+      }
+  }
+  
+  // GOOD
+  for (size_t slot_idx = 0; slot_idx < slot_count; ++slot_idx) {
+      for (size_t retry_idx = 0; retry_idx < max_retries; ++retry_idx) {
+          // Clear what each index represents
+      }
+  }
+  ```
+
+- **Temporary variables**: Name based on role, not just "temp":
+  ```cpp
+  // BAD
+  auto tmp = calculate_offset();
+  auto res = validate();
+  
+  // GOOD
+  auto aligned_offset = calculate_offset();
+  auto is_valid = validate();
+  ```
+
+- **Result variables**: Be explicit about what result:
+  ```cpp
+  // BAD
+  auto r = operation();
+  
+  // GOOD
+  auto acquire_result = acquire_write_slot(timeout);
+  auto recovery_status = validate_integrity();
+  ```
+
+**Exception**: Very short, well-established idioms in limited scope (e.g., `i` in a simple 3-line for loop) may be acceptable, but prefer meaningful names.
+
+### Braces Requirement
+
+**Rule**: All C/C++ control flow statements **must use braces** `{}`, even for single-statement bodies.
+
+**Rationale**:
+- Avoids lint warnings
+- Prevents scope-related bugs when code is modified later
+- Improves readability and consistency
+- Prevents dangerous patterns (e.g., Apple's "goto fail" bug)
+
+**Examples**:
+
+```cpp
+// BAD: No braces
+if (condition)
+    do_something();
+
+if (error)
+    return false;
+
+for (int slot_idx = 0; slot_idx < count; ++slot_idx)
+    process_slot(slot_idx);
+
+while (retry_count < max_retries)
+    retry_count++;
+
+// GOOD: Always use braces
+if (condition) {
+    do_something();
+}
+
+if (error) {
+    return false;
+}
+
+for (int slot_idx = 0; slot_idx < count; ++slot_idx) {
+    process_slot(slot_idx);
+}
+
+while (retry_count < max_retries) {
+    retry_count++;
+}
+```
+
+**Critical cases** where braces prevent bugs:
+
+```cpp
+// BAD: Extremely dangerous
+if (condition)
+    LOGGER_DEBUG("Debug: condition true");
+    do_critical_operation();  // ALWAYS EXECUTES! Indentation misleads reader
+
+// BAD: Modification later breaks
+if (condition)
+    operation1();
+// Someone adds:
+    operation2();  // NOT under if! Bug introduced
+
+// GOOD: Safe and clear
+if (condition) {
+    LOGGER_DEBUG("Debug: condition true");
+    do_critical_operation();  // Clearly within if block
+}
+
+// GOOD: Modifications stay safe
+if (condition) {
+    operation1();
+    operation2();  // Adding new statement is safe
+}
+```
+
+**Applies to**: All control flow statements
+- `if`, `else if`, `else`
+- `for`, `while`, `do-while`
+- `switch` cases (braces optional but recommended for multi-statement cases)
+
+**Style**: Follow LLVM/Allman brace style (opening brace on same line for control structures, per `.clang-format`).
 
 ---
 
@@ -87,7 +245,7 @@ The Data Exchange Hub uses a **dual-chain** memory layout:
 
 ### C++ Abstraction Layers (DataBlock)
 
-The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstraction** is the default for application code. The layer map below consolidates the design formerly in **`docs/DATAHUB_CPP_ABSTRACTION_DESIGN.md`** (archived in **`docs/archive/transient-2026-02-13/`**).
+The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstraction** is the default for application code.
 
 | Layer   | Use for |
 |---------|--------|
@@ -651,7 +809,7 @@ if (!lock.try_lock()) {
 
 ## Testing Strategy
 
-**Cross-references:** Test plan and Phase A–D rationale: **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**. Topic summary: **`docs/README/README_testing.md`**. Execution order and priorities: **`docs/DATAHUB_TODO.md`**.
+For detailed test plans, phase rationale, and execution priorities, see **`docs/README/README_testing.md`** and **`docs/DATAHUB_TODO.md`**.
 
 ### Test Organization
 
@@ -833,7 +991,7 @@ Apply to: LayoutChecksumInput, DataBlockLayout, FlexibleZoneInfo, SchemaInfo, an
 
 **Problem**: Layout- and mode-critical parameters (`policy`, `consumer_sync_policy`, `physical_page_size`, `ring_buffer_capacity`) must not be left unset or mismatched; otherwise producer/consumer can get wrong layout or sync behavior → memory corruption or sync bugs.
 
-**Solution**: These four parameters have **no valid default**; they use sentinels (`Unset` or `0`) and **producer creation fails** (throws `std::invalid_argument`) if any are unset. Always set them explicitly on `DataBlockConfig` before calling `create_datablock_producer`. Consumer attach validates layout (and optional `expected_config`) in one place: `validate_attach_layout_and_config`. See § "Config validation and memory block setup" above; full policy analysis archived in **`docs/archive/transient-2026-02-13/`**.
+**Solution**: These four parameters have **no valid default**; they use sentinels (`Unset` or `0`) and **producer creation fails** (throws `std::invalid_argument`) if any are unset. Always set them explicitly on `DataBlockConfig` before calling `create_datablock_producer`. Consumer attach validates layout (and optional `expected_config`) in one place: `validate_attach_layout_and_config`. See § "Config validation and memory block setup" above.
 
 ### Pitfall 8: Test Atomic Variables Without Proper Ordering
 
@@ -867,6 +1025,188 @@ ASSERT_EQ(fut.wait_for(2s), std::future_status::ready);  // Wait for async callb
 ASSERT_GE(callback_count.load(std::memory_order_acquire), 1);
 ```
 
+### Pitfall 10: Destroying Consumer/Producer While Handles Are Still in Scope
+
+**Problem**: `SlotConsumeHandle` and `SlotWriteHandle` reference the consumer/producer that created them. Destroying the consumer or producer while a handle is still in scope causes use-after-free (SIGSEGV) when the handle destructor runs.
+
+**Solution**: Destroy all handles (let them go out of scope or call `handle.reset()`) **before** destroying the consumer or producer.
+
+```cpp
+// WRONG: consumer destroyed before h
+auto h = consumer->acquire_consume_slot(slot_id, 1000);
+consumer.reset();  // consumer destroyed
+// h destructor runs at lambda end → access impl.owner → SIGSEGV
+
+// CORRECT: scope h so it is destroyed first
+{
+    auto h = consumer->acquire_consume_slot(slot_id, 1000);
+    ASSERT_NE(h.get(), nullptr);
+    // h destructor runs here
+}
+producer.reset();
+consumer.reset();
+```
+
+See `SlotConsumeHandle` and `SlotWriteHandle` in `data_block.hpp` for the full lifetime contract.
+
+---
+
+## Emergency Recovery Procedures
+
+When DataBlocks encounter failures in production, use the recovery tools to diagnose and recover. This section provides guidance for common failure scenarios.
+
+### Recovery Tools
+
+Two primary tools are available:
+
+1. **`datablock-admin` CLI Tool**: Command-line utility for quick diagnostics and recovery
+2. **Python Recovery API**: `pylabhub.recovery` module for programmatic access
+
+### Common Failure Scenarios
+
+#### Scenario 1: Stuck Writer
+
+**Symptom**: Producer process crashes while holding write lock, preventing new writes.
+
+**Diagnosis**:
+```bash
+./build/bin/datablock-admin diagnose my_datablock --slot 0
+```
+Look for `is_stuck: Yes` and `write_lock` with non-zero PID of dead process.
+
+**Recovery**:
+```bash
+./build/bin/datablock-admin recover my_datablock --slot 0 --action release_writer
+```
+
+#### Scenario 2: Stuck Readers
+
+**Symptom**: Consumer crashes while holding read lock, preventing slot reuse.
+
+**Diagnosis**: Non-zero `reader_count` on slot without recent updates, `writer_waiting: 1`.
+
+**Recovery**:
+```bash
+./build/bin/datablock-admin recover my_datablock --slot 0 --action release_readers --force
+```
+
+#### Scenario 3: Dead Consumers
+
+**Symptom**: Consumer heartbeat stopped, incorrect `active_consumer_count`.
+
+**Recovery**: Scan heartbeat table and remove dead consumers:
+```bash
+./build/bin/datablock-admin cleanup my_datablock
+```
+
+#### Scenario 4: Data Corruption
+
+**Diagnosis**: Check integrity of metadata and checksums:
+```bash
+./build/bin/datablock-admin validate my_datablock
+```
+
+**Recovery** (dangerous operation):
+```bash
+./build/bin/datablock-admin validate my_datablock --repair
+```
+
+**Warning**: Repair recalculates checksums and may cause data loss. Use only as last resort.
+
+---
+
+## Naming Conventions
+
+### Display Name Format
+
+`DataBlockProducer::name()` and `DataBlockConsumer::name()` return a **display name** with runtime suffix:
+
+| Case | Format | Example |
+|------|--------|---------|
+| No pImpl (null/moved-from) | `"(null)"` | `(null)` |
+| User provided name | `<user_name> \| pid:<pid>-<idx>` | `sensor_channel \| pid:12345-0` |
+| No name provided | `producer-<pid>-<idx>` or `consumer-<pid>-<idx>` | `producer-12345-1` |
+
+**Suffix marker**: ` | pid:` (space, pipe, space, `pid:`) starts the runtime suffix.
+**Performance**: Display name computed once via `std::call_once` and cached.
+
+### Rule: User Names Must Not Contain Suffix Marker
+
+User-assigned names (channel, DataBlock) **must not contain** ` | pid:`.
+
+- ✅ Allowed: `sensor_channel`, `my-block`, `channel_1`
+- ❌ Disallowed: `foo | pid:123` (would confuse parser)
+
+### Comparing and Looking Up Names
+
+For channel lookup, broker registration/discovery, or equality checks, compare only the **logical name** (part before suffix):
+
+```cpp
+std::string_view logical_name(std::string_view full_name) noexcept;
+```
+
+**Example**:
+```cpp
+auto a = producer->name();
+auto b = other_producer->name();
+if (pylabhub::hub::logical_name(a) == pylabhub::hub::logical_name(b)) {
+    // Same channel / logical name
+}
+```
+
+### Usage Summary
+
+| Use Case | Action |
+|----------|--------|
+| Logging / diagnostics | Use full `name()` (includes suffix for context) |
+| Channel or broker comparison | Use `logical_name(name())` |
+| User-assigned names | Do NOT use ` \| pid:` substring |
+| Performance | Not hot path; computed once and cached |
+
+See `data_block.hpp` for `logical_name()` and `name()` API.
+
+---
+
+## [[nodiscard]] Exception Sites
+
+This section documents call sites that intentionally do NOT check `[[nodiscard]]` return values, with rationale.
+
+**Policy**: Default is to check and handle (log, propagate, throw). Exceptions documented here for consistency review.
+
+### Test / Example Code
+
+#### Zombie Writer Test
+**File**: `tests/test_layer3_datahub/workers/slot_protocol_workers.cpp`  
+**Call**: `wh->write()`, `wh->commit()` in `zombie_writer_acquire_then_exit`  
+**Rationale**: Process calls `_exit(0)` immediately; never returns to assert. Test goal is "writer holds lock and exits without release."  
+**Marker**: `(void)` with comment
+
+#### JsonConfig Transaction Proxy
+**File**: `tests/test_layer2_service/workers/jsonconfig_workers.cpp`  
+**Call**: `cfg.transaction()`  
+**Rationale**: Test intentionally doesn't call `.read()` or `.write()` to trigger debug-build warning about unconsumed proxy.  
+**Marker**: `(void)` with comment
+
+### Production / Library Code
+
+Best-effort operations or irrelevant return values:
+
+| File | Call | Rationale |
+|------|------|-----------|
+| `src/utils/data_block.cpp` | `release_write_handle()` in dtor | Release logs on failure; dtor does best-effort, no need to log again |
+| `src/utils/data_block.cpp` | `release_consume_handle()` in dtor | Same as above |
+| `src/utils/logger.cpp` | `future.get()` (multiple sites) | Sync-only or error path; return intentionally unused |
+| `src/utils/data_block_mutex.cpp` | `pthread_mutexattr_setprotocol()` | Best-effort PI; ENOTSUP tolerated if platform lacks it |
+| `src/utils/debug_info.cpp` | `SymInitialize()` | Best-effort Windows symbol init; failures tolerated |
+| `src/include/utils/json_config.hpp` | `wlock.json().dump()` | Validate JSON via side effect; return unused |
+
+### Summary
+
+- **Checked and handled**: Guard release in dtor/assignment (log), broker registration (log), `with_typed_write` commit (throw), `SlotDiagnostics` ctor (log), test assertions
+- **Intentionally unchecked**: Test edge cases (zombie, proxy), production best-effort operations (dtor release, logger sync, platform features, validation)
+
+**Rule**: When adding new intentional ignore, document here with rationale and mark with `(void)` cast and comment.
+
 ---
 
 ## Code Review Checklist
@@ -877,6 +1217,8 @@ For the **full review process** (first pass, higher-level requirements, test int
 
 - [ ] All public classes use pImpl idiom
 - [ ] All public symbols use `PYLABHUB_UTILS_EXPORT`
+- [ ] Variable names are meaningful (≥ 3 characters, describe purpose)
+- [ ] All control flow statements use braces (no brace-less if/for/while)
 - [ ] Memory ordering is correct (acquire/release on ARM)
 - [ ] Structs used in hashing/checksum are value-initialized (`T var{}`)
 - [ ] Test atomics: use release/acquire for cross-thread visibility; use promise to wait for async callbacks before asserting
@@ -907,42 +1249,14 @@ For the **full review process** (first pass, higher-level requirements, test int
 
 ---
 
-## Deferred refactoring (from code quality analysis)
-
-Refactoring and documentation actions from the 2026-02-13 code-quality analysis have been completed. Summary:
-
-| Priority | Status | Action |
-|----------|--------|--------|
-| P1 | Done | Timeout: `spin_elapsed_ms_exceeded` already used in spin loops. |
-| P1 | Done | SlotConsumeHandleImpl factory: `make_slot_consume_handle_impl`; used from three call sites. |
-| P2 | Done | Slot-buffer helper: `slot_buffer_ptr`; used in all handle construction paths. |
-| P2 | Done | Validation helper: `get_header_and_slot_count`; used in acquire paths and try_next. |
-| P2 | Done | Doxygen: DataBlockPageSize, to_bytes, SharedMemoryHeader, with_*_transaction; SlotRWState. |
-| P2 | Done | High-risk comments: TOCTTOU, zombie reclaim, single-point ctor, Sync_reader offset, validate_read_impl, release checksum. |
-| P3 | Done | TODOs tracked in DATAHUB_TODO and in-code "Not yet implemented" comments. |
-| P3 | Optional | "Lifetime" and "Thread safety" subsections in file or here; trim Doxygen where needed. |
-
-Full analysis (duplication, layering, naming, [[nodiscard]], logger usage, action details) is in **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**. Review findings and follow-ups (2026-02-13) are in **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`**.
-
-**Flexible zone and integrity:** Flexible zone access is valid only after definition and agreement (producer config + consumer expected_config). Integrity repair currently uses full producer/consumer; a lighter path (diagnostic-only verify/repair) is planned. Design rationale was in **DATAHUB_DESIGN_DISCUSSION.md** (archived). **Cross-platform:** DataBlock, spinlock, and recovery use only `plh_platform` APIs; detailed platform table was in **DATAHUB_DATABLOCK_CRITICAL_REVIEW.md** (archived).
-
----
-
 ## References
 
 - **Design Specification**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
-- **Documentation structure**: `docs/DOC_STRUCTURE.md` (execution plan, implementation and review guidance, topic docs)
-- **Code review process**: `docs/CODE_REVIEW_GUIDANCE.md` (full review workflow; 2026-02-13 findings archived in `docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`)
+- **Execution Plan**: `docs/DATAHUB_TODO.md`
+- **Code Review Process**: `docs/CODE_REVIEW_GUIDANCE.md`
+- **Documentation Structure**: `docs/DOC_STRUCTURE.md`
 - **Build System**: `CLAUDE.md`
+- **Test Strategy**: `docs/README/README_testing.md`
 - **Lifecycle Pattern**: `src/include/utils/lifecycle.hpp`
 - **Logger Usage**: `src/include/utils/logger.hpp`
 - **Platform Utilities**: `src/include/plh_platform.hpp`
-
----
-
-**Revision History**:
-- **v1.4** (2026-02-13): Merged and archived CODE_QUALITY_AND_REFACTORING_ANALYSIS and CODE_REVIEW_REPORT. § Deferred refactoring now self-contained with completion status; full analysis and report in docs/archive/transient-2026-02-13/. References updated to point to archive.
-- **v1.3** (2026-02-13): Merged transient design docs: added § Deferred refactoring (from CODE_QUALITY_AND_REFACTORING_ANALYSIS); updated config and C++ layer references to point to archive. Design rationale (critical review, design discussion, policy/schema, abstraction layer) consolidated here; originals moved to docs/archive/transient-2026-02-13/.
-- **v1.2** (2026-02-13): Added § "Config validation and memory block setup (single point of access)": config checked before any memory creation; single point is DataBlock creator constructor; required explicit parameters table. Updated Pitfall 7 to explicit required params (fail if unset). TABLE 2 caption: slot_stride_bytes.
-- **v1.1** (2026-02-13): Added Pitfalls 6–9 (deterministic init, config defaults, test atomics, async callbacks); testing async callbacks; checklist updates.
-- **v1.0** (2026-02-09): Initial guidance document created for implementation phase
