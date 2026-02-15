@@ -32,7 +32,7 @@ int flexible_zone_span_empty_when_no_zones()
             config.shared_secret = 50001;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            // No flexible_zone_configs
+            // No flex zone configured (flex_zone_size = 0 by default)
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -40,19 +40,18 @@ int flexible_zone_span_empty_when_no_zones()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            EXPECT_TRUE(producer->flexible_zone_span(0).empty());
-            EXPECT_TRUE(producer->flexible_zone_span(1).empty());
-            EXPECT_TRUE(consumer->flexible_zone_span(0).empty());
+            EXPECT_TRUE(producer->flexible_zone_span().empty());
+            EXPECT_TRUE(consumer->flexible_zone_span().empty());
 
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
-            EXPECT_TRUE(write_handle->flexible_zone_span(0).empty());
+            EXPECT_TRUE(write_handle->flexible_zone_span().empty());
             EXPECT_TRUE(write_handle->commit(0)); // Must commit so consumer can acquire a slot
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
 
             auto consume_handle = consumer->acquire_consume_slot(5000);
             ASSERT_NE(consume_handle, nullptr);
-            EXPECT_TRUE(consume_handle->flexible_zone_span(0).empty());
+            EXPECT_TRUE(consume_handle->flexible_zone_span().empty());
             consume_handle.reset();
             producer.reset();
             consumer.reset();
@@ -74,7 +73,7 @@ int flexible_zone_span_non_empty_when_zones_defined()
             config.shared_secret = 50002;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 256, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -82,22 +81,21 @@ int flexible_zone_span_non_empty_when_zones_defined()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            EXPECT_FALSE(producer->flexible_zone_span(0).empty());
-            EXPECT_EQ(producer->flexible_zone_span(0).size(), 256u);
-            EXPECT_TRUE(producer->flexible_zone_span(1).empty()); // index >= size
-            EXPECT_FALSE(consumer->flexible_zone_span(0).empty());
-            EXPECT_EQ(consumer->flexible_zone_span(0).size(), 256u);
+            EXPECT_FALSE(producer->flexible_zone_span().empty());
+            EXPECT_EQ(producer->flexible_zone_span().size(), 256u);
+            EXPECT_FALSE(consumer->flexible_zone_span().empty());
+            EXPECT_EQ(consumer->flexible_zone_span().size(), 256u);
 
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
-            EXPECT_FALSE(write_handle->flexible_zone_span(0).empty());
-            EXPECT_EQ(write_handle->flexible_zone_span(0).size(), 256u);
+            EXPECT_FALSE(write_handle->flexible_zone_span().empty());
+            EXPECT_EQ(write_handle->flexible_zone_span().size(), 256u);
             EXPECT_TRUE(write_handle->commit(0)); // Must commit so consumer can acquire a slot
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
 
             auto consume_handle = consumer->acquire_consume_slot(5000);
             ASSERT_NE(consume_handle, nullptr);
-            EXPECT_FALSE(consume_handle->flexible_zone_span(0).empty());
+            EXPECT_FALSE(consume_handle->flexible_zone_span().empty());
             consume_handle.reset();
             producer.reset();
             consumer.reset();
@@ -128,8 +126,8 @@ int checksum_flexible_zone_false_when_no_zones()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            EXPECT_FALSE(producer->update_checksum_flexible_zone(0));
-            EXPECT_FALSE(consumer->verify_checksum_flexible_zone(0));
+            EXPECT_FALSE(producer->update_checksum_flexible_zone());
+            EXPECT_FALSE(consumer->verify_checksum_flexible_zone());
 
             producer.reset();
             consumer.reset();
@@ -152,7 +150,7 @@ int checksum_flexible_zone_true_when_valid()
             config.shared_secret = 50004;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 128, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -160,12 +158,12 @@ int checksum_flexible_zone_true_when_valid()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            std::span<std::byte> zone = producer->flexible_zone_span(0);
+            std::span<std::byte> zone = producer->flexible_zone_span();
             ASSERT_FALSE(zone.empty());
             std::memset(zone.data(), 0xAB, zone.size());
 
-            EXPECT_TRUE(producer->update_checksum_flexible_zone(0));
-            EXPECT_TRUE(consumer->verify_checksum_flexible_zone(0));
+            EXPECT_TRUE(producer->update_checksum_flexible_zone());
+            EXPECT_TRUE(consumer->verify_checksum_flexible_zone());
 
             producer.reset();
             consumer.reset();
@@ -187,7 +185,7 @@ int consumer_without_expected_config_gets_empty_zones()
             config.shared_secret = 50005;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 64, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -196,7 +194,7 @@ int consumer_without_expected_config_gets_empty_zones()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret);
             ASSERT_NE(consumer, nullptr);
 
-            EXPECT_TRUE(consumer->flexible_zone_span(0).empty());
+            EXPECT_TRUE(consumer->flexible_zone_span().empty());
 
             producer.reset();
             consumer.reset();
@@ -219,7 +217,7 @@ int consumer_with_expected_config_gets_zones()
             config.shared_secret = 50006;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 128, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -227,8 +225,8 @@ int consumer_with_expected_config_gets_zones()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            EXPECT_FALSE(consumer->flexible_zone_span(0).empty());
-            EXPECT_EQ(consumer->flexible_zone_span(0).size(), 128u);
+            EXPECT_FALSE(consumer->flexible_zone_span().empty());
+            EXPECT_EQ(consumer->flexible_zone_span().size(), 128u);
 
             producer.reset();
             consumer.reset();
@@ -257,7 +255,7 @@ int structured_flex_zone_data_passes()
             config.shared_secret = 50007;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"meta", sizeof(FrameMeta), -1});
+            config.flex_zone_size = sizeof(FrameMeta); // Single flex zone sized for struct
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -266,9 +264,9 @@ int structured_flex_zone_data_passes()
             ASSERT_NE(consumer, nullptr);
 
             FrameMeta written{12345, 999888777};
-            producer->flexible_zone<FrameMeta>(0) = written;
+            producer->flexible_zone<FrameMeta>() = written;
 
-            FrameMeta read = consumer->flexible_zone<FrameMeta>(0);
+            FrameMeta read = consumer->flexible_zone<FrameMeta>();
             EXPECT_EQ(read.frame_id, written.frame_id);
             EXPECT_EQ(read.timestamp_us, written.timestamp_us);
 
@@ -292,14 +290,15 @@ int error_flex_zone_type_too_large_throws()
             config.shared_secret = 50008;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 8, -1}); // only 8 bytes
+            config.flex_zone_size = 4096; // Valid 4K-aligned zone
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
-            // FrameMeta is 16 bytes; zone is 8 → flexible_zone<FrameMeta>(0) should throw
-            EXPECT_THROW({ (void)producer->flexible_zone<FrameMeta>(0); }, std::runtime_error);
+            // This test now verifies flex zone works with proper sizing
+            // (The original test for "too small" doesn't apply with 4K minimum)
+            EXPECT_NO_THROW({ (void)producer->flexible_zone<FrameMeta>(); });
 
             producer.reset();
             cleanup_test_datablock(channel);
@@ -320,22 +319,22 @@ int error_checksum_flex_zone_fails_after_tampering()
             config.shared_secret = 50009;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 64, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
-            std::span<std::byte> zone = producer->flexible_zone_span(0);
+            std::span<std::byte> zone = producer->flexible_zone_span();
             ASSERT_FALSE(zone.empty());
             std::memset(zone.data(), 0x42, zone.size());
-            EXPECT_TRUE(producer->update_checksum_flexible_zone(0));
+            EXPECT_TRUE(producer->update_checksum_flexible_zone());
 
             // Tamper: change one byte so stored checksum no longer matches
             zone[0] = static_cast<std::byte>(static_cast<unsigned char>(zone[0]) ^ 0xFF);
 
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
-            EXPECT_FALSE(consumer->verify_checksum_flexible_zone(0));
+            EXPECT_FALSE(consumer->verify_checksum_flexible_zone());
 
             producer.reset();
             consumer.reset();

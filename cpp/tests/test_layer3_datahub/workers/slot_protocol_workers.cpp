@@ -347,7 +347,7 @@ int layout_with_checksum_and_flexible_zone_succeeds()
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
             config.checksum_policy = ChecksumPolicy::Enforced;
-            config.flexible_zone_configs.push_back({"zone0", 128, -1});
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -1374,8 +1374,7 @@ int flexible_zone_multi_zones()
             config.shared_secret = 88885;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 64, -1});
-            config.flexible_zone_configs.push_back({"zone1", 64, -1});
+            config.flex_zone_size = 128; // Single flex zone (Phase 2 design, was 2×64)
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -1383,21 +1382,14 @@ int flexible_zone_multi_zones()
             auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
-            const char data0[] = "zone0-data";
-            const char data1[] = "zone1-data";
-            std::span<std::byte> z0 = producer->flexible_zone_span(0);
-            std::span<std::byte> z1 = producer->flexible_zone_span(1);
+            const char data0[] = "single-zone-data";
+            std::span<std::byte> z0 = producer->flexible_zone_span();
             ASSERT_GE(z0.size(), sizeof(data0));
-            ASSERT_GE(z1.size(), sizeof(data1));
             std::memcpy(z0.data(), data0, sizeof(data0));
-            std::memcpy(z1.data(), data1, sizeof(data1));
 
-            std::span<const std::byte> cz0 = consumer->flexible_zone_span(0);
-            std::span<const std::byte> cz1 = consumer->flexible_zone_span(1);
+            std::span<const std::byte> cz0 = consumer->flexible_zone_span();
             ASSERT_GE(cz0.size(), sizeof(data0));
-            ASSERT_GE(cz1.size(), sizeof(data1));
-            EXPECT_EQ(std::memcmp(cz0.data(), data0, sizeof(data0)), 0) << "zone0 content";
-            EXPECT_EQ(std::memcmp(cz1.data(), data1, sizeof(data1)), 0) << "zone1 content";
+            EXPECT_EQ(std::memcmp(cz0.data(), data0, sizeof(data0)), 0) << "flex zone content";
 
             producer.reset();
             consumer.reset();
@@ -1419,7 +1411,7 @@ int flexible_zone_with_spinlock()
             config.shared_secret = 88886;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flexible_zone_configs.push_back({"zone0", 64, 0}); // spinlock index 0
+            config.flex_zone_size = 4096; // Single flex zone, must be 4K-aligned
 
             auto producer = create_datablock_producer(hub_ref, channel,
                                                       DataBlockPolicy::RingBuffer, config);
@@ -1430,14 +1422,14 @@ int flexible_zone_with_spinlock()
             const char payload[] = "spinlock-protected";
             SharedSpinLock sl_prod = producer->get_spinlock(0);
             sl_prod.lock();
-            std::span<std::byte> z0 = producer->flexible_zone_span(0);
+            std::span<std::byte> z0 = producer->flexible_zone_span();
             ASSERT_GE(z0.size(), sizeof(payload));
             std::memcpy(z0.data(), payload, sizeof(payload));
             sl_prod.unlock();
 
             SharedSpinLock sl_cons = consumer->get_spinlock(0);
             sl_cons.lock();
-            std::span<const std::byte> cz0 = consumer->flexible_zone_span(0);
+            std::span<const std::byte> cz0 = consumer->flexible_zone_span();
             ASSERT_GE(cz0.size(), sizeof(payload));
             EXPECT_EQ(std::memcmp(cz0.data(), payload, sizeof(payload)), 0) << "zone with spinlock";
             sl_cons.unlock();

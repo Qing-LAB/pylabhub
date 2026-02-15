@@ -149,19 +149,56 @@ extern "C"
     } DataBlockMetrics;
 
     /**
-     * @brief Retrieves current metrics from the shared memory header.
-     * @param shared_memory_header Pointer to the SharedMemoryHeader.
-     * @param out_metrics Pointer to a DataBlockMetrics struct to fill.
-     * @return 0 on success, -1 on error.
+     * @brief Retrieves current metrics and state snapshot from the shared memory header.
+     * 
+     * Provides a comprehensive snapshot of DataBlock performance and error metrics:
+     * - **State**: commit_index (last committed slot), slot_count (ring buffer capacity)
+     * - **Writer metrics**: Various timeout counts, lock contention, blocked time
+     * - **Reader metrics**: Race detection, validation failures, peak concurrent readers
+     * - **Error tracking**: Last error timestamp, error codes, sequence numbers
+     * - **Performance**: Total slots/bytes written and read, uptime, creation timestamp
+     * 
+     * This function uses relaxed memory ordering for efficient snapshots. Metrics are
+     * consistent within reasonable bounds but may not reflect absolute ordering with
+     * concurrent operations.
+     * 
+     * @param shared_memory_header Pointer to the SharedMemoryHeader (must not be null).
+     * @param out_metrics Pointer to a DataBlockMetrics struct to fill (must not be null).
+     * @return 0 on success, -1 if either pointer is null.
+     * 
+     * @note This is a C API function - no exceptions, returns error codes.
+     * @note Thread-safe and can be called concurrently with normal operations.
+     * @note For C++ API, use DataBlockProducer::get_metrics() or DataBlockConsumer::get_metrics()
+     * 
+     * @par Usage from C++
+     * @code
+     * auto header = get_shared_memory_header();  // From your access method
+     * DataBlockMetrics metrics;
+     * if (slot_rw_get_metrics(header, &metrics) == 0) {
+     *     printf("Total commits: %llu\n", metrics.total_slots_written);
+     *     printf("Has any commits: %s\n", metrics.total_slots_written > 0 ? "yes" : "no");
+     * }
+     * @endcode
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
                             DataBlockMetrics *out_metrics);
 
     /**
-     * @brief Resets metrics in the shared memory header.
-     * @param shared_memory_header Pointer to the SharedMemoryHeader.
-     * @return 0 on success, -1 on error.
+     * @brief Resets all metric counters in the shared memory header to zero.
+     * 
+     * Resets performance and error counters while preserving state information:
+     * - **Reset**: All timeout counts, contention metrics, error counts, performance counters
+     * - **Preserved**: commit_index, slot_count (state snapshot fields in DataBlockMetrics)
+     * 
+     * Useful for measuring metrics over specific time intervals or after resolving issues.
+     * 
+     * @param shared_memory_header Pointer to the SharedMemoryHeader (must not be null).
+     * @return 0 on success, -1 if pointer is null.
+     * 
+     * @warning Use cautiously in production - resets diagnostic history.
+     * @note This is a C API function - no exceptions, returns error codes.
+     * @note Thread-safe but should be coordinated with monitoring systems.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);

@@ -166,17 +166,52 @@ extern "C"
 
     /**
      * @brief Retrieves current metrics and state snapshot for a DataBlock by name.
-     * @param shm_name The name of the shared memory DataBlock.
-     * @param out_metrics Pointer to a DataBlockMetrics struct to fill (see slot_rw_coordinator.h).
-     * @return 0 on success, -1 on error (invalid args, open failed).
+     * 
+     * Opens the DataBlock in read-only diagnostic mode and retrieves comprehensive metrics:
+     * - State snapshot: commit_index, slot_count
+     * - Writer/reader metrics: timeouts, contention, races, validation failures
+     * - Error tracking: timestamps, error codes, sequences
+     * - Performance: total slots/bytes written and read
+     * 
+     * This is a name-based convenience wrapper around slot_rw_get_metrics() for external
+     * diagnostics and monitoring tools that don't have direct Producer/Consumer handles.
+     * 
+     * @param shm_name The name of the shared memory DataBlock (must not be null).
+     * @param out_metrics Pointer to a DataBlockMetrics struct to fill (must not be null).
+     * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
+     * 
+     * @note This is a C API function - no exceptions, returns error codes.
+     * @note Opens and closes the DataBlock internally - not for hot path use.
+     * @note For active producers/consumers, use DataBlockProducer::get_metrics() or
+     *       DataBlockConsumer::get_metrics() instead (more efficient).
+     * 
+     * @par Example
+     * @code
+     * DataBlockMetrics metrics;
+     * if (datablock_get_metrics("my_datablock", &metrics) == 0) {
+     *     printf("Commit index: %llu\n", metrics.commit_index);
+     *     printf("Total commits: %llu (has_commits: %s)\n", 
+     *            metrics.total_slots_written,
+     *            metrics.total_slots_written > 0 ? "yes" : "no");
+     *     printf("Writer timeouts: %llu\n", metrics.writer_timeout_count);
+     *     printf("Reader races: %llu\n", metrics.reader_race_detected);
+     * }
+     * @endcode
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_get_metrics(const char *shm_name,
                                                                        DataBlockMetrics *out_metrics);
 
     /**
-     * @brief Resets metrics for a DataBlock by name (state such as commit_index is not reset).
-     * @param shm_name The name of the shared memory DataBlock.
-     * @return 0 on success, -1 on error.
+     * @brief Resets metrics for a DataBlock by name.
+     * 
+     * Resets all metric counters to zero while preserving state fields (commit_index, slot_count).
+     * Opens the DataBlock in read-write diagnostic mode to perform the reset.
+     * 
+     * @param shm_name The name of the shared memory DataBlock (must not be null).
+     * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
+     * 
+     * @warning Use cautiously - resets diagnostic history.
+     * @note Opens and closes the DataBlock internally.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_reset_metrics(const char *shm_name);
 

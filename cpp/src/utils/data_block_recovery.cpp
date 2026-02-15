@@ -685,33 +685,33 @@ extern "C"
                     return RECOVERY_FAILED;
                 }
 
-                // Flexible zone checksums
-                for (size_t i = 0; i < expected_config.flexible_zone_configs.size(); ++i)
+                // Flexible zone checksum (single flex zone in Phase 2 design)
+                if (expected_config.flex_zone_size > 0)
                 {
-                        if (!consumer->verify_checksum_flexible_zone(i))
-                        { // Pass index
+                        if (!consumer->verify_checksum_flexible_zone())
+                        {
                             LOGGER_WARN(
-                                "INTEGRITY_CHECK: Flexible zone {} checksum is invalid for '{}'.", i,
+                                "INTEGRITY_CHECK: Flexible zone checksum is invalid for '{}'.",
                                 ctx->shm_name);
                         if (repair)
                         {
-                            LOGGER_WARN("REPAIR: Attempting to recalculate flexible zone {} "
+                            LOGGER_WARN("REPAIR: Attempting to recalculate flexible zone "
                                         "checksum for '{}'.",
-                                        i, ctx->shm_name);
+                                        ctx->shm_name);
                             auto producer = pylabhub::hub::create_datablock_producer(
                                 pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
                                 expected_config.policy, expected_config); // Removed schema_instance
-                            if (producer && producer->update_checksum_flexible_zone(i))
-                            { // Pass index
-                                LOGGER_WARN("REPAIR: Successfully recalculated flexible zone {} "
+                            if (producer && producer->update_checksum_flexible_zone())
+                            {
+                                LOGGER_WARN("REPAIR: Successfully recalculated flexible zone "
                                             "checksum for '{}'.",
-                                            i, ctx->shm_name);
+                                            ctx->shm_name);
                             }
                             else
                             {
-                                LOGGER_ERROR("REPAIR: Failed to recalculate flexible zone {} "
+                                LOGGER_ERROR("REPAIR: Failed to recalculate flexible zone "
                                              "checksum for '{}'.",
-                                             i, ctx->shm_name);
+                                             ctx->shm_name);
                                 overall_result = RECOVERY_FAILED;
                             }
                         }
