@@ -95,23 +95,26 @@ int with_write_transaction_timeout()
                 (void)ctx.slot().commit(1);
             });
             // Consumer acquires and holds the slot (blocks producer from reusing it)
-            auto read_handle = consumer->acquire_consume_slot(5000);
-            ASSERT_NE(read_handle, nullptr) << "Consumer must acquire slot after producer commit";
-            // Writer tries with_write_transaction with short timeout -> should throw (slot busy)
-            try
+            // IMPORTANT: Scope read_handle to destroy it before consumer.reset() (Pitfall 10)
             {
-                with_write_transaction(*producer, 100, [](WriteTransactionContext &ctx) {
-                    (void)ctx.slot().commit(1);
-                });
-                ADD_FAILURE() << "Expected with_write_transaction to throw on timeout";
-            }
-            catch (const std::exception &e)
-            {
-                // Acquisition failed (timeout or slot busy); any exception is acceptable
-                (void)e;
+                auto read_handle = consumer->acquire_consume_slot(5000);
+                ASSERT_NE(read_handle, nullptr) << "Consumer must acquire slot after producer commit";
+                // Writer tries with_write_transaction with short timeout -> should throw (slot busy)
+                try
+                {
+                    with_write_transaction(*producer, 100, [](WriteTransactionContext &ctx) {
+                        (void)ctx.slot().commit(1);
+                    });
+                    ADD_FAILURE() << "Expected with_write_transaction to throw on timeout";
+                }
+                catch (const std::exception &e)
+                {
+                    // Acquisition failed (timeout or slot busy); any exception is acceptable
+                    (void)e;
+                }
+                // read_handle destroyed here - BEFORE producer.reset() and consumer.reset()
             }
 
-            read_handle.reset();
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(channel);
@@ -154,10 +157,14 @@ int WriteTransactionGuard_exception_releases_slot()
             ASSERT_TRUE(exception_caught) << "Expected exception";
 
             // Slot must have been released by guard destructor. Acquire again should succeed.
-            auto h = producer->acquire_write_slot(1000);
-            ASSERT_NE(h.get(), nullptr) << "Slot should be available after guard released";
-            EXPECT_TRUE(h->commit(0));
-            EXPECT_TRUE(producer->release_write_slot(*h));
+            // IMPORTANT: Scope handle to destroy it before producer.reset() (Pitfall 10)
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h.get(), nullptr) << "Slot should be available after guard released";
+                EXPECT_TRUE(h->commit(0));
+                EXPECT_TRUE(producer->release_write_slot(*h));
+                // h destroyed here - BEFORE producer.reset()
+            }
 
             producer.reset();
             cleanup_test_datablock(channel);
@@ -214,8 +221,12 @@ int ReadTransactionGuard_exception_releases_slot()
 
             // Slot released by guard dtor; re-acquire same slot by ID (no-arg overload with
             // Latest_only would skip it because last_consumed_slot_id already equals commit_index).
-            auto h = consumer->acquire_consume_slot(slot_id, 1000);
-            ASSERT_NE(h.get(), nullptr) << "Slot should be available after guard released";
+            // IMPORTANT: Scope handle to destroy it before consumer.reset() (Pitfall 10)
+            {
+                auto h = consumer->acquire_consume_slot(slot_id, 1000);
+                ASSERT_NE(h.get(), nullptr) << "Slot should be available after guard released";
+                // h destroyed here - BEFORE producer.reset() and consumer.reset()
+            }
 
             producer.reset();
             consumer.reset();

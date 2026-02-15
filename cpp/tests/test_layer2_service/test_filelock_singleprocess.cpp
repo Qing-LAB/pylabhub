@@ -175,6 +175,11 @@ TEST_F(FileLockSingleProcessTest, BlockingLockTimeout)
 /**
  * @brief Tests multi-threaded lock contention within single process.
  * @details Pattern 2 - Thread safety test, not multi-process IPC.
+ * 
+ * IMPORTANT: Uses barrier to ensure the main thread waits for all worker threads
+ * to complete before exiting the test. Without the barrier, the main thread could
+ * exit and destroy test resources while worker threads are still holding locks,
+ * potentially causing race conditions or false test results.
  */
 TEST_F(FileLockSingleProcessTest, MultiThreadedContention)
 {
@@ -182,10 +187,15 @@ TEST_F(FileLockSingleProcessTest, MultiThreadedContention)
 
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
+    
+    constexpr int NUM_THREADS = 10;
+    
+    // Barrier to ensure all threads complete before test ends
+    std::barrier completion_barrier(NUM_THREADS + 1); // +1 for main thread
 
     // Spawn 10 threads that all try to acquire lock non-blocking
     std::vector<std::thread> threads;
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < NUM_THREADS; ++i)
     {
         threads.emplace_back(
             [&, i]()
@@ -198,16 +208,23 @@ TEST_F(FileLockSingleProcessTest, MultiThreadedContention)
                     success_count++;
                     LOGGER_DEBUG("Thread {} acquired lock", i);
                     std::this_thread::sleep_for(10ms); // Hold briefly
+                    // Lock released here when lock_opt goes out of scope
                 }
                 else
                 {
                     fail_count++;
                     LOGGER_DEBUG("Thread {} failed to acquire lock", i);
                 }
+                
+                // Signal completion - wait for all threads to finish their work
+                completion_barrier.arrive_and_wait();
             });
     }
 
-    // Wait for all threads
+    // Main thread waits at barrier for all worker threads to complete
+    completion_barrier.arrive_and_wait();
+    
+    // Now join all threads (they're all done)
     for (auto &t : threads)
     {
         t.join();
