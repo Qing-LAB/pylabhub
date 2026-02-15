@@ -40,6 +40,24 @@ namespace pylabhub::hub
 {
 
 // ============================================================================
+// Phase 3: C++ RAII Layer - Forward Declarations
+// ============================================================================
+
+// Forward declarations for RAII layer types
+template <typename T, typename E> class Result;
+template <typename DataBlockT, bool IsMutable> class SlotRef;
+template <typename FlexZoneT, bool IsMutable> class ZoneRef;
+template <typename FlexZoneT, typename DataBlockT, bool IsWrite> class TransactionContext;
+template <typename DataBlockT, bool IsWrite> class SlotIterator;
+
+// Type aliases
+template <typename FlexZoneT, typename DataBlockT>
+using WriteTransactionContext = TransactionContext<FlexZoneT, DataBlockT, true>;
+
+template <typename FlexZoneT, typename DataBlockT>
+using ReadTransactionContext = TransactionContext<FlexZoneT, DataBlockT, false>;
+
+// ============================================================================
 // SharedMemoryHeader Layout Constants (Version 1.0)
 // ============================================================================
 // CRITICAL: These constants define the ABI layout of SharedMemoryHeader.
@@ -230,33 +248,14 @@ enum class ConsumerSyncPolicy
 };
 
 /**
-
- * @struct FlexibleZoneConfig
-
- * @brief Configuration for a single flexible zone within the DataBlock.
-
- */
-
-struct FlexibleZoneConfig
-{
-
-    std::string name;
-
-    size_t size = 0;
-
-    int spinlock_index = -1; // -1 means no dedicated spinlock
-};
-
-/**
-
  * @struct DataBlockConfig
-
  * @brief Configuration for creating a new DataBlock.
-
+ * 
+ * @note FlexibleZoneConfig was removed in Phase 2 refactoring (2026-02-15).
+ *       Use flex_zone_size field instead for single flexible zone configuration.
  */
 
 struct DataBlockConfig
-
 {
 
     std::string name;
@@ -288,23 +287,12 @@ struct DataBlockConfig
     /** When to update/verify checksums. */
     ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
 
-    std::vector<FlexibleZoneConfig> flexible_zone_configs;
-
-    /** Computed: Total flexible zone size. */
-
-    size_t total_flexible_zone_size() const
-    {
-
-        size_t total = 0;
-
-        for (const auto &config : flexible_zone_configs)
-        {
-
-            total += config.size;
-        }
-
-        return total;
-    }
+    /**
+     * Single flexible zone size in bytes.
+     * Must be 0 (no flex zone) or a multiple of 4096 (page size).
+     * This replaces the old flexible_zone_configs vector.
+     */
+    size_t flex_zone_size = 0;
 
     /** Effective logical unit size (slot stride in bytes). 0 at config means use physical_page_size. */
     size_t effective_logical_unit_size() const
@@ -531,21 +519,10 @@ struct SlotConsumeHandleImpl;
 struct DataBlockSlotIteratorImpl;
 
 /**
- * @struct FlexibleZoneInfo
- * @brief Runtime information for a flexible zone.
- *
- * Flexible zone semantics: A zone is **undefined** until the producer supplies a definition
- * (flexible_zone_configs) and the consumer agrees (expected_config). Until then, no access
- * is granted: flexible_zone_span() returns an empty span, and checksum update/verify return
- * false. Do not read or write flexible zone data until the zone is defined and both sides
- * have agreed on layout.
+ * @note Phase 2 refactoring (2026-02-15): FlexibleZoneInfo struct removed.
+ *       Single flexible zone design no longer requires this structure.
+ *       Use DataBlockProducer::flexible_zone_span() for single zone access.
  */
-struct FlexibleZoneInfo
-{
-    size_t offset;
-    size_t size;
-    int spinlock_index;
-};
 
 /**
  * @class SlotWriteHandle
@@ -574,9 +551,13 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 
     /** @brief Mutable view of the slot buffer. */
     std::span<std::byte> buffer_span() noexcept;
-    /** @brief Mutable view of the flexible zone. Empty if zone is undefined or index invalid
-     * (see FlexibleZoneInfo). */
-    std::span<std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) noexcept;
+    /** 
+     * @brief Mutable view of the flexible zone.
+     * @return Empty span if zone is not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
+     */
+    std::span<std::byte> flexible_zone_span() noexcept;
 
     /** @brief Copy into slot buffer with bounds check. */
     [[nodiscard]] bool write(const void *src, size_t len, size_t offset = 0) noexcept;
@@ -585,8 +566,11 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 
     /** @brief Update checksum for this slot (if enabled). */
     [[nodiscard]] bool update_checksum_slot() noexcept;
-    /** @brief Update checksum for flexible zone (if enabled). */
-    [[nodiscard]] bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0) noexcept;
+    /** 
+     * @brief Update checksum for flexible zone (if enabled).
+     * @note Phase 2: Single flex zone design. Old index parameter removed.
+     */
+    [[nodiscard]] bool update_checksum_flexible_zone() noexcept;
 
   private:
     friend class DataBlockProducer;
@@ -621,17 +605,24 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 
     /** @brief Read-only view of the slot buffer. */
     std::span<const std::byte> buffer_span() const noexcept;
-    /** @brief Read-only view of the flexible zone. Empty if zone undefined or index invalid
-     * (see FlexibleZoneInfo). */
-    std::span<const std::byte> flexible_zone_span(size_t flexible_zone_idx = 0) const noexcept;
+    /** 
+     * @brief Read-only view of the flexible zone.
+     * @return Empty span if zone is not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
+     */
+    std::span<const std::byte> flexible_zone_span() const noexcept;
 
     /** @brief Copy out of slot buffer with bounds check. */
     [[nodiscard]] bool read(void *dst, size_t len, size_t offset = 0) const noexcept;
 
     /** @brief Verify checksum for this slot (if enabled). */
     [[nodiscard]] bool verify_checksum_slot() const noexcept;
-    /** @brief Verify checksum for flexible zone (if enabled). */
-    [[nodiscard]] bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const noexcept;
+    /** 
+     * @brief Verify checksum for flexible zone (if enabled).
+     * @note Phase 2: Single flex zone design. Old index parameter removed.
+     */
+    [[nodiscard]] bool verify_checksum_flexible_zone() const noexcept;
     /** @brief Returns true if the slot is still valid (generation not overwritten). */
     [[nodiscard]] bool validate_read() const noexcept;
 
@@ -717,22 +708,32 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     uint32_t spinlock_count() const noexcept;
 
     // ─── Flexible Zone Access ───
-    // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
-    template <typename T> T &flexible_zone(size_t index)
+    // Phase 2 refactoring: Single flex zone (no index parameter)
+    template <typename T> T &flexible_zone()
     {
-        std::span<std::byte> span = flexible_zone_span(index);
+        std::span<std::byte> span = flexible_zone_span();
         if (span.size() < sizeof(T))
         {
             throw std::runtime_error("Flexible zone too small for type T");
         }
         return *reinterpret_cast<T *>(span.data());
     }
-    /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
-    std::span<std::byte> flexible_zone_span(size_t index = 0) noexcept;
+    /** 
+     * @brief Direct view of flexible zone memory.
+     * @return Empty span if zone is not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
+     */
+    std::span<std::byte> flexible_zone_span() noexcept;
 
     // ─── Checksum API (BLAKE2b via libsodium; stored in control zone) ───
-    /** Compute BLAKE2b of flexible zone, store in header. Returns false if zone undefined. */
-    [[nodiscard]] bool update_checksum_flexible_zone(size_t flexible_zone_idx = 0) noexcept;
+    /** 
+     * @brief Compute BLAKE2b of flexible zone, store in header.
+     * @return false if zone not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old index parameter removed.
+     */
+    [[nodiscard]] bool update_checksum_flexible_zone() noexcept;
     /** Compute BLAKE2b of data slot at index, store in header. Slot layout:
      * structured_buffer_size/ring_capacity. */
     [[nodiscard]] bool update_checksum_slot(size_t slot_index) noexcept;
@@ -766,10 +767,154 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     /** @brief Last committed slot id (commit_index). Returns 0 if producer is invalid. */
     [[nodiscard]] uint64_t last_slot_id() const noexcept;
 
-    /** @brief Fills metrics and state snapshot via C API (slot_rw_get_metrics). Returns -1 on error. */
+    /** 
+     * @brief Retrieve comprehensive metrics and state snapshot from the DataBlock.
+     * 
+     * Fills the provided DataBlockMetrics structure with current metrics including:
+     * - State snapshot: commit_index, slot_count
+     * - Writer metrics: timeout counts, lock contention, blocked time
+     * - Reader metrics: race detection, validation failures, peak reader count
+     * - Error tracking: last error timestamp, error codes, error sequence
+     * - Checksum metrics: checksum failures
+     * - Performance: total slots written/read, total bytes written/read, uptime
+     * 
+     * This is a lightweight operation using relaxed memory ordering suitable for
+     * monitoring and diagnostics. All metrics are atomic snapshots.
+     * 
+     * @param out_metrics Reference to DataBlockMetrics struct to fill
+     * @return 0 on success, -1 if producer is invalid or error occurred
+     * 
+     * @note Thread-safe. Can be called concurrently with other operations.
+     * @note Uses slot_rw_get_metrics() C API internally
+     * 
+     * @par Example
+     * @code
+     * DataBlockMetrics metrics;
+     * if (producer->get_metrics(metrics) == 0) {
+     *     std::cout << "Total commits: " << metrics.total_slots_written << "\n";
+     *     std::cout << "Writer timeouts: " << metrics.writer_timeout_count << "\n";
+     * }
+     * @endcode
+     */
     [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
-    /** @brief Resets metrics via C API (slot_rw_reset_metrics). State (e.g. commit_index) is not reset. Returns -1 on error. */
+    
+    /**
+     * @brief Reset all metrics counters to zero.
+     * 
+     * Resets metric counters while preserving state information (commit_index, slot_count).
+     * Useful for measuring metrics over specific time intervals.
+     * 
+     * @return 0 on success, -1 if producer is invalid or error occurred
+     * 
+     * @note Thread-safe but should be used carefully in production to avoid
+     *       losing diagnostic information during incidents.
+     * @note Uses slot_rw_reset_metrics() C API internally
+     */
     [[nodiscard]] int reset_metrics() noexcept;
+
+    // ─── Structure Re-Mapping API (Placeholder - Future Feature) ───
+    /**
+     * @brief Request structure remapping (requires broker coordination).
+     * @param new_flexzone_schema New flex zone structure info (optional)
+     * @param new_datablock_schema New ring buffer slot structure info (optional)
+     * @return RequestId for broker coordination
+     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
+     * 
+     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
+     *       This API ensures our design doesn't block future remapping capability.
+     *       
+     * **Future Remapping Protocol:**
+     * 1. Producer calls `request_structure_remap()` → broker validates
+     * 2. Broker signals all consumers to call `release_for_remap()`
+     * 3. Producer calls `commit_structure_remap()` → updates schema_hash
+     * 4. Broker signals consumers to call `reattach_after_remap()`
+     * 
+     * See `CHECKSUM_ARCHITECTURE.md` §7.1 for full protocol details.
+     */
+    [[nodiscard]] uint64_t request_structure_remap(
+        const std::optional<schema::SchemaInfo> &new_flexzone_schema,
+        const std::optional<schema::SchemaInfo> &new_datablock_schema
+    );
+    
+    /**
+     * @brief Commit structure remapping (after broker approval).
+     * @param request_id From request_structure_remap()
+     * @param new_flexzone_schema New flex zone structure (if remapping flex zone)
+     * @param new_datablock_schema New slot structure (if remapping slots)
+     * @throws std::runtime_error if broker hasn't approved or remap not in progress
+     * 
+     * @note **PLACEHOLDER API.** Throws "not implemented" until broker is ready.
+     * 
+     * Updates `schema_hash`, `schema_version`, and recomputes checksums.
+     * Must be called with all consumers detached (broker-coordinated).
+     */
+    void commit_structure_remap(
+        uint64_t request_id,
+        const std::optional<schema::SchemaInfo> &new_flexzone_schema,
+        const std::optional<schema::SchemaInfo> &new_datablock_schema
+    );
+
+    // ====================================================================
+    // Phase 3: C++ RAII Layer - Type-Safe Transaction API
+    // ====================================================================
+
+    /**
+     * @brief Execute a type-safe transaction with schema validation
+     * @tparam FlexZoneT Type of flexible zone data (or void for no flexzone)
+     * @tparam DataBlockT Type of datablock slot data
+     * @tparam Func Lambda/callable type (must accept WriteTransactionContext<F,D>&)
+     * @param timeout Default timeout for slot operations
+     * @param func Lambda receiving transaction context
+     * @return Result of lambda invocation
+     * @throws std::invalid_argument if parameters invalid
+     * @throws std::runtime_error if entry validation fails (schema, layout, checksums)
+     * 
+     * **Type-Safe Transaction API** - The primary interface for producer operations.
+     * 
+     * Entry Validation:
+     * - Schema validation (if registered): sizeof(FlexZoneT) and sizeof(DataBlockT)
+     * - Layout validation: slot count, stride
+     * - Checksum policy enforcement
+     * 
+     * Context Lifetime:
+     * - Context valid for entire lambda scope
+     * - RAII ensures cleanup on exception
+     * - Current slot auto-released on scope exit
+     * 
+     * Usage:
+     * @code
+     * struct MetaData { int status; };
+     * struct Payload { double value; };
+     * 
+     * producer.with_transaction<MetaData, Payload>(100ms, [](auto& ctx) {
+     *     // Access flexible zone
+     *     ctx.flexzone().get().status = 1;
+     *     
+     *     // Iterate over slots (non-terminating)
+     *     for (auto result : ctx.slots(100ms)) {
+     *         if (!result.is_ok()) {
+     *             if (result.error() == SlotAcquireError::Timeout) {
+     *                 process_events();
+     *             }
+     *             if (ctx.flexzone().get().shutdown_requested) break;
+     *             continue;
+     *         }
+     *         
+     *         auto& slot = result.value();
+     *         slot.get().value = compute();
+     *         ctx.commit();
+     *     }
+     * });
+     * @endcode
+     * 
+     * @note Requires: FlexZoneT and DataBlockT must be trivially copyable.
+     * @note Thread-safe: Producer has internal mutex, contexts are per-thread.
+     * 
+     * @see WriteTransactionContext, SlotIterator, Result
+     */
+    template <typename FlexZoneT, typename DataBlockT, typename Func>
+    auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
+        -> std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>;
 
     /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
      * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
@@ -808,22 +953,32 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     uint32_t spinlock_count() const noexcept;
 
     // ─── Flexible Zone Access ───
-    // Access is valid only when the zone is defined and agreed (see FlexibleZoneInfo).
-    template <typename T> const T &flexible_zone(size_t index) const
+    // Phase 2 refactoring: Single flex zone (no index parameter)
+    template <typename T> const T &flexible_zone() const
     {
-        std::span<const std::byte> span = flexible_zone_span(index);
+        std::span<const std::byte> span = flexible_zone_span();
         if (span.size() < sizeof(T))
         {
             throw std::runtime_error("Flexible zone too small for type T");
         }
         return *reinterpret_cast<const T *>(span.data());
     }
-    /** Empty if zone undefined or index invalid (see FlexibleZoneInfo). */
-    std::span<const std::byte> flexible_zone_span(size_t index = 0) const noexcept;
+    /**
+     * @brief Read-only view of flexible zone memory.
+     * @return Empty span if zone is not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
+     */
+    std::span<const std::byte> flexible_zone_span() const noexcept;
 
     // ─── Checksum API (BLAKE2b; verify stored checksum matches computed) ───
-    /** Returns true if stored checksum matches computed BLAKE2b; false if zone undefined. */
-    [[nodiscard]] bool verify_checksum_flexible_zone(size_t flexible_zone_idx = 0) const noexcept;
+    /** 
+     * @brief Returns true if stored checksum matches computed BLAKE2b.
+     * @return false if zone not configured (size == 0).
+     * 
+     * @note Phase 2: Single flex zone design. Old index parameter removed.
+     */
+    [[nodiscard]] bool verify_checksum_flexible_zone() const noexcept;
     /** Returns true if stored checksum matches computed BLAKE2b of data slot. */
     [[nodiscard]] bool verify_checksum_slot(size_t slot_index) const noexcept;
 
@@ -831,8 +986,20 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** @brief Registers the consumer in the heartbeat table. Returns the slot index or -1 on
      * failure. */
     [[nodiscard]] int register_heartbeat();
+    
     /** @brief Updates the heartbeat for the given slot. */
     void update_heartbeat(int slot);
+    
+    /** @brief Updates the heartbeat using the registered slot (convenience). 
+     * 
+     * Phase 3.8: Convenience overload for use within transactions.
+     * Updates the heartbeat for the currently registered slot.
+     * No-op if heartbeat not registered.
+     * 
+     * Example: During long event processing in iterator loop.
+     */
+    void update_heartbeat() noexcept;
+    
     /** @brief Unregisters the consumer from the heartbeat table. */
     void unregister_heartbeat(int slot);
 
@@ -863,10 +1030,146 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * or a generated id "consumer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
     [[nodiscard]] const std::string &name() const noexcept;
 
-    /** @brief Fills metrics and state snapshot via C API (slot_rw_get_metrics). Returns -1 on error. */
+    /** 
+     * @brief Retrieve comprehensive metrics and state snapshot from the DataBlock.
+     * 
+     * Fills the provided DataBlockMetrics structure with current metrics including:
+     * - State snapshot: commit_index, slot_count
+     * - Writer metrics: timeout counts, lock contention, blocked time
+     * - Reader metrics: race detection, validation failures, peak reader count
+     * - Error tracking: last error timestamp, error codes, error sequence
+     * - Checksum metrics: checksum failures
+     * - Performance: total slots written/read, total bytes written/read, uptime
+     * 
+     * This is a lightweight operation using relaxed memory ordering suitable for
+     * monitoring and diagnostics. All metrics are atomic snapshots.
+     * 
+     * @param out_metrics Reference to DataBlockMetrics struct to fill
+     * @return 0 on success, -1 if consumer is invalid or error occurred
+     * 
+     * @note Thread-safe. Can be called concurrently with other operations.
+     * @note Uses slot_rw_get_metrics() C API internally
+     * 
+     * @par Example
+     * @code
+     * DataBlockMetrics metrics;
+     * if (consumer->get_metrics(metrics) == 0) {
+     *     std::cout << "Total reads: " << metrics.total_slots_read << "\n";
+     *     std::cout << "Reader races detected: " << metrics.reader_race_detected << "\n";
+     *     std::cout << "Peak concurrent readers: " << metrics.reader_peak_count << "\n";
+     * }
+     * @endcode
+     */
     [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
-    /** @brief Resets metrics via C API (slot_rw_reset_metrics). State (e.g. commit_index) is not reset. Returns -1 on error. */
+    
+    /**
+     * @brief Reset all metrics counters to zero.
+     * 
+     * Resets metric counters while preserving state information (commit_index, slot_count).
+     * Useful for measuring metrics over specific time intervals.
+     * 
+     * @return 0 on success, -1 if consumer is invalid or error occurred
+     * 
+     * @note Thread-safe but should be used carefully in production to avoid
+     *       losing diagnostic information during incidents.
+     * @note Uses slot_rw_reset_metrics() C API internally
+     */
     [[nodiscard]] int reset_metrics() noexcept;
+
+    // ─── Structure Re-Mapping API (Placeholder - Future Feature) ───
+    /**
+     * @brief Release context for structure remapping.
+     * Called in response to broker signal when remapping is requested.
+     * Consumer waits for broker approval before reattaching.
+     * 
+     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
+     * 
+     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
+     * 
+     * **Future Protocol:**
+     * 1. Broker signals consumer → consumer calls `release_for_remap()`
+     * 2. Consumer detaches, waits for broker "remap complete" signal
+     * 3. Consumer calls `reattach_after_remap()` with new schema
+     * 
+     * See `CHECKSUM_ARCHITECTURE.md` §7.1 for full protocol details.
+     */
+    void release_for_remap();
+    
+    /**
+     * @brief Reattach after structure remapping.
+     * @param new_flexzone_schema Expected flex zone structure
+     * @param new_datablock_schema Expected slot structure
+     * @throws SchemaMismatchException if reattach with wrong schema
+     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
+     * 
+     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
+     * 
+     * Revalidates schema against producer's updated `schema_hash`.
+     * If schema matches, consumer resumes normal operations.
+     */
+    void reattach_after_remap(
+        const std::optional<schema::SchemaInfo> &new_flexzone_schema,
+        const std::optional<schema::SchemaInfo> &new_datablock_schema
+    );
+
+    // ====================================================================
+    // Phase 3: C++ RAII Layer - Type-Safe Transaction API
+    // ====================================================================
+
+    /**
+     * @brief Execute a type-safe transaction with schema validation
+     * @tparam FlexZoneT Type of flexible zone data (or void for no flexzone)
+     * @tparam DataBlockT Type of datablock slot data
+     * @tparam Func Lambda/callable type (must accept ReadTransactionContext<F,D>&)
+     * @param timeout Default timeout for slot operations
+     * @param func Lambda receiving transaction context
+     * @return Result of lambda invocation
+     * @throws std::invalid_argument if parameters invalid
+     * @throws std::runtime_error if entry validation fails (schema, layout, checksums)
+     * 
+     * **Type-Safe Transaction API** - The primary interface for consumer operations.
+     * 
+     * Entry Validation:
+     * - Schema validation (if registered): sizeof(FlexZoneT) and sizeof(DataBlockT)
+     * - Layout validation: slot count, stride
+     * - Checksum policy enforcement
+     * 
+     * Context Lifetime:
+     * - Context valid for entire lambda scope
+     * - RAII ensures cleanup on exception
+     * - Current slot auto-released on scope exit
+     * 
+     * Usage:
+     * @code
+     * struct MetaData { int status; };
+     * struct Payload { double value; };
+     * 
+     * consumer.with_transaction<MetaData, Payload>(100ms, [](auto& ctx) {
+     *     // Iterate over slots (non-terminating)
+     *     for (auto result : ctx.slots(100ms)) {
+     *         if (!result.is_ok()) {
+     *             process_events();
+     *             continue;
+     *         }
+     *         
+     *         if (!ctx.validate_read()) continue;
+     *         
+     *         if (ctx.flexzone().get().end_of_stream) break;
+     *         
+     *         auto& slot = result.value();
+     *         process(slot.get().value);
+     *     }
+     * });
+     * @endcode
+     * 
+     * @note Requires: FlexZoneT and DataBlockT must be trivially copyable.
+     * @note Thread-safe: Consumer has internal mutex, contexts are per-thread.
+     * 
+     * @see ReadTransactionContext, SlotIterator, Result
+     */
+    template <typename FlexZoneT, typename DataBlockT, typename Func>
+    auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
+        -> std::invoke_result_t<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockConsumer(std::unique_ptr<DataBlockConsumerImpl> impl);
@@ -875,230 +1178,48 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     std::unique_ptr<DataBlockConsumerImpl> pImpl;
 };
 
-/**
- * Transaction context and guards
- * ------------------------------
- * with_write_transaction / with_read_transaction pass a context object to the
- * lambda so the lambda can access slot, flexible_zone(i), slot_id, and (read)
- * validate_read() from one object. Option C: always pass context; use ctx.slot()
- * for the handle.
- * Guards are noexcept on accessors; with_* may throw on acquisition failure.
- */
+} // namespace pylabhub::hub
 
-/** Context passed to the lambda in with_write_transaction. Non-owning; valid only during the call. */
-struct WriteTransactionContext
+// ============================================================================
+// Phase 3: C++ RAII Layer - Headers (outside namespace to avoid nesting)
+// ============================================================================
+
+#include "utils/result.hpp"
+#include "utils/slot_ref.hpp"
+#include "utils/zone_ref.hpp"
+#include "utils/transaction_context.hpp"
+#include "utils/slot_iterator.hpp"
+
+namespace pylabhub::hub
 {
-    SlotWriteHandle *slot_ptr = nullptr;
-    SlotWriteHandle &slot() { return *slot_ptr; }
-    std::span<std::byte> flexible_zone(size_t index = 0) { return slot().flexible_zone_span(index); }
-    uint64_t slot_id() const { return slot_ptr ? slot_ptr->slot_id() : 0; }
-    size_t slot_index() const { return slot_ptr ? slot_ptr->slot_index() : 0; }
-};
 
-/** Context passed to the lambda in with_read_transaction. Non-owning; valid only during the call. */
-struct ReadTransactionContext
+// ============================================================================
+// Phase 3: C++ RAII Layer - Template Implementations
+// ============================================================================
+
+// with_transaction() implementations
+template <typename FlexZoneT, typename DataBlockT, typename Func>
+auto DataBlockProducer::with_transaction(std::chrono::milliseconds timeout, Func &&func)
+    -> std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>
 {
-    const SlotConsumeHandle *slot_ptr = nullptr;
-    const SlotConsumeHandle &slot() const { return *slot_ptr; }
-    std::span<const std::byte> flexible_zone(size_t index = 0) const
-    {
-        return slot().flexible_zone_span(index);
-    }
-    [[nodiscard]] bool validate_read() const noexcept
-    {
-        return slot_ptr ? slot_ptr->validate_read() : false;
-    }
-    uint64_t slot_id() const { return slot_ptr ? slot_ptr->slot_id() : 0; }
-};
+    // Create transaction context with entry validation
+    WriteTransactionContext<FlexZoneT, DataBlockT> ctx(this, timeout);
 
-/**
- * Transaction guards and exception policy (dynamic library)
- * --------------------------------------------------------
- * For ABI stability and safe use across the shared-library boundary, these APIs
- * avoid throwing from accessors. slot() is noexcept and returns std::optional;
- * "no slot" is std::nullopt, so callers can handle failure without exceptions.
- * with_write_transaction / with_read_transaction may throw from the caller's
- * func or on acquisition failure; that is documented and acceptable for
- * application-level error handling.
- */
-
-/**
- * @class WriteTransactionGuard
- * @brief RAII guard for managing a DataBlockProducer write slot.
- */
-class PYLABHUB_UTILS_EXPORT WriteTransactionGuard
-{
-  public:
-    explicit WriteTransactionGuard(DataBlockProducer &producer, int timeout_ms);
-    WriteTransactionGuard(WriteTransactionGuard &&) noexcept;
-    WriteTransactionGuard &operator=(WriteTransactionGuard &&) noexcept;
-    WriteTransactionGuard(const WriteTransactionGuard &) = delete;
-    WriteTransactionGuard &operator=(const WriteTransactionGuard &) = delete;
-    ~WriteTransactionGuard() noexcept;
-    [[nodiscard]] explicit operator bool() const noexcept;
-    /** Returns optional reference to the held slot; std::nullopt if no slot. Never throws. */
-    [[nodiscard]] std::optional<std::reference_wrapper<SlotWriteHandle>> slot() noexcept;
-    void commit();
-    void abort() noexcept;
-
-  private:
-    DataBlockProducer *producer_;
-    std::unique_ptr<SlotWriteHandle> slot_;
-    bool acquired_;
-    bool committed_;
-    bool aborted_;
-};
-
-/**
- * @class ReadTransactionGuard
- * @brief RAII guard for managing a DataBlockConsumer read slot.
- */
-class PYLABHUB_UTILS_EXPORT ReadTransactionGuard
-{
-  public:
-    explicit ReadTransactionGuard(DataBlockConsumer &consumer, uint64_t slot_id, int timeout_ms);
-    ReadTransactionGuard(ReadTransactionGuard &&) noexcept;
-    ReadTransactionGuard &operator=(ReadTransactionGuard &&) noexcept;
-    ReadTransactionGuard(const ReadTransactionGuard &) = delete;
-    ReadTransactionGuard &operator=(const ReadTransactionGuard &) = delete;
-    ~ReadTransactionGuard() noexcept;
-    [[nodiscard]] explicit operator bool() const noexcept;
-    /** Returns optional reference to the held slot; std::nullopt if no slot. Never throws. */
-    [[nodiscard]] std::optional<std::reference_wrapper<const SlotConsumeHandle>> slot() const noexcept;
-
-  private:
-    DataBlockConsumer *consumer_;
-    std::unique_ptr<SlotConsumeHandle> slot_;
-    bool acquired_;
-};
-
-/**
- * @brief Executes a write transaction on a DataBlock producer.
- *
- * Acquires a write slot and invokes func(WriteTransactionContext&). The context
- * exposes slot(), flexible_zone(i), slot_id(), slot_index(). The slot is released
- * when the function returns or when an exception is thrown.
- *
- * @param producer The DataBlock producer.
- * @param timeout_ms Timeout in milliseconds for slot acquisition; 0 = no wait.
- * @param func Callable taking WriteTransactionContext&; may throw.
- * @return The return value of func.
- * @throws std::runtime_error on acquisition failure.
- * @tparam Func A callable that takes a `WriteTransactionContext&`.
- */
-template <typename Func>
-auto with_write_transaction(DataBlockProducer &producer, int timeout_ms, Func &&func)
-    -> std::invoke_result_t<Func, WriteTransactionContext &>
-{
-    WriteTransactionGuard guard(producer, timeout_ms);
-    auto opt = guard.slot();
-    if (!opt)
-    {
-        throw std::runtime_error("Failed to acquire write slot in transaction");
-    }
-    WriteTransactionContext ctx;
-    ctx.slot_ptr = &opt->get();
-    return std::invoke(std::forward<Func>(func), ctx);
+    // Invoke user lambda with context reference
+    // Exception safety: ctx destructor ensures cleanup
+    return std::forward<Func>(func)(ctx);
 }
 
-/**
- * @brief Executes a read transaction on a DataBlock consumer for a specific slot ID.
- *
- * Acquires the slot for reading and invokes func(ReadTransactionContext&). The
- * context exposes slot(), flexible_zone(i), validate_read(), slot_id(). The slot
- * is released when the function returns or when an exception is thrown.
- *
- * @param consumer The DataBlock consumer.
- * @param slot_id Slot ID to read.
- * @param timeout_ms Timeout in milliseconds for slot acquisition; 0 = no wait.
- * @param func Callable taking ReadTransactionContext&; may throw.
- * @return The return value of func.
- * @throws std::runtime_error on acquisition failure.
- * @tparam Func A callable that takes a `ReadTransactionContext&`.
- */
-template <typename Func>
-auto with_read_transaction(DataBlockConsumer &consumer, uint64_t slot_id, int timeout_ms,
-                           Func &&func) -> std::invoke_result_t<Func, ReadTransactionContext &>
+template <typename FlexZoneT, typename DataBlockT, typename Func>
+auto DataBlockConsumer::with_transaction(std::chrono::milliseconds timeout, Func &&func)
+    -> std::invoke_result_t<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>
 {
-    ReadTransactionGuard guard(consumer, slot_id, timeout_ms);
-    auto opt = guard.slot();
-    if (!opt)
-    {
-        throw std::runtime_error("Failed to acquire consume slot in transaction");
-    }
-    ReadTransactionContext ctx;
-    ctx.slot_ptr = &opt->get();
-    return std::invoke(std::forward<Func>(func), ctx);
-}
+    // Create transaction context with entry validation
+    ReadTransactionContext<FlexZoneT, DataBlockT> ctx(this, timeout);
 
-/**
- * @brief Typed write transaction: acquire slot, invoke func(T&), commit sizeof(T).
- *
- * Enforces memory structure for the ring-buffer slot: T must be trivially copyable,
- * sizeof(T) <= slot buffer size, and buffer must be suitably aligned for T.
- */
-template <typename T, typename Func>
-auto with_typed_write(DataBlockProducer &producer, int timeout_ms, Func &&func)
-    -> std::invoke_result_t<Func, T &>
-{
-    static_assert(std::is_trivially_copyable_v<T>,
-                  "T must be trivially copyable for shared-memory slot access");
-    return with_write_transaction(producer, timeout_ms, [&](WriteTransactionContext &ctx) {
-        std::span<std::byte> buf = ctx.slot().buffer_span();
-        if (buf.size() < sizeof(T))
-        {
-            throw std::runtime_error("Slot buffer too small for type T");
-        }
-        auto *ptr = buf.data();
-        if (reinterpret_cast<uintptr_t>(ptr) % alignof(T) != 0)
-        {
-            throw std::runtime_error("Slot buffer alignment insufficient for type T");
-        }
-        T &ref = *reinterpret_cast<T *>(ptr);
-        if constexpr (std::is_void_v<std::invoke_result_t<Func, T &>>)
-        {
-            std::invoke(std::forward<Func>(func), ref);
-            if (!ctx.slot().commit(sizeof(T)))
-            {
-                throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
-                                        std::to_string(ctx.slot_id()) + ", slot_index=" +
-                                        std::to_string(ctx.slot_index()) + ")");
-            }
-        }
-        else
-        {
-            auto result = std::invoke(std::forward<Func>(func), ref);
-            if (!ctx.slot().commit(sizeof(T)))
-            {
-                throw std::runtime_error("with_typed_write: slot commit failed (slot_id=" +
-                                        std::to_string(ctx.slot_id()) + ", slot_index=" +
-                                        std::to_string(ctx.slot_index()) + ")");
-            }
-            return result;
-        }
-    });
-}
-
-/**
- * @brief Typed read transaction: acquire slot, invoke func(const T&).
- *
- * Enforces memory structure: T must be trivially copyable, sizeof(T) <= slot buffer size.
- */
-template <typename T, typename Func>
-auto with_typed_read(DataBlockConsumer &consumer, uint64_t slot_id, int timeout_ms, Func &&func)
-    -> std::invoke_result_t<Func, const T &>
-{
-    static_assert(std::is_trivially_copyable_v<T>,
-                  "T must be trivially copyable for shared-memory slot access");
-    return with_read_transaction(consumer, slot_id, timeout_ms, [&](ReadTransactionContext &ctx) {
-        std::span<const std::byte> buf = ctx.slot().buffer_span();
-        if (buf.size() < sizeof(T))
-        {
-            throw std::runtime_error("Slot buffer too small for type T");
-        }
-        const T &ref = *reinterpret_cast<const T *>(buf.data());
-        return std::invoke(std::forward<Func>(func), ref);
-    });
+    // Invoke user lambda with context reference
+    // Exception safety: ctx destructor ensures cleanup
+    return std::forward<Func>(func)(ctx);
 }
 
 /**
@@ -1358,6 +1479,7 @@ find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t share
     return find_datablock_consumer_impl(hub, name, shared_secret, &expected_config,
                                         &expected_schema);
 }
+
 
 } // namespace pylabhub::hub
 

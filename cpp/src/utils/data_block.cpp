@@ -22,6 +22,14 @@ class DataBlock;
 
 namespace detail
 {
+/// Memory layout constants (Phase 2 refactoring)
+/// Standard page size used for alignment throughout the DataBlock memory layout.
+/// Per DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md §2.2-2.3:
+/// - Data region start must be 4K-aligned
+/// - Flex zone size must be N×4K
+/// - All major memory sections align on 4K boundaries
+inline constexpr size_t PAGE_SIZE = 4096;
+
 /// Producer heartbeat: at PRODUCER_HEARTBEAT_OFFSET, [0]=producer_id, [1]=producer_last_heartbeat_ns.
 inline std::atomic<uint64_t> *producer_heartbeat_id_ptr(SharedMemoryHeader *header)
 {
@@ -45,6 +53,186 @@ inline void update_producer_heartbeat_impl(SharedMemoryHeader *header, uint64_t 
     producer_heartbeat_id_ptr(header)->store(pid, std::memory_order_release);
     producer_heartbeat_ns_ptr(header)->store(now, std::memory_order_release);
 }
+
+// ============================================================================
+// Centralized Header Access Functions (Phase 1)
+// ============================================================================
+// All header field access must go through these functions to ensure
+// consistency, validation, and correct memory ordering.
+//
+// These functions provide:
+// - Null pointer safety (all functions handle nullptr gracefully)
+// - Consistent memory ordering (acquire/release/relaxed as appropriate)
+// - Single point of maintenance for field access
+// - Foundation for future enhancements (validation, logging, authorization)
+//
+// Usage:
+// - Hot path (acquire/release/commit): Use these functions to update metrics/indices
+// - Diagnostics: Use slot_rw_get_metrics() for batch snapshot
+// - Validation: Use has_any_commits(), get_commit_index(), etc. for runtime checks
+
+// === Metrics Access Functions ===
+// These functions update performance and error tracking counters.
+// Memory ordering: relaxed for metrics (ordering not critical), release for commit count.
+
+inline void increment_metric_writer_timeout(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void increment_metric_writer_lock_timeout(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->writer_lock_timeout_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void increment_metric_writer_reader_timeout(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->writer_reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void increment_metric_write_lock_contention(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->write_lock_contention.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void increment_metric_reader_race_detected(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->reader_race_detected.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void increment_metric_reader_validation_failed(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->reader_validation_failed.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+/** 
+ * Increment total commit count. Called on every successful slot commit.
+ * Memory ordering: release (synchronizes with readers checking commit progress).
+ */
+inline void increment_metric_total_commits(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->total_slots_written.fetch_add(1, std::memory_order_release);
+    }
+}
+
+/**
+ * Get total number of commits (slots written and committed).
+ * Memory ordering: acquire (sees all writes up to last commit).
+ * 
+ * @return Total commits, or 0 if header is null.
+ */
+inline uint64_t get_total_commits(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->total_slots_written.load(std::memory_order_acquire) : 0;
+}
+
+/**
+ * Check if any commits have been made.
+ * 
+ * Critical for validation logic: checksums should only be validated if commits exist.
+ * Example: In verify_checksum_*, skip validation if has_any_commits() returns false.
+ * 
+ * @return true if at least one commit has been made, false otherwise.
+ */
+inline bool has_any_commits(const SharedMemoryHeader* header) noexcept {
+    return get_total_commits(header) > 0;
+}
+
+/**
+ * Update peak reader count metric if current count exceeds stored peak.
+ * Called on reader release to track maximum concurrent readers.
+ */
+inline void update_reader_peak_count(SharedMemoryHeader* header, uint32_t current_count) noexcept {
+    if (header == nullptr) {
+        return;
+    }
+    uint64_t peak = header->reader_peak_count.load(std::memory_order_relaxed);
+    if (current_count > peak) {
+        header->reader_peak_count.store(current_count, std::memory_order_relaxed);
+    }
+}
+
+// === Index Access Functions ===
+// These functions access ring buffer coordination indices.
+// Memory ordering: acquire for reads (see committed data), release for updates (publish data).
+
+/**
+ * Get the current commit index (last committed slot ID).
+ * Memory ordering: acquire (ensures we see all writes to committed slots).
+ * 
+ * @return Commit index, or max(uint64_t) if header is null (INVALID_SLOT_ID equivalent).
+ */
+inline uint64_t get_commit_index(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->commit_index.load(std::memory_order_acquire) : std::numeric_limits<uint64_t>::max();
+}
+
+/**
+ * Increment commit index by 1.
+ * Called after slot transitions to COMMITTED state to make it visible to consumers.
+ * Memory ordering: release (publishes all slot writes to readers).
+ */
+inline void increment_commit_index(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->commit_index.fetch_add(1, std::memory_order_release);
+    }
+}
+
+/**
+ * Get the current write index (next slot producer will write to).
+ * Memory ordering: acquire.
+ */
+inline uint64_t get_write_index(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->write_index.load(std::memory_order_acquire) : 0;
+}
+
+/**
+ * Get the current read index (for Single_reader policy).
+ * Memory ordering: acquire.
+ */
+inline uint64_t get_read_index(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->read_index.load(std::memory_order_acquire) : 0;
+}
+
+// === Config Access Functions (read-only) ===
+// These functions read immutable configuration fields (set at creation, never modified).
+// Memory ordering: plain access (fields are const after initialization).
+
+inline DataBlockPolicy get_policy(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->policy : DataBlockPolicy::Unset;
+}
+
+inline ConsumerSyncPolicy get_consumer_sync_policy(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->consumer_sync_policy : ConsumerSyncPolicy::Unset;
+}
+
+inline uint32_t get_ring_buffer_capacity(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->ring_buffer_capacity : 0;
+}
+
+inline uint32_t get_physical_page_size(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->physical_page_size : 0;
+}
+
+inline uint32_t get_logical_unit_size(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->logical_unit_size : 0;
+}
+
+inline ChecksumType get_checksum_type(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? static_cast<ChecksumType>(header->checksum_type) : ChecksumType::Unset;
+}
+
+inline ChecksumPolicy get_checksum_policy(const SharedMemoryHeader* header) noexcept {
+    return (header != nullptr) ? header->checksum_policy : ChecksumPolicy::None;
+}
+
+// End of Centralized Access Functions
+// ============================================================================
+
 
 /// Returns true if producer heartbeat exists for this pid and is fresh (within threshold).
 inline bool is_producer_heartbeat_fresh(const SharedMemoryHeader *header, uint64_t pid)
@@ -221,7 +409,7 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
             slot_rw_state->write_lock.store(my_pid, std::memory_order_release); // Reclaim
             if (header != nullptr)
             {
-                header->write_lock_contention.fetch_add(1, std::memory_order_relaxed);
+                detail::increment_metric_write_lock_contention(header);
             }
             break; // Acquired
         }
@@ -231,8 +419,8 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
         {
             if (header != nullptr)
             {
-                header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
-                header->writer_lock_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                detail::increment_metric_writer_timeout(header);
+                detail::increment_metric_writer_lock_timeout(header);
                 LOGGER_ERROR(
                     "DataBlock acquire_write: timeout while waiting for write_lock. "
                     "pid={}, current_owner_pid={}",
@@ -265,8 +453,8 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
                 0, std::memory_order_release); // Release the lock before returning timeout
             if (header != nullptr)
             {
-                header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
-                header->writer_reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
+                detail::increment_metric_writer_timeout(header);
+                detail::increment_metric_writer_reader_timeout(header);
                 LOGGER_ERROR(
                     "DataBlock acquire_write: timeout while waiting for readers to drain. "
                     "pid={}, reader_count={} (possible zombie reader).",
@@ -295,10 +483,8 @@ void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header)
                                     std::memory_order_release); // Step 2: Transition to COMMITTED state
     if (header != nullptr)
     {
-        header->commit_index.fetch_add(
-            1, std::memory_order_release); // Step 3: Increment global commit index (makes visible
-                                           // to consumers)
-        header->total_slots_written.fetch_add(1, std::memory_order_release); // Metric: commit count
+        detail::increment_commit_index(header); // Step 3: Increment global commit index (makes visible to consumers)
+        detail::increment_metric_total_commits(header); // Metric: commit count
     }
     // Memory ordering: All writes before this release are visible to
     // any consumer that performs acquire on commit_index or slot_state
@@ -337,7 +523,7 @@ SlotAcquireResult acquire_read(SlotRWState *slot_rw_state, SharedMemoryHeader *h
         slot_rw_state->reader_count.fetch_sub(1, std::memory_order_release);
         if (header != nullptr)
         {
-            header->reader_race_detected.fetch_add(1, std::memory_order_relaxed);
+            detail::increment_metric_reader_race_detected(header);
         }
         return SLOT_ACQUIRE_NOT_READY;
     }
@@ -361,7 +547,7 @@ bool validate_read_impl(SlotRWState *slot_rw_state, SharedMemoryHeader *header,
         // Slot was reused (ring buffer wrapped around)
         if (header != nullptr)
         {
-            header->reader_validation_failed.fetch_add(1, std::memory_order_relaxed);
+            detail::increment_metric_reader_validation_failed(header);
         }
         return false;
     }
@@ -376,14 +562,8 @@ void release_read(SlotRWState *slot_rw_state, SharedMemoryHeader *header)
     uint32_t prev_count = slot_rw_state->reader_count.fetch_sub(1, std::memory_order_release);
 
     // Track peak reader count (optional; header may be null for C API)
-    if (header != nullptr)
-    {
-        uint64_t peak = header->reader_peak_count.load(std::memory_order_relaxed);
-        if (prev_count > peak)
-        {
-            header->reader_peak_count.store(prev_count, std::memory_order_relaxed);
-        }
-    }
+    detail::update_reader_peak_count(header, prev_count);
+
     // If last reader and writer is waiting, writer will proceed
     // (writer polls reader_count with acquire ordering)
 }
@@ -405,15 +585,30 @@ bool is_writer_alive(const SharedMemoryHeader *header, uint64_t pid) noexcept
 // Validation entry points: validate_header_layout_hash (ABI); validate_attach_layout_and_config
 // (layout checksum + optional config match); used by find_datablock_consumer_impl and recovery.
 // ============================================================================
+// ============================================================================
+// DataBlockLayout - Memory Layout Calculator and Validator
+// ============================================================================
+// CRITICAL: This is the SINGLE SOURCE OF TRUTH for all memory layout calculations.
+// All layout offsets, sizes, and validations MUST go through these functions.
+// Do NOT duplicate layout logic elsewhere in the codebase.
+//
+// Design: DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md §2.3
+// Memory Structure:
+//   [Header 4K] [Control Zone → 4K pad] [Flex Zone N×4K] [Ring-Buffer]
+//
 struct DataBlockLayout
 {
     size_t slot_rw_state_offset = 0;
     size_t slot_rw_state_size = 0;
     size_t slot_checksum_offset = 0;
     size_t slot_checksum_size = 0;
+    // Phase 2 memory layout (per DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md §2.3):
+    //   - flexible_zone_offset: 4K-aligned (start of DATA region)
+    //   - flexible_zone_size: N×4K (must be multiple of 4096)
+    //   - structured_buffer_offset: 4K-aligned (ring-buffer start = flex_zone_offset + flex_zone_size)
     size_t flexible_zone_offset = 0;
     size_t flexible_zone_size = 0;
-    size_t structured_buffer_offset = 0;
+    size_t structured_buffer_offset = 0; // Ring-buffer offset (4K-aligned)
     size_t structured_buffer_size = 0;
     size_t total_size = 0;
     /** Slot stride (bytes per slot). Single source for slot buffer pointer arithmetic. */
@@ -422,6 +617,49 @@ struct DataBlockLayout
     size_t physical_page_size_bytes = 0;
     /** Effective slot count (single source; 0 capacity treated as 1). */
     uint32_t slot_count = 0;
+    
+    // === Layout Query APIs (Public Interface) ===
+    // These are the ONLY way to query layout information
+    
+    /** Get control zone total size (SlotRWState + SlotChecksum arrays) */
+    [[nodiscard]] size_t control_zone_size() const noexcept {
+        return slot_rw_state_size + slot_checksum_size;
+    }
+    
+    /** Get control zone end offset (before padding to 4K) */
+    [[nodiscard]] size_t control_zone_end() const noexcept {
+        return slot_rw_state_offset + control_zone_size();
+    }
+    
+    /** Check if flex zone is configured (size > 0) */
+    [[nodiscard]] bool has_flex_zone() const noexcept {
+        return flexible_zone_size > 0;
+    }
+    
+    /** Get flex zone pointer from base address */
+    [[nodiscard]] char* flex_zone_ptr(void* base) const noexcept {
+        return (base != nullptr && has_flex_zone()) 
+            ? static_cast<char*>(base) + flexible_zone_offset 
+            : nullptr;
+    }
+    
+    /** Get ring-buffer pointer from base address */
+    [[nodiscard]] char* ring_buffer_ptr(void* base) const noexcept {
+        return (base != nullptr) 
+            ? static_cast<char*>(base) + structured_buffer_offset 
+            : nullptr;
+    }
+    
+    /** Get slot pointer from base address and slot index */
+    [[nodiscard]] char* slot_ptr(void* base, size_t slot_index) const noexcept {
+        if (base == nullptr || slot_index >= slot_count) {
+            return nullptr;
+        }
+        return static_cast<char*>(base) + structured_buffer_offset + (slot_index * slot_stride_bytes_);
+    }
+    
+    // === Layout Factory Methods (Creation) ===
+    // These are the ONLY way to create valid layouts
 
     static DataBlockLayout from_config(const DataBlockConfig &config)
     {
@@ -435,18 +673,54 @@ struct DataBlockLayout
                 ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
                 : 0;
         layout.slot_checksum_offset = layout.slot_rw_state_offset + layout.slot_rw_state_size;
-        layout.flexible_zone_size = config.total_flexible_zone_size();
-        layout.flexible_zone_offset = layout.slot_checksum_offset + layout.slot_checksum_size;
+        
+        // Phase 2 refactoring: New memory layout per DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
+        // 
+        // Memory structure:
+        //   1. Global Header (4K or 8K)
+        //   2. Control Zone (SlotRWState + SlotChecksum arrays, padded to 4K)
+        //   3. DATA REGION (4K-aligned):
+        //      - Flex zone (N×4K)
+        //      - Ring-buffer (M × logical_unit_size)
+        
+        const size_t control_zone_size = layout.slot_rw_state_size + layout.slot_checksum_size;
+        const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
+        
+        // Align data region start to 4K boundary (design §2.3)
+        const size_t data_region_offset =
+            (control_zone_end + detail::PAGE_SIZE - 1) & ~(detail::PAGE_SIZE - 1);
+        
+        // Single flex zone (Phase 2 refactoring)
+        layout.flexible_zone_size = config.flex_zone_size;
+        
+        // Validate flex zone size is 0 or multiple of 4K (design §2.4)
+        if (layout.flexible_zone_size % detail::PAGE_SIZE != 0) {
+            throw std::invalid_argument(
+                "flex_zone_size must be 0 or a multiple of 4096 (page size)");
+        }
+        
+        // Layout per design §2.3:
+        //   flex_zone_offset = data_region_offset
+        //   ring_buffer_offset = data_region_offset + flex_zone_size
+        layout.flexible_zone_offset = data_region_offset;
+        
+        // Ring-buffer parameters
         layout.slot_stride_bytes_ = config.effective_logical_unit_size();
         layout.physical_page_size_bytes = to_bytes(config.physical_page_size);
         layout.structured_buffer_size = config.structured_buffer_size();
-        // Align structured data start so slot buffers meet alignof(T) for with_typed_write/read.
-        // Physical page size governs slot stride; the offset of the structured region was packed (no
-        // padding) and thus misaligned. Single constant, no branches; raw and typed access both valid.
-        constexpr size_t kStructuredBufferAlignment = 8;
-        const size_t after_flexible = layout.flexible_zone_offset + layout.flexible_zone_size;
-        layout.structured_buffer_offset =
-            (after_flexible + kStructuredBufferAlignment - 1) & ~(kStructuredBufferAlignment - 1);
+        
+        // Ring-buffer starts immediately after flex zone
+        // Since data_region_offset is 4K-aligned and flex_zone_size is N×4K,
+        // ring_buffer is guaranteed to be 4K-aligned (design §2.2)
+        layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
+        
+        // Validate ring-buffer alignment (design requirement)
+        if (layout.structured_buffer_offset % detail::PAGE_SIZE != 0) {
+            throw std::logic_error(
+                "Internal error: ring-buffer offset is not 4K-aligned. "
+                "This violates the memory layout design.");
+        }
+        
         layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
         return layout;
     }
@@ -462,19 +736,39 @@ struct DataBlockLayout
         layout.slot_rw_state_offset = sizeof(SharedMemoryHeader);
         layout.slot_rw_state_size = layout.slot_count * sizeof(SlotRWState);
         layout.slot_checksum_size =
-            (static_cast<ChecksumType>(header->checksum_type) != ChecksumType::Unset)
+            (detail::get_checksum_type(header) != ChecksumType::Unset)
                 ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
                 : 0;
         layout.slot_checksum_offset = layout.slot_rw_state_offset + layout.slot_rw_state_size;
+        
+        // Phase 2 refactoring: Calculate data region offset per design
+        const size_t control_zone_size = layout.slot_rw_state_size + layout.slot_checksum_size;
+        const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
+        
+        const size_t data_region_offset =
+            (control_zone_end + detail::PAGE_SIZE - 1) & ~(detail::PAGE_SIZE - 1);
+        
+        // Flex zone offset and size from header
         layout.flexible_zone_size = header->flexible_zone_size;
-        layout.flexible_zone_offset = layout.slot_checksum_offset + layout.slot_checksum_size;
+        layout.flexible_zone_offset = data_region_offset;
+        
+        // Ring-buffer parameters
         layout.slot_stride_bytes_ = static_cast<size_t>(detail::get_slot_stride_bytes(header));
         layout.physical_page_size_bytes = static_cast<size_t>(header->physical_page_size);
         layout.structured_buffer_size = layout.slot_count * layout.slot_stride_bytes_;
-        const size_t after_flexible = layout.flexible_zone_offset + layout.flexible_zone_size;
-        constexpr size_t kStructuredBufferAlignment = 8; // Same as from_config; no legacy branch.
-        layout.structured_buffer_offset =
-            (after_flexible + kStructuredBufferAlignment - 1) & ~(kStructuredBufferAlignment - 1);
+        
+        // Ring-buffer starts immediately after flex zone
+        // Since data_region_offset is 4K-aligned and flex_zone_size is N×4K,
+        // ring_buffer is guaranteed to be 4K-aligned (design §2.2)
+        layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
+        
+        // Validate ring-buffer alignment (design requirement)
+        if (layout.structured_buffer_offset % detail::PAGE_SIZE != 0) {
+            throw std::logic_error(
+                "Internal error: ring-buffer offset is not 4K-aligned. "
+                "This violates the memory layout design.");
+        }
+        
         layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
         return layout;
     }
@@ -498,61 +792,105 @@ struct DataBlockLayout
 #if !defined(NDEBUG)
     [[nodiscard]] bool validate() const
     {
+        // Validate header is at start
         if (slot_rw_state_offset != sizeof(SharedMemoryHeader))
         {
             return false;
         }
+        
+        // Validate control zone is contiguous
         if (slot_checksum_offset != slot_rw_state_offset + slot_rw_state_size)
         {
             return false;
         }
-        if (flexible_zone_offset != slot_checksum_offset + slot_checksum_size)
+        
+        // NEW DESIGN: Validate 4K-aligned data region start
+        // flexible_zone_offset must be 4K-aligned and >= control zone end
+        const size_t control_zone_end = slot_checksum_offset + slot_checksum_size;
+        if (flexible_zone_offset % detail::PAGE_SIZE != 0)
         {
             return false;
         }
-        const size_t after_flexible = flexible_zone_offset + flexible_zone_size;
-        if (structured_buffer_offset < after_flexible)
+        if (flexible_zone_offset < control_zone_end)
         {
             return false;
         }
+        
+        // Validate flex zone size is 0 or multiple of 4K
+        if (flexible_zone_size % detail::PAGE_SIZE != 0)
+        {
+            return false;
+        }
+        
+        // Validate ring-buffer follows flex zone immediately (no padding)
+        if (structured_buffer_offset != flexible_zone_offset + flexible_zone_size)
+        {
+            return false;
+        }
+        
+        // Validate ring-buffer is 4K-aligned
+        if (structured_buffer_offset % detail::PAGE_SIZE != 0)
+        {
+            return false;
+        }
+        
+        // Validate total size
         if (total_size != structured_buffer_offset + structured_buffer_size)
         {
             return false;
         }
+        
         return true;
     }
 #endif
 };
 
 // ============================================================================
-// Flexible zone info – single source of truth
+// Phase 2 refactoring: FlexibleZoneInfo and build_flexible_zone_info removed
+// Single flex zone design (N×4K), no need for multi-zone mapping
 // ============================================================================
-// Rules:
-// 1. Layout comes from FlexibleZoneConfig list only; offset = sum of previous sizes.
-// 2. DataBlock (creator): populated in ctor from config via build_flexible_zone_info.
-// 3. DataBlock (attacher): populated only via set_flexible_zone_info_for_attach(configs)
-//    when the factory has expected_config (consumer must agree on zone layout).
-// 4. ProducerImpl/ConsumerImpl flexible_zones_info: built in factory from same config
-//    that created or validated the block. Use build_flexible_zone_info() for consistency.
-namespace
-{
-std::vector<FlexibleZoneInfo> build_flexible_zone_info(const std::vector<FlexibleZoneConfig> &configs)
-{
-    std::vector<FlexibleZoneInfo> out;
-    out.reserve(configs.size());
-    size_t offset = 0;
-    for (const auto &config : configs)
-    {
-        FlexibleZoneInfo info{};
-        info.offset = offset;
-        info.size = config.size;
-        info.spinlock_index = config.spinlock_index;
-        out.push_back(info);
-        offset += config.size;
+
+// ============================================================================
+// Flexible Zone Access Helpers (Single Zone Design)
+// ============================================================================
+// CRITICAL: These are the ONLY implementations for flex zone access.
+// All public APIs must delegate to these helpers.
+//
+namespace detail {
+
+/** Validate and get flex zone span for producer/write handle */
+template<typename ImplT>
+inline std::span<std::byte> get_flex_zone_span_mutable(ImplT* impl) noexcept {
+    if (impl == nullptr || impl->dataBlock == nullptr || impl->flex_zone_size == 0) {
+        return {};
     }
-    return out;
+    
+    char* zone_base = impl->dataBlock->flexible_data_zone();
+    if (zone_base == nullptr) {
+        return {};
+    }
+    
+    return {reinterpret_cast<std::byte*>(zone_base + impl->flex_zone_offset),
+            impl->flex_zone_size};
 }
-} // namespace
+
+/** Validate and get flex zone span for consumer/read handle (const) */
+template<typename ImplT>
+inline std::span<const std::byte> get_flex_zone_span_const(const ImplT* impl) noexcept {
+    if (impl == nullptr || impl->dataBlock == nullptr || impl->flex_zone_size == 0) {
+        return {};
+    }
+    
+    const char* zone_base = impl->dataBlock->flexible_data_zone();
+    if (zone_base == nullptr) {
+        return {};
+    }
+    
+    return {reinterpret_cast<const std::byte*>(zone_base + impl->flex_zone_offset),
+            impl->flex_zone_size};
+}
+
+} // namespace detail
 
 // ============================================================================
 // DataBlock - Internal helper
@@ -745,13 +1083,7 @@ class DataBlock
         m_structured_data_buffer =
             reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
-        // Populate flexible zone info map (single source: build_flexible_zone_info)
-        const auto &configs = config.flexible_zone_configs;
-        auto vec = build_flexible_zone_info(configs);
-        for (size_t i = 0; i < configs.size(); ++i)
-        {
-            m_flexible_zone_info[configs[i].name] = vec[i];
-        }
+        // Phase 2 refactoring: Single flex zone, no need to populate flexible_zone_info map
 
         // Sync_reader: initialize per-consumer read positions in reserved_header
         for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
@@ -864,11 +1196,11 @@ class DataBlock
         }
     }
 
-    SharedMemoryHeader *header() const { return m_header; }
-    char *flexible_data_zone() const { return m_flexible_data_zone; }
-    char *structured_data_buffer() const { return m_structured_data_buffer; }
-    void *segment() const { return m_shm.base; }
-    size_t size() const { return m_size; }
+    [[nodiscard]] SharedMemoryHeader *header() const { return m_header; }
+    [[nodiscard]] char *flexible_data_zone() const { return m_flexible_data_zone; }
+    [[nodiscard]] char *structured_data_buffer() const { return m_structured_data_buffer; }
+    [[nodiscard]] void *segment() const { return m_shm.base; }
+    [[nodiscard]] size_t size() const { return m_size; }
 
     size_t acquire_shared_spinlock(const std::string &debug_name)
     {
@@ -915,7 +1247,7 @@ class DataBlock
         return &m_header->spinlock_states[index];
     }
 
-    SlotRWState *slot_rw_state(size_t index) const
+    [[nodiscard]] SlotRWState *slot_rw_state(size_t index) const
     {
         if (m_header == nullptr || index >= m_layout.slot_count_value())
         {
@@ -924,22 +1256,11 @@ class DataBlock
         }
         return &m_slot_rw_states_array[index];
     }
-    const std::unordered_map<std::string, FlexibleZoneInfo> &flexible_zone_info() const
-    {
-        return m_flexible_zone_info;
-    }
-    /** Called by consumer factory when attaching with expected_config; populates zone map so
-     * verify_checksum_flexible_zone etc. work. Uses same build_flexible_zone_info as creator. */
-    void set_flexible_zone_info_for_attach(const std::vector<FlexibleZoneConfig> &configs)
-    {
-        m_flexible_zone_info.clear();
-        auto vec = build_flexible_zone_info(configs);
-        for (size_t i = 0; i < configs.size(); ++i)
-        {
-            m_flexible_zone_info[configs[i].name] = vec[i];
-        }
-    }
-    const DataBlockLayout &layout() const { return m_layout; }
+    
+    // Phase 2 refactoring: flexible_zone_info() and set_flexible_zone_info_for_attach() removed
+    // Single flex zone no longer needs named zone mapping
+    
+    [[nodiscard]] const DataBlockLayout &layout() const { return m_layout; }
 
   private:
     std::string m_name;
@@ -953,7 +1274,7 @@ class DataBlock
     char *m_flexible_data_zone = nullptr;
     char *m_structured_data_buffer = nullptr;
     // Removed m_management_mutex as it's no longer managed by DataBlock directly
-    std::unordered_map<std::string, FlexibleZoneInfo> m_flexible_zone_info; // New member
+    // Phase 2 refactoring: m_flexible_zone_info removed (single flex zone, no named mapping)
 };
 
 // ============================================================================
@@ -984,7 +1305,7 @@ inline std::pair<SharedMemoryHeader *, uint32_t> get_header_and_slot_count(DataB
     return {hdr, dataBlock->layout().slot_count_value()};
 }
 
-inline bool update_checksum_flexible_zone_impl(DataBlock *block, size_t flexible_zone_idx)
+inline bool update_checksum_flexible_zone_impl(DataBlock *block)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -996,34 +1317,33 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, size_t flexible
     }
     auto *hdr = block->header();
 
-    // Get the FlexibleZoneInfo from the block's flexible_zone_info map
-    if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
-        flexible_zone_idx >= block->flexible_zone_info().size())
+    // Phase 2: Single flex zone (always at index 0)
+    constexpr size_t flex_zone_idx = 0;
+    
+    const auto &layout = block->layout();
+    if (layout.flexible_zone_size == 0)
     {
-        return false;
+        return false; // No flex zone configured
     }
-    auto zone_iter = block->flexible_zone_info().begin();
-    std::advance(zone_iter, flexible_zone_idx);
-    const FlexibleZoneInfo &zone_info = zone_iter->second;
 
     char *flex = block->flexible_data_zone();
-    size_t len = zone_info.size;              // Use size from zone_info
-    char *zone_ptr = flex + zone_info.offset; // Calculate pointer to specific zone
+    size_t len = layout.flexible_zone_size;
+    char *zone_ptr = flex; // Single zone starts at offset 0
 
     if (zone_ptr == nullptr || len == 0)
     {
         return false;
     }
 
-    // Checksum data is now per flexible zone, stored in SharedMemoryHeader::flexible_zone_checksums
+    // Checksum data stored in SharedMemoryHeader::flexible_zone_checksums[0]
     if (!pylabhub::crypto::compute_blake2b(
-            hdr->flexible_zone_checksums[flexible_zone_idx].checksum_bytes, zone_ptr, len))
+            hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, zone_ptr, len))
     {
         return false;
     }
 
-    hdr->flexible_zone_checksums[flexible_zone_idx].valid.store(
-        1, std::memory_order_release); // Use valid
+    hdr->flexible_zone_checksums[flex_zone_idx].valid.store(
+        1, std::memory_order_release);
     return true;
 }
 
@@ -1067,7 +1387,7 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
     return true;
 }
 
-inline bool verify_checksum_flexible_zone_impl(const DataBlock *block, size_t flexible_zone_idx)
+inline bool verify_checksum_flexible_zone_impl(const DataBlock *block)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -1079,33 +1399,32 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block, size_t fl
     }
     auto *hdr = block->header();
 
-    // Get the FlexibleZoneInfo from the block's flexible_zone_info map
-    if (flexible_zone_idx >= detail::MAX_FLEXIBLE_ZONE_CHECKSUMS ||
-        flexible_zone_idx >= block->flexible_zone_info().size())
+    // Phase 2: Single flex zone (always at index 0)
+    constexpr size_t flex_zone_idx = 0;
+    
+    const auto &layout = block->layout();
+    if (layout.flexible_zone_size == 0)
     {
-        return false;
+        return false; // No flex zone configured
     }
-    auto zone_iter = block->flexible_zone_info().begin();
-    std::advance(zone_iter, flexible_zone_idx);
-    const FlexibleZoneInfo &zone_info = zone_iter->second;
 
-    if (hdr->flexible_zone_checksums[flexible_zone_idx].valid.load(std::memory_order_acquire) != 1)
+    if (hdr->flexible_zone_checksums[flex_zone_idx].valid.load(std::memory_order_acquire) != 1)
     {
         return false;
     }
 
     const char *flex = block->flexible_data_zone();
-    size_t len = zone_info.size;                    // Use size from zone_info
-    const char *zone_ptr = flex + zone_info.offset; // Calculate pointer to specific zone
+    size_t len = layout.flexible_zone_size;
+    const char *zone_ptr = flex; // Single zone starts at offset 0
 
     if (zone_ptr == nullptr || len == 0)
     {
         return false;
     }
 
-    // Checksum data is now per flexible zone, stored in SharedMemoryHeader::flexible_zone_checksums
+    // Checksum data stored in SharedMemoryHeader::flexible_zone_checksums[0]
     return pylabhub::crypto::verify_blake2b(
-        hdr->flexible_zone_checksums[flexible_zone_idx].checksum_bytes, zone_ptr, len);
+        hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, zone_ptr, len);
 }
 
 inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
@@ -1226,7 +1545,9 @@ struct DataBlockProducerImpl
     std::string name;
     std::unique_ptr<DataBlock> dataBlock;
     ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
-    std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
+    // Single flexible zone (Phase 2 refactoring)
+    size_t flex_zone_offset = 0;
+    size_t flex_zone_size = 0;
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
@@ -1258,7 +1579,9 @@ struct DataBlockConsumerImpl
     std::unique_ptr<DataBlock> dataBlock;
     ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
     uint64_t last_consumed_slot_id = INVALID_SLOT_ID;  // This field is still needed
-    std::vector<FlexibleZoneInfo> flexible_zones_info; // New member
+    // Single flexible zone (Phase 2 refactoring)
+    size_t flex_zone_offset = 0;
+    size_t flex_zone_size = 0;
     int heartbeat_slot = -1; // For Sync_reader: index into consumer_heartbeats / read positions
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
@@ -1452,10 +1775,45 @@ int DataBlockProducer::reset_metrics() noexcept
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
 }
 
-bool DataBlockProducer::update_checksum_flexible_zone(size_t flexible_zone_idx) noexcept
+// ============================================================================
+// Structure Re-Mapping API (Placeholder)
+// ============================================================================
+
+// NOLINT annotations: these are placeholder stubs for future broker-coordinated remapping
+uint64_t DataBlockProducer::request_structure_remap(
+    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo> &new_datablock_schema)
+{
+    (void)new_flexzone_schema;
+    (void)new_datablock_schema;
+    (void)pImpl; // Will be used in future implementation
+    throw std::runtime_error(
+        "DataBlockProducer::request_structure_remap: "
+        "Structure remapping requires broker coordination - not yet implemented. "
+        "This is a placeholder API for future functionality. "
+        "See CHECKSUM_ARCHITECTURE.md §7.1 for protocol details.");
+}
+
+void DataBlockProducer::commit_structure_remap(
+    uint64_t request_id,
+    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo> &new_datablock_schema)
+{
+    (void)request_id;
+    (void)new_flexzone_schema;
+    (void)new_datablock_schema;
+    (void)pImpl; // Will be used in future implementation
+    throw std::runtime_error(
+        "DataBlockProducer::commit_structure_remap: "
+        "Structure remapping requires broker coordination - not yet implemented. "
+        "This is a placeholder API for future functionality. "
+        "See CHECKSUM_ARCHITECTURE.md §7.1 for protocol details.");
+}
+
+bool DataBlockProducer::update_checksum_flexible_zone() noexcept
 {
     return (pImpl != nullptr && pImpl->dataBlock != nullptr)
-               ? update_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
+               ? update_checksum_flexible_zone_impl(pImpl->dataBlock.get())
                : false;
 }
 
@@ -1475,19 +1833,9 @@ uint32_t DataBlockProducer::spinlock_count() const noexcept
     return static_cast<uint32_t>(detail::MAX_SHARED_SPINLOCKS);
 }
 
-std::span<std::byte> DataBlockProducer::flexible_zone_span(size_t index) noexcept
+std::span<std::byte> DataBlockProducer::flexible_zone_span() noexcept
 {
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr || index >= pImpl->flexible_zones_info.size())
-    {
-        return {};
-    }
-    const auto &zone_info = pImpl->flexible_zones_info[index];
-    char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
-    if (flexible_zone_base == nullptr || zone_info.size == 0)
-    {
-        return {};
-    }
-    return {reinterpret_cast<std::byte *>(flexible_zone_base + zone_info.offset), zone_info.size};
+    return detail::get_flex_zone_span_mutable(pImpl.get());
 }
 
 bool DataBlockProducer::update_checksum_slot(size_t slot_index) noexcept
@@ -1842,15 +2190,14 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
             success = false;
         }
 
-        // Update flexible zone checksums
-        for (size_t i = 0; i < impl.dataBlock->flexible_zone_info().size(); ++i)
+        // Update flexible zone checksums (Phase 2: single flex zone)
+        if (impl.dataBlock->layout().flexible_zone_size > 0)
         {
-            if (!update_checksum_flexible_zone_impl(impl.dataBlock, i))
+            if (!update_checksum_flexible_zone_impl(impl.dataBlock))
             {
-                LOGGER_WARN("DataBlock '{}': release_write_slot failed — flexible zone checksum update failed for zone_index={} slot_index={}.",
-                            impl.owner != nullptr ? impl.owner->name : "(unknown)", i, impl.slot_index);
+                LOGGER_WARN("DataBlock '{}': release_write_slot failed — flexible zone checksum update failed for slot_index={}.",
+                            impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index);
                 success = false;
-                break;
             }
         }
     }
@@ -1910,14 +2257,14 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
                         impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index, impl.slot_id);
             success = false;
         }
-        for (size_t i = 0; i < impl.dataBlock->flexible_zone_info().size(); ++i)
+        // Verify flexible zone checksums (Phase 2: single flex zone)
+        if (impl.dataBlock->layout().flexible_zone_size > 0)
         {
-            if (!verify_checksum_flexible_zone_impl(impl.dataBlock, i))
+            if (!verify_checksum_flexible_zone_impl(impl.dataBlock))
             {
-                LOGGER_WARN("DataBlock '{}': release_consume_slot failed — flexible zone checksum verification failed for zone_index={} slot_index={}.",
-                            impl.owner != nullptr ? impl.owner->name : "(unknown)", i, impl.slot_index);
+                LOGGER_WARN("DataBlock '{}': release_consume_slot failed — flexible zone checksum verification failed for slot_index={}.",
+                            impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index);
                 success = false;
-                break;
             }
         }
     }
@@ -2007,23 +2354,11 @@ std::span<std::byte> SlotWriteHandle::buffer_span() noexcept
     return {reinterpret_cast<std::byte *>(pImpl->buffer_ptr), pImpl->buffer_size};
 }
 
-std::span<std::byte> SlotWriteHandle::flexible_zone_span(size_t flexible_zone_idx) noexcept
+std::span<std::byte> SlotWriteHandle::flexible_zone_span() noexcept
 {
-    if (pImpl == nullptr || pImpl->owner == nullptr || pImpl->dataBlock == nullptr ||
-        flexible_zone_idx >= pImpl->owner->flexible_zones_info.size())
-    {
-        return {};
-    }
-
-    const auto &zone_info = pImpl->owner->flexible_zones_info[flexible_zone_idx];
-    char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
-
-    if (flexible_zone_base == nullptr || zone_info.size == 0)
-    {
-        return {};
-    }
-
-    return {reinterpret_cast<std::byte *>(flexible_zone_base + zone_info.offset), zone_info.size};
+    return (pImpl != nullptr && pImpl->owner != nullptr) 
+        ? detail::get_flex_zone_span_mutable(pImpl->owner)
+        : std::span<std::byte>{};
 }
 
 bool SlotWriteHandle::write(const void *src, size_t len, size_t offset) noexcept
@@ -2065,13 +2400,13 @@ bool SlotWriteHandle::update_checksum_slot() noexcept
     return update_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
 }
 
-bool SlotWriteHandle::update_checksum_flexible_zone(size_t flexible_zone_idx) noexcept
+bool SlotWriteHandle::update_checksum_flexible_zone() noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
     {
         return false;
     }
-    return update_checksum_flexible_zone_impl(pImpl->dataBlock, flexible_zone_idx);
+    return update_checksum_flexible_zone_impl(pImpl->dataBlock);
 }
 
 SlotConsumeHandle::SlotConsumeHandle() : pImpl(nullptr) {}
@@ -2112,24 +2447,11 @@ std::span<const std::byte> SlotConsumeHandle::buffer_span() const noexcept
     return {reinterpret_cast<const std::byte *>(pImpl->buffer_ptr), pImpl->buffer_size};
 }
 
-std::span<const std::byte> SlotConsumeHandle::flexible_zone_span(size_t flexible_zone_idx) const noexcept
+std::span<const std::byte> SlotConsumeHandle::flexible_zone_span() const noexcept
 {
-    if (pImpl == nullptr || pImpl->owner == nullptr || pImpl->dataBlock == nullptr ||
-        flexible_zone_idx >= pImpl->owner->flexible_zones_info.size())
-    {
-        return {};
-    }
-
-    const auto &zone_info = pImpl->owner->flexible_zones_info[flexible_zone_idx];
-    const char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
-
-    if (flexible_zone_base == nullptr || zone_info.size == 0)
-    {
-        return {};
-    }
-
-    return {reinterpret_cast<const std::byte *>(flexible_zone_base + zone_info.offset),
-            zone_info.size};
+    return (pImpl != nullptr && pImpl->owner != nullptr)
+        ? detail::get_flex_zone_span_const(pImpl->owner)
+        : std::span<const std::byte>{};
 }
 
 bool SlotConsumeHandle::read(void *dst, size_t len, size_t offset) const noexcept
@@ -2155,13 +2477,13 @@ bool SlotConsumeHandle::verify_checksum_slot() const noexcept
     return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
 }
 
-bool SlotConsumeHandle::verify_checksum_flexible_zone(size_t flexible_zone_idx) const noexcept
+bool SlotConsumeHandle::verify_checksum_flexible_zone() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
     {
         return false;
     }
-    return verify_checksum_flexible_zone_impl(pImpl->dataBlock, flexible_zone_idx);
+    return verify_checksum_flexible_zone_impl(pImpl->dataBlock);
 }
 
 bool SlotConsumeHandle::validate_read() const noexcept
@@ -2205,27 +2527,16 @@ uint32_t DataBlockConsumer::spinlock_count() const noexcept
     return static_cast<uint32_t>(detail::MAX_SHARED_SPINLOCKS);
 }
 
-bool DataBlockConsumer::verify_checksum_flexible_zone(size_t flexible_zone_idx) const noexcept
+bool DataBlockConsumer::verify_checksum_flexible_zone() const noexcept
 {
     return (pImpl != nullptr && pImpl->dataBlock != nullptr)
-               ? verify_checksum_flexible_zone_impl(pImpl->dataBlock.get(), flexible_zone_idx)
+               ? verify_checksum_flexible_zone_impl(pImpl->dataBlock.get())
                : false;
 }
 
-std::span<const std::byte> DataBlockConsumer::flexible_zone_span(size_t index) const noexcept
+std::span<const std::byte> DataBlockConsumer::flexible_zone_span() const noexcept
 {
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr || index >= pImpl->flexible_zones_info.size())
-    {
-        return {};
-    }
-    const auto &zone_info = pImpl->flexible_zones_info[index];
-    const char *flexible_zone_base = pImpl->dataBlock->flexible_data_zone();
-    if (flexible_zone_base == nullptr || zone_info.size == 0)
-    {
-        return {};
-    }
-    return {reinterpret_cast<const std::byte *>(flexible_zone_base + zone_info.offset),
-            zone_info.size};
+    return detail::get_flex_zone_span_const(pImpl.get());
 }
 
 bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const noexcept
@@ -2459,6 +2770,29 @@ void DataBlockConsumer::update_heartbeat(int slot)
         pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
 }
 
+void DataBlockConsumer::update_heartbeat() noexcept
+{
+    if (pImpl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
+    int slot = pImpl->heartbeat_slot;
+    if (slot >= 0)
+    {
+        // Directly update without delegating (avoid recursive lock)
+        if (pImpl->dataBlock != nullptr && pImpl->dataBlock->header() != nullptr)
+        {
+            auto *header = pImpl->dataBlock->header();
+            if (slot < static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
+            {
+                header->consumer_heartbeats[slot].last_heartbeat_ns.store(
+                    pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
+            }
+        }
+    }
+}
+
 void DataBlockConsumer::unregister_heartbeat(int slot)
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr ||
@@ -2497,6 +2831,35 @@ int DataBlockConsumer::reset_metrics() noexcept
     }
     SharedMemoryHeader *header = pImpl->dataBlock->header();
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
+}
+
+// ============================================================================
+// Structure Re-Mapping API (Placeholder)
+// ============================================================================
+
+// NOLINT annotations: these are placeholder stubs for future broker-coordinated remapping
+void DataBlockConsumer::release_for_remap()
+{
+    (void)pImpl; // Will be used in future implementation
+    throw std::runtime_error(
+        "DataBlockConsumer::release_for_remap: "
+        "Structure remapping requires broker coordination - not yet implemented. "
+        "This is a placeholder API for future functionality. "
+        "See CHECKSUM_ARCHITECTURE.md §7.1 for protocol details.");
+}
+
+void DataBlockConsumer::reattach_after_remap(
+    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo> &new_datablock_schema)
+{
+    (void)new_flexzone_schema;
+    (void)new_datablock_schema;
+    (void)pImpl; // Will be used in future implementation
+    throw std::runtime_error(
+        "DataBlockConsumer::reattach_after_remap: "
+        "Structure remapping requires broker coordination - not yet implemented. "
+        "This is a placeholder API for future functionality. "
+        "See CHECKSUM_ARCHITECTURE.md §7.1 for protocol details.");
 }
 
 // ============================================================================
@@ -2651,7 +3014,7 @@ static bool validate_attach_layout_and_config(const SharedMemoryHeader *header,
     {
         return true;
     }
-    const bool flex_ok = header->flexible_zone_size == expected_config->total_flexible_zone_size();
+    const bool flex_ok = header->flexible_zone_size == expected_config->flex_zone_size;
     const bool cap_ok = header->ring_buffer_capacity == expected_config->ring_buffer_capacity;
     const bool page_ok =
         header->physical_page_size == static_cast<uint32_t>(to_bytes(expected_config->physical_page_size));
@@ -2690,7 +3053,12 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
     impl->name = name;
     impl->dataBlock = std::make_unique<DataBlock>(name, config);
     impl->checksum_policy = config.checksum_policy;
-    impl->flexible_zones_info = build_flexible_zone_info(config.flexible_zone_configs);
+    
+    // Single flex zone (Phase 2 refactoring)
+    // Store offset and size directly from layout
+    auto layout = DataBlockLayout::from_config(config);
+    impl->flex_zone_offset = layout.flexible_zone_offset;
+    impl->flex_zone_size = layout.flexible_zone_size;
 
     auto *header = impl->dataBlock->header();
     if (header != nullptr && schema_info != nullptr)
@@ -2784,12 +3152,12 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
         return nullptr;
     }
     impl->checksum_policy = header->checksum_policy;
-    if (expected_config != nullptr)
-    {
-        const auto &configs = expected_config->flexible_zone_configs;
-        impl->flexible_zones_info = build_flexible_zone_info(configs);
-        impl->dataBlock->set_flexible_zone_info_for_attach(configs);
-    }
+    
+    // Single flex zone (Phase 2 refactoring)
+    // Store offset and size from attached header's layout
+    auto layout = DataBlockLayout::from_header(header);
+    impl->flex_zone_offset = layout.flexible_zone_offset;
+    impl->flex_zone_size = layout.flexible_zone_size;
 
     // Validate schema if provided
     if (schema_info != nullptr)
@@ -2864,167 +3232,6 @@ std::unique_ptr<DataBlockConsumer> find_datablock_consumer(MessageHub &hub, cons
                                                            const DataBlockConfig &expected_config)
 {
     return find_datablock_consumer_impl(hub, name, shared_secret, &expected_config, nullptr);
-}
-
-WriteTransactionGuard::WriteTransactionGuard(DataBlockProducer &producer, int timeout_ms)
-    : producer_(&producer), slot_(producer.acquire_write_slot(timeout_ms)),
-      acquired_(static_cast<bool>(slot_)), committed_(false), aborted_(false)
-{
-}
-
-WriteTransactionGuard::~WriteTransactionGuard() noexcept
-{
-    if (acquired_ && !aborted_ && slot_)
-    {
-        // The user is responsible for calling slot().commit(bytes_written).
-        // We release the slot; in destructor we cannot throw, so we log on failure.
-        if (!producer_->release_write_slot(*slot_))
-        {
-            LOGGER_WARN("WriteTransactionGuard: release_write_slot failed in destructor. name='{}' slot_id={} slot_index={} (slot may remain held; check for checksum/commit failure in previous log).",
-                        producer_->name(), slot_->slot_id(), slot_->slot_index());
-        }
-    }
-}
-
-WriteTransactionGuard::WriteTransactionGuard(WriteTransactionGuard &&other) noexcept
-    : producer_(other.producer_), slot_(std::move(other.slot_)), acquired_(other.acquired_),
-      committed_(other.committed_), aborted_(other.aborted_)
-{
-    other.acquired_ = false;  // Transfer ownership
-    other.committed_ = false; // Ensure other doesn't commit/release
-    other.aborted_ = true;    // Mark other as aborted to prevent its destructor actions
-}
-
-WriteTransactionGuard &WriteTransactionGuard::operator=(WriteTransactionGuard &&other) noexcept
-{
-    if (this != &other)
-    {
-        // Release our current slot first if it was acquired
-        if (acquired_ && !aborted_ && slot_)
-        {
-            if (!producer_->release_write_slot(*slot_))
-            {
-                LOGGER_WARN("WriteTransactionGuard::operator=: release_write_slot failed. name='{}' slot_id={} slot_index={} (slot may remain held; check for checksum/commit failure in previous log).",
-                            producer_->name(), slot_->slot_id(), slot_->slot_index());
-            }
-        }
-
-        // Transfer ownership from other
-        producer_ = other.producer_;
-        slot_ = std::move(other.slot_);
-        acquired_ = other.acquired_;
-        committed_ = other.committed_;
-        aborted_ = other.aborted_;
-
-        other.acquired_ = false;
-        other.committed_ = false;
-        other.aborted_ = true;
-    }
-    return *this;
-}
-
-WriteTransactionGuard::operator bool() const noexcept
-{
-    return acquired_ && !aborted_ && static_cast<bool>(slot_);
-}
-
-std::optional<std::reference_wrapper<SlotWriteHandle>> WriteTransactionGuard::slot() noexcept
-{
-    if (!slot_)
-    {
-        return std::nullopt;
-    }
-    return std::ref(*slot_);
-}
-
-void WriteTransactionGuard::commit()
-{
-    // This `commit()` merely sets an internal flag.
-    // The user MUST call `slot().commit(bytes_written)` explicitly
-    // to make the data visible. This flag is for internal state tracking.
-    if (!acquired_)
-    {
-        throw std::runtime_error("WriteTransactionGuard: Cannot commit, slot not acquired.");
-    }
-    if (aborted_)
-    {
-        throw std::runtime_error("WriteTransactionGuard: Cannot commit, transaction aborted.");
-    }
-    committed_ = true;
-}
-
-void WriteTransactionGuard::abort() noexcept
-{
-    aborted_ = true;
-    committed_ = false; // Ensure it's not marked as committed if aborted
-}
-
-// ============================================================================
-// ReadTransactionGuard
-// ============================================================================
-
-ReadTransactionGuard::ReadTransactionGuard(DataBlockConsumer &consumer, uint64_t slot_id,
-                                           int timeout_ms)
-    : consumer_(&consumer), slot_(consumer.acquire_consume_slot(slot_id, timeout_ms)),
-      acquired_(static_cast<bool>(slot_))
-{
-}
-
-ReadTransactionGuard::~ReadTransactionGuard() noexcept
-{
-    if (acquired_ && slot_)
-    {
-        if (!consumer_->release_consume_slot(*slot_))
-        {
-            LOGGER_WARN("ReadTransactionGuard: release_consume_slot failed in destructor. name='{}' slot_id={} slot_index={} (slot may remain held; check for validation/checksum failure in previous log).",
-                        consumer_->name(), slot_->slot_id(), slot_->slot_index());
-        }
-    }
-}
-
-ReadTransactionGuard::ReadTransactionGuard(ReadTransactionGuard &&other) noexcept
-    : consumer_(other.consumer_), slot_(std::move(other.slot_)), acquired_(other.acquired_)
-{
-    other.acquired_ = false; // Transfer ownership
-}
-
-ReadTransactionGuard &ReadTransactionGuard::operator=(ReadTransactionGuard &&other) noexcept
-{
-    if (this != &other)
-    {
-        // Release our current slot first if it was acquired
-        if (acquired_ && slot_)
-        {
-            if (!consumer_->release_consume_slot(*slot_))
-            {
-                LOGGER_WARN("ReadTransactionGuard::operator=: release_consume_slot failed. name='{}' slot_id={} slot_index={} (slot may remain held; check for validation/checksum failure in previous log).",
-                            consumer_->name(), slot_->slot_id(), slot_->slot_index());
-            }
-        }
-
-        // Transfer ownership from other
-        consumer_ = other.consumer_;
-        slot_ = std::move(other.slot_);
-        acquired_ = other.acquired_;
-
-        other.acquired_ = false;
-    }
-    return *this;
-}
-
-ReadTransactionGuard::operator bool() const noexcept
-{
-    return acquired_ && static_cast<bool>(slot_);
-}
-
-std::optional<std::reference_wrapper<const SlotConsumeHandle>>
-ReadTransactionGuard::slot() const noexcept
-{
-    if (!slot_)
-    {
-        return std::nullopt;
-    }
-    return std::ref(*slot_);
 }
 
 // ============================================================================

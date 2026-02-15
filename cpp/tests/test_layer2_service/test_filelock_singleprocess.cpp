@@ -24,6 +24,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <barrier>
 
 namespace fs = std::filesystem;
 using namespace pylabhub::utils;
