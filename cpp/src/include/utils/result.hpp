@@ -206,11 +206,6 @@ class Result
         return std::get<T>(std::move(m_data));
     }
 
-    // Backward compatibility aliases (deprecated)
-    [[nodiscard]] [[deprecated("Use content() instead")]] T &value() & { return content(); }
-    [[nodiscard]] [[deprecated("Use content() instead")]] const T &value() const & { return content(); }
-    [[nodiscard]] [[deprecated("Use content() instead")]] T &&value() && { return std::move(*this).content(); }
-
     /**
      * @brief Get the success value or a default if error
      * @param default_value Value to return if Result is error

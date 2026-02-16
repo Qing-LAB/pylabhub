@@ -21,12 +21,12 @@
 #define PYLABHUB_NODISCARD
 #endif
 
-// Forward declaration of the C++ SlotRWState struct
-// The C functions will operate on a pointer to this type,
-// with the expectation that the C++ implementation will cast it.
+// Forward declarations of C++ types used in the C API.
+// Must be outside extern "C" — namespace keyword is not valid in C linkage context.
 namespace pylabhub::hub
 {
 struct SlotRWState;
+struct SharedMemoryHeader;
 }
 
 #ifdef __cplusplus
@@ -49,7 +49,7 @@ extern "C"
     /**
      * @brief Acquires a write lock for a SlotRWState.
      * @param rw_state Pointer to the SlotRWState structure in shared memory.
-     * @param timeout_ms Maximum time to wait in milliseconds. 0 for no timeout.
+     * @param timeout_ms Maximum time to wait in milliseconds. 0 = non-blocking, -1 = no timeout (wait forever), >0 = wait up to N ms.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
@@ -97,11 +97,6 @@ extern "C"
     void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state);
 
     // === Metrics API ===
-    // Forward declaration of SharedMemoryHeader to access metrics
-    namespace pylabhub::hub
-    {
-    struct SharedMemoryHeader;
-    }
 
     /**
      * @brief Snapshot of DataBlock metrics and key state (read-only surface).
