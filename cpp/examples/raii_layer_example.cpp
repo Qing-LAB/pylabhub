@@ -1,14 +1,15 @@
 /**
  * @file raii_layer_example.cpp
- * @brief Comprehensive example of Phase 3 C++ RAII Layer
+ * @brief Comprehensive example of Phase 3 C++ RAII Layer with BLDS Schema Validation
  * 
  * Demonstrates:
  * - Type-safe with_transaction API
  * - Non-terminating slot iterator
  * - Result<T, E> error handling
  * - SlotRef and ZoneRef typed access
- * - Schema validation
+ * - BLDS schema generation and validation
  * - Explicit heartbeat updates
+ * - Proper checksum configuration
  */
 
 #include <chrono>
@@ -19,15 +20,35 @@
 
 #include "utils/data_block.hpp"
 #include "utils/message_hub.hpp"
+#include "utils/schema_blds.hpp"
 
 using namespace std::chrono_literals;
 using namespace pylabhub::hub;
 
 // ============================================================================
-// Data Structures
+// Data Structures with BLDS Schema Registration
+// ============================================================================
+//
+// DataHub Architecture:
+//   - FlexZone: Shared metadata region (1 instance, all consumers see it)
+//   - DataBlock: Ring buffer of slots (N instances, FIFO queue)
+//
+// In with_transaction<FlexZoneT, DataBlockT>():
+//   - FlexZoneT  → Type for ctx.flexzone() (shared state)
+//   - DataBlockT → Type for ctx.slots() (per-message data)
 // ============================================================================
 
-// Flexible zone structure (shared metadata)
+/**
+ * @brief FlexZone structure: Shared metadata visible to all consumers
+ * 
+ * Memory layout:
+ *   - Located in "Flexible Zone" region (config.flex_zone_size bytes)
+ *   - Single instance shared across producer and all consumers
+ *   - Used for: event flags, counters, configuration, synchronization
+ *   - Size constraint: sizeof(FlexZoneMetadata) <= config.flex_zone_size
+ * 
+ * Access in RAII layer: ctx.flexzone() → ZoneRef<FlexZoneMetadata>
+ */
 struct FlexZoneMetadata
 {
     std::atomic<uint32_t> active_producers{0};
@@ -36,7 +57,28 @@ struct FlexZoneMetadata
     char description[64]{"RAII Layer Example"};
 };
 
-// Slot data structure (per-message data)
+// Register BLDS schema for FlexZoneMetadata
+// NOTE: In Phase 3, this schema is NOT stored in SharedMemoryHeader
+//       (only used for compile-time generation and documentation)
+// TODO: Phase 4 will store flexzone_schema_hash separately
+PYLABHUB_SCHEMA_BEGIN(FlexZoneMetadata)
+    PYLABHUB_SCHEMA_MEMBER(active_producers)
+    PYLABHUB_SCHEMA_MEMBER(total_messages)
+    PYLABHUB_SCHEMA_MEMBER(shutdown_flag)
+    PYLABHUB_SCHEMA_MEMBER(description)
+PYLABHUB_SCHEMA_END(FlexZoneMetadata)
+
+/**
+ * @brief DataBlock structure: Per-slot message data in ring buffer
+ * 
+ * Memory layout:
+ *   - Located in "Ring Buffer" region (num_slots × slot_bytes)
+ *   - N instances (one per slot in ring buffer)
+ *   - Used for: actual message payloads, per-event data
+ *   - Size constraint: sizeof(Message) <= config.ring_buffer.slot_bytes
+ * 
+ * Access in RAII layer: slot.content() → SlotRef<Message>
+ */
 struct Message
 {
     uint64_t sequence_num{0};
@@ -46,6 +88,36 @@ struct Message
     char payload[128]{"Hello from RAII Layer!"};
 };
 
+// Register BLDS schema for Message
+// NOTE: In Phase 3, THIS is the schema stored in SharedMemoryHeader::schema_hash
+//       (validated when consumer attaches)
+PYLABHUB_SCHEMA_BEGIN(Message)
+    PYLABHUB_SCHEMA_MEMBER(sequence_num)
+    PYLABHUB_SCHEMA_MEMBER(timestamp_ns)
+    PYLABHUB_SCHEMA_MEMBER(producer_id)
+    PYLABHUB_SCHEMA_MEMBER(checksum)
+    PYLABHUB_SCHEMA_MEMBER(payload)
+PYLABHUB_SCHEMA_END(Message)
+
+// ============================================================================
+// Helper: Print Schema Information
+// ============================================================================
+
+void print_schema_info(const std::string &type_name, const pylabhub::schema::SchemaInfo &schema)
+{
+    std::cout << "\n--- Schema Info: " << type_name << " ---" << std::endl;
+    std::cout << "  Name:    " << schema.name << std::endl;
+    std::cout << "  Version: " << schema.version.to_string() << std::endl;
+    std::cout << "  Size:    " << schema.struct_size << " bytes" << std::endl;
+    std::cout << "  BLDS:    " << schema.blds << std::endl;
+    std::cout << "  Hash:    ";
+    for (size_t i = 0; i < 8; ++i)  // Print first 8 bytes for brevity
+    {
+        std::cout << fmt::format("{:02x}", schema.hash[i]);
+    }
+    std::cout << "..." << std::endl;
+}
+
 // ============================================================================
 // Producer Example: Type-Safe Transaction with Iterator
 // ============================================================================
@@ -54,18 +126,63 @@ void producer_example(std::shared_ptr<MessageHub> hub)
 {
     std::cout << "\n=== Producer: RAII Layer Example ===\n" << std::endl;
 
-    // Create datablock with schema
+    // ========================================================================
+    // Step 1: Generate and print schema information
+    // ========================================================================
+    std::cout << "--- Step 1: Schema Generation ---" << std::endl;
+    
+    auto flexzone_schema = pylabhub::schema::generate_schema_info<FlexZoneMetadata>(
+        "FlexZoneMetadata",
+        pylabhub::schema::SchemaVersion{1, 0, 0}
+    );
+    print_schema_info("FlexZoneMetadata", flexzone_schema);
+    
+    auto message_schema = pylabhub::schema::generate_schema_info<Message>(
+        "Message",
+        pylabhub::schema::SchemaVersion{1, 0, 0}
+    );
+    print_schema_info("Message", message_schema);
+
+    // ========================================================================
+    // Step 2: Create datablock producer with schema validation
+    // ========================================================================
+    std::cout << "\n--- Step 2: Producer Creation ---" << std::endl;
+    
     DataBlockConfig config;
     config.name = "raii_example";
-    config.ring_buffer.num_slots = 16;
-    config.ring_buffer.slot_bytes = 256;
-    config.flex_zone_size = 4096;  // 4K for FlexZoneMetadata
-    config.enable_checksum = ChecksumType::CRC32;
+    
+    // Set physical page size (allocation unit)
+    config.physical_page_size = DataBlockPageSize::Size_4K;  // 4096 bytes
+    
+    // Set logical slot size (0 = use physical_page_size)
+    config.logical_unit_size = 0;  // Use 4K per slot (default)
+    // Or explicitly: config.logical_unit_size = 8192;  // 2 pages per slot
+    
+    // Set number of slots
+    config.ring_buffer_capacity = 16;  // 16 slots in ring buffer
+    
+    // Set flexible zone size (MUST be 0 or multiple of 4096)
+    config.flex_zone_size = 4096;  // 1 page (must fit FlexZoneMetadata)
+    
+    // Set policies
+    config.policy = DataBlockPolicy::RingBuffer;
+    config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    config.checksum_type = ChecksumType::BLAKE2b;  // Only supported algorithm
+    config.checksum_policy = ChecksumPolicy::Enforced;  // Automatic checksums
 
-    auto producer = create_datablock_producer<Message>(
-        hub, "raii_example", 
-        CreationPolicy::CreateOrAttach,
-        config);
+    // PHASE 4 API: Create producer with BOTH schema types
+    // Both FlexZoneMetadata and Message schemas will be:
+    //   - Generated at compile-time (BLDS)
+    //   - Stored in SharedMemoryHeader (flexzone_schema_hash + datablock_schema_hash)
+    //   - Validated when consumer attaches
+    auto producer = create_datablock_producer<FlexZoneMetadata, Message>(
+        //                                     ^^^^^^^^^^^^^^^^  ^^^^^^^ 
+        //                                     Both types provided!
+        *hub, "raii_example", 
+        DataBlockPolicy::RingBuffer,
+        config
+        // No schema instances needed - generated from template types
+    );
 
     if (!producer)
     {
@@ -73,26 +190,40 @@ void producer_example(std::shared_ptr<MessageHub> hub)
         return;
     }
 
-    std::cout << "Producer created successfully\n" << std::endl;
+    std::cout << "✓ Producer created with dual schema validation" << std::endl;
+    std::cout << "  FlexZoneMetadata BLDS hash → flexzone_schema_hash[32]" << std::endl;
+    std::cout << "  Message BLDS hash → datablock_schema_hash[32]" << std::endl;
 
     // ========================================================================
     // Example 1: Basic with_transaction with typed access
     // ========================================================================
-    std::cout << "--- Example 1: Basic Transaction ---" << std::endl;
+    std::cout << "\n--- Example 1: Basic Transaction ---" << std::endl;
+    std::cout << "  with_transaction<FlexZoneMetadata, Message>() uses:" << std::endl;
+    std::cout << "    - FlexZoneMetadata for ctx.flexzone() access" << std::endl;
+    std::cout << "    - Message for ctx.slots() access" << std::endl;
 
     try
     {
         producer->with_transaction<FlexZoneMetadata, Message>(
+            //                     ^^^^^^^^^^^^^^^^  ^^^^^^^ 
+            //                     FlexZone type     DataBlock/slot type
             100ms,
             [](WriteTransactionContext<FlexZoneMetadata, Message> &ctx)
             {
-                // Initialize flexible zone
-                auto zone = ctx.flexzone();
+                // Access flexible zone (shared metadata)
+                auto zone = ctx.flexzone();  // Returns ZoneRef<FlexZoneMetadata>
                 zone.get().active_producers.store(1, std::memory_order_relaxed);
                 zone.get().total_messages.store(0, std::memory_order_relaxed);
                 zone.get().shutdown_flag.store(false, std::memory_order_relaxed);
                 
-                std::cout << "Initialized flexible zone: " << zone.get().description << std::endl;
+                std::cout << "✓ Initialized flexible zone: " << zone.get().description << std::endl;
+                std::cout << "  NOTE: with_transaction() performs full validation:" << std::endl;
+                std::cout << "    ✓ Compile-time: static_assert(is_trivially_copyable)" << std::endl;
+                std::cout << "    ✓ Runtime sizeof(): FlexZoneMetadata=" << sizeof(FlexZoneMetadata) 
+                          << " <= " << 4096 << std::endl;
+                std::cout << "    ✓ Runtime sizeof(): Message=" << sizeof(Message) 
+                          << " <= " << 4096 << std::endl;
+                std::cout << "    ✓ BLDS hash: Validated at producer/consumer creation (Phase 4)" << std::endl;
             });
     }
     catch (const std::exception &e)
@@ -115,12 +246,12 @@ void producer_example(std::shared_ptr<MessageHub> hub)
             const uint32_t target_messages = 10;
 
             // Non-terminating iterator - yields Result<SlotRef, Error>
-            for (auto slot_result : ctx.slots(50ms))
+            for (auto &slot : ctx.slots(50ms))
             {
                 // Check for errors (timeout/no-slot/fatal)
-                if (!slot_result.is_ok())
+                if (!slot.is_ok())
                 {
-                    auto err = slot_result.error();
+                    auto err = slot.error();
                     if (err == SlotAcquireError::Timeout)
                     {
                         std::cout << "  [Timeout] No slot available, checking shutdown..." << std::endl;
@@ -150,22 +281,22 @@ void producer_example(std::shared_ptr<MessageHub> hub)
                 }
 
                 // Success! Got a slot
-                auto &slot = slot_result.content();
+                auto &content = slot.content();
                 
                 // Type-safe access
-                slot.get().sequence_num = messages_sent;
-                slot.get().timestamp_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-                slot.get().producer_id = 1;
-                slot.get().checksum = messages_sent * 42;  // Simple checksum
+                content.get().sequence_num = messages_sent;
+                content.get().timestamp_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+                content.get().producer_id = 1;
+                content.get().checksum = messages_sent * 42;  // Simple checksum
                 
                 // Raw access if needed
-                // auto raw_span = slot.raw_access();
+                // auto raw_span = content.raw_access();
                 
                 std::cout << "  [Sent] Message #" << messages_sent 
-                          << " (slot_id=" << slot.slot_id() << ")" << std::endl;
+                          << " (slot_id=" << content.slot_id() << ")" << std::endl;
 
                 // Commit the slot
-                ctx.commit();
+                ctx.publish();
 
                 // Update flexible zone counter
                 zone.get().total_messages.fetch_add(1, std::memory_order_relaxed);
@@ -193,21 +324,21 @@ void producer_example(std::shared_ptr<MessageHub> hub)
             100ms,
             [](WriteTransactionContext<FlexZoneMetadata, Message> &ctx)
             {
-                for (auto slot_result : ctx.slots(50ms))
+                for (auto &slot : ctx.slots(50ms))
                 {
-                    if (!slot_result.is_ok())
+                    if (!slot.is_ok())
                     {
                         continue;
                     }
 
-                    auto &slot = slot_result.content();
-                    slot.get().sequence_num = 999;
+                    auto &content = slot.content();
+                    content.get().sequence_num = 999;
                     
                     // Simulate error before commit
                     throw std::runtime_error("Simulated error - slot NOT committed");
                     
                     // This line never executes - slot is automatically cleaned up
-                    ctx.commit();  // NOLINT
+                    ctx.publish();  // NOLINT
                     break;
                 }
             });
@@ -229,17 +360,28 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
 {
     std::cout << "\n=== Consumer: RAII Layer Example ===\n" << std::endl;
 
-    // Attach to existing datablock with schema validation
+    // ========================================================================
+    // Step 1: Attach to datablock with schema validation
+    // ========================================================================
+    std::cout << "--- Step 1: Consumer Attachment ---" << std::endl;
+    
     DataBlockConfig expected_config;
     expected_config.name = "raii_example";
-    expected_config.ring_buffer.num_slots = 16;
-    expected_config.ring_buffer.slot_bytes = 256;
+    expected_config.physical_page_size = DataBlockPageSize::Size_4K;
+    expected_config.logical_unit_size = 0;  // Match producer (use physical)
+    expected_config.ring_buffer_capacity = 16;
     expected_config.flex_zone_size = 4096;
 
-    auto consumer = find_datablock_consumer<Message>(
-        hub, "raii_example", 
-        std::nullopt,  // No shared secret
-        expected_config);
+    // PHASE 4 API: Attach consumer with BOTH schema types
+    // Both schemas will be validated against producer's stored hashes
+    auto consumer = find_datablock_consumer<FlexZoneMetadata, Message>(
+        //                                   ^^^^^^^^^^^^^^^^  ^^^^^^^ 
+        //                                   Both types must match producer!
+        *hub, "raii_example", 
+        0,  // Shared secret (0 = default/discover)
+        expected_config
+        // No schema instances needed - generated from template types
+    );
 
     if (!consumer)
     {
@@ -247,12 +389,14 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
         return;
     }
 
-    std::cout << "Consumer attached successfully\n" << std::endl;
+    std::cout << "✓ Consumer attached with dual schema validation" << std::endl;
+    std::cout << "  FlexZoneMetadata schema hash verified" << std::endl;
+    std::cout << "  Message schema hash verified" << std::endl;
 
     // ========================================================================
-    // Example: Read with validation and heartbeat
+    // Step 2: Read with validation and heartbeat
     // ========================================================================
-    std::cout << "--- Consumer: Reading Messages ---" << std::endl;
+    std::cout << "\n--- Step 2: Reading Messages with RAII Transaction ---" << std::endl;
 
     consumer->with_transaction<FlexZoneMetadata, Message>(
         100ms,
@@ -266,11 +410,11 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
             std::cout << "Total messages: " 
                       << zone.get().total_messages.load(std::memory_order_relaxed) << std::endl;
 
-            for (auto slot_result : ctx.slots(50ms))
+            for (auto &slot : ctx.slots(50ms))
             {
-                if (!slot_result.is_ok())
+                if (!slot.is_ok())
                 {
-                    auto err = slot_result.error();
+                    auto err = slot.error();
                     if (err == SlotAcquireError::Timeout)
                     {
                         std::cout << "  [Timeout] No new messages" << std::endl;
@@ -297,7 +441,7 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
                     }
                 }
 
-                auto &slot = slot_result.value();
+                auto &content = slot.content();
                 
                 // Validate read (checksum, staleness, etc.)
                 if (!ctx.validate_read())
@@ -307,7 +451,7 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
                 }
 
                 // Type-safe read
-                const auto &msg = slot.get();
+                const auto &msg = content.get();
                 std::cout << "  [Read] seq=" << msg.sequence_num
                           << " timestamp=" << msg.timestamp_ns
                           << " producer=" << msg.producer_id

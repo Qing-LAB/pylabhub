@@ -673,9 +673,9 @@ extern "C"
             if (static_cast<pylabhub::hub::ChecksumType>(header->checksum_type) !=
                 pylabhub::hub::ChecksumType::Unset)
             {
-                auto consumer = pylabhub::hub::find_datablock_consumer(
+                auto consumer = pylabhub::hub::find_datablock_consumer_impl(
                     pylabhub::hub::MessageHub::get_instance(), ctx->shm_name, expected_config.shared_secret,
-                    expected_config);
+                    &expected_config, nullptr, nullptr);
 
                 if (!consumer)
                 {
@@ -698,9 +698,9 @@ extern "C"
                             LOGGER_WARN("REPAIR: Attempting to recalculate flexible zone "
                                         "checksum for '{}'.",
                                         ctx->shm_name);
-                            auto producer = pylabhub::hub::create_datablock_producer(
+                            auto producer = pylabhub::hub::create_datablock_producer_impl(
                                 pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
-                                expected_config.policy, expected_config); // Removed schema_instance
+                                expected_config.policy, expected_config, nullptr, nullptr);
                             if (producer && producer->update_checksum_flexible_zone())
                             {
                                 LOGGER_WARN("REPAIR: Successfully recalculated flexible zone "
@@ -742,10 +742,9 @@ extern "C"
                                 LOGGER_WARN("REPAIR: Attempting to recalculate checksum for slot "
                                             "{} in '{}'.",
                                             i, ctx->shm_name);
-                                auto producer = pylabhub::hub::create_datablock_producer(
+                                auto producer = pylabhub::hub::create_datablock_producer_impl(
                                     pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
-                                    expected_config.policy,
-                                    expected_config); // Removed schema_instance
+                                    expected_config.policy, expected_config, nullptr, nullptr);
                                 if (producer && producer->update_checksum_slot(i))
                                 {
                                     LOGGER_WARN("REPAIR: Successfully recalculated checksum for "

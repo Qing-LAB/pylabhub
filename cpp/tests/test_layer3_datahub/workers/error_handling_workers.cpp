@@ -13,6 +13,10 @@
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
 
+// Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
+// data_block.hpp (plh_datahub.hpp) with SchemaInfo* parameter types. No local forward
+// declarations needed — the header declarations are used directly.
+
 namespace pylabhub::tests::worker::error_handling
 {
 
@@ -34,10 +38,12 @@ int acquire_consume_slot_timeout_returns_null()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+                                                        &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
             // Producer never writes/commits → consumer must get nullptr on short timeout
             std::unique_ptr<SlotConsumeHandle> h = consumer->acquire_consume_slot(50);
@@ -64,11 +70,13 @@ int find_consumer_wrong_secret_returns_null()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             uint64_t wrong_secret = config.shared_secret + 1;
-            auto consumer = find_datablock_consumer(hub_ref, channel, wrong_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, channel, wrong_secret,
+                                                        &config, nullptr, nullptr);
             EXPECT_EQ(consumer.get(), nullptr);
 
             producer.reset();
@@ -91,8 +99,9 @@ int release_write_slot_invalid_handle_returns_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             SlotWriteHandle invalid_handle; // default-constructed
             EXPECT_FALSE(producer->release_write_slot(invalid_handle));
@@ -118,10 +127,12 @@ int release_consume_slot_invalid_handle_returns_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+                                                        &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
             SlotConsumeHandle invalid_handle;
             EXPECT_FALSE(consumer->release_consume_slot(invalid_handle));
@@ -148,8 +159,9 @@ int write_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
@@ -182,8 +194,9 @@ int commit_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
@@ -211,10 +224,12 @@ int read_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+                                                        &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
             const char payload[] = "x";
@@ -254,8 +269,9 @@ int double_release_write_slot_idempotent()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
@@ -283,10 +299,12 @@ int slot_iterator_try_next_timeout_returns_not_ok()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config);
+            auto producer = create_datablock_producer_impl(hub_ref, channel,
+                                                      DataBlockPolicy::RingBuffer, config,
+                                                      nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+                                                        &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
             auto it = consumer->slot_iterator();
             auto res = it.try_next(50);
