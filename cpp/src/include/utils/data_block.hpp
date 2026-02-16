@@ -195,7 +195,7 @@ inline size_t to_bytes(DataBlockPageSize u)
 
  */
 
-enum class DataBlockPolicy
+enum class DataBlockPolicy : uint32_t
 {
     Single = 0,
     DoubleBuffer = 1,
@@ -239,7 +239,7 @@ enum class ChecksumPolicy
  * - Sync_reader: Multiple consumers. Per-consumer positions; read_index = min(positions).
  *   Iterator blocks until slowest reader has consumed; writer blocks when ring full.
  */
-enum class ConsumerSyncPolicy
+enum class ConsumerSyncPolicy : uint32_t
 {
     Latest_only = 0,  // Reader follows latest committed only; writer can overwrite
     Single_reader = 1, // One consumer, one read_index; read in order; writer blocks when full
@@ -333,11 +333,17 @@ struct alignas(4096) SharedMemoryHeader
     uint16_t version_minor;
     uint64_t total_block_size; // Total shared memory size
 
-    // === Security ===
+    // === Security and Schema ===
     uint8_t shared_secret[64]; // Access capability token
-    uint8_t schema_hash[32];   // BLAKE2b hash of data schema
-    uint32_t schema_version;   // Schema version number
-    uint8_t padding_sec[28];   // Align to cache line
+    
+    // Phase 4: Dual schema support (FlexZone + DataBlock)
+    uint8_t flexzone_schema_hash[32];   // BLAKE2b hash of FlexZone schema
+    uint8_t datablock_schema_hash[32];  // BLAKE2b hash of DataBlock/slot schema
+    uint32_t schema_version;            // Schema version number
+    
+    // Note: Old layout had schema_hash[32] + padding_sec[28] = 60 bytes
+    // New layout: flexzone_schema_hash[32] + datablock_schema_hash[32] + schema_version[4] = 68 bytes
+    // No padding needed (net +8 bytes absorbed from reserved_header padding at end)
 
     // === Ring Buffer Configuration ===
     DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
@@ -345,7 +351,7 @@ struct alignas(4096) SharedMemoryHeader
     uint32_t physical_page_size;          // Physical page size (bytes); allocation granularity
     uint32_t logical_unit_size;           // Logical slot size (bytes); always >= physical_page_size (legacy 0 = use physical)
     uint32_t ring_buffer_capacity;        // Number of slots
-    size_t flexible_zone_size;      // Total TABLE 1 size
+    uint32_t flexible_zone_size;    // Total TABLE 1 size (u32: 4 GB max is sufficient for metadata)
     uint8_t checksum_type;          // ChecksumType; always present (BLAKE2b)
     ChecksumPolicy checksum_policy;
 
@@ -440,18 +446,18 @@ static_assert(alignof(SharedMemoryHeader) >= 4096,
     OP(version_major, "u16")                                                                  \
     OP(version_minor, "u16")                                                                  \
     OP(total_block_size, "u64")                                                               \
-    /* Security */                                                                            \
+    /* Security and Schema (Phase 4: Dual schema) */                                         \
     OP(shared_secret, "u8[64]")                                                               \
-    OP(schema_hash, "u8[32]")                                                                 \
+    OP(flexzone_schema_hash, "u8[32]")                                                        \
+    OP(datablock_schema_hash, "u8[32]")                                                       \
     OP(schema_version, "u32")                                                                 \
-    OP(padding_sec, "u8[28]")                                                                 \
     /* Ring Buffer Configuration */                                                           \
     OP(policy, "u32")                                                                         \
     OP(consumer_sync_policy, "u32")                                                          \
     OP(physical_page_size, "u32")                                                             \
     OP(logical_unit_size, "u32")                                                               \
     OP(ring_buffer_capacity, "u32")                                                           \
-    OP(flexible_zone_size, "u64")                                                             \
+    OP(flexible_zone_size, "u32")                                                             \
     OP(checksum_type, "u8")                                                                     \
     OP(checksum_policy, "u32")                                                                \
     /* Ring Buffer State (Hot Path) */                                                         \
@@ -652,9 +658,9 @@ class PYLABHUB_UTILS_EXPORT DataBlockSlotIterator
     DataBlockSlotIterator &operator=(const DataBlockSlotIterator &) = delete;
 
     /** @brief Advance to next available slot; returns ok=false on timeout. */
-    [[nodiscard]] NextResult try_next(int timeout_ms = 0) noexcept;
+    [[nodiscard]] NextResult try_next(int timeout_ms = -1) noexcept;
     /** @brief Advance to next available slot; throws on timeout. */
-    SlotConsumeHandle next(int timeout_ms = 0);
+    SlotConsumeHandle next(int timeout_ms = -1);
 
     /** @brief Set cursor to latest committed slot (no consumption). */
     void seek_latest() noexcept;
@@ -741,7 +747,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     // ─── Primitive Data Transfer API ───
     /** Acquire a slot for writing; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle). */
-    [[nodiscard]] std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = 0) noexcept;
+    [[nodiscard]] std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = -1) noexcept;
     /**
      * @brief Release a previously acquired slot.
      * @return true on success. Returns false if:
@@ -902,7 +908,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      *         
      *         auto& slot = result.value();
      *         slot.get().value = compute();
-     *         ctx.commit();
+     *         ctx.publish();
      *     }
      * });
      * @endcode
@@ -913,13 +919,19 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @see WriteTransactionContext, SlotIterator, Result
      */
     template <typename FlexZoneT, typename DataBlockT, typename Func>
-    auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
+        requires std::invocable<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>
+    [[nodiscard]] auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
         -> std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>;
 
     /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
      * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
      * or a generated id "producer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
     [[nodiscard]] const std::string &name() const noexcept;
+
+    /** @brief Returns the checksum policy configured for this DataBlock.
+     * Used by the RAII layer (with_transaction) to decide whether to auto-update the
+     * flexzone checksum on transaction exit. Returns ChecksumPolicy::None if pImpl is null. */
+    [[nodiscard]] ChecksumPolicy checksum_policy() const noexcept;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockProducer(std::unique_ptr<DataBlockProducerImpl> impl);
@@ -1007,7 +1019,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** Acquire the next slot for reading; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle).
      * @note Single-threaded: do not call from multiple threads on the same consumer instance. */
-    [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = 0) noexcept;
+    [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = -1) noexcept;
     /** Acquire a specific slot by ID for reading; returns nullptr on timeout or if slot not
      * available. */
     [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(uint64_t slot_id,
@@ -1168,7 +1180,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * @see ReadTransactionContext, SlotIterator, Result
      */
     template <typename FlexZoneT, typename DataBlockT, typename Func>
-    auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
+        requires std::invocable<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>
+    [[nodiscard]] auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
         -> std::invoke_result_t<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>;
 
     /** Construct from implementation (for factory use; Impl is opaque to users). */
@@ -1199,18 +1212,47 @@ namespace pylabhub::hub
 
 // with_transaction() implementations
 template <typename FlexZoneT, typename DataBlockT, typename Func>
+    requires std::invocable<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>
 auto DataBlockProducer::with_transaction(std::chrono::milliseconds timeout, Func &&func)
     -> std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>
 {
-    // Create transaction context with entry validation
     WriteTransactionContext<FlexZoneT, DataBlockT> ctx(this, timeout);
 
-    // Invoke user lambda with context reference
-    // Exception safety: ctx destructor ensures cleanup
-    return std::forward<Func>(func)(ctx);
+    using ReturnType = std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>;
+
+    if constexpr (std::is_void_v<ReturnType>)
+    {
+        std::forward<Func>(func)(ctx);
+        // Conservative: only auto-update flexzone checksum on normal exit (no exception).
+        // On exception the stack unwinds past this point, so the update is skipped —
+        // leaving the stored checksum inconsistent with any partial flexzone writes,
+        // which signals to consumers that the flexzone state is unreliable.
+        if constexpr (!std::is_void_v<FlexZoneT>)
+        {
+            if (!ctx.is_flexzone_checksum_suppressed() &&
+                checksum_policy() != ChecksumPolicy::None)
+            {
+                (void)update_checksum_flexible_zone();
+            }
+        }
+    }
+    else
+    {
+        auto &&result = std::forward<Func>(func)(ctx);
+        if constexpr (!std::is_void_v<FlexZoneT>)
+        {
+            if (!ctx.is_flexzone_checksum_suppressed() &&
+                checksum_policy() != ChecksumPolicy::None)
+            {
+                (void)update_checksum_flexible_zone();
+            }
+        }
+        return std::forward<decltype(result)>(result);
+    }
 }
 
 template <typename FlexZoneT, typename DataBlockT, typename Func>
+    requires std::invocable<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>
 auto DataBlockConsumer::with_transaction(std::chrono::milliseconds timeout, Func &&func)
     -> std::invoke_result_t<Func, ReadTransactionContext<FlexZoneT, DataBlockT> &>
 {
@@ -1312,53 +1354,22 @@ inline std::string_view logical_name(std::string_view full_name) noexcept
 }
 
 // ─── Factory Functions (require LifecycleGuard with GetLifecycleModule() in main()) ───
-template <typename Schema>
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const DataBlockConfig &config, const Schema &schema_instance);
 
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const DataBlockConfig &config);
-
-template <typename Schema>
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
-                        const DataBlockConfig &expected_config, const Schema &schema_instance);
-
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
-                        const DataBlockConfig &expected_config);
-
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret);
-
-/** Overload: validate version and config on attach. Returns nullptr if inconsistent. */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
-                        const DataBlockConfig &expected_config);
-
-// ─── Internal Implementation Functions (not for public use) ───
-// These are used by template functions to pass schema information
-
-/**
- * @brief Internal: Creates producer with optional schema storage.
- * @param schema_info If non-null, stores schema hash and version in SharedMemoryHeader.
- */
+// Internal implementation (exported for test and recovery tool use)
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
 create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
                                const DataBlockConfig &config,
-                               const pylabhub::schema::SchemaInfo *schema_info);
+                               const pylabhub::schema::SchemaInfo *flexzone_schema,
+                               const pylabhub::schema::SchemaInfo *datablock_schema);
 
-/**
- * @brief Internal: Finds consumer with optional config/schema validation.
- * @param expected_config If non-null, validates against stored config.
- * @param schema_info If non-null, validates against stored schema hash.
- */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
-                             const pylabhub::schema::SchemaInfo *schema_info);
+                             const pylabhub::schema::SchemaInfo *flexzone_schema,
+                             const pylabhub::schema::SchemaInfo *datablock_schema);
+
+// Public C++ API: Template-based dual-schema factory functions.
+// Schema derived from template parameters, stored/validated in shared memory.
 
 // ============================================================================
 // Memory model: layout and validation API (single control surface)
@@ -1392,93 +1403,98 @@ PYLABHUB_UTILS_EXPORT void store_layout_checksum(SharedMemoryHeader *header);
 /** Validate layout checksum; returns true if stored checksum matches recomputed from header. */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool validate_layout_checksum(const SharedMemoryHeader *header);
 
-/** @deprecated Use DataBlockProducer. Kept for compatibility. */
-using IDataBlockProducer = DataBlockProducer;
-
-/** @deprecated Use DataBlockConsumer. Kept for compatibility. */
-using IDataBlockConsumer = DataBlockConsumer;
-
 // ============================================================================
 // Template Factory Function Implementations (must be in header for templates)
 // ============================================================================
 
+// ============================================================================
+// Phase 4: Dual-Schema Template Implementations
+// ============================================================================
+
 /**
- * @brief Creates a DataBlock producer with schema validation (template version).
- * @details This template version generates schema information at compile-time
- *          from the Schema type and stores it in SharedMemoryHeader for
- *          consumer validation.
- *
- * @tparam Schema The C++ struct type used for data slots.
- * @param hub MessageHub for broker registration.
- * @param name Channel name for discovery.
- * @param policy Buffer policy (Single, DoubleBuffer, RingBuffer).
- * @param config DataBlock configuration.
- * @param schema_instance Dummy parameter for template type deduction (unused).
- * @return Unique pointer to DataBlockProducer with schema validation enabled.
- *
- * @note Requires PYLABHUB_SCHEMA_BEGIN/END macros to be defined for Schema type.
- *
- * @example
- * PYLABHUB_SCHEMA_BEGIN(SensorData)
- *     PYLABHUB_SCHEMA_MEMBER(timestamp_ns)
- *     PYLABHUB_SCHEMA_MEMBER(temperature)
- * PYLABHUB_SCHEMA_END(SensorData)
- *
- * auto producer = create_datablock_producer<SensorData>(
- *     hub, "sensor_temp", DataBlockPolicy::RingBuffer, config, SensorData{}
- * );
+ * @brief Creates producer with dual-schema storage (FlexZone + DataBlock).
+ * Schema is derived from the template parameters (FlexZoneT, DataBlockT); no schema argument.
+ * @tparam FlexZoneT Type of flexible zone data (schema generated from this type)
+ * @tparam DataBlockT Type of datablock slot data (schema generated from this type)
  */
-template <typename Schema>
+template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockProducer>
 create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                          const DataBlockConfig &config, const Schema &schema_instance)
+                          const DataBlockConfig &config)
 {
-    (void)schema_instance; // Unused, just for template deduction
-
-    // Generate schema info at compile-time
-    auto schema_info = pylabhub::schema::generate_schema_info<Schema>(
-        name, pylabhub::schema::SchemaVersion{1, 0, 0});
-
-    // Call internal implementation with schema info
-    return create_datablock_producer_impl(hub, name, policy, config, &schema_info);
+    // Compile-time validation
+    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
+                  "FlexZoneT must be trivially copyable for shared memory");
+    static_assert(std::is_trivially_copyable_v<DataBlockT>,
+                  "DataBlockT must be trivially copyable for shared memory");
+    
+    // Generate BOTH schemas at compile-time
+    auto flexzone_schema = pylabhub::schema::generate_schema_info<FlexZoneT>(
+        "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
+    
+    auto datablock_schema = pylabhub::schema::generate_schema_info<DataBlockT>(
+        "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
+    
+    // Validate sizes
+    if constexpr (!std::is_void_v<FlexZoneT>)
+    {
+        if (config.flex_zone_size < sizeof(FlexZoneT))
+        {
+            throw std::invalid_argument(
+                "config.flex_zone_size (" + std::to_string(config.flex_zone_size) +
+                ") too small for FlexZoneT (" + std::to_string(sizeof(FlexZoneT)) + ")");
+        }
+    }
+    
+    size_t slot_size = config.effective_logical_unit_size();
+    if (slot_size < sizeof(DataBlockT))
+    {
+        throw std::invalid_argument(
+            "slot size (" + std::to_string(slot_size) +
+            ") too small for DataBlockT (" + std::to_string(sizeof(DataBlockT)) + ")");
+    }
+    
+    // Call internal implementation with BOTH schemas
+    return create_datablock_producer_impl(hub, name, policy, config,
+                                          &flexzone_schema, &datablock_schema);
 }
 
 /**
- * @brief Discovers and attaches to a DataBlock consumer with schema validation (template version).
- * @details This template version generates expected schema at compile-time
- *          and validates it against the producer's schema stored in SharedMemoryHeader.
- *
- * @tparam Schema The expected C++ struct type for data slots.
- * @param hub MessageHub for broker discovery.
- * @param name Channel name to discover.
- * @param shared_secret Access capability token.
- * @param expected_config Expected DataBlock configuration.
- * @param schema_instance Dummy parameter for template type deduction (unused).
- * @return Unique pointer to DataBlockConsumer.
- * @throws pylabhub::schema::SchemaValidationException if schema doesn't match producer.
- *
- * @note Requires PYLABHUB_SCHEMA_BEGIN/END macros to be defined for Schema type.
- *
- * @example
- * auto consumer = find_datablock_consumer<SensorData>(
- *     hub, "sensor_temp", secret, config, SensorData{}
- * );
+ * @brief Discovers consumer with dual-schema validation (FlexZone + DataBlock).
+ * Schema is derived from the template parameters (FlexZoneT, DataBlockT); no schema argument.
+ * @tparam FlexZoneT Expected type of flexible zone (must match producer)
+ * @tparam DataBlockT Expected type of datablock slot (must match producer)
+ * @param expected_config Config to validate against producer's config (REQUIRED for type-safe API)
+ * @return Consumer handle, or nullptr if schema hashes don't match, producer did not store
+ *         schemas, or config/sizes incompatible (see DESIGN_VERIFICATION_CHECKLIST.md).
+ * @throws std::invalid_argument if sizes/alignment incompatible (during config validation).
  */
-template <typename Schema>
+template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
-                        const DataBlockConfig &expected_config, const Schema &schema_instance)
+                        const DataBlockConfig &expected_config)
 {
-    (void)schema_instance; // Unused, just for template deduction
-
-    // Generate expected schema at compile-time
-    auto expected_schema = pylabhub::schema::generate_schema_info<Schema>(
-        name, pylabhub::schema::SchemaVersion{1, 0, 0});
-
-    // Call internal implementation with expected schema for validation
+    // Compile-time validation
+    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
+                  "FlexZoneT must be trivially copyable for shared memory");
+    static_assert(std::is_trivially_copyable_v<DataBlockT>,
+                  "DataBlockT must be trivially copyable for shared memory");
+    
+    // Generate BOTH expected schemas at compile-time
+    auto expected_flexzone = pylabhub::schema::generate_schema_info<FlexZoneT>(
+        "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
+    
+    auto expected_datablock = pylabhub::schema::generate_schema_info<DataBlockT>(
+        "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
+    
+    // Call internal implementation with BOTH schemas for validation
     return find_datablock_consumer_impl(hub, name, shared_secret, &expected_config,
-                                        &expected_schema);
+                                        &expected_flexzone, &expected_datablock);
 }
+
+// ============================================================================
+// Phase 3: Single-Schema Template Implementations (Deprecated)
+// ============================================================================
 
 
 } // namespace pylabhub::hub

@@ -9,6 +9,8 @@ This document provides quick-reference examples for the Phase 3 C++ RAII Layer.
 using namespace pylabhub::hub;
 ```
 
+**Important:** Use `.content()` to extract values from `Result<T, E>`, not `.value()`. The name `content()` better conveys that you're accessing a contained object, not a primitive value.
+
 ## Producer: Type-Safe Write Transaction
 
 ```cpp
@@ -35,10 +37,10 @@ producer->with_transaction<FlexZone, Message>(
         auto zone = ctx.flexzone();
         zone.get().counter++;
         
-        // Non-terminating iterator
-        for (auto slot_result : ctx.slots(50ms)) {
-            if (!slot_result.is_ok()) {
-                if (slot_result.error() == SlotAcquireError::Timeout) {
+        // Non-terminating iterator - returns Result objects
+        for (auto &slot : ctx.slots(50ms)) {
+            if (!slot.is_ok()) {
+                if (slot.error() == SlotAcquireError::Timeout) {
                     // Check shutdown condition
                     if (zone.get().shutdown_flag) break;
                     continue;  // Retry
@@ -46,12 +48,12 @@ producer->with_transaction<FlexZone, Message>(
                 break;  // Fatal error
             }
             
-            // Got a slot!
-            auto &slot = slot_result.content();
-            slot.get().seq_num = zone.get().counter;
-            strcpy(slot.get().data, "Hello RAII!");
+            // Got a slot! Extract the SlotRef content
+            auto &content = slot.content();
+            content.get().seq_num = zone.get().counter;
+            strcpy(content.get().data, "Hello RAII!");
             
-            ctx.commit();
+            ctx.publish();
             break;  // Or continue for more slots
         }
     });
@@ -70,9 +72,9 @@ consumer->with_transaction<FlexZone, Message>(
     [](ReadTransactionContext<FlexZone, Message> &ctx) {
         auto zone = ctx.flexzone();
         
-        for (auto slot_result : ctx.slots(50ms)) {
-            if (!slot_result.is_ok()) {
-                if (slot_result.error() == SlotAcquireError::Timeout) {
+        for (auto &slot : ctx.slots(50ms)) {
+            if (!slot.is_ok()) {
+                if (slot.error() == SlotAcquireError::Timeout) {
                     ctx.update_heartbeat();  // Keep alive during idle
                     if (zone.get().shutdown_flag) break;
                     continue;
@@ -80,7 +82,7 @@ consumer->with_transaction<FlexZone, Message>(
                 break;
             }
             
-            auto &slot = slot_result.content();
+            auto &content = slot.content();
             
             // Validate read (checksum, staleness)
             if (!ctx.validate_read()) {
@@ -88,7 +90,7 @@ consumer->with_transaction<FlexZone, Message>(
             }
             
             // Type-safe read
-            const auto &msg = slot.get();
+            const auto &msg = content.get();
             std::cout << "Received: " << msg.data << std::endl;
             
             if (/* done condition */) break;
@@ -101,9 +103,9 @@ consumer->with_transaction<FlexZone, Message>(
 ### 1. Result<T, E> Error Handling
 
 ```cpp
-for (auto slot_result : ctx.slots(50ms)) {
-    if (!slot_result.is_ok()) {
-        switch (slot_result.error()) {
+for (auto &slot : ctx.slots(50ms)) {
+    if (!slot.is_ok()) {
+        switch (slot.error()) {
             case SlotAcquireError::Timeout:
                 // Expected, retry possible
                 break;
@@ -117,7 +119,8 @@ for (auto slot_result : ctx.slots(50ms)) {
         continue;
     }
     
-    // Use slot_result.content()
+    // Extract SlotRef content
+    auto &content = slot.content();
 }
 ```
 
@@ -126,8 +129,8 @@ for (auto slot_result : ctx.slots(50ms)) {
 The iterator **never ends** on timeout/no-slot - only on fatal errors. You must explicitly `break`:
 
 ```cpp
-for (auto slot_result : ctx.slots(50ms)) {
-    if (!slot_result.is_ok()) {
+for (auto &slot : ctx.slots(50ms)) {
+    if (!slot.is_ok()) {
         // Check your shutdown condition
         if (should_stop()) break;
         continue;  // Keep trying
@@ -164,18 +167,18 @@ auto raw_span = slot.raw_access();  // std::span<std::byte>
 
 ```cpp
 producer->with_transaction<FlexZone, Message>(100ms, [](auto &ctx) {
-    for (auto slot_result : ctx.slots(50ms)) {
-        if (!slot_result.is_ok()) continue;
+    for (auto &slot : ctx.slots(50ms)) {
+        if (!slot.is_ok()) continue;
         
-        auto &slot = slot_result.value();
-        slot.get().data = 42;
+        auto &content = slot.content();
+        content.get().data = 42;
         
         // Exception thrown - slot automatically released
         if (error_condition) {
             throw std::runtime_error("Error!");
         }
         
-        ctx.commit();
+        ctx.publish();
         break;
     }
 });  // Context destructor ensures cleanup
@@ -216,9 +219,9 @@ consumer->update_heartbeat();  // Uses registered heartbeat slot
 ### Pattern 1: Retry with Timeout
 
 ```cpp
-for (auto slot_result : ctx.slots(50ms)) {
-    if (!slot_result.is_ok()) {
-        if (slot_result.error() == SlotAcquireError::Timeout) {
+for (auto &slot : ctx.slots(50ms)) {
+    if (!slot.is_ok()) {
+        if (slot.error() == SlotAcquireError::Timeout) {
             std::this_thread::sleep_for(10ms);
             continue;
         }
@@ -231,8 +234,8 @@ for (auto slot_result : ctx.slots(50ms)) {
 ### Pattern 2: Event-Driven Break
 
 ```cpp
-for (auto slot_result : ctx.slots(50ms)) {
-    if (!slot_result.is_ok()) {
+for (auto &slot : ctx.slots(50ms)) {
+    if (!slot.is_ok()) {
         // Check flexzone event flags
         if (zone.get().shutdown_flag) break;
         continue;
@@ -245,8 +248,8 @@ for (auto slot_result : ctx.slots(50ms)) {
 
 ```cpp
 int processed = 0;
-for (auto slot_result : ctx.slots(50ms)) {
-    if (!slot_result.is_ok()) continue;
+for (auto &slot : ctx.slots(50ms)) {
+    if (!slot.is_ok()) continue;
     
     // Process slot...
     
@@ -273,11 +276,11 @@ with_write_transaction(producer, 100, [](WriteTransactionContext &ctx) {
 ```cpp
 // New: with_transaction
 producer->with_transaction<FlexZone, Message>(100ms, [](auto &ctx) {
-    for (auto slot_result : ctx.slots(50ms)) {
-        if (!slot_result.is_ok()) continue;
-        auto &slot = slot_result.value();
-        slot.get().data = ...;
-        ctx.commit();
+    for (auto &slot : ctx.slots(50ms)) {
+        if (!slot.is_ok()) continue;
+        auto &content = slot.content();
+        content.get().data = ...;
+        ctx.publish();
         break;
     }
 });
@@ -285,8 +288,8 @@ producer->with_transaction<FlexZone, Message>(100ms, [](auto &ctx) {
 
 ## Best Practices
 
-1. **Always check `is_ok()`** before accessing `value()`
-2. **Use typed access** (`slot.get()`) for safety; fall back to `raw_access()` only when needed
+1. **Always check `is_ok()`** before accessing `content()`
+2. **Use typed access** (`content.get()`) for safety; fall back to `raw_access()` only when needed
 3. **Update heartbeat** during long idle periods in iterator loops
 4. **Validate reads** with `ctx.validate_read()` to catch stale/corrupt data
 5. **Break explicitly** - the iterator won't end on timeout

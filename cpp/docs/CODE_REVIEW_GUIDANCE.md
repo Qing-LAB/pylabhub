@@ -2,7 +2,9 @@
 
 **Purpose:** Instructions for thorough and critical code review: what to check first, higher-level requirements, and test integration after review. This document is a **draft framework**; improve it with additional discussion and project-specific learnings.
 
-**Doc policy:** This guidance is part of the documentation structure (**`docs/DOC_STRUCTURE.md`** §2.5). It complements **`docs/IMPLEMENTATION_GUIDANCE.md`** (implementation patterns and checklist). Execution plan and priorities live in **`docs/DATAHUB_TODO.md`**. For test rationale and phase detail, see **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**. Review findings and follow-ups are recorded in a report; when completed, the report is archived (see DOC_STRUCTURE §8). Latest: **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`** (2026-02-13).
+**Doc policy:** This guidance is part of the documentation structure (**`docs/DOC_STRUCTURE.md`** §2.5). It complements **`docs/IMPLEMENTATION_GUIDANCE.md`** (implementation patterns and checklist). Execution plan and priorities live in **`docs/DATAHUB_TODO.md`**. Review findings and follow-ups are recorded in a report; when completed, the report is archived (see DOC_STRUCTURE §8). Latest: **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`** (2026-02-13).
+
+**Design verification:** All API and design claims in documentation MUST be verified against actual code. See **`docs/DESIGN_VERIFICATION_RULE.md`** and **`docs/DESIGN_VERIFICATION_CHECKLIST.md`**.
 
 ---
 
@@ -11,8 +13,9 @@
 1. [Project Context: Structure and Where to Look](#1-project-context-structure-and-where-to-look)
 2. [First Pass: Basic Checks](#2-first-pass-basic-checks)
 3. [Higher-Level Requirements](#3-higher-level-requirements)
-4. [Test Integration After Review](#4-test-integration-after-review)
-5. [Review Workflow Summary](#5-review-workflow-summary)
+4. [Design and API Verification (Mandatory)](#4-design-and-api-verification-mandatory)
+5. [Test Integration After Review](#5-test-integration-after-review)
+6. [Review Workflow Summary](#6-review-workflow-summary)
 
 Sections **2.6** and **2.7** integrate code-quality and warning practices (duplication, refactoring, Doxygen, `[[nodiscard]]`, exception specs) as standard review items.
 
@@ -169,11 +172,23 @@ Use the **Code Review Checklist** in **`docs/IMPLEMENTATION_GUIDANCE.md`** (Befo
 
 ---
 
-## 4. Test Integration After Review
+## 4. Design and API Verification (Mandatory)
+
+**Rule:** All API and design claims in documentation MUST be verified against actual code. Documentation does not imply implementation.
+
+- [ ] **Claims checked against code:** For any design doc or API description under review, the reviewer has traced the described behavior to actual source (file, function, and relevant branches). No reliance on "the doc says so" without code verification.
+- [ ] **Verification checkboxes in design docs:** Design and API documents that describe implemented behavior include verification checkboxes (e.g. `- [x]`) with a **code reference** (file:line or function name). Unverified claims are marked (e.g. `- [ ]` or "Not yet verified") so readers treat them as suspect.
+- [ ] **Single source of truth:** Code is the authority. If the doc and code disagree, the doc is wrong until updated to match the code (or the code is fixed to match the intended design, then doc updated).
+
+See **`docs/DESIGN_VERIFICATION_RULE.md`** for the full rule and checkbox format, and **`docs/DESIGN_VERIFICATION_CHECKLIST.md`** for the current dual-schema design verification and code references.
+
+---
+
+## 5. Test Integration After Review
 
 Before approving, ensure tests exist and are run so that the change is validated in the project’s test environment.
 
-### 4.1 Test Structure (Quick Reference)
+### 5.1 Test Structure (Quick Reference)
 
 - **Layer 0:** `test_layer0_platform` — platform, version, `shm_*`.
 - **Layer 1:** `test_layer1_*` — base utilities (spinlock, guards).
@@ -182,7 +197,7 @@ Before approving, ensure tests exist and are run so that the change is validated
 
 Details: **`docs/README/README_testing.md`**; test plan and phases: **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**.
 
-### 4.2 What to Run After Review
+### 5.2 What to Run After Review
 
 - [ ] **Build and stage tests:** `cmake --build cpp/build --target stage_tests` (or rely on `PYLABHUB_STAGE_ON_BUILD=ON`).
 - [ ] **Full suite (recommended before merge):**  
@@ -197,8 +212,9 @@ Details: **`docs/README/README_testing.md`**; test plan and phases: **`docs/test
   `cmake -S cpp -B cpp/build-asan -DPYLABHUB_USE_SANITIZER=Address` then build and run tests. Fix any reported issues before merge.
 - [ ] **Multi-process / concurrency:** If the change affects IPC or concurrency, run the corresponding multi-process or concurrent tests (see test plan and README_testing).
 
-### 4.3 Test Quality
+### 5.3 Test Quality
 
+- [ ] **C API tests preserved:** The C API is the foundation; other layers are built on it. **Do not delete C API tests.** See **`docs/C_API_TEST_POLICY.md`** for the list of mandatory test assets (e.g. `test_slot_rw_coordinator.cpp`, `test_recovery_api.cpp`, recovery_workers, slot_protocol_workers C API usage). Any change that removes or disables these must be rejected unless the C API itself is explicitly removed by design.
 - [ ] **New behavior covered:** New or modified behavior has corresponding tests (unit or integration as appropriate).
 - [ ] **No regressions:** Existing tests that touch the changed area still pass; no unnecessary disable or skip without a documented reason.
 - [ ] **Cross-platform:** Tests are run (or documented as skipped) on all supported platforms where applicable; no silent platform-only assumptions.
@@ -206,7 +222,7 @@ Details: **`docs/README/README_testing.md`**; test plan and phases: **`docs/test
 
 ---
 
-## 5. Review Workflow Summary
+## 6. Review Workflow Summary
 
 1. **Orient:** Use §1 to locate changed files, build targets, and relevant docs (HEP, IMPLEMENTATION_GUIDANCE, DATAHUB_TODO, test plan).
 2. **First pass (§2):** Build, format/lint, includes/exports, obvious correctness, docs, and code quality (§2.6: duplication, abstraction, naming, comments, Doxygen). Build must be warning-free (§2.7: exception specs, `[[nodiscard]]`).

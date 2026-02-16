@@ -8,6 +8,7 @@
 - Design specifications → `docs/HEP/` (authoritative design specs)
 - Execution plan → `docs/DATAHUB_TODO.md` (what to do next, priorities)
 - Documentation structure → `docs/DOC_STRUCTURE.md` (where information belongs)
+- **Design verification rule** → `docs/DESIGN_VERIFICATION_RULE.md` (all API/design claims must be verified against code; use checkboxes in docs)
 
 ---
 
@@ -21,6 +22,7 @@
    - [Error reporting: C vs C++](#error-reporting-c-vs-c)
    - [Explicit noexcept where the public API does not throw](#explicit-noexcept-where-the-public-api-does-not-throw)
    - [Config validation and memory block setup](#config-validation-and-memory-block-setup-single-point-of-access)
+   - [Design and API verification against code](#design-and-api-verification-against-code)
 4. [DataBlock API, Concurrency, and Protocol](#datablock-api-concurrency-and-protocol)
    - [Structured buffer alignment](#structured-buffer-alignment)
    - [Unified metrics and state API](#unified-metrics-and-state-api)
@@ -312,6 +314,14 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 | `checksum_type` | `ChecksumType::Unset` | BLAKE2b (0); mandatory |
 
 **Rationale and full parameter table:** Full analysis was in **`docs/DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`**; merged here and archived in **`docs/archive/transient-2026-02-13/`** (§1 and “Other parameters: fail if not set”).
+
+### Design and API verification against code
+
+**Rule:** All API and design claims in documentation MUST be verified against actual code. Documentation does not imply implementation.
+
+- **When writing or updating design/API docs:** Trace every described behavior to source (file, function, and relevant branches). In the doc, use a **verification checkbox**: `- [x]` with a **code reference** (file:line or function name) for confirmed behavior; `- [ ]` or "Not yet verified" for anything not yet checked. See **`docs/DESIGN_VERIFICATION_RULE.md`**.
+- **When implementing:** Do not document behavior as done until the code path exists and has been verified. If the doc and code disagree, fix one and update the other; code is the single source of truth.
+- **Checklist:** Use **`docs/DESIGN_VERIFICATION_CHECKLIST.md`** for the current dual-schema design; update it when code or design changes.
 
 ### Policy and Schema Separation of Concerns
 

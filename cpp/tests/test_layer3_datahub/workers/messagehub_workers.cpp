@@ -19,6 +19,10 @@
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
 
+// Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
+// data_block.hpp (plh_datahub.hpp) with SchemaInfo* parameter types. No local forward
+// declarations needed — the header declarations are used directly.
+
 namespace pylabhub::tests::worker::messagehub
 {
 
@@ -227,7 +231,8 @@ int with_broker_happy_path()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer =
-                create_datablock_producer(hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                create_datablock_producer_impl(hub_ref, channel, DataBlockPolicy::RingBuffer, config,
+                                              nullptr, nullptr);
             ASSERT_NE(producer, nullptr) << "create_datablock_producer failed (register should succeed with broker)";
 
             const char payload[] = "with_broker_happy_path payload";
@@ -243,7 +248,8 @@ int with_broker_happy_path()
             EXPECT_EQ(info->shm_name, channel);
             EXPECT_EQ(info->schema_version, 0u);
 
-            auto consumer = find_datablock_consumer(hub_ref, info->shm_name, config.shared_secret, config);
+            auto consumer = find_datablock_consumer_impl(hub_ref, info->shm_name, config.shared_secret,
+                                                         &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr) << "find_datablock_consumer with discovered shm_name must succeed";
 
             auto consume_handle = consumer->acquire_consume_slot(5000);

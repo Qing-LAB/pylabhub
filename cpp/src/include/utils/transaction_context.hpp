@@ -1,16 +1,17 @@
 /**
  * @file transaction_context.hpp
  * @brief Transaction context for type-safe RAII layer
- * 
+ *
  * @copyright Copyright (c) 2024-2026 PyLabHub Project
- * 
+ *
  * Part of Phase 3: C++ RAII Layer
- * Provides the core context-centric transaction API with schema validation.
- * 
+ * Provides the core context-centric transaction API.
+ *
  * Design Philosophy:
- * - Context represents session-level state (validation, protection, layout)
+ * - Context represents session-level state (typed access, slot iteration, lifecycle)
  * - Context is NOT the current slot (slots are acquired via iterator)
- * - Validation happens once at entry, not per slot
+ * - Validation is performed once at creation/attach time (template factory functions),
+ *   not repeated per transaction — the type system enforces correctness.
  * - Context lifetime = transaction scope (RAII)
  */
 
@@ -22,7 +23,6 @@
 #include "utils/zone_ref.hpp"
 #include <chrono>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -35,51 +35,52 @@ class SlotIterator;
 
 /**
  * @class TransactionContext
- * @brief Context for a transaction with schema validation and typed access
- * 
+ * @brief Context for a type-safe transaction with typed flexzone and slot access
+ *
  * @tparam FlexZoneT Type of flexible zone data (or void for no flexzone)
  * @tparam DataBlockT Type of datablock slot data
  * @tparam IsWrite true for producer (write), false for consumer (read)
- * 
- * TransactionContext is the heart of the RAII layer. It:
- * 1. **Validates at entry**: Schema, layout, checksums (one-time cost)
- * 2. **Provides flexzone access**: `ctx.flexzone()` → ZoneRef<FlexZoneT>
- * 3. **Provides slot iteration**: `ctx.slots(timeout)` → SlotIterator
- * 4. **Manages lifecycle**: RAII ensures cleanup on scope exit
- * 
+ *
+ * TransactionContext is the primary public interface of the RAII layer. It:
+ * 1. **Provides flexzone access**: `ctx.flexzone()` → ZoneRef<FlexZoneT>
+ * 2. **Provides slot iteration**: `ctx.slots(timeout)` → SlotIterator
+ * 3. **Manages lifecycle**: RAII ensures slot cleanup on scope exit
+ *
+ * Schema and layout correctness are guaranteed by the template factory functions
+ * (`create_datablock_producer<F,D>`, `find_datablock_consumer<F,D>`) which
+ * perform schema hash validation at creation/attach time. There is no redundant
+ * runtime re-validation inside transactions.
+ *
  * Usage (Producer):
  * @code
  * producer.with_transaction<MetaData, Payload>(timeout, [](auto& ctx) {
  *     ctx.flexzone().get().status = Status::Active;
- *     
- *     for (auto result : ctx.slots(timeout)) {
+ *
+ *     for (auto& result : ctx.slots(timeout)) {
  *         if (!result.is_ok()) {
  *             if (result.error() == SlotAcquireError::Timeout) {
  *                 process_events();
  *             }
  *             continue;
  *         }
- *         
- *         auto& slot = result.value();
+ *
+ *         auto& slot = result.content();
  *         slot.get().data = produce();
- *         ctx.commit();
  *     }
  * });
  * @endcode
- * 
+ *
  * Usage (Consumer):
  * @code
  * consumer.with_transaction<MetaData, Payload>(timeout, [](auto& ctx) {
- *     for (auto result : ctx.slots(timeout)) {
+ *     for (auto& result : ctx.slots(timeout)) {
  *         if (!result.is_ok()) continue;
- *         
- *         if (!ctx.validate_read()) continue;
- *         
- *         process(result.value().get());
+ *
+ *         process(result.content().get());
  *     }
  * });
  * @endcode
- * 
+ *
  * Thread Safety: TransactionContext is not thread-safe. Each thread should
  * create its own transaction context. The underlying Producer/Consumer are
  * thread-safe (internal mutex).
@@ -104,16 +105,10 @@ class TransactionContext
     // ====================================================================
 
     /**
-     * @brief Construct transaction context with validation
-     * @param handle Producer or Consumer handle
+     * @brief Construct transaction context
+     * @param handle Producer or Consumer handle (must not be null)
      * @param timeout Default timeout for slot operations
      * @throws std::invalid_argument if handle is null
-     * @throws std::runtime_error if validation fails (schema, layout, checksums)
-     * 
-     * Performs entry validation:
-     * 1. Schema validation (if schema registered)
-     * 2. Layout validation (sizeof checks)
-     * 3. Checksum policy enforcement
      */
     explicit TransactionContext(HandleType *handle, std::chrono::milliseconds timeout)
         : m_handle(handle), m_default_timeout(timeout)
@@ -122,9 +117,6 @@ class TransactionContext
         {
             throw std::invalid_argument("TransactionContext: handle cannot be null");
         }
-
-        // Perform entry validation
-        validate_entry();
     }
 
     // Non-copyable, movable
@@ -140,12 +132,11 @@ class TransactionContext
     /**
      * @brief Get reference to flexible zone
      * @return ZoneRef for typed or raw access to flexible zone
-     * 
+     *
      * Returns WriteZoneRef (producer) or ReadZoneRef (consumer).
-     * 
      * For FlexZoneT=void, the returned ZoneRef provides only raw_access().
      * For typed FlexZoneT, use zone.get() for type-safe access.
-     * 
+     *
      * Example:
      * @code
      * auto zone = ctx.flexzone();
@@ -154,24 +145,15 @@ class TransactionContext
      */
     [[nodiscard]] ZoneRefType flexzone()
     {
-        if constexpr (IsWrite)
-        {
-            return ZoneRefType(m_handle);
-        }
-        else
-        {
-            return ZoneRefType(m_handle);
-        }
+        return ZoneRefType(m_handle);
     }
 
     /**
-     * @brief Get const reference to flexible zone
-     * @return Const ZoneRef for read-only access
+     * @brief Get const reference to flexible zone (always read-only)
      */
-    [[nodiscard]] auto flexzone() const
+    [[nodiscard]] ReadZoneRef<FlexZoneT> flexzone() const
     {
-        // Always return const zone ref for const context
-        return ReadZoneRef<FlexZoneT>(const_cast<HandleType *>(m_handle));
+        return ReadZoneRef<FlexZoneT>(m_handle);
     }
 
     // ====================================================================
@@ -182,24 +164,25 @@ class TransactionContext
      * @brief Get slot iterator for this transaction
      * @param timeout Timeout for each slot acquisition attempt
      * @return SlotIterator yielding Result<SlotRef, SlotAcquireError>
-     * 
+     *
      * Returns a non-terminating iterator that yields Result objects.
      * User must check result.is_ok() and handle timeout/error cases.
-     * 
+     *
      * Iterator continues until:
      * - Fatal error (producer/consumer destroyed)
      * - User breaks explicitly (based on flexzone flags, events, etc.)
-     * 
+     *
      * Example:
      * @code
-     * for (auto result : ctx.slots(100ms)) {
+     * for (auto& result : ctx.slots(100ms)) {
      *     if (!result.is_ok()) {
      *         if (result.error() == SlotAcquireError::Timeout) {
      *             process_events();
      *         }
      *         continue;
      *     }
-     *     // Process slot
+     *     auto& slot = result.content();
+     *     slot.get().value = compute();
      * }
      * @endcode
      */
@@ -219,66 +202,91 @@ class TransactionContext
     // ====================================================================
 
     /**
-     * @brief Commit current slot (producer only)
+     * @brief Publish current slot (producer only)
      * @throws std::logic_error if no slot is active
-     * @throws std::runtime_error if commit fails
-     * 
-     * Makes the current slot visible to consumers. This is a protocol step:
-     * - Advances commit_index
-     * - Updates checksums (if policy requires)
-     * - Releases slot for consumption
-     * 
-     * Size committed = sizeof(DataBlockT) (typed commit)
-     * 
-     * Must be called after writing to slot, before acquiring next slot.
+     * @throws std::runtime_error if publish fails
+     *
+     * Makes the current slot visible to consumers: marks committed, updates checksums,
+     * advances commit_index, releases write lock. Size committed = sizeof(DataBlockT).
+     *
+     * This is an explicit control path for advanced use. Most callers can rely on the
+     * auto-publish behavior: when the SlotIterator exits normally (break or end of range),
+     * the current slot is automatically published. An exception in the loop body triggers
+     * automatic rollback (slot released without publish).
+     *
+     * ctx.publish() and auto-publish are both safe to use; publish() is idempotent.
      */
-    void commit() requires IsWrite
+    void publish() requires IsWrite
     {
         if (!m_current_write_slot)
         {
-            throw std::logic_error("TransactionContext::commit(): no active write slot");
+            throw std::logic_error("TransactionContext::publish(): no active write slot");
         }
 
-        // Commit the slot (this also releases it)
         bool success = m_current_write_slot->commit(sizeof(DataBlockT));
         if (!success)
         {
-            throw std::runtime_error("TransactionContext::commit(): commit failed");
+            throw std::runtime_error("TransactionContext::publish(): publish failed");
         }
 
-        // Release the slot handle
         if (m_handle)
         {
             m_handle->release_write_slot(*m_current_write_slot);
         }
 
-        m_current_write_slot.reset();
+        // Clear the raw pointer — slot is released. SlotIterator's unique_ptr still holds
+        // the handle but release_write_handle() will detect impl.released==true and no-op.
+        m_current_write_slot = nullptr;
     }
 
     // ====================================================================
-    // Transaction Operations (Consumer only)
+    // Flexible Zone Checksum Control (Producer only)
     // ====================================================================
 
     /**
-     * @brief Validate current read slot (consumer only)
-     * @return true if slot is still valid, false if invalid
-     * 
-     * Checks if the currently acquired slot is still valid:
-     * - Checksums match (if enforced)
-     * - Slot hasn't been overwritten (in ring buffer scenarios)
-     * 
-     * Should be called before processing slot data.
+     * @brief Immediately update the flexzone checksum (producer only)
+     *
+     * Computes and stores the BLAKE2b checksum of the flexible zone right now,
+     * under the producer mutex. Use this when you want explicit control over when
+     * the checksum is updated rather than relying on the auto-update at
+     * with_transaction exit.
+     *
+     * No-op if FlexZoneT is void or the handle is null.
      */
-    [[nodiscard]] bool validate_read() const requires(!IsWrite)
+    void publish_flexzone() requires IsWrite
     {
-        if (!m_current_read_slot)
+        if constexpr (!std::is_void_v<FlexZoneT>)
         {
-            return false;
+            if (m_handle)
+            {
+                (void)m_handle->update_checksum_flexible_zone();
+            }
         }
+    }
 
-        // Validate checksum if policy requires
-        // (This delegates to the underlying slot handle's validation)
-        return true; // Placeholder: actual validation in SlotConsumeHandle
+    /**
+     * @brief Suppress the automatic flexzone checksum update at with_transaction exit.
+     *
+     * By default, with_transaction updates the flexzone checksum on normal (non-exception)
+     * exit. Call this to opt out — useful when you did not modify the flexzone content
+     * and want to avoid an unnecessary checksum recomputation, or when you want to
+     * leave the existing checksum deliberately unchanged.
+     *
+     * Has no effect when called during exception propagation (auto-update is already
+     * suppressed on the exception path).
+     */
+    void suppress_flexzone_checksum() requires IsWrite
+    {
+        m_suppress_flexzone_checksum = true;
+    }
+
+    /**
+     * @brief Returns true if flexzone checksum auto-update is suppressed.
+     * Called by with_transaction after the lambda returns to decide whether to update.
+     */
+    [[nodiscard]] bool is_flexzone_checksum_suppressed() const noexcept requires IsWrite
+    {
+        return m_suppress_flexzone_checksum;
     }
 
     // ====================================================================
@@ -287,11 +295,9 @@ class TransactionContext
 
     /**
      * @brief Update heartbeat (convenience wrapper)
-     * 
+     *
      * Forwards to producer/consumer update_heartbeat().
-     * Useful when inside transaction but not acquiring slots.
-     * 
-     * Example: During long event processing in iterator loop.
+     * Useful when inside a long-running transaction loop without slot activity.
      */
     void update_heartbeat()
     {
@@ -302,142 +308,26 @@ class TransactionContext
     }
 
     // ====================================================================
-    // Context Metadata
-    // ====================================================================
-
-    /**
-     * @brief Get datablock configuration
-     * @return Const reference to DataBlockConfig
-     */
-    [[nodiscard]] const DataBlockConfig &config() const
-    {
-        if (!m_handle)
-        {
-            throw std::logic_error("TransactionContext::config(): handle is null");
-        }
-        return m_handle->config();
-    }
-
-    // Note: layout() method removed - DataBlockLayout is internal implementation detail
-
-    // ====================================================================
     // Internal Access (for SlotIterator)
     // ====================================================================
 
     /**
      * @brief Get underlying handle (internal use by SlotIterator)
-     * @return Pointer to Producer or Consumer
      */
     [[nodiscard]] HandleType *handle() const noexcept { return m_handle; }
 
-    /**
-     * @brief Set current write slot (internal use by SlotIterator)
-     */
-    void set_current_slot(SlotWriteHandle *slot) requires IsWrite
-    {
-        m_current_write_slot.reset(slot);
-    }
-
-    /**
-     * @brief Set current read slot (internal use by SlotIterator)
-     */
-    void set_current_slot(SlotConsumeHandle *slot) requires(!IsWrite)
-    {
-        m_current_read_slot.reset(slot);
-    }
-
   private:
-    // ====================================================================
-    // Entry Validation
-    // ====================================================================
+    HandleType *m_handle;                         // Producer or Consumer
+    std::chrono::milliseconds m_default_timeout;  // Default timeout for slot ops
 
-    /**
-     * @brief Perform entry validation (called from constructor)
-     * @throws std::runtime_error if validation fails
-     */
-    void validate_entry()
-    {
-        validate_schema();
-        validate_layout();
-        validate_checksums();
-    }
+    // Non-owning pointer to the current write slot (owned by SlotIterator).
+    // Set by SlotIterator via the pointer-to-pointer mechanism in slots().
+    // Cleared by publish() after release, and by SlotIterator on destruction.
+    SlotWriteHandle *m_current_write_slot = nullptr; // For producer; null for consumer
 
-    /**
-     * @brief Validate schema (if registered)
-     * @throws std::runtime_error if schema mismatch
-     * 
-     * Phase 3.7: Size-based validation (complete)
-     * - Validates sizeof(FlexZoneT) <= cfg.flex_zone_size
-     * - Validates sizeof(DataBlockT) <= cfg.ring_buffer.slot_bytes
-     * 
-     * Future: Full BLDS-based schema validation
-     * - Compare against stored schema::SchemaInfo hash
-     * - Validate member-level compatibility
-     */
-    void validate_schema()
-    {
-        const auto &cfg = config();
-
-        // Validate flexible zone size
-        if constexpr (!std::is_void_v<FlexZoneT>)
-        {
-            if (cfg.flex_zone_size < sizeof(FlexZoneT))
-            {
-                throw std::runtime_error(
-                    "TransactionContext: flexible zone size (" + std::to_string(cfg.flex_zone_size) +
-                    " bytes) is smaller than sizeof(FlexZoneT) (" + std::to_string(sizeof(FlexZoneT)) + " bytes)");
-            }
-        }
-
-        // Validate slot size
-        size_t slot_size = cfg.ring_buffer.slot_bytes;
-        if (slot_size < sizeof(DataBlockT))
-        {
-            throw std::runtime_error(
-                "TransactionContext: slot size (" + std::to_string(slot_size) +
-                " bytes) is smaller than sizeof(DataBlockT) (" + std::to_string(sizeof(DataBlockT)) + " bytes)");
-        }
-    }
-
-    /**
-     * @brief Validate layout (consistency checks)
-     */
-    void validate_layout()
-    {
-        // Basic sanity checks on config
-        const auto &cfg = config();
-
-        if (cfg.ring_buffer.num_slots == 0)
-        {
-            throw std::runtime_error("TransactionContext: slot count is zero");
-        }
-
-        if (cfg.ring_buffer.slot_bytes == 0)
-        {
-            throw std::runtime_error("TransactionContext: slot stride is zero");
-        }
-    }
-
-    /**
-     * @brief Validate checksums (if policy requires)
-     */
-    void validate_checksums()
-    {
-        // Checksum validation will be performed by the underlying
-        // Producer/Consumer at slot acquisition time
-        // This is just a placeholder for future policy checks
-    }
-
-    // ====================================================================
-    // Member Variables
-    // ====================================================================
-
-    HandleType *m_handle;                                  // Producer or Consumer
-    std::chrono::milliseconds m_default_timeout;           // Default timeout for slot ops
-
-    // Current slot (only one active at a time per context)
-    std::unique_ptr<SlotWriteHandle> m_current_write_slot;    // For producer
-    std::unique_ptr<SlotConsumeHandle> m_current_read_slot;   // For consumer
+    // When true, with_transaction will not auto-update the flexzone checksum on exit.
+    // Set via suppress_flexzone_checksum(). Only meaningful for IsWrite=true.
+    bool m_suppress_flexzone_checksum = false;
 };
 
 // ====================================================================

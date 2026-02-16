@@ -59,14 +59,20 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
         // Check if lock holder is dead
         if (expected_pid != 0 && !pylabhub::platform::is_process_alive(expected_pid))
         {
-            // Force reclaim zombie lock
-            LOGGER_WARN("SharedSpinLock '{}': Detected dead owner PID {}. Force reclaiming.",
-                        m_name, expected_pid);
-            m_state->owner_pid.store(my_pid, std::memory_order_release);
-            m_state->owner_tid.store(my_tid, std::memory_order_release);
-            m_state->recursion_count.store(1, std::memory_order_relaxed);
-            m_state->generation.fetch_add(1, std::memory_order_relaxed);
-            return true;
+            // Use CAS (not store) to reclaim zombie lock so only one process wins when
+            // multiple processes detect the same dead holder simultaneously.
+            uint64_t zombie_pid = expected_pid;
+            if (m_state->owner_pid.compare_exchange_strong(
+                    zombie_pid, my_pid, std::memory_order_acquire, std::memory_order_relaxed))
+            {
+                LOGGER_WARN("SharedSpinLock '{}': Reclaimed zombie lock from dead PID {}.",
+                            m_name, expected_pid);
+                m_state->owner_tid.store(my_tid, std::memory_order_release);
+                m_state->recursion_count.store(1, std::memory_order_relaxed);
+                m_state->generation.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            }
+            // Lost the reclaim race — another process grabbed it first; fall through to spin/timeout.
         }
 
         // Timeout check
