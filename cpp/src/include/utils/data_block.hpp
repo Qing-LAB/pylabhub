@@ -995,24 +995,26 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     [[nodiscard]] bool verify_checksum_slot(size_t slot_index) const noexcept;
 
     // --- Heartbeat Management ---
+    // Heartbeat registration and deregistration are managed automatically:
+    //   - register_heartbeat() is called by find_datablock_consumer<>() at construction.
+    //   - unregister_heartbeat() is called by the DataBlockConsumer destructor.
+    // These methods are public for advanced use (e.g. attaching a consumer without the factory),
+    // but normal callers do not need to call them directly.
+
     /** @brief Registers the consumer in the heartbeat table. Returns the slot index or -1 on
-     * failure. */
+     * failure (pool exhausted). Normally called automatically by the factory function. */
     [[nodiscard]] int register_heartbeat();
-    
-    /** @brief Updates the heartbeat for the given slot. */
+
+    /** @brief Updates the heartbeat for the given slot index. */
     void update_heartbeat(int slot);
-    
-    /** @brief Updates the heartbeat using the registered slot (convenience). 
-     * 
-     * Phase 3.8: Convenience overload for use within transactions.
-     * Updates the heartbeat for the currently registered slot.
-     * No-op if heartbeat not registered.
-     * 
-     * Example: During long event processing in iterator loop.
-     */
+
+    /** @brief Updates the heartbeat for the currently registered slot.
+     * No-op if no heartbeat slot is registered.
+     * Call during long idle periods inside a transaction loop to signal liveness. */
     void update_heartbeat() noexcept;
-    
-    /** @brief Unregisters the consumer from the heartbeat table. */
+
+    /** @brief Unregisters the consumer from the heartbeat table.
+     * Normally called automatically by the destructor. */
     void unregister_heartbeat(int slot);
 
     // ─── Primitive Data Transfer API ───

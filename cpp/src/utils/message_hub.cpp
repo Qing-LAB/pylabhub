@@ -24,7 +24,7 @@ constexpr size_t kSchemaHashBytes = 32;
 constexpr unsigned int kNibbleMask = 0x0FU;
 constexpr int kHexLetterOffset = 10; // 'a'-'f' and 'A'-'F' value offset
 constexpr size_t kZ85KeyBufSize = 41;    // 40 chars + null
-constexpr int kHubShutdownTimeoutMs = 5000;
+constexpr std::chrono::milliseconds kHubShutdownTimeoutMs{5000};
 
 bool is_valid_z85_key(const std::string &key)
 {

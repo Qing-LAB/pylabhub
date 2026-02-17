@@ -121,30 +121,32 @@ TEST_F(LifecycleTest, StaticElaborateIndirectCycleAborts)
 }
 
 // ============================================================================
-// Module name C-string validation (MAX_MODULE_NAME_LEN = 256, null-terminated)
+// Module name string_view validation (MAX_MODULE_NAME_LEN = 256)
 // ============================================================================
 
-TEST_F(LifecycleTest, ModuleDef_RejectsNullName)
+TEST_F(LifecycleTest, ModuleDef_RejectsEmptyName)
 {
-    EXPECT_THROW(ModuleDef(nullptr), std::invalid_argument);
+    // With string_view API, empty string replaces null as the "invalid name" case.
+    EXPECT_THROW(ModuleDef(""), std::invalid_argument);
 }
 
 TEST_F(LifecycleTest, ModuleDef_RejectsNameExceedingMaxLength)
 {
     std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'x');
-    EXPECT_THROW(ModuleDef mod(long_name.c_str()), std::length_error);
+    EXPECT_THROW(ModuleDef mod(long_name), std::length_error);
 }
 
 TEST_F(LifecycleTest, ModuleDef_AcceptsNameAtMaxLength)
 {
     std::string max_name(ModuleDef::MAX_MODULE_NAME_LEN, 'a');
-    EXPECT_NO_THROW({ ModuleDef mod(max_name.c_str()); });
+    EXPECT_NO_THROW({ ModuleDef mod(max_name); });
 }
 
-TEST_F(LifecycleTest, AddDependency_IgnoresNull)
+TEST_F(LifecycleTest, AddDependency_IgnoresEmpty)
 {
+    // With string_view API, empty string replaces null — silently ignored.
     ModuleDef mod("ValidModule");
-    EXPECT_NO_THROW(mod.add_dependency(nullptr));
+    EXPECT_NO_THROW(mod.add_dependency(""));
 }
 
 TEST_F(LifecycleTest, AddDependency_RejectsNameExceedingMaxLength)
@@ -184,4 +186,57 @@ TEST_F(LifecycleTest, UnloadModule_ReturnsFalseForNameExceedingMaxLength)
     WorkerProcess proc(g_self_exe_path, "lifecycle.unload_module_overflow_returns_false", {});
     ASSERT_TRUE(proc.valid());
     ASSERT_EQ(proc.wait_for_exit(), 0);
+}
+
+// ============================================================================
+// Log sink injection tests
+// ============================================================================
+
+// Test that an installed log sink receives the warning emitted when unload_module
+// is called on a module that is still referenced by another loaded module.
+TEST_F(LifecycleTest, LogSink_RoutesWarningThroughSink)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.log_sink_routes_warning", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("LIFECYCLE_SINK:"));
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("Cannot unload module"));
+}
+
+// Test that clearing the log sink stops routing through it (messages fall back to PLH_DEBUG).
+TEST_F(LifecycleTest, LogSink_ClearedStopsRouting)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.log_sink_cleared_uses_fallback", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+    // The sink must NOT have been called — its prefix should be absent.
+    ASSERT_THAT(proc.get_stderr(), Not(HasSubstr("LIFECYCLE_SINK:")));
+}
+
+// ============================================================================
+// Async unload + finalize interaction
+// ============================================================================
+
+// Test that finalize() waits for a pending async unload even when WaitForUnload
+// was never called explicitly — the LifecycleGuard destructor must drain the
+// shutdown thread and guarantee the stop callback ran before returning.
+TEST_F(LifecycleTest, FinalizeWaitsForPendingAsyncUnload)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.finalize_waits_for_pending_async_unload", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+}
+
+// Test that the log sink and logger both survive a timed-out async module shutdown
+// that overlaps with the final shutdown sequence.  Specifically verifies that:
+//  - lifecycleError() routes through LOGGER_ERROR while the logger is still running.
+//  - do_logger_shutdown removes the sink before tearing down the logger queue.
+//  - The process exits cleanly (no crash, no use-after-free).
+TEST_F(LifecycleTest, FinalizeSinkSafeDuringAsyncShutdownFailure)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.finalize_sink_safe_during_async_failure", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+    // The timeout error must have been emitted (either via sink→logger or PLH_DEBUG).
+    ASSERT_THAT(proc.get_stderr(), HasSubstr("TIMED OUT"));
 }

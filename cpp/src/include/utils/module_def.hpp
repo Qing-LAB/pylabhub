@@ -5,8 +5,10 @@
  */
 #include "pylabhub_utils_export.h"
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <string_view>
 
 // Disable warning C4251 on MSVC. This is a common practice for exported classes
 // that use std::unique_ptr to a forward-declared (incomplete) type (Pimpl).
@@ -27,134 +29,133 @@ class LifecycleManager; // Forward-declaration for the friend class
 /**
  * @brief A function pointer type for module startup and shutdown callbacks.
  *
- * Using a C-style function pointer is essential for ABI stability, as it has a
- * standardized calling convention, unlike `std::function`. The argument is
- * optional; `nullptr` will be passed if no argument is provided.
+ * Using a C-style function pointer is intentional and essential for ABI stability
+ * across shared library boundaries — it has a standardised calling convention,
+ * unlike `std::function`. The `arg` pointer is never null when a startup/shutdown
+ * argument was supplied; it is `nullptr` when none was given.
+ *
+ * **Do not change this to `std::string_view` or any other C++ type**: function
+ * pointers cross `.so` / DLL boundaries and must use C-compatible signatures.
  */
-typedef void (*LifecycleCallback)(const char *arg);
+using LifecycleCallback = void (*)(const char *arg);
 
 /**
  * @class ModuleDef
- * @brief An ABI-safe object for defining a lifecycle module's properties.
+ * @brief An ABI-safe builder for a lifecycle module definition.
  *
- * This class acts as a builder for a module definition. It uses the Pimpl idiom
- * to hide its internal `std::string` and `std::vector` members, making it safe
- * to create and pass this object across shared library boundaries.
+ * `ModuleDef` uses the Pimpl idiom to hide its internal `std::string` and
+ * `std::vector` members, making it safe to create and pass across shared-library
+ * boundaries without exposing STL internals in the ABI.
  *
- * It is movable but not copyable, enforcing a clear ownership model. Once a
+ * It is movable but not copyable, enforcing a clear ownership model.  Once a
  * `ModuleDef` is registered with the `LifecycleManager`, ownership is transferred.
  *
- * **C-string requirements for module and dependency names:**
- * All `const char*` parameters for module names (e.g., `name`, `dependency_name`)
- * and names passed to `load_module`/`unload_module` must satisfy:
- * - Be a valid C-string (null-terminated)
- * - Have length (excluding the null terminator) not exceeding `MAX_MODULE_NAME_LEN` (256)
- *
- * Malformed or oversized strings are rejected to protect against buffer overreads
- * and excessive memory allocation. Violations throw `std::invalid_argument` or
- * `std::length_error`.
+ * **Name length limit:** all module and dependency names must not exceed
+ * `MAX_MODULE_NAME_LEN` characters.  Violations are rejected at the point of
+ * call with a `std::length_error` so there is no silent truncation.
  */
 class PYLABHUB_UTILS_EXPORT ModuleDef
 {
   public:
     /**
-     * @brief The maximum allowed length for a module or dependency name.
+     * @brief Maximum number of characters allowed in a module or dependency name.
      *
-     * Module names and dependency names must be null-terminated C-strings with
-     * length (excluding the null terminator) not exceeding this value. This limit
-     * protects against buffer overreads and malicious or accidental oversized
-     * inputs.
+     * Enforced in `ModuleDef(std::string_view)` and `add_dependency()`.
+     * Kept as a `size_t` so it compares directly against `std::string_view::size()`.
      */
     static constexpr size_t MAX_MODULE_NAME_LEN = 256;
 
     /**
-     * @brief The maximum allowed length for a callback string argument.
+     * @brief Maximum number of characters allowed in a callback string argument.
      *
-     * This limit prevents excessive memory allocation for callback arguments.
-     * An exception will be thrown if this limit is exceeded.
+     * Enforced in `set_startup(cb, arg)` and `set_shutdown(cb, timeout, arg)`.
      */
     static constexpr size_t MAX_CALLBACK_PARAM_STRLEN = 1024;
 
     /**
      * @brief Constructs a module definition with a given name.
-     * @param name The unique name for this module (e.g., "Logger", "Database").
-     *             Must be a null-terminated C-string. Length must not exceed
-     *             MAX_MODULE_NAME_LEN (256). Must not be null.
-     * @throws std::invalid_argument if name is null or not null-terminated.
-     * @throws std::length_error if string length exceeds MAX_MODULE_NAME_LEN.
+     *
+     * @param name Unique name for this module (e.g. `"Logger"`, `"Database"`).
+     *             Must be non-empty and at most `MAX_MODULE_NAME_LEN` characters.
+     * @throws std::invalid_argument if `name` is empty.
+     * @throws std::length_error     if `name.size() > MAX_MODULE_NAME_LEN`.
      */
-    explicit ModuleDef(const char *name);
+    explicit ModuleDef(std::string_view name);
 
-    /// @brief Destructor. Must be defined in the .cpp file for the Pimpl idiom.
+    /// @brief Destructor. Defined in the .cpp file to satisfy the Pimpl idiom.
     ~ModuleDef();
 
     // --- Rule of Five: Movable, but not Copyable ---
-    // The move constructor and assignment operators are defaulted in the .cpp file.
-    // to ensure they are generated where ModuleDefImpl is a complete type.
+    // Move constructor/assignment are defined in the .cpp where ModuleDefImpl is complete.
     ModuleDef(ModuleDef &&other) noexcept;
     ModuleDef &operator=(ModuleDef &&other) noexcept;
     ModuleDef(const ModuleDef &) = delete;
     ModuleDef &operator=(const ModuleDef &) = delete;
 
     /**
-     * @brief Adds a dependency to this module.
-     * @param dependency_name The name of the module that this module depends on.
-     *                        Must be a null-terminated C-string. Length must not
-     *                        exceed MAX_MODULE_NAME_LEN (256). Ignored if null.
-     * @throws std::length_error if string length exceeds MAX_MODULE_NAME_LEN or
-     *         if the string is not null-terminated within MAX_MODULE_NAME_LEN chars.
+     * @brief Declares a dependency on another module.
+     *
+     * The `LifecycleManager` ensures the named module is started before this one
+     * and shut down after it.  An empty `dependency_name` is silently ignored.
+     *
+     * @param dependency_name Name of the module this module depends on.
+     *                        At most `MAX_MODULE_NAME_LEN` characters.
+     * @throws std::length_error if `dependency_name.size() > MAX_MODULE_NAME_LEN`.
      */
-    void add_dependency(const char *dependency_name);
+    void add_dependency(std::string_view dependency_name);
 
     /**
-     * @brief Sets the startup callback for this module (no argument).
-     * @param startup_func The callback to be called on startup.
+     * @brief Sets the startup callback (no argument variant).
+     * @param startup_func Called on module startup; must not be null.
      */
     void set_startup(LifecycleCallback startup_func);
 
     /**
      * @brief Sets the startup callback with a string argument.
-     * @param startup_func The callback to be called on startup.
-     * @param data A pointer to the string data.
-     * @param len The length of the string data.
-     * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
+     *
+     * @param startup_func Called on module startup; must not be null.
+     * @param arg          Argument forwarded to `startup_func` as a null-terminated
+     *                     C-string.  At most `MAX_CALLBACK_PARAM_STRLEN` characters.
+     * @throws std::length_error if `arg.size() > MAX_CALLBACK_PARAM_STRLEN`.
      */
-    void set_startup(LifecycleCallback startup_func, const char *data, size_t len);
+    void set_startup(LifecycleCallback startup_func, std::string_view arg);
 
     /**
-     * @brief Sets the shutdown callback for this module (no argument).
-     * @param shutdown_func The callback to be called on shutdown.
-     * @param timeout_ms The timeout in milliseconds for the shutdown function.
+     * @brief Sets the shutdown callback (no argument variant).
+     *
+     * @param shutdown_func Called on module shutdown; must not be null.
+     * @param timeout       Maximum time allowed for the callback to complete.
+     *                      Use `std::chrono::milliseconds(0)` for no timeout (runs
+     *                      until completion, no thread detach).
      */
-    void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms);
+    void set_shutdown(LifecycleCallback shutdown_func, std::chrono::milliseconds timeout);
 
     /**
      * @brief Sets the shutdown callback with a string argument.
-     * @param shutdown_func The callback to be called on shutdown.
-     * @param timeout_ms The timeout in milliseconds for the shutdown function.
-     * @param data A pointer to the string data.
-     * @param len The length of the string data.
-     * @throws std::length_error if `len` > `MAX_CALLBACK_PARAM_STRLEN`.
+     *
+     * @param shutdown_func Called on module shutdown; must not be null.
+     * @param timeout       Maximum time allowed for the callback to complete.
+     * @param arg           Argument forwarded to `shutdown_func` as a null-terminated
+     *                      C-string.  At most `MAX_CALLBACK_PARAM_STRLEN` characters.
+     * @throws std::length_error if `arg.size() > MAX_CALLBACK_PARAM_STRLEN`.
      */
-    void set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms, const char *data,
-                      size_t len);
+    void set_shutdown(LifecycleCallback shutdown_func, std::chrono::milliseconds timeout,
+                      std::string_view arg);
 
     /**
-     * @brief Marks this module as persistent.
-     * @details A persistent dynamic module, once loaded, will not be unloaded
-     * automatically when its reference count drops to zero. It will only be
-     * unloaded when the application is finalized. This is useful for modules that
-     * are costly to initialize and should stay loaded. This flag has no effect
-     * on static modules.
-     * @param persistent If `true` (default), marks the module as persistent.
+     * @brief Marks this module as persistent (dynamic modules only).
+     *
+     * A persistent dynamic module will not be unloaded when its reference count
+     * drops to zero — it stays loaded until `finalize()` is called.  Useful for
+     * expensive-to-initialise services that should remain active for the entire
+     * application lifetime.  Has no effect on static modules.
+     *
+     * @param persistent `true` (default) to mark as persistent.
      */
     void set_as_persistent(bool persistent = true);
 
   private:
-    // This friend declaration allows LifecycleManager to access the private pImpl
-    // member to extract the module definition. This is a controlled way to
-    // break encapsulation for the Pimpl pattern without exposing implementation
-    // details publicly.
+    // LifecycleManager is the sole consumer of the pImpl internals.
     friend class LifecycleManager;
     std::unique_ptr<ModuleDefImpl> pImpl;
 };

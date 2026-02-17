@@ -111,6 +111,12 @@ inline void increment_metric_reader_validation_failed(SharedMemoryHeader* header
     }
 }
 
+inline void increment_metric_slot_acquire_errors(SharedMemoryHeader* header) noexcept {
+    if (header != nullptr) {
+        header->slot_acquire_errors.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 /** 
  * Increment total commit count. Called on every successful slot commit.
  * Memory ordering: release (synchronizes with readers checking commit progress).
@@ -151,9 +157,14 @@ inline void update_reader_peak_count(SharedMemoryHeader* header, uint32_t curren
     if (header == nullptr) {
         return;
     }
+    // CAS loop: atomically update peak only if current_count exceeds it.
+    // Avoids TOCTOU race between load and store on concurrent reader releases.
     uint64_t peak = header->reader_peak_count.load(std::memory_order_relaxed);
-    if (current_count > peak) {
-        header->reader_peak_count.store(current_count, std::memory_order_relaxed);
+    while (current_count > peak &&
+           !header->reader_peak_count.compare_exchange_weak(peak, current_count,
+                                                            std::memory_order_relaxed,
+                                                            std::memory_order_relaxed))
+    {
     }
 }
 
@@ -315,10 +326,14 @@ constexpr uint64_t kNanosecondsPerMillisecond = 1'000'000ULL;
 /// hoists the threshold multiply out of the loop — only a 64-bit compare remains per iteration.
 inline bool spin_elapsed_ms_exceeded(uint64_t start_time_ns, int timeout_ms)
 {
-    if (timeout_ms == 0) return true;  // non-blocking: expire immediately on first miss
-    if (timeout_ms < 0)  return false; // infinite: never expire
+    if (timeout_ms == 0) {
+        return true; // non-blocking: expire immediately on first miss
+    }
+    if (timeout_ms < 0) {
+        return false; // infinite: never expire
+    }
     // Convert threshold to nanoseconds once; compare elapsed_ns directly (no division).
-    const uint64_t timeout_ns = static_cast<uint64_t>(timeout_ms) * 1'000'000ULL;
+    const uint64_t timeout_ns = static_cast<uint64_t>(timeout_ms) * kNanosecondsPerMillisecond;
     return pylabhub::platform::elapsed_time_ns(start_time_ns) >= timeout_ns;
 }
 
@@ -1263,17 +1278,19 @@ class DataBlock
     {
         if (index >= detail::MAX_SHARED_SPINLOCKS)
         {
-            throw std::out_of_range("Spinlock index out of range.");
+            return nullptr; // Programming error; caller checks nullptr
         }
         return &m_header->spinlock_states[index];
     }
 
-    [[nodiscard]] SlotRWState *slot_rw_state(size_t index) const
+    // Returns nullptr on out-of-range (programming error) rather than throwing, so that
+    // noexcept callers (acquire_write_slot, acquire_consume_slot, try_next) can handle it
+    // via their existing null checks without risking std::terminate through noexcept.
+    [[nodiscard]] SlotRWState *slot_rw_state(size_t index) const noexcept
     {
         if (m_header == nullptr || index >= m_layout.slot_count_value())
         {
-            throw std::out_of_range(
-                fmt::format("SlotRWState index {} out of range or header invalid.", index));
+            return nullptr;
         }
         return &m_slot_rw_states_array[index];
     }
@@ -1892,7 +1909,6 @@ bool DataBlockProducer::update_checksum_slot(size_t slot_index) noexcept
                : false;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- slot_rw_state may throw; callers expect noexcept
 std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeout_ms) noexcept
 {
     if (pImpl == nullptr)
@@ -1936,7 +1952,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     SlotRWState *rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
     if (rw_state == nullptr)
     {
-        return nullptr; // Should not happen, slot_rw_state throws on error
+        return nullptr; // Should not happen: slot_id % slot_count always in range
     }
 
     // Acquire write lock for this slot
@@ -2074,7 +2090,6 @@ DataBlockSlotIterator::DataBlockSlotIterator(DataBlockSlotIterator &&other) noex
 DataBlockSlotIterator &
 DataBlockSlotIterator::operator=(DataBlockSlotIterator &&other) noexcept = default;
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- slot_rw_state may throw; callers expect noexcept
 DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms) noexcept
 {
     NextResult result{};
@@ -2600,7 +2615,7 @@ bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const noexcept
                : false;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape,readability-function-cognitive-complexity) -- slot_rw_state may throw; structured acquire flow
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- structured multi-step slot acquire flow
 std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int timeout_ms) noexcept
 {
     if (pImpl == nullptr)
@@ -2624,13 +2639,12 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     SlotAcquireResult acquire_res{};
 
     // Sync_reader: heartbeat is registered at construction time (find_datablock_consumer_impl).
-    // Read position is initialized there too. Verify registration is active; return nullptr
-    // only if heartbeat pool exhaustion occurred at construction (heartbeat_slot == -1).
+    // Read position is initialized there too. If heartbeat registration failed (pool exhausted),
+    // the warning was already logged once at construction — only increment metric here to avoid
+    // flooding the log on every acquire call.
     if (policy == ConsumerSyncPolicy::Sync_reader && pImpl->heartbeat_slot < 0)
     {
-        LOGGER_WARN("DataBlockConsumer::acquire_consume_slot: Sync_reader consumer '{}' has no "
-                    "heartbeat slot registered. Heartbeat pool may be exhausted (max={}).",
-                    pImpl->name, detail::MAX_CONSUMER_HEARTBEATS);
+        detail::increment_metric_slot_acquire_errors(header);
         return nullptr;
     }
 
@@ -2688,7 +2702,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(handle_impl)));
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters,bugprone-exception-escape) -- slot_id then timeout_ms; slot_rw_state may throw
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- slot_id then timeout_ms; intentional ordering
 std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint64_t slot_id,
                                                                            int timeout_ms) noexcept
 {

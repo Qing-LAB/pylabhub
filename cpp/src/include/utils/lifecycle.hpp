@@ -107,6 +107,45 @@ template <typename... Mods> inline std::vector<ModuleDef> MakeModDefList(Mods &&
 }
 
 /**
+ * @brief Severity levels for lifecycle manager internal log messages.
+ *
+ * Used by `LifecycleLogSink` callbacks installed via `SetLifecycleLogSink()`.
+ * The values are intentionally sparse to allow future levels without ABI breakage.
+ */
+enum class LifecycleLogLevel : int
+{
+    Debug = 1, ///< Verbose/diagnostic messages.
+    Warn  = 3, ///< Warnings: recoverable policy violations or unexpected states.
+    Error = 4  ///< Errors: unload failures, contamination, destabilization.
+};
+
+/**
+ * @brief Callback type for the lifecycle log sink.
+ *
+ * Install one via `SetLifecycleLogSink()`. When set, the lifecycle manager
+ * routes its runtime log messages through this function instead of PLH_DEBUG.
+ * The callback must be thread-safe (it may be invoked from the shutdown thread).
+ */
+using LifecycleLogSink = std::function<void(LifecycleLogLevel, const std::string &)>;
+
+/**
+ * @brief Runtime state of a dynamic module.
+ *
+ * Returned by `LifecycleManager::dynamic_module_state()` to allow callers to
+ * inspect or poll the lifecycle of a dynamic module without blocking.
+ */
+enum class DynModuleState : int
+{
+    NotRegistered,  ///< Module not found in the manager (never registered, or already removed).
+    Unloaded,       ///< Registered but never loaded (or successfully removed from graph).
+    Loading,        ///< Startup callback is currently running.
+    Loaded,         ///< Fully loaded and running.
+    Unloading,      ///< Async shutdown is in progress.
+    ShutdownTimeout, ///< Shutdown timed out; thread was detached. Module may be destabilized.
+    ShutdownFailed  ///< Shutdown threw an exception. Module may be destabilized.
+};
+
+/**
  * @class LifecycleManager
  * @brief The ABI-safe singleton manager for the application lifecycle.
  *
@@ -170,7 +209,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *
      * @return `true` if `initialize()` has been called, `false` otherwise.
      */
-    bool is_initialized();
+    [[nodiscard]] bool is_initialized();
 
     /**
      * @brief Checks if the lifecycle manager has been finalized.
@@ -179,7 +218,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *
      * @return `true` if `finalize()` has been called, `false` otherwise.
      */
-    bool is_finalized();
+    [[nodiscard]] bool is_finalized();
 
     /**
      * @brief Registers a dynamic module with the lifecycle system.
@@ -194,7 +233,7 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *         failed (e.g., a module with the same name exists, or a dependency
      *         is not found).
      */
-    bool register_dynamic_module(ModuleDef &&module_def);
+    [[nodiscard]] bool register_dynamic_module(ModuleDef &&module_def);
 
     /**
      * @brief Loads a dynamic module and its dependencies.
@@ -209,35 +248,93 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      *       A direct call to `load_module` does not increment this count; it
      *       simply ensures the module is in the `LOADED` state.
      *
-     * @param name The name of the module to load. Must be a null-terminated
-     *             C-string. Length must not exceed ModuleDef::MAX_MODULE_NAME_LEN
-     *             (256). Returns false if null or invalid.
+     * @param name Name of the module to load. At most `ModuleDef::MAX_MODULE_NAME_LEN`
+     *             characters; empty name returns `false`.
      * @return `true` if the module was loaded successfully, `false` otherwise.
      */
-    bool load_module(const char *name, std::source_location loc);
+    [[nodiscard]] bool load_module(std::string_view name, std::source_location loc);
 
     /**
-     * @brief Unloads a dynamic module and de-registers it.
+     * @brief Schedules an async unload of a dynamic module and its closure.
      *
      * This function is thread-safe and idempotent. It will only succeed if no
      * other loaded dynamic modules depend on the target module (i.e., its
-     * internal reference count is zero). A successful unload performs these steps:
-     * 1.  Runs the module's `shutdown()` callback.
-     * 2.  Recursively unloads any of its dependencies that are no longer needed.
-     * 3.  **Removes the module and its unreferenced dependencies from the manager.**
+     * internal reference count is zero). A successful call performs:
+     * 1.  Marks the full transitive closure of modules upfront (preventing new loads).
+     * 2.  Enqueues them for the dedicated shutdown thread.
+     * 3.  Returns immediately — the shutdown callbacks run asynchronously.
+     *
+     * Use `wait_for_unload()` to synchronise when you need to know the shutdown
+     * callbacks have actually completed.
      *
      * To reload a module that has been unloaded, it must be registered again via
-     * `register_dynamic_module()`. This function must not be called from within a
-     * startup or shutdown callback.
+     * `register_dynamic_module()`. Must not be called from within a callback.
      *
-     * @param name The name of the module to unload. Must be a null-terminated
-     *             C-string. Length must not exceed ModuleDef::MAX_MODULE_NAME_LEN
-     *             (256). Returns false if null or invalid.
-     * @return `true` if the module was considered for unloading (even if it was
-     *         already unloaded). Returns `false` if the module could not be
-     *         unloaded because it is still in use by another loaded module.
+     * @param name Name of the module to unload. At most `ModuleDef::MAX_MODULE_NAME_LEN`
+     *             characters; empty name returns `false`.
+     * @return `true` if the unload was scheduled (or the module was already not loaded).
+     *         `false` if the module is still in use by another loaded module.
      */
-    bool unload_module(const char *name, std::source_location loc);
+    [[nodiscard]] bool unload_module(std::string_view name, std::source_location loc);
+
+    /**
+     * @brief Blocks until the unload triggered by `unload_module(name)` completes.
+     *
+     * `unload_module()` is asynchronous. Call this when you need to be sure the
+     * shutdown callbacks for `name` **and its entire dependency closure** have
+     * finished before proceeding (e.g. before checking side-effects in tests, or
+     * before re-registering the module).
+     *
+     * Returns immediately if the module was never scheduled for unload, has already
+     * finished unloading, or if `name` is empty.
+     *
+     * @param name    Root module name passed to `unload_module()`.
+     * @param timeout Maximum time to wait.  `{}` (zero duration) means wait
+     *                indefinitely.
+     * @return The final `DynModuleState` of the module after the wait:
+     *         - `NotRegistered` — module was removed from the graph (successful unload)
+     *           or name was empty / never registered.
+     *         - `Unloading`     — timeout expired; async shutdown is still in progress.
+     *         - `ShutdownTimeout` / `ShutdownFailed` — shutdown completed but failed;
+     *           module remains in the graph in a contaminated state.
+     */
+    DynModuleState wait_for_unload(std::string_view name,
+                                   std::chrono::milliseconds timeout = std::chrono::milliseconds{});
+
+    /**
+     * @brief Returns the current runtime state of a dynamic module.
+     *
+     * Thread-safe snapshot.  Returns `DynModuleState::NotRegistered` for unknown
+     * names, empty names, or static modules.
+     *
+     * @param name Module name (at most `ModuleDef::MAX_MODULE_NAME_LEN` characters).
+     */
+    DynModuleState dynamic_module_state(std::string_view name);
+
+    /**
+     * @brief Installs a log sink for lifecycle internal messages.
+     *
+     * Once installed, the lifecycle manager routes its runtime log messages
+     * through `sink` instead of PLH_DEBUG. The sink is invoked from whatever
+     * thread generates the message (including the dedicated async shutdown
+     * thread), so it must be thread-safe.
+     *
+     * Passing an empty/null `LifecycleLogSink` is equivalent to calling
+     * `clear_lifecycle_log_sink()`.
+     *
+     * Typical usage: call from the logger module's startup callback so that
+     * lifecycle events appear in the application log.
+     *
+     * @param sink Callable matching `LifecycleLogSink`; replaces any prior sink.
+     */
+    void set_lifecycle_log_sink(LifecycleLogSink sink);
+
+    /**
+     * @brief Removes the installed log sink. Lifecycle messages fall back to PLH_DEBUG.
+     *
+     * Call from the logger module's shutdown callback before the logger tears down.
+     */
+    void clear_lifecycle_log_sink() noexcept;
 
     // --- Rule of Five: Singleton, not Copyable or Assignable ---
     LifecycleManager(const LifecycleManager &) = delete;
@@ -320,30 +417,74 @@ inline bool RegisterDynamicModule(ModuleDef &&module_def)
 }
 
 /**
- * @brief A convenience function to load a dynamic module.
+ * @brief Loads a dynamic module and its dependencies.
  * @see LifecycleManager::load_module
- *
- * @param name The name of the module to load. Must be a null-terminated C-string,
- *             length not exceeding ModuleDef::MAX_MODULE_NAME_LEN (256).
- * @return `true` if the module was loaded successfully, `false` otherwise.
+ * @param name Module name; at most `ModuleDef::MAX_MODULE_NAME_LEN` characters.
+ * @return `true` if loaded successfully, `false` otherwise.
  */
-inline bool LoadModule(const char *name, std::source_location loc = std::source_location::current())
+[[nodiscard]] inline bool LoadModule(std::string_view name,
+                                     std::source_location loc = std::source_location::current())
 {
     return LifecycleManager::instance().load_module(name, loc);
 }
 
 /**
- * @brief A convenience function to unload a dynamic module.
+ * @brief Schedules an async unload of a dynamic module and its dependency closure.
  * @see LifecycleManager::unload_module
  *
- * @param name The name of the module to unload. Must be a null-terminated C-string,
- *             length not exceeding ModuleDef::MAX_MODULE_NAME_LEN (256).
- * @return `true` if the module was considered for unloading.
+ * Returns immediately — use `WaitForUnload()` to synchronise on completion.
+ *
+ * @param name Module name; at most `ModuleDef::MAX_MODULE_NAME_LEN` characters.
+ * @return `true` if the unload was scheduled, `false` if the module is still in use.
  */
-inline bool UnloadModule(const char *name,
-                         std::source_location loc = std::source_location::current())
+[[nodiscard]] inline bool UnloadModule(std::string_view name,
+                                       std::source_location loc = std::source_location::current())
 {
     return LifecycleManager::instance().unload_module(name, loc);
+}
+
+/**
+ * @brief Blocks until the unload of `name` (and its full closure) completes.
+ * @see LifecycleManager::wait_for_unload
+ *
+ * @param name    Root module name passed to `UnloadModule()`.
+ * @param timeout Maximum wait time.  `{}` means wait indefinitely.
+ * @return The final `DynModuleState` of the module:
+ *         `NotRegistered` on successful removal, `Unloading` on timeout,
+ *         `ShutdownTimeout`/`ShutdownFailed` if the shutdown callback failed.
+ */
+inline DynModuleState WaitForUnload(std::string_view name,
+                                    std::chrono::milliseconds timeout = std::chrono::milliseconds{})
+{
+    return LifecycleManager::instance().wait_for_unload(name, timeout);
+}
+
+/**
+ * @brief Returns the current runtime state of a dynamic module (non-blocking).
+ * @see LifecycleManager::dynamic_module_state
+ * @param name Module name; at most `ModuleDef::MAX_MODULE_NAME_LEN` characters.
+ */
+inline DynModuleState GetDynamicModuleState(std::string_view name)
+{
+    return LifecycleManager::instance().dynamic_module_state(name);
+}
+
+/**
+ * @brief Installs a lifecycle log sink so internal messages route through the application logger.
+ * @see LifecycleManager::set_lifecycle_log_sink
+ */
+inline void SetLifecycleLogSink(LifecycleLogSink sink)
+{
+    LifecycleManager::instance().set_lifecycle_log_sink(std::move(sink));
+}
+
+/**
+ * @brief Removes the installed lifecycle log sink. Messages fall back to PLH_DEBUG.
+ * @see LifecycleManager::clear_lifecycle_log_sink
+ */
+inline void ClearLifecycleLogSink() noexcept
+{
+    LifecycleManager::instance().clear_lifecycle_log_sink();
 }
 
 class LifecycleGuard
