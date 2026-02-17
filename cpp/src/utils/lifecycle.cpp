@@ -41,10 +41,12 @@
 
 #include "utils/lifecycle.hpp"
 #include "utils/module_def.hpp"
+#include <chrono>             // For std::chrono::milliseconds, steady_clock
 #include <condition_variable> // For std::condition_variable
 #include <cstdint>            // For std::uint8_t
 #include <fmt/ranges.h>       // For fmt::join on vectors
 #include <map>                // For std::map
+#include <mutex>              // For std::mutex, std::unique_lock, std::lock_guard
 #include <queue>              // For std::queue
 #include <set>                // For std::set
 #include <stdexcept>          // For std::runtime_error, std::length_error

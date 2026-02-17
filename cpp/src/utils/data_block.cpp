@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <thread>
 #include <chrono>

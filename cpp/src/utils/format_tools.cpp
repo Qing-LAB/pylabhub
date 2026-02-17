@@ -1,8 +1,11 @@
 // format_tools.cpp
 #include "plh_base.hpp"
 
+#include <optional>
+
 #if defined(PYLABHUB_PLATFORM_WIN64)
 #include <chrono>
+#include <filesystem>
 #include <random>
 #include <sstream>
 #endif
