@@ -964,7 +964,7 @@ class DataBlock
   public:
     // Single point of config validation and memory creation; do not add alternate creation paths without updating this.
     DataBlock(const std::string &name, const DataBlockConfig &config)
-        : m_name(name), m_is_creator(true)
+        : m_name(name), m_open_mode(DataBlockOpenMode::Create)
     {
         if (config.policy == DataBlockPolicy::Unset)
         {
@@ -1172,7 +1172,81 @@ class DataBlock
         LOGGER_INFO("DataBlock '{}' created with total size {} bytes.", m_name, m_size);
     }
 
-    DataBlock(std::string name) : m_name(std::move(name)), m_is_creator(false)
+    // WriteAttach / ReadAttach constructor: attaches to an existing segment without creating or
+    // initializing. Used for source processes (WriteAttach) and diagnostic tools (ReadAttach).
+    // The caller is responsible for passing the correct mode.
+    DataBlock(std::string name, DataBlockOpenMode mode)
+        : m_name(std::move(name)), m_open_mode(mode)
+    {
+        m_shm = pylabhub::platform::shm_attach(m_name.c_str());
+        if (m_shm.base == nullptr)
+        {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+            throw std::runtime_error(
+                fmt::format("Failed to open file mapping for attaching '{}'. Error: {}", m_name, GetLastError()));
+#else
+            throw std::runtime_error(
+                fmt::format("shm_attach failed for attaching '{}'. Error: {}", m_name, errno));
+#endif
+        }
+        m_size = m_shm.size;
+        m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
+
+        // Wait for creator to fully initialize the header (same 5 s timeout as ReadAttach).
+        const int max_wait_ms = 5000;
+        const int poll_interval_ms = 10;
+        int total_wait_ms = 0;
+        while (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER) &&
+               total_wait_ms < max_wait_ms)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+            total_wait_ms += poll_interval_ms;
+        }
+
+        if (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER))
+        {
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}' initialization timeout - creator may have crashed.", m_name));
+        }
+
+        // Validate version compatibility
+        if (m_header->version_major != DATABLOCK_VERSION_MAJOR ||
+            m_header->version_minor > DATABLOCK_VERSION_MINOR)
+        {
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}' version mismatch. Creator: {}.{}, Attacher: {}.{}",
+                            m_name, m_header->version_major, m_header->version_minor,
+                            DATABLOCK_VERSION_MAJOR, DATABLOCK_VERSION_MINOR));
+        }
+
+        // Validate total size
+        if (m_size != m_header->total_block_size)
+        {
+            pylabhub::platform::shm_close(&m_shm);
+            throw std::runtime_error(
+                fmt::format("DataBlock '{}' size mismatch. Expected {}, got {}",
+                            m_name, m_header->total_block_size, m_size));
+        }
+
+        // Reconstruct layout from header (no config available)
+        m_layout = DataBlockLayout::from_header(m_header);
+#if !defined(NDEBUG)
+        assert(m_layout.validate() && "DataBlockLayout invariant violated");
+#endif
+        m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
+            reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
+        m_flexible_data_zone =
+            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
+        m_structured_data_buffer =
+            reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
+
+        const char *mode_str = (mode == DataBlockOpenMode::WriteAttach) ? "write-attach" : "read-attach";
+        LOGGER_INFO("DataBlock '{}' attached ({}) with total size {} bytes.", m_name, mode_str, m_size);
+    }
+
+    DataBlock(std::string name) : m_name(std::move(name)), m_open_mode(DataBlockOpenMode::ReadAttach)
     {
         m_shm = pylabhub::platform::shm_attach(m_name.c_str());
         if (m_shm.base == nullptr)
@@ -1252,7 +1326,7 @@ class DataBlock
     ~DataBlock()
     {
         pylabhub::platform::shm_close(&m_shm);
-        if (m_is_creator)
+        if (m_open_mode == DataBlockOpenMode::Create)
         {
             pylabhub::platform::shm_unlink(m_name.c_str());
             LOGGER_INFO("DataBlock '{}' shared memory removed.", m_name);
@@ -1329,7 +1403,7 @@ class DataBlock
 
   private:
     std::string m_name;
-    bool m_is_creator;
+    DataBlockOpenMode m_open_mode;
     pylabhub::platform::ShmHandle m_shm{};
     size_t m_size = 0; // Cached from m_shm.size for convenience
     DataBlockLayout m_layout{};
@@ -3202,6 +3276,144 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
     }
     
     return consumer;
+}
+
+// ============================================================================
+// attach_datablock_as_writer_impl
+// ============================================================================
+// Attaches to an existing shared memory segment as a writer (WriteAttach mode).
+// Used for the hub/broker architecture: the hub creates the segment and the source
+// process attaches R/W without initializing or owning the segment.
+// Validation mirrors find_datablock_consumer_impl (secret + schema).
+std::unique_ptr<DataBlockProducer>
+attach_datablock_as_writer_impl(MessageHub &hub, const std::string &name,
+                                uint64_t shared_secret,
+                                const DataBlockConfig *expected_config,
+                                const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                const pylabhub::schema::SchemaInfo *datablock_schema)
+{
+    if (!lifecycle_initialized())
+    {
+        throw std::runtime_error(
+            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
+            "with pylabhub::hub::GetLifecycleModule() (and typically Logger, CryptoUtils) before attaching as writer.");
+    }
+
+    auto impl = std::make_unique<DataBlockProducerImpl>();
+    impl->name = name;
+    // Attach R/W to existing segment; no creation, no header initialization, no unlink.
+    impl->dataBlock = std::make_unique<DataBlock>(name, DataBlockOpenMode::WriteAttach);
+
+    auto *header = impl->dataBlock->header();
+    if (header == nullptr)
+    {
+        return nullptr;
+    }
+
+    // Validate shared secret (first 8 bytes)
+    if (std::memcmp(header->shared_secret, &shared_secret, sizeof(shared_secret)) != 0)
+    {
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: shared_secret mismatch.", name);
+        return nullptr;
+    }
+
+    // Validate header layout hash (ABI compatibility)
+    try
+    {
+        validate_header_layout_hash(header);
+    }
+    catch (const pylabhub::schema::SchemaValidationException &)
+    {
+        header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: Header layout mismatch (ABI incompatibility).", name);
+        return nullptr;
+    }
+
+    // Validate layout checksum + optional config
+    if (!validate_attach_layout_and_config(header, expected_config))
+    {
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: Layout checksum or config mismatch.", name);
+        return nullptr;
+    }
+    impl->checksum_policy = header->checksum_policy;
+
+    // Reconstruct flex zone layout
+    auto layout = DataBlockLayout::from_header(header);
+    impl->flex_zone_offset = layout.flexible_zone_offset;
+    impl->flex_zone_size = layout.flexible_zone_size;
+
+    // Validate FlexZone schema if provided
+    if (flexzone_schema != nullptr)
+    {
+        bool has_flexzone = std::any_of(
+            header->flexzone_schema_hash,
+            header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
+            [](uint8_t byte) { return byte != 0; });
+        if (!has_flexzone)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store FlexZone schema, but writer expects '{}'",
+                        name, flexzone_schema->name);
+            return nullptr;
+        }
+        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] WriteAttach: FlexZone schema hash mismatch! Expected '{}' v{}",
+                         name, flexzone_schema->name, flexzone_schema->version.to_string());
+            return nullptr;
+        }
+        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: FlexZone schema validated: {} v{}",
+                     name, flexzone_schema->name, flexzone_schema->version.to_string());
+    }
+
+    // Validate DataBlock schema if provided
+    if (datablock_schema != nullptr)
+    {
+        bool has_datablock = std::any_of(
+            header->datablock_schema_hash,
+            header->datablock_schema_hash + detail::CHECKSUM_BYTES,
+            [](uint8_t byte) { return byte != 0; });
+        if (!has_datablock)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store DataBlock schema, but writer expects '{}'",
+                        name, datablock_schema->name);
+            return nullptr;
+        }
+        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] WriteAttach: DataBlock schema hash mismatch! Expected '{}' v{}",
+                         name, datablock_schema->name, datablock_schema->version.to_string());
+            return nullptr;
+        }
+        auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
+        if (stored_version.major != datablock_schema->version.major)
+        {
+            header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_ERROR("[DataBlock:{}] WriteAttach: Incompatible DataBlock schema version! Creator: {}, Writer: {}",
+                         name, stored_version.to_string(), datablock_schema->version.to_string());
+            return nullptr;
+        }
+        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: DataBlock schema validated: {} v{}",
+                     name, datablock_schema->name, datablock_schema->version.to_string());
+    }
+
+    // Register with broker (best-effort; writer does not own the channel)
+    ProducerInfo pinfo{};
+    pinfo.shm_name = name;
+    pinfo.producer_pid = pylabhub::platform::get_pid();
+    pinfo.schema_hash.assign(reinterpret_cast<const char *>(header->datablock_schema_hash),
+                             detail::CHECKSUM_BYTES);
+    pinfo.schema_version = header->schema_version;
+    if (!hub.register_producer(name, pinfo))
+    {
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: Failed to register writer with broker (discovery may be unavailable).", name);
+    }
+
+    LOGGER_INFO("[DataBlock:{}] Attached as writer (WriteAttach mode).", name);
+    return std::make_unique<DataBlockProducer>(std::move(impl));
 }
 
 // Non-template wrappers removed (see comment after create_datablock_producer_impl above).

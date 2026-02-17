@@ -177,6 +177,26 @@ Mark clearly as experimental, subject to change:
 
 ## Recent Completions
 
+### 2026-02-17 (DataBlock three-mode constructor + WriteAttach)
+
+- ✅ **`DataBlockOpenMode` enum added** — `Create` / `WriteAttach` / `ReadAttach` modes in
+  `data_block.hpp`; replaces `bool m_is_creator` in internal `DataBlock` class.
+  Creator mode still owns and unlinks the segment; WriteAttach and ReadAttach do not.
+  — `src/include/utils/data_block.hpp`, `src/utils/data_block.cpp`
+- ✅ **`attach_datablock_as_writer_impl()` implemented** — Mirrors consumer validation
+  (shared_secret, header layout hash, config checksum, both schemas).  Returns
+  `DataBlockProducer` attached in WriteAttach mode (no unlink on destroy).
+  — `src/include/utils/data_block.hpp`, `src/utils/data_block.cpp`
+- ✅ **Timeout named constants** — `TIMEOUT_IMMEDIATE` (0), `TIMEOUT_DEFAULT` (100 ms),
+  `TIMEOUT_INFINITE` (-1) added to `data_block.hpp` near `DataBlockOpenMode` enum.
+  — `src/include/utils/data_block.hpp`
+- ✅ **`ScopedDiagnosticHandle` alias** — `using ScopedDiagnosticHandle = std::unique_ptr<DataBlockDiagnosticHandle>`
+  added near `open_datablock_for_diagnostic`; documented as canonical RAII pattern.
+  — `src/include/utils/data_block.hpp`
+- ✅ **4 new WriteAttach tests** — `DatahubWriteAttachTest`: basic roundtrip, secret
+  validation, schema validation, segment persistence after writer detach.
+  — `tests/test_layer3_datahub/test_datahub_write_attach.cpp`
+
 ### 2026-02-17 (docs audit — resolved issues verified)
 - ✅ **API_ISSUE_NO_CONFIG_OVERLOAD resolved** — The dangerous no-config template overload
   `find_datablock_consumer<FlexZoneT, DataBlockT>(hub, name, secret)` (schema validated but

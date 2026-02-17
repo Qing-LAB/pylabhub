@@ -87,21 +87,11 @@
 - [ ] MessageHub error paths with broker
 - [ ] Recovery: zombie reader detection and cleanup
 - [ ] Recovery: corrupted header/layout repair
-- [ ] **Config validation test** (`test_datahub_config_validation.cpp`) — error paths for all
-  mandatory config fields (missing policy, capacity=0, missing sync policy, etc.); verify
-  `create_datablock_producer` throws `std::invalid_argument` on each invalid config
-- [ ] **Header structure test** (`test_datahub_header_structure.cpp`) — verify both
-  `flexzone_schema_hash` and `datablock_schema_hash` fields are populated (non-zero) in
-  `SharedMemoryHeader` after producer creation; verify via `DiagnosticHandle`
 
 ### Medium Priority
-- [ ] Config explicit-fail test (validation before memory creation) ← see Config validation test above
 - [ ] Flexible zone by-name access edge cases
 - [ ] Transaction API exception safety (comprehensive)
 - [ ] Diagnostic API comprehensive coverage
-- [ ] C API header/layout validation test (`test_datahub_c_api_validation.cpp`) — test
-  layout hash validation, layout checksum, schema hash comparison at the C API level
-  (calls `slot_rw_*` and integrity validation functions directly)
 
 ### Low Priority
 - [ ] stuck_duration_ms in diagnostics (requires timestamp on acquire)
@@ -112,13 +102,31 @@
 
 ## Recent Completions
 
+### 2026-02-17 (WriteAttach mode tests)
+- ✅ **WriteAttach test suite** (`test_datahub_write_attach.cpp` + workers) — 4 tests:
+  basic roundtrip (hub creates, source attaches R/W and writes, creator consumer reads);
+  secret mismatch → nullptr; schema mismatch → nullptr; segment persists after writer detach.
+  Secrets 76001–76004. Verifies broker-owned shared memory model.
+  **Total: 375/375 passing.**
+
+### 2026-02-17 (coverage gap tests completed)
+- ✅ **Config validation test** (`test_datahub_config_validation.cpp` + workers) — 5 tests:
+  all four mandatory-field throw cases + valid config succeeds. Secrets 73001–73005.
+- ✅ **Header structure test** (`test_datahub_header_structure.cpp` + workers) — 3 tests:
+  template API populates both schema hashes; impl with nullptr zeroes them; different types
+  produce different hashes. Secrets 74001–74004. Fix: `flex_zone_size = sizeof(FlexZoneT)` required.
+- ✅ **C API validation test** (`test_datahub_c_api_validation.cpp` + workers) — 5 tests:
+  `datablock_validate_integrity` succeeds on fresh; fails on nonexistent (allow ERROR logs);
+  `datablock_get_metrics` shows 0 commits; `datablock_diagnose_slot` shows FREE;
+  `datablock_diagnose_all_slots` returns capacity entries. Secrets 75001–75005.
+  **Total: 371/371 passing.**
+
 ### 2026-02-17 (docs audit — test refactoring status verified)
 - ✅ **Test refactoring complete** — All Phase 1-3 and Phase 4 (T4.1-T4.5) tasks from the
   test refactoring plan are done: shared test types (`test_datahub_types.h`), removed obsolete
   non-template tests, all enabled tests compile; new tests added for schema validation,
   c_api checksum, exception safety, handle semantics. Phase 5 renaming also complete (all
   files follow `test_datahub_*` convention). Verified: 358/358 passing.
-  Open: config validation test, header structure test, c_api_validation test (see Coverage Gaps).
   — All transient test planning docs archived to `docs/archive/transient-2026-02-17/`
 
 ### 2026-02-17
