@@ -22,7 +22,7 @@
 //   7. read_returns_null_on_empty_ring     — acquire_consume_slot(0) → null when no data
 //   8. metrics_accumulate_across_writes    — N commits → total_slots_written==N; consumer read counted
 
-#include "c_api_slot_protocol_workers.h"
+#include "datahub_c_api_slot_protocol_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"

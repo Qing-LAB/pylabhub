@@ -1,6 +1,6 @@
 // tests/test_layer3_datahub/workers/messagehub_workers.cpp
 // Phase C – MessageHub unit tests (no broker and with in-process broker).
-#include "messagehub_workers.h"
+#include "datahub_messagehub_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"

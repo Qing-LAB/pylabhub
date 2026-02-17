@@ -1,9 +1,9 @@
 /**
  * @file test_transaction_api.cpp
- * @brief Layer 3 DataHub – Transaction API tests (Phase 2.3).
+ * @brief Layer 3 DataHub – Transaction API tests (RAII layer).
  *
- * Tests for with_write_transaction, with_read_transaction, WriteTransactionGuard,
- * ReadTransactionGuard, with_typed_write/with_typed_read, and with_next_slot.
+ * Tests for with_transaction (producer/consumer), WriteTransactionGuard,
+ * ReadTransactionGuard, typed write/read, and ctx.slots() non-terminating iterator.
  * Verifies exception safety: when lambdas throw, guards release slots.
  */
 #include "test_patterns.h"
@@ -15,42 +15,42 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class TransactionAPITest : public IsolatedProcessTest
+class DatahubTransactionApiTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(TransactionAPITest, WithWriteTransactionSuccess)
+TEST_F(DatahubTransactionApiTest, WithWriteTransactionSuccess)
 {
     auto proc = SpawnWorker("transaction_api.with_write_transaction_success", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }
 
-TEST_F(TransactionAPITest, WithWriteTransactionTimeout)
+TEST_F(DatahubTransactionApiTest, WithWriteTransactionTimeout)
 {
     auto proc = SpawnWorker("transaction_api.with_write_transaction_timeout", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }
 
-TEST_F(TransactionAPITest, WriteTransactionGuardExceptionReleasesSlot)
+TEST_F(DatahubTransactionApiTest, WriteTransactionGuardExceptionReleasesSlot)
 {
     auto proc = SpawnWorker("transaction_api.WriteTransactionGuard_exception_releases_slot", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }
 
-TEST_F(TransactionAPITest, ReadTransactionGuardExceptionReleasesSlot)
+TEST_F(DatahubTransactionApiTest, ReadTransactionGuardExceptionReleasesSlot)
 {
     auto proc = SpawnWorker("transaction_api.ReadTransactionGuard_exception_releases_slot", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }
 
-TEST_F(TransactionAPITest, WithTypedWriteReadSucceeds)
+TEST_F(DatahubTransactionApiTest, WithTypedWriteReadSucceeds)
 {
     auto proc = SpawnWorker("transaction_api.with_typed_write_read_succeeds", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }
 
-TEST_F(TransactionAPITest, WithNextSlotIterator)
+TEST_F(DatahubTransactionApiTest, RaiiSlotIteratorRoundtrip)
 {
-    auto proc = SpawnWorker("transaction_api.with_next_slot_iterator", {});
+    auto proc = SpawnWorker("transaction_api.raii_slot_iterator_roundtrip", {});
     ExpectWorkerOk(proc, {"[transaction_api]"});
 }

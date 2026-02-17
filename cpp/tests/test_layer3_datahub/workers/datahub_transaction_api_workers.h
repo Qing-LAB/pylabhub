@@ -19,7 +19,7 @@ int ReadTransactionGuard_exception_releases_slot();
 /** with_typed_write / with_typed_read: type-safe slot access succeeds. */
 int with_typed_write_read_succeeds();
 
-/** with_next_slot: iterator-based consume. */
-int with_next_slot_iterator();
+/** RAII ctx.slots() iterator: write/read roundtrip via non-terminating iterator. */
+int raii_slot_iterator_roundtrip();
 
 } // namespace pylabhub::tests::worker::transaction_api

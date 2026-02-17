@@ -1,191 +1,125 @@
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <thread>
-#include <numeric> // For std::iota
-
+/**
+ * @file datahub_producer_example.cpp
+ * @brief Example: DataBlock producer using the RAII transaction API.
+ *
+ * Demonstrates create_datablock_producer<FlexZoneT, DataBlockT> and
+ * producer->with_transaction for typed, schema-validated writes.
+ */
 #include "plh_datahub.hpp"
-#include "utils/lifecycle.hpp"
-#include "utils/data_block.hpp"
-#include "utils/message_hub.hpp"
-#include "utils/logger.hpp"
 
-// Define a sample data structure
-struct SensorData {
-    uint64_t timestamp_ns;
-    double temperature;
-    double humidity;
-    char sensor_name[16];
-    uint32_t sequence_num;
+#include <chrono>
+#include <cstring>
+#include <iostream>
+
+using namespace pylabhub::hub;
+using namespace pylabhub::utils;
+using namespace std::chrono_literals;
+
+// ─── Application data types ──────────────────────────────────────────────────
+
+/**
+ * @brief Flexible zone: control/metadata shared between producer and consumers.
+ *
+ * Written by the producer on every transaction. Consumers poll this to detect
+ * shutdown or configuration changes without acquiring a data slot.
+ */
+struct SensorFlexZone
+{
+    uint64_t frame_count{0};     ///< Incremented on every published slot.
+    bool shutdown_flag{false};   ///< Set to true when producer is shutting down.
 };
+static_assert(std::is_trivially_copyable_v<SensorFlexZone>);
+
+PYLABHUB_SCHEMA_BEGIN(SensorFlexZone)
+    PYLABHUB_SCHEMA_MEMBER(frame_count)
+    PYLABHUB_SCHEMA_MEMBER(shutdown_flag)
+PYLABHUB_SCHEMA_END(SensorFlexZone)
+
+/**
+ * @brief Per-slot data payload.
+ */
+struct SensorData
+{
+    uint64_t timestamp_ns{0};
+    float    temperature{0.0f};
+    float    humidity{0.0f};
+    uint32_t sequence_num{0};
+};
+static_assert(std::is_trivially_copyable_v<SensorData>);
+
+PYLABHUB_SCHEMA_BEGIN(SensorData)
+    PYLABHUB_SCHEMA_MEMBER(timestamp_ns)
+    PYLABHUB_SCHEMA_MEMBER(temperature)
+    PYLABHUB_SCHEMA_MEMBER(humidity)
+    PYLABHUB_SCHEMA_MEMBER(sequence_num)
+PYLABHUB_SCHEMA_END(SensorData)
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main()
 {
-    // LifecycleGuard initializes Logger, CryptoUtils, and Data Exchange Hub (required for DataBlock).
-    pylabhub::utils::LifecycleGuard lifecycle(pylabhub::utils::MakeModDefList(
-        pylabhub::utils::Logger::GetLifecycleModule(),
+    // LifecycleGuard initializes Logger, CryptoUtils, and DataHub in topological order.
+    LifecycleGuard lifecycle(MakeModDefList(
+        Logger::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::hub::GetLifecycleModule()));
+        GetLifecycleModule()));
 
-    const std::string channel_name = "sensor_data_channel";
-    const uint64_t shared_secret = 0xBAD5ECRET; // Example secret
+    MessageHub &hub = MessageHub::get_instance();
 
-    pylabhub::hub::MessageHub hub; // MessageHub is a placeholder in this example
+    // ─── Create producer ───────────────────────────────────────────────────
+    DataBlockConfig config{};
+    config.policy                = DataBlockPolicy::RingBuffer;
+    config.consumer_sync_policy  = ConsumerSyncPolicy::Single_reader;
+    config.shared_secret         = 0xBAD5ECRET;
+    config.ring_buffer_capacity  = 4;
+    config.physical_page_size    = DataBlockPageSize::Size4K;
+    config.flex_zone_size        = 4096; // must be a multiple of 4096 (page size)
+    config.checksum_policy       = ChecksumPolicy::Enforced;
 
-    // --- Producer Side ---
-    std::cout << "--- Producer Application Starting ---" << std::endl;
-
-    pylabhub::hub::DataBlockConfig config;
-    config.policy = pylabhub::hub::DataBlockPolicy::DoubleBuffer;
-    config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Latest_only;
-    config.shared_secret = shared_secret;
-    config.flexible_zone_size = 0; // No flexible zone for this example
-    config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K; // 4KB page size
-    config.ring_buffer_capacity = 2; // Double buffer for stable writes
-    config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
-
-    std::unique_ptr<pylabhub::hub::DataBlockProducer> producer;
-    try {
-        producer = pylabhub::hub::create_datablock_producer(
-            hub, channel_name, pylabhub::hub::DataBlockPolicy::DoubleBuffer, config);
-        if (!producer) {
-            std::cerr << "Failed to create DataBlockProducer!" << std::endl;
-            return 1;
-        }
-        std::cout << "DataBlockProducer created for channel: " << channel_name << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating producer: " << e.what() << std::endl;
+    auto producer = create_datablock_producer<SensorFlexZone, SensorData>(
+        hub, "sensor_data_channel", DataBlockPolicy::RingBuffer, config);
+    if (!producer)
+    {
+        std::cerr << "Failed to create DataBlockProducer!\n";
         return 1;
     }
+    std::cout << "DataBlockProducer ready.\n";
 
-    // --- Example 1: Using with_write_transaction (Recommended for C++) ---
-    std::cout << "
---- Example 1: with_write_transaction ---" << std::endl;
-    SensorData data1 = {
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count(),
-        25.5, 60.2, "TempSensor01", 1
-    };
+    // ─── Write 5 slots ─────────────────────────────────────────────────────
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        producer->with_transaction<SensorFlexZone, SensorData>(
+            1000ms,
+            [i](WriteTransactionContext<SensorFlexZone, SensorData> &ctx)
+            {
+                // Update the flexible zone (control/metadata shared with consumers).
+                auto zone = ctx.flexzone();
+                zone.get().frame_count = i + 1;
+                zone.get().shutdown_flag = (i == 4); // signal shutdown on last frame
 
-    try {
-        pylabhub::hub::with_write_transaction(
-            *producer, 1000, [&](pylabhub::hub::WriteTransactionContext& ctx) {
-                // Write data to the slot buffer
-                auto& slot = ctx.slot();
-                auto buffer_span = slot.buffer_span();
-                if (buffer_span.size() < sizeof(SensorData)) {
-                    throw std::runtime_error("Slot buffer too small for SensorData");
+                // Acquire a write slot and publish data.
+                for (auto &result : ctx.slots(100ms))
+                {
+                    if (!result.is_ok())
+                    {
+                        std::cerr << "  Slot acquire timeout, retrying...\n";
+                        break;
+                    }
+
+                    SensorData &data = result.content().get();
+                    data.timestamp_ns  = pylabhub::platform::monotonic_time_ns();
+                    data.temperature   = 20.0f + static_cast<float>(i) * 0.5f;
+                    data.humidity      = 50.0f + static_cast<float>(i) * 1.0f;
+                    data.sequence_num  = i;
+
+                    // auto-publish fires when the loop exits normally (break).
+                    break;
                 }
-                std::memcpy(buffer_span.data(), &data1, sizeof(SensorData));
-                
-                // Commit the data, making it visible to consumers
-                slot.commit(sizeof(SensorData));
-                std::cout << "with_write_transaction: SensorData sequence " << data1.sequence_num << " committed." << std::endl;
+
+                std::cout << "  Published slot " << i << " (frame_count=" << i + 1 << ")\n";
             });
-    } catch (const std::exception& e) {
-        std::cerr << "with_write_transaction failed: " << e.what() << std::endl;
-    }
-    
-    // Demonstrate exception handling with with_write_transaction
-    std::cout << "
---- Example 1.1: with_write_transaction with exception (should not commit) ---" << std::endl;
-    SensorData data_exception = {
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count(),
-        99.9, 10.0, "FaultySensor", 2
-    };
-    try {
-        pylabhub::hub::with_write_transaction(
-            *producer, 1000, [&](pylabhub::hub::WriteTransactionContext& ctx) {
-                auto buffer_span = ctx.slot().buffer_span();
-                std::memcpy(buffer_span.data(), &data_exception, sizeof(SensorData));
-                ctx.slot().commit(sizeof(SensorData));
-                std::cout << "with_write_transaction: About to throw, data should not commit." << std::endl;
-                throw std::runtime_error("Simulated network error during post-write processing");
-            });
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Caught expected exception from with_write_transaction: " << e.what() << std::endl;
-        // Verify that commit_index did not advance
-        // (Note: This verification logic would need access to internal header details,
-        //  which is typically not available to end-users directly.
-        //  For a real test, you'd check consumer side or internal metrics.)
     }
 
-
-    // --- Example 2: Using WriteTransactionGuard (for more explicit control) ---
-    std::cout << "
---- Example 2: WriteTransactionGuard ---" << std::endl;
-    SensorData data2 = {
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count(),
-        30.1, 65.8, "TempSensor02", 3
-    };
-
-    try {
-        // Acquire the guard
-        pylabhub::hub::WriteTransactionGuard guard(*producer, 1000);
-        if (!guard) {
-            std::cerr << "WriteTransactionGuard: Failed to acquire slot." << std::endl;
-            return 1;
-        }
-
-        // Access the slot through the guard
-        auto slot_opt = guard.slot();
-        if (!slot_opt) {
-            std::cerr << "WriteTransactionGuard: slot() returned nullopt." << std::endl;
-            return 1;
-        }
-        pylabhub::hub::SlotWriteHandle& slot = slot_opt->get();
-        auto buffer_span = slot.buffer_span();
-        if (buffer_span.size() < sizeof(SensorData)) {
-            throw std::runtime_error("Slot buffer too small for SensorData");
-        }
-        std::memcpy(buffer_span.data(), &data2, sizeof(SensorData));
-        
-        // Explicitly commit the data (REQUIRED by WriteTransactionGuard pattern)
-        slot.commit(sizeof(SensorData));
-        std::cout << "WriteTransactionGuard: SensorData sequence " << data2.sequence_num << " committed." << std::endl;
-
-        // Optionally mark guard as committed (for internal tracking/debugging, not implicit action)
-        guard.commit(); 
-        
-        // Guard goes out of scope here and automatically releases the slot
-    } catch (const std::exception& e) {
-        std::cerr << "WriteTransactionGuard usage failed: " << e.what() << std::endl;
-    }
-
-    // Demonstrate explicit abort with WriteTransactionGuard
-    std::cout << "
---- Example 2.1: WriteTransactionGuard with explicit abort ---" << std::endl;
-    SensorData data_abort = {
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count(),
-        -5.0, 90.0, "AbortSensor", 4
-    };
-    try {
-        pylabhub::hub::WriteTransactionGuard guard(*producer, 1000);
-        if (!guard) {
-            std::cerr << "WriteTransactionGuard (abort): Failed to acquire slot." << std::endl;
-            return 1;
-        }
-        auto slot_opt = guard.slot();
-        if (!slot_opt) {
-            std::cerr << "WriteTransactionGuard (abort): slot() returned nullopt." << std::endl;
-            return 1;
-        }
-        pylabhub::hub::SlotWriteHandle& slot = slot_opt->get();
-        std::memcpy(slot.buffer_span().data(), &data_abort, sizeof(SensorData));
-        slot.commit(sizeof(SensorData)); // Data is committed to the slot, but will be aborted
-
-        std::cout << "WriteTransactionGuard: SensorData sequence " << data_abort.sequence_num << " written, then aborted." << std::endl;
-        guard.abort(); // Explicitly abort; slot released, but not considered committed by the system
-        // Data in slot will effectively be ignored by consumers if commit_index doesn't advance past it
-    } catch (const std::exception& e) {
-        std::cerr << "WriteTransactionGuard (abort) usage failed: " << e.what() << std::endl;
-    }
-
-
-    std::cout << "
---- Producer Application Finished ---" << std::endl;
-
-    // A small delay to allow potential consumers to read
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
+    std::cout << "DataBlockProducer finished.\n";
     return 0;
 }

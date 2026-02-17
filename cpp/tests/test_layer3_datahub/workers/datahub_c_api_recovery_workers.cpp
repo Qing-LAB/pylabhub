@@ -1,7 +1,7 @@
 // tests/test_layer3_datahub/workers/recovery_workers.cpp
 // Recovery API tests: Tests extern "C" recovery_api facility functions.
 // Creates test datablocks via impl (no templates - recovery has no types).
-#include "recovery_workers.h"
+#include "datahub_c_api_recovery_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"

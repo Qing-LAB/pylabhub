@@ -8,7 +8,7 @@
 // - Tests use dual-schema types (FlexZone + DataBlock) to verify v1.0.0 architecture
 // - Resource lifecycle is carefully managed (handles destroyed before producer/consumer reset)
 //
-#include "transaction_api_workers.h"
+#include "datahub_transaction_api_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -110,7 +110,7 @@ int with_write_transaction_success()
             config.shared_secret = 70001;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096; // Room for TxAPITestFlexZone
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             // Create producer with dual-schema
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
@@ -220,7 +220,7 @@ int with_write_transaction_timeout()
             config.shared_secret = 70002;
             config.ring_buffer_capacity = 1; // Only one slot
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096;
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
                 hub_ref, channel, DataBlockPolicy::RingBuffer, config);
@@ -329,7 +329,7 @@ int WriteTransactionGuard_exception_releases_slot()
             config.shared_secret = 70003;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096;
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
                 hub_ref, channel, DataBlockPolicy::RingBuffer, config);
@@ -419,7 +419,7 @@ int ReadTransactionGuard_exception_releases_slot()
             config.shared_secret = 70004;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096;
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
                 hub_ref, channel, DataBlockPolicy::RingBuffer, config);
@@ -533,7 +533,7 @@ int with_typed_write_read_succeeds()
             config.shared_secret = 70005;
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096;
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
                 hub_ref, channel, DataBlockPolicy::RingBuffer, config);
@@ -607,18 +607,18 @@ int with_typed_write_read_succeeds()
 // ============================================================================
 
 /**
- * @test with_next_slot_iterator
- * @brief Verify non-terminating iterator behavior
- * 
+ * @test raii_slot_iterator_roundtrip
+ * @brief Verify non-terminating ctx.slots() iterator for write/read roundtrip
+ *
  * @test_strategy
- * Producer: Write 3 slots sequentially
- * Consumer: Use ctx.slots() non-terminating iterator to read all 3
- * Expected: Iterator yields Result<SlotRef, Error> for each slot
- * 
+ * Producer: Write 3 slots sequentially via ctx.slots()
+ * Consumer: Read all 3 via ctx.slots() non-terminating iterator
+ * Expected: Iterator yields Result<SlotRef, Error>; values match write order
+ *
  * @test_level C++ RAII
- * @coverage Normal usage (iterator)
+ * @coverage Normal usage (non-terminating iterator)
  */
-int with_next_slot_iterator()
+int raii_slot_iterator_roundtrip()
 {
     return run_gtest_worker(
         []()
@@ -631,7 +631,7 @@ int with_next_slot_iterator()
             config.shared_secret = 70006;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = 4096;
+            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
                 hub_ref, channel, DataBlockPolicy::RingBuffer, config);
@@ -691,9 +691,9 @@ int with_next_slot_iterator()
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(channel);
-            fmt::print(stderr, "[transaction_api] with_next_slot_iterator ok\n");
+            fmt::print(stderr, "[transaction_api] raii_slot_iterator_roundtrip ok\n");
         },
-        "with_next_slot_iterator", logger_module(), crypto_module(), hub_module());
+        "raii_slot_iterator_roundtrip", logger_module(), crypto_module(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::transaction_api
@@ -725,8 +725,8 @@ struct TransactionAPIWorkerRegistrar
                     return ReadTransactionGuard_exception_releases_slot();
                 if (scenario == "with_typed_write_read_succeeds")
                     return with_typed_write_read_succeeds();
-                if (scenario == "with_next_slot_iterator")
-                    return with_next_slot_iterator();
+                if (scenario == "raii_slot_iterator_roundtrip")
+                    return raii_slot_iterator_roundtrip();
                 fmt::print(stderr, "ERROR: Unknown transaction_api scenario '{}'\n", scenario);
                 return 1;
             });

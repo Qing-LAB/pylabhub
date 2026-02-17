@@ -15,13 +15,13 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class CApiSlotProtocolTest : public IsolatedProcessTest
+class DatahubCApiSlotProtocolTest : public IsolatedProcessTest
 {
 };
 
 // ─── Roundtrip ────────────────────────────────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, WriteSlotReadSlotRoundtrip)
+TEST_F(DatahubCApiSlotProtocolTest, WriteSlotReadSlotRoundtrip)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.write_slot_read_slot_roundtrip", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -29,13 +29,13 @@ TEST_F(CApiSlotProtocolTest, WriteSlotReadSlotRoundtrip)
 
 // ─── Metrics: commit vs abort ─────────────────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, CommitAdvancesMetrics)
+TEST_F(DatahubCApiSlotProtocolTest, CommitAdvancesMetrics)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.commit_advances_metrics", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(CApiSlotProtocolTest, AbortDoesNotCommit)
+TEST_F(DatahubCApiSlotProtocolTest, AbortDoesNotCommit)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.abort_does_not_commit", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -43,7 +43,7 @@ TEST_F(CApiSlotProtocolTest, AbortDoesNotCommit)
 
 // ─── ConsumerSyncPolicy: Latest_only ─────────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, LatestOnlyReadsLatest)
+TEST_F(DatahubCApiSlotProtocolTest, LatestOnlyReadsLatest)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.latest_only_reads_latest", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -51,7 +51,7 @@ TEST_F(CApiSlotProtocolTest, LatestOnlyReadsLatest)
 
 // ─── ConsumerSyncPolicy: Single_reader ───────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, SingleReaderReadsSequentially)
+TEST_F(DatahubCApiSlotProtocolTest, SingleReaderReadsSequentially)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.single_reader_reads_sequentially", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -59,13 +59,13 @@ TEST_F(CApiSlotProtocolTest, SingleReaderReadsSequentially)
 
 // ─── Ring buffer full / empty ─────────────────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, WriteReturnsNullWhenRingFull)
+TEST_F(DatahubCApiSlotProtocolTest, WriteReturnsNullWhenRingFull)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.write_returns_null_when_ring_full", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(CApiSlotProtocolTest, ReadReturnsNullOnEmptyRing)
+TEST_F(DatahubCApiSlotProtocolTest, ReadReturnsNullOnEmptyRing)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.read_returns_null_on_empty_ring", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -73,7 +73,7 @@ TEST_F(CApiSlotProtocolTest, ReadReturnsNullOnEmptyRing)
 
 // ─── Metrics accumulation ─────────────────────────────────────────────────────
 
-TEST_F(CApiSlotProtocolTest, MetricsAccumulateAcrossWrites)
+TEST_F(DatahubCApiSlotProtocolTest, MetricsAccumulateAcrossWrites)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.metrics_accumulate_across_writes", {});
     ExpectWorkerOk(proc, {"DataBlock"});

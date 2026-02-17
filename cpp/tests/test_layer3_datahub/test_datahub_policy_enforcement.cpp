@@ -15,25 +15,25 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class PolicyEnforcementTest : public IsolatedProcessTest
+class DatahubPolicyEnforcementTest : public IsolatedProcessTest
 {
 };
 
 // ─── Checksum: Enforced ───────────────────────────────────────────────────────
 
-TEST_F(PolicyEnforcementTest, ChecksumEnforcedWriteReadRoundtrip)
+TEST_F(DatahubPolicyEnforcementTest, ChecksumEnforcedWriteReadRoundtrip)
 {
     auto proc = SpawnWorker("policy_enforcement.checksum_enforced_write_read_roundtrip", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-TEST_F(PolicyEnforcementTest, ChecksumEnforcedFlexzoneOnlyWrite)
+TEST_F(DatahubPolicyEnforcementTest, ChecksumEnforcedFlexzoneOnlyWrite)
 {
     auto proc = SpawnWorker("policy_enforcement.checksum_enforced_flexzone_only_write", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-TEST_F(PolicyEnforcementTest, ChecksumEnforcedVerifyDetectsCorruption)
+TEST_F(DatahubPolicyEnforcementTest, ChecksumEnforcedVerifyDetectsCorruption)
 {
     auto proc = SpawnWorker("policy_enforcement.checksum_enforced_verify_detects_corruption", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
@@ -41,7 +41,7 @@ TEST_F(PolicyEnforcementTest, ChecksumEnforcedVerifyDetectsCorruption)
 
 // ─── Checksum: None ───────────────────────────────────────────────────────────
 
-TEST_F(PolicyEnforcementTest, ChecksumNoneSkipsUpdateVerify)
+TEST_F(DatahubPolicyEnforcementTest, ChecksumNoneSkipsUpdateVerify)
 {
     auto proc = SpawnWorker("policy_enforcement.checksum_none_skips_update_verify", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
@@ -49,7 +49,7 @@ TEST_F(PolicyEnforcementTest, ChecksumNoneSkipsUpdateVerify)
 
 // ─── Checksum: Manual ─────────────────────────────────────────────────────────
 
-TEST_F(PolicyEnforcementTest, ChecksumManualRequiresExplicitCall)
+TEST_F(DatahubPolicyEnforcementTest, ChecksumManualRequiresExplicitCall)
 {
     auto proc = SpawnWorker("policy_enforcement.checksum_manual_requires_explicit_call", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
@@ -57,19 +57,19 @@ TEST_F(PolicyEnforcementTest, ChecksumManualRequiresExplicitCall)
 
 // ─── Heartbeat: Auto-register / Auto-unregister ───────────────────────────────
 
-TEST_F(PolicyEnforcementTest, ConsumerAutoRegistersHeartbeatOnConstruction)
+TEST_F(DatahubPolicyEnforcementTest, ConsumerAutoRegistersHeartbeatOnConstruction)
 {
     auto proc = SpawnWorker("policy_enforcement.consumer_auto_registers_heartbeat_on_construction", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-TEST_F(PolicyEnforcementTest, ConsumerAutoUnregistersHeartbeatOnDestroy)
+TEST_F(DatahubPolicyEnforcementTest, ConsumerAutoUnregistersHeartbeatOnDestroy)
 {
     auto proc = SpawnWorker("policy_enforcement.consumer_auto_unregisters_heartbeat_on_destroy", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-TEST_F(PolicyEnforcementTest, AllPolicyConsumersHaveHeartbeat)
+TEST_F(DatahubPolicyEnforcementTest, AllPolicyConsumersHaveHeartbeat)
 {
     auto proc = SpawnWorker("policy_enforcement.all_policy_consumers_have_heartbeat", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
@@ -77,7 +77,7 @@ TEST_F(PolicyEnforcementTest, AllPolicyConsumersHaveHeartbeat)
 
 // ─── Sync_reader: Backpressure ────────────────────────────────────────────────
 
-TEST_F(PolicyEnforcementTest, SyncReaderProducerRespectsConsumerPosition)
+TEST_F(DatahubPolicyEnforcementTest, SyncReaderProducerRespectsConsumerPosition)
 {
     auto proc = SpawnWorker("policy_enforcement.sync_reader_producer_respects_consumer_position", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
@@ -85,13 +85,13 @@ TEST_F(PolicyEnforcementTest, SyncReaderProducerRespectsConsumerPosition)
 
 // ─── Auto-heartbeat in iterator ──────────────────────────────────────────────
 
-TEST_F(PolicyEnforcementTest, ProducerOperatorIncrementUpdatesHeartbeat)
+TEST_F(DatahubPolicyEnforcementTest, ProducerOperatorIncrementUpdatesHeartbeat)
 {
     auto proc = SpawnWorker("policy_enforcement.producer_operator_increment_updates_heartbeat", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-TEST_F(PolicyEnforcementTest, ConsumerOperatorIncrementUpdatesHeartbeat)
+TEST_F(DatahubPolicyEnforcementTest, ConsumerOperatorIncrementUpdatesHeartbeat)
 {
     auto proc = SpawnWorker("policy_enforcement.consumer_operator_increment_updates_heartbeat", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});

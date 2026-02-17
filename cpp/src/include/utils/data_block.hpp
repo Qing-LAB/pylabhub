@@ -522,7 +522,6 @@ inline uint32_t get_slot_count(const SharedMemoryHeader *h) noexcept
 // Forward declarations for slot handles (primitive data transfer API)
 struct SlotWriteHandleImpl;
 struct SlotConsumeHandleImpl;
-struct DataBlockSlotIteratorImpl;
 
 /**
  * @note Phase 2 refactoring (2026-02-15): FlexibleZoneInfo struct removed.
@@ -634,54 +633,8 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 
   private:
     friend class DataBlockConsumer;
-    friend class DataBlockSlotIterator;
     explicit SlotConsumeHandle(std::unique_ptr<SlotConsumeHandleImpl> impl);
     std::unique_ptr<SlotConsumeHandleImpl> pImpl;
-};
-
-/**
- * @class DataBlockSlotIterator
- * @brief Iterator for ring-buffer slots (consumer view).
- *
- * Provides a higher-level API that hides commit_index/ring-buffer mechanics.
- */
-class PYLABHUB_UTILS_EXPORT DataBlockSlotIterator
-{
-  public:
-    struct NextResult;
-
-    DataBlockSlotIterator();
-    ~DataBlockSlotIterator() noexcept;
-    DataBlockSlotIterator(DataBlockSlotIterator &&other) noexcept;
-    DataBlockSlotIterator &operator=(DataBlockSlotIterator &&other) noexcept;
-    DataBlockSlotIterator(const DataBlockSlotIterator &) = delete;
-    DataBlockSlotIterator &operator=(const DataBlockSlotIterator &) = delete;
-
-    /** @brief Advance to next available slot; returns ok=false on timeout. */
-    [[nodiscard]] NextResult try_next(int timeout_ms = -1) noexcept;
-    /** @brief Advance to next available slot; throws on timeout. */
-    SlotConsumeHandle next(int timeout_ms = -1);
-
-    /** @brief Set cursor to latest committed slot (no consumption). */
-    void seek_latest() noexcept;
-    /** @brief Set cursor to a specific slot id (next() returns newer). */
-    void seek_to(uint64_t slot_id) noexcept;
-
-    uint64_t last_slot_id() const noexcept;
-    [[nodiscard]] bool is_valid() const noexcept;
-
-  private:
-    friend class DataBlockConsumer;
-    explicit DataBlockSlotIterator(std::unique_ptr<DataBlockSlotIteratorImpl> impl);
-    std::unique_ptr<DataBlockSlotIteratorImpl> pImpl;
-};
-
-/** Result of DataBlockSlotIterator::try_next() */
-struct DataBlockSlotIterator::NextResult
-{
-    SlotConsumeHandle next;
-    bool ok = false;
-    int error_code = 0;
 };
 
 /**
@@ -945,7 +898,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
  * @brief Consumer handle for a DataBlock. ABI-stable via pImpl.
  *
  * @par Thread Safety
- * DataBlockConsumer is **thread-safe**: slot acquire/release, slot_iterator(),
+ * DataBlockConsumer is **thread-safe**: slot acquire/release,
  * register_heartbeat, update_heartbeat, and unregister_heartbeat are protected by
  * an internal recursive mutex. Multiple threads may share one consumer; only one
  * context (e.g. one consume slot or iterator advance) is active at a time per consumer.
@@ -1028,9 +981,6 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
                                                                           int timeout_ms) noexcept;
     /** Release a previously acquired slot; returns false if checksum verification failed. */
     [[nodiscard]] bool release_consume_slot(SlotConsumeHandle &handle) noexcept;
-
-    /** Iterator for ring-buffer slots (consumer view). */
-    DataBlockSlotIterator slot_iterator();
 
     // ─── Broker Discovery ───
     /** @brief Discovers a producer via the broker and attaches as a consumer. */
@@ -1264,55 +1214,6 @@ auto DataBlockConsumer::with_transaction(std::chrono::milliseconds timeout, Func
     // Invoke user lambda with context reference
     // Exception safety: ctx destructor ensures cleanup
     return std::forward<Func>(func)(ctx);
-}
-
-/**
- * @brief Executes a function on the next available slot from a `DataBlockSlotIterator`.
- *
- * This function attempts to get the next available slot from the iterator and,
- * if successful, executes the provided lambda with the slot handle.
- *
- * @tparam Func A callable that takes a `const SlotConsumeHandle&`.
- * @param iterator The `DataBlockSlotIterator` to use.
- * @param timeout_ms The timeout in milliseconds to wait for the next slot.
- * @param lambda The function to execute.
- * @return An `std::optional` containing the return value of the lambda, or `std::nullopt` on
- * timeout.
- */
-template <typename Func>
-auto with_next_slot(DataBlockSlotIterator &iterator, int timeout_ms, Func &&lambda)
-    -> std::optional<
-        std::conditional_t<std::is_void_v<std::invoke_result_t<Func, const SlotConsumeHandle &>>,
-                           std::monostate, std::invoke_result_t<Func, const SlotConsumeHandle &>>>
-{
-    using LambdaReturnType = std::invoke_result_t<Func, const SlotConsumeHandle &>;
-    using OptionalWrappedType =
-        std::conditional_t<std::is_void_v<LambdaReturnType>, std::monostate, LambdaReturnType>;
-    using ReturnOptionalType = std::optional<OptionalWrappedType>;
-
-    auto result = iterator.try_next(timeout_ms);
-
-    if (!result.ok)
-    {
-        return ReturnOptionalType();
-    }
-
-    try
-    {
-        if constexpr (std::is_void_v<LambdaReturnType>)
-        {
-            std::invoke(std::forward<Func>(lambda), result.next);
-            return ReturnOptionalType(std::monostate());
-        }
-        else
-        {
-            return ReturnOptionalType(std::invoke(std::forward<Func>(lambda), result.next));
-        }
-    }
-    catch (...)
-    {
-        throw;
-    }
 }
 
 // ─── Diagnostic attach (for recovery / tooling; read-only) ───

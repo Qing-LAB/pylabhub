@@ -15,18 +15,18 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class DataBlockMutexTest : public IsolatedProcessTest
+class DatahubMutexTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DataBlockMutexTest, CreatorAcquiresAndReleases)
+TEST_F(DatahubMutexTest, CreatorAcquiresAndReleases)
 {
     std::string shm_name = make_test_channel_name("DBMutexCreator");
     auto proc = SpawnWorker("datablock_mutex.acquire_and_release_creator", {shm_name});
     ExpectWorkerOk(proc, {"Mutex acquired", "Mutex released"});
 }
 
-TEST_F(DataBlockMutexTest, AttacherAcquiresAfterCreator)
+TEST_F(DatahubMutexTest, AttacherAcquiresAfterCreator)
 {
     // Creator unlinks shm on exit; attacher must attach while creator is still alive.
     // Use ready-signal pipe for deterministic ordering: creator signals when mutex is created and
@@ -42,7 +42,7 @@ TEST_F(DataBlockMutexTest, AttacherAcquiresAfterCreator)
     pylabhub::tests::helper::expect_worker_ok(attacher, {"Mutex acquired", "Mutex released"});
 }
 
-TEST_F(DataBlockMutexTest, ZombieOwnerRecovery)
+TEST_F(DatahubMutexTest, ZombieOwnerRecovery)
 {
 #if !PYLABHUB_IS_POSIX
     GTEST_SKIP() << "Zombie owner (EOWNERDEAD) recovery tested on POSIX only";
@@ -60,7 +60,7 @@ TEST_F(DataBlockMutexTest, ZombieOwnerRecovery)
 #endif
 }
 
-TEST_F(DataBlockMutexTest, AttachNonexistentFails)
+TEST_F(DatahubMutexTest, AttachNonexistentFails)
 {
     std::string shm_name =
         "test_nonexistent_mutex_" + std::to_string(static_cast<unsigned long>(std::time(nullptr)));
