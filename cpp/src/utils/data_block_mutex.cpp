@@ -5,12 +5,10 @@
 #include <windows.h>
 #include <string> // For std::to_string
 #else
-#include <cerrno>   // For errno
-#include <fcntl.h> // For O_CREAT, O_RDWR, O_EXCL
-#include <sys/mman.h>
-#include <sys/stat.h> // For fstat, S_IRUSR, S_IWUSR
-#include <unistd.h>  // For ftruncate, close
-#include <string>   // For std::to_string
+#include <cerrno>  // For ETIMEDOUT, EOWNERDEAD
+#include <pthread.h>
+#include <string>  // For std::to_string
+#include <ctime>  // For clock_gettime, CLOCK_REALTIME
 #endif
 
 namespace pylabhub::hub
@@ -19,12 +17,24 @@ namespace pylabhub::hub
 // ============================================================================
 // DataBlockMutex Implementation
 // ============================================================================
+//
+// INTENTION: The implementation is split into separate Windows and POSIX blocks
+// because the entire logic differs by platform:
+//
+//   - Windows: Uses a named kernel mutex (CreateMutexA/OpenMutexA). No shared
+//     memory for the mutex itself; the mutex is a kernel object.
+//
+//   - POSIX: Uses pthread_mutex_t in shared memory. Either embedded in an
+//     existing block (base != null) or in a dedicated shm segment (base == null).
+//     The dedicated-segment path uses platform shm_create/shm_attach/shm_close.
+//
+// ============================================================================
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-// Windows implementation
-DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory_address,
+// --- Windows: named kernel mutex ---
+DataBlockMutex::DataBlockMutex(std::string name, void *base_shared_memory_address,
                                size_t offset_to_mutex_storage, bool is_creator)
-    : m_name(name), m_is_creator(is_creator)
+    : m_name(std::move(name)), m_is_creator(is_creator)
 {
     // For Windows, base_shared_memory_address and offset_to_mutex_storage are ignored.
     // The name is derived from the shared memory's name to ensure uniqueness and association.
@@ -109,6 +119,28 @@ void DataBlockMutex::lock()
     }
 }
 
+bool DataBlockMutex::try_lock_for(int timeout_ms)
+{
+    if (m_mutex_handle == NULL)
+    {
+        throw std::runtime_error(
+            "Windows DataBlockMutex: Attempt to lock an invalid mutex handle for '" + m_name +
+            "'.");
+    }
+    DWORD ms = (timeout_ms <= 0) ? 0 : static_cast<DWORD>(timeout_ms);
+    DWORD wait_result = WaitForSingleObject(m_mutex_handle, ms);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED)
+    {
+        if (wait_result == WAIT_ABANDONED)
+            LOGGER_WARN("Windows DataBlockMutex: Mutex for '{}' was abandoned. Acquired.", m_name);
+        return true;
+    }
+    if (wait_result == WAIT_TIMEOUT)
+        return false;
+    throw std::runtime_error("Windows DataBlockMutex: Wait failed for '" + m_name +
+                             "'. Error: " + std::to_string(GetLastError()));
+}
+
 void DataBlockMutex::unlock()
 {
     if (m_mutex_handle == NULL)
@@ -125,74 +157,47 @@ void DataBlockMutex::unlock()
 }
 
 #else
-// POSIX implementation
-DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory_address,
+// --- POSIX: pthread_mutex in shared memory (embedded or dedicated shm segment) ---
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- constructor branches by platform and creator/attacher
+DataBlockMutex::DataBlockMutex(std::string name, void *base_shared_memory_address,
                                size_t offset_to_mutex_storage, bool is_creator)
-    : m_name(name), m_is_creator(is_creator),
+    : m_name(std::move(name)), m_is_creator(is_creator),
       m_base_shared_memory_address(base_shared_memory_address),
       m_offset_to_mutex_storage(offset_to_mutex_storage)
 {
     // When base is null: create/attach to a dedicated shm segment for mutex storage.
     // Used by unit tests; Windows always ignores base and uses a named kernel mutex.
-    if (!m_base_shared_memory_address)
+    // Uses platform shm_* API for consistency with DataBlock.
+    if (m_base_shared_memory_address == nullptr)
     {
         std::string shm_name = m_name + "_DataBlockManagementMutex";
         const size_t mutex_size = sizeof(pthread_mutex_t);
 
         if (m_is_creator)
         {
-            m_dedicated_shm_fd =
-                shm_open(shm_name.c_str(), O_CREAT | O_RDWR | O_EXCL, S_IRUSR | S_IWUSR);
-            if (m_dedicated_shm_fd == -1 && errno == EEXIST)
+            m_dedicated_shm = pylabhub::platform::shm_create(shm_name.c_str(), mutex_size,
+                                                            pylabhub::platform::SHM_CREATE_EXCLUSIVE);
+            if (m_dedicated_shm.base == nullptr)
             {
-                shm_unlink(shm_name.c_str());
-                m_dedicated_shm_fd =
-                    shm_open(shm_name.c_str(), O_CREAT | O_RDWR | O_EXCL, S_IRUSR | S_IWUSR);
+                m_dedicated_shm = pylabhub::platform::shm_create(
+                    shm_name.c_str(), mutex_size, pylabhub::platform::SHM_CREATE_UNLINK_FIRST);
             }
-            if (m_dedicated_shm_fd == -1)
+            if (m_dedicated_shm.base == nullptr)
             {
-                throw std::runtime_error("POSIX DataBlockMutex: shm_open failed for '" + m_name +
-                                         "'. Error: " + std::to_string(errno));
-            }
-            if (ftruncate(m_dedicated_shm_fd, static_cast<off_t>(mutex_size)) != 0)
-            {
-                close(m_dedicated_shm_fd);
-                shm_unlink(shm_name.c_str());
-                throw std::runtime_error("POSIX DataBlockMutex: ftruncate failed for '" + m_name +
+                throw std::runtime_error("POSIX DataBlockMutex: shm_create failed for '" + m_name +
                                          "'.");
             }
-            m_dedicated_shm_size = mutex_size;
         }
         else
         {
-            m_dedicated_shm_fd = shm_open(shm_name.c_str(), O_RDWR, 0);
-            if (m_dedicated_shm_fd == -1)
+            m_dedicated_shm = pylabhub::platform::shm_attach(shm_name.c_str());
+            if (m_dedicated_shm.base == nullptr)
             {
-                throw std::runtime_error("POSIX DataBlockMutex: shm_open failed for '" + m_name +
-                                         "'. Error: " + std::to_string(errno));
-            }
-            struct stat st;
-            if (fstat(m_dedicated_shm_fd, &st) != 0)
-            {
-                close(m_dedicated_shm_fd);
-                throw std::runtime_error("POSIX DataBlockMutex: fstat failed for '" + m_name +
+                throw std::runtime_error("POSIX DataBlockMutex: shm_attach failed for '" + m_name +
                                          "'.");
             }
-            m_dedicated_shm_size = static_cast<size_t>(st.st_size);
         }
-        m_dedicated_shm_mapped =
-            mmap(nullptr, m_dedicated_shm_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                 m_dedicated_shm_fd, 0);
-        if (m_dedicated_shm_mapped == MAP_FAILED)
-        {
-            close(m_dedicated_shm_fd);
-            if (m_is_creator)
-            {
-                shm_unlink(shm_name.c_str());
-            }
-            throw std::runtime_error("POSIX DataBlockMutex: mmap failed for '" + m_name + "'.");
-        }
-        m_base_shared_memory_address = m_dedicated_shm_mapped;
+        m_base_shared_memory_address = m_dedicated_shm.base;
         m_offset_to_mutex_storage = 0;
     }
 
@@ -223,6 +228,16 @@ DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory
         if (res == 0)
         {
             res = pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
+        }
+        if (res == 0)
+        {
+            // Workaround for Linux kernel robust-futex bug (lkml.org/lkml/2013/9/27/338):
+            // Without PTHREAD_PRIO_INHERIT, pthread_mutex_lock can block indefinitely instead
+            // of returning EOWNERDEAD when the owner dies. PI uses exit_pi_state_list() which
+            // handles wake-ups more reliably. Ignore ENOTSUP if the platform lacks PI support.
+#if defined(PTHREAD_PRIO_INHERIT)
+            (void)pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT);
+#endif
         }
 
         if (res != 0)
@@ -255,94 +270,27 @@ DataBlockMutex::DataBlockMutex(const std::string &name, void *base_shared_memory
 
 DataBlockMutex::~DataBlockMutex()
 {
-    // Only the creator should destroy the mutex.
-    // This must be done while no other process is holding or waiting on the mutex.
-    // If a process dies while holding the mutex, its state becomes abandoned.
-    // A robust mutex allows another process to acquire it and then "clean up" the abandoned state.
-    // It is generally not safe to destroy a robust mutex if it might be abandoned or held.
-    // The safest approach is to only destroy it if this process is the creator AND it's certain no
-    // other process is using it. Given the multi-tiered locking, this management mutex should
-    // ideally be destroyed only when the *entire* DataBlock is no longer in use by any process. For
-    // now, we will destroy it only if we are the creator and can ensure it's not locked. This needs
-    // careful thought in the overall DataBlock cleanup strategy.
-
-    // A simpler strategy for now: if this is the creator, try to destroy.
-    // Robust mutexes often don't need explicit destruction if the shared memory block is unlinked
-    // and destroyed, as their resources are often tied to the memory itself.
-    if (m_base_shared_memory_address && m_is_creator)
-    {
-        pthread_mutex_t *mutex_ptr = get_pthread_mutex();
-        // Attempt to lock and unlock it to ensure it's not abandoned and we can destroy it safely.
-        // This is a common pattern to ensure the mutex is in a destroyable state.
-        int res = pthread_mutex_trylock(mutex_ptr);
-        if (res == 0)
-        { // Successfully locked
-            pthread_mutex_unlock(mutex_ptr);
-            res = pthread_mutex_destroy(mutex_ptr);
-            if (res != 0)
-            {
-                LOGGER_ERROR(
-                    "POSIX DataBlockMutex: pthread_mutex_destroy failed for '{}'. Error: {} ({})",
-                    m_name, std::strerror(res), res);
-            }
-            else
-            {
-                LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' destroyed.", m_name);
-            }
-        }
-        else if (res == EBUSY)
-        {
-            LOGGER_WARN(
-                "POSIX DataBlockMutex: Mutex for '{}' is busy and cannot be destroyed by creator.",
-                m_name);
-        }
-        else if (res == EOWNERDEAD)
-        {
-            LOGGER_WARN("POSIX DataBlockMutex: Mutex for '{}' is in an abandoned state. Will "
-                        "attempt to destroy.",
-                        m_name);
-            // If EOWNERDEAD, we should unlock and then destroy.
-            pthread_mutex_unlock(mutex_ptr); // Unlock the abandoned mutex
-            res = pthread_mutex_destroy(mutex_ptr);
-            if (res != 0)
-            {
-                LOGGER_ERROR("POSIX DataBlockMutex: pthread_mutex_destroy failed for abandoned "
-                             "mutex '{}'. Error: {} ({})",
-                             m_name, std::strerror(res), res);
-            }
-            else
-            {
-                LOGGER_INFO("POSIX DataBlockMutex: Mutex for abandoned '{}' destroyed.", m_name);
-            }
-        }
-        else
-        {
-            LOGGER_ERROR("POSIX DataBlockMutex: pthread_mutex_trylock failed unexpectedly for "
-                         "'{}'. Error: {} ({})",
-                         m_name, std::strerror(res), res);
-        }
-    }
+    // We intentionally do NOT call pthread_mutex_destroy. Reasons:
+    // (1) The mutex lives in shared memory. When shm_close/shm_unlink releases the segment,
+    //     the memory (and the mutex object) is reclaimed by the kernel. No leak.
+    // (2) It is unpredictable which process is "last" to exit. Calling destroy while another
+    //     process holds or waits on the mutex is undefined behavior. Skipping destroy avoids
+    //     EBUSY/EOWNERDEAD races and timing issues entirely.
 
     // Dedicated-shm cleanup: when mutex used its own segment (base was null)
-    if (m_dedicated_shm_mapped != nullptr)
+    if (m_dedicated_shm.base != nullptr)
     {
-        munmap(m_dedicated_shm_mapped, m_dedicated_shm_size);
-        m_dedicated_shm_mapped = nullptr;
-        if (m_dedicated_shm_fd >= 0)
-        {
-            close(m_dedicated_shm_fd);
-            m_dedicated_shm_fd = -1;
-        }
+        pylabhub::platform::shm_close(&m_dedicated_shm);
         if (m_is_creator)
         {
-            shm_unlink((m_name + "_DataBlockManagementMutex").c_str());
+            pylabhub::platform::shm_unlink((m_name + "_DataBlockManagementMutex").c_str());
         }
     }
 }
 
 void DataBlockMutex::lock()
 {
-    if (!m_base_shared_memory_address) // Check base address now
+    if (m_base_shared_memory_address == nullptr) // Check base address now
     {
         throw std::runtime_error(
             "POSIX DataBlockMutex: Attempt to lock an uninitialized mutex for '" + m_name + "'.");
@@ -354,7 +302,7 @@ void DataBlockMutex::lock()
         // Handle EOWNERDEAD for robust mutexes
         if (res == EOWNERDEAD)
         {
-            LOGGER_WARN("POSIX DataBlockMutex: Mutex for '{}' was abandoned by a dead owner. "
+            LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned by a dead owner. "
                         "Successfully acquired and marked consistent.",
                         m_name);
             // The mutex has been acquired, but its state is inconsistent.
@@ -367,9 +315,77 @@ void DataBlockMutex::lock()
     }
 }
 
+namespace
+{
+constexpr long kMsPerSecond = 1000;
+constexpr long kNsPerMs = 1'000'000L;
+constexpr long kNsPerSecond = 1'000'000'000L;
+}
+
+bool DataBlockMutex::try_lock_for(int timeout_ms)
+{
+    if (m_base_shared_memory_address == nullptr)
+    {
+        throw std::runtime_error(
+            "POSIX DataBlockMutex: Attempt to lock an uninitialized mutex for '" + m_name + "'.");
+    }
+    pthread_mutex_t *mutex_ptr = get_pthread_mutex();
+    if (timeout_ms <= 0)
+    {
+        int res = pthread_mutex_trylock(mutex_ptr);
+        if (res == 0)
+        {
+            return true;
+        }
+        if (res == EOWNERDEAD)
+        {
+            LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marked consistent.",
+                        m_name);
+            pthread_mutex_consistent(mutex_ptr);
+            return true;
+        }
+        if (res == EBUSY)
+        {
+            return false;
+        }
+        throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_trylock failed for '" +
+                                 m_name + "'. Error: " + std::to_string(res));
+    }
+    struct timespec abstime;
+    if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
+    {
+        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime failed for '" + m_name + "'.");
+    }
+    abstime.tv_sec += timeout_ms / kMsPerSecond;
+    abstime.tv_nsec += static_cast<long>(timeout_ms % kMsPerSecond) * kNsPerMs;
+    if (abstime.tv_nsec >= kNsPerSecond)
+    {
+        abstime.tv_sec += 1;
+        abstime.tv_nsec -= kNsPerSecond;
+    }
+    int res = pthread_mutex_timedlock(mutex_ptr, &abstime);
+    if (res == 0)
+    {
+        return true;
+    }
+    if (res == EOWNERDEAD)
+    {
+        LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marked consistent.",
+                    m_name);
+        pthread_mutex_consistent(mutex_ptr);
+        return true;
+    }
+    if (res == ETIMEDOUT)
+    {
+        return false;
+    }
+    throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" + m_name +
+                             "'. Error: " + std::to_string(res));
+}
+
 void DataBlockMutex::unlock()
 {
-    if (!m_base_shared_memory_address) // Check base address now
+    if (m_base_shared_memory_address == nullptr) // Check base address now
     {
         throw std::runtime_error(
             "POSIX DataBlockMutex: Attempt to unlock an uninitialized mutex for '" + m_name + "'.");
@@ -393,6 +409,7 @@ DataBlockLockGuard::DataBlockLockGuard(DataBlockMutex &mutex) : m_mutex(mutex)
     m_mutex.lock();
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) -- unlock() may throw; required by RAII contract
 DataBlockLockGuard::~DataBlockLockGuard()
 {
     m_mutex.unlock();

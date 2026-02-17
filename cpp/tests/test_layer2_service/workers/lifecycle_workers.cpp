@@ -1,0 +1,1073 @@
+#include "lifecycle_workers.h"
+#include "test_entrypoint.h"
+#include "plh_datahub.hpp"
+#include "shared_test_helpers.h"
+#include "test_process_utils.h"
+#include "gtest/gtest.h"
+
+using namespace pylabhub::utils;
+
+namespace
+{
+// --- Globals for static module tests ---
+std::atomic<int> g_startup_counter{0};
+void counter_startup_callback(const char *)
+{
+    g_startup_counter++;
+}
+void reset_static_counters()
+{
+    g_startup_counter = 0;
+}
+
+// --- Globals for dynamic module tests ---
+std::atomic<int> dyn_A_start{0}, dyn_B_start{0}, dyn_C_start{0}, dyn_D_start{0}, dyn_E_start{0};
+std::atomic<int> dyn_A_stop{0}, dyn_B_stop{0}, dyn_C_stop{0}, dyn_D_stop{0}, dyn_E_stop{0};
+
+void reset_dynamic_counters()
+{
+    dyn_A_start = 0;
+    dyn_B_start = 0;
+    dyn_C_start = 0;
+    dyn_D_start = 0;
+    dyn_E_start = 0;
+    dyn_A_stop = 0;
+    dyn_B_stop = 0;
+    dyn_C_stop = 0;
+    dyn_D_stop = 0;
+    dyn_E_stop = 0;
+}
+
+void startup_A(const char *)
+{
+    dyn_A_start++;
+}
+void startup_B(const char *)
+{
+    dyn_B_start++;
+}
+void startup_C(const char *)
+{
+    dyn_C_start++;
+}
+void startup_D(const char *)
+{
+    dyn_D_start++;
+}
+void startup_E(const char *)
+{
+    dyn_E_start++;
+}
+void shutdown_A(const char *)
+{
+    dyn_A_stop++;
+}
+void shutdown_B(const char *)
+{
+    dyn_B_stop++;
+}
+void shutdown_C(const char *)
+{
+    dyn_C_stop++;
+}
+void shutdown_D(const char *)
+{
+    dyn_D_stop++;
+}
+void shutdown_E(const char *)
+{
+    dyn_E_stop++;
+}
+
+} // namespace
+
+// ============================================================================
+// Static Lifecycle Workers
+// ============================================================================
+
+int pylabhub::tests::worker::lifecycle::test_multiple_guards_warning()
+{
+    LifecycleGuard guard1;
+    LifecycleGuard guard2;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_module_registration_and_initialization()
+{
+    reset_static_counters();
+    ModuleDef module_a("ModuleA");
+    module_a.set_startup(counter_startup_callback);
+    LifecycleGuard guard(std::move(module_a));
+    return (g_startup_counter.load() != 1);
+}
+
+int pylabhub::tests::worker::lifecycle::test_register_after_init_aborts()
+{
+    LifecycleGuard guard;
+    ModuleDef module_a("LateStaticModule");
+    RegisterModule(std::move(module_a)); // Should abort
+    return 1;                            // Should not be reached
+}
+
+int pylabhub::tests::worker::lifecycle::test_unresolved_dependency()
+{
+    ModuleDef module_a("ModuleA");
+    module_a.add_dependency("NonExistentModule");
+    LifecycleGuard guard(std::move(module_a)); // Should abort
+    return 1;                                  // Should not be reached
+}
+
+int pylabhub::tests::worker::lifecycle::test_is_initialized_flag()
+{
+    // App should not be initialized before a guard is created.
+    if (IsAppInitialized())
+    {
+        return 1;
+    }
+
+    LifecycleGuard guard;
+
+    // After the first guard is created, the app should be initialized.
+    if (!IsAppInitialized())
+    {
+        return 2;
+    }
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_case_insensitive_dependency()
+{
+    // Module dependency resolution is case-sensitive. This test verifies that
+    // initialization will fail if a dependency is declared with a name that
+    // differs only by case.
+    ModuleDef module_a("ModuleA");
+    ModuleDef module_b("ModuleB");
+    module_b.add_dependency("modulea"); // Dependency with wrong case
+
+    // This should cause a panic/abort because "modulea" is not found.
+    LifecycleGuard guard(MakeModDefList(std::move(module_a), std::move(module_b)));
+
+    return 1; // Should not be reached.
+}
+
+int pylabhub::tests::worker::lifecycle::test_static_circular_dependency_aborts()
+{
+    ModuleDef module_a("CycleA");
+    module_a.add_dependency("CycleB");
+
+    ModuleDef module_b("CycleB");
+    module_b.add_dependency("CycleA");
+
+    // Registering both modules should succeed. The cycle is formed, but
+    // is only detected during the topological sort in initialize().
+    RegisterModule(std::move(module_a));
+    RegisterModule(std::move(module_b));
+
+    // The LifecycleGuard's constructor calls initialize(), which should detect
+    // the cycle and abort the program.
+    LifecycleGuard guard;
+
+    return 1; // Should not be reached.
+}
+
+int pylabhub::tests::worker::lifecycle::test_static_elaborate_indirect_cycle_aborts()
+{
+    // Cluster 1
+    ModuleDef c1_root("C1_Root");
+    ModuleDef c1_a1("C1_A1");
+    c1_a1.add_dependency("C1_Root");
+    ModuleDef c1_a2("C1_A2");
+    c1_a2.add_dependency("C1_Root");
+    ModuleDef c1_b1("C1_B1");
+    c1_b1.add_dependency("C1_A1");
+    ModuleDef c1_b2("C1_B2");
+    c1_b2.add_dependency("C1_A1");
+    c1_b2.add_dependency("C1_A2");
+    ModuleDef c1_c1("C1_C1");
+    c1_c1.add_dependency("C1_B1");
+
+    // Cluster 2
+    ModuleDef c2_root("C2_Root");
+    ModuleDef c2_a1("C2_A1");
+    c2_a1.add_dependency("C2_Root");
+    ModuleDef c2_a2("C2_A2");
+    c2_a2.add_dependency("C2_Root");
+    ModuleDef c2_b1("C2_B1");
+    c2_b1.add_dependency("C2_A1");
+    ModuleDef c2_b2("C2_B2");
+    c2_b2.add_dependency("C2_A1");
+    c2_b2.add_dependency("C2_A2");
+    ModuleDef c2_c1("C2_C1");
+    c2_c1.add_dependency("C2_B1");
+    c2_c1.add_dependency("C2_B2");
+    ModuleDef c2_d1("C2_D1");
+    c2_d1.add_dependency("C2_C1");
+
+    c2_c1.add_dependency("C1_B2"); // Link 1 (C1 -> C2)
+    c1_a1.add_dependency("C2_D1"); // Link 2 (C2 -> C1, forms the cycle)
+    c1_c1.add_dependency("C2_A2"); // Link 3 (Non-cycling cross-link)
+
+    RegisterModule(std::move(c1_root));
+    RegisterModule(std::move(c1_a1));
+    RegisterModule(std::move(c1_a2));
+    RegisterModule(std::move(c1_b1));
+    RegisterModule(std::move(c1_b2));
+    RegisterModule(std::move(c1_c1));
+    RegisterModule(std::move(c2_root));
+    RegisterModule(std::move(c2_a1));
+    RegisterModule(std::move(c2_a2));
+    RegisterModule(std::move(c2_b1));
+    RegisterModule(std::move(c2_b2));
+    RegisterModule(std::move(c2_c1));
+    RegisterModule(std::move(c2_d1));
+
+    // This guard will call initialize(), which will run the topological sort
+    // and detect the cycle: C1_A1 -> C1_B2 -> C2_C1 -> C2_D1 -> C1_A1
+    LifecycleGuard guard;
+
+    return 1; // Should not be reached
+}
+
+// ============================================================================
+// Init/finalize idempotency and is_finalized
+// ============================================================================
+
+int pylabhub::tests::worker::lifecycle::test_init_idempotency()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    // Second call to InitializeApp should be idempotent (no-op)
+    InitializeApp();
+    if (!IsAppInitialized())
+        return 2;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_finalize_idempotency()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    // Manual FinalizeApp; guard destructor will call it again (idempotent)
+    FinalizeApp();
+    // Destructor runs when guard goes out of scope - FinalizeApp again
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::test_is_finalized_flag()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    if (!IsAppInitialized())
+        return 1;
+    if (IsAppFinalized())
+        return 2;  // Should not be finalized yet
+    FinalizeApp();
+    if (!IsAppFinalized())
+        return 3;
+    return 0;
+}
+
+// ============================================================================
+// Dynamic Lifecycle Workers
+// ============================================================================
+
+int pylabhub::tests::worker::lifecycle::dynamic_register_before_init_fail()
+{
+    ModuleDef mod("DynA");
+    // Should fail because static core is not initialized.
+    if (RegisterDynamicModule(std::move(mod)))
+        return 1;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_load_unload()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod("DynA");
+    mod.set_startup(startup_A);
+    mod.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
+
+    if (!LoadModule("DynA"))
+        return 2;
+    if (dyn_A_start != 1)
+        return 3;
+
+    if (!UnloadModule("DynA"))
+        return 4;
+    WaitForUnload("DynA");
+    if (dyn_A_stop != 1)
+        return 5;
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_ref_counting()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod("DynA");
+    mod.set_startup(startup_A);
+    mod.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
+
+    // First load
+    if (!LoadModule("DynA"))
+        return 2;
+    if (dyn_A_start != 1)
+        return 3;
+
+    // Second load should be a no-op
+    if (!LoadModule("DynA"))
+        return 4;
+    if (dyn_A_start != 1) // Should not start again
+        return 5;
+
+    // A single unload should now work
+    if (!UnloadModule("DynA"))
+        return 6;
+    WaitForUnload("DynA");
+    if (dyn_A_stop != 1)
+        return 7;
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_dependency_chain()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef modB("DynB");
+    modB.set_startup(startup_B);
+    modB.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 1;
+
+    ModuleDef modA("DynA");
+    modA.add_dependency("DynB");
+    modA.set_startup(startup_A);
+    modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 2;
+
+    if (!LoadModule("DynA"))
+        return 3;
+    if (dyn_A_start != 1 || dyn_B_start != 1)
+        return 4;
+
+    // Unloading DynA should trigger a recursive unload of DynB.
+    if (!UnloadModule("DynA"))
+        return 5;
+    WaitForUnload("DynA");
+    if (dyn_A_stop != 1 || dyn_B_stop != 1)
+        return 6;
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_diamond_dependency()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef modD("DynD");
+    modD.set_startup(startup_D);
+    modD.set_shutdown(shutdown_D, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modD)))
+        return 1;
+
+    ModuleDef modB("DynB");
+    modB.add_dependency("DynD");
+    modB.set_startup(startup_B);
+    modB.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 2;
+
+    ModuleDef modC("DynC");
+    modC.add_dependency("DynD");
+    modC.set_startup(startup_C);
+    modC.set_shutdown(shutdown_C, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modC)))
+        return 3;
+
+    ModuleDef modA("DynA");
+    modA.add_dependency("DynB");
+    modA.add_dependency("DynC");
+    modA.set_startup(startup_A);
+    modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 4;
+
+    // --- SCENARIO 1: Unload from the top ---
+    if (!LoadModule("DynA"))
+        return 5;
+    if (dyn_A_start != 1 || dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1)
+        return 6;
+
+    // Unloading A should trigger a full cascade unload.
+    if (!UnloadModule("DynA"))
+        return 7;
+    WaitForUnload("DynA");
+    if (dyn_A_stop != 1 || dyn_B_stop != 1 || dyn_C_stop != 1 || dyn_D_stop != 1)
+        return 8;
+
+    // --- SCENARIO 2: Unload side branches ---
+    reset_dynamic_counters();
+    // Re-register modules since they were removed from the graph.
+    ModuleDef modD2("DynD");
+    modD2.set_startup(startup_D);
+    modD2.set_shutdown(shutdown_D, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modD2)))
+        return 101;
+    ModuleDef modB2("DynB");
+    modB2.add_dependency("DynD");
+    modB2.set_startup(startup_B);
+    modB2.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB2)))
+        return 102;
+    ModuleDef modC2("DynC");
+    modC2.add_dependency("DynD");
+    modC2.set_startup(startup_C);
+    modC2.set_shutdown(shutdown_C, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modC2)))
+        return 103;
+
+    // Load B and C independently
+    if (!LoadModule("DynB"))
+        return 9;
+    if (!LoadModule("DynC"))
+        return 10;
+    if (dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1)
+        return 11;
+    if (dyn_A_start != 0)
+        return 12;
+
+    // Try to unload D. Should fail (ref_count is 2). `UnloadModule` returns false.
+    if (UnloadModule("DynD"))
+        return 13;
+    if (dyn_D_stop != 0)
+        return 14;
+
+    // Unload B. D should NOT be unloaded (ref_count will drop to 1).
+    if (!UnloadModule("DynB"))
+        return 15;
+    WaitForUnload("DynB");
+    if (dyn_B_stop != 1)
+        return 16;
+    if (dyn_D_stop != 0)
+        return 17;
+
+    // Try to unload D again. Should still fail (ref_count is 1).
+    if (UnloadModule("DynD"))
+        return 18;
+    if (dyn_D_stop != 0)
+        return 19;
+
+    // Unload C. This should now trigger D to be unloaded.
+    if (!UnloadModule("DynC"))
+        return 20;
+    WaitForUnload("DynC");
+    if (dyn_C_stop != 1)
+        return 21;
+    if (dyn_D_stop != 1)
+        return 22;
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_finalize_unloads_all()
+{
+    reset_dynamic_counters();
+    {
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+        ModuleDef mod("DynA");
+        mod.set_startup(startup_A);
+        mod.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+        if (!RegisterDynamicModule(std::move(mod)))
+            return 1;
+
+        if (!LoadModule("DynA"))
+            return 2;
+    }
+    if (dyn_A_stop != 1)
+        return 3;
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_in_middle()
+{
+    PLH_DEBUG("-> WORKER dynamic_persistent_in_middle STARTED");
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    PLH_DEBUG("WORKER: Registering modules...");
+    // Register E (bottom of one branch)
+    ModuleDef modE("DynE");
+    modE.set_startup(startup_E);
+    modE.set_shutdown(shutdown_E, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modE)))
+        return 1;
+
+    // Register D (persistent, bottom of other branch)
+    ModuleDef modD("DynD");
+    modD.set_startup(startup_D);
+    modD.set_shutdown(shutdown_D, std::chrono::milliseconds(100));
+    modD.set_as_persistent();
+    if (!RegisterDynamicModule(std::move(modD)))
+        return 2;
+
+    // Register C
+    ModuleDef modC("DynC");
+    modC.add_dependency("DynE");
+    modC.set_startup(startup_C);
+    modC.set_shutdown(shutdown_C, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modC)))
+        return 3;
+
+    // Register B
+    ModuleDef modB("DynB");
+    modB.add_dependency("DynD");
+    modB.set_startup(startup_B);
+    modB.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 4;
+
+    // Register A (top)
+    ModuleDef modA("DynA");
+    modA.add_dependency("DynB");
+    modA.add_dependency("DynC");
+    modA.set_startup(startup_A);
+    modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 5;
+    PLH_DEBUG("WORKER: Module registration complete.");
+
+    // Load the whole graph from the top
+    PLH_DEBUG("WORKER: Calling LoadModule('DynA')...");
+    if (!LoadModule("DynA"))
+    {
+        PLH_DEBUG("WORKER: LoadModule('DynA') failed unexpectedly.");
+        return 10;
+    }
+    PLH_DEBUG("WORKER: LoadModule('DynA') finished. Checking startup counters...");
+    if (dyn_A_start != 1 || dyn_B_start != 1 || dyn_C_start != 1 || dyn_D_start != 1 ||
+        dyn_E_start != 1)
+    {
+        PLH_DEBUG("WORKER: Startup counters are incorrect.");
+        return 11;
+    }
+    PLH_DEBUG("WORKER: Startup counters are correct.");
+
+    // Unload from the top
+    PLH_DEBUG("WORKER: Calling UnloadModule('DynA')...");
+    if (!UnloadModule("DynA"))
+    {
+        PLH_DEBUG("WORKER: UnloadModule('DynA') failed unexpectedly.");
+        return 12;
+    }
+    WaitForUnload("DynA");
+    PLH_DEBUG("WORKER: UnloadModule('DynA') finished. Checking shutdown counters...");
+
+    // A, B, C, E should be stopped. D (persistent) should NOT be stopped.
+    if (dyn_A_stop != 1)
+        return 13;
+    if (dyn_B_stop != 1)
+        return 14;
+    if (dyn_C_stop != 1)
+        return 15;
+    if (dyn_E_stop != 1)
+        return 16;
+    if (dyn_D_stop != 0)
+    {
+        PLH_DEBUG("WORKER: persistent module 'DynD' was incorrectly stopped.");
+        return 17;
+    }
+    PLH_DEBUG("WORKER: Shutdown counters are correct. Test passed.");
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_static_dependency_fail()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef dynMod("DynA");
+    dynMod.add_dependency("NonExistentStaticMod");
+    if (RegisterDynamicModule(std::move(dynMod)))
+        return 1;
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::registration_fails_with_unresolved_dependency()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    // This test verifies that the system prevents dependency cycles at registration
+    // time by failing to register a module with an unresolved dependency.
+    // We attempt to register DynA which depends on DynB (which doesn't exist yet).
+    // This registration must fail.
+    ModuleDef modA("DynA");
+    modA.add_dependency("DynB");
+    if (!RegisterDynamicModule(std::move(modA)))
+    {
+        // This is the expected outcome. The registration failed because the
+        // dependency was not resolved.
+        return 0; // Success for the test
+    }
+
+    // If we reach here, the registration unexpectedly succeeded, which is a failure.
+    return 1;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
+{
+    struct ReentrantCallbacks
+    {
+        static void startup(const char *)
+        {
+            // LoadModule("DynB") will detect re-entrancy and return false.
+            // We must throw an exception to signal the failure to the parent
+            // `loadModule` call.
+            if (LoadModule("DynB"))
+            {
+                throw std::runtime_error("Re-entrant LoadModule('DynB') unexpectedly succeeded!");
+            }
+            throw std::runtime_error(
+                "LoadModule('DynB') detected re-entrant call and failed as expected.");
+        }
+    };
+
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+    ModuleDef modB("DynB");
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 1;
+
+    ModuleDef modA("DynA");
+    modA.set_startup(ReentrantCallbacks::startup);
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 2;
+
+    // LoadModule("DynA") should fail because its startup callback throws an exception.
+    LoadModule("DynA");
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_module()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod_perm("DynPerm");
+    mod_perm.set_startup(startup_D); // Using D's counters
+    mod_perm.set_shutdown(shutdown_D, std::chrono::milliseconds(100));
+    mod_perm.set_as_persistent();
+    if (!RegisterDynamicModule(std::move(mod_perm)))
+        return 1;
+
+    ModuleDef mod_a("DynA");
+    mod_a.add_dependency("DynPerm");
+    mod_a.set_startup(startup_A);
+    mod_a.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(mod_a)))
+        return 2;
+
+    if (!LoadModule("DynA"))
+        return 3;
+    if (dyn_A_start != 1 || dyn_D_start != 1)
+        return 4;
+
+    if (!UnloadModule("DynA"))
+        return 5;
+    WaitForUnload("DynA");
+    if (dyn_A_stop != 1)
+        return 6;
+    if (dyn_D_stop != 0)
+        return 7; // DynPerm should NOT be stopped
+
+    // finalize() should shut it down
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize()
+{
+    reset_dynamic_counters();
+    {
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        ModuleDef mod_perm("DynPerm");
+        mod_perm.set_startup(startup_D);
+        mod_perm.set_shutdown(shutdown_D, std::chrono::milliseconds(100));
+        mod_perm.set_as_persistent();
+        if (!RegisterDynamicModule(std::move(mod_perm)))
+            return 1;
+
+        if (!LoadModule("DynPerm"))
+            return 2;
+        if (dyn_D_start != 1)
+            return 3;
+
+        // Don't unload, let the LifecycleGuard handle it.
+    }
+    // At this point, finalize() has been called.
+
+    if (dyn_D_stop != 1)
+        return 4; // DynPerm should BE stopped by finalize()
+
+    return 0;
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_unload_timeout()
+{
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef mod("HangingModule");
+    mod.set_shutdown(
+        [](const char *)
+        {
+            PLH_DEBUG("HangingModule shutdown started, sleeping for 250ms...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            PLH_DEBUG("HangingModule shutdown finished sleep.");
+        },
+        std::chrono::milliseconds(50));
+
+    if (!RegisterDynamicModule(std::move(mod)))
+        return 1;
+
+    if (!LoadModule("HangingModule"))
+        return 2;
+
+    // This should return in ~50ms, not hang for 250ms.
+    // The test runner will verify the "TIMEOUT!" message in stderr.
+    if (!UnloadModule("HangingModule"))
+        return 3;
+
+    return 0;
+}
+
+// ============================================================================
+// Null/overflow input validation (need lifecycle initialized to reach the check)
+// ============================================================================
+
+int pylabhub::tests::worker::lifecycle::load_module_null_returns_false()
+{
+    // With string_view API, there is no null; empty string is the invalid-name equivalent.
+    LifecycleGuard guard;
+    return LoadModule("") ? 1 : 0;
+}
+
+int pylabhub::tests::worker::lifecycle::load_module_overflow_returns_false()
+{
+    LifecycleGuard guard;
+    std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'z');
+    return LoadModule(long_name.c_str()) ? 1 : 0;
+}
+
+int pylabhub::tests::worker::lifecycle::unload_module_null_returns_false()
+{
+    // With string_view API, there is no null; empty string is the invalid-name equivalent.
+    LifecycleGuard guard;
+    return UnloadModule("") ? 1 : 0;
+}
+
+int pylabhub::tests::worker::lifecycle::unload_module_overflow_returns_false()
+{
+    LifecycleGuard guard;
+    std::string long_name(ModuleDef::MAX_MODULE_NAME_LEN + 1, 'w');
+    return UnloadModule(long_name.c_str()) ? 1 : 0;
+}
+
+// ============================================================================
+// Log sink injection workers
+// ============================================================================
+
+/**
+ * @brief Installs a log sink, then triggers the "cannot unload — in use" warning
+ *        by trying to unload a module that still has a dependent loaded.
+ *
+ * Verifies that the message was routed through the sink by writing it to stderr
+ * with a "LIFECYCLE_SINK:" prefix.  The parent test checks for that prefix.
+ */
+int pylabhub::tests::worker::lifecycle::log_sink_routes_warning()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    // Register and load DynA (the dependency).
+    ModuleDef modA("DynA");
+    modA.set_startup(startup_A);
+    modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 1;
+
+    // Register and load DynB (depends on DynA).
+    ModuleDef modB("DynB");
+    modB.add_dependency("DynA");
+    modB.set_startup(startup_B);
+    modB.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 2;
+
+    if (!LoadModule("DynB"))
+        return 3;
+
+    // Install a sink that writes to stderr with a distinguishable prefix.
+    SetLifecycleLogSink(
+        [](pylabhub::utils::LifecycleLogLevel /*level*/, const std::string &msg)
+        {
+            fmt::print(stderr, "LIFECYCLE_SINK: {}\n", msg);
+            std::fflush(stderr);
+        });
+
+    // Attempt to unload DynA while DynB still depends on it — this must fail
+    // and emit the "Cannot unload module" warning through the sink.
+    bool result = UnloadModule("DynA");
+    if (result)
+        return 4; // Should have been rejected.
+
+    return 0;
+}
+
+/**
+ * @brief Installs a sink, immediately clears it, then triggers the same warning.
+ *
+ * Verifies that after clearing the sink the message does NOT appear with the
+ * "LIFECYCLE_SINK:" prefix (it falls back to PLH_DEBUG instead).
+ */
+int pylabhub::tests::worker::lifecycle::log_sink_cleared_uses_fallback()
+{
+    reset_dynamic_counters();
+    LifecycleGuard guard(Logger::GetLifecycleModule());
+
+    ModuleDef modA("DynA");
+    modA.set_startup(startup_A);
+    modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modA)))
+        return 1;
+
+    ModuleDef modB("DynB");
+    modB.add_dependency("DynA");
+    modB.set_startup(startup_B);
+    modB.set_shutdown(shutdown_B, std::chrono::milliseconds(100));
+    if (!RegisterDynamicModule(std::move(modB)))
+        return 2;
+
+    if (!LoadModule("DynB"))
+        return 3;
+
+    // Install then immediately clear the sink.
+    SetLifecycleLogSink(
+        [](pylabhub::utils::LifecycleLogLevel /*level*/, const std::string &msg)
+        {
+            fmt::print(stderr, "LIFECYCLE_SINK: {}\n", msg);
+            std::fflush(stderr);
+        });
+    ClearLifecycleLogSink();
+
+    // The warning should NOT go through the sink.
+    bool result = UnloadModule("DynA");
+    if (result)
+        return 4;
+
+    return 0;
+}
+
+// ============================================================================
+// Async unload + finalize interaction workers
+// ============================================================================
+
+/**
+ * @brief Schedules an async unload then lets finalize() drain the thread.
+ *
+ * This is the "fire and forget" unload pattern — no WaitForUnload before the
+ * LifecycleGuard goes out of scope.  Verifies that Phase 1 of finalize() (join
+ * the shutdown thread) correctly waits for the pending unload to complete so
+ * the stop callback is always observed.
+ */
+int pylabhub::tests::worker::lifecycle::finalize_waits_for_pending_async_unload()
+{
+    reset_dynamic_counters();
+    {
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        ModuleDef modA("DynA");
+        modA.set_startup(startup_A);
+        modA.set_shutdown(shutdown_A, std::chrono::milliseconds(100));
+        if (!RegisterDynamicModule(std::move(modA)))
+            return 1;
+
+        if (!LoadModule("DynA"))
+            return 2;
+
+        if (dyn_A_start != 1)
+            return 3;
+
+        // Schedule async unload — deliberately skip WaitForUnload.
+        // finalize() (triggered by guard destructor) must drain the shutdown
+        // thread before returning, so the stop counter is observable here.
+        if (!UnloadModule("DynA"))
+            return 4;
+
+        // Guard destructor calls finalize() here, joining the shutdown thread.
+    }
+
+    // After finalize: the shutdown callback must have run exactly once.
+    if (dyn_A_stop != 1)
+        return 5;
+
+    return 0;
+}
+
+/**
+ * @brief Verifies that the lifecycle log sink is safe during async shutdown
+ *        failure that overlaps with the final shutdown sequence.
+ *
+ * Timeline:
+ *  1. Logger is running — its log sink is installed.
+ *  2. A module with a short timeout is loaded and unloaded (async).
+ *  3. The shutdown callback hangs past its timeout.
+ *  4. finalize() is called (via LifecycleGuard destructor):
+ *     - Phase 1: joins the shutdown thread.
+ *       timedShutdown detaches the hung callback thread and records SHUTDOWN_TIMEOUT.
+ *       lifecycleError() is called from the shutdown thread — routes through the
+ *       log sink → LOGGER_ERROR while the logger is still running.
+ *     - Phase 3: Logger static module shuts down.
+ *       do_logger_shutdown calls ClearLifecycleLogSink() first, then drains queue.
+ *  5. Process exits cleanly with no crash.
+ *
+ * The test verifies:
+ *  - Process exits with code 0.
+ *  - The destabilization error message appeared in stderr (via logger or PLH_DEBUG).
+ */
+int pylabhub::tests::worker::lifecycle::finalize_sink_safe_during_async_failure()
+{
+    {
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        ModuleDef mod("SlowShutdown");
+        mod.set_shutdown(
+            [](const char *)
+            {
+                // Hang longer than the timeout so timedShutdown detaches us.
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            },
+            std::chrono::milliseconds(50));
+
+        if (!RegisterDynamicModule(std::move(mod)))
+            return 1;
+
+        if (!LoadModule("SlowShutdown"))
+            return 2;
+
+        // Schedule async unload without waiting.
+        if (!UnloadModule("SlowShutdown"))
+            return 3;
+
+        // Guard destructor triggers finalize() here.
+        // Phase 1 joins the shutdown thread:
+        //   timedShutdown fires after 50ms, detaches the hung callback thread.
+        //   lifecycleError("ERROR: ... shutdown TIMED OUT ...") is called.
+        //   The log sink routes this to LOGGER_ERROR while the logger is alive.
+        // Phase 3 shuts down Logger — do_logger_shutdown removes the sink first.
+    }
+
+    return 0;
+}
+
+// Self-registering dispatcher — no separate dispatcher file needed.
+namespace
+{
+struct LifecycleWorkerRegistrar
+{
+    LifecycleWorkerRegistrar()
+    {
+        register_worker_dispatcher(
+            [](int argc, char **argv) -> int
+            {
+                if (argc < 2)
+                    return -1;
+                std::string_view mode = argv[1];
+                auto dot = mode.find('.');
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "lifecycle")
+                    return -1;
+                std::string scenario(mode.substr(dot + 1));
+                using namespace pylabhub::tests::worker::lifecycle;
+                if (scenario == "test_multiple_guards_warning")
+                    return test_multiple_guards_warning();
+                if (scenario == "test_module_registration_and_initialization")
+                    return test_module_registration_and_initialization();
+                if (scenario == "test_is_initialized_flag")
+                    return test_is_initialized_flag();
+                if (scenario == "test_register_after_init_aborts")
+                    return test_register_after_init_aborts();
+                if (scenario == "test_unresolved_dependency")
+                    return test_unresolved_dependency();
+                if (scenario == "test_case_insensitive_dependency")
+                    return test_case_insensitive_dependency();
+                if (scenario == "test_static_circular_dependency_aborts")
+                    return test_static_circular_dependency_aborts();
+                if (scenario == "test_static_elaborate_indirect_cycle_aborts")
+                    return test_static_elaborate_indirect_cycle_aborts();
+                if (scenario == "test_init_idempotency")
+                    return test_init_idempotency();
+                if (scenario == "test_finalize_idempotency")
+                    return test_finalize_idempotency();
+                if (scenario == "test_is_finalized_flag")
+                    return test_is_finalized_flag();
+                if (scenario == "dynamic.register_before_init_fail")
+                    return dynamic_register_before_init_fail();
+                if (scenario == "dynamic.load_unload")
+                    return dynamic_load_unload();
+                if (scenario == "dynamic.ref_counting")
+                    return dynamic_ref_counting();
+                if (scenario == "dynamic.dependency_chain")
+                    return dynamic_dependency_chain();
+                if (scenario == "dynamic.diamond_dependency")
+                    return dynamic_diamond_dependency();
+                if (scenario == "dynamic.finalize_unloads_all")
+                    return dynamic_finalize_unloads_all();
+                if (scenario == "dynamic.persistent_in_middle")
+                    return dynamic_persistent_in_middle();
+                if (scenario == "dynamic.static_dependency_fail")
+                    return dynamic_static_dependency_fail();
+                if (scenario == "registration_fails_with_unresolved_dependency")
+                    return registration_fails_with_unresolved_dependency();
+                if (scenario == "dynamic.reentrant_load_fail")
+                    return dynamic_reentrant_load_fail();
+                if (scenario == "dynamic.persistent_module")
+                    return dynamic_persistent_module();
+                if (scenario == "dynamic.persistent_module_finalize")
+                    return dynamic_persistent_module_finalize();
+                if (scenario == "dynamic.unload_timeout")
+                    return dynamic_unload_timeout();
+                if (scenario == "load_module_null_returns_false")
+                    return load_module_null_returns_false();
+                if (scenario == "load_module_overflow_returns_false")
+                    return load_module_overflow_returns_false();
+                if (scenario == "unload_module_null_returns_false")
+                    return unload_module_null_returns_false();
+                if (scenario == "unload_module_overflow_returns_false")
+                    return unload_module_overflow_returns_false();
+                if (scenario == "log_sink_routes_warning")
+                    return log_sink_routes_warning();
+                if (scenario == "log_sink_cleared_uses_fallback")
+                    return log_sink_cleared_uses_fallback();
+                if (scenario == "finalize_waits_for_pending_async_unload")
+                    return finalize_waits_for_pending_async_unload();
+                if (scenario == "finalize_sink_safe_during_async_failure")
+                    return finalize_sink_safe_during_async_failure();
+                fmt::print(stderr, "ERROR: Unknown lifecycle scenario '{}'\n", scenario);
+                return 1;
+            });
+    }
+};
+static LifecycleWorkerRegistrar g_lifecycle_registrar;
+} // namespace

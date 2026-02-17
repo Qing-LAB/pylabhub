@@ -35,10 +35,10 @@ std::string SyslogSink::description() const
 
 int SyslogSink::level_to_syslog_priority(int level)
 {
+    constexpr int kSystemLevel = 5;
     switch (level)
     {
     case 0: // TRACE
-        return LOG_DEBUG;
     case 1: // DEBUG
         return LOG_DEBUG;
     case 2: // INFO
@@ -47,7 +47,7 @@ int SyslogSink::level_to_syslog_priority(int level)
         return LOG_WARNING;
     case 4: // ERROR
         return LOG_ERR;
-    case 5: // SYSTEM
+    case kSystemLevel: // SYSTEM
         return LOG_CRIT;
     default:
         return LOG_INFO;

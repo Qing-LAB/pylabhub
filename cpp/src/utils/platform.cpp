@@ -10,6 +10,8 @@
  */
 #include "plh_base.hpp"
 #include "pylabhub_version.h"
+#include <chrono>
+#include <limits>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
@@ -37,6 +39,11 @@
 #include <dlfcn.h>    // For dladdr
 #include <execinfo.h> // For backtrace, backtrace_symbols
 #include <unistd.h>
+#include <cerrno>   // For ESRCH
+#include <csignal>  // For kill
+#include <fcntl.h>  // For O_CREAT, O_RDWR
+#include <sys/mman.h> // For mmap, munmap
+#include <sys/stat.h> // For fstat
 #endif
 
 #ifdef PYLABHUB_PLATFORM_FREEBSD
@@ -48,9 +55,6 @@
 #include <limits.h>      // PATH_MAX
 #include <mach-o/dyld.h> // _NSGetExecutablePath
 #endif
-
-#include "fmt/core.h"
-#include "fmt/format.h"
 
 namespace pylabhub::platform
 {
@@ -141,7 +145,9 @@ std::string get_executable_name(bool include_path) noexcept
             buf.resize(buf.size() * 2);
             count = readlink("/proc/self/exe", buf.data(), buf.size());
             if (count == -1)
+            {
                 return "unknown_linux";
+            }
         }
         full_path.assign(buf.data(), static_cast<size_t>(count));
 
@@ -248,9 +254,323 @@ int get_version_rolling() noexcept
     return PYLABHUB_VERSION_ROLLING;
 }
 
-const char* get_version_string() noexcept
+const char *get_version_string() noexcept
 {
     return PYLABHUB_VERSION_STRING;
 }
+
+/**
+ * @brief Checks if a process with the given PID is currently alive.
+ * @details This function uses platform-specific mechanisms to determine
+ *          if a process is still running. This is critical for detecting
+ *          zombie locks and stale PID-based synchronization primitives.
+ *
+ * @param pid The process ID to check. PID 0 is always considered invalid.
+ * @return True if the process exists, false otherwise.
+ *
+ * @note Windows Implementation:
+ *       - Uses OpenProcess() with PROCESS_QUERY_INFORMATION
+ *       - Checks GetExitCodeProcess() for STILL_ACTIVE status
+ *       - ERROR_INVALID_PARAMETER indicates non-existent PID
+ *
+ * @note POSIX Implementation:
+ *       - Uses kill(pid, 0) which checks process existence without sending signal
+ *       - ESRCH (errno 3) means "No such process" -> dead
+ *       - EPERM (errno 1) means "Operation not permitted" -> alive but inaccessible
+ *       - Success (0) means process exists and we can signal it
+ */
+bool is_process_alive(uint64_t pid) noexcept
+{
+    if (pid == 0)
+    {
+        // PID 0 is typically invalid or refers to the system/kernel
+        return false;
+    }
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // On Windows, check if process handle can be opened and is still active
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (process == NULL)
+    {
+        // GetLastError() could be ERROR_INVALID_PARAMETER if PID doesn't exist
+        DWORD error = GetLastError();
+        // Process doesn't exist if we get invalid parameter error
+        return error != ERROR_INVALID_PARAMETER;
+    }
+
+    DWORD exitCode = 0;
+    BOOL result = GetExitCodeProcess(process, &exitCode);
+    CloseHandle(process);
+
+    if (!result)
+    {
+        // Could not get exit code, assume dead or inaccessible
+        return false;
+    }
+
+    // STILL_ACTIVE (259) means process is running
+    return exitCode == STILL_ACTIVE;
+
+#else // POSIX systems
+    // Reject PIDs that don't fit in pid_t: UINT64_MAX truncates to -1, and
+    // kill(-1, 0) can succeed (signals all processes), which would incorrectly
+    // report "alive". Reject any pid > pid_t max.
+    const auto pid_max = static_cast<uint64_t>(std::numeric_limits<pid_t>::max());
+    if (pid > pid_max)
+    {
+        return false;
+    }
+    // On POSIX, kill(pid, 0) checks for existence without sending a signal
+    // Returns 0 on success (process exists), -1 on failure
+    if (kill(static_cast<pid_t>(pid), 0) == 0)
+    {
+        return true; // Process exists and we can signal it
+    }
+
+    // Check errno to distinguish between different failure modes
+    // ESRCH (3): No such process -> dead
+    // EPERM (1): Operation not permitted -> alive but we lack permissions
+    // Other errors: treat as "not alive" for safety
+    return errno != ESRCH;
+#endif
+}
+
+/**
+ * @brief Gets a monotonic timestamp in nanoseconds.
+ * @details Uses std::chrono::steady_clock for guaranteed monotonicity across
+ *          all platforms (C++11). This is crucial for:
+ *          - Timeout calculations in SlotRWState acquisition
+ *          - Performance metrics in SharedMemoryHeader
+ *          - Heartbeat timestamps
+ *          - Logger timestamps
+ *
+ * @return Nanoseconds since an unspecified epoch (typically boot time).
+ *         The absolute value is meaningless; use for deltas only.
+ *
+ * @note Thread-safe. steady_clock is monotonic on Windows, Linux, macOS, FreeBSD.
+ */
+uint64_t monotonic_time_ns() noexcept
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
+
+/**
+ * @brief Computes elapsed time in nanoseconds since a start timestamp.
+ * @details Convenience function for timeout and performance measurement.
+ *          Handles potential clock skew by returning 0 if start_ns is in future.
+ *
+ * @param start_ns A previous timestamp from monotonic_time_ns().
+ * @return Nanoseconds elapsed. Returns 0 if start_ns > current time (clock skew).
+ *
+ * @note Example usage:
+ *       uint64_t start = monotonic_time_ns();
+ *       // ... do work ...
+ *       uint64_t elapsed = elapsed_time_ns(start);
+ *       LOGGER_DEBUG("Operation took {} ns", elapsed);
+ */
+uint64_t elapsed_time_ns(uint64_t start_ns) noexcept
+{
+    uint64_t now = monotonic_time_ns();
+    // Guard against clock skew (should never happen with monotonic clock)
+    if (now < start_ns)
+    {
+        return 0;
+    }
+    return now - start_ns;
+}
+
+// ============================================================================
+// Shared Memory
+// ============================================================================
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+
+ShmHandle shm_create(const char *name, size_t size, unsigned flags)
+{
+    ShmHandle h{};
+    if (!name || size == 0)
+        return h;
+    HANDLE mapping =
+        CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                          static_cast<DWORD>(size), name);
+    if (mapping == NULL)
+        return h;
+    if ((flags & SHM_CREATE_EXCLUSIVE) != 0 && GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(mapping);
+        return h;
+    }
+    void *base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size);
+    if (base == NULL)
+    {
+        CloseHandle(mapping);
+        return h;
+    }
+    h.base = base;
+    h.size = size;
+    h.opaque = mapping;
+    return h;
+}
+
+ShmHandle shm_attach(const char *name)
+{
+    ShmHandle h{};
+    if (!name)
+        return h;
+    HANDLE mapping = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
+    if (mapping == NULL)
+        return h;
+    void *base = MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+    if (base == NULL)
+    {
+        CloseHandle(mapping);
+        return h;
+    }
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(base, &mbi, sizeof(mbi)) == 0)
+    {
+        UnmapViewOfFile(base);
+        CloseHandle(mapping);
+        return h;
+    }
+    h.base = base;
+    h.size = mbi.RegionSize;
+    h.opaque = mapping;
+    return h;
+}
+
+void shm_close(ShmHandle *handle)
+{
+    if (!handle)
+        return;
+    if (handle->base)
+    {
+        UnmapViewOfFile(handle->base);
+        handle->base = nullptr;
+    }
+    if (handle->opaque)
+    {
+        CloseHandle(static_cast<HANDLE>(handle->opaque));
+        handle->opaque = nullptr;
+    }
+    handle->size = 0;
+}
+
+void shm_unlink(const char * /*name*/)
+{
+    // Windows: no explicit unlink; name is released when last handle closes.
+}
+
+#else // POSIX
+
+namespace
+{
+constexpr int kShmModeRw = 0666;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- API order matches header; size/flags types differ at call sites
+ShmHandle shm_create(const char *name, size_t size, unsigned flags)
+{
+    ShmHandle handle{};
+    if (name == nullptr || size == 0)
+    {
+        return handle;
+    }
+    if ((flags & SHM_CREATE_UNLINK_FIRST) != 0)
+    {
+        ::shm_unlink(name);
+    }
+    int open_flags = O_CREAT | O_RDWR;
+    if ((flags & SHM_CREATE_EXCLUSIVE) != 0)
+    {
+        open_flags |= O_EXCL;
+    }
+    int shm_fd = shm_open(name, open_flags, kShmModeRw);
+    if (shm_fd == -1)
+    {
+        return handle;
+    }
+    if (ftruncate(shm_fd, static_cast<off_t>(size)) == -1)
+    {
+        close(shm_fd);
+        shm_unlink(name);
+        return handle;
+    }
+    void *base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (base == MAP_FAILED)
+    {
+        close(shm_fd);
+        shm_unlink(name);
+        return handle;
+    }
+    handle.base = base;
+    handle.size = size;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- store fd in opaque for close(); ShmHandle ABI
+    handle.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(shm_fd));
+    return handle;
+}
+
+ShmHandle shm_attach(const char *name)
+{
+    ShmHandle handle{};
+    if (name == nullptr)
+    {
+        return handle;
+    }
+    int shm_fd = shm_open(name, O_RDWR, kShmModeRw);
+    if (shm_fd == -1)
+    {
+        return handle;
+    }
+    struct stat stat_buf;
+    if (fstat(shm_fd, &stat_buf) == -1)
+    {
+        close(shm_fd);
+        return handle;
+    }
+    auto seg_size = static_cast<size_t>(stat_buf.st_size);
+    void *base = mmap(nullptr, seg_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (base == MAP_FAILED)
+    {
+        close(shm_fd);
+        return handle;
+    }
+    handle.base = base;
+    handle.size = seg_size;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- store fd in opaque for close(); ShmHandle ABI
+    handle.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(shm_fd));
+    return handle;
+}
+
+void shm_close(ShmHandle *handle)
+{
+    if (handle == nullptr)
+    {
+        return;
+    }
+    if (handle->base != nullptr && handle->size > 0)
+    {
+        munmap(handle->base, handle->size);
+        handle->base = nullptr;
+    }
+    if (handle->opaque != nullptr)
+    {
+        close(static_cast<int>(reinterpret_cast<intptr_t>(handle->opaque)));
+        handle->opaque = nullptr;
+    }
+    handle->size = 0;
+}
+
+void shm_unlink(const char *name)
+{
+    if (name != nullptr)
+    {
+        ::shm_unlink(name);
+    }
+}
+
+#endif
 
 } // namespace pylabhub::platform

@@ -123,13 +123,10 @@ else()
 
   set(_sanitizer_comment_name "${PYLABHUB_USE_SANITIZER}Sanitizer runtime")
 
-  if(PLATFORM_APPLE)
-    set(_suffix_regex "(dylib)")
-    set(_accepted_suffixes "dylib")
-  else()
-    set(_suffix_regex "(a|so|dylib)")
-    set(_accepted_suffixes "a;so;dylib")
-  endif()
+  # Accept both static (.a) and shared (.so/.dylib) runtimes on all platforms.
+  # The toolchain may provide either; detection and staging logic handle both correctly.
+  set(_suffix_regex "(a|so|dylib)")
+  set(_accepted_suffixes "a;so;dylib")
 
   message(STATUS "[pylabhub-runtime-sanitize] PYLABHUB_USE_SANITIZER is set to ${PYLABHUB_USE_SANITIZER}")
   message(STATUS "[pylabhub-runtime-sanitize] Using an empty.c to find sanitizer lib path.")
@@ -191,7 +188,7 @@ else()
         set(_found_trace_line "${_line}")
 
         # More permissive path/basename extraction: capture tokens that end with an accepted suffix
-        string(REGEX MATCH "([^ \\r\\n\\t:]+\\.(?:${_accepted_suffix_alternation}))" _path_candidate "${_line}")
+        string(REGEX MATCH "([^ \\r\\n\\t:]+\\.(${_accepted_suffix_alternation}))" _path_candidate "${_line}")
 
         if(_path_candidate)
           # Try direct existence first
@@ -253,8 +250,36 @@ else()
     set(PYLABHUB_SANITIZER_RUNTIME_BASENAME "" CACHE STRING "" FORCE)
     set(PYLABHUB_SANITIZER_RUNTIME_TYPE "unknown" CACHE STRING "" FORCE)
     set(PYLABHUB_SANITIZER_TRACE_LINE "" CACHE STRING "" FORCE)
-    message(WARNING "Could not find ${_sanitizer_comment_name} via linker trace.")
+    set(_trace_file "${CMAKE_BINARY_DIR}/sanitizer_link_trace_${_san_lib_shortname}.txt")
+    file(WRITE "${_trace_file}" "${_link_trace}")
+    message(STATUS "[pylabhub-runtime-sanitize] ${_sanitizer_comment_name} path not determined via linker trace; compiler will link at build time. Trace saved to ${_trace_file}")
+    if(PYLABHUB_SANITIZER_VERBOSE)
+      message(STATUS "[pylabhub-runtime-sanitize] Linker trace (first 30 lines):")
+      string(REPLACE "\n" ";" _trace_line_list "${_link_trace}")
+      list(SUBLIST _trace_line_list 0 30 _first_lines)
+      foreach(_tl IN LISTS _first_lines)
+        message(STATUS "  ${_tl}")
+      endforeach()
+    endif()
   endif()
+
+  # Summary: what was detected and will be used
+  message(STATUS "[pylabhub-runtime-sanitize] --- Sanitizer detection summary ---")
+  if(_found_path)
+    message(STATUS "[pylabhub-runtime-sanitize] Sanitizer: ${PYLABHUB_USE_SANITIZER}")
+    message(STATUS "[pylabhub-runtime-sanitize] Runtime:   ${PYLABHUB_SANITIZER_RUNTIME_PATH} (${PYLABHUB_SANITIZER_RUNTIME_TYPE})")
+    if(PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
+      message(STATUS "[pylabhub-runtime-sanitize] Staging:   Will copy to ${PYLABHUB_STAGING_DIR}/lib/")
+    else()
+      message(STATUS "[pylabhub-runtime-sanitize] Staging:   Skipped (static runtime linked into executables)")
+    endif()
+  else()
+    message(STATUS "[pylabhub-runtime-sanitize] Sanitizer: ${PYLABHUB_USE_SANITIZER}")
+    message(STATUS "[pylabhub-runtime-sanitize] Runtime:   Not found via trace; compiler driver will link at build time")
+    message(STATUS "[pylabhub-runtime-sanitize] Staging:   N/A")
+  endif()
+  message(STATUS "[pylabhub-runtime-sanitize] ---")
+  message(STATUS "")
 
   # Stage shared runtimes
   if(PYLABHUB_SANITIZER_RUNTIME_PATH AND PYLABHUB_SANITIZER_RUNTIME_TYPE STREQUAL "shared")
@@ -273,10 +298,10 @@ else()
     list(APPEND CMAKE_INSTALL_RPATH "${PYLABHUB_STAGING_DIR}/lib")
     message(STATUS "[pylabhub-runtime-sanitize] Adding RPATH for sanitizer: ${PYLABHUB_STAGING_DIR}/lib")
   elseif(PYLABHUB_SANITIZER_RUNTIME_PATH) # static
-    message(STATUS "[pylabhub-runtime-sanitize] Sanitizer runtime found but it's static (${PYLABHUB_SANITIZER_RUNTIME_BASENAME}); skipping copy to staging (not necessary).")
-    message(WARNING "Static sanitizer lib may not link properly with tests. If you have BUILD_TESTS=ON, you may encounter errors.")
+    message(STATUS "[pylabhub-runtime-sanitize] Sanitizer runtime is static (${PYLABHUB_SANITIZER_RUNTIME_BASENAME}); skipping copy to staging (not necessary).")
+    message(STATUS "[pylabhub-runtime-sanitize] Executables that load shared libs (e.g. pylabhub-utils) must link pylabhub::sanitizer_flags; call pylabhub_ensure_sanitizer_for_executable(<target>).")
   else()
-    message(WARNING "Could not find ${_sanitizer_comment_name}. Staged executables may not run from a clean environment.")
+    message(STATUS "[pylabhub-runtime-sanitize] ${_sanitizer_comment_name} path not determined; compiler will link at build time.")
   endif()
 
   message(STATUS "")

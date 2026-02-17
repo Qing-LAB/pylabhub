@@ -16,6 +16,7 @@ option(BUILD_XOP "Build the Igor Pro XOP module" ON)
 set(PYLABHUB_USE_SANITIZER "None" CACHE STRING "Enable sanitizers (None, Address, Thread, UndefinedBehavior, Undefined). AddressSanitizer supported on MSVC.")
 set_property(CACHE PYLABHUB_USE_SANITIZER PROPERTY STRINGS "None" "Address" "Thread" "UndefinedBehavior" "Undefined")
 option(PYLABHUB_LINK_STATIC_SANITIZER_INTO_SHARED_LIBS "When using a static sanitizer library (e.g., libasan.a), force it to be linked into the project's shared libraries (like pylabhub-utils). Default is OFF, as it's often better to link the sanitizer into the final executable." OFF)
+option(PYLABHUB_SANITIZER_VERBOSE "When sanitizer runtime detection fails, print linker trace and save to build dir for debugging." OFF)
 
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
@@ -36,19 +37,28 @@ option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default buil
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
-# Option to control the intensity of the atomic_guard stress tests
-set(VALID_STRESS_LEVELS "None" "Light" "Heavy")
-set(PYLABHUB_ATOMICGUARD_STRESS_LEVEL "Light" CACHE STRING "Set the stress level for atomic_guard tests. Valid values are: ${VALID_STRESS_LEVELS}")
-set_property(CACHE PYLABHUB_ATOMICGUARD_STRESS_LEVEL PROPERTY STRINGS ${VALID_STRESS_LEVELS})
-
-if(NOT PYLABHUB_ATOMICGUARD_STRESS_LEVEL IN_LIST VALID_STRESS_LEVELS)
-    message(FATAL_ERROR "Invalid value for PYLABHUB_ATOMICGUARD_STRESS_LEVEL: '${PYLABHUB_ATOMICGUARD_STRESS_LEVEL}'. Must be one of ${VALID_STRESS_LEVELS}")
+# Option to control load for racing-condition / stress tests (InProcessSpinState/SpinGuard, SlotRWCoordinator, high_load, FileLock, Logger, JsonConfig, etc.).
+# Low: fewer threads, shorter duration (e.g. 10 s). High: more threads, longer duration (e.g. 30 s).
+set(STRESS_TEST_LEVEL_VALID "Low" "Medium" "High")
+set(STRESS_TEST_LEVEL "Low" CACHE STRING "Stress test level for racing-condition tests: Low (10s, fewer threads), Medium (20s), High (30s, more threads).")
+set_property(CACHE STRESS_TEST_LEVEL PROPERTY STRINGS ${STRESS_TEST_LEVEL_VALID})
+if(NOT STRESS_TEST_LEVEL IN_LIST STRESS_TEST_LEVEL_VALID)
+    message(FATAL_ERROR "Invalid STRESS_TEST_LEVEL: '${STRESS_TEST_LEVEL}'. Must be one of ${STRESS_TEST_LEVEL_VALID}")
 endif()
+
 # Option to enable the PLH_DEBUG and PLH_DEBUG_RT macros.
 if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
   option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" ON)
 else()
   option(PYLABHUB_ENABLE_DEBUG_MESSAGES "Enable PLH_DEBUG and PLH_DEBUG_RT messages" OFF)
+endif()
+
+# --- RecursionGuard max depth ---
+# Max recursion depth per thread for RecursionGuard. Exceeding this causes PLH_PANIC.
+# Configurable at configure time; passed as compile definition.
+set(PLH_RECURSION_GUARD_MAX_DEPTH 64 CACHE STRING "Max recursion depth for RecursionGuard; panic if exceeded (compile-time).")
+if(PLH_RECURSION_GUARD_MAX_DEPTH LESS 1 OR PLH_RECURSION_GUARD_MAX_DEPTH GREATER 1024)
+  message(FATAL_ERROR "PLH_RECURSION_GUARD_MAX_DEPTH must be between 1 and 1024, got ${PLH_RECURSION_GUARD_MAX_DEPTH}")
 endif()
 
 # --- Logger Compile-Time Level ---

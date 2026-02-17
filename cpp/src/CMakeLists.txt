@@ -26,6 +26,11 @@ cmake_minimum_required(VERSION 3.29)
 # Add the utils subdirectory, which defines the pylabhub::utils library.
 # This must be done before defining any targets that depend on it.
 add_subdirectory(utils)
+# admin is P10+ stub — disabled until implemented
+# Enable with: cmake -DPYLABHUB_BUILD_ADMIN=ON
+if(PYLABHUB_BUILD_ADMIN)
+    add_subdirectory(admin)
+endif()
 
 # Define the main application executable.
 add_executable(pylabhub-hubshell hubshell.cpp)

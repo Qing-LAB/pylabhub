@@ -1,0 +1,204 @@
+#pragma once
+#include <string>
+#include <vector>
+
+// tests/test_harness/logger_workers.h
+
+#pragma once
+
+#include <string>
+
+#include <vector>
+
+/**
+
+ * @file logger_workers.h
+
+ * @brief Declares worker functions for Logger tests.
+
+ *
+
+ * These functions are designed to be executed in separate processes to test
+
+ * various features of the Logger, including multi-process and multi-threaded
+
+ * logging, lifecycle management, and error handling.
+
+ */
+
+namespace pylabhub::tests::worker
+
+{
+
+namespace logger
+
+{
+
+/**
+
+ * @brief Worker that writes a high volume of log messages from a single process.
+
+ * @param log_path Path to the output log file.
+
+ * @param msg_count The number of messages to log.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int stress_log(const std::string &log_path, int msg_count);
+
+/**
+
+ * @brief Tests basic file logging in a worker process.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_basic_logging(const std::string &log_path_str);
+
+/**
+
+ * @brief Tests that log messages are filtered based on the current log level.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_log_level_filtering(const std::string &log_path_str);
+
+/**
+
+ * @brief Tests the logger's behavior with a malformed format string.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_bad_format_string(const std::string &log_path_str);
+
+/**
+
+ * @brief Tests switching from the default sink to a file sink.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_default_sink_and_switching(const std::string &log_path_str);
+
+/**
+
+ * @brief Writes log messages from multiple threads within a single worker process.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_multithread_stress(const std::string &log_path_str);
+
+/**
+
+ * @brief Verifies that `flush()` waits for the logging queue to be empty.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_flush_waits_for_queue(const std::string &log_path_str);
+
+/**
+
+ * @brief Tests that the logger shutdown process is idempotent.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_shutdown_idempotency(const std::string &log_path_str);
+
+/**
+
+ * @brief Tests the behavior of the write error callback, including re-entrant logging.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_reentrant_error_callback(const std::string &initial_log_path_str);
+
+/**
+
+ * @brief Tests that the asynchronous write error callback is invoked on failure.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_write_error_callback_async();
+
+/**
+
+ * @brief Smoke test for platform-specific sinks (Event Log on Windows, syslog on POSIX).
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_platform_sinks();
+
+/**
+
+ * @brief Tests the stability of the logger and lifecycle manager under chaotic concurrent
+ operations.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_concurrent_lifecycle_chaos(const std::string &log_path_str);
+
+/**
+
+ * @brief Worker that logs messages with flock enabled to test for torn writes.
+
+ * @param log_path Path to the shared output log file.
+
+ * @param worker_id A unique ID for the worker.
+
+ * @param msg_count The number of messages to log.
+
+ * @return 0 on success, non-zero on failure.
+
+ */
+
+int test_inter_process_flock(const std::string &log_path, const std::string &worker_id,
+                             int msg_count);
+
+/**
+ * @brief Tests the RotatingFileSink functionality within a worker process.
+ * @param base_log_path The base path for the rotating log files.
+ * @param max_file_size_bytes The maximum size a log file can reach before rotation.
+ * @param max_backup_files The maximum number of backup log files to keep.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_rotating_file_sink(const std::string &base_log_path, size_t max_file_size_bytes,
+                            size_t max_backup_files);
+
+/**
+ * @brief Tests the logger's message dropping behavior when the queue is full.
+ * @param log_path Path to the output log file.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_queue_full_and_message_dropping(const std::string &log_path);
+
+/**
+ * @brief Worker that uses Logger (set_logfile) without lifecycle initialized.
+ * Expected to abort.
+ */
+int use_without_lifecycle_aborts();
+
+} // namespace logger
+
+} // namespace pylabhub::tests::worker

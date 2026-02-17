@@ -15,8 +15,24 @@
 namespace pylabhub::hub
 {
 
-// Forward declare the implementation class
 class MessageHubImpl;
+
+struct ProducerInfo
+{
+    std::string shm_name;
+    uint64_t producer_pid;
+    std::string schema_hash;
+    uint32_t schema_version;
+    // Add more metadata fields as needed based on the spec
+};
+
+struct ConsumerInfo
+{
+    std::string shm_name;
+    std::string schema_hash;
+    uint32_t schema_version;
+    // Add more metadata fields as needed based on the spec
+};
 
 /**
  * @class MessageHub
@@ -24,6 +40,10 @@ class MessageHubImpl;
  *
  * This class handles connecting to the broker and sending messages according to the
  * strict two-part protocol defined in HEP-core-0002.
+ *
+ * All public methods are thread-safe and can be called concurrently from
+ * multiple threads. Internal locking ensures ZeroMQ socket operations
+ * are serialized.
  */
 class PYLABHUB_UTILS_EXPORT MessageHub
 {
@@ -42,7 +62,7 @@ class PYLABHUB_UTILS_EXPORT MessageHub
      * @param server_key The Z85-encoded public key of the broker for CurveZMQ.
      * @return True if the connection was successful, false otherwise.
      */
-    bool connect(const std::string &endpoint, const std::string &server_key);
+    [[nodiscard]] bool connect(const std::string &endpoint, const std::string &server_key);
 
     /**
      * @brief Disconnects from the broker and cleans up resources.
@@ -50,23 +70,51 @@ class PYLABHUB_UTILS_EXPORT MessageHub
     void disconnect();
 
     /**
-     * @brief Sends a two-part message to the broker.
-     * @param header A 16-byte character array representing the message type.
-     * @param payload A JSON object to be serialized with MessagePack.
-     * @param response Optional output parameter to store the broker's response.
+     * @brief Sends a message to the broker and waits for a response.
+     * @param message_type First frame (e.g. "REG_REQ", "DISC_REQ").
+     * @param json_payload Second frame (JSON body).
      * @param timeout_ms Timeout for waiting for a response.
-     * @return True on success, false on failure or timeout.
+     * @return The response payload (last frame) as a string, or std::nullopt on failure or timeout.
      */
-    bool send_request(const char *header, const nlohmann::json &payload, nlohmann::json &response,
-                      int timeout_ms = 5000);
+    [[nodiscard]] std::optional<std::string> send_message(const std::string &message_type,
+                                                           const std::string &json_payload,
+                                                           int timeout_ms = 5000);
 
     /**
-     * @brief Sends a one-way notification to the broker.
-     * @param header A 16-byte character array representing the message type.
-     * @param payload A JSON object to be serialized with MessagePack.
+     * @brief Receives a message from the broker.
+     * @param timeout_ms Timeout for waiting for a message.
+     * @return The received message as a string, or std::nullopt on failure or timeout.
+     */
+    [[nodiscard]] std::optional<std::string> receive_message(int timeout_ms);
+
+    /**
+     * @brief Registers a producer with the broker.
+     * @param channel The channel name.
+     * @param info Producer information.
      * @return True on success, false on failure.
      */
-    bool send_notification(const char *header, const nlohmann::json &payload);
+    [[nodiscard]] bool register_producer(const std::string &channel, const ProducerInfo &info);
+
+    /**
+     * @brief Discovers a producer's information from the broker.
+     * @param channel The channel name.
+     * @return ConsumerInfo on success, or std::nullopt on failure.
+     */
+    [[nodiscard]] std::optional<ConsumerInfo> discover_producer(const std::string &channel);
+
+    /**
+     * @brief Registers a consumer with the broker.
+     * @param channel The channel name.
+     * @param info Consumer information.
+     * @return True on success, false on failure.
+     */
+    [[nodiscard]] bool register_consumer(const std::string &channel, const ConsumerInfo &info);
+
+    /**
+     * @brief Returns the singleton instance of the MessageHub.
+     * @return Reference to the MessageHub instance.
+     */
+    static MessageHub &get_instance();
 
   private:
     std::unique_ptr<MessageHubImpl> pImpl;
@@ -76,7 +124,7 @@ class PYLABHUB_UTILS_EXPORT MessageHub
  * @brief Checks if the Data Exchange Hub module has been initialized by the Lifecycle manager.
  * @return True if the module is initialized, false otherwise.
  */
-PYLABHUB_UTILS_EXPORT bool lifecycle_initialized() noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool lifecycle_initialized() noexcept;
 
 /**
  * @brief Factory function to get the ModuleDef for the Data Exchange Hub.

@@ -203,7 +203,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
                                             size_t max_file_size_bytes, size_t max_backup_files,
-                                            std::error_code &ec) noexcept;
+                                            std::error_code &err_code) noexcept;
 
     /**
      * @brief Overload for set_rotating_logfile with explicit flocking behavior.
@@ -212,7 +212,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      */
     [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
                                             size_t max_file_size_bytes, size_t max_backup_files,
-                                            bool use_flock, std::error_code &ec) noexcept;
+                                            bool use_flock, std::error_code &err_code) noexcept;
 
     /**
      * @brief Asynchronously switches logging to syslog (POSIX only). This is a no-op on Windows.
@@ -277,10 +277,11 @@ class PYLABHUB_UTILS_EXPORT Logger
     size_t get_max_queue_size() const;
 
     /**
-     * @brief Gets the total number of messages dropped due to a full queue.
-     * @return The number of dropped messages.
+     * @brief Gets the total number of messages dropped since the last sink switch.
+     * @return The accumulated count of dropped messages. Resets to 0 when the
+     *         log sink is switched (set_console, set_logfile, set_rotating_logfile, etc.).
      */
-    size_t get_dropped_message_count() const;
+    size_t get_total_dropped_since_sink_switch() const;
 
     /**
      * @brief Sets a callback to be invoked upon a sink write error.
@@ -291,7 +292,7 @@ class PYLABHUB_UTILS_EXPORT Logger
      *
      * @param cb A function taking a const std::string& containing the error message.
      */
-    void set_write_error_callback(std::function<void(const std::string &)> cb);
+    void set_write_error_callback(std::function<void(const std::string &)> callback);
 
     /**
      * @brief Asynchronously enables or disables logging of internal sink switching messages.
@@ -305,75 +306,75 @@ class PYLABHUB_UTILS_EXPORT Logger
     // against the arguments at compile time.
 
     template <Level lvl, typename... Args>
-    void log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
+    bool log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     template <Level lvl, typename... Args>
-    void log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
+    bool log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     template <typename... Args>
-    void trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool trace_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_TRACE>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_TRACE>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool debug_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_DEBUG>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_DEBUG>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool info_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_INFO>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_INFO>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool warn_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_WARNING>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_WARNING>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool error_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_ERROR>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void system_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+    bool system_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
     {
-        log_fmt<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
+        return log_fmt<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
+    bool system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept;
 
     // --- Runtime Formatting API (Header-Only Templates) ---
     // These functions use `fmt::runtime` to parse the format string at runtime.
     // This is more flexible but less performant and lacks compile-time checks.
 
     template <typename... Args>
-    void log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
+    bool log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept;
 
-    template <typename... Args> void trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> bool trace_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_TRACE, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> bool debug_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_DEBUG, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> bool info_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_INFO, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> bool warn_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_WARNING, fmt_str, std::forward<Args>(args)...);
     }
-    template <typename... Args> void error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    template <typename... Args> bool error_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_ERROR, fmt_str, std::forward<Args>(args)...);
     }
     template <typename... Args>
-    void system_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
+    bool system_fmt_rt(fmt::string_view fmt_str, Args &&...args) noexcept
     {
-        log_fmt_runtime(Level::L_SYSTEM, fmt_str, std::forward<Args>(args)...);
+        return log_fmt_runtime(Level::L_SYSTEM, fmt_str, std::forward<Args>(args)...);
     }
 
   private:
@@ -384,11 +385,11 @@ class PYLABHUB_UTILS_EXPORT Logger
     std::unique_ptr<Impl> pImpl;
 
     // Internal low-level function that enqueues a pre-formatted message.
-    void enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept;
-    void enqueue_log(Level lvl, std::string &&body_str) noexcept;
+    bool enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept;
+    bool enqueue_log(Level lvl, std::string &&body_str) noexcept;
 
     // Internal helper for synchronous logging
-    void write_sync(Level lvl, fmt::memory_buffer &&body) noexcept;
+    bool write_sync(Level lvl, fmt::memory_buffer &&body) noexcept;
 
     // Internal accessor for runtime log level filtering.
     bool should_log(Level lvl) const noexcept;
@@ -407,7 +408,7 @@ class PYLABHUB_UTILS_EXPORT Logger
 // =============================================================================
 
 template <Logger::Level lvl, typename... Args>
-void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+bool Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
     // First, check the compile-time level. `if constexpr` ensures that if the
     // condition is false, the entire block is discarded during compilation.
@@ -415,7 +416,7 @@ void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexce
     {
         // Second, check the runtime level. This is a quick atomic load.
         if (!should_log(lvl))
-            return;
+            return true; // Not an error, just filtered out.
 
         try
         {
@@ -424,77 +425,81 @@ void Logger::log_fmt(fmt::format_string<Args...> fmt_str, Args &&...args) noexce
             fmt::memory_buffer mb;
             mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
             fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
-            enqueue_log(lvl, std::move(mb));
+            return enqueue_log(lvl, std::move(mb));
         }
         catch (const std::exception &ex)
         {
             // If formatting fails, enqueue the error message instead.
-            enqueue_log(Level::L_ERROR, std::string("[FORMAT ERROR] ") + ex.what());
+            return enqueue_log(Level::L_ERROR, std::string("[FORMAT ERROR] ") + ex.what());
         }
         catch (...)
         {
-            enqueue_log(Level::L_ERROR, "[UNKNOWN FORMAT ERROR]");
+            return enqueue_log(Level::L_ERROR, "[UNKNOWN FORMAT ERROR]");
         }
     }
+    return true;
 }
 
 template <Logger::Level lvl, typename... Args>
-void Logger::log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+bool Logger::log_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
     if constexpr (static_cast<int>(lvl) >= LOGGER_COMPILE_LEVEL)
     {
         if (!should_log(lvl))
-            return;
+            return true;
 
         try
         {
             fmt::memory_buffer mb;
             mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
             fmt::format_to(std::back_inserter(mb), fmt_str, std::forward<Args>(args)...);
-            write_sync(lvl, std::move(mb)); // Call the synchronous write
+            return write_sync(lvl, std::move(mb)); // Call the synchronous write
         }
         catch (const std::exception &ex)
         {
             // For synchronous logging, print to stderr directly as fallback.
             fmt::print(stderr, "CRITICAL LOGGER ERROR: SYNC LOG FORMAT ERROR: {}\n", ex.what());
+            return false;
         }
         catch (...)
         {
             fmt::print(stderr, "CRITICAL LOGGER ERROR: SYNC LOG UNKNOWN FORMAT ERROR.\n");
+            return false;
         }
     }
+    return true;
 }
 
 template <typename... Args>
-void Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept
+bool Logger::log_fmt_runtime(Level lvl, fmt::string_view fmt_str, Args &&...args) noexcept
 {
     // The runtime version cannot use `if constexpr` for compile-time filtering,
     // but we still check the runtime level first.
     if (!should_log(lvl))
-        return;
+        return true;
 
     try
     {
         fmt::memory_buffer mb;
         mb.reserve(LOGGER_FMT_BUFFER_RESERVE);
         fmt::format_to(std::back_inserter(mb), fmt::runtime(fmt_str), std::forward<Args>(args)...);
-        enqueue_log(lvl, std::move(mb));
+        return enqueue_log(lvl, std::move(mb));
     }
     catch (const std::exception &ex)
     {
-        enqueue_log(Level::L_ERROR, std::string("[FORMAT ERROR] ") + ex.what());
+        return enqueue_log(Level::L_ERROR, std::string("[FORMAT ERROR] ") + ex.what());
     }
     catch (...)
     {
-        enqueue_log(Level::L_ERROR, "[UNKNOWN FORMAT ERROR]");
+        return enqueue_log(Level::L_ERROR, "[UNKNOWN FORMAT ERROR]");
     }
 }
 
 // Helper for synchronous system messages
 template <typename... Args>
-void Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
+bool Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args) noexcept
 {
-    log_fmt_sync<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
+    return log_fmt_sync<Level::L_SYSTEM>(fmt_str, std::forward<Args>(args)...);
 }
 
 } // namespace pylabhub::utils
@@ -506,22 +511,21 @@ void Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args
 // =============================================================================
 // Public Logging Macros
 // =============================================================================
-// These macros are the primary user-facing API. They automatically capture
-// the logger instance and pass the format string and arguments to the correct
-// compile-time checked `log_fmt` implementation.
+// These macros are the primary user-facing API. They are now expressions that
+// return a bool, allowing callers to check if a message was dropped.
 
 #define LOGGER_TRACE(fmt, ...)                                                                     \
-    ::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().trace_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_DEBUG(fmt, ...)                                                                     \
-    ::pylabhub::utils::Logger::instance().debug_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().debug_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_INFO(fmt, ...)                                                                      \
-    ::pylabhub::utils::Logger::instance().info_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().info_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_WARN(fmt, ...)                                                                      \
-    ::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().warn_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_ERROR(fmt, ...)                                                                     \
-    ::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().error_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_SYSTEM(fmt, ...)                                                                    \
-    ::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().system_fmt(FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 
 // =============================================================================
 // Public Synchronous Logging Macros
@@ -531,36 +535,36 @@ void Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args
 // Note: These macros will block the calling thread.
 
 #define LOGGER_TRACE_SYNC(fmt, ...)                                                                \
-    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_TRACE>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_TRACE>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_DEBUG_SYNC(fmt, ...)                                                                \
-    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_DEBUG>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_DEBUG>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_INFO_SYNC(fmt, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_INFO>(  \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_INFO>(  \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_WARN_SYNC(fmt, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance()                                                          \
+    (::pylabhub::utils::Logger::instance()                                                          \
         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_WARNING>(FMT_STRING(fmt) __VA_OPT__(, )  \
-                                                                       __VA_ARGS__)
+                                                                       __VA_ARGS__))
 #define LOGGER_ERROR_SYNC(fmt, ...)                                                                \
-    ::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_ERROR>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_ERROR>( \
+        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_SYSTEM_SYNC(fmt, ...)                                                               \
-    ::pylabhub::utils::Logger::instance()                                                          \
+    (::pylabhub::utils::Logger::instance()                                                          \
         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_SYSTEM>(FMT_STRING(fmt) __VA_OPT__(, )   \
-                                                                      __VA_ARGS__)
+                                                                      __VA_ARGS__))
 
 // Macros for runtime format string checking.
 #define LOGGER_TRACE_RT(fmt, ...)                                                                  \
-    ::pylabhub::utils::Logger::instance().trace_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().trace_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_DEBUG_RT(fmt, ...)                                                                  \
-    ::pylabhub::utils::Logger::instance().debug_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().debug_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_INFO_RT(fmt, ...)                                                                   \
-    ::pylabhub::utils::Logger::instance().info_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().info_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_WARN_RT(fmt, ...)                                                                   \
-    ::pylabhub::utils::Logger::instance().warn_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().warn_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_ERROR_RT(fmt, ...)                                                                  \
-    ::pylabhub::utils::Logger::instance().error_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().error_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_SYSTEM_RT(fmt, ...)                                                                 \
-    ::pylabhub::utils::Logger::instance().system_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__)
+    (::pylabhub::utils::Logger::instance().system_fmt_rt(fmt __VA_OPT__(, ) __VA_ARGS__))

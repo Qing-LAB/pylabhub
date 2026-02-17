@@ -17,8 +17,9 @@ message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 
 set(UTILS_SOURCES
   format_tools.cpp
-  debug_info.cpp  
+  debug_info.cpp
   platform.cpp
+  crypto_utils.cpp
   lifecycle.cpp
   file_lock.cpp
   logger_sinks/sink.cpp
@@ -32,7 +33,12 @@ set(UTILS_SOURCES
   message_hub.cpp
   data_block.cpp
   data_block_mutex.cpp
-  data_header_sync_primitives.cpp
+  shared_memory_spinlock.cpp
+  data_block_recovery.cpp
+  slot_diagnostics.cpp
+  slot_recovery.cpp
+  heartbeat_manager.cpp
+  integrity_validator.cpp
   # Add any new .cpp files for this library to the list above.
 )
 
@@ -55,7 +61,11 @@ endif()
 
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
-if(NOT MSVC)
+if(MSVC)
+  # /Zc:preprocessor enables the conformant C++20 preprocessor required for __VA_OPT__ in
+  # public headers (logger.hpp, debug_info.hpp). Propagated PUBLIC so all consumers compile cleanly.
+  target_compile_options(pylabhub-utils PUBLIC /Zc:preprocessor)
+else()
   target_compile_options(pylabhub-utils PRIVATE -fvisibility=hidden)
 endif()
 
