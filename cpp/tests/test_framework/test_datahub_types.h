@@ -58,6 +58,9 @@ struct TestDataBlock {
         : sequence(seq), value(val), label{} 
     {
         if (lbl) {
+#if defined(_MSC_VER)
+#pragma warning(suppress : 4996) // strncpy: safe — bounded by sizeof(label)-1, null-terminated below
+#endif
             std::strncpy(label, lbl, sizeof(label) - 1);
             label[sizeof(label) - 1] = '\0';
         }

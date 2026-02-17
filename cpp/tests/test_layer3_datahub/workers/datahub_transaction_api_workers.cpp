@@ -31,13 +31,33 @@ using namespace std::chrono_literals;
 // ============================================================================
 
 /**
- * @brief FlexZone structure for shared metadata
- * @note Must be trivially copyable for shared memory
+ * @brief FlexZone structure for shared metadata.
+ *
+ * **Type rule:** FlexZoneT must be trivially copyable (enforced by static_assert in
+ * ZoneRef / TransactionContext). Plain POD members are required.
+ *
+ * **Why NOT std::atomic<T> members:** std::atomic<T> has a deleted copy constructor and
+ * deleted copy assignment operator. On MSVC this makes the enclosing type fail
+ * std::is_trivially_copyable_v. On GCC/Linux the check happens to pass for lock-free integer
+ * types, but this is non-portable — do not rely on it.
+ *
+ * **Correct pattern for atomic access:**
+ * - Inside with_transaction: plain read/write is safe. The SharedSpinLock held by
+ *   with_transaction uses acquire/release ordering, providing a full memory fence for all
+ *   accesses inside the lambda.
+ * - Outside with_transaction (lock-free polling from another thread/process): use
+ *   std::atomic_ref<T>(field).load/store with the desired memory order. atomic_ref imposes
+ *   atomic semantics on plain storage without changing the struct layout.
+ *
+ * @code
+ * // Lock-free read from outside the transaction:
+ * uint32_t n = std::atomic_ref<uint32_t>(fz.transaction_count).load(std::memory_order_acquire);
+ * @endcode
  */
 struct TxAPITestFlexZone
 {
-    std::atomic<uint32_t> transaction_count{0};
-    std::atomic<bool> test_flag{false};
+    uint32_t transaction_count{0};
+    uint32_t test_flag{0}; // 0 = false, 1 = true
 };
 static_assert(std::is_trivially_copyable_v<TxAPITestFlexZone>);
 
@@ -131,8 +151,8 @@ int with_write_transaction_success()
                 {
                     // Access flex zone
                     auto zone = ctx.flexzone();
-                    zone.get().transaction_count.store(1, std::memory_order_relaxed);
-                    zone.get().test_flag.store(true, std::memory_order_relaxed);
+                    zone.get().transaction_count = 1;
+                    zone.get().test_flag = 1;
                     
                     // Write one slot
                     for (auto &slot : ctx.slots(50ms))
@@ -160,8 +180,8 @@ int with_write_transaction_success()
                 {
                     // Verify flex zone
                     auto zone = ctx.flexzone();
-                    EXPECT_EQ(zone.get().transaction_count.load(), 1u);
-                    EXPECT_TRUE(zone.get().test_flag.load());
+                    EXPECT_EQ(zone.get().transaction_count, 1u);
+                    EXPECT_TRUE(zone.get().test_flag);
                     
                     // Read one slot
                     for (auto &slot : ctx.slots(50ms))
@@ -553,8 +573,8 @@ int with_typed_write_read_succeeds()
                 {
                     // Access FlexZone (shared metadata)
                     auto zone = ctx.flexzone();
-                    zone.get().transaction_count.store(expected_count, std::memory_order_relaxed);
-                    zone.get().test_flag.store(true, std::memory_order_relaxed);
+                    zone.get().transaction_count = expected_count;
+                    zone.get().test_flag = 1;
                     
                     // Access DataBlock (per-slot message)
                     for (auto &slot : ctx.slots(50ms))
@@ -577,8 +597,8 @@ int with_typed_write_read_succeeds()
                 {
                     // Verify FlexZone data
                     auto zone = ctx.flexzone();
-                    EXPECT_EQ(zone.get().transaction_count.load(), expected_count);
-                    EXPECT_TRUE(zone.get().test_flag.load());
+                    EXPECT_EQ(zone.get().transaction_count, expected_count);
+                    EXPECT_TRUE(zone.get().test_flag);
                     
                     // Verify DataBlock data
                     for (auto &slot : ctx.slots(50ms))

@@ -117,6 +117,9 @@ class PYLABHUB_UTILS_EXPORT MessageHub
     static MessageHub &get_instance();
 
   private:
+#if defined(_MSC_VER)
+#pragma warning(suppress : 4251) // std::unique_ptr<ForwardDeclaredImpl> in exported class; safe — impl defined in .cpp
+#endif
     std::unique_ptr<MessageHubImpl> pImpl;
 };
 

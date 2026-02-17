@@ -416,9 +416,12 @@ extern "C"
             rw_state->reader_count.store(0, std::memory_order_release);
             if (current_slot_state == pylabhub::hub::SlotRWState::SlotState::DRAINING)
             {
-                rw_state->slot_state.store(pylabhub::hub::SlotRWState::SlotState::FREE,
+                // DRAINING: write_lock held; producer was draining readers before writing.
+                // Previous commit data is still valid (write not yet started).
+                // Restore to COMMITTED so consumers can still read the last good value.
+                // The zombie write_lock (if any) is cleared by the next acquire_write() zombie check.
+                rw_state->slot_state.store(pylabhub::hub::SlotRWState::SlotState::COMMITTED,
                                            std::memory_order_release);
-                rw_state->writer_waiting.store(0, std::memory_order_release);
             }
 
             header->recovery_actions_count.fetch_add(1, std::memory_order_relaxed);

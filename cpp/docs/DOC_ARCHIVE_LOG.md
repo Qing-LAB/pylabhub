@@ -6,6 +6,50 @@
 
 ## Archive batches
 
+### 2026-02-17 (Code Review Archived — REVIEW_utils_2026-02-15.md)
+
+All 11 items in `REVIEW_utils_2026-02-15.md` are ✅ FIXED (last items resolved 2026-02-17).
+Review moved to `docs/archive/transient-2026-02-17/`. Active review table in `TODO_MASTER.md` cleared.
+
+---
+
+### 2026-02-17 (docs/ Root Cleanup — 29 non-core documents)
+
+Audited all .md files directly under `docs/` root. Identified 29 non-core documents
+(design notes, audit reports, session summaries, test refactoring plans, API analyses).
+Content verified against codebase; key governance rules and open items merged into core docs;
+all 29 archived.
+
+**Key merges:**
+- `C_API_TEST_POLICY.md` → `IMPLEMENTATION_GUIDANCE.md` § "C API Test Preservation" + `CLAUDE.md`
+- `CORE_STRUCTURE_CHANGE_PROTOCOL.md` → `IMPLEMENTATION_GUIDANCE.md` § "Core Structure Change Protocol"
+- `TEST_REFACTOR_TODO.md` + test audit docs → `TESTING_TODO.md` (coverage gaps + completions)
+- `API_ISSUE_NO_CONFIG_OVERLOAD.md` → `API_TODO.md` (verified resolved)
+- Transient document rule → `IMPLEMENTATION_GUIDANCE.md` § Session Hygiene + `CLAUDE.md`
+
+Moved to: **`docs/archive/transient-2026-02-17/`**
+See **`docs/archive/transient-2026-02-17/README.md`** for the full merge map.
+
+**docs/ root now contains only canonical core documents.**
+
+---
+
+### 2026-02-17 (code_review/ Normalization — Session/Phase Docs)
+
+Archived 20 non-conforming session and phase documents from `docs/code_review/` that did not follow
+the `REVIEW_<Module>_YYYY-MM-DD.md` naming convention. All were verified as processed/obsolete before
+archiving. Key implementations confirmed in codebase: (1) `DataBlockSlotIterator`/`with_next_slot()`
+removed, (2) dual schema hashes (`flexzone_schema_hash`, `datablock_schema_hash`) in `SharedMemoryHeader`,
+(3) factory functions generate and validate both hashes.
+
+Moved to: **`docs/archive/transient-2026-02-15/`**
+See **`docs/archive/transient-2026-02-15/README.md`** for the full list and disposition of each file.
+
+**`docs/code_review/` now contains only the active review:**
+- `REVIEW_utils_2026-02-15.md` — 11 items open, tracked in subtopic TODOs
+
+---
+
 ### 2026-02-14 (Standalone Documents Merge)
 
 Merged standalone guidance documents into **`docs/IMPLEMENTATION_GUIDANCE.md`** for consolidation; originals moved to **`docs/archive/standalone-2026-02-14/`**.
@@ -62,6 +106,11 @@ See **`docs/archive/transient-2026-02-12/README.md`** for the list of archived f
 ## Quick reference: where to find historical content
 
 | Looking for | Location |
+|-------------|----------|
+| Phase 3 RAII layer implementation history | `docs/archive/transient-2026-02-15/` (20 session/phase docs) |
+| Dual schema validation design (FlexZone + DataBlock) | `docs/archive/transient-2026-02-15/PHASE4_DUAL_SCHEMA_API_DESIGN.md` |
+| FlexZone schema gap root cause analysis | `docs/archive/transient-2026-02-15/ROOT_CAUSE_ANALYSIS.md` |
+| Phase 2 cleanup plan (DataBlockSlotIterator removal) | `docs/archive/transient-2026-02-15/POST_PHASE3_CLEANUP_PLAN.md` |
 |-------------|----------|
 | Review findings / follow-up actions from last full review | `docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md` (2026-02-13; follow-ups done) |
 | Full code quality / refactoring analysis | `docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md` (summary in IMPLEMENTATION_GUIDANCE § Deferred refactoring) |

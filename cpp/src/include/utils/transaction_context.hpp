@@ -95,10 +95,15 @@ class TransactionContext
     using HandleType = std::conditional_t<IsWrite, DataBlockProducer, DataBlockConsumer>;
 
     // Compile-time checks
+    // Note: std::atomic<T> members make a type non-trivially copyable on MSVC.
+    // Use plain POD types in FlexZoneT/DataBlockT; apply std::atomic_ref<T> at call sites
+    // for any fields that require lock-free access outside the with_transaction spinlock scope.
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
-                  "FlexZoneT must be trivially copyable for shared memory (or void for no flexzone)");
+                  "FlexZoneT must be trivially copyable for shared memory (or void for no flexzone). "
+                  "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at call sites.");
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
-                  "DataBlockT must be trivially copyable for shared memory");
+                  "DataBlockT must be trivially copyable for shared memory. "
+                  "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at call sites.");
 
     // ====================================================================
     // Construction (Internal - called by with_transaction)

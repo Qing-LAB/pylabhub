@@ -20,33 +20,32 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 1: Memory Layout Implementation
-📍 **Status**: In Design  
-📋 **Details**: `docs/todo/MEMORY_LAYOUT_TODO.md`
-
-Key tasks:
-- Finalize single memory structure design (flex zone + ring buffer)
-- Implement structured buffer alignment (8-byte aligned)
-- Update layout validation and checksum logic
-
-### Priority 2: RAII Layer Improvements
-📍 **Status**: In Design  
-📋 **Details**: `docs/todo/RAII_LAYER_TODO.md`
-
-Key tasks:
-- Refine transaction API patterns
-- Improve typed access helpers
-- Update examples and documentation
-
-### Priority 3: Testing and Validation
-📍 **Status**: Ongoing  
+### Priority 1: Test Coverage Gaps
+📍 **Status**: Ongoing
 📋 **Details**: `docs/todo/TESTING_TODO.md`
 
 Key tasks:
-- Complete Phase C (integration) tests
-- Phase D (high-load, edge cases) tests
-- Recovery scenario tests
-- Fixed: Pitfall 10 violations (4 occurrences), FileLock barrier sync
+- Config validation error-path tests (`test_datahub_config_validation.cpp`)
+- Header structure dual-schema field tests (`test_datahub_header_structure.cpp`)
+- Recovery scenario tests (zombie reader detection, corrupted header repair)
+- C API header/layout validation test (`test_datahub_c_api_validation.cpp`)
+
+### Priority 2: MessageHub Broker Protocol
+📍 **Status**: Deferred (protocol not yet defined)
+📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
+
+Key tasks:
+- Define consumer registration to broker protocol
+- Implement broker schema registry
+- MessageHub error paths with broker
+
+### Priority 3: Platform / Windows Verification
+📍 **Status**: Mostly done
+📋 **Details**: `docs/todo/PLATFORM_TODO.md`
+
+Key tasks (backlog only):
+- `/Zc:preprocessor` PUBLIC propagation — Windows CI build verification
+- MSVC warnings-as-errors gate (`/W4 /WX` in CI)
 
 ---
 
@@ -54,14 +53,18 @@ Key tasks:
 
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
-| Memory Layout | 🟡 In Design | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single flex zone, alignment fixes |
-| RAII Layer | 🟡 In Design | `docs/todo/RAII_LAYER_TODO.md` | Transaction API improvements |
-| API Refinements | 🟢 Ready | `docs/todo/API_TODO.md` | Documentation gaps, consistency |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | Phase C/D coverage, test fixes |
+| RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
+| API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | All code review items resolved; DRAINING state machine implemented |
+| Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 358/358 passing; 3 coverage gap tests needed (config, header, c_api_validation) |
+| Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
+| Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
+| Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
 | MessageHub | 🔵 Deferred | `docs/todo/MESSAGEHUB_TODO.md` | Broker protocol pending |
-| Schema Validation | ✅ Complete | — | P9 schema validation done |
-| Recovery API | ✅ Complete | — | P8 recovery API done |
-| Platform Support | 🟢 Stable | (to be created) | Cross-platform consistency |
+
+**Active code reviews:** None. All reviews resolved and archived.
+
+Archive each review to `docs/archive/` once all its items are ✅ fixed; record in `docs/DOC_ARCHIVE_LOG.md`.
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred

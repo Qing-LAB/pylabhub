@@ -87,12 +87,21 @@
 - [ ] MessageHub error paths with broker
 - [ ] Recovery: zombie reader detection and cleanup
 - [ ] Recovery: corrupted header/layout repair
+- [ ] **Config validation test** (`test_datahub_config_validation.cpp`) — error paths for all
+  mandatory config fields (missing policy, capacity=0, missing sync policy, etc.); verify
+  `create_datablock_producer` throws `std::invalid_argument` on each invalid config
+- [ ] **Header structure test** (`test_datahub_header_structure.cpp`) — verify both
+  `flexzone_schema_hash` and `datablock_schema_hash` fields are populated (non-zero) in
+  `SharedMemoryHeader` after producer creation; verify via `DiagnosticHandle`
 
 ### Medium Priority
-- [ ] Config explicit-fail test (validation before memory creation)
+- [ ] Config explicit-fail test (validation before memory creation) ← see Config validation test above
 - [ ] Flexible zone by-name access edge cases
 - [ ] Transaction API exception safety (comprehensive)
 - [ ] Diagnostic API comprehensive coverage
+- [ ] C API header/layout validation test (`test_datahub_c_api_validation.cpp`) — test
+  layout hash validation, layout checksum, schema hash comparison at the C API level
+  (calls `slot_rw_*` and integrity validation functions directly)
 
 ### Low Priority
 - [ ] stuck_duration_ms in diagnostics (requires timestamp on acquire)
@@ -102,6 +111,25 @@
 ---
 
 ## Recent Completions
+
+### 2026-02-17 (docs audit — test refactoring status verified)
+- ✅ **Test refactoring complete** — All Phase 1-3 and Phase 4 (T4.1-T4.5) tasks from the
+  test refactoring plan are done: shared test types (`test_datahub_types.h`), removed obsolete
+  non-template tests, all enabled tests compile; new tests added for schema validation,
+  c_api checksum, exception safety, handle semantics. Phase 5 renaming also complete (all
+  files follow `test_datahub_*` convention). Verified: 358/358 passing.
+  Open: config validation test, header structure test, c_api_validation test (see Coverage Gaps).
+  — All transient test planning docs archived to `docs/archive/transient-2026-02-17/`
+
+### 2026-02-17
+- ✅ `DatahubSlotDrainingTest` (7 tests): DRAINING state machine tests — entered on wraparound,
+  rejects new readers, resolves after reader release, timeout restores COMMITTED, no reader races
+  on clean wraparound; plus ring-full barrier proof tests for Single_reader and Sync_reader
+  — `tests/test_layer3_datahub/test_datahub_c_api_slot_protocol.cpp`,
+    `tests/test_layer3_datahub/workers/datahub_c_api_draining_workers.cpp`
+- ✅ Proved DRAINING structurally unreachable for Single_reader / Sync_reader
+  (ring-full check before fetch_add creates arithmetic barrier) — documented in
+  `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
 
 ### 2026-02-14
 - ✅ Writer timeout metrics split test (lock vs reader timeout)

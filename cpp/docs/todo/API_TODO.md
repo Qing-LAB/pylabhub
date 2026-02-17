@@ -11,7 +11,6 @@
 ## Current Focus
 
 ### API Documentation Gaps
-**Status**: 🟡 In Progress
 
 - [ ] **Consumer registration to broker** – `MessageHub::register_consumer` is a stub, protocol not yet defined
 - [ ] **stuck_duration_ms in diagnostics** – `SlotDiagnostic::stuck_duration_ms` requires timestamp on acquire
@@ -177,6 +176,74 @@ Mark clearly as experimental, subject to change:
 ---
 
 ## Recent Completions
+
+### 2026-02-17 (docs audit — resolved issues verified)
+- ✅ **API_ISSUE_NO_CONFIG_OVERLOAD resolved** — The dangerous no-config template overload
+  `find_datablock_consumer<FlexZoneT, DataBlockT>(hub, name, secret)` (schema validated but
+  NOT config/sizes) has been removed. The only template overload now requires `expected_config`
+  (line 1396, `data_block.hpp`). All template consumers enforce full schema+config validation.
+- ✅ **Deprecated single-schema template declarations removed** — Phase 3 single-schema
+  templates (`create_datablock_producer<T>` / `find_datablock_consumer<T>` without dual schema)
+  are gone; comment at line 1418 is a placeholder with empty section.
+- ✅ **Obsolete code (`DataBlockSlotIterator`, `with_next_slot`, `LegacyTransactionContext`)
+  removed** — None of these symbols exist in `src/`. Confirmed by grep search.
+
+### 2026-02-17 (DRAINING policy reachability documented and tested)
+
+- ✅ **DRAINING unreachability for ordered policies** — Proved (and verified in code) that
+  `SlotState::DRAINING` is structurally unreachable for `Single_reader` and `Sync_reader`:
+  ring-full check (`write_index - read_index < capacity`) fires **before** `write_index.fetch_add(1)`;
+  if reader holds slot K then `read_index ≤ K`, making the ring-full condition impossible to
+  pass. DRAINING is a `Latest_only`-only live mechanism.
+  — `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
+- ✅ **2 new policy-barrier tests** — `SingleReaderRingFullBlocksNotDraining` and
+  `SyncReaderRingFullBlocksNotDraining` verify `writer_reader_timeout_count == 0` and no slot
+  in DRAINING state when a ring-full timeout occurs (7 draining tests total, 358 overall).
+  — `tests/test_layer3_datahub/`
+
+### 2026-02-17 (DRAINING state machine implemented)
+
+- ✅ **`SlotState::DRAINING` activated** — `acquire_write()` now enters DRAINING when wrapping
+  a COMMITTED slot; drain timeout restores COMMITTED; recovery path restores COMMITTED (not FREE).
+  New readers automatically rejected (slot_state != COMMITTED → NOT_READY). Eliminates
+  reader-race events on wrap-around. — `src/utils/data_block.cpp`,
+  `src/utils/data_block_recovery.cpp`, `src/include/utils/data_block.hpp`
+- ✅ **DRAINING tests** — 5 new `DatahubSlotDrainingTest` scenarios verify state machine:
+  DRAINING entered, new readers rejected, resolves after release, timeout restores COMMITTED,
+  zero reader races on clean wraparound. — `tests/test_layer3_datahub/`
+- ✅ **Protocol doc updated** — State machine and producer flow updated with DRAINING transitions.
+  — `docs/DATAHUB_PROTOCOL_AND_POLICY.md`
+
+### 2026-02-17 (all code review items resolved)
+
+- ✅ **[A-6] `high_resolution_clock` inconsistency** — Replaced with
+  `platform::monotonic_time_ns()` in `logger.cpp:87` and `format_tools.cpp:100`
+- ✅ **[A-7] `SlotState::DRAINING` undocumented** — Comment updated: active semantics documented
+  — `src/include/utils/data_block.hpp`
+- ✅ **[CONC-1b] `unlock()` clearing order** — Verified: `owner_pid == 0` is the
+  authoritative "lock free" signal; ordering invariant documented in code
+  — `src/utils/shared_memory_spinlock.cpp`
+- ✅ **[A-4] Shutdown timeout no-op** — Verified: redesigned to real detachable threads,
+  not `std::async`; comment in `lifecycle.cpp:37` confirms — `src/utils/lifecycle.cpp`
+- ✅ **[A-5] Handle destructors silent errors** — Verified: `LOGGER_WARN` emitted inside
+  `release_write_handle()` for checksum failures — `src/utils/data_block.cpp`
+- ✅ **[A-9] namespace inside extern "C"** — Verified: namespace placed before `extern "C"`
+  block with comment — `src/include/utils/slot_rw_coordinator.h`
+- ✅ **[Q-9] Heartbeat helpers not centralized** — Verified: `is_producer_heartbeat_fresh()`
+  uses `producer_heartbeat_id_ptr()` / `producer_heartbeat_ns_ptr()` helpers
+
+### 2026-02-17 (code review resolution)
+
+- ✅ **[CONC-1] Zombie lock reclaim CAS** — `SharedSpinLock` zombie reclaim now uses
+  `compare_exchange_strong` instead of plain `store` — `src/utils/shared_memory_spinlock.cpp`
+- ✅ **[A-2] `flexible_zone_size` size_t → uint32_t** — ABI-fixed in `SharedMemoryHeader`
+- ✅ **[A-3] Enum fixed underlying types** — `DataBlockPolicy : uint32_t`,
+  `ConsumerSyncPolicy : uint32_t` — `src/include/utils/data_block.hpp`
+- ✅ **[pImpl] `SharedSpinLock::m_name` ABI fix** — `std::string` replaced with
+  `char m_name[256]` — `src/include/utils/shared_memory_spinlock.hpp`
+- ✅ **[C4251/C4324] MSVC export warnings** — Pragmas added in `message_hub.hpp`,
+  `data_block.hpp` — Windows compatibility
+- ✅ **[Q-10] `update_reader_peak_count` TOCTOU** — Fixed with `compare_exchange_weak` loop
 
 ### 2026-02-14
 - ✅ Documented all recovery error codes in recovery_api.hpp
