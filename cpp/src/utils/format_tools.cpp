@@ -97,7 +97,7 @@ std::wstring win32_to_long_path(const std::filesystem::path &p_in)
 /// Generate a reasonably-unique suffix for temp filenames.
 std::wstring win32_make_unique_suffix()
 {
-    auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    uint64_t now = pylabhub::platform::monotonic_time_ns();
     DWORD pid = GetCurrentProcessId();
     DWORD tid = GetCurrentThreadId();
 

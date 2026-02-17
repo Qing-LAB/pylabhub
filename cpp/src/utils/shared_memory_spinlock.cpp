@@ -1,5 +1,6 @@
 #include "utils/shared_memory_spinlock.hpp"
 #include "plh_service.hpp" // For platform, logger, backoff_strategy
+#include <cstring>
 
 namespace pylabhub::hub
 {
@@ -14,8 +15,10 @@ constexpr uint64_t kNsPerMs = 1'000'000;
 }
 
 SharedSpinLock::SharedSpinLock(SharedSpinLockState *state, std::string name)
-    : m_state(state), m_name(std::move(name))
+    : m_state(state)
 {
+    std::strncpy(m_name, name.c_str(), detail::SPINLOCK_NAME_MAX - 1);
+    m_name[detail::SPINLOCK_NAME_MAX - 1] = '\0';
     if (m_state == nullptr)
     {
         LOGGER_ERROR("SharedSpinLock '{}': Initialized with a null SharedSpinLockState.", m_name);

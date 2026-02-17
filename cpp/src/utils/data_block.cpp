@@ -463,8 +463,25 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
         backoff(iteration++);
     }
 
-    // Now we hold the write_lock
-    slot_rw_state->writer_waiting.store(1, std::memory_order_relaxed); // Signal readers to drain
+    // Now we hold the write_lock.
+    // If the previous occupant committed data (COMMITTED), transition to DRAINING so new
+    // readers see a non-COMMITTED state immediately and bail out, while existing in-progress
+    // readers (reader_count > 0) drain naturally. FREE slots have no readers, so we skip
+    // the DRAINING transition — no readers can be holding a FREE slot.
+    SlotRWState::SlotState prev_state =
+        slot_rw_state->slot_state.load(std::memory_order_acquire);
+    bool entered_draining = (prev_state == SlotRWState::SlotState::COMMITTED);
+
+    if (entered_draining)
+    {
+        // COMMITTED → DRAINING: write_lock held, so plain store is safe.
+        // New readers see slot_state != COMMITTED → return NOT_READY immediately.
+        // Existing in-progress readers (reader_count > 0) continue and drain naturally.
+        slot_rw_state->slot_state.store(SlotRWState::SlotState::DRAINING,
+                                        std::memory_order_release);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+    slot_rw_state->writer_waiting.store(1, std::memory_order_relaxed); // diagnostic compat
 
     iteration = 0;
     while (true)
@@ -483,6 +500,12 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
         if (spin_elapsed_ms_exceeded(start_time, timeout_ms))
         {
             slot_rw_state->writer_waiting.store(0, std::memory_order_relaxed);
+            if (entered_draining)
+            {
+                // Previous commit data is still valid — restore so consumers can read it.
+                slot_rw_state->slot_state.store(SlotRWState::SlotState::COMMITTED,
+                                                std::memory_order_release);
+            }
             slot_rw_state->write_lock.store(
                 0, std::memory_order_release); // Release the lock before returning timeout
             if (header != nullptr)
@@ -497,7 +520,7 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
     }
     slot_rw_state->writer_waiting.store(0, std::memory_order_relaxed); // All readers drained
 
-    // Transition to WRITING state
+    // DRAINING → WRITING (or FREE → WRITING — same store either way)
     slot_rw_state->slot_state.store(SlotRWState::SlotState::WRITING, std::memory_order_release);
     std::atomic_thread_fence(std::memory_order_seq_cst); // Ensure state change is visible
 

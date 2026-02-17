@@ -86,12 +86,20 @@ When you want to add or update **example code for usage** (standalone `.cpp` fil
 **Guidelines:**
 - Use this directory for in-progress, module-specific code reviews
 - The general code review process is documented in **`docs/CODE_REVIEW_GUIDANCE.md`**
-- Name review documents clearly: `REVIEW_<Module>_YYYY-MM-DD.md`
-- Reference follow-up work in the relevant TODO documents (e.g., `DATAHUB_TODO.md`)
+- **Naming convention:** `REVIEW_<Module>_YYYY-MM-DD.md`
+  - `<Module>` — area being reviewed (e.g. `utils`, `datahub`, `filelock`, `lifecycle`)
+  - `YYYY-MM-DD` — date the review was created
+  - Example: `REVIEW_utils_2026-02-15.md`, `REVIEW_datahub_2026-03-01.md`
+  - The date in the filename is the **creation date**, not the resolution date
+- **Discovering active reviews:** Any `REVIEW_*.md` file present in `docs/code_review/` (not archived) is active. The master TODO (`docs/TODO_MASTER.md`) also maintains a table of active reviews for quick lookup.
+- Each active review file must have a **status table at the top** listing each finding as ✅ FIXED or ❌ OPEN. This is the authoritative status at a glance.
+- Each ❌ OPEN item must also be tracked in the appropriate subtopic TODO (`docs/todo/*.md`). The review file is transient; the subtopic TODO is permanent.
+- Reference follow-up work in the relevant TODO documents (e.g., `docs/todo/RAII_LAYER_TODO.md`)
 - After the review is completed and addressed:
   1. **Merge** relevant findings into core documents (IMPLEMENTATION_GUIDANCE, HEP, etc.)
   2. **Move** the review document to **`docs/archive/`** in a dated folder
   3. **Record** the activity in **`docs/DOC_ARCHIVE_LOG.md`**
+  4. **Remove** the entry from the `TODO_MASTER.md` active reviews table
 - Keep this directory clean—only active, in-progress reviews should remain here
 
 See **`docs/code_review/README.md`** for the complete lifecycle process.

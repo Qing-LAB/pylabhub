@@ -4,7 +4,47 @@
 **Reviewer:** Claude Code (automated deep review)
 **Scope:** All source files under `src/utils/` and all headers under `src/include/utils/`
 **Review process:** Follows `docs/CODE_REVIEW_GUIDANCE.md` (§2 First Pass, §3 Higher-Level Requirements)
-**Follow-up tracking:** Open items tracked in `docs/DATAHUB_TODO.md` (or subtopic TODOs)
+**Follow-up tracking:** Open items tracked in subtopic TODOs (see below)
+
+---
+
+## Current Status (Updated 2026-02-17)
+
+**Open items tracked in subtopic TODOs — this document stays in `docs/code_review/` until all are resolved.**
+
+| Item | Status | Tracked In |
+|---|---|---|
+| C-1 `SlotIterator::begin()` copy bug | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| C-2 `TransactionContext::config()` missing | ✅ Fixed by redesign 2026-02-17 | `RAII_LAYER_TODO.md` |
+| C-3 `validate_read()` always-true stub | ✅ Fixed by redesign 2026-02-17 | `RAII_LAYER_TODO.md` |
+| CONC-1 Zombie lock reclaim not atomic | ✅ Fixed 2026-02-17 | `API_TODO.md` |
+| A-2 `flexible_zone_size` was `size_t` | ✅ Fixed → `uint32_t` 2026-02-17 | `API_TODO.md` |
+| A-3 Enums without fixed underlying type | ✅ Fixed 2026-02-17 | `API_TODO.md` |
+| Q-10 TOCTOU race in peak count | ✅ Fixed 2026-02-17 | `API_TODO.md` |
+| M-2 Redundant `if constexpr` in `flexzone()` | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| M-3 Silent `catch(...)` in `has_zone()` | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| pImpl `SharedSpinLock::m_name` ABI | ✅ Fixed 2026-02-17 | `API_TODO.md` |
+| Q-5 Vestigial `ContextType` alias | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| Q-6 Unnecessary `const_cast` | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| A-8 Doc example `result.value()` | ✅ Fixed 2026-02-17 | `RAII_LAYER_TODO.md` |
+| A-1 noexcept+throw UB in acquire fns | ✅ Fixed (verified 2026-02-17) — `slot_rw_state()` made `noexcept`; returns `nullptr` on bad index; callers handle via null checks | `RAII_LAYER_TODO.md` |
+| M-1 `publish()` double-release? | ✅ Verified 2026-02-17 — `release_write_handle()` is idempotent (`impl.released` guard); no double-release | `RAII_LAYER_TODO.md` |
+| M-5 Handle destructor protocol | ✅ Verified 2026-02-17 — destructors call `release_write/consume_handle()` which releases write_lock and sets `released=true` | `RAII_LAYER_TODO.md` |
+| CONC-1b `unlock()` clearing order | ✅ Fixed (verified 2026-02-17) — documented in code: `owner_pid` is the authoritative "lock free" signal; intermediate state is safe because the process is alive | `API_TODO.md` |
+| A-4 Shutdown timeout is a no-op | ✅ Fixed (verified 2026-02-17) — redesigned to use real detachable threads, not `std::async`; comment in `lifecycle.cpp:37` confirms | `API_TODO.md` |
+| A-5 Destructor silently drops errors | ✅ Fixed (verified 2026-02-17) — `LOGGER_WARN` emitted inside `release_write_handle()` for checksum failures; errors are not silent | `API_TODO.md` |
+| A-9 namespace inside extern "C" | ✅ Fixed (verified 2026-02-17) — namespace now placed before `extern "C"` block; comment added | `API_TODO.md` |
+| Q-9 Heartbeat helpers not used inline | ✅ Fixed (verified 2026-02-17) — `is_producer_heartbeat_fresh()` uses `producer_heartbeat_id_ptr()` / `producer_heartbeat_ns_ptr()` | `API_TODO.md` |
+| Q-3 Redundant catch in `with_next_slot` | ✅ Moot 2026-02-17 — `with_next_slot()` function removed entirely as part of post-Phase3 cleanup | `RAII_LAYER_TODO.md` |
+| A-6 high_resolution_clock inconsistency | ✅ Fixed 2026-02-17 — replaced with `platform::monotonic_time_ns()` in `logger.cpp:87` and `format_tools.cpp:100` | `PLATFORM_TODO.md` |
+| A-7 `SlotState::DRAINING` undocumented | ✅ Fixed 2026-02-17 — comment updated: "Reserved for future wrap-around optimization; not entered by C++ write path; recognized by recovery API" | `API_TODO.md` |
+| Q-1 ExponentialBackoff name misleading | ✅ Fixed 2026-02-17 — note strengthened: "name is historical, retained for API compatibility; do not rename without updating all callsites" | `RAII_LAYER_TODO.md` |
+| Q-2 RAII headers mid-file | ✅ Fixed 2026-02-17 — comment added explaining intentional placement: headers must follow class declarations they reference; moving to top would cause incomplete-type errors | `RAII_LAYER_TODO.md` |
+
+**Archive condition:** Move to `docs/archive/` once all ❌ OPEN items above are marked ✅.
+Record in `docs/DOC_ARCHIVE_LOG.md` per `docs/DOC_STRUCTURE.md §2.2`.
+
+---
 
 ---
 

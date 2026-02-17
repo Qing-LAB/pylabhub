@@ -46,7 +46,8 @@ namespace pylabhub::utils
  * Phase 3 (iterations 10+): linear sleep (N*10us) - reduce bus traffic
  *
  * Note: Despite the struct name, Phase 3 grows linearly (not exponentially).
- * The name is retained for API compatibility.
+ * The name is historical and retained for API compatibility — do not rename
+ * without updating all callsites (SharedSpinLock, FileLock, MessageHub, etc.).
  *
  * Total backoff time at iteration N:
  * - N=0-3:  ~0us (just yield)

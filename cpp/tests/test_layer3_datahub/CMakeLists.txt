@@ -38,14 +38,21 @@ add_executable(test_layer3_datahub
     workers/datahub_schema_blds_workers.cpp
     test_datahub_schema_validation.cpp
     workers/datahub_schema_validation_workers.cpp
+    test_datahub_config_validation.cpp
+    workers/datahub_config_validation_workers.cpp
+    test_datahub_header_structure.cpp
+    workers/datahub_header_structure_workers.cpp
 
     # ── C API layer ───────────────────────────────────────────────────────────
     test_datahub_c_api_slot_protocol.cpp
     workers/datahub_c_api_slot_protocol_workers.cpp
+    workers/datahub_c_api_draining_workers.cpp
     test_datahub_c_api_checksum.cpp
     workers/datahub_c_api_checksum_workers.cpp
     test_datahub_c_api_recovery.cpp
     workers/datahub_c_api_recovery_workers.cpp
+    test_datahub_c_api_validation.cpp
+    workers/datahub_c_api_validation_workers.cpp
 
     # ── C++ Primitive API ─────────────────────────────────────────────────────
     test_datahub_producer_consumer.cpp

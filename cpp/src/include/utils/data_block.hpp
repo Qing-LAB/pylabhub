@@ -134,6 +134,10 @@ struct DataBlockDiagnosticHandleImpl;
  * write_lock is PID-based; 0 means free. Reader path uses double-check (TOCTTOU
  * mitigation); see acquire_read and HEP-CORE-0002.
  */
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324) // structure padded due to alignment specifier — intentional for cache-line isolation
+#endif
 struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
 {
     // === Writer Coordination ===
@@ -148,7 +152,12 @@ struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
         FREE = 0,      // Available for writing
         WRITING = 1,   // Producer is writing
         COMMITTED = 2, // Data ready for reading
-        DRAINING = 3   // Waiting for readers to finish (wrap-around)
+        DRAINING = 3   // Write_lock held; producer draining in-progress readers before writing.
+                       // Transitions: COMMITTED → DRAINING (after write_lock acquire on a
+                       // previously-committed slot); DRAINING → WRITING (reader_count reaches 0);
+                       // DRAINING → COMMITTED (drain timeout; previous commit data still valid).
+                       // New readers are rejected (slot_state != COMMITTED → NOT_READY).
+                       // Recovery: DRAINING + dead write_lock → COMMITTED (last data still valid).
     };
     std::atomic<SlotState> slot_state;
 
@@ -161,6 +170,9 @@ struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
     // === Padding ===
     uint8_t padding[24]; // Pad to 48 bytes
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 constexpr size_t raw_size_SlotRWState =
     offsetof(SlotRWState, padding) + sizeof(SlotRWState::padding);
@@ -1146,7 +1158,14 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 } // namespace pylabhub::hub
 
 // ============================================================================
-// Phase 3: C++ RAII Layer - Headers (outside namespace to avoid nesting)
+// Phase 3: C++ RAII Layer - Headers
+//
+// Intentionally placed here — NOT at the top of the file.
+// These headers reference DataBlockProducer and DataBlockConsumer (declared
+// above) via template method bodies. Moving them before those class
+// declarations would cause "incomplete type" / "undeclared identifier" errors.
+// The includes are placed outside the pylabhub::hub namespace to avoid
+// double-nesting (the RAII headers open their own namespace blocks).
 // ============================================================================
 
 #include "utils/result.hpp"

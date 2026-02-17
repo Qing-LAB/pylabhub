@@ -84,7 +84,7 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
     {
         auto temp_file_path =
             dir / fmt::format("pylabhub_write_check_{}.tmp",
-                              std::chrono::high_resolution_clock::now().time_since_epoch().count());
+                              pylabhub::platform::monotonic_time_ns());
 
 #ifdef PYLABHUB_PLATFORM_WIN64
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);

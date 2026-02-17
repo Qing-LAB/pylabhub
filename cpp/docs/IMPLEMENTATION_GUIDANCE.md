@@ -889,8 +889,54 @@ When a test fails, **scrutinize before coding**:
 
 1. **Classify the failure:** Is this a **logic or design flaw in the test** (wrong assertion, incorrect protocol usage, wrong expectations), or does it **reveal a bug in the implementation**?
 2. **Prefer discovering bugs:** If the test follows the agreed protocol and design (HEP, DATAHUB_TODO, IMPLEMENTATION_GUIDANCE), favor the hypothesis that it has revealed a bug. Do **not** tweak the test merely to produce SUCCESS — use the failure as an opportunity to review and challenge the code.
-3. **Verify test correctness:** On the other hand, test conditions must be correct. Do **not** change the codebase just to satisfy a test; if the test’s expectations or protocol usage are wrong, fix the test, not the implementation.
-4. **Reason first:** Any problem shown by tests needs careful reasoning — trace the protocol, verify invariants, and check edge cases — before applying code changes. Avoid quick “make it pass” edits.
+3. **Verify test correctness:** On the other hand, test conditions must be correct. Do **not** change the codebase just to satisfy a test; if the test's expectations or protocol usage are wrong, fix the test, not the implementation.
+4. **Reason first:** Any problem shown by tests needs careful reasoning — trace the protocol, verify invariants, and check edge cases — before applying code changes. Avoid quick "make it pass" edits.
+
+### C API Test Preservation
+
+**Rule (mandatory):** DO NOT delete C API tests. The C API (slot_rw_coordinator, recovery_api) is
+the foundational layer on which all C++ abstractions are built. These tests must remain intact
+through any reorganization, modernization, or refactoring.
+
+**Protected assets:**
+
+| Asset | Purpose |
+|-------|---------|
+| `tests/test_layer2_service/test_slot_rw_coordinator.cpp` | Pure C SlotRWCoordinator API: acquire/commit/release write, acquire/validate/release read, metrics, reset |
+| `tests/test_layer3_datahub/test_datahub_c_api_recovery.cpp` | Recovery API: `datablock_is_process_alive`, `integrity_validator_validate`, slot recovery, heartbeat manager |
+| `tests/test_layer3_datahub/workers/datahub_c_api_recovery_workers.cpp` | Worker implementations for recovery API tests |
+| `tests/test_layer3_datahub/workers/datahub_c_api_slot_protocol_workers.cpp` | Uses C API `slot_rw_coordinator.h` directly: `slot_rw_state()`, `slot_rw_get_metrics()` |
+
+When moving or renaming tests, these files (or their replacement C API test coverage) must remain.
+Any new directory structure should include or reference these tests; do not drop them.
+
+**Extension:** Prefer adding new tests that call the C API directly (more `slot_rw_*` scenarios,
+more recovery_api scenarios, error codes, NULL handling). When adding higher-level tests (C++
+primitive, schema, RAII), do NOT replace or remove C API tests that cover the same behavior.
+
+### Core Structure Change Protocol
+
+**Rule (mandatory):** Before modifying any of the following ABI-sensitive structures, run through
+the full mandatory review checklist (defined below):
+
+- `SharedMemoryHeader` (`data_block.hpp`) — 4KB-aligned, shared memory layout
+- `DataBlockConfig` (`data_block.hpp`) — API-critical factory function parameters
+- `FlexibleZoneChecksumEntry` / `ConsumerHeartbeat` — layout-critical, embedded in header
+- BLDS schema structures (`schema_validation.hpp`) — hash computation affects compatibility
+
+**Impact matrix (must review when touching `SharedMemoryHeader`):**
+
+| Component | Review Required |
+|---|---|
+| Size & Alignment | MANDATORY — `static_assert` at 4096 bytes |
+| Schema Macro | MANDATORY — update `PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS` |
+| Constructor/Initialization | MANDATORY — `DataBlock::DataBlock()` in `data_block.cpp` |
+| Producer Registration | MANDATORY — `register_with_broker()` schema hash logic |
+| Consumer Discovery | MANDATORY — `find_datablock_consumer_impl()` validation |
+| Schema Validation | MANDATORY — all `generate_schema_info<SharedMemoryHeader>()` calls |
+| Checksum Logic | MANDATORY — `update_checksum_flexible_zone()`, `verify_checksum_flexible_zone()` |
+| Test Coverage | MANDATORY — update `test_datahub_schema_blds.cpp`, `test_datahub_schema_validation.cpp` |
+| Documentation | MANDATORY — update memory layout diagrams, IMPLEMENTATION_GUIDANCE |
 
 ---
 
@@ -1058,6 +1104,42 @@ consumer.reset();
 ```
 
 See `SlotConsumeHandle` and `SlotWriteHandle` in `data_block.hpp` for the full lifetime contract.
+
+---
+
+### Pitfall 11: Assuming DRAINING Can Occur for Ordered Consumer Sync Policies
+
+**Problem**: `SlotState::DRAINING` exists in the enum and is visible to diagnostics, so it
+might be assumed to be reachable for any ring buffer configuration. In reality, for
+`Single_reader` and `Sync_reader`, DRAINING is **structurally unreachable** — the ring-full
+check prevents the writer from ever reaching a slot a reader is currently holding.
+
+**Why DRAINING is Latest_only-only:**
+
+The ring-full check (`write_index - read_index < capacity`) is evaluated **before** the
+irrevocable `write_index.fetch_add(1)` that gives the writer its next slot. `read_index`
+only advances on `release_consume_slot()` — not on acquire. Therefore, if reader R holds
+slot K (`read_index ≤ K`), the writer W cannot reach slot K+capacity without first passing
+a ring-full spin that requires `write_index − read_index < capacity` — which means `K < read_index`.
+Contradiction: the ring-full spin blocks indefinitely until the reader releases.
+
+`Latest_only` has no ring-full check, so the writer can orbit freely and must use DRAINING
+to safely drain any reader before overwriting a COMMITTED slot.
+
+**Correct mental model:**
+
+| ConsumerSyncPolicy | DRAINING reachable? | Writer blocked by |
+|---|---|---|
+| `Latest_only` | **Yes** — only policy where DRAINING can be entered | Drain spin (readers must clear) |
+| `Single_reader` | **No** — ring-full blocks before writer reaches held slot | Ring-full check |
+| `Sync_reader` | **No** — read_index = min(all positions); same barrier applies | Ring-full check |
+
+**Diagnostic discriminator:** `writer_reader_timeout_count > 0` means a drain spin timed out
+(DRAINING entered, Latest_only path). `writer_reader_timeout_count == 0` with `writer_timeout_count > 0`
+means ring-full blocked (ordered policy path; DRAINING never entered).
+
+See `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11 for the complete formal proof and
+`DatahubSlotDrainingTest.{Single,Sync}ReaderRingFullBlocksNotDraining` for live verification.
 
 ---
 
@@ -1259,12 +1341,98 @@ For the **full review process** (first pass, higher-level requirements, test int
 
 ---
 
+## Session Hygiene — Keeping TODO State Current
+
+**Motivation:** We have repeatedly lost track of what remains to be done because TODO
+documents were not updated during or after implementation sessions. Code review findings
+were left only in transient review documents, not in the canonical subtopic TODOs. This
+section is the standing rule to prevent that.
+
+### Mandatory: End-of-Session TODO Update
+
+At the end of every implementation session (or whenever switching contexts), the following
+must be done **before closing**:
+
+1. **Mark completed items** in the appropriate subtopic TODO (`docs/todo/*.md`):
+   - Change `- [ ]` to `- [x]`
+   - Move the item to the "Recent Completions" section with a date
+   - Include a one-line description of how it was resolved and which file was changed
+
+2. **Add newly discovered items** to the correct subtopic TODO immediately:
+   - Do not leave them as mental notes or inline code comments only
+   - Cross-reference the code file and the original issue (e.g., `[A-1]` from a review)
+
+3. **Update `docs/TODO_MASTER.md`** "Active Work Areas" table:
+   - Adjust status indicators (🟡 🟢 ✅ 🔵 🔴)
+   - Update the "Notes" column to reflect the count of open items
+
+4. **If a code review (`docs/code_review/*.md`) is active**, update its status table:
+   - Mark items ✅ FIXED with the date
+   - Ensure every OPEN item is cross-referenced in a subtopic TODO
+
+### Canonical Home for Every Open Item
+
+| Type of item | Correct subtopic TODO |
+|---|---|
+| RAII layer, `with_transaction`, `TransactionContext`, slot iterator | `RAII_LAYER_TODO.md` |
+| Primitive API, ABI, concurrency (spinlock, ordering), lifecycle | `API_TODO.md` |
+| Windows/MSVC, cross-platform headers, CMake flags | `PLATFORM_TODO.md` |
+| Tests (new tests, coverage gaps, failing tests) | `TESTING_TODO.md` |
+| Memory layout, `SharedMemoryHeader`, struct sizes | `MEMORY_LAYOUT_TODO.md` |
+| MessageHub, broker protocol | `MESSAGEHUB_TODO.md` |
+
+**Never** leave an open item only in:
+- A code review document (transient — will be archived)
+- An inline `// TODO:` comment without a subtopic TODO entry
+- Session summary documents or chat history
+
+### Transient Document Rule
+
+**Rule:** When producing any transient document (design notes, analysis, plan, audit, session
+summary), it **must** be placed in the correct location per `docs/DOC_STRUCTURE.md`:
+
+- Active design/implementation drafts → `docs/tech_draft/` (naming: `DRAFT_<Topic>_YYYY-MM.md`)
+- In-progress module-targeted code reviews → `docs/code_review/` (naming: `REVIEW_<Module>_YYYY-MM-DD.md`)
+- **Do NOT** create free-floating `.md` files directly under `docs/` root
+
+Any open item in the transient document **must also appear** in the relevant subtopic TODO so it
+survives context resets. When the work is complete and verified against code:
+
+1. **Merge** any lasting insight into core docs (IMPLEMENTATION_GUIDANCE, HEP, protocol docs)
+2. **Archive** the transient doc to `docs/archive/transient-YYYY-MM-DD/`
+3. **Record** the archive in `docs/DOC_ARCHIVE_LOG.md`
+
+A transient document left unarchived after its work is complete is documentation debt.
+
+### Code Review Lifecycle
+
+Per `docs/DOC_STRUCTURE.md §1.7` and `§2.2`:
+
+1. Code review findings → **enter immediately into subtopic TODOs** on discovery
+2. Code review document keeps a **status table** at the top (✅ FIXED / ❌ OPEN)
+3. When all items in the status table are ✅ FIXED:
+   - Move the review document to `docs/archive/transient-YYYY-MM-DD/`
+   - Record the archive in `docs/DOC_ARCHIVE_LOG.md`
+   - Update `docs/TODO_MASTER.md` to remove the active review reference
+
+### Quick Checklist (Run Before Closing a Session)
+
+```
+[ ] Subtopic TODOs updated (completed → Recent Completions; new items added)
+[ ] docs/TODO_MASTER.md Active Work Areas table reflects current state
+[ ] Active code review status table updated (✅ FIXED / ❌ OPEN)
+[ ] No open item exists only in chat history or inline comments
+```
+
+---
+
 ## References
 
 - **Design Specification**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
-- **Execution Plan**: `docs/DATAHUB_TODO.md`
+- **Execution Plan**: `docs/TODO_MASTER.md` + `docs/todo/` subtopic TODOs
 - **Code Review Process**: `docs/CODE_REVIEW_GUIDANCE.md`
 - **Documentation Structure**: `docs/DOC_STRUCTURE.md`
+- **Active Code Reviews**: `docs/code_review/` (pattern: `REVIEW_<Module>_YYYY-MM-DD.md`; listed in `docs/TODO_MASTER.md`)
 - **Build System**: `CLAUDE.md`
 - **Test Strategy**: `docs/README/README_testing.md`
 - **Lifecycle Pattern**: `src/include/utils/lifecycle.hpp`
