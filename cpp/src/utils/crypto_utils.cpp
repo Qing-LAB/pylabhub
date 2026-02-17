@@ -235,8 +235,7 @@ pylabhub::utils::ModuleDef GetLifecycleModule()
 {
     pylabhub::utils::ModuleDef module("CryptoUtils");
     module.set_startup(crypto_startup);
-    constexpr int kShutdownTimeoutMs = 1000; // 1 second
-    module.set_shutdown(crypto_shutdown, kShutdownTimeoutMs);
+    module.set_shutdown(crypto_shutdown, std::chrono::milliseconds(1000));
     // No dependencies - CryptoUtils is a foundational module
     return module;
 }

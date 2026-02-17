@@ -1049,11 +1049,32 @@ void do_logger_startup(const char *arg)
     (void)arg; // Argument not used by logger startup.
     Logger::instance().pImpl->start_worker();
     g_logger_state.store(LoggerState::Initialized, std::memory_order_release);
+
+    // Route lifecycle internal messages through the logger now that it is running.
+    pylabhub::utils::SetLifecycleLogSink(
+        [](pylabhub::utils::LifecycleLogLevel level, const std::string &msg)
+        {
+            switch (level)
+            {
+            case pylabhub::utils::LifecycleLogLevel::Error:
+                LOGGER_ERROR("{}", msg);
+                break;
+            case pylabhub::utils::LifecycleLogLevel::Warn:
+                LOGGER_WARN("{}", msg);
+                break;
+            default:
+                LOGGER_DEBUG("{}", msg);
+                break;
+            }
+        });
 }
 
 void do_logger_shutdown(const char *arg)
 {
     (void)arg; // Argument not used by logger shutdown.
+    // Remove the lifecycle log sink before the logger tears down so no lifecycle
+    // message can be dispatched to a destroyed logger queue.
+    pylabhub::utils::ClearLifecycleLogSink();
     LoggerState expected = LoggerState::Initialized;
     // Atomically change state from Initialized to ShuttingDown.
     // If it wasn't Initialized, another thread is already shutting it down, so we do nothing.
@@ -1086,8 +1107,7 @@ ModuleDef Logger::GetLifecycleModule()
     ModuleDef module("pylabhub::utils::Logger");
     // Using the no-argument overloads now.
     module.set_startup(&do_logger_startup);
-    constexpr int kLoggerShutdownTimeoutMs = 5000;
-    module.set_shutdown(&do_logger_shutdown, kLoggerShutdownTimeoutMs);
+    module.set_shutdown(&do_logger_shutdown, std::chrono::milliseconds(5000));
     return module;
 }
 

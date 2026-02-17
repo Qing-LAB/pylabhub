@@ -55,7 +55,7 @@ TEST(ResultTest, ConstructionErrorDefaultCode)
 TEST(ResultTest, ValueAccessSuccess)
 {
     auto result = Result<std::string, TestError>::ok("hello");
-    EXPECT_EQ(result.value(), "hello");
+    EXPECT_EQ(result.content(), "hello");
 
     // Test mutable access
     result.content() = "world";
@@ -108,7 +108,7 @@ TEST(ResultTest, MoveConstruction)
     auto result2 = std::move(result1);
 
     EXPECT_TRUE(result2.is_ok());
-    EXPECT_EQ(result2.value(), "moved");
+    EXPECT_EQ(result2.content(), "moved");
 }
 
 TEST(ResultTest, MoveAssignment)
@@ -119,7 +119,7 @@ TEST(ResultTest, MoveAssignment)
     result2 = std::move(result1);
 
     EXPECT_TRUE(result2.is_ok());
-    EXPECT_EQ(result2.value(), "moved");
+    EXPECT_EQ(result2.content(), "moved");
 }
 
 TEST(ResultTest, MoveValue)

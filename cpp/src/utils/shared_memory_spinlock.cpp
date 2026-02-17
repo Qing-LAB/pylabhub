@@ -127,11 +127,18 @@ void SharedSpinLock::unlock()
         return; // Still recursively locked by this process
     }
 
-    // Release the lock
+    // Release the lock.
+    // Order: owner_tid BEFORE owner_pid (intentional).
+    // owner_pid is the authoritative "lock free" signal used by CAS in try_lock_for().
+    // Storing owner_pid last (with release fence) ensures:
+    //   1. No contender CAS-succeeds while owner_tid is still being cleared.
+    //   2. The intermediate state (owner_pid!=0, owner_tid==0) is harmless — the lock is
+    //      still held from a CAS perspective, and zombie reclaim cannot fire because the
+    //      process is alive (it is executing this very code).
     m_state->recursion_count.store(0, std::memory_order_release);
-    m_state->generation.fetch_add(1, std::memory_order_release); // Increment generation
-    m_state->owner_tid.store(0, std::memory_order_release);
-    m_state->owner_pid.store(0, std::memory_order_release);      // Finally release ownership
+    m_state->generation.fetch_add(1, std::memory_order_relaxed);
+    m_state->owner_tid.store(0, std::memory_order_relaxed);  // Cleared first; lock still "held" here
+    m_state->owner_pid.store(0, std::memory_order_release);  // Authoritative "lock free" signal — last
 }
 
 bool SharedSpinLock::is_locked_by_current_process() const
