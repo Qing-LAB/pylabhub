@@ -73,6 +73,14 @@ add_executable(test_layer3_datahub
     # ── Integration / Scenario ────────────────────────────────────────────────
     test_datahub_messagehub.cpp
     workers/datahub_messagehub_workers.cpp
+
+    # ── WriteAttach mode (broker-owned shared memory) ─────────────────────────
+    test_datahub_write_attach.cpp
+    workers/datahub_write_attach_workers.cpp
+
+    # ── Recovery scenarios (facility: zombie detection, force-reset, dead consumer) ──
+    test_datahub_recovery_scenarios.cpp
+    workers/datahub_recovery_scenario_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE workers)

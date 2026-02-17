@@ -25,10 +25,8 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 📋 **Details**: `docs/todo/TESTING_TODO.md`
 
 Key tasks:
-- Config validation error-path tests (`test_datahub_config_validation.cpp`)
-- Header structure dual-schema field tests (`test_datahub_header_structure.cpp`)
 - Recovery scenario tests (zombie reader detection, corrupted header repair)
-- C API header/layout validation test (`test_datahub_c_api_validation.cpp`)
+- MessageHub broker integration tests
 
 ### Priority 2: MessageHub Broker Protocol
 📍 **Status**: Deferred (protocol not yet defined)
@@ -54,9 +52,9 @@ Key tasks (backlog only):
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
 | RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
-| API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | All code review items resolved; DRAINING state machine implemented |
+| API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 358/358 passing; 3 coverage gap tests needed (config, header, c_api_validation) |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 375/375 passing; remaining: recovery scenarios, MessageHub broker integration |
 | Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |

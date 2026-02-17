@@ -260,9 +260,34 @@ enum class ConsumerSyncPolicy : uint32_t
 };
 
 /**
+ * @enum DataBlockOpenMode
+ * @brief Determines role and ownership when creating or attaching a DataBlock.
+ *
+ * - Create:      Hub process creates and initializes the shared memory segment.
+ *                The DataBlock owns the segment and unlinks it on destruction.
+ * - WriteAttach: Source process attaches to an existing segment with R/W access.
+ *                No initialization; no unlink on destruction.
+ * - ReadAttach:  Terminal/consumer process attaches to an existing segment read-only.
+ *                No initialization; no unlink on destruction.
+ */
+enum class DataBlockOpenMode : uint8_t
+{
+    Create,       ///< Hub: create + initialize; unlinks on destruction
+    WriteAttach,  ///< Source: attach R/W to existing; no init, no unlink
+    ReadAttach    ///< Terminal: attach read-only to existing; no init, no unlink
+};
+
+/// @name Slot acquire timeout sentinel values (pass as timeout_ms to acquire_*_slot)
+/// @{
+inline constexpr int TIMEOUT_IMMEDIATE = 0;   ///< Non-blocking: return nullptr immediately if not available
+inline constexpr int TIMEOUT_DEFAULT   = 100; ///< Default poll interval: 100 ms
+inline constexpr int TIMEOUT_INFINITE  = -1;  ///< Block indefinitely until a slot is available
+/// @}
+
+/**
  * @struct DataBlockConfig
  * @brief Configuration for creating a new DataBlock.
- * 
+ *
  * @note FlexibleZoneConfig was removed in Phase 2 refactoring (2026-02-15).
  *       Use flex_zone_size field instead for single flexible zone configuration.
  */
@@ -711,7 +736,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 
     // ─── Primitive Data Transfer API ───
     /** Acquire a slot for writing; returns nullptr on timeout.
-     * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle). */
+     * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle).
+     * @note timeout_ms: use TIMEOUT_IMMEDIATE (0), TIMEOUT_DEFAULT (100), or TIMEOUT_INFINITE (-1). */
     [[nodiscard]] std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = -1) noexcept;
     /**
      * @brief Release a previously acquired slot.
@@ -1263,6 +1289,17 @@ class PYLABHUB_UTILS_EXPORT DataBlockDiagnosticHandle
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockDiagnosticHandle>
 open_datablock_for_diagnostic(const std::string &name);
 
+/** @brief Canonical RAII alias for a diagnostic handle (move-only unique_ptr).
+ *
+ *  Preferred pattern for short-lived diagnostic inspections:
+ *  @code
+ *  if (auto diag = open_datablock_for_diagnostic(name)) {
+ *      auto *hdr = diag->header();
+ *  }
+ *  @endcode
+ */
+using ScopedDiagnosticHandle = std::unique_ptr<DataBlockDiagnosticHandle>;
+
 /** @brief Returns the logical name (part before any runtime suffix) for comparison/lookup.
  * Producer/Consumer name() may append a suffix " | pid:<pid>-<idx>"; for channel or broker
  * comparison use this. See docs/NAME_CONVENTIONS.md. */
@@ -1289,6 +1326,31 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema);
+
+/**
+ * @brief Attach to an existing DataBlock as a writer (WriteAttach mode).
+ *
+ * Used by the hub/broker architecture: the hub creates the segment (Create mode)
+ * and the source process attaches with R/W access (WriteAttach mode).
+ * Performs the same shared_secret and schema validation as find_datablock_consumer_impl.
+ * The returned DataBlockProducer does NOT own the segment and will not unlink it on
+ * destruction; the hub (creator) is responsible for segment lifetime.
+ *
+ * @param hub            MessageHub instance (must be initialized via LifecycleGuard)
+ * @param name           Shared memory segment name (same as used by the hub creator)
+ * @param shared_secret  Must match the value stored at creation
+ * @param expected_config Optional config to validate against stored layout (nullptr = skip)
+ * @param flexzone_schema Optional FlexZone schema to validate (nullptr = skip)
+ * @param datablock_schema Optional DataBlock schema to validate (nullptr = skip)
+ * @return DataBlockProducer or nullptr if validation fails
+ * @throws std::runtime_error if Data Exchange Hub lifecycle is not initialized
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
+attach_datablock_as_writer_impl(MessageHub &hub, const std::string &name,
+                                uint64_t shared_secret,
+                                const DataBlockConfig *expected_config,
+                                const pylabhub::schema::SchemaInfo *flexzone_schema,
+                                const pylabhub::schema::SchemaInfo *datablock_schema);
 
 // Public C++ API: Template-based dual-schema factory functions.
 // Schema derived from template parameters, stored/validated in shared memory.
