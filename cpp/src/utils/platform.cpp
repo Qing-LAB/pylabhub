@@ -11,6 +11,7 @@
 #include "plh_base.hpp"
 #include "pylabhub_version.h"
 #include <chrono>
+#include <filesystem>
 #include <limits>
 
 #if defined(PYLABHUB_PLATFORM_WIN64)

@@ -6,6 +6,7 @@
 #include "plh_service.hpp" // For Logger (includes plh_base.hpp)
 
 #include <sodium.h>
+#include <chrono>
 #include <cstring>
 
 namespace pylabhub::crypto

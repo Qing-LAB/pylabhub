@@ -7,6 +7,9 @@
 
 #include <array>
 #include <cassert>
+#include <chrono>
+#include <mutex>
+#include <optional>
 #include <vector>
 #include <atomic>
 
