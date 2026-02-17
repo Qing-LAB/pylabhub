@@ -38,4 +38,12 @@ int dynamic_persistent_module_finalize();
 int dynamic_persistent_in_middle();
 int dynamic_unload_timeout();
 
+// --- Log sink injection tests ---
+int log_sink_routes_warning();
+int log_sink_cleared_uses_fallback();
+
+// --- Async unload + finalize interaction ---
+int finalize_waits_for_pending_async_unload();
+int finalize_sink_safe_during_async_failure();
+
 } // namespace pylabhub::tests::worker::lifecycle

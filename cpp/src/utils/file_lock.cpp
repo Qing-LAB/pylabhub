@@ -28,7 +28,7 @@ static std::atomic<bool> g_filelock_initialized{false};
 namespace
 {
 constexpr int kLockFileMode = 0644;
-constexpr int kFileLockShutdownTimeoutMs = 2000;
+constexpr std::chrono::milliseconds kFileLockShutdownTimeoutMs{2000};
 }
 
 static std::string make_lock_key(const std::filesystem::path &lockpath)

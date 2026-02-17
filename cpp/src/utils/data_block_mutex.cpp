@@ -410,7 +410,6 @@ DataBlockLockGuard::DataBlockLockGuard(DataBlockMutex &mutex) : m_mutex(mutex)
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape) -- unlock() may throw; required by RAII contract
-// NOLINTNEXTLINE(bugprone-exception-escape) -- unlock() may throw; required by RAII contract
 DataBlockLockGuard::~DataBlockLockGuard()
 {
     m_mutex.unlock();

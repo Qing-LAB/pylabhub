@@ -133,26 +133,99 @@
 
 ---
 
-### Phase 5: Reorganize Structure ⏸️
+### Phase 5: Reorganize Structure and Rename Tests ⏸️
 
-- [ ] **T5.1**: Create directory structure
-  - **Dirs**: c_api/, cpp_primitive/, cpp_schema/, cpp_raii/, facility/, integration/
-  
-- [ ] **T5.2**: Move tests to new locations
-  - **Files**: Move working tests to logical directories
+**Goal:** Make `test_layer3_datahub/` follow the same naming and ordering discipline as
+`test_layer0_platform/`, `test_layer1_base/`, and `test_layer2_service/`, where:
+- Every file is named `test_{module_name}.cpp` — the module under test is immediately obvious.
+- Files are ordered by abstraction level: lower layers first, higher layers later.
+- The test binary / target name reflects the layer and module.
 
-- [ ] **T5.3**: Update CMakeLists.txt for new structure
-  - **Action**: Update all paths, target names
+**Current problem:** `test_layer3_datahub/` mixes levels (C API, primitive, RAII, integration)
+in a flat directory with ambiguous names (`test_error_handling.cpp`, `test_recovery_api.cpp`,
+`test_policy_enforcement.cpp`) that don't identify which module or which layer they belong to.
+There is also a stray `test_raii_layer/` directory that duplicates the layer-3 concern.
+
+---
+
+- [ ] **T5.1**: Define the target file layout following the architecture hierarchy
+
+  The logical order is: **facility → C API → primitive API → RAII layer → integration/scenario**
+
+  ```
+  test_layer3_datahub/
+    # ── Facility (individual class/subsystem unit tests) ──────────────────────
+    test_datahub_schema_blds.cpp          (rename: test_schema_blds.cpp)
+    test_datahub_schema_validation.cpp    (rename: test_schema_validation.cpp)
+    test_datahub_config_validation.cpp    (new: T4 config error path tests)
+    test_datahub_header_structure.cpp     (new: SharedMemoryHeader dual-schema fields)
+
+    # ── C API layer (slot_rw_coordinator, checksum, recovery) ─────────────────
+    test_datahub_c_api_slot_protocol.cpp  (rename: test_c_api_slot_protocol.cpp)
+    test_datahub_c_api_checksum.cpp       (rename: test_c_api_checksum.cpp)
+    test_datahub_c_api_validation.cpp     (new: T4.3 header/layout validation at C level)
+    test_datahub_c_api_recovery.cpp       (rename: test_recovery_api.cpp)
+
+    # ── C++ Primitive API (DataBlockProducer/Consumer, no RAII) ───────────────
+    test_datahub_producer_consumer.cpp    (rename: test_error_handling.cpp — name now reflects
+                                           what is tested: producer/consumer API error paths)
+    test_datahub_mutex.cpp                (rename: test_datablock_mutex.cpp)
+
+    # ── C++ RAII layer (TransactionContext, SlotIterator, policies) ───────────
+    test_datahub_transaction_api.cpp      (rename: test_transaction_api.cpp)
+    test_datahub_policy_enforcement.cpp   (rename: test_policy_enforcement.cpp)
+    test_datahub_exception_safety.cpp     (new: T4.4 RAII exception safety)
+    test_datahub_handle_semantics.cpp     (new: T4.5 handle move/lifecycle)
+
+    # ── Integration / Scenario (multi-module, end-to-end) ────────────────────
+    test_datahub_messagehub.cpp           (rename: test_message_hub.cpp)
+
+    workers/                              (keep; rename worker files to match above)
+  ```
+
+  Additionally, absorb `test_raii_layer/test_result.cpp` — move to `test_layer1_base/`
+  (Result<T,E> is a generic utility independent of datahub) and delete the `test_raii_layer/`
+  directory.
+
+- [ ] **T5.2**: Rename all files and update worker pairs to match
+
+  Each worker file should follow the same `{test_name}_workers.cpp` convention so the
+  pairing is always obvious. Example: `test_datahub_c_api_recovery.cpp` ↔
+  `workers/datahub_c_api_recovery_workers.cpp`.
+
+  | Current name | New name |
+  |---|---|
+  | `test_c_api_slot_protocol.cpp` | `test_datahub_c_api_slot_protocol.cpp` |
+  | `test_c_api_checksum.cpp` | `test_datahub_c_api_checksum.cpp` |
+  | `test_recovery_api.cpp` | `test_datahub_c_api_recovery.cpp` |
+  | `test_error_handling.cpp` | `test_datahub_producer_consumer.cpp` |
+  | `test_datablock_mutex.cpp` | `test_datahub_mutex.cpp` |
+  | `test_schema_blds.cpp` | `test_datahub_schema_blds.cpp` |
+  | `test_schema_validation.cpp` | `test_datahub_schema_validation.cpp` |
+  | `test_transaction_api.cpp` | `test_datahub_transaction_api.cpp` |
+  | `test_policy_enforcement.cpp` | `test_datahub_policy_enforcement.cpp` |
+  | `test_message_hub.cpp` | `test_datahub_messagehub.cpp` |
+
+- [ ] **T5.3**: Update CMakeLists.txt — source paths, add_test names, and labels
+
+  - All test names in `add_test(NAME ...)` should reflect their layer, e.g.
+    `DatahubCApiSlotProtocol.*`, `DatahubRaii.*`, `DatahubIntegration.*`.
+  - Labels: add a `datahub_c_api`, `datahub_raii`, `datahub_facility` label per group so
+    `ctest -L datahub_c_api` runs only the C API tier.
+  - The convention already used by layer 0–2 test targets (`test_layer0_platform`, etc.)
+    should be preserved: the binary is still `test_layer3_datahub`; the internal test names
+    and file names carry the disambiguation.
 
 ---
 
 ## Immediate Execution Queue (Next Steps)
 
-1. **T2.1**: Fix error_handling_workers.cpp
-2. **T2.2**: Disable slot_protocol in CMakeLists
-3. **T2.4**: Audit messagehub_workers.cpp
-4. **T2.5**: Audit transaction_api_workers.cpp
-5. **T2.6**: Verify build succeeds
+1. **T4.1**: test_cpp_dual_schema_validation.cpp
+2. **T4.3**: test_c_api_validation.cpp
+3. **T4.4**: test_cpp_exception_safety.cpp
+4. **T4.5**: test_cpp_handle_semantics.cpp
+5. **Facility gaps**: test_datahub_config_validation.cpp, test_schema_validation dual-schema update
+6. **T5.x**: Rename and reorganize (after all new tests are written, so only one restructure pass)
 
 ---
 

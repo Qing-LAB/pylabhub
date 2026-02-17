@@ -27,53 +27,131 @@
  *     and recursively loads it and its dependencies, using reference counting.
  *     Failures are handled gracefully and do not panic the application.
  *
- * 5.  **Timed Shutdown**: `finalize()` first shuts down all active dynamic
- *     modules, then the static modules, using timeouts to prevent hangs.
+ * 5.  **Async Dynamic Shutdown**: `unload_module()` computes the full transitive
+ *     closure of modules to unload, marks them upfront (preventing new loads),
+ *     and schedules them on a dedicated shutdown thread. The shutdown thread
+ *     processes modules sequentially with per-module timeouts. A contaminated-
+ *     modules set prevents loading modules whose prior unload failed.
+ *
+ * 6.  **Timed Shutdown**: All module shutdown callbacks are run with real
+ *     timeouts using thread+flag+poll+detach (not std::async, whose destructor
+ *     blocks even after wait_for returns timeout).
  ******************************************************************************/
 #include "plh_base.hpp"
 
 #include "utils/lifecycle.hpp"
 #include "utils/module_def.hpp"
-#include <cstdint>      // For std::uint8_t
-#include <cstring>      // For strnlen
-#include <fmt/ranges.h> // For fmt::join on vectors
-#include <future>       // For std::async, std::future
-#include <map>          // For std::map
-#include <stdexcept>    // For std::runtime_error, std::length_error
+#include <condition_variable> // For std::condition_variable
+#include <cstdint>            // For std::uint8_t
+#include <fmt/ranges.h>       // For fmt::join on vectors
+#include <map>                // For std::map
+#include <queue>              // For std::queue
+#include <set>                // For std::set
+#include <stdexcept>          // For std::runtime_error, std::length_error
+#include <thread>             // For std::thread
 
 namespace
 {
 /**
- * @brief Validates a module name C-string for safe use.
+ * @brief Validates a module name string_view: non-empty, within MAX_MODULE_NAME_LEN.
  *
- * Requirements: non-null, null-terminated within MAX_MODULE_NAME_LEN chars,
- * length (excluding null) not exceeding MAX_MODULE_NAME_LEN.
- *
- * @param name The C-string to validate (may be null for dependency_name, but not for module name).
- * @param allow_null If true, nullptr is accepted (no validation). If false, nullptr throws.
+ * @param name       The view to validate.
  * @param param_name For error messages (e.g., "module name", "dependency name").
- * @throws std::invalid_argument if name is null and allow_null is false, or if not null-terminated.
- * @throws std::length_error if length exceeds MAX_MODULE_NAME_LEN.
+ * @throws std::invalid_argument if `name` is empty.
+ * @throws std::length_error     if `name.size() > MAX_MODULE_NAME_LEN`.
  */
-void validate_module_name_cstr(const char *name, bool allow_null, const char *param_name)
+void validate_module_name(std::string_view name, const char *param_name)
 {
-    if (name == nullptr)
+    if (name.empty())
     {
-        if (allow_null)
-        {
-            return;
-        }
-        throw std::invalid_argument(std::string("Lifecycle: ") + param_name + " must not be null.");
+        throw std::invalid_argument(std::string("Lifecycle: ") + param_name +
+                                    " must not be empty.");
     }
-    const size_t len = strnlen(name, pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN + 1);
-    if (len > pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN)
+    if (name.size() > pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN)
     {
-        throw std::length_error(std::string("Lifecycle: ") + param_name +
-                                " exceeds maximum length of " +
+        throw std::length_error(std::string("Lifecycle: ") + param_name + " exceeds maximum of " +
                                 std::to_string(pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN) +
-                                " or is not null-terminated.");
+                                " characters.");
     }
 }
+
+/**
+ * @brief Outcome of a timed shutdown call.
+ */
+struct ShutdownOutcome
+{
+    bool success;           ///< true if the callback completed without throwing
+    bool timed_out;         ///< true if the callback did not complete within the deadline
+    std::string exception_msg; ///< non-empty if the callback threw an exception
+};
+
+/**
+ * @brief Runs `func` on a thread with a real deadline. Returns without blocking
+ *        beyond the deadline even if `func` hangs (the thread is detached on timeout).
+ *
+ * Unlike `std::async` + `wait_for`, detaching the thread on timeout is safe at process
+ * exit (static modules) and acceptable for contaminated dynamic modules (the process
+ * continues without them).
+ *
+ * @param func       The shutdown callback to invoke. Ignored if empty.
+ * @param timeout    Maximum time to wait for `func` to complete.
+ * @return ShutdownOutcome with success/timed_out/exception_msg fields.
+ */
+ShutdownOutcome timedShutdown(const std::function<void()> &func,
+                              std::chrono::milliseconds timeout)
+{
+    if (!func)
+    {
+        return {true, false, {}};
+    }
+
+    std::atomic<bool> completed{false};
+    std::exception_ptr ex_ptr{nullptr};
+    std::thread thread([&func, &completed, &ex_ptr]()
+                  {
+                      try
+                      {
+                          func();
+                      }
+                      catch (...)
+                      {
+                          ex_ptr = std::current_exception();
+                      }
+                      completed.store(true, std::memory_order_release);
+                  });
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!completed.load(std::memory_order_acquire))
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            thread.detach();
+            return {false, true, {}};
+        }
+        constexpr std::chrono::milliseconds kPollInterval(10);
+        std::this_thread::sleep_for(kPollInterval);
+    }
+
+    thread.join();
+
+    if (ex_ptr)
+    {
+        try
+        {
+            std::rethrow_exception(ex_ptr);
+        }
+        catch (const std::exception &e)
+        {
+            return {false, false, e.what()};
+        }
+        catch (...)
+        {
+            return {false, false, "unknown exception"};
+        }
+    }
+    return {true, false, {}};
+}
+
 } // namespace
 
 namespace pylabhub::utils::lifecycle_internal
@@ -102,19 +180,22 @@ class ModuleDefImpl
     lifecycle_internal::InternalModuleDef def;
 };
 
-ModuleDef::ModuleDef(const char *name) : pImpl(std::make_unique<ModuleDefImpl>())
+ModuleDef::ModuleDef(std::string_view name) : pImpl(std::make_unique<ModuleDefImpl>())
 {
-    validate_module_name_cstr(name, false, "module name");
-    pImpl->def.name = name;
+    validate_module_name(name, "module name");
+    pImpl->def.name = std::string(name);
 }
 ModuleDef::~ModuleDef() = default;
 ModuleDef::ModuleDef(ModuleDef &&other) noexcept = default;
 ModuleDef &ModuleDef::operator=(ModuleDef &&other) noexcept = default;
-void ModuleDef::add_dependency(const char *dependency_name)
+void ModuleDef::add_dependency(std::string_view dependency_name)
 {
-    if (pImpl != nullptr && dependency_name != nullptr)
+    if (pImpl != nullptr && !dependency_name.empty())
     {
-        validate_module_name_cstr(dependency_name, false, "dependency name");
+        if (dependency_name.size() > MAX_MODULE_NAME_LEN)
+        {
+            throw std::length_error("Lifecycle: dependency name exceeds maximum length.");
+        }
         pImpl->def.dependencies.emplace_back(dependency_name);
     }
 }
@@ -125,40 +206,40 @@ void ModuleDef::set_startup(LifecycleCallback startup_func)
         pImpl->def.startup = [startup_func]() { startup_func(nullptr); };
     }
 }
-void ModuleDef::set_startup(LifecycleCallback startup_func, const char *data, size_t len)
+void ModuleDef::set_startup(LifecycleCallback startup_func, std::string_view arg)
 {
     if (pImpl != nullptr && startup_func != nullptr)
     {
-        if (len > MAX_CALLBACK_PARAM_STRLEN)
+        if (arg.size() > MAX_CALLBACK_PARAM_STRLEN)
         {
-            throw std::length_error("Lifecycle: Startup argument length exceeds MAX_LEN.");
+            throw std::length_error("Lifecycle: startup argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
-        std::string arg_str(data, len);
+        std::string arg_str(arg);
         pImpl->def.startup = [startup_func, arg = std::move(arg_str)]()
         { startup_func(arg.c_str()); };
     }
 }
-void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms)
+void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, std::chrono::milliseconds timeout)
 {
     if (pImpl != nullptr && shutdown_func != nullptr)
     {
         pImpl->def.shutdown.func = [shutdown_func]() { shutdown_func(nullptr); };
-        pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
+        pImpl->def.shutdown.timeout = timeout;
     }
 }
-void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, unsigned int timeout_ms,
-                             const char *data, size_t data_len)
+void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, std::chrono::milliseconds timeout,
+                             std::string_view arg)
 {
     if (pImpl != nullptr && shutdown_func != nullptr)
     {
-        if (data_len > MAX_CALLBACK_PARAM_STRLEN)
+        if (arg.size() > MAX_CALLBACK_PARAM_STRLEN)
         {
-            throw std::length_error("Lifecycle: Shutdown argument length exceeds MAX_LEN.");
+            throw std::length_error("Lifecycle: shutdown argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
-        std::string arg_str(data, data_len);
+        std::string arg_str(arg);
         pImpl->def.shutdown.func = [shutdown_func, arg_copy = std::move(arg_str)]()
         { shutdown_func(arg_copy.c_str()); };
-        pImpl->def.shutdown.timeout = std::chrono::milliseconds(timeout_ms);
+        pImpl->def.shutdown.timeout = timeout;
     }
 }
 
@@ -179,6 +260,8 @@ class LifecycleManagerImpl
     {
     }
 
+    ~LifecycleManagerImpl();
+
     enum class ModuleStatus : std::uint8_t
     {
         Registered,
@@ -186,14 +269,18 @@ class LifecycleManagerImpl
         Started,
         Failed,
         Shutdown,
-        FailedShutdown
+        FailedShutdown,
+        ShutdownTimeout ///< Shutdown callback did not complete within timeout; thread was detached.
     };
     enum class DynamicModuleStatus : std::uint8_t
     {
         UNLOADED,
         LOADING,
         LOADED,
-        FAILED
+        FAILED,
+        UNLOADING,       ///< Marked for unload; shutdown thread will process it.
+        SHUTDOWN_TIMEOUT, ///< Shutdown timed out; module may be in undefined state.
+        FAILED_SHUTDOWN  ///< Shutdown threw an exception; module may be in undefined state.
     };
 
     struct InternalGraphNode
@@ -226,8 +313,12 @@ class LifecycleManagerImpl
     bool registerDynamicModule(lifecycle_internal::InternalModuleDef def);
     void initialize(std::source_location loc = std::source_location::current());
     void finalize(std::source_location loc = std::source_location::current());
-    bool loadModule(const char *name, std::source_location loc = std::source_location::current());
-    bool unloadModule(const char *name, std::source_location loc = std::source_location::current());
+    bool loadModule(std::string_view name, std::source_location loc = std::source_location::current());
+    bool unloadModule(std::string_view name, std::source_location loc = std::source_location::current());
+    DynModuleState waitForUnload(std::string_view name, std::chrono::milliseconds timeout);
+    DynModuleState getDynamicModuleState(std::string_view name);
+    void setLifecycleLogSink(std::shared_ptr<LifecycleLogSink> sink);
+    void clearLifecycleLogSink() noexcept;
     [[nodiscard]] bool is_initialized() const
     {
         return m_is_initialized.load(std::memory_order_acquire);
@@ -243,9 +334,50 @@ class LifecycleManagerImpl
     void buildStaticGraph();
     static std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
-    void unloadModuleInternal(InternalGraphNode &node);
     static void shutdownModuleWithTimeout(InternalGraphNode &mod, std::string &debug_info);
     void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
+
+    // Routes `msg` through the installed log sink (if any) or falls back to PLH_DEBUG.
+    // Used only in runtime paths where the logger is expected to be up.
+    void lifecycleLog(LifecycleLogLevel level, std::string msg) const;
+
+    // Typed helpers — call like LOGGER_DEBUG / LOGGER_WARN / LOGGER_ERROR.
+    template <typename... Args>
+    void lifecycleDebug(fmt::format_string<Args...> fmt_str, Args &&...args) const
+    {
+        lifecycleLog(LifecycleLogLevel::Debug,
+               fmt::format(fmt_str, std::forward<Args>(args)...));
+    }
+    template <typename... Args>
+    void lifecycleWarn(fmt::format_string<Args...> fmt_str, Args &&...args) const
+    {
+        lifecycleLog(LifecycleLogLevel::Warn,
+               fmt::format(fmt_str, std::forward<Args>(args)...));
+    }
+    template <typename... Args>
+    void lifecycleError(fmt::format_string<Args...> fmt_str, Args &&...args) const
+    {
+        lifecycleLog(LifecycleLogLevel::Error,
+               fmt::format(fmt_str, std::forward<Args>(args)...));
+    }
+
+    // --- Dynamic module shutdown thread ---
+    /// Computes the full transitive closure of dynamic modules that would be unloaded
+    /// if `root_name` is unloaded (i.e., root + all deps whose ref_count drops to zero).
+    /// Caller must hold m_graph_mutation_mutex.
+    std::set<std::string> computeUnloadClosure(const std::string &root_name);
+
+    /// Starts the dynamic shutdown thread if not already running.
+    /// Caller must hold m_graph_mutation_mutex.
+    void startDynShutdownThread();
+
+    /// Main loop of the dedicated dynamic module shutdown thread.
+    void dynShutdownThreadMain();
+
+    /// Processes a single dynamic module unload (called from the shutdown thread).
+    /// Acquires/releases m_graph_mutation_mutex internally around graph mutations;
+    /// runs the shutdown callback WITHOUT holding any mutex.
+    void processOneUnloadInThread(const std::string &node_name);
 
     // --- Member Variables ---
     const uint64_t m_pid;
@@ -253,17 +385,74 @@ class LifecycleManagerImpl
     std::atomic<bool> m_is_initialized = {false};
     std::atomic<bool> m_is_finalized = {false};
     std::mutex m_registry_mutex;       // Protects m_registered_modules before initialization
-    std::mutex m_graph_mutation_mutex; // Protects m_module_graph after initialization
+    std::mutex m_graph_mutation_mutex; // Protects m_module_graph, m_marked_for_unload,
+                                       //   m_contaminated_modules, and m_dyn_shutdown_thread_started
     std::vector<lifecycle_internal::InternalModuleDef> m_registered_modules;
-    std::map<std::string, InternalGraphNode> m_module_graph;
+    // std::less<> enables heterogeneous lookup (find/contains with std::string_view)
+    // without constructing a temporary std::string.
+    std::map<std::string, InternalGraphNode, std::less<>> m_module_graph;
     std::vector<InternalGraphNode *> m_startup_order;
     std::vector<InternalGraphNode *> m_shutdown_order;
+
+    // Modules scheduled for unload (entire closure marked upfront).
+    // Protected by m_graph_mutation_mutex.
+    std::set<std::string, std::less<>> m_marked_for_unload;
+
+    // Modules whose shutdown failed or timed out. New loads that depend on these are rejected.
+    // Protected by m_graph_mutation_mutex.
+    std::set<std::string, std::less<>> m_contaminated_modules;
+
+    // Dedicated dynamic module shutdown thread.
+    std::thread m_dyn_shutdown_thread;
+    bool m_dyn_shutdown_thread_started{false}; // protected by m_graph_mutation_mutex
+    std::mutex m_shutdown_queue_mutex;         // Protects m_shutdown_queue only
+    std::condition_variable m_shutdown_cv;
+    std::queue<std::string> m_shutdown_queue;
+    std::atomic<bool> m_dyn_shutdown_thread_stop{false};
+
+    // Condition variable for wait_for_unload() synchronisation.
+    // Notified from processOneUnloadInThread() each time a module finishes.
+    // Must be waited on under m_graph_mutation_mutex (like the CV patterns below).
+    std::condition_variable m_unload_complete_cv;
+
+    // Tracks which closure modules remain unprocessed, keyed by the root name
+    // passed to unload_module(). Protected by m_graph_mutation_mutex.
+    std::map<std::string, std::set<std::string>, std::less<>> m_pending_unload_closures;
+
+    // Optional log sink injected by the logger module (or any module that provides logging).
+    // null → fall back to PLH_DEBUG.
+    std::atomic<std::shared_ptr<LifecycleLogSink>> m_lifecycle_log_sink{nullptr};
 };
 
 namespace
 {
 constexpr size_t kDebugInfoReserveBytes = 4096;
+} // namespace
+
+// ============================================================================
+// LifecycleManagerImpl destructor
+// ============================================================================
+
+LifecycleManagerImpl::~LifecycleManagerImpl()
+{
+    // If the shutdown thread was started (by any unload_module call), signal it
+    // to stop and wait for it to finish. If finalize() was called first (normal
+    // usage), the thread will have already drained and will exit immediately.
+    if (!m_dyn_shutdown_thread_started || !m_dyn_shutdown_thread.joinable())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_shutdown_queue_mutex);
+        m_dyn_shutdown_thread_stop.store(true, std::memory_order_release);
+    }
+    m_shutdown_cv.notify_all();
+    m_dyn_shutdown_thread.join();
 }
+
+// ============================================================================
+// Static module management
+// ============================================================================
 
 void LifecycleManagerImpl::registerStaticModule(lifecycle_internal::InternalModuleDef def)
 {
@@ -326,6 +515,18 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
         }
     }
 
+    // Reject registration if any dependency is contaminated.
+    for (const auto &dep_name : def.dependencies)
+    {
+        if (m_contaminated_modules.contains(dep_name))
+        {
+            PLH_DEBUG("[PLH_LifeCycle]\n[{}]:PID[{}]\n  "
+                      "    **  ERROR: Cannot register '{}': dependency '{}' is contaminated.",
+                      m_app_name, m_pid, def.name, dep_name);
+            return false;
+        }
+    }
+
     auto &node = m_module_graph[def.name];
     node.name = def.name;
     node.startup = def.startup;
@@ -346,6 +547,10 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
               def.name);
     return true;
 }
+
+// ============================================================================
+// initialize / finalize
+// ============================================================================
 
 /**
  * @brief Initializes the static modules of the application.
@@ -425,11 +630,15 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
 
 /**
  * @brief Shuts down all application modules.
- * @details This method is idempotent. It first finds all currently loaded dynamic
- *          modules, determines the correct shutdown order, and calls their shutdown
- *          callbacks. It then shuts down all static modules in the reverse of
- *          their startup order. Shutdown for each module is performed with a
- *          timeout to prevent hangs.
+ *
+ * Sequence:
+ * 1. Signal the dynamic shutdown thread to drain and stop; join with a bounded wait.
+ * 2. Shut down any remaining LOADED dynamic modules inline (those not previously
+ *    scheduled for async unload).
+ * 3. Shut down static modules in reverse startup order, each with a per-module timeout.
+ *
+ * All shutdown callbacks use thread+flag+poll+detach, so no shutdown call can block
+ * finalize() beyond its configured timeout.
  */
 void LifecycleManagerImpl::finalize(std::source_location loc)
 {
@@ -449,7 +658,27 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                     m_app_name, m_pid, loc.function_name(),
                     pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
 
+    // Phase 1: Drain the dynamic shutdown thread.
+    // Signal it to stop (after it empties its queue) and join.
+    // The join is bounded because each item processed by the thread has a per-module
+    // timeout enforced by timedShutdown().
+    {
+        std::lock_guard<std::mutex> queue_lock(m_shutdown_queue_mutex);
+        m_dyn_shutdown_thread_stop.store(true, std::memory_order_release);
+    }
+    m_shutdown_cv.notify_all();
+
+    if (m_dyn_shutdown_thread_started && m_dyn_shutdown_thread.joinable())
+    {
+        debug_info += "     -> Waiting for dynamic shutdown thread to drain...\n";
+        m_dyn_shutdown_thread.join(); // bounded by per-module shutdown timeouts
+        debug_info += "     --- Dynamic shutdown thread drained ---\n";
+    }
+
+    // Phase 2: Handle any remaining LOADED dynamic modules (those not scheduled via
+    // unload_module — e.g., the application forgot to unload them before finalize).
     std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+
     std::vector<InternalGraphNode *> loaded_dyn_nodes;
     for (auto &entry : m_module_graph)
     {
@@ -465,18 +694,19 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     {
         auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
         std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
-        debug_info += "     -> Unloading dynamic modules...\n";
+        debug_info += "     -> Shutting down remaining dynamic modules...\n";
         for (auto *mod : dyn_shutdown_order)
         {
             shutdownModuleWithTimeout(*mod, debug_info);
         }
-        debug_info += "     --- Dynamic module unload complete ---\n";
+        debug_info += "     --- Remaining dynamic module shutdown complete ---\n";
     }
     else
     {
-        debug_info += "     --- No dynamic modules to unload ---\n";
+        debug_info += "     --- No remaining dynamic modules to shut down ---\n";
     }
 
+    // Phase 3: Shut down static modules in reverse startup order.
     debug_info += "\n     <- Shutting down static modules...\n";
     for (auto *mod : m_shutdown_order)
     {
@@ -496,6 +726,10 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     PLH_DEBUG("{}", debug_info);
 }
 
+// ============================================================================
+// loadModule / loadModuleInternal
+// ============================================================================
+
 /**
  * @brief Public entry point for loading a dynamic module.
  * @details This method is thread-safe and uses a `RecursionGuard` to prevent
@@ -504,7 +738,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
  * @param name The name of the module to load.
  * @return True if the module was loaded successfully, false otherwise.
  */
-bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc)
+bool LifecycleManagerImpl::loadModule(std::string_view name, std::source_location loc)
 {
     if (!is_initialized())
     {
@@ -514,91 +748,125 @@ bool LifecycleManagerImpl::loadModule(const char *name, std::source_location loc
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     }
-    if (name == nullptr)
-    {
-        return false;
-    }
+    // Broad catch: validate_module_name may throw std::invalid_argument/std::length_error,
+    // and internal map/set operations may throw std::bad_alloc. None should escape a
+    // bool-returning function. RAII guards (RecursionGuard, lock_guard) unwind cleanly.
     try
     {
-        validate_module_name_cstr(name, false, "load_module name");
+        validate_module_name(name, "load_module name");
+
+        PLH_DEBUG("loadModule: request to load '{}'", name);
+
+        if (pylabhub::basics::RecursionGuard::is_recursing(this))
+        {
+            PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                      "     **** loadModule() called from {} ({}:{})\n"
+                      "     ****  ERROR: Re-entrant call to load_module('{}') detected.",
+                      m_app_name, m_pid, loc.function_name(),
+                      pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
+            return false;
+        }
+        pylabhub::basics::RecursionGuard guard(this);
+        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+
+        if (is_finalized())
+        {
+            PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                      "     **** loadModule() called from {} ({}:{})\n"
+                      "     **** ERROR: load_module called after finalization.",
+                      m_app_name, m_pid, loc.function_name(),
+                      pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
+            return false;
+        }
+
+        auto iter = m_module_graph.find(name);
+        if (iter == m_module_graph.end() || !iter->second.is_dynamic)
+        {
+            PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
+                      "     **** loadModule() called from {} ({}:{})\n"
+                      "     ****  ERROR: Dynamic module '{}' not found.",
+                      m_app_name, m_pid, loc.function_name(),
+                      pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
+            return false;
+        }
+
+        PLH_DEBUG("loadModule: starting internal load for '{}'", name);
+        bool result = loadModuleInternal(iter->second);
+        PLH_DEBUG(
+            "loadModule: internal load for '{}' finished with result: {}. Recalculating ref counts.",
+            name, result);
+        recalculateReferenceCounts();
+        return result;
     }
-    catch (const std::exception &)
+    catch (const std::exception &e)
     {
+        PLH_DEBUG("[PLH_LifeCycle] loadModule '{}': caught exception: {}", name, e.what());
         return false;
     }
-
-    PLH_DEBUG("loadModule: request to load '{}'", name);
-
-    if (pylabhub::basics::RecursionGuard::is_recursing(this))
+    catch (...)
     {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "     **** loadModule() called from {} ({}:{})\n"
-                  "     ****  ERROR: Re-entrant call to load_module('{}') detected.",
-                  m_app_name, m_pid, loc.function_name(),
-                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
+        PLH_DEBUG("[PLH_LifeCycle] loadModule '{}': caught unknown exception.", name);
         return false;
     }
-    pylabhub::basics::RecursionGuard guard(this);
-    std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
-
-    if (is_finalized())
-    {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "     **** loadModule() called from {} ({}:{})\n"
-                  "     **** ERROR: load_module called after finalization.",
-                  m_app_name, m_pid, loc.function_name(),
-                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
-        return false;
-    }
-
-    auto iter = m_module_graph.find(name);
-    if (iter == m_module_graph.end() || !iter->second.is_dynamic)
-    {
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                  "     **** loadModule() called from {} ({}:{})\n"
-                  "     ****  ERROR: Dynamic module '{}' not found.",
-                  m_app_name, m_pid, loc.function_name(),
-                  pylabhub::format_tools::filename_only(loc.file_name()), loc.line(), name);
-        return false;
-    }
-
-    PLH_DEBUG("loadModule: starting internal load for '{}'", name);
-    bool result = loadModuleInternal(iter->second);
-    PLH_DEBUG(
-        "loadModule: internal load for '{}' finished with result: {}. Recalculating ref counts.",
-        name, result);
-    recalculateReferenceCounts();
-    return result;
 }
 
 /**
  * @brief Internal recursive implementation for loading a dynamic module.
- * @details This function performs the core logic of loading a module. It handles
- *          different module statuses, detects circular dependencies, and recursively
- *          loads dependencies. It no longer manages reference counts.
+ *
+ * Load gate: rejects any module that is scheduled for unload (UNLOADING) or whose
+ * prior unload failed (SHUTDOWN_TIMEOUT / FAILED_SHUTDOWN / contaminated set).
+ * This prevents loading into a partially-unloaded dependency chain.
+ *
  * @param node The graph node of the module to be loaded.
- * @return True on success, false on failure (e.g., circular dependency,
- *         unmet dependency, or exception during startup).
+ * @return True on success, false on failure.
  */
 bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
 {
-    PLH_DEBUG("loadModuleInternal: trying to load '{}'. Current status: {}", node.name,
+    PLH_DEBUG("loadModuleInternal: trying to load '{}'. Current dynamic_status: {}", node.name,
               static_cast<int>(node.dynamic_status.load(std::memory_order_acquire)));
-    if (node.dynamic_status.load(std::memory_order_acquire) == DynamicModuleStatus::LOADED)
+
+    // --- Load gate: check current dynamic_status ---
+    switch (node.dynamic_status.load(std::memory_order_acquire))
     {
+    case DynamicModuleStatus::LOADED:
         PLH_DEBUG("loadModuleInternal: '{}' is already LOADED.", node.name);
         return true;
-    }
-    if (node.dynamic_status.load(std::memory_order_acquire) == DynamicModuleStatus::LOADING)
-    {
+
+    case DynamicModuleStatus::LOADING:
         PLH_DEBUG("loadModuleInternal: circular dependency detected for '{}'.", node.name);
         return false;
+
+    case DynamicModuleStatus::FAILED:
+        PLH_DEBUG("loadModuleInternal: **** ERROR: Module '{}' is in FAILED state.", node.name);
+        return false;
+
+    case DynamicModuleStatus::UNLOADING:
+        PLH_DEBUG("loadModuleInternal: '{}' is scheduled for unload — rejecting load.", node.name);
+        return false;
+
+    case DynamicModuleStatus::SHUTDOWN_TIMEOUT:
+    case DynamicModuleStatus::FAILED_SHUTDOWN:
+        PLH_DEBUG(
+            "loadModuleInternal: '{}' previously failed to unload — module is contaminated. "
+            "Rejecting load.",
+            node.name);
+        return false;
+
+    case DynamicModuleStatus::UNLOADED:
+    default:
+        break; // Proceed with load.
     }
-    if (node.dynamic_status.load(std::memory_order_acquire) == DynamicModuleStatus::FAILED)
+
+    // Also check the contaminated set (covers the case where a node was erased from the graph
+    // and re-registered under the same name — the set persists even if the node was removed).
+    if (m_contaminated_modules.contains(node.name))
     {
-        PLH_DEBUG("**** ERROR: Module '{}' is in a failed state.", node.name);
+        PLH_DEBUG(
+            "loadModuleInternal: '{}' is in the contaminated set — rejecting load.", node.name);
+        node.dynamic_status.store(DynamicModuleStatus::FAILED, std::memory_order_release);
         return false;
     }
+
     node.dynamic_status.store(DynamicModuleStatus::LOADING, std::memory_order_release);
     PLH_DEBUG("loadModuleInternal: marked '{}' as LOADING. Checking dependencies.", node.name);
 
@@ -653,15 +921,23 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
     }
 }
 
+// ============================================================================
+// unloadModule — async scheduling via the dedicated shutdown thread
+// ============================================================================
+
 /**
  * @brief Public entry point for unloading a dynamic module.
- * @details This method is thread-safe and uses a `RecursionGuard` to prevent
- *          re-entrant calls. It finds the requested module and delegates the
- *          core unloading logic to `unloadModuleInternal`.
+ *
+ * The unload is asynchronous: this function computes the full transitive closure
+ * of modules that will be unloaded, marks them all upfront (preventing any new
+ * load_module calls on them), and enqueues the root module for the dedicated
+ * shutdown thread. Returns immediately.
+ *
  * @param name The name of the module to unload.
- * @return True if the module was found and considered for unloading.
+ * @return True if the unload was scheduled or the module was already not loaded.
+ *         False if the module is in use (ref_count > 0) or cannot be found.
  */
-bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location loc)
+bool LifecycleManagerImpl::unloadModule(std::string_view name, std::source_location loc)
 {
     if (!is_initialized())
     {
@@ -671,18 +947,12 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
                   m_app_name, m_pid, loc.function_name(),
                   pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     }
-    if (name == nullptr)
-    {
-        return false;
-    }
+    // Broad catch: same rationale as loadModule — none of these exceptions should
+    // escape a bool-returning function. RAII guards unwind cleanly on exception.
     try
     {
-        validate_module_name_cstr(name, false, "unload_module name");
-    }
-    catch (const std::exception &)
-    {
-        return false;
-    }
+        validate_module_name(name, "unload_module name");
+
     if (pylabhub::basics::RecursionGuard::is_recursing(this))
     {
         PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}]\n"
@@ -716,7 +986,7 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
     if (node_to_unload.dynamic_status.load(std::memory_order_acquire) !=
         DynamicModuleStatus::LOADED)
     {
-        PLH_DEBUG("[PLH_LifeCycle] Ignoring unload request for module '{}', which is not loaded.",
+        PLH_DEBUG("[PLH_LifeCycle] Ignoring unload request for module '{}', which is not LOADED.",
                   name);
         return true;
     }
@@ -729,114 +999,489 @@ bool LifecycleManagerImpl::unloadModule(const char *name, std::source_location l
 
     if (node_to_unload.ref_count.load(std::memory_order_acquire) > 0)
     {
-        PLH_DEBUG(
+        lifecycleWarn(
             "[PLH_LifeCycle] Cannot unload module '{}': it is a dependency for {} other module(s).",
             name, node_to_unload.ref_count.load(std::memory_order_acquire));
         return false;
     }
 
-    unloadModuleInternal(node_to_unload);
+    // Compute the full closure of modules that will be unloaded.
+    // This must be done before any status changes so the ref_count simulation is accurate.
+    auto closure = computeUnloadClosure(std::string(name));
+
+    // Reject if any module in the closure is already contaminated.
+    for (const auto &module_name : closure)
+    {
+        if (m_contaminated_modules.contains(module_name))
+        {
+            PLH_DEBUG("[PLH_LifeCycle] Cannot schedule unload of '{}': closure member '{}' is "
+                      "contaminated.",
+                      name, module_name);
+            return false;
+        }
+    }
+
+    PLH_DEBUG("[PLH_LifeCycle] Scheduling unload of '{}' (closure size: {}).", name, closure.size());
+
+    // Mark the entire closure upfront: prevents new load_module calls on these modules.
+    for (const auto &module_name : closure)
+    {
+        m_marked_for_unload.insert(module_name);
+        auto module_iterator = m_module_graph.find(module_name);
+        if (module_iterator != m_module_graph.end())
+        {
+            module_iterator->second.dynamic_status.store(DynamicModuleStatus::UNLOADING,
+                                            std::memory_order_release);
+        }
+    }
+
+    // Record the full closure so wait_for_unload() can track completion.
+    // Key = root module name, Value = all modules in the closure (including root).
+    m_pending_unload_closures[std::string(name)] = closure;
+
+    // Start the shutdown thread if not already running, then enqueue the root module.
+    startDynShutdownThread();
+    {
+        std::lock_guard<std::mutex> queue_lock(m_shutdown_queue_mutex);
+        m_shutdown_queue.emplace(name);
+    }
+    m_shutdown_cv.notify_one();
 
     return true;
+    }
+    catch (const std::exception &e)
+    {
+        PLH_DEBUG("[PLH_LifeCycle] unloadModule '{}': caught exception: {}", name, e.what());
+        return false;
+    }
+    catch (...)
+    {
+        PLH_DEBUG("[PLH_LifeCycle] unloadModule '{}': caught unknown exception.", name);
+        return false;
+    }
+}
+
+// ============================================================================
+// Timed module shutdown (used for static modules and inline dynamic cleanup)
+// ============================================================================
+
+/**
+ * @brief Shuts down a module with a per-module timeout.
+ *
+ * Uses thread+flag+poll+detach (not std::async): correctly handles hangs by
+ * detaching the thread and returning immediately after the deadline.
+ *
+ * Sets mod.status to Shutdown, FailedShutdown, or ShutdownTimeout.
+ */
+void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod,
+                                                     std::string &debug_info)
+{
+    const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
+    debug_info += fmt::format("     <- Shutting down {} module: '{}'...", type_str, mod.name);
+
+    auto outcome = timedShutdown(mod.shutdown.func, mod.shutdown.timeout);
+
+    if (outcome.success)
+    {
+        mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
+        debug_info += "done.\n";
+    }
+    else if (outcome.timed_out)
+    {
+        mod.status.store(ModuleStatus::ShutdownTimeout, std::memory_order_release);
+        debug_info +=
+            fmt::format("TIMEOUT ({}ms)! Thread detached.\n", mod.shutdown.timeout.count());
+    }
+    else
+    {
+        mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
+        debug_info += fmt::format("\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
+                                  type_str, mod.name, outcome.exception_msg);
+    }
+}
+
+// ============================================================================
+// Dynamic shutdown thread implementation
+// ============================================================================
+
+std::set<std::string> LifecycleManagerImpl::computeUnloadClosure(const std::string &root_name)
+{
+    // BFS: expand the closure by adding any dynamic dep whose ref_count would drop to 0
+    // once everything already in the closure is removed.
+    // Caller holds m_graph_mutation_mutex.
+    std::set<std::string> closure;
+    std::queue<std::string> to_visit;
+
+    closure.insert(root_name);
+    to_visit.push(root_name);
+
+    while (!to_visit.empty())
+    {
+        std::string current = std::move(to_visit.front());
+        to_visit.pop();
+
+        auto module_iterator = m_module_graph.find(current);
+        if (module_iterator == m_module_graph.end())
+        {
+            continue;
+        }
+
+        for (const auto &dep_name : module_iterator->second.dependencies)
+        {
+            if (closure.contains(dep_name))
+            {
+                continue; // Already in closure.
+            }
+            auto dep_it = m_module_graph.find(dep_name);
+            if (dep_it == m_module_graph.end())
+            {
+                continue;
+            }
+            const InternalGraphNode &dep = dep_it->second;
+            if (!dep.is_dynamic || dep.is_persistent)
+            {
+                continue;
+            }
+            if (dep.dynamic_status.load(std::memory_order_acquire) != DynamicModuleStatus::LOADED)
+            {
+                continue;
+            }
+
+            // Count LOADED dynamic modules that reference dep_name, excluding closure members.
+            int remaining_refs = 0;
+            for (const auto &pair : m_module_graph)
+            {
+                if (!pair.second.is_dynamic)
+                {
+                    continue;
+                }
+                if (closure.contains(pair.first))
+                {
+                    continue; // This module will be removed.
+                }
+                if (pair.second.dynamic_status.load(std::memory_order_acquire) !=
+                    DynamicModuleStatus::LOADED)
+                {
+                    continue;
+                }
+                for (const auto &dependency_name : pair.second.dependencies)
+                {
+                    if (dependency_name == dep_name)
+                    {
+                        ++remaining_refs;
+                    }
+                }
+            }
+
+            if (remaining_refs == 0)
+            {
+                closure.insert(dep_name);
+                to_visit.push(dep_name);
+            }
+        }
+    }
+    return closure;
+}
+
+void LifecycleManagerImpl::startDynShutdownThread()
+{
+    // Caller holds m_graph_mutation_mutex.
+    if (!m_dyn_shutdown_thread_started)
+    {
+        m_dyn_shutdown_thread_started = true;
+        m_dyn_shutdown_thread =
+            std::thread(&LifecycleManagerImpl::dynShutdownThreadMain, this);
+    }
+}
+
+void LifecycleManagerImpl::dynShutdownThreadMain()
+{
+    PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] Dynamic shutdown thread started.", m_app_name, m_pid);
+    while (true)
+    {
+        std::string name_to_process;
+        {
+            std::unique_lock<std::mutex> lock(m_shutdown_queue_mutex);
+            m_shutdown_cv.wait(lock, [this]()
+                               {
+                                   return m_dyn_shutdown_thread_stop.load(
+                                              std::memory_order_acquire) ||
+                                          !m_shutdown_queue.empty();
+                               });
+            if (m_shutdown_queue.empty())
+            {
+                // Woke up with an empty queue — either stop signal or spurious wakeup.
+                if (m_dyn_shutdown_thread_stop.load(std::memory_order_acquire))
+                {
+                    break;
+                }
+                continue;
+            }
+            name_to_process = std::move(m_shutdown_queue.front());
+            m_shutdown_queue.pop();
+        }
+        // m_shutdown_queue_mutex is released here.
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] Shutdown thread processing '{}'.", m_app_name,
+                  m_pid, name_to_process);
+        processOneUnloadInThread(name_to_process);
+    }
+    PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] Dynamic shutdown thread exiting.", m_app_name, m_pid);
 }
 
 /**
- * @brief Internal implementation for recursively unloading a module and its now-unused
- * dependencies.
- * @warning This is a destructive operation that removes the module from the graph.
+ * @brief Shuts down a single dynamic module and, on success, recursively processes
+ *        its newly-unreferenced dependencies.
+ *
+ * Called exclusively from the shutdown thread. Acquires/releases m_graph_mutation_mutex
+ * around graph mutations only; the shutdown callback is run WITHOUT holding any mutex.
+ *
+ * On failure (timeout or exception):
+ * - Adds the module to m_contaminated_modules.
+ * - Logs an ERROR: "Unsuccessful unload of dynamic module may have destabilized the system."
+ * - Halts the dependency chain (does not attempt to unload deps).
  */
-void LifecycleManagerImpl::unloadModuleInternal(InternalGraphNode &node)
+void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name)
 {
-    PLH_DEBUG("unloadModuleInternal: trying to unload '{}', ref_count={}", node.name,
-              node.ref_count.load(std::memory_order_acquire));
-
-    // Base cases for recursion: already unloaded, persistent, or still in use.
-    if (node.dynamic_status.load(std::memory_order_acquire) != DynamicModuleStatus::LOADED)
+    // Step 1: Read node info under m_graph_mutation_mutex (short hold, no I/O).
+    std::function<void()> shutdown_func;
+    std::chrono::milliseconds shutdown_timeout;
+    std::vector<std::string> deps_copy;
     {
-        PLH_DEBUG("unloadModuleInternal: skipping '{}', status is not LOADED.", node.name);
-        return;
-    }
-    if (node.is_persistent)
-    {
-        PLH_DEBUG("unloadModuleInternal: skipping '{}', module is persistent.", node.name);
-        return;
-    }
-    if (node.ref_count.load(std::memory_order_acquire) > 0)
-    {
-        PLH_DEBUG("unloadModuleInternal: skipping '{}', ref_count is > 0.", node.name);
-        return;
-    }
-
-    PLH_DEBUG("<- Unloading dynamic module '{}'", node.name);
-
-    // Copy data needed for later, before `node` reference can be invalidated.
-    const auto deps_copy = node.dependencies;
-    const std::string node_name = node.name;
-    std::string debug_info; // For shutdownModuleWithTimeout
-
-    // 1. Shutdown the module and update its status.
-    shutdownModuleWithTimeout(node, debug_info);
-    PLH_DEBUG("{}", debug_info);
-
-    node.dynamic_status.store(DynamicModuleStatus::UNLOADED, std::memory_order_release);
-    PLH_DEBUG("unloadModuleInternal: marked '{}' as UNLOADED.", node.name);
-
-    // 2. Recalculate all reference counts now that this node is marked as UNLOADED.
-    recalculateReferenceCounts();
-
-    // 3. Recurse on dependencies that may now be unreferenced.
-    std::vector<std::string> dependencies_to_unload;
-    for (const auto &dep_name : deps_copy)
-    {
-        PLH_DEBUG("unloadModuleInternal: checking dependency '{}' of unloaded module '{}'.",
-                  dep_name, node_name);
-
-        auto dep_it = m_module_graph.find(dep_name);
-        if (dep_it != m_module_graph.end() && dep_it->second.is_dynamic)
+        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+        auto module_iterator = m_module_graph.find(node_name);
+        if (module_iterator == m_module_graph.end())
         {
-            PLH_DEBUG("unloadModuleInternal: dependency '{}' found, its ref_count is now {}.",
-                      dep_name, dep_it->second.ref_count.load(std::memory_order_acquire));
-            if (dep_it->second.ref_count.load(std::memory_order_acquire) == 0)
+            PLH_DEBUG("processOneUnloadInThread: '{}' not found in graph — skipping.", node_name);
+            return;
+        }
+        InternalGraphNode &node = module_iterator->second;
+        if (node.dynamic_status.load(std::memory_order_acquire) != DynamicModuleStatus::UNLOADING)
+        {
+            PLH_DEBUG("processOneUnloadInThread: '{}' is not in UNLOADING state — skipping.",
+                      node_name);
+            return;
+        }
+        shutdown_func = node.shutdown.func;
+        shutdown_timeout = node.shutdown.timeout;
+        deps_copy = node.dependencies;
+    }
+
+    // Step 2: Run shutdown callback WITHOUT holding any mutex.
+    PLH_DEBUG("processOneUnloadInThread: running shutdown for '{}'.", node_name);
+    auto outcome = timedShutdown(shutdown_func, shutdown_timeout);
+
+    // Step 3: Update the graph under m_graph_mutation_mutex based on the outcome.
+    std::vector<std::string> deps_to_process;
+    {
+        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+
+        auto module_iterator = m_module_graph.find(node_name);
+
+        // Remove this module from all pending closure tracking entries.
+        // If the entry becomes empty, erase it so wait_for_unload() can observe completion.
+        for (auto it = m_pending_unload_closures.begin(); it != m_pending_unload_closures.end();)
+        {
+            it->second.erase(node_name);
+            if (it->second.empty())
             {
-                dependencies_to_unload.push_back(dep_name);
+                it = m_pending_unload_closures.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        m_unload_complete_cv.notify_all();
+
+        if (outcome.success)
+        {
+            PLH_DEBUG("processOneUnloadInThread: '{}' shut down successfully. Removing from graph.",
+                      node_name);
+            m_marked_for_unload.erase(node_name);
+
+            // Clean up this node's entry in each dependency's `dependents` list.
+            if (module_iterator != m_module_graph.end())
+            {
+                for (const auto &dep_name : deps_copy)
+                {
+                    auto dep_it = m_module_graph.find(dep_name);
+                    if (dep_it != m_module_graph.end())
+                    {
+                        auto &dependents_list = dep_it->second.dependents;
+                        dependents_list.erase(std::remove_if(dependents_list.begin(), dependents_list.end(),
+                                                [&node_name](InternalGraphNode *n)
+                                                { return n->name == node_name; }),
+                                 dependents_list.end());
+                    }
+                }
+                m_module_graph.erase(module_iterator);
+            }
+
+            recalculateReferenceCounts();
+
+            // Collect deps in the closure whose ref_count has now dropped to 0.
+            for (const auto &dep_name : deps_copy)
+            {
+                auto dep_it = m_module_graph.find(dep_name);
+                if (dep_it == m_module_graph.end())
+                {
+                    continue;
+                }
+                const InternalGraphNode &dep = dep_it->second;
+                if (!dep.is_dynamic || dep.is_persistent)
+                {
+                    continue;
+                }
+                if (dep.dynamic_status.load(std::memory_order_acquire) !=
+                    DynamicModuleStatus::UNLOADING)
+                {
+                    continue; // Not in the closure.
+                }
+                if (dep.ref_count.load(std::memory_order_acquire) > 0)
+                {
+                    continue; // Still referenced by another loaded module.
+                }
+                deps_to_process.push_back(dep_name);
             }
         }
         else
         {
-            PLH_DEBUG("unloadModuleInternal: dependency '{}' not found or not dynamic.", dep_name);
+            // Shutdown failed or timed out.
+            m_contaminated_modules.insert(node_name);
+            m_marked_for_unload.erase(node_name);
+
+            if (module_iterator != m_module_graph.end())
+            {
+                if (outcome.timed_out)
+                {
+                    module_iterator->second.dynamic_status.store(DynamicModuleStatus::SHUTDOWN_TIMEOUT,
+                                                    std::memory_order_release);
+                    lifecycleError("[PLH_LifeCycle] [{}]:PID[{}] ERROR: Dynamic module '{}' shutdown "
+                                   "TIMED OUT ({}ms).",
+                                   m_app_name, m_pid, node_name, shutdown_timeout.count());
+                }
+                else
+                {
+                    module_iterator->second.dynamic_status.store(DynamicModuleStatus::FAILED_SHUTDOWN,
+                                                    std::memory_order_release);
+                    lifecycleError("[PLH_LifeCycle] [{}]:PID[{}] ERROR: Dynamic module '{}' shutdown "
+                                   "threw: {}",
+                                   m_app_name, m_pid, node_name, outcome.exception_msg);
+                }
+            }
+
+            // Emit the destabilization warning. This is the ONLY place where this
+            // warning is logged — it fires exclusively on an unsuccessful unload.
+            lifecycleError("[PLH_LifeCycle] [{}]:PID[{}] ERROR: Unsuccessful unload of dynamic module "
+                           "'{}' may have destabilized the system! "
+                           "Halting unload of its dependency chain.",
+                           m_app_name, m_pid, node_name);
+            return; // Do NOT continue processing deps on failure.
         }
     }
 
-    // Now unload the collected dependencies
-    for (const auto &dep_name : dependencies_to_unload)
+    // Step 4: Recursively process deps whose ref_count dropped to zero (success path only).
+    for (const auto &dep_name : deps_to_process)
     {
-        PLH_DEBUG("unloadModuleInternal: recursing on dependency '{}'.", dep_name);
-        auto dep_it =
-            m_module_graph.find(dep_name); // Re-find the iterator, it might have been invalidated
-        if (dep_it != m_module_graph.end())
-        { // Check if it still exists
-            unloadModuleInternal(dep_it->second);
-        }
+        processOneUnloadInThread(dep_name);
     }
-
-    // 3. Finally, remove the now-shutdown node from the graph. This must be the
-    //    last step to avoid invalidating references up the call stack.
-    PLH_DEBUG("unloadModuleInternal: cleaning up and removing '{}' from graph.", node_name);
-    for (const auto &dep_name : deps_copy)
-    {
-        auto dep_it = m_module_graph.find(dep_name);
-        if (dep_it != m_module_graph.end())
-        {
-            auto &dependents_list = dep_it->second.dependents;
-            dependents_list.erase(std::remove_if(dependents_list.begin(), dependents_list.end(),
-                                                 [&](InternalGraphNode *node)
-                                                 { return node->name == node_name; }),
-                                  dependents_list.end());
-        }
-    }
-    m_module_graph.erase(node_name);
-    PLH_DEBUG("unloadModuleInternal: finished with '{}'.", node_name);
 }
+
+// ============================================================================
+// waitForUnload / getDynamicModuleState
+// ============================================================================
+
+DynModuleState LifecycleManagerImpl::waitForUnload(std::string_view name,
+                                                    std::chrono::milliseconds timeout)
+{
+    if (name.empty())
+    {
+        return DynModuleState::NotRegistered;
+    }
+
+    // Helper: read dynamic_status from node to DynModuleState while caller holds the mutex.
+    auto read_state = [this](std::string_view n) -> DynModuleState
+    {
+        const auto it = m_module_graph.find(n);
+        if (it == m_module_graph.end() || !it->second.is_dynamic)
+        {
+            return DynModuleState::NotRegistered;
+        }
+        switch (it->second.dynamic_status.load(std::memory_order_acquire))
+        {
+        case DynamicModuleStatus::UNLOADED:         return DynModuleState::Unloaded;
+        case DynamicModuleStatus::LOADING:          return DynModuleState::Loading;
+        case DynamicModuleStatus::LOADED:           return DynModuleState::Loaded;
+        case DynamicModuleStatus::UNLOADING:        return DynModuleState::Unloading;
+        case DynamicModuleStatus::SHUTDOWN_TIMEOUT: return DynModuleState::ShutdownTimeout;
+        case DynamicModuleStatus::FAILED_SHUTDOWN:  return DynModuleState::ShutdownFailed;
+        default:                                    return DynModuleState::Unloaded;
+        }
+    };
+
+    std::unique_lock<std::mutex> lock(m_graph_mutation_mutex);
+
+    // Not scheduled → nothing to wait for; return current state now.
+    if (!m_pending_unload_closures.contains(name))
+    {
+        return read_state(name);
+    }
+
+    // Capture name by value (string_view is cheap to copy; caller's string outlives the wait).
+    auto predicate = [this, name]()
+    { return !m_pending_unload_closures.contains(name); };
+
+    if (timeout.count() == 0)
+    {
+        // Zero means wait indefinitely.
+        m_unload_complete_cv.wait(lock, predicate);
+    }
+    else if (!m_unload_complete_cv.wait_for(lock, timeout, predicate))
+    {
+        // Timed out — still unloading.
+        return DynModuleState::Unloading;
+    }
+
+    // Wait completed normally. Return the final observed state (lock still held).
+    // A successfully unloaded module is removed from the graph → NotRegistered.
+    return read_state(name);
+}
+
+DynModuleState LifecycleManagerImpl::getDynamicModuleState(std::string_view name)
+{
+    if (name.empty() || name.size() > ModuleDef::MAX_MODULE_NAME_LEN)
+    {
+        return DynModuleState::NotRegistered;
+    }
+    std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+    const auto it = m_module_graph.find(name);
+    if (it == m_module_graph.end() || !it->second.is_dynamic)
+    {
+        return DynModuleState::NotRegistered;
+    }
+    switch (it->second.dynamic_status.load(std::memory_order_acquire))
+    {
+    case DynamicModuleStatus::UNLOADED:
+        return DynModuleState::Unloaded;
+    case DynamicModuleStatus::LOADING:
+        return DynModuleState::Loading;
+    case DynamicModuleStatus::LOADED:
+        return DynModuleState::Loaded;
+    case DynamicModuleStatus::UNLOADING:
+        return DynModuleState::Unloading;
+    case DynamicModuleStatus::SHUTDOWN_TIMEOUT:
+        return DynModuleState::ShutdownTimeout;
+    case DynamicModuleStatus::FAILED_SHUTDOWN:
+        return DynModuleState::ShutdownFailed;
+    case DynamicModuleStatus::FAILED:
+    default:
+        return DynModuleState::Unloaded; // FAILED → effectively unloaded/unusable.
+    }
+}
+
+// ============================================================================
+// Reference counting
+// ============================================================================
 
 void LifecycleManagerImpl::recalculateReferenceCounts()
 {
@@ -875,48 +1520,9 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
     }
 }
 
-void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod,
-                                                     std::string &debug_info)
-{
-    const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
-    try
-    {
-        debug_info += fmt::format("     <- Shutting down {} module: '{}'...", type_str, mod.name);
-        if (mod.shutdown.func)
-        {
-            auto fut = std::async(std::launch::async, mod.shutdown.func);
-            if (fut.wait_for(mod.shutdown.timeout) == std::future_status::timeout)
-            {
-                debug_info += "TIMEOUT!\n";
-                mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-            }
-            else
-            {
-                fut.get(); // Propagate exceptions
-                debug_info += "done.\n";
-                mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            }
-        }
-        else
-        {
-            mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info += "(no-op) done.\n";
-        }
-    }
-    catch (const std::exception &e)
-    {
-        mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-        debug_info += fmt::format("\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
-                                  type_str, mod.name, e.what());
-    }
-    catch (...)
-    {
-        mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-        debug_info += fmt::format(
-            "\n     **** ERROR: {} module '{}' threw an unknown exception on shutdown.\n", type_str,
-            mod.name);
-    }
-}
+// ============================================================================
+// Graph construction and topology
+// ============================================================================
 
 /**
  * @brief Constructs the initial dependency graph from pre-registered static modules.
@@ -1038,6 +1644,36 @@ void LifecycleManagerImpl::printStatusAndAbort(const std::string &msg, const std
     std::abort();
 }
 
+// ============================================================================
+// Log sink — internal runtime logging
+// ============================================================================
+
+void LifecycleManagerImpl::setLifecycleLogSink(std::shared_ptr<LifecycleLogSink> sink)
+{
+    m_lifecycle_log_sink.store(std::move(sink), std::memory_order_release);
+}
+
+void LifecycleManagerImpl::clearLifecycleLogSink() noexcept
+{
+    m_lifecycle_log_sink.store(nullptr, std::memory_order_release);
+}
+
+void LifecycleManagerImpl::lifecycleLog(LifecycleLogLevel level, std::string msg) const
+{
+    auto sink_ptr = m_lifecycle_log_sink.load(std::memory_order_acquire);
+    if (sink_ptr && *sink_ptr)
+    {
+        (*sink_ptr)(level, msg);
+        return;
+    }
+    // No sink installed — fall back to PLH_DEBUG for all levels.
+    PLH_DEBUG("[Lifecycle] {}", msg);
+}
+
+// ============================================================================
+// LifecycleManager public API (thin delegation layer)
+// ============================================================================
+
 LifecycleManager::LifecycleManager() : pImpl(std::make_unique<LifecycleManagerImpl>()) {}
 LifecycleManager::~LifecycleManager() = default;
 LifecycleManager &LifecycleManager::instance()
@@ -1076,13 +1712,37 @@ bool LifecycleManager::is_finalized()
 {
     return pImpl->is_finalized();
 }
-bool LifecycleManager::load_module(const char *name, std::source_location loc)
+bool LifecycleManager::load_module(std::string_view name, std::source_location loc)
 {
     return pImpl->loadModule(name, loc);
 }
-bool LifecycleManager::unload_module(const char *name, std::source_location loc)
+bool LifecycleManager::unload_module(std::string_view name, std::source_location loc)
 {
     return pImpl->unloadModule(name, loc);
+}
+DynModuleState LifecycleManager::wait_for_unload(std::string_view name,
+                                                  std::chrono::milliseconds timeout)
+{
+    return pImpl->waitForUnload(name, timeout);
+}
+DynModuleState LifecycleManager::dynamic_module_state(std::string_view name)
+{
+    return pImpl->getDynamicModuleState(name);
+}
+void LifecycleManager::set_lifecycle_log_sink(LifecycleLogSink sink)
+{
+    if (sink)
+    {
+        pImpl->setLifecycleLogSink(std::make_shared<LifecycleLogSink>(std::move(sink)));
+    }
+    else
+    {
+        pImpl->clearLifecycleLogSink();
+    }
+}
+void LifecycleManager::clear_lifecycle_log_sink() noexcept
+{
+    pImpl->clearLifecycleLogSink();
 }
 
 } // namespace pylabhub::utils

@@ -185,37 +185,37 @@ class ZoneRef
 
     /**
      * @brief Get raw memory span for advanced usage (mutable version)
-     * @return Mutable span of bytes covering the flexible zone (may be empty)
-     * 
+     * @return Mutable span of bytes covering the flexible zone (empty if not configured or moved-from)
+     *
      * **Use with caution**: This bypasses type safety. User is responsible for:
      * - Correct interpretation of memory layout
      * - Not exceeding span boundaries
      * - Maintaining data structure invariants
-     * 
-     * Returns empty span if no flexible zone is configured.
-     * 
+     *
+     * Returns empty span if no flexible zone is configured or if ZoneRef was moved from.
+     *
      * Only available after transaction entry validation (schema, checksums, etc.)
      */
-    [[nodiscard]] std::span<std::byte> raw_access() requires IsMutable
+    [[nodiscard]] std::span<std::byte> raw_access() noexcept requires IsMutable
     {
         if (!m_producer)
         {
-            throw std::logic_error("ZoneRef::raw_access(): producer is null");
+            return {};
         }
         return m_producer->flexible_zone_span();
     }
 
     /**
      * @brief Get raw memory span for advanced usage (const version)
-     * @return Const span of bytes covering the flexible zone (may be empty)
+     * @return Const span of bytes covering the flexible zone (empty if not configured or moved-from)
      */
-    [[nodiscard]] std::span<const std::byte> raw_access() const
+    [[nodiscard]] std::span<const std::byte> raw_access() const noexcept
     {
         if constexpr (IsMutable)
         {
             if (!m_producer)
             {
-                throw std::logic_error("ZoneRef::raw_access(): producer is null");
+                return {};
             }
             return m_producer->flexible_zone_span();
         }
@@ -223,7 +223,7 @@ class ZoneRef
         {
             if (!m_consumer)
             {
-                throw std::logic_error("ZoneRef::raw_access(): consumer is null");
+                return {};
             }
             return m_consumer->flexible_zone_span();
         }
@@ -239,14 +239,7 @@ class ZoneRef
      */
     [[nodiscard]] bool has_zone() const noexcept
     {
-        try
-        {
-            return !raw_access().empty();
-        }
-        catch (...)
-        {
-            return false;
-        }
+        return !raw_access().empty();
     }
 
     /**
@@ -255,14 +248,7 @@ class ZoneRef
      */
     [[nodiscard]] size_t size() const noexcept
     {
-        try
-        {
-            return raw_access().size();
-        }
-        catch (...)
-        {
-            return 0;
-        }
+        return raw_access().size();
     }
 
   private:
