@@ -1,7 +1,7 @@
 /**
  * @file test_c_api_slot_protocol.cpp
  * @brief C API slot protocol tests: write/read roundtrip, commit/abort, ring buffer
- *        policies, timeout behavior, and metrics.
+ *        policies, timeout behavior, metrics, and DRAINING state machine.
  *
  * Each test spawns an isolated worker process that exercises DataBlockProducer/Consumer
  * directly via the C++ wrappers (no RAII templates, no schema validation).
@@ -76,5 +76,56 @@ TEST_F(DatahubCApiSlotProtocolTest, ReadReturnsNullOnEmptyRing)
 TEST_F(DatahubCApiSlotProtocolTest, MetricsAccumulateAcrossWrites)
 {
     auto proc = SpawnWorker("c_api_slot_protocol.metrics_accumulate_across_writes", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+// ─── SlotState::DRAINING state machine ───────────────────────────────────────
+
+class DatahubSlotDrainingTest : public IsolatedProcessTest
+{
+};
+
+TEST_F(DatahubSlotDrainingTest, DrainingStateEnteredOnWraparound)
+{
+    auto proc = SpawnWorker("c_api_draining.draining_state_entered_on_wraparound", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubSlotDrainingTest, DrainingRejectsNewReaders)
+{
+    auto proc = SpawnWorker("c_api_draining.draining_rejects_new_readers", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubSlotDrainingTest, DrainingResolvesAfterReaderRelease)
+{
+    auto proc = SpawnWorker("c_api_draining.draining_resolves_after_reader_release", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubSlotDrainingTest, DrainingTimeoutRestoresCommitted)
+{
+    auto proc = SpawnWorker("c_api_draining.draining_timeout_restores_committed", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubSlotDrainingTest, NoReaderRacesOnCleanWraparound)
+{
+    auto proc = SpawnWorker("c_api_draining.no_reader_races_on_clean_wraparound", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+// Ring-full check (before fetch_add) structurally prevents DRAINING for ordered policies.
+// Single_reader: writer cannot advance past the slowest reader — ring-full fires first.
+TEST_F(DatahubSlotDrainingTest, SingleReaderRingFullBlocksNotDraining)
+{
+    auto proc = SpawnWorker("c_api_draining.single_reader_ring_full_blocks_not_draining", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+// Sync_reader: read_index = min(all consumer positions) — same ring-full barrier applies.
+TEST_F(DatahubSlotDrainingTest, SyncReaderRingFullBlocksNotDraining)
+{
+    auto proc = SpawnWorker("c_api_draining.sync_reader_ring_full_blocks_not_draining", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }

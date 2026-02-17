@@ -70,10 +70,16 @@ class ZoneRef
     using span_type = std::conditional_t<IsMutable, std::span<std::byte>, std::span<const std::byte>>;
 
     // Compile-time check: FlexZoneT must be trivially copyable for shared memory
-    // (unless it's void, which is allowed for no-flexzone mode)
+    // (unless it's void, which is allowed for no-flexzone mode).
+    //
+    // Common pitfall: std::atomic<T> members make a type non-trivially copyable on MSVC
+    // (its copy constructor and copy assignment are deleted). Use plain POD members (e.g.
+    // uint32_t, bool) in the struct instead, and apply std::atomic_ref<T> at the call site
+    // for any field that requires lock-free access outside a with_transaction spinlock scope.
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
                   "FlexZoneT must be trivially copyable for safe shared memory access. "
-                  "Types with vtables, std::string, std::vector, etc. are not allowed. "
+                  "Types with vtables, std::string, std::vector, std::atomic<T>, etc. are not allowed. "
+                  "Use plain POD members; apply std::atomic_ref<T> at call sites for lock-free access. "
                   "Use FlexZoneT=void for no-flexzone mode.");
 
     // ====================================================================

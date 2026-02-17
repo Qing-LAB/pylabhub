@@ -16,6 +16,7 @@
 #include "plh_platform.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <stdexcept>
@@ -24,6 +25,14 @@
 
 namespace pylabhub::hub
 {
+
+namespace detail
+{
+/** Maximum length (including null terminator) for a SharedSpinLock diagnostic name.
+ *  Matches ModuleDef::MAX_MODULE_NAME_LEN (256). Fixed-size to avoid
+ *  ABI-sensitive std::string in an exported class. */
+inline constexpr std::size_t SPINLOCK_NAME_MAX = 256;
+} // namespace detail
 
 /**
  * @struct SharedSpinLockState
@@ -111,7 +120,7 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
     static uint64_t get_current_thread_id();
 
     SharedSpinLockState *m_state;
-    std::string m_name; // For logging/error reporting
+    char m_name[detail::SPINLOCK_NAME_MAX]; ///< Fixed-size name (no ABI-sensitive std::string in exported class)
 };
 
 /**

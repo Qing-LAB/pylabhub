@@ -70,3 +70,64 @@ Uses GoogleTest. Multi-process IPC tests spawn child worker processes coordinate
 - HEP documents (`docs/HEP/`) are the authoritative design specifications for each component.
 - Code style: `.clang-format` (LLVM-based, 4-space indent, 100-char lines, Allman braces). `.clang-tidy` runs automatically with Clang and treats warnings as errors.
 - Cross-reference `CMakeLists.txt` files and `cmake/` helpers before proposing build changes.
+- **Do NOT delete C API tests** (slot_rw_coordinator, recovery_api). These are the foundational
+  test layer. Any reorganization must preserve and preferably extend C API coverage.
+  See `docs/IMPLEMENTATION_GUIDANCE.md` § "C API Test Preservation".
+- **Core structure changes** (`SharedMemoryHeader`, `DataBlockConfig`, BLDS schema, etc.) require
+  the mandatory review checklist in `docs/IMPLEMENTATION_GUIDANCE.md` § "Core Structure Change Protocol"
+  before any modification.
+
+## TODO Bookkeeping (Mandatory)
+
+**Every implementation session must maintain the TODO system.** Failure to do this is what
+causes us to lose track of open items across sessions.
+
+### Where to look first
+
+Before starting any task, **always check**:
+1. `docs/TODO_MASTER.md` — current sprint and area status; lists any active code reviews
+2. `docs/todo/<area>_TODO.md` — detailed open items for the relevant area
+3. `docs/code_review/` — any active code review file (`REVIEW_<Module>_YYYY-MM-DD.md`)
+   with an ❌ OPEN status table. Multiple reviews may be active simultaneously.
+
+### What to do when completing work
+
+After implementing anything non-trivial, **before responding "done"**:
+
+1. **Update the subtopic TODO** (`docs/todo/*.md`):
+   - Completed items → move to "Recent Completions" with date + one-line description
+   - Newly discovered items → add to "Current Focus" with file reference
+
+2. **Update `docs/TODO_MASTER.md`** status table if the area's state changed;
+   update or remove any `Active code review:` reference when all items are resolved
+
+3. **Update any active code review** in `docs/code_review/` whose items were addressed:
+   mark ✅ FIXED with date. Reviews follow the naming pattern `REVIEW_<Module>_YYYY-MM-DD.md`.
+   When all items are ✅, archive per `docs/DOC_STRUCTURE.md §2.2`.
+
+4. **Never leave an open item only in chat history or an inline `// TODO:` comment** —
+   it must be in a subtopic TODO to survive context resets
+
+5. **Transient documents** (design notes, plans, analyses, audits) must be placed in the
+   correct location per `docs/DOC_STRUCTURE.md`:
+   - Active design/implementation drafts → `docs/tech_draft/`
+   - In-progress module-specific code reviews → `docs/code_review/`
+   - Do NOT create free-floating `.md` files directly under `docs/` root
+   - Any open item in a transient document must also appear in the relevant subtopic TODO
+   - When the work captured in a transient document is complete and verified against code:
+     **merge** any lasting insight into core docs, then **archive** the transient doc to
+     `docs/archive/transient-YYYY-MM-DD/` and record it in `docs/DOC_ARCHIVE_LOG.md`
+
+### Canonical subtopic TODOs
+
+| Area | File |
+|---|---|
+| RAII layer / `with_transaction` / Phase 3 | `docs/todo/RAII_LAYER_TODO.md` |
+| Primitive API / ABI / concurrency / lifecycle | `docs/todo/API_TODO.md` |
+| Windows/MSVC / cross-platform / CMake flags | `docs/todo/PLATFORM_TODO.md` |
+| Tests / coverage / new test scenarios | `docs/todo/TESTING_TODO.md` |
+| Memory layout / `SharedMemoryHeader` / struct sizes | `docs/todo/MEMORY_LAYOUT_TODO.md` |
+| MessageHub / broker protocol | `docs/todo/MESSAGEHUB_TODO.md` |
+
+Full rules in `docs/IMPLEMENTATION_GUIDANCE.md` § "Session Hygiene"
+and `docs/DOC_STRUCTURE.md` §1.7 (code review lifecycle).

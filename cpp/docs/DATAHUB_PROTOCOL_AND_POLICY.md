@@ -15,26 +15,28 @@ Each ring-buffer slot transitions through the following states. The state machin
 by atomic operations in `SlotRWState`.
 
 ```
-                  acquire_write_slot(timeout)
-FREE ─────────────────────────────────────────► WRITING
+                  acquire_write_slot(timeout)                  acquire_write_slot(timeout)
+FREE ─────────────────────────────────────────► WRITING      [slot was FREE — no readers]
  ▲                                                │
  │  release with committed=false (abort)          │ publish() / auto-publish at loop exit
  │  (exception propagation through SlotIterator)  │
  │                                                ▼
- │                                            COMMITTED / READY
- │                                                │
- │  release_consume_slot()                        │ acquire_consume_slot(timeout)
- │  Latest_only:       slot → FREE               │
- │  Single_reader:     advance read_index → FREE  ▼
- └──────────────────────────────────────────── READING
-                                                  │
-                                    release_consume_slot()
-                                       → validate generation (TOCTTOU)
-                                       → verify checksums (if Enforced)
-                                       → release read_lock
-                                       → Single_reader: advance read_index → FREE
-                                       → Sync_reader: advance per-consumer position,
-                                                       update read_index = min(positions)
+ │              acquire_write_slot           COMMITTED / READY ──────────────────────────►
+ │  ◄─────────────────────────────────────── [slot was COMMITTED; write_lock acquired]    │
+ │                                                                                         │
+ │            DRAINING ──[reader_count==0]───────────────────────────────────────────► WRITING
+ │               │                                │ acquire_consume_slot(timeout)
+ │  [timeout]    │                                ▼
+ │  restore  ────┘                            READING
+ │  COMMITTED                                     │
+ │                                    release_consume_slot()
+ │                                       → validate generation (TOCTTOU)
+ │                                       → verify checksums (if Enforced)
+ │                                       → release read_lock
+ │                                       → Single_reader: advance read_index → FREE
+ │  release_consume_slot()               → Sync_reader: advance per-consumer position,
+ │  Latest_only:       slot → FREE                        update read_index = min(positions)
+ └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **State definitions:**
@@ -42,6 +44,10 @@ FREE ─────────────────────────
 - `WRITING` — producer holds write_lock (PID-based); slot_state == WRITING
 - `COMMITTED / READY` — data visible to consumers; slot_state == COMMITTED; commit_index advanced
 - `READING` — consumer holds read_lock (reader_count > 0); slot_state == COMMITTED
+- `DRAINING` — write_lock held; producer draining in-progress readers before writing. Entered
+  when `acquire_write` wraps around a previously COMMITTED slot. New readers are rejected
+  (slot_state != COMMITTED → NOT_READY). On drain success: → WRITING. On drain timeout:
+  slot_state restored to COMMITTED (last data still valid); write_lock released.
 
 ---
 
@@ -50,8 +56,14 @@ FREE ─────────────────────────
 ```
 1. acquire_write_slot(timeout_ms)
      → spin-acquire write_lock (PID-based CAS)
-     → transition slot_state: FREE → WRITING
+     → if previous slot_state == COMMITTED (wrap-around):
+         → slot_state: COMMITTED → DRAINING  (new readers see non-COMMITTED → reject fast)
+         → spin until reader_count == 0  (existing readers drain naturally)
+         → on drain timeout: slot_state restored to COMMITTED; write_lock released → return nullptr
+         → on drain success: slot_state: DRAINING → WRITING
+     → if previous slot_state == FREE: slot_state: FREE → WRITING  (no readers possible)
      → returns SlotWriteHandle (or nullptr on timeout)
+     → note: writer_waiting flag kept for diagnostic compat; set/cleared alongside DRAINING
 
 2. Write data to slot buffer
      → via SlotWriteHandle::buffer_span() or WriteSlotRef::get()
@@ -180,6 +192,8 @@ for (auto& result : ctx.slots(50ms)) {
 | `ConsumerSyncPolicy::Latest_only` | Never blocked on readers; old slots may be overwritten | Always reads latest committed slot | No heartbeat needed for read-position tracking; heartbeat still registered for liveness |
 | `ConsumerSyncPolicy::Single_reader` | Blocked when ring full and consumer has not advanced | Reads sequentially; shared `read_index` tracked | Same as above |
 | `ConsumerSyncPolicy::Sync_reader` | Blocked when slowest consumer is behind | Per-consumer read position tracked via heartbeat slot index | Heartbeat slot doubles as read-position cursor; always auto-registered at construction |
+
+**Note — DRAINING reachability by policy.** `SlotState::DRAINING` is only ever entered by `Latest_only` producers. For `Single_reader` and `Sync_reader`, the ring-full check (`write_index - read_index < capacity`, evaluated *before* `write_index.fetch_add`) creates a structural barrier that makes DRAINING unreachable. See § 11 for the formal analysis.
 | `DataBlockPolicy::RingBuffer` | N-slot circular; wraps | Reads in policy-defined order | Managed by C API |
 
 ---
@@ -241,7 +255,84 @@ These are user-callable methods for cases where the automatic behavior is insuff
 
 ---
 
-## 9. Invariants the System Maintains
+## 9. FlexZone and DataBlock Type Requirements
+
+### Trivially-Copyable Constraint
+
+Both `FlexZoneT` and `DataBlockT` must satisfy `std::is_trivially_copyable_v<T>`. This is
+enforced at compile time by `static_assert` in `ZoneRef`, `SlotRef`, and `TransactionContext`.
+
+**Why it matters:** Slot and flexzone data live in a POSIX/Win32 shared memory segment. The
+checksum mechanism copies the raw bytes of the struct. Types that are not trivially copyable
+may contain internal pointers, OS handles, or virtual dispatch tables that are meaningless
+across process boundaries.
+
+**Common pitfall — `std::atomic<T>` members:**
+
+```cpp
+// WRONG — fails static_assert on MSVC (std::atomic<T> has deleted copy ctor/assign)
+struct BadFlexZone {
+    std::atomic<uint32_t> counter{0};  // NOT trivially copyable on MSVC
+    std::atomic<bool> flag{false};     // same issue
+};
+
+// CORRECT — plain POD layout; apply atomic_ref<T> at call sites when needed
+struct GoodFlexZone {
+    uint32_t counter{0};
+    uint32_t flag{0};  // 0 = false, 1 = true
+};
+```
+
+On GCC/Linux `std::atomic<T>` for lock-free integer types happens to pass the
+`is_trivially_copyable` check, but this is non-portable. MSVC explicitly marks
+`std::atomic<T>` as non-trivially copyable because its copy constructor is deleted.
+Always use plain POD types.
+
+### Atomic Access Pattern for FlexZone Fields
+
+**Inside `with_transaction`** — no per-field atomics needed.
+The `with_transaction` call holds a `SharedSpinLock` whose acquire uses
+`memory_order_acquire` and release uses `memory_order_release`. This provides a full
+memory fence; plain reads and writes inside the lambda are sequentially consistent.
+
+```cpp
+producer->with_transaction<GoodFlexZone, Payload>(timeout, [](auto& ctx) {
+    // Spinlock held — plain assignment is safe and sequentially ordered.
+    ctx.flexzone().get().counter = 42;
+    ctx.flexzone().get().flag = 1;
+});
+```
+
+**Outside `with_transaction`** — use `std::atomic_ref<T>` (C++20).
+If a consumer needs to poll a FlexZone field _without_ acquiring the lock (e.g. a
+UI thread reading a status flag the producer sets), use `std::atomic_ref<T>` to impose
+atomic semantics on the plain storage:
+
+```cpp
+// Producer side (inside with_transaction — plain write is fine):
+ctx.flexzone().get().flag = 1;
+
+// Consumer side (outside with_transaction — atomic read via atomic_ref):
+auto& fz = *reinterpret_cast<GoodFlexZone*>(
+    consumer.flexible_zone_span().data()); // low-level raw access
+uint32_t v = std::atomic_ref<uint32_t>(fz.flag).load(std::memory_order_acquire);
+```
+
+`std::atomic_ref<T>` requires the underlying storage to be suitably aligned and of a
+lock-free-compatible size (same requirements as placing a `std::atomic<T>` there).
+Use `alignas` on the struct member if necessary.
+
+**Summary table:**
+
+| Access location | Pattern | Why |
+|---|---|---|
+| Inside `with_transaction` | Plain read/write | Spinlock provides acquire/release fence |
+| Outside lock — lock-free poll | `std::atomic_ref<T>(field).load/store` | Imposes atomic semantics on POD storage |
+| Outside lock — full mutual exclusion | Acquire the spinlock via C API | Strongest guarantee; heavier weight |
+
+---
+
+## 10. Invariants the System Maintains
 
 These are invariants that hold at all times during correct operation. Violation indicates
 a bug in the protocol implementation, not user code.
@@ -252,3 +343,73 @@ a bug in the protocol implementation, not user code.
 - `consumer_heartbeats[i].consumer_id` is 0 (unregistered) or a valid PID.
 - `active_consumer_count` equals the number of entries in `consumer_heartbeats[]` with `consumer_id != 0`.
 - The stored flexzone checksum reflects the last `update_checksum_flexible_zone()` call, not necessarily the current flexzone content (checksum is a snapshot).
+- For `Single_reader` and `Sync_reader`: `write_index - read_index < capacity` at the moment of the ring-full check (before `fetch_add`) guarantees the writer never reaches a slot held by the slowest active reader. DRAINING is therefore structurally unreachable for those policies.
+
+---
+
+## 11. DRAINING Reachability by ConsumerSyncPolicy
+
+### Claim
+
+`SlotState::DRAINING` is only reachable for `ConsumerSyncPolicy::Latest_only`.
+For `Single_reader` and `Sync_reader` it is structurally unreachable; the ring-full
+check creates a hard arithmetic barrier before any drain attempt can occur.
+
+### Proof (ring-full barrier)
+
+**Preconditions:**
+
+1. Reader **R** holds slot **K** (i.e., `reader_count(K) ≥ 1`).
+   - `read_index` has NOT yet advanced past K — it advances only inside
+     `release_consume_slot()`, not at acquire time.
+   - Therefore: `read_index ≤ K`.
+   - For `Sync_reader`, `read_index = min(all registered per-consumer positions)`; still `≤ K`.
+
+2. Writer **W** tries to overwrite the same physical slot (ring wrap).
+   - Physical slot `K % capacity` is reused when `write_index = K + capacity`.
+   - DRAINING is entered by `acquire_write()` **after** `write_index.fetch_add(1)` (irrevocable).
+
+**Ring-full check (before `fetch_add`):**
+
+```
+(write_index.load() - read_index.load()) < capacity   →  proceed
+(write_index.load() - read_index.load()) ≥ capacity   →  spin / return TIMEOUT
+```
+
+**For W to reach slot K (same physical slot), W needs `write_index = K + capacity`.**
+
+Ring-full condition at that moment:
+
+```
+(K + capacity) - read_index < capacity
+⟺  K < read_index
+```
+
+But from precondition 1: `read_index ≤ K`.
+**Contradiction.** The ring-full check always fires before `fetch_add` reaches `K + capacity`.
+
+**Therefore:**
+- `write_index.fetch_add(1)` to value `K + capacity` is impossible while reader R holds slot K.
+- `acquire_write()` for slot K is never called.
+- DRAINING is never entered.
+
+### Why `Latest_only` is different
+
+`Latest_only` has **no ring-full check**. The writer advances `write_index.fetch_add(1)`
+unconditionally on every call. Multiple slot-IDs can be issued and "overwritten" without
+reader coordination. DRAINING is the mechanism that prevents corruption when a reader is
+actively reading the slot being overwritten — the writer pauses until `reader_count → 0`.
+
+### Discriminating metric
+
+`writer_reader_timeout_count` is incremented **only** by the drain-spin timeout path inside
+`acquire_write()`. The ring-full timeout path increments `writer_timeout_count` only.
+
+| Policy | Expected on reader stall |
+|---|---|
+| `Latest_only` | `writer_reader_timeout_count > 0` — drain spin timed out |
+| `Single_reader` | `writer_reader_timeout_count == 0` — ring-full blocked; no drain ever attempted |
+| `Sync_reader` | `writer_reader_timeout_count == 0` — same ring-full barrier |
+
+This is verified by tests `DatahubSlotDrainingTest.SingleReaderRingFullBlocksNotDraining`
+and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
