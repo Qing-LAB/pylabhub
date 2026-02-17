@@ -5,7 +5,7 @@
 // - Each test runs in an isolated process via run_gtest_worker
 // - Tests verify that the RAII layer and C API enforce policies transparently
 // - Heartbeat tests use active_consumer_count from shared memory header as oracle
-#include "policy_enforcement_workers.h"
+#include "datahub_policy_enforcement_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -67,7 +67,7 @@ static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, ChecksumPolic
     cfg.shared_secret = secret;
     cfg.ring_buffer_capacity = 2;
     cfg.physical_page_size = DataBlockPageSize::Size4K;
-    cfg.flex_zone_size = 4096; // room for PolicyFlexZone
+    cfg.flex_zone_size = sizeof(PolicyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
     cfg.checksum_policy = cs_policy;
     return cfg;
 }
@@ -485,7 +485,7 @@ int sync_reader_producer_respects_consumer_position()
             cfg.shared_secret = 80020;
             cfg.ring_buffer_capacity = 1;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
-            cfg.flex_zone_size = 4096;
+            cfg.flex_zone_size = sizeof(PolicyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
             cfg.checksum_policy = ChecksumPolicy::Enforced;
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(

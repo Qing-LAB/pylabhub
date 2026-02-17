@@ -37,18 +37,21 @@ namespace pylabhub::utils
 // ============================================================================
 
 /**
- * @brief Exponential backoff strategy with three phases.
+ * @brief Three-phase backoff strategy: yield → 1us sleep → linear sleep.
  * @details Optimized for scenarios where contention is typically short-lived
  *          but may occasionally persist.
  *
  * Phase 1 (iterations 0-3): yield() - cooperative multitasking, minimal overhead
  * Phase 2 (iterations 4-9): 1us sleep - transition to light sleep
- * Phase 3 (iterations 10+): exponential sleep - reduce bus traffic
+ * Phase 3 (iterations 10+): linear sleep (N*10us) - reduce bus traffic
+ *
+ * Note: Despite the struct name, Phase 3 grows linearly (not exponentially).
+ * The name is retained for API compatibility.
  *
  * Total backoff time at iteration N:
  * - N=0-3:  ~0us (just yield)
  * - N=4-9:  ~1us per iteration = 6us total
- * - N=10:   10us
+ * - N=10:   100us
  * - N=20:   200us
  * - N=50:   500us
  * - N=100:  1000us = 1ms
@@ -88,8 +91,8 @@ struct ExponentialBackoff
         }
         else
         {
-            // Phase 3: Exponential backoff - reduce memory bus contention
-            // Typical latency: 10us - 1ms (grows linearly with iteration)
+            // Phase 3: Linear backoff - reduce memory bus contention
+            // Latency = iteration * 10us (linear growth)
             std::this_thread::sleep_for(
                 std::chrono::microseconds(static_cast<long>(iteration * 10)));
         }

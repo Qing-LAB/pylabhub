@@ -24,7 +24,7 @@ int commit_bounds_return_false();
 int read_bounds_return_false();
 /** Second release_write_slot on same handle is idempotent (returns true). */
 int double_release_write_slot_idempotent();
-/** try_next(timeout) returns ok=false when no slot available (timeout). */
-int slot_iterator_try_next_timeout_returns_not_ok();
+/** ctx.slots(timeout) yields a timeout error when no slot is available. */
+int slot_acquire_timeout_returns_error();
 
 } // namespace pylabhub::tests::worker::error_handling

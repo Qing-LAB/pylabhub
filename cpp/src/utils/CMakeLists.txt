@@ -61,7 +61,11 @@ endif()
 
 # Set modern C++ standard.
 target_compile_features(pylabhub-utils PUBLIC cxx_std_20)
-if(NOT MSVC)
+if(MSVC)
+  # /Zc:preprocessor enables the conformant C++20 preprocessor required for __VA_OPT__ in
+  # public headers (logger.hpp, debug_info.hpp). Propagated PUBLIC so all consumers compile cleanly.
+  target_compile_options(pylabhub-utils PUBLIC /Zc:preprocessor)
+else()
   target_compile_options(pylabhub-utils PRIVATE -fvisibility=hidden)
 endif()
 

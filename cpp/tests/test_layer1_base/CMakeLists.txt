@@ -130,8 +130,41 @@ gtest_discover_tests(test_layer1_format_tools
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: Result<T,E>
+# Generic error-handling type (independent of datahub; belongs at base layer)
+# Moved here from test_raii_layer/ (T5.1: Result is a layer-1 utility)
+# ============================================================================
+
+add_executable(test_layer1_result
+    test_result.cpp
+)
+
+target_link_libraries(test_layer1_result
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_features(test_layer1_result PRIVATE cxx_std_20)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_result
+    SUITE_NAME "Layer1_Result"
+)
+layer1_require_staged_utils(test_layer1_result)
+
+gtest_discover_tests(test_layer1_result
+    PROPERTIES
+        LABELS "layer1;base;result"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
 message(STATUS "  - test_layer1_scope_guard")
 message(STATUS "  - test_layer1_format_tools")
+message(STATUS "  - test_layer1_result")

@@ -19,60 +19,60 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class DataBlockErrorHandlingTest : public IsolatedProcessTest
+class DatahubProducerConsumerTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DataBlockErrorHandlingTest, AcquireConsumeSlotTimeoutReturnsNull)
+TEST_F(DatahubProducerConsumerTest, AcquireConsumeSlotTimeoutReturnsNull)
 {
     auto proc = SpawnWorker("error_handling.acquire_consume_slot_timeout_returns_null", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, FindConsumerWrongSecretReturnsNull)
+TEST_F(DatahubProducerConsumerTest, FindConsumerWrongSecretReturnsNull)
 {
     auto proc = SpawnWorker("error_handling.find_consumer_wrong_secret_returns_null", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, ReleaseWriteSlotInvalidHandleReturnsFalse)
+TEST_F(DatahubProducerConsumerTest, ReleaseWriteSlotInvalidHandleReturnsFalse)
 {
     auto proc = SpawnWorker("error_handling.release_write_slot_invalid_handle_returns_false", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, ReleaseConsumeSlotInvalidHandleReturnsFalse)
+TEST_F(DatahubProducerConsumerTest, ReleaseConsumeSlotInvalidHandleReturnsFalse)
 {
     auto proc = SpawnWorker("error_handling.release_consume_slot_invalid_handle_returns_false", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, WriteBoundsReturnFalse)
+TEST_F(DatahubProducerConsumerTest, WriteBoundsReturnFalse)
 {
     auto proc = SpawnWorker("error_handling.write_bounds_return_false", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, CommitBoundsReturnFalse)
+TEST_F(DatahubProducerConsumerTest, CommitBoundsReturnFalse)
 {
     auto proc = SpawnWorker("error_handling.commit_bounds_return_false", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, ReadBoundsReturnFalse)
+TEST_F(DatahubProducerConsumerTest, ReadBoundsReturnFalse)
 {
     auto proc = SpawnWorker("error_handling.read_bounds_return_false", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, DoubleReleaseWriteSlotIdempotent)
+TEST_F(DatahubProducerConsumerTest, DoubleReleaseWriteSlotIdempotent)
 {
     auto proc = SpawnWorker("error_handling.double_release_write_slot_idempotent", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(DataBlockErrorHandlingTest, SlotIteratorTryNextTimeoutReturnsNotOk)
+TEST_F(DatahubProducerConsumerTest, SlotAcquireTimeoutReturnsError)
 {
-    auto proc = SpawnWorker("error_handling.slot_iterator_try_next_timeout_returns_not_ok", {});
+    auto proc = SpawnWorker("error_handling.slot_acquire_timeout_returns_error", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }

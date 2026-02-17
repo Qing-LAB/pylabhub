@@ -1,9 +1,10 @@
 // tests/test_layer3_datahub/workers/error_handling_workers.cpp
 // DataBlock/slot error paths: timeout, wrong secret, invalid handle, bounds checks.
 // Ensures recoverable errors return false/nullptr/empty instead of undefined behavior.
-#include "error_handling_workers.h"
+#include "datahub_producer_consumer_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
+#include "test_datahub_types.h"
 #include "plh_datahub.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -12,6 +13,7 @@
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
+using namespace std::chrono_literals;
 
 // Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
 // data_block.hpp (plh_datahub.hpp) with SchemaInfo* parameter types. No local forward
@@ -285,12 +287,13 @@ int double_release_write_slot_idempotent()
         "double_release_write_slot_idempotent", logger_module(), crypto_module(), hub_module());
 }
 
-int slot_iterator_try_next_timeout_returns_not_ok()
+int slot_acquire_timeout_returns_error()
 {
     return run_gtest_worker(
         []()
         {
-            std::string channel = make_test_channel_name("ErrIteratorTimeout");
+            using namespace pylabhub::tests;
+            std::string channel = make_test_channel_name("ErrSlotTimeout");
             MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
@@ -299,23 +302,36 @@ int slot_iterator_try_next_timeout_returns_not_ok()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
-                                                      DataBlockPolicy::RingBuffer, config,
-                                                      nullptr, nullptr);
+            config.flex_zone_size = sizeof(EmptyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+
+            auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
-                                                        &config, nullptr, nullptr);
+            auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
+                hub_ref, channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
-            auto it = consumer->slot_iterator();
-            auto res = it.try_next(50);
-            EXPECT_FALSE(res.ok);
+
+            // No data written — acquiring a slot must time out.
+            bool got_timeout = false;
+            consumer->with_transaction<EmptyFlexZone, TestDataBlock>(
+                50ms,
+                [&got_timeout](ReadTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+                {
+                    for (auto &result : ctx.slots(50ms))
+                    {
+                        EXPECT_FALSE(result.is_ok());
+                        EXPECT_EQ(result.error(), SlotAcquireError::Timeout);
+                        got_timeout = true;
+                        break;
+                    }
+                });
+            EXPECT_TRUE(got_timeout);
 
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_iterator_try_next_timeout_returns_not_ok", logger_module(), crypto_module(),
-        hub_module());
+        "slot_acquire_timeout_returns_error", logger_module(), crypto_module(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::error_handling
@@ -353,8 +369,8 @@ struct ErrorHandlingWorkerRegistrar
                     return read_bounds_return_false();
                 if (scenario == "double_release_write_slot_idempotent")
                     return double_release_write_slot_idempotent();
-                if (scenario == "slot_iterator_try_next_timeout_returns_not_ok")
-                    return slot_iterator_try_next_timeout_returns_not_ok();
+                if (scenario == "slot_acquire_timeout_returns_error")
+                    return slot_acquire_timeout_returns_error();
                 fmt::print(stderr, "ERROR: Unknown error_handling scenario '{}'\n", scenario);
                 return 1;
             });

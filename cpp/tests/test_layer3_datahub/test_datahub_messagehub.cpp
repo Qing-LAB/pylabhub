@@ -17,47 +17,47 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class MessageHubTest : public IsolatedProcessTest
+class DatahubMessageHubTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(MessageHubTest, LifecycleInitializedFollowsState)
+TEST_F(DatahubMessageHubTest, LifecycleInitializedFollowsState)
 {
     auto proc = SpawnWorker("messagehub.lifecycle_initialized_follows_state", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(MessageHubTest, SendMessageWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessageHubTest, SendMessageWhenNotConnectedReturnsNullopt)
 {
     auto proc = SpawnWorker("messagehub.send_message_when_not_connected_returns_nullopt", {});
     ExpectWorkerOk(proc, {"MessageHub"});
 }
 
-TEST_F(MessageHubTest, ReceiveMessageWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessageHubTest, ReceiveMessageWhenNotConnectedReturnsNullopt)
 {
     auto proc = SpawnWorker("messagehub.receive_message_when_not_connected_returns_nullopt", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(MessageHubTest, RegisterProducerWhenNotConnectedReturnsFalse)
+TEST_F(DatahubMessageHubTest, RegisterProducerWhenNotConnectedReturnsFalse)
 {
     auto proc = SpawnWorker("messagehub.register_producer_when_not_connected_returns_false", {});
     ExpectWorkerOk(proc, {"MessageHub"});
 }
 
-TEST_F(MessageHubTest, DiscoverProducerWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessageHubTest, DiscoverProducerWhenNotConnectedReturnsNullopt)
 {
     auto proc = SpawnWorker("messagehub.discover_producer_when_not_connected_returns_nullopt", {});
     ExpectWorkerOk(proc, {"MessageHub"});
 }
 
-TEST_F(MessageHubTest, DisconnectWhenNotConnectedIdempotent)
+TEST_F(DatahubMessageHubTest, DisconnectWhenNotConnectedIdempotent)
 {
     auto proc = SpawnWorker("messagehub.disconnect_when_not_connected_idempotent", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(MessageHubTest, WithBrokerHappyPath)
+TEST_F(DatahubMessageHubTest, WithBrokerHappyPath)
 {
     auto proc = SpawnWorker("messagehub.with_broker_happy_path", {});
     ExpectWorkerOk(proc, {});
