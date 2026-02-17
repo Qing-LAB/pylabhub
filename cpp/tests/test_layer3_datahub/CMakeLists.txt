@@ -3,46 +3,69 @@
 # Layer 3 (DataHub) tests
 # Tests for plh_datahub.hpp (depends on plh_service.hpp)
 #
-# Structure:
-#   test_*.cpp    — GTest test suites
-#   workers/      — Worker process implementations (spawned as subprocesses)
+# Structure (ordered by abstraction level — facility → C API → primitive → RAII → integration):
 #
-# NOTE: Test refactoring in progress (2026-02-15)
-# - phase_a tests DELETED (wrong layer, used removed API)
-# - schema_validation tests DISABLED (needs rewrite to dual-schema template API)
-# - slot_protocol tests DISABLED (too large - needs split into C API + C++ tests, see T3.1-T3.4)
-# - See docs/TEST_REFACTOR_TODO.md for full plan
+#   Facility (individual class/subsystem unit tests):
+#     test_datahub_schema_blds.cpp
+#     test_datahub_schema_validation.cpp
+#
+#   C API layer (slot_rw_coordinator, checksum, recovery):
+#     test_datahub_c_api_slot_protocol.cpp
+#     test_datahub_c_api_checksum.cpp
+#     test_datahub_c_api_recovery.cpp
+#
+#   C++ Primitive API (DataBlockProducer/Consumer, no RAII):
+#     test_datahub_producer_consumer.cpp
+#     test_datahub_mutex.cpp
+#
+#   C++ RAII layer (TransactionContext, SlotIterator, policies):
+#     test_datahub_transaction_api.cpp
+#     test_datahub_policy_enforcement.cpp
+#     test_datahub_exception_safety.cpp
+#     test_datahub_handle_semantics.cpp
+#
+#   Integration / Scenario (multi-module, end-to-end):
+#     test_datahub_messagehub.cpp
+#
+#   workers/ — Worker process implementations (spawned as subprocesses)
+#              Each worker file is named datahub_<module>_workers.{cpp,h}
 
 message(STATUS "** Configuring Layer 3 (DataHub) tests...")
 
-# ============================================================================
-# Test: Schema BLDS
-# Pure API tests (types, builder, version) + isolated-process SchemaInfo tests
-# ============================================================================
-
 add_executable(test_layer3_datahub
-    test_schema_blds.cpp
-    workers/schema_blds_workers.cpp
-    test_schema_validation.cpp
-    workers/schema_validation_workers.cpp
-    test_recovery_api.cpp
-    workers/recovery_workers.cpp
-    # test_slot_protocol.cpp  # DELETED - used removed non-template API; see T3.1-T3.4 in TEST_REFACTOR_TODO.md
-    # workers/slot_protocol_workers.cpp  # DELETED
-    test_error_handling.cpp
-    workers/error_handling_workers.cpp
-    test_message_hub.cpp
-    workers/messagehub_workers.cpp
-    test_transaction_api.cpp
-    workers/transaction_api_workers.cpp
-    test_datablock_mutex.cpp
-    workers/datablock_management_mutex_workers.cpp
-    test_policy_enforcement.cpp
-    workers/policy_enforcement_workers.cpp
-    test_c_api_slot_protocol.cpp
-    workers/c_api_slot_protocol_workers.cpp
-    test_c_api_checksum.cpp
-    workers/c_api_checksum_workers.cpp
+    # ── Facility ──────────────────────────────────────────────────────────────
+    test_datahub_schema_blds.cpp
+    workers/datahub_schema_blds_workers.cpp
+    test_datahub_schema_validation.cpp
+    workers/datahub_schema_validation_workers.cpp
+
+    # ── C API layer ───────────────────────────────────────────────────────────
+    test_datahub_c_api_slot_protocol.cpp
+    workers/datahub_c_api_slot_protocol_workers.cpp
+    test_datahub_c_api_checksum.cpp
+    workers/datahub_c_api_checksum_workers.cpp
+    test_datahub_c_api_recovery.cpp
+    workers/datahub_c_api_recovery_workers.cpp
+
+    # ── C++ Primitive API ─────────────────────────────────────────────────────
+    test_datahub_producer_consumer.cpp
+    workers/datahub_producer_consumer_workers.cpp
+    test_datahub_mutex.cpp
+    workers/datahub_mutex_workers.cpp
+
+    # ── C++ RAII layer ────────────────────────────────────────────────────────
+    test_datahub_transaction_api.cpp
+    workers/datahub_transaction_api_workers.cpp
+    test_datahub_policy_enforcement.cpp
+    workers/datahub_policy_enforcement_workers.cpp
+    test_datahub_exception_safety.cpp
+    workers/datahub_exception_safety_workers.cpp
+    test_datahub_handle_semantics.cpp
+    workers/datahub_handle_semantics_workers.cpp
+
+    # ── Integration / Scenario ────────────────────────────────────────────────
+    test_datahub_messagehub.cpp
+    workers/datahub_messagehub_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE workers)
@@ -70,9 +93,9 @@ pylabhub_register_test_for_staging(TARGET test_layer3_datahub)
 
 gtest_discover_tests(test_layer3_datahub
     PROPERTIES
-        LABELS "layer3;datahub;schema"
+        LABELS "layer3;datahub"
     DISCOVERY_TIMEOUT 60
 )
 
 message(STATUS "** Layer 3 (DataHub) tests configured.")
-message(STATUS "  - test_layer3_datahub (schema_blds, schema_validation, recovery_api, slot_protocol, error_handling, message_hub, transaction_api)")
+message(STATUS "  - test_layer3_datahub: facility, c_api, primitive, raii, integration")

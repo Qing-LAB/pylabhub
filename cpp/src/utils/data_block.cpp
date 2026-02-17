@@ -23,12 +23,16 @@ class DataBlock;
 namespace detail
 {
 /// Memory layout constants (Phase 2 refactoring)
-/// Standard page size used for alignment throughout the DataBlock memory layout.
+/// OS mmap alignment boundary used throughout the DataBlock memory layout.
+/// This is the minimum granularity for mmap allocations on all supported platforms (x86-64, ARM64).
+/// It is distinct from DataBlockConfig::physical_page_size, which is the per-slot stride
+/// (the DataBlock "page" size — 4K, 4M, or 16M slots). PAGE_ALIGNMENT is the OS alignment
+/// requirement for section boundaries (data region start, flex zone, ring buffer).
 /// Per DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md §2.2-2.3:
-/// - Data region start must be 4K-aligned
-/// - Flex zone size must be N×4K
-/// - All major memory sections align on 4K boundaries
-inline constexpr size_t PAGE_SIZE = 4096;
+/// - Data region start must be PAGE_ALIGNMENT-aligned
+/// - Flex zone size is rounded up to a PAGE_ALIGNMENT boundary
+/// - All major memory sections align on PAGE_ALIGNMENT boundaries
+inline constexpr size_t PAGE_ALIGNMENT = 4096;
 
 /// Producer heartbeat: at PRODUCER_HEARTBEAT_OFFSET, [0]=producer_id, [1]=producer_last_heartbeat_ns.
 inline std::atomic<uint64_t> *producer_heartbeat_id_ptr(SharedMemoryHeader *header)
@@ -183,13 +187,15 @@ inline uint64_t get_commit_index(const SharedMemoryHeader* header) noexcept {
 }
 
 /**
- * Increment commit index by 1.
+ * Update commit index to the given slot_id.
  * Called after slot transitions to COMMITTED state to make it visible to consumers.
+ * Stores the actual committed slot_id (not a running counter) so that aborted writes
+ * (which advance write_index but skip commit) do not cause commit_index to lag behind.
  * Memory ordering: release (publishes all slot writes to readers).
  */
-inline void increment_commit_index(SharedMemoryHeader* header) noexcept {
+inline void update_commit_index(SharedMemoryHeader* header, uint64_t slot_id) noexcept {
     if (header != nullptr) {
-        header->commit_index.fetch_add(1, std::memory_order_release);
+        header->commit_index.store(slot_id, std::memory_order_release);
     }
 }
 
@@ -251,18 +257,13 @@ inline bool is_producer_heartbeat_fresh(const SharedMemoryHeader *header, uint64
     if (header == nullptr || pid == 0) {
         return false;
     }
-    uint64_t stored_id =
-        reinterpret_cast<const std::atomic<uint64_t> *>(
-            header->reserved_header + PRODUCER_HEARTBEAT_OFFSET)
-            ->load(std::memory_order_acquire);
+    // Use centralized pointer helpers to avoid duplicating offset arithmetic.
+    auto *mut_header = const_cast<SharedMemoryHeader *>(header);
+    uint64_t stored_id = producer_heartbeat_id_ptr(mut_header)->load(std::memory_order_acquire);
     if (stored_id != pid) {
         return false;
     }
-    constexpr size_t kProducerHeartbeatNsOffset = sizeof(uint64_t);
-    uint64_t stored_ns =
-        reinterpret_cast<const std::atomic<uint64_t> *>(
-            header->reserved_header + PRODUCER_HEARTBEAT_OFFSET + kProducerHeartbeatNsOffset)
-            ->load(std::memory_order_acquire);
+    uint64_t stored_ns = producer_heartbeat_ns_ptr(mut_header)->load(std::memory_order_acquire);
     uint64_t now = pylabhub::platform::monotonic_time_ns();
     return (now - stored_ns) <= PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 }
@@ -352,7 +353,7 @@ inline std::pair<SharedMemoryHeader *, uint32_t> get_header_and_slot_count(DataB
 
 /**
  * Policy-based next slot to read. Single place for Latest_only / Single_reader / Sync_reader.
- * Used by DataBlockConsumer::acquire_consume_slot and DataBlockSlotIterator::try_next.
+ * Used by DataBlockConsumer::acquire_consume_slot.
  * @return Next slot_id to try, or INVALID_SLOT_ID if none available yet.
  */
 inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- (header, last_seen_or_consumed_slot_id, heartbeat_slot) order is fixed by API
@@ -502,7 +503,9 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
 }
 
 // 4.2.2 Writer Commit Flow
-void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header)
+// slot_id: the write_index-derived ID for this slot (stored in commit_index so consumers can
+// locate the committed slot directly even when earlier slot_ids were aborted/skipped).
+void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header, uint64_t slot_id)
 {
     slot_rw_state->write_generation.fetch_add(
         1, std::memory_order_release); // Step 1: Increment generation counter
@@ -510,7 +513,7 @@ void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header)
                                     std::memory_order_release); // Step 2: Transition to COMMITTED state
     if (header != nullptr)
     {
-        detail::increment_commit_index(header); // Step 3: Increment global commit index (makes visible to consumers)
+        detail::update_commit_index(header, slot_id); // Step 3: Store slot_id in commit_index (makes visible to consumers)
         detail::increment_metric_total_commits(header); // Metric: commit count
     }
     // Memory ordering: All writes before this release are visible to
@@ -630,9 +633,9 @@ struct DataBlockLayout
     size_t slot_checksum_offset = 0;
     size_t slot_checksum_size = 0;
     // Phase 2 memory layout (per DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md §2.3):
-    //   - flexible_zone_offset: 4K-aligned (start of DATA region)
-    //   - flexible_zone_size: N×4K (must be multiple of 4096)
-    //   - structured_buffer_offset: 4K-aligned (ring-buffer start = flex_zone_offset + flex_zone_size)
+    //   - flexible_zone_offset: PAGE_ALIGNMENT-aligned (start of DATA region)
+    //   - flexible_zone_size: rounded up to PAGE_ALIGNMENT at creation; 0 if no flex zone
+    //   - structured_buffer_offset: PAGE_ALIGNMENT-aligned (= flex_zone_offset + flex_zone_size)
     size_t flexible_zone_offset = 0;
     size_t flexible_zone_size = 0;
     size_t structured_buffer_offset = 0; // Ring-buffer offset (4K-aligned)
@@ -713,18 +716,17 @@ struct DataBlockLayout
         const size_t control_zone_size = layout.slot_rw_state_size + layout.slot_checksum_size;
         const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
         
-        // Align data region start to 4K boundary (design §2.3)
+        // Align data region start to PAGE_ALIGNMENT boundary (design §2.3)
         const size_t data_region_offset =
-            (control_zone_end + detail::PAGE_SIZE - 1) & ~(detail::PAGE_SIZE - 1);
-        
+            (control_zone_end + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
+
         // Single flex zone (Phase 2 refactoring)
-        layout.flexible_zone_size = config.flex_zone_size;
-        
-        // Validate flex zone size is 0 or multiple of 4K (design §2.4)
-        if (layout.flexible_zone_size % detail::PAGE_SIZE != 0) {
-            throw std::invalid_argument(
-                "flex_zone_size must be 0 or a multiple of 4096 (page size)");
-        }
+        // Round up to the next PAGE_ALIGNMENT boundary (OS mmap granularity).
+        // flex_zone_size=sizeof(MyType) is valid input; it will be rounded up transparently.
+        // The rounded value is stored in the header; consumers applying the same rounding
+        // will always agree on the size.
+        layout.flexible_zone_size =
+            (config.flex_zone_size + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
         
         // Layout per design §2.3:
         //   flex_zone_offset = data_region_offset
@@ -737,15 +739,16 @@ struct DataBlockLayout
         layout.structured_buffer_size = config.structured_buffer_size();
         
         // Ring-buffer starts immediately after flex zone
-        // Since data_region_offset is 4K-aligned and flex_zone_size is N×4K,
-        // ring_buffer is guaranteed to be 4K-aligned (design §2.2)
+        // Since data_region_offset is PAGE_ALIGNMENT-aligned and flex_zone_size is
+        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design §2.2)
         layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
         
         // Validate ring-buffer alignment (design requirement)
-        if (layout.structured_buffer_offset % detail::PAGE_SIZE != 0) {
+        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0) {
             throw std::logic_error(
-                "Internal error: ring-buffer offset is not 4K-aligned. "
-                "This violates the memory layout design.");
+                "Internal error: ring-buffer offset is not PAGE_ALIGNMENT ("
+                    + std::to_string(detail::PAGE_ALIGNMENT) + " bytes)-aligned. "
+                      "This violates the memory layout design.");
         }
         
         layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
@@ -773,7 +776,7 @@ struct DataBlockLayout
         const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
         
         const size_t data_region_offset =
-            (control_zone_end + detail::PAGE_SIZE - 1) & ~(detail::PAGE_SIZE - 1);
+            (control_zone_end + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
         
         // Flex zone offset and size from header
         layout.flexible_zone_size = header->flexible_zone_size;
@@ -785,15 +788,16 @@ struct DataBlockLayout
         layout.structured_buffer_size = layout.slot_count * layout.slot_stride_bytes_;
         
         // Ring-buffer starts immediately after flex zone
-        // Since data_region_offset is 4K-aligned and flex_zone_size is N×4K,
-        // ring_buffer is guaranteed to be 4K-aligned (design §2.2)
+        // Since data_region_offset is PAGE_ALIGNMENT-aligned and flex_zone_size is
+        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design §2.2)
         layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
         
         // Validate ring-buffer alignment (design requirement)
-        if (layout.structured_buffer_offset % detail::PAGE_SIZE != 0) {
+        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0) {
             throw std::logic_error(
-                "Internal error: ring-buffer offset is not 4K-aligned. "
-                "This violates the memory layout design.");
+                "Internal error: ring-buffer offset is not PAGE_ALIGNMENT ("
+                    + std::to_string(detail::PAGE_ALIGNMENT) + " bytes)-aligned. "
+                      "This violates the memory layout design.");
         }
         
         layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
@@ -831,10 +835,10 @@ struct DataBlockLayout
             return false;
         }
         
-        // NEW DESIGN: Validate 4K-aligned data region start
-        // flexible_zone_offset must be 4K-aligned and >= control zone end
+        // Validate PAGE_ALIGNMENT-aligned data region start
+        // flexible_zone_offset must be PAGE_ALIGNMENT-aligned and >= control zone end
         const size_t control_zone_end = slot_checksum_offset + slot_checksum_size;
-        if (flexible_zone_offset % detail::PAGE_SIZE != 0)
+        if (flexible_zone_offset % detail::PAGE_ALIGNMENT != 0)
         {
             return false;
         }
@@ -843,8 +847,8 @@ struct DataBlockLayout
             return false;
         }
         
-        // Validate flex zone size is 0 or multiple of 4K
-        if (flexible_zone_size % detail::PAGE_SIZE != 0)
+        // Validate flex zone size is PAGE_ALIGNMENT-aligned
+        if (flexible_zone_size % detail::PAGE_ALIGNMENT != 0)
         {
             return false;
         }
@@ -855,8 +859,8 @@ struct DataBlockLayout
             return false;
         }
         
-        // Validate ring-buffer is 4K-aligned
-        if (structured_buffer_offset % detail::PAGE_SIZE != 0)
+        // Validate ring-buffer is PAGE_ALIGNMENT-aligned
+        if (structured_buffer_offset % detail::PAGE_ALIGNMENT != 0)
         {
             return false;
         }
@@ -1077,9 +1081,7 @@ class DataBlock
         m_header->total_bytes_read.store(0, std::memory_order_release);
         m_header->uptime_seconds.store(0, std::memory_order_release);
         m_header->creation_timestamp_ns.store(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::high_resolution_clock::now().time_since_epoch())
-                .count(),
+            pylabhub::platform::monotonic_time_ns(),
             std::memory_order_release);
         for (auto &reserved_perf_elem : m_header->reserved_perf)
         {
@@ -2067,163 +2069,6 @@ bool DataBlockProducer::register_with_broker(MessageHub &hub, const std::string 
 }
 
 // ============================================================================
-// DataBlockSlotIterator (ring-buffer)
-// ============================================================================
-struct DataBlockSlotIteratorImpl
-{
-    DataBlockConsumerImpl *owner = nullptr;
-    DataBlock *dataBlock = nullptr;
-    uint64_t last_seen_slot_id = INVALID_SLOT_ID;
-};
-
-DataBlockSlotIterator::DataBlockSlotIterator() : pImpl(nullptr) {}
-
-DataBlockSlotIterator::DataBlockSlotIterator(std::unique_ptr<DataBlockSlotIteratorImpl> impl)
-    : pImpl(std::move(impl))
-{
-}
-
-DataBlockSlotIterator::~DataBlockSlotIterator() noexcept = default;
-
-DataBlockSlotIterator::DataBlockSlotIterator(DataBlockSlotIterator &&other) noexcept = default;
-
-DataBlockSlotIterator &
-DataBlockSlotIterator::operator=(DataBlockSlotIterator &&other) noexcept = default;
-
-DataBlockSlotIterator::NextResult DataBlockSlotIterator::try_next(int timeout_ms) noexcept
-{
-    NextResult result{};
-    result.ok = false;
-    result.error_code = 0;
-    if (pImpl == nullptr)
-    {
-        result.error_code = 1;
-        return result;
-    }
-    DataBlockConsumerImpl *owner = pImpl->owner;
-    if (owner == nullptr)
-    {
-        result.error_code = 1;
-        return result;
-    }
-    std::lock_guard<std::recursive_mutex> lock(owner->mutex);
-    auto [header, slot_count] = get_header_and_slot_count(pImpl->dataBlock);
-    if (header == nullptr || slot_count == 0)
-    {
-        result.error_code = 1;
-        return result;
-    }
-
-    const ConsumerSyncPolicy policy = header->consumer_sync_policy;
-    auto start_time = pylabhub::platform::monotonic_time_ns();
-    int iteration = 0;
-    uint64_t slot_id = INVALID_SLOT_ID;
-    size_t slot_index = 0;
-    SlotRWState *rw_state = nullptr;
-    uint64_t captured_generation = 0;
-    SlotAcquireResult acquire_res{};
-
-    const int heartbeat_slot =
-        (pImpl->owner != nullptr) ? pImpl->owner->heartbeat_slot : -1;
-
-    while (true)
-    {
-        const uint64_t next_to_read =
-            get_next_slot_to_read(header, pImpl->last_seen_slot_id, heartbeat_slot);
-
-        if (next_to_read != INVALID_SLOT_ID)
-        {
-            slot_index = static_cast<size_t>(next_to_read % slot_count);
-            rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
-            if (rw_state == nullptr)
-            {
-                result.error_code = 3;
-                return result;
-            }
-            acquire_res = acquire_read(rw_state, header, &captured_generation);
-            if (acquire_res == SLOT_ACQUIRE_OK)
-            {
-                slot_id = next_to_read;
-                break;
-            }
-            if (acquire_res != SLOT_ACQUIRE_NOT_READY)
-            {
-                result.error_code = 3;
-                return result;
-            }
-        }
-
-        if (spin_elapsed_ms_exceeded(start_time, timeout_ms))
-        {
-            header->reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
-            result.error_code = 2;
-            return result;
-        }
-        backoff(iteration++);
-    }
-
-    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes();
-    auto impl = make_slot_consume_handle_impl(
-        pImpl->owner, pImpl->dataBlock, header, slot_id, slot_index,
-        pImpl->dataBlock->structured_data_buffer(), slot_stride_bytes,
-        rw_state, captured_generation,
-        (policy == ConsumerSyncPolicy::Sync_reader && pImpl->owner != nullptr)
-            ? pImpl->owner->heartbeat_slot
-            : -1);
-
-    result.next = SlotConsumeHandle(std::move(impl));
-    result.ok = true;
-    pImpl->last_seen_slot_id = slot_id;
-    return result;
-}
-
-SlotConsumeHandle DataBlockSlotIterator::next(int timeout_ms)
-{
-    auto res = try_next(timeout_ms);
-    if (!res.ok)
-    {
-        throw std::runtime_error(
-            fmt::format("DataBlockSlotIterator::next: slot not available (error {})", res.error_code));
-    }
-    return std::move(res.next);
-}
-
-void DataBlockSlotIterator::seek_latest() noexcept
-{
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr || pImpl->owner == nullptr)
-    {
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> lock(pImpl->owner->mutex);
-    auto *header = pImpl->dataBlock->header();
-    if (header == nullptr)
-    {
-        return;
-    }
-    pImpl->last_seen_slot_id = header->commit_index.load(std::memory_order_acquire);
-}
-
-void DataBlockSlotIterator::seek_to(uint64_t slot_id) noexcept
-{
-    if (pImpl == nullptr || pImpl->owner == nullptr)
-    {
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> lock(pImpl->owner->mutex);
-    pImpl->last_seen_slot_id = slot_id;
-}
-
-uint64_t DataBlockSlotIterator::last_slot_id() const noexcept
-{
-    return pImpl ? pImpl->last_seen_slot_id : INVALID_SLOT_ID;
-}
-
-bool DataBlockSlotIterator::is_valid() const noexcept
-{
-    return pImpl != nullptr && pImpl->dataBlock != nullptr;
-}
-
-// ============================================================================
 // Slot Handles (Primitive Data Transfer API) - Implementations
 // ============================================================================
 // Lifetime contract: SlotWriteHandle and SlotConsumeHandle hold pointers into the
@@ -2267,7 +2112,7 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
     // Commit the write (make it visible to readers)
     if (impl.committed && impl.rw_state != nullptr && impl.header != nullptr)
     {
-        commit_write(impl.rw_state, impl.header);
+        commit_write(impl.rw_state, impl.header, impl.slot_id);
         detail::update_producer_heartbeat_impl(impl.header, pylabhub::platform::get_pid());
         // Release write_lock so the slot can be reused on wrap-around (lap2+)
         impl.rw_state->write_lock.store(0, std::memory_order_release);
@@ -2775,20 +2620,6 @@ bool DataBlockConsumer::release_consume_slot(SlotConsumeHandle &handle) noexcept
     return release_consume_handle(*handle.pImpl);
 }
 
-DataBlockSlotIterator DataBlockConsumer::slot_iterator()
-{
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
-    {
-        return {};
-    }
-    std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    auto impl = std::make_unique<DataBlockSlotIteratorImpl>();
-    impl->owner = pImpl.get();
-    impl->dataBlock = pImpl->dataBlock.get();
-    impl->last_seen_slot_id = INVALID_SLOT_ID;
-    return DataBlockSlotIterator(std::move(impl));
-}
-
 int DataBlockConsumer::register_heartbeat()
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr || pImpl->dataBlock->header() == nullptr)
@@ -3073,7 +2904,12 @@ static bool validate_attach_layout_and_config(const SharedMemoryHeader *header,
     {
         return true;
     }
-    const bool flex_ok = header->flexible_zone_size == expected_config->flex_zone_size;
+    // Round the expected flex_zone_size to PAGE_ALIGNMENT (same rounding applied at creation time)
+    // so that consumers passing sizeof(MyFlexZone) match the rounded value stored in the header.
+    const size_t rounded_expected_flex =
+        (expected_config->flex_zone_size + detail::PAGE_ALIGNMENT - 1) &
+        ~(detail::PAGE_ALIGNMENT - 1);
+    const bool flex_ok = header->flexible_zone_size == rounded_expected_flex;
     const bool cap_ok = header->ring_buffer_capacity == expected_config->ring_buffer_capacity;
     const bool page_ok =
         header->physical_page_size == static_cast<uint32_t>(to_bytes(expected_config->physical_page_size));
@@ -3366,7 +3202,9 @@ extern "C"
     {
         if (rw_state != nullptr)
         {
-            commit_write(rw_state, nullptr);
+            // slot_id=0: header is nullptr so commit_index is not updated by this C API path.
+            // Callers that need commit_index tracking must use DataBlockProducer::release_write_slot().
+            commit_write(rw_state, nullptr, 0);
         }
     }
 

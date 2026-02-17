@@ -1,4 +1,4 @@
-#include "datablock_management_mutex_workers.h"
+#include "datahub_mutex_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "utils/data_block_mutex.hpp"

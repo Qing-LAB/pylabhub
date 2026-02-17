@@ -1,5 +1,5 @@
 // tests/test_layer3_datahub/schema_blds_workers.cpp
-#include "schema_blds_workers.h"
+#include "datahub_schema_blds_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"

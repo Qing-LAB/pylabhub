@@ -17,7 +17,7 @@
 //
 // Secret numbers: 72001+ to avoid conflicts with other test suites
 
-#include "c_api_checksum_workers.h"
+#include "datahub_c_api_checksum_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"

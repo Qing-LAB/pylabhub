@@ -13,47 +13,47 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class RecoveryApiTest : public IsolatedProcessTest
+class DatahubCApiRecoveryTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(RecoveryApiTest, DatablockIsProcessAlive_ReturnsTrueForSelf)
+TEST_F(DatahubCApiRecoveryTest, DatablockIsProcessAlive_ReturnsTrueForSelf)
 {
     auto proc = SpawnWorker("recovery.datablock_is_process_alive", {});
     ExpectWorkerOk(proc);
 }
 
-TEST_F(RecoveryApiTest, IntegrityValidator_ValidateSucceedsOnCreatedDatablock)
+TEST_F(DatahubCApiRecoveryTest, IntegrityValidator_ValidateSucceedsOnCreatedDatablock)
 {
     auto proc = SpawnWorker("recovery.integrity_validator_validate", {});
     ExpectWorkerOk(proc, {"INTEGRITY_CHECK: Finished"});
 }
 
-TEST_F(RecoveryApiTest, SlotDiagnostics_RefreshSucceedsOnCreatedDatablock)
+TEST_F(DatahubCApiRecoveryTest, SlotDiagnostics_RefreshSucceedsOnCreatedDatablock)
 {
     auto proc = SpawnWorker("recovery.slot_diagnostics_refresh", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(RecoveryApiTest, SlotRecovery_ReleaseZombieReadersOnEmptySlot)
+TEST_F(DatahubCApiRecoveryTest, SlotRecovery_ReleaseZombieReadersOnEmptySlot)
 {
     auto proc = SpawnWorker("recovery.slot_recovery_release_zombie_readers", {});
     ExpectWorkerOk(proc, {"datablock_release_zombie_readers"});
 }
 
-TEST_F(RecoveryApiTest, HeartbeatManager_RegistersAndPulses)
+TEST_F(DatahubCApiRecoveryTest, HeartbeatManager_RegistersAndPulses)
 {
     auto proc = SpawnWorker("recovery.heartbeat_manager_registers", {});
     ExpectWorkerOk(proc, {"opened by consumer"});
 }
 
-TEST_F(RecoveryApiTest, ProducerUpdateHeartbeat_ExplicitSucceeds)
+TEST_F(DatahubCApiRecoveryTest, ProducerUpdateHeartbeat_ExplicitSucceeds)
 {
     auto proc = SpawnWorker("recovery.producer_update_heartbeat_explicit", {});
     ExpectWorkerOk(proc);
 }
 
-TEST_F(RecoveryApiTest, ProducerHeartbeat_AndIsWriterAlive)
+TEST_F(DatahubCApiRecoveryTest, ProducerHeartbeat_AndIsWriterAlive)
 {
     auto proc = SpawnWorker("recovery.producer_heartbeat_and_is_writer_alive", {});
     ExpectWorkerOk(proc);

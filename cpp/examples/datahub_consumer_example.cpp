@@ -1,128 +1,114 @@
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <thread>
-#include <numeric> // For std::iota
-#include <optional>
-#include <monostate> // For std::monostate with optional
-
+/**
+ * @file datahub_consumer_example.cpp
+ * @brief Example: DataBlock consumer using the RAII transaction API.
+ *
+ * Demonstrates find_datablock_consumer<FlexZoneT, DataBlockT> and
+ * consumer->with_transaction for typed, schema-validated reads.
+ *
+ * Schema types (SensorFlexZone, SensorData) must match the producer.
+ */
 #include "plh_datahub.hpp"
-#include "utils/lifecycle.hpp"
-#include "utils/data_block.hpp"
-#include "utils/message_hub.hpp"
-#include "utils/logger.hpp"
 
-// Define a sample data structure (must match producer)
-struct SensorData {
-    uint64_t timestamp_ns;
-    double temperature;
-    double humidity;
-    char sensor_name[16];
-    uint32_t sequence_num;
+#include <chrono>
+#include <iostream>
+
+using namespace pylabhub::hub;
+using namespace pylabhub::utils;
+using namespace std::chrono_literals;
+
+// ─── Application data types (must match producer exactly) ────────────────────
+
+struct SensorFlexZone
+{
+    uint64_t frame_count{0};
+    bool shutdown_flag{false};
 };
+static_assert(std::is_trivially_copyable_v<SensorFlexZone>);
+
+PYLABHUB_SCHEMA_BEGIN(SensorFlexZone)
+    PYLABHUB_SCHEMA_MEMBER(frame_count)
+    PYLABHUB_SCHEMA_MEMBER(shutdown_flag)
+PYLABHUB_SCHEMA_END(SensorFlexZone)
+
+struct SensorData
+{
+    uint64_t timestamp_ns{0};
+    float    temperature{0.0f};
+    float    humidity{0.0f};
+    uint32_t sequence_num{0};
+};
+static_assert(std::is_trivially_copyable_v<SensorData>);
+
+PYLABHUB_SCHEMA_BEGIN(SensorData)
+    PYLABHUB_SCHEMA_MEMBER(timestamp_ns)
+    PYLABHUB_SCHEMA_MEMBER(temperature)
+    PYLABHUB_SCHEMA_MEMBER(humidity)
+    PYLABHUB_SCHEMA_MEMBER(sequence_num)
+PYLABHUB_SCHEMA_END(SensorData)
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main()
 {
-    // LifecycleGuard initializes Logger, CryptoUtils, and Data Exchange Hub (required for DataBlock).
-    pylabhub::utils::LifecycleGuard lifecycle(pylabhub::utils::MakeModDefList(
-        pylabhub::utils::Logger::GetLifecycleModule(),
+    LifecycleGuard lifecycle(MakeModDefList(
+        Logger::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::hub::GetLifecycleModule()));
+        GetLifecycleModule()));
 
-    const std::string channel_name = "sensor_data_channel";
-    const uint64_t shared_secret = 0xBAD5ECRET; // Example secret (must match producer)
+    MessageHub &hub = MessageHub::get_instance();
 
-    pylabhub::hub::MessageHub hub; // MessageHub is a placeholder in this example
+    // ─── Attach consumer ───────────────────────────────────────────────────
+    DataBlockConfig expected_config{};
+    expected_config.policy               = DataBlockPolicy::RingBuffer;
+    expected_config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    expected_config.shared_secret        = 0xBAD5ECRET;
+    expected_config.ring_buffer_capacity = 4;
+    expected_config.physical_page_size   = DataBlockPageSize::Size4K;
+    expected_config.flex_zone_size       = 4096; // must be a multiple of 4096 (page size)
+    expected_config.checksum_policy      = ChecksumPolicy::Enforced;
 
-    // --- Consumer Side ---
-    std::cout << "--- Consumer Application Starting ---" << std::endl;
-
-    std::unique_ptr<pylabhub::hub::DataBlockConsumer> consumer;
-    try {
-        consumer = pylabhub::hub::find_datablock_consumer(hub, channel_name, shared_secret);
-        if (!consumer) {
-            std::cerr << "Failed to find DataBlockConsumer! Is producer running?" << std::endl;
-            return 1;
-        }
-        std::cout << "DataBlockConsumer found for channel: " << channel_name << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error finding consumer: " << e.what() << std::endl;
+    // Schema types are validated at attach time: mismatched types → nullptr.
+    auto consumer = find_datablock_consumer<SensorFlexZone, SensorData>(
+        hub, "sensor_data_channel", expected_config.shared_secret, expected_config);
+    if (!consumer)
+    {
+        std::cerr << "Failed to attach DataBlockConsumer (producer not running?)\n";
         return 1;
     }
+    std::cout << "DataBlockConsumer attached.\n";
 
-    // --- Example 1: Using with_read_transaction ---
-    std::cout << "
---- Example 1: with_read_transaction ---" << std::endl;
-    // Assume producer has written some data at slot_id 0
-    try {
-        pylabhub::hub::with_read_transaction(
-            *consumer, 0, 1000, [&](pylabhub::hub::ReadTransactionContext& ctx) {
-                const auto& slot = ctx.slot();
-                SensorData data;
-                slot.read(&data, sizeof(SensorData));
-                std::cout << "with_read_transaction: Read sequence " << data.sequence_num 
-                          << ", Temp: " << data.temperature << std::endl;
-            });
-    } catch (const std::runtime_error& e) {
-        std::cerr << "with_read_transaction failed for slot 0: " << e.what() << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Caught unexpected exception: " << e.what() << std::endl;
-    }
+    // ─── Read until the producer signals shutdown ──────────────────────────
+    consumer->with_transaction<SensorFlexZone, SensorData>(
+        10000ms,  // outer timeout (total budget for this transaction session)
+        [](ReadTransactionContext<SensorFlexZone, SensorData> &ctx)
+        {
+            for (auto &result : ctx.slots(200ms))
+            {
+                // Check control zone first — no slot acquisition needed.
+                {
+                    auto zone = ctx.flexzone();
+                    if (zone.get().shutdown_flag)
+                    {
+                        std::cout << "  Shutdown flag set — stopping.\n";
+                        break;
+                    }
+                }
 
-    // --- Example 2: Using with_next_slot with DataBlockSlotIterator ---
-    std::cout << "
---- Example 2: with_next_slot with DataBlockSlotIterator ---" << std::endl;
-    pylabhub::hub::DataBlockSlotIterator iterator = consumer->slot_iterator();
-    iterator.seek_latest(); // Start from the latest available slot
+                if (!result.is_ok())
+                {
+                    // Timeout waiting for a new slot; keep heartbeat alive and retry.
+                    ctx.update_heartbeat();
+                    continue;
+                }
 
-    int slots_read = 0;
-    while (slots_read < 5) { // Try to read up to 5 slots
-        std::optional<std::monostate> result = pylabhub::hub::with_next_slot(
-            iterator, 100, // Wait up to 100ms for a new slot
-            [&](const pylabhub::hub::SlotConsumeHandle& slot) {
-                SensorData data;
-                slot.read(&data, sizeof(SensorData));
-                std::cout << "with_next_slot: Read sequence " << data.sequence_num 
-                          << ", Temp: " << data.temperature << std::endl;
-                slots_read++;
-            });
-
-        if (!result.has_value()) {
-            std::cout << "with_next_slot: No new data for 100ms, waiting..." << std::endl;
-            // Optionally sleep to prevent busy-waiting if producer is slow
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-    }
-    std::cout << "with_next_slot: Finished reading " << slots_read << " slots." << std::endl;
-
-    // --- Example 3: Using ReadTransactionGuard ---
-    std::cout << "
---- Example 3: ReadTransactionGuard ---" << std::endl;
-    // Producer needs to write more data for this example if ring_buffer_capacity is small
-    // Assuming producer is still writing, or we read a slot we know exists
-    try {
-        // Acquire guard for slot_id 0 (if it's still valid/accessible)
-        pylabhub::hub::ReadTransactionGuard guard(*consumer, 0, 1000);
-        if (static_cast<bool>(guard)) { // Check if slot was successfully acquired
-            auto slot_opt = guard.slot();
-            if (slot_opt) {
-                SensorData data;
-                slot_opt->get().read(&data, sizeof(SensorData));
-                std::cout << "ReadTransactionGuard: Read sequence " << data.sequence_num 
-                          << ", Temp: " << data.temperature << std::endl;
+                const SensorData &data = result.content().get();
+                std::cout << "  Slot " << data.sequence_num
+                          << "  temp=" << data.temperature
+                          << "  hum=" << data.humidity << "\n";
+                // Slot is released automatically when result goes out of scope.
             }
-        } else {
-            std::cerr << "ReadTransactionGuard: Failed to acquire slot 0." << std::endl;
-        }
-    } catch (const std::runtime_error& e) {
-        std::cerr << "ReadTransactionGuard failed: " << e.what() << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Caught unexpected exception: " << e.what() << std::endl;
-    }
+        });
 
-
-    std::cout << "
---- Consumer Application Finished ---" << std::endl;
-
+    std::cout << "DataBlockConsumer finished.\n";
     return 0;
 }

@@ -15,19 +15,19 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class CApiChecksumTest : public IsolatedProcessTest
+class DatahubCApiChecksumTest : public IsolatedProcessTest
 {
 };
 
 // ─── ChecksumPolicy::Enforced ─────────────────────────────────────────────────
 
-TEST_F(CApiChecksumTest, EnforcedRoundtripPasses)
+TEST_F(DatahubCApiChecksumTest, EnforcedRoundtripPasses)
 {
     auto proc = SpawnWorker("c_api_checksum.enforced_roundtrip_passes", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-TEST_F(CApiChecksumTest, EnforcedCorruptionDetected)
+TEST_F(DatahubCApiChecksumTest, EnforcedCorruptionDetected)
 {
     auto proc = SpawnWorker("c_api_checksum.enforced_corruption_detected", {});
     ExpectWorkerOk(proc, {"DataBlock"});
@@ -35,7 +35,7 @@ TEST_F(CApiChecksumTest, EnforcedCorruptionDetected)
 
 // ─── ChecksumPolicy::None ─────────────────────────────────────────────────────
 
-TEST_F(CApiChecksumTest, NoneSkipsVerification)
+TEST_F(DatahubCApiChecksumTest, NoneSkipsVerification)
 {
     auto proc = SpawnWorker("c_api_checksum.none_skips_verification", {});
     ExpectWorkerOk(proc, {"DataBlock"});
