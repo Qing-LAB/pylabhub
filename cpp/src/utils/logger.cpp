@@ -3,12 +3,16 @@
  * @brief Implementation of the high-performance, asynchronous logger.
  ******************************************************************************/
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <future>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <variant>
 
 #include "plh_base.hpp"
