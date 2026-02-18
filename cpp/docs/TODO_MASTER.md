@@ -25,17 +25,19 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 📋 **Details**: `docs/todo/TESTING_TODO.md`
 
 Key tasks:
-- Recovery scenario tests — facility layer ✅ done (384/384); broker-coordinated flow deferred (needs broker protocol)
-- Messenger broker integration tests (when broker protocol is defined)
+- Recovery scenario tests — facility layer ✅ done; broker-coordinated flow deferred (needs broker protocol)
+- ✅ Messenger broker integration tests — Phase C complete (390/390 tests passing)
 
 ### Priority 2: Messenger Broker Protocol
-📍 **Status**: Deferred (protocol not yet defined)
+📍 **Status**: 🟢 Broker server implemented (REG/DISC/DEREG); consumer reg still deferred
 📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
 
 Key tasks:
-- Define consumer registration to broker protocol
-- Implement `register_consumer` (currently a stub in `messenger.cpp`)
-- Messenger error paths with broker
+- [x] `pylabhub-broker` executable — `src/broker/` (ChannelRegistry + BrokerService + broker_main)
+- [x] CurveZMQ server keypair; REG_REQ / DISC_REQ / DEREG_REQ handlers
+- [x] Phase C broker integration tests — DatahubBrokerTest (6 tests: registry ops, REG/DISC, schema mismatch, channel not found, deregister happy path, pid mismatch)
+- [ ] Define consumer registration to broker protocol
+- [ ] Implement `register_consumer` (currently a stub in `messenger.cpp`)
 
 ### Priority 3: Platform / Windows Verification
 📍 **Status**: Mostly done
@@ -54,11 +56,11 @@ Key tasks (backlog only):
 | RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 384/384 passing; remaining: slot-checksum repair, broker-coordinated recovery, Messenger integration |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 390/390 passing; remaining: slot-checksum repair, broker-coordinated recovery |
 | Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
-| Messenger | 🟢 Core done | `docs/todo/MESSAGEHUB_TODO.md` | Renamed from MessageHub; async queue + ZMQContext module; lifecycle ownership fixed; HEP updated; broker protocol pending |
+| Messenger / Broker | 🟢 Core done | `docs/todo/MESSAGEHUB_TODO.md` | Async queue + ZMQContext module; `pylabhub-broker` server (REG/DISC/DEREG); Phase C integration tests complete (6 tests); consumer reg pending |
 
 **Active code reviews:** None. All reviews resolved and archived.
 
