@@ -19,7 +19,7 @@
 #include <fmt/format.h>
 
 #include "utils/data_block.hpp"
-#include "utils/message_hub.hpp"
+#include "utils/messenger.hpp"
 #include "utils/schema_blds.hpp"
 
 using namespace std::chrono_literals;
@@ -122,7 +122,7 @@ void print_schema_info(const std::string &type_name, const pylabhub::schema::Sch
 // Producer Example: Type-Safe Transaction with Iterator
 // ============================================================================
 
-void producer_example(std::shared_ptr<MessageHub> hub)
+void producer_example()
 {
     std::cout << "\n=== Producer: RAII Layer Example ===\n" << std::endl;
 
@@ -176,9 +176,9 @@ void producer_example(std::shared_ptr<MessageHub> hub)
     //   - Stored in SharedMemoryHeader (flexzone_schema_hash + datablock_schema_hash)
     //   - Validated when consumer attaches
     auto producer = create_datablock_producer<FlexZoneMetadata, Message>(
-        //                                     ^^^^^^^^^^^^^^^^  ^^^^^^^ 
+        //                                     ^^^^^^^^^^^^^^^^  ^^^^^^^
         //                                     Both types provided!
-        *hub, "raii_example", 
+        "raii_example",
         DataBlockPolicy::RingBuffer,
         config
         // No schema instances needed - generated from template types
@@ -356,7 +356,7 @@ void producer_example(std::shared_ptr<MessageHub> hub)
 // Consumer Example: Type-Safe Reading with Schema Validation
 // ============================================================================
 
-void consumer_example(std::shared_ptr<MessageHub> hub)
+void consumer_example()
 {
     std::cout << "\n=== Consumer: RAII Layer Example ===\n" << std::endl;
 
@@ -375,9 +375,9 @@ void consumer_example(std::shared_ptr<MessageHub> hub)
     // PHASE 4 API: Attach consumer with BOTH schema types
     // Both schemas will be validated against producer's stored hashes
     auto consumer = find_datablock_consumer<FlexZoneMetadata, Message>(
-        //                                   ^^^^^^^^^^^^^^^^  ^^^^^^^ 
+        //                                   ^^^^^^^^^^^^^^^^  ^^^^^^^
         //                                   Both types must match producer!
-        *hub, "raii_example", 
+        "raii_example",
         0,  // Shared secret (0 = default/discover)
         expected_config
         // No schema instances needed - generated from template types
@@ -483,22 +483,14 @@ int main()
 
     try
     {
-        // Initialize message hub
-        auto hub = create_message_hub("/tmp/pylabhub_raii_example");
-        if (!hub)
-        {
-            std::cerr << "Failed to create message hub" << std::endl;
-            return 1;
-        }
-
         // Run producer
-        producer_example(hub);
+        producer_example();
 
         // Small delay
         std::this_thread::sleep_for(100ms);
 
         // Run consumer
-        consumer_example(hub);
+        consumer_example();
 
         std::cout << "\n╔════════════════════════════════════════════════════════════╗" << std::endl;
         std::cout << "║                    All Examples Complete!                   ║" << std::endl;

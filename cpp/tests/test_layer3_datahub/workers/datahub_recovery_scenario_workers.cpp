@@ -71,10 +71,9 @@ int zombie_writer_detected_and_released()
                 << "Test invariant: kDeadPid (" << kDeadPid << ") must not be a live process";
 
             std::string channel = make_test_channel_name("ZombieWriter");
-            MessageHub &hub = MessageHub::get_instance();
             DataBlockConfig cfg = make_recovery_config(77001);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -119,9 +118,19 @@ int zombie_writer_detected_and_released()
                     << "recovery_actions_count must be > 0 after a recovery action";
             }
 
-            // wh still holds a dangling reference (write_lock was overwritten), so we must NOT
-            // call release_write_slot here — that would try to commit via the now-cleared lock.
-            // Simply let wh go out of scope; its destructor tries release (write_lock=0 → no-op commit).
+            // wh still holds a write handle whose write_lock was overwritten then cleared by
+            // recovery. Restore the slot to a WRITING + our_pid state so release_write_slot
+            // can abort cleanly (its abort path requires write_lock == current PID).  We
+            // already verified the recovery result above; this is purely a cleanup step.
+            {
+                auto diag = open_datablock_for_diagnostic(channel);
+                ASSERT_NE(diag, nullptr);
+                SlotRWState *rw = diag->slot_rw_state(0);
+                ASSERT_NE(rw, nullptr);
+                rw->write_lock.store(pylabhub::platform::get_pid(), std::memory_order_release);
+                rw->slot_state.store(SlotRWState::SlotState::WRITING, std::memory_order_release);
+            }
+            static_cast<void>(producer->release_write_slot(*wh)); // abort the write cleanly
             producer.reset();
             cleanup_test_datablock(channel);
         },
@@ -142,10 +151,9 @@ int zombie_readers_force_cleared()
         []()
         {
             std::string channel = make_test_channel_name("ZombieReaders");
-            MessageHub &hub = MessageHub::get_instance();
             DataBlockConfig cfg = make_recovery_config(77002);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -219,10 +227,9 @@ int force_reset_slot_on_dead_writer()
                 << "Test invariant: kDeadPid must not be a live process";
 
             std::string channel = make_test_channel_name("ForceResetDeadWriter");
-            MessageHub &hub = MessageHub::get_instance();
             DataBlockConfig cfg = make_recovery_config(77003);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -264,6 +271,16 @@ int force_reset_slot_on_dead_writer()
                 EXPECT_GT(hdr->recovery_actions_count.load(std::memory_order_acquire), 0u);
             }
 
+            // Restore slot state so wh can abort cleanly before producer is destroyed.
+            {
+                auto diag = open_datablock_for_diagnostic(channel);
+                ASSERT_NE(diag, nullptr);
+                SlotRWState *rw = diag->slot_rw_state(0);
+                ASSERT_NE(rw, nullptr);
+                rw->write_lock.store(pylabhub::platform::get_pid(), std::memory_order_release);
+                rw->slot_state.store(SlotRWState::SlotState::WRITING, std::memory_order_release);
+            }
+            static_cast<void>(producer->release_write_slot(*wh));
             producer.reset();
             cleanup_test_datablock(channel);
         },
@@ -285,10 +302,9 @@ int dead_consumer_cleanup()
                 << "Test invariant: kDeadPid must not be a live process";
 
             std::string channel = make_test_channel_name("DeadConsumerCleanup");
-            MessageHub &hub = MessageHub::get_instance();
             DataBlockConfig cfg = make_recovery_config(77004);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -368,10 +384,9 @@ int force_reset_unsafe_when_writer_alive()
         []()
         {
             std::string channel = make_test_channel_name("ForceResetUnsafe");
-            MessageHub &hub = MessageHub::get_instance();
             DataBlockConfig cfg = make_recovery_config(77006);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);

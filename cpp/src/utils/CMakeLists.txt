@@ -30,7 +30,8 @@ set(UTILS_SOURCES
   logger_sinks/event_log_sink.cpp
   logger.cpp
   json_config.cpp
-  message_hub.cpp
+  zmq_context.cpp
+  messenger.cpp
   data_block.cpp
   data_block_mutex.cpp
   shared_memory_spinlock.cpp

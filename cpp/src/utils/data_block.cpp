@@ -1,10 +1,11 @@
 #include "plh_service.hpp" // Includes crypto_utils, logger, lifecycle
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
+#include "utils/messenger.hpp"
 #include "utils/deterministic_checksum.hpp"
-#include "utils/message_hub.hpp"
 #include "utils/data_block_mutex.hpp"
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <mutex>
@@ -2149,24 +2150,6 @@ void DataBlockProducer::check_consumer_health() noexcept
     }
 }
 
-bool DataBlockProducer::register_with_broker(MessageHub &hub, const std::string &channel_name)
-{
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr ||
-        pImpl->dataBlock->header() == nullptr)
-    {
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    ProducerInfo info{};
-    info.shm_name = pImpl->name;
-    info.producer_pid = pylabhub::platform::get_pid();
-    info.schema_hash.assign(
-        reinterpret_cast<const char *>(pImpl->dataBlock->header()->datablock_schema_hash),
-        detail::CHECKSUM_BYTES);
-    info.schema_version = pImpl->dataBlock->header()->schema_version;
-    return hub.register_producer(channel_name, info);
-}
-
 // ============================================================================
 // Slot Handles (Primitive Data Transfer API) - Implementations
 // ============================================================================
@@ -3033,7 +3016,7 @@ static bool validate_attach_layout_and_config(const SharedMemoryHeader *header,
 // Internal implementation that accepts optional schema info
 // Internal implementation that creates producer with dual schema support (Phase 4)
 std::unique_ptr<DataBlockProducer>
-create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
                                const DataBlockConfig &config,
                                const pylabhub::schema::SchemaInfo *flexzone_schema,
                                const pylabhub::schema::SchemaInfo *datablock_schema)
@@ -3088,17 +3071,6 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
         }
     }
 
-    ProducerInfo pinfo{};
-    pinfo.shm_name = name;
-    pinfo.producer_pid = pylabhub::platform::get_pid();
-    // Backward compat: report datablock schema in schema_hash field
-    pinfo.schema_hash.assign(reinterpret_cast<const char *>(header->datablock_schema_hash),
-                             detail::CHECKSUM_BYTES);
-    pinfo.schema_version = header->schema_version;
-    if (!hub.register_producer(name, pinfo))
-    {
-        LOGGER_WARN("DataBlock: Failed to register producer '{}' with broker (discovery may be unavailable).", name);
-    }
     return std::make_unique<DataBlockProducer>(std::move(impl));
 }
 
@@ -3108,7 +3080,7 @@ create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlo
 
 // Phase 4: Internal implementation with dual schema validation
 std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
+find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema)
@@ -3263,18 +3235,6 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
         }
     }
 
-    // Register with broker
-    ConsumerInfo cinfo{};
-    cinfo.shm_name = name;
-    // Note: consumer_pid field was removed from ConsumerInfo; PID is tracked elsewhere
-    cinfo.schema_hash.assign(reinterpret_cast<const char *>(header->datablock_schema_hash),
-                             detail::CHECKSUM_BYTES);
-    cinfo.schema_version = header->schema_version;
-    if (!hub.register_consumer(name, cinfo))
-    {
-        LOGGER_WARN("DataBlock: Failed to register consumer for '{}' with broker (discovery may be unavailable). Check broker connectivity and that the channel name is correct.", name);
-    }
-    
     return consumer;
 }
 
@@ -3286,7 +3246,7 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
 // process attaches R/W without initializing or owning the segment.
 // Validation mirrors find_datablock_consumer_impl (secret + schema).
 std::unique_ptr<DataBlockProducer>
-attach_datablock_as_writer_impl(MessageHub &hub, const std::string &name,
+attach_datablock_as_writer_impl(const std::string &name,
                                 uint64_t shared_secret,
                                 const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
@@ -3398,18 +3358,6 @@ attach_datablock_as_writer_impl(MessageHub &hub, const std::string &name,
         }
         LOGGER_DEBUG("[DataBlock:{}] WriteAttach: DataBlock schema validated: {} v{}",
                      name, datablock_schema->name, datablock_schema->version.to_string());
-    }
-
-    // Register with broker (best-effort; writer does not own the channel)
-    ProducerInfo pinfo{};
-    pinfo.shm_name = name;
-    pinfo.producer_pid = pylabhub::platform::get_pid();
-    pinfo.schema_hash.assign(reinterpret_cast<const char *>(header->datablock_schema_hash),
-                             detail::CHECKSUM_BYTES);
-    pinfo.schema_version = header->schema_version;
-    if (!hub.register_producer(name, pinfo))
-    {
-        LOGGER_WARN("[DataBlock:{}] WriteAttach: Failed to register writer with broker (discovery may be unavailable).", name);
     }
 
     LOGGER_INFO("[DataBlock:{}] Attached as writer (WriteAttach mode).", name);

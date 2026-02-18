@@ -16,20 +16,8 @@
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
 
-// Forward declare impl (internal, used by recovery - no templates needed)
-namespace pylabhub::hub {
-    std::unique_ptr<DataBlockProducer>
-    create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
-                                   const DataBlockConfig &config,
-                                   const pylabhub::schema::SchemaInfo *flexzone_schema,
-                                   const pylabhub::schema::SchemaInfo *datablock_schema);
-
-    std::unique_ptr<DataBlockConsumer>
-    find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
-                                 const DataBlockConfig *expected_config,
-                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
-                                 const pylabhub::schema::SchemaInfo *datablock_schema);
-}
+// Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
+// data_block.hpp (plh_datahub.hpp) without hub parameter. No local forward declarations needed.
 
 namespace pylabhub::tests::worker::recovery
 {
@@ -56,7 +44,6 @@ int integrity_validator_validate_succeeds_on_created_datablock()
         []()
         {
             std::string channel = make_test_channel_name("IntegrityValidator");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -65,7 +52,7 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             IntegrityValidator validator(channel);
@@ -84,7 +71,6 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
         []()
         {
             std::string channel = make_test_channel_name("SlotDiagnostics");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -93,7 +79,7 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotDiagnostics diag(channel, 0);
@@ -113,7 +99,6 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
         []()
         {
             std::string channel = make_test_channel_name("SlotRecovery");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -122,7 +107,7 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotRecovery recovery(channel, 0);
@@ -142,7 +127,6 @@ int heartbeat_manager_registers_and_pulses()
         []()
         {
             std::string channel = make_test_channel_name("HeartbeatManager");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -151,11 +135,11 @@ int heartbeat_manager_registers_and_pulses()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             auto consumer = find_datablock_consumer_impl(
-                hub_ref, channel, config.shared_secret, &config, nullptr, nullptr);
+                channel, config.shared_secret, &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
             {
@@ -177,7 +161,6 @@ int producer_update_heartbeat_explicit_succeeds()
         []()
         {
             std::string channel = make_test_channel_name("ProducerHeartbeat");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -186,7 +169,7 @@ int producer_update_heartbeat_explicit_succeeds()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             producer->update_heartbeat();
@@ -204,7 +187,6 @@ int producer_heartbeat_and_is_writer_alive()
         []()
         {
             std::string channel = make_test_channel_name("ProducerHeartbeatIsWriterAlive");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -213,7 +195,7 @@ int producer_heartbeat_and_is_writer_alive()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer = create_datablock_producer_impl(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             const uint64_t my_pid = pylabhub::platform::get_pid();

@@ -52,13 +52,12 @@ int policy_unset_throws()
         []()
         {
             std::string channel = make_test_channel_name("CfgPolicyUnset");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(73001);
             cfg.policy = DataBlockPolicy::Unset;
 
             EXPECT_THROW(
-                (void)create_datablock_producer_impl(hub, channel, DataBlockPolicy::Unset,
+                (void)create_datablock_producer_impl(channel, DataBlockPolicy::Unset,
                                                      cfg, nullptr, nullptr),
                 std::invalid_argument)
                 << "create_datablock_producer_impl must throw std::invalid_argument "
@@ -77,13 +76,12 @@ int consumer_sync_policy_unset_throws()
         []()
         {
             std::string channel = make_test_channel_name("CfgSyncUnset");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(73002);
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Unset;
 
             EXPECT_THROW(
-                (void)create_datablock_producer_impl(hub, channel, cfg.policy,
+                (void)create_datablock_producer_impl(channel, cfg.policy,
                                                      cfg, nullptr, nullptr),
                 std::invalid_argument)
                 << "create_datablock_producer_impl must throw when consumer_sync_policy is Unset";
@@ -101,13 +99,12 @@ int physical_page_size_unset_throws()
         []()
         {
             std::string channel = make_test_channel_name("CfgPageUnset");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(73003);
             cfg.physical_page_size = DataBlockPageSize::Unset;
 
             EXPECT_THROW(
-                (void)create_datablock_producer_impl(hub, channel, cfg.policy,
+                (void)create_datablock_producer_impl(channel, cfg.policy,
                                                      cfg, nullptr, nullptr),
                 std::invalid_argument)
                 << "create_datablock_producer_impl must throw when physical_page_size is Unset";
@@ -125,13 +122,12 @@ int ring_buffer_capacity_zero_throws()
         []()
         {
             std::string channel = make_test_channel_name("CfgCapZero");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(73004);
             cfg.ring_buffer_capacity = 0;
 
             EXPECT_THROW(
-                (void)create_datablock_producer_impl(hub, channel, cfg.policy,
+                (void)create_datablock_producer_impl(channel, cfg.policy,
                                                      cfg, nullptr, nullptr),
                 std::invalid_argument)
                 << "create_datablock_producer_impl must throw when ring_buffer_capacity is 0";
@@ -149,10 +145,9 @@ int valid_config_creates_successfully()
         []()
         {
             std::string channel = make_test_channel_name("CfgValid");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(73005);
-            auto producer = create_datablock_producer_impl(hub, channel, cfg.policy,
+            auto producer = create_datablock_producer_impl(channel, cfg.policy,
                                                            cfg, nullptr, nullptr);
             EXPECT_NE(producer, nullptr)
                 << "create_datablock_producer_impl must succeed with a fully valid config";

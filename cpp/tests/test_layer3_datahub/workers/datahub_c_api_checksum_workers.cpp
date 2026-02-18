@@ -59,13 +59,12 @@ int enforced_roundtrip_passes()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsRoundtrip");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ChecksumPolicy::Enforced, 72001);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -113,13 +112,12 @@ int enforced_corruption_detected()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsCorrupt");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ChecksumPolicy::Enforced, 72002);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -170,13 +168,12 @@ int none_skips_verification()
         []()
         {
             std::string channel = make_test_channel_name("CApiCsNone");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ChecksumPolicy::None, 72003);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 

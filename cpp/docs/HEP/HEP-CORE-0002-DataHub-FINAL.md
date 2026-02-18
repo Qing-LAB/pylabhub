@@ -33,8 +33,8 @@ This is the **authoritative, implementation-ready specification** for the Data E
 
 Implementation status and priorities are tracked in **`docs/DATAHUB_TODO.md`** (single execution plan). Summary:
 
-- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle), MessageHub lifecycle and no-broker paths, Layer 3 tests (slot protocol, error handling, recovery, policy tests, high-load integrity). **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses recursive mutex). **Producer heartbeat** is stored in `reserved_header` at a fixed offset; updated on commit and via `producer->update_heartbeat()`. Liveness uses **heartbeat-first**: if heartbeat is fresh the writer is considered alive, else `is_process_alive(pid)` is used (e.g. for zombie reclaim). **Layer 1.75** (standalone `SlotRWAccess` / `slot_rw_access.hpp`) has been **removed**; typed access is via **Producer/Consumer** `with_typed_write<T>` and `with_typed_read<T>` in `data_block.hpp`. The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers must ensure multithread safety.
-- **Not yet implemented / in progress:** Broker schema registry (1.4), schema versioning (1.5), full MessageHub Phase C/D integration, optional integrity repair path, some DataBlockMutex reintegration and factory behavior. For any section in this HEP that describes functionality not yet in code, consider it **not yet implemented** and sync with **`docs/DATAHUB_TODO.md`** for the current plan and next steps.
+- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, WriteAttach mode (broker-owned segment), recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle). **Messenger** (renamed from MessageHub): ZeroMQ-based async command-queue broker client; fire-and-forget `register_producer`; synchronous `discover_producer` via `std::future`/`std::promise`; `register_consumer` stub pending protocol. **ZMQContext**: separate static lifecycle module (`GetZMQContextModule()`); lifecycle-managed context/socket teardown order guaranteed. **DataBlock factory functions are fully decoupled from Messenger** — no hub parameter; broker registration is caller-initiated after factory returns. **All 384 tests passing** including: recovery scenarios (zombie detection, force-reset, dead consumer cleanup), integrity validation (layout checksum, magic number, fresh-block baseline), WriteAttach tests, and complete slot protocol/RAII/policy suite. **DRAINING state** (`SlotState::DRAINING`) is active and tested: entered on ring-buffer wrap of COMMITTED slot, rejects new readers, resolves after reader release; provably unreachable for Single_reader and Sync_reader policies. **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses recursive mutex). **Producer heartbeat** is stored in `reserved_header` at a fixed offset; liveness uses **heartbeat-first**: if heartbeat is fresh the writer is considered alive, else `is_process_alive(pid)` is used. **Layer 1.75** (standalone `SlotRWAccess`) has been **removed**; typed access is via `with_transaction<FlexZoneT, DataBlockT>()` in `data_block.hpp`. The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers ensure multi-thread safety.
+- **Not yet implemented / in progress:** Broker schema registry (1.4), schema versioning (1.5), consumer registration protocol (broker team dependency), broker-coordinated recovery (Phase C — requires broker protocol), slot-checksum in-place repair (requires WriteAttach path in `datablock_validate_integrity`). For any section in this HEP that describes functionality not yet in code, consider it **not yet implemented** and sync with **`docs/TODO_MASTER.md`** and subtopic TODOs for the current plan and next steps.
 
 Design rationale and critical review (cross-platform, API consistency, flexible zone, integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**, **DATAHUB_CPP_ABSTRACTION_DESIGN**, and **DATAHUB_POLICY_AND_SCHEMA_ANALYSIS**; key content has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder’s README for the merge map).
 
@@ -126,7 +126,7 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 
 **Completed (8/9 tasks):**
 - P1: Ring Buffer Policy (backpressure, queue full/empty detection)
-- P2: MessageHub Thread Safety (internal mutex)
+- P2: Messenger Thread Safety (async command queue; ZMQ socket single-threaded in worker)
 - P3: Checksum Policy (Manual vs Enforced)
 - P4: TOCTTOU Race Mitigation (SlotRWCoordinator)
 - P5: Memory Barriers (acquire/release ordering)
@@ -203,7 +203,7 @@ graph TB
 
     subgraph "Control Plane"
         BROKER[Broker Service<br/>Discovery Registry]
-        MH[MessageHub<br/>ZeroMQ Client]
+        MH[Messenger<br/>ZeroMQ Client]
     end
 
     APP1 --> L3
@@ -1433,7 +1433,7 @@ This section describes the **access API** and how it relates to the shared-memor
 | **release_write_slot(handle)** | Release the write handle; under Enforced checksum policy, updates slot checksum before release. | Decrements writer refs; may write checksum into control zone; slot can be reused on wrap. |
 | **flexible_zone_span(index)** / **flexible_zone&lt;T&gt;(index)** | Access TABLE 1 (metadata). | Offsets derived from layout; valid only when zone is defined and agreed. |
 | **update_checksum_slot** / **update_checksum_flexible_zone** | Store BLAKE2b of slot or flexible zone in header. | Used when ChecksumPolicy is Manual; stored in header/control zone. |
-| **register_with_broker** / **check_consumer_health** | Discovery and liveness. | Broker optional; heartbeat in header `consumer_heartbeats[]`. |
+| **check_consumer_health** | Liveness check for active consumers. | Reads `consumer_heartbeats[]` from header; calls `is_process_alive(pid)` if heartbeat is stale. DataBlock is fully decoupled from Messenger — broker registration is caller-initiated via `Messenger::get_instance().register_producer()` after construction. |
 
 Lifetime: All write handles must be released or destroyed before destroying the producer; otherwise use-after-free.
 
@@ -1589,7 +1589,7 @@ The **Broker Service** is a lightweight discovery-only registry. It is **NOT** i
 - **Out of Critical Path:** Data flows peer-to-peer via shared memory
 - **Crash Tolerant:** Broker crash does NOT affect running data transfers
 - **Optional:** Direct shared memory attachment possible (bypass broker)
-- **Thread-Safe:** Internal mutex protects ZeroMQ socket operations
+- **Thread-Safe:** Async command queue; ZMQ socket owned exclusively by worker thread (no socket mutex)
 
 **Broker Responsibilities:**
 - ✅ Producer registration (store channel → shm_name mapping)
@@ -1598,6 +1598,44 @@ The **Broker Service** is a lightweight discovery-only registry. It is **NOT** i
 - ❌ Data routing (NO message forwarding)
 - ❌ Heartbeat coordination (handled in shared memory)
 - ❌ Error recovery (handled by CLI tools)
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph TD
+    subgraph "Producer Process"
+        PA["Application Code"]
+        PM["Messenger\n(async queue)"]
+        PW["Worker Thread\n(ZMQ DEALER socket)"]
+        PDB["DataBlockProducer\n(shared memory)"]
+        PA -->|"register_producer()"| PM
+        PM -->|"RegisterProducerCmd"| PW
+        PA -->|"acquire / commit"| PDB
+    end
+
+    subgraph "Consumer Process"
+        CA["Application Code"]
+        CM["Messenger\n(async queue)"]
+        CW["Worker Thread\n(ZMQ DEALER socket)"]
+        CDB["DataBlockConsumer\n(shared memory)"]
+        CA -->|"discover_producer()"| CM
+        CM -->|"DiscoverProducerCmd + future"| CW
+        CA -->|"acquire / read"| CDB
+    end
+
+    subgraph "Broker (separate process)"
+        B["Broker Service\nDiscovery Registry\nchannel → shm_name"]
+    end
+
+    SHM[("Shared Memory\nSegment")]
+
+    PW -->|"REG_REQ"| B
+    B -->|"REG_ACK"| PW
+    CW -->|"DISC_REQ"| B
+    B -->|"DISC_ACK {shm_name}"| CW
+    CA -->|"attach(shm_name)"| CDB
+    PDB <-->|"ring buffer IPC"| SHM
+    CDB <-->|"ring buffer IPC"| SHM
+```
 
 ### 6.2 Message Format Specification
 
@@ -1894,130 +1932,258 @@ flowchart LR
     D --> E[Dead, reclaim]
 ```
 
-### 6.5 MessageHub Thread Safety Implementation
+### 6.5 Messenger: Async Command Queue Design
 
-**Design Decision (from P2):** Internal mutex protecting all ZeroMQ socket operations.
+**Design Decision (from P2):** The ZMQ socket is owned exclusively by a single dedicated worker
+thread. All callers enqueue typed commands; the worker thread processes them serially. This
+eliminates the internal mutex on the socket entirely — no lock contention, no thundering-herd
+serialization — while preserving thread-safe access from any caller thread.
 
-**Implementation:**
+**Why not a mutex?**
+ZeroMQ sockets are explicitly not thread-safe. The prior approach of protecting all socket
+operations with a `std::mutex` caused every caller to block during network I/O, and the
+documentation-level guarantee that "all methods are thread-safe" hid an O(n) serialization cliff
+under concurrent load. The async queue design makes the threading contract explicit at the type
+level: callers never touch the socket; only the worker thread does.
+
+**Command Variant:**
 ```cpp
-// pylabhub/include/message_hub.hpp
-namespace pylabhub {
-
-class MessageHub {
-public:
-    // All public methods are thread-safe
-    void send_message(const std::string& channel, const std::string& message);
-    std::optional<std::string> receive_message(int timeout_ms);
-
-    // Multiple threads can call these concurrently
-    void register_producer(const std::string& channel, const ProducerInfo& info);
-    std::optional<ConsumerInfo> discover_producer(const std::string& channel);
-
-private:
-    class Impl;
-    std::unique_ptr<Impl> m_impl;  // pImpl idiom for ABI stability
+// src/utils/messenger.cpp (internal — not in public API)
+struct ConnectCmd    { std::string endpoint; std::string server_key; std::promise<bool> result; };
+struct DisconnectCmd { };
+struct RegisterProducerCmd { std::string channel; ProducerInfo info; };
+struct RegisterConsumerCmd { std::string channel; ConsumerInfo info; };
+struct DiscoverProducerCmd {
+    std::string channel;
+    int timeout_ms;
+    std::promise<std::optional<ConsumerInfo>> result;
 };
+struct StopCmd { };
 
-// pylabhub/src/message_hub.cpp
-class MessageHub::Impl {
-public:
-    void send_message(const std::string& channel, const std::string& message) {
-        std::lock_guard<std::mutex> lock(m_socket_mutex);
-
-        // All ZeroMQ operations protected by mutex
-        zmq::message_t msg_channel(channel.data(), channel.size());
-        zmq::message_t msg_body(message.data(), message.size());
-
-        m_socket.send(msg_channel, zmq::send_flags::sndmore);
-        m_socket.send(msg_body, zmq::send_flags::none);
-    }
-
-    std::optional<std::string> receive_message(int timeout_ms) {
-        std::lock_guard<std::mutex> lock(m_socket_mutex);
-
-        // Set socket timeout
-        m_socket.set(zmq::sockopt::rcvtimeo, timeout_ms);
-
-        zmq::message_t msg;
-        auto result = m_socket.recv(msg, zmq::recv_flags::none);
-
-        if (!result) return std::nullopt;
-
-        return std::string(static_cast<char*>(msg.data()), msg.size());
-    }
-
-private:
-    zmq::context_t m_context{1};
-    zmq::socket_t m_socket;
-    mutable std::mutex m_socket_mutex;  // Protects all socket operations
-};
-
-} // namespace pylabhub
+using MessengerCommand = std::variant<
+    ConnectCmd, DisconnectCmd,
+    RegisterProducerCmd, RegisterConsumerCmd,
+    DiscoverProducerCmd,
+    StopCmd>;
 ```
 
-**Performance Impact:**
-```
-Operation: MessageHub::send_message()
-─────────────────────────────────────
-Mutex lock/unlock:     50-100 ns
-JSON serialization:    1-5 μs
-ZeroMQ send:          10-50 μs (network latency)
-─────────────────────────────────────
-Total:                ~10-55 μs
-Mutex overhead:       <0.2% (negligible)
-```
-
-**Concurrent Usage Patterns:**
+**MessengerImpl (pImpl):**
 ```cpp
-// Pattern 1: Producer + Consumer in same process
-DataBlockProducer producer(config);
-DataBlockConsumer consumer(config);
+class MessengerImpl {
+public:
+    zmq::socket_t m_socket;          // Owned exclusively by m_worker
+    std::atomic<bool> m_is_connected{false};
 
-std::thread producer_thread([&]() {
-    while (running) {
-        producer.write_data(...);
-        producer.message_hub().send_message("status", "OK");  // Thread-safe
+    std::deque<MessengerCommand> m_queue;
+    std::mutex m_queue_mutex;
+    std::condition_variable m_queue_cv;
+    std::thread m_worker;
+    std::atomic<bool> m_running{false};
+
+    MessengerImpl();    // Constructs socket from get_zmq_context()
+    ~MessengerImpl();   // Enqueues StopCmd, joins worker thread
+
+    void enqueue(MessengerCommand cmd);   // Called from any thread
+    void worker_loop();                   // Runs on m_worker only
+};
+```
+
+**Worker Thread Loop (single consumer):**
+```cpp
+void MessengerImpl::worker_loop() {
+    while (true) {
+        std::deque<MessengerCommand> local_queue;
+        {
+            std::unique_lock lock(m_queue_mutex);
+            m_queue_cv.wait(lock, [&] { return !m_queue.empty(); });
+            std::swap(local_queue, m_queue);  // Batch: drain all pending
+        }
+        for (auto& cmd : local_queue) {
+            std::visit([this](auto& c) { handle_command(c); }, cmd);
+            if (std::holds_alternative<StopCmd>(cmd)) { return; }
+        }
     }
-});
-
-std::thread consumer_thread([&]() {
-    while (running) {
-        consumer.read_data(...);
-        consumer.message_hub().send_message("ack", "received");  // Thread-safe
-    }
-});
-
-// Pattern 2: Multiple producers in same process
-std::vector<std::thread> threads;
-for (int i = 0; i < 4; ++i) {
-    threads.emplace_back([&, i]() {
-        message_hub.register_producer(
-            fmt::format("channel_{}", i), producer_info
-        );  // Thread-safe
-    });
 }
 ```
 
-**API Contract:**
+**Fire-and-Forget Commands (register_producer, register_consumer):**
+Callers enqueue and return immediately. The worker sends to the broker asynchronously;
+errors are logged by the worker thread. Return type is `void` — callers have no result to wait on.
+
 ```cpp
-/**
- * MessageHub: Thread-Safe ZeroMQ Client
- *
- * All methods are thread-safe and can be called concurrently from
- * multiple threads. Internal locking ensures ZeroMQ socket operations
- * are serialized.
- *
- * Performance: Mutex overhead ~50-100ns, negligible vs network latency.
- *
- * Usage:
- *   MessageHub hub("tcp://localhost:5555");
- *
- *   // Thread 1
- *   hub.send_message("channel1", "data");
- *
- *   // Thread 2 (concurrent, safe)
- *   hub.send_message("channel2", "data");
- */
+void Messenger::register_producer(const std::string& channel, const ProducerInfo& info) {
+    pImpl->enqueue(RegisterProducerCmd{channel, info});
+}
+```
+
+**Synchronous Commands (connect, discover_producer):**
+Callers enqueue a command with an embedded `std::promise<T>`, then block on the corresponding
+`std::future<T>`. The worker fulfills the promise after completing the ZMQ exchange.
+
+```cpp
+[[nodiscard]] bool Messenger::connect(const std::string& endpoint,
+                                      const std::string& server_key) {
+    std::promise<bool> p;
+    auto fut = p.get_future();
+    pImpl->enqueue(ConnectCmd{endpoint, server_key, std::move(p)});
+    return fut.get();  // Blocks caller until worker fulfills promise
+}
+
+[[nodiscard]] std::optional<ConsumerInfo>
+Messenger::discover_producer(const std::string& channel, int timeout_ms) {
+    std::promise<std::optional<ConsumerInfo>> p;
+    auto fut = p.get_future();
+    pImpl->enqueue(DiscoverProducerCmd{channel, timeout_ms, std::move(p)});
+    return fut.get();  // Blocks caller until worker receives broker reply
+}
+```
+
+**ZMQ Context Lifecycle (ZMQContext module):**
+
+The ZeroMQ context (`zmq::context_t`) is managed as a separate static lifecycle module named
+`"ZMQContext"`. `GetLifecycleModule()` (DataExchangeHub) declares a dependency on it, guaranteeing
+the following strict startup/shutdown ordering:
+
+```
+Startup order:
+  Logger  →  ZMQContext  →  DataExchangeHub (Messenger)
+
+Shutdown order:
+  Messenger (StopCmd → join worker → close socket)
+      →  ZMQContext (delete context)
+          →  Logger
+```
+
+The shutdown ordering is critical: the worker thread joins (and closes its socket) before the ZMQ
+context is destroyed. Any violation would cause `zmq_term()` to block indefinitely or crash.
+
+The `zmq_context_shutdown()` function is idempotent — a `nullptr` guard prevents double-delete
+if both `GetZMQContextModule()` and `GetLifecycleModule()` are registered independently.
+
+**Lifecycle-Managed Singleton:**
+
+`Messenger::get_instance()` is NOT a function-local static. The instance is allocated in
+`do_hub_startup` and stored in `g_messenger_instance` (a raw pointer in anonymous namespace).
+`do_hub_shutdown` destroys it before tearing down the ZMQ context.
+
+```cpp
+namespace {
+std::atomic<bool> g_hub_initialized{false};
+Messenger* g_messenger_instance = nullptr;
+} // namespace
+
+void do_hub_startup(const char*) {
+    sodium_init();
+    zmq_context_startup();
+    g_messenger_instance = new Messenger();
+    g_hub_initialized.store(true, std::memory_order_release);
+}
+
+void do_hub_shutdown(const char*) {
+    g_hub_initialized.store(false, std::memory_order_release);
+    delete g_messenger_instance;   // ~MessengerImpl: StopCmd → join → socket closed
+    g_messenger_instance = nullptr;
+    zmq_context_shutdown();        // Context destroyed after socket is gone
+}
+
+Messenger& Messenger::get_instance() {
+    assert(g_hub_initialized.load(std::memory_order_acquire) &&
+           "Messenger::get_instance() called before registration and initialization through Lifecycle");
+    assert(g_messenger_instance != nullptr);
+    return *g_messenger_instance;
+}
+```
+
+**Thread Safety Summary:**
+
+| Caller thread action         | Thread-safe? | Mechanism                                |
+|------------------------------|:------------:|------------------------------------------|
+| `register_producer()`        | ✅ Yes       | Enqueue + `m_queue_mutex` + `notify_one` |
+| `register_consumer()`        | ✅ Yes       | Enqueue + `m_queue_mutex` + `notify_one` |
+| `connect()`                  | ✅ Yes       | Enqueue + `std::future::get()` (blocks)  |
+| `discover_producer()`        | ✅ Yes       | Enqueue + `std::future::get()` (blocks)  |
+| ZMQ socket operations        | ✅ Yes       | Worker thread only — no socket mutex     |
+| `get_instance()` (post-init) | ✅ Yes       | Atomic load; pointer immutable after init|
+| `get_instance()` (pre-init)  | ✅ Asserts   | `assert(g_hub_initialized)`             |
+
+**Async Command Queue — Sequence Diagram:**
+```mermaid
+sequenceDiagram
+    participant C as Caller Thread
+    participant Q as Command Queue<br/>(mutex + condvar)
+    participant W as Worker Thread<br/>(owns ZMQ socket)
+    participant B as Broker
+
+    Note over C,W: Fire-and-forget (register_producer)
+    C->>Q: enqueue(RegisterProducerCmd)
+    C-->>C: return immediately (void)
+    Q->>W: notify_one()
+    W->>B: ZMQ send (DEALER frame)
+    B-->>W: (no reply expected)
+
+    Note over C,W: Synchronous (connect / discover_producer)
+    C->>Q: enqueue(ConnectCmd + promise<bool>)
+    C->>C: future.get() [blocks]
+    Q->>W: notify_one()
+    W->>B: ZMQ send + poll
+    B-->>W: reply frame
+    W-->>C: promise.set_value(true)
+    C-->>C: future.get() returns
+
+    Note over C,W: Shutdown
+    C->>Q: enqueue(StopCmd)
+    W->>W: break loop
+    W->>W: close socket
+```
+
+**Lifecycle Dependency Graph:**
+```mermaid
+graph TD
+    Logger["Logger\n(static module)"]
+    ZMQ["ZMQContext\n(static module)\nzmq::context_t"]
+    Hub["DataExchangeHub\n(static module)\nMessenger instance"]
+    Sodium["libsodium\nsodium_init()"]
+
+    Logger -->|"depended on by"| ZMQ
+    ZMQ -->|"depended on by"| Hub
+    Sodium -->|"initialized in"| Hub
+
+    subgraph "Startup Order →"
+        Logger
+        ZMQ
+        Hub
+    end
+
+    subgraph "Shutdown Order ←"
+        Hub
+        ZMQ
+        Logger
+    end
+```
+
+**ZMQ Socket Ownership — Thread Responsibility:**
+```mermaid
+graph LR
+    subgraph "Caller Threads (any)"
+        CT1["Thread A\nregister_producer()"]
+        CT2["Thread B\ndiscover_producer()"]
+        CT3["Thread C\nconnect()"]
+    end
+
+    subgraph "Messenger Internal"
+        Q["Command Queue\nstd::deque\n+ mutex\n+ condvar"]
+        W["Worker Thread\nworker_loop()"]
+        S["zmq::socket_t\n(DEALER)"]
+    end
+
+    B["Broker\n(remote process)"]
+
+    CT1 -->|"enqueue cmd"| Q
+    CT2 -->|"enqueue cmd + future"| Q
+    CT3 -->|"enqueue cmd + future"| Q
+    Q -->|"notify_one"| W
+    W -->|"only thread to access"| S
+    S <-->|"ZMQ frames"| B
 ```
 
 ---
@@ -2077,8 +2243,11 @@ public:
     TemperatureSensorProducer(const DataBlockConfig& config)
         : m_producer(config)
     {
-        // Register with broker
-        m_producer.register_with_broker("sensors/temperature/lab1");
+        // DataBlock creation is decoupled from Messenger.
+        // Caller registers with broker after the producer is constructed.
+        // Example (in main / setup code):
+        //   ProducerInfo info{ .shm_name = config.name, .schema_hash = ... };
+        //   Messenger::get_instance().register_producer("sensors/temperature/lab1", info);
     }
 
     void run() {
@@ -2131,12 +2300,12 @@ class TemperatureSensorConsumer {
 public:
     TemperatureSensorConsumer(const std::string& channel)
     {
-        // Discover producer via broker
-        auto info = MessageHub::discover(channel);
-        m_consumer = std::make_unique<DataBlockConsumer>(info.shm_name);
-
-        // Register for heartbeat
-        m_consumer->register_consumer();
+        // Discover producer via broker (synchronous: blocks until reply or timeout)
+        auto info = Messenger::get_instance().discover_producer(channel, /*timeout_ms=*/5000);
+        if (!info) {
+            throw std::runtime_error("No producer found for channel: " + channel);
+        }
+        m_consumer = std::make_unique<DataBlockConsumer>(info->shm_name);
     }
 
     void run() {
