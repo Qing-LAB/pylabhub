@@ -121,7 +121,6 @@ inline bool is_header_magic_valid(const std::atomic<uint32_t> *magic_ptr,
 PYLABHUB_UTILS_EXPORT bool is_writer_alive(const SharedMemoryHeader *header, uint64_t pid) noexcept;
 
 // Forward declarations
-class MessageHub;
 struct DataBlockProducerImpl;
 struct DataBlockConsumerImpl;
 struct DataBlockDiagnosticHandleImpl;
@@ -680,7 +679,7 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
  *
  * @par Thread Safety
  * DataBlockProducer is **thread-safe**: slot acquire/release, update_heartbeat,
- * check_consumer_health, and register_with_broker are protected by an internal mutex.
+ * and check_consumer_health are protected by an internal mutex.
  * Multiple threads may share one producer; only one context (e.g. one write slot) is
  * active at a time per producer.
  */
@@ -749,10 +748,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      */
     [[nodiscard]] bool release_write_slot(SlotWriteHandle &handle) noexcept;
 
-    // ─── Broker and Health Management ───
-    /** @brief Registers the producer with the broker.
-     * If passing this producer's name as @p channel_name, use logical_name(name()) so the broker uses the logical channel name. */
-    [[nodiscard]] bool register_with_broker(MessageHub &hub, const std::string &channel_name);
+    // ─── Health Management ───
     /** @brief Checks the health of registered consumers and cleans up dead ones. */
     void check_consumer_health() noexcept;
 
@@ -1019,13 +1015,6 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
                                                                           int timeout_ms) noexcept;
     /** Release a previously acquired slot; returns false if checksum verification failed. */
     [[nodiscard]] bool release_consume_slot(SlotConsumeHandle &handle) noexcept;
-
-    // ─── Broker Discovery ───
-    /** @brief Discovers a producer via the broker and attaches as a consumer. */
-    [[nodiscard]] static std::unique_ptr<DataBlockConsumer> discover(MessageHub &hub,
-                                                       const std::string &channel_name,
-                                                       uint64_t shared_secret,
-                                                       const DataBlockConfig &expected_config);
 
     /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
      * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
@@ -1316,13 +1305,13 @@ inline std::string_view logical_name(std::string_view full_name) noexcept
 
 // Internal implementation (exported for test and recovery tool use)
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-create_datablock_producer_impl(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
                                const DataBlockConfig &config,
                                const pylabhub::schema::SchemaInfo *flexzone_schema,
                                const pylabhub::schema::SchemaInfo *datablock_schema);
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t shared_secret,
+find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema);
@@ -1336,7 +1325,6 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
  * The returned DataBlockProducer does NOT own the segment and will not unlink it on
  * destruction; the hub (creator) is responsible for segment lifetime.
  *
- * @param hub            MessageHub instance (must be initialized via LifecycleGuard)
  * @param name           Shared memory segment name (same as used by the hub creator)
  * @param shared_secret  Must match the value stored at creation
  * @param expected_config Optional config to validate against stored layout (nullptr = skip)
@@ -1346,7 +1334,7 @@ find_datablock_consumer_impl(MessageHub &hub, const std::string &name, uint64_t 
  * @throws std::runtime_error if Data Exchange Hub lifecycle is not initialized
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-attach_datablock_as_writer_impl(MessageHub &hub, const std::string &name,
+attach_datablock_as_writer_impl(const std::string &name,
                                 uint64_t shared_secret,
                                 const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
@@ -1403,7 +1391,7 @@ PYLABHUB_UTILS_EXPORT void store_layout_checksum(SharedMemoryHeader *header);
  */
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockProducer>
-create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPolicy policy,
+create_datablock_producer(const std::string &name, DataBlockPolicy policy,
                           const DataBlockConfig &config)
 {
     // Compile-time validation
@@ -1411,14 +1399,14 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
                   "FlexZoneT must be trivially copyable for shared memory");
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
                   "DataBlockT must be trivially copyable for shared memory");
-    
+
     // Generate BOTH schemas at compile-time
     auto flexzone_schema = pylabhub::schema::generate_schema_info<FlexZoneT>(
         "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
-    
+
     auto datablock_schema = pylabhub::schema::generate_schema_info<DataBlockT>(
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
-    
+
     // Validate sizes
     if constexpr (!std::is_void_v<FlexZoneT>)
     {
@@ -1429,7 +1417,7 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
                 ") too small for FlexZoneT (" + std::to_string(sizeof(FlexZoneT)) + ")");
         }
     }
-    
+
     size_t slot_size = config.effective_logical_unit_size();
     if (slot_size < sizeof(DataBlockT))
     {
@@ -1437,9 +1425,9 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
             "slot size (" + std::to_string(slot_size) +
             ") too small for DataBlockT (" + std::to_string(sizeof(DataBlockT)) + ")");
     }
-    
+
     // Call internal implementation with BOTH schemas
-    return create_datablock_producer_impl(hub, name, policy, config,
+    return create_datablock_producer_impl(name, policy, config,
                                           &flexzone_schema, &datablock_schema);
 }
 
@@ -1455,7 +1443,7 @@ create_datablock_producer(MessageHub &hub, const std::string &name, DataBlockPol
  */
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t shared_secret,
+find_datablock_consumer(const std::string &name, uint64_t shared_secret,
                         const DataBlockConfig &expected_config)
 {
     // Compile-time validation
@@ -1463,16 +1451,16 @@ find_datablock_consumer(MessageHub &hub, const std::string &name, uint64_t share
                   "FlexZoneT must be trivially copyable for shared memory");
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
                   "DataBlockT must be trivially copyable for shared memory");
-    
+
     // Generate BOTH expected schemas at compile-time
     auto expected_flexzone = pylabhub::schema::generate_schema_info<FlexZoneT>(
         "FlexZone", pylabhub::schema::SchemaVersion{1, 0, 0});
-    
+
     auto expected_datablock = pylabhub::schema::generate_schema_info<DataBlockT>(
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
-    
+
     // Call internal implementation with BOTH schemas for validation
-    return find_datablock_consumer_impl(hub, name, shared_secret, &expected_config,
+    return find_datablock_consumer_impl(name, shared_secret, &expected_config,
                                         &expected_flexzone, &expected_datablock);
 }
 

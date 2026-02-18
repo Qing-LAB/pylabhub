@@ -82,14 +82,13 @@ int checksum_enforced_write_read_roundtrip()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs1");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80001);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Write slot — checksum auto-updated on publish
@@ -139,14 +138,13 @@ int checksum_enforced_flexzone_only_write()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs2");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80002);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Write only the flexzone — no slot publish
@@ -181,11 +179,10 @@ int checksum_enforced_verify_detects_corruption()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs3");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80003);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Write and publish one slot normally
@@ -206,7 +203,7 @@ int checksum_enforced_verify_detects_corruption()
             fz_span[0] ^= std::byte{0xFF}; // flip a byte — checksum now stale
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Consumer should detect checksum mismatch
@@ -231,11 +228,10 @@ int checksum_none_skips_update_verify()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs4");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None, 80004);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Write one slot
@@ -255,7 +251,7 @@ int checksum_none_skips_update_verify()
             if (!fz_span.empty()) { fz_span[0] ^= std::byte{0xFF}; }
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // verify_checksum_flexible_zone with None policy: returns false (no checksum stored)
@@ -292,11 +288,10 @@ int checksum_manual_requires_explicit_call()
         []()
         {
             std::string ch = make_test_channel_name("PolicyCs5");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Manual, 80005);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Write WITHOUT updating flexzone checksum
@@ -316,7 +311,7 @@ int checksum_manual_requires_explicit_call()
                 });
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Checksum is stale (never computed) — consumer verify should fail or be invalid
@@ -351,11 +346,10 @@ int consumer_auto_registers_heartbeat_on_construction()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb1");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80010);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // active_consumer_count starts at 0
@@ -365,7 +359,7 @@ int consumer_auto_registers_heartbeat_on_construction()
             EXPECT_EQ(before, 0u) << "No consumers yet";
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             uint32_t after = diag->header()->active_consumer_count.load(std::memory_order_acquire);
@@ -389,11 +383,10 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb2");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80011);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             auto diag = open_datablock_for_diagnostic(ch);
@@ -401,7 +394,7 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
 
             {
                 auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                    hub, ch, cfg.shared_secret, cfg);
+                    ch, cfg.shared_secret, cfg);
                 ASSERT_NE(consumer, nullptr);
 
                 uint32_t during = diag->header()->active_consumer_count.load(std::memory_order_acquire);
@@ -428,11 +421,10 @@ int all_policy_consumers_have_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb3");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Sync_reader, ChecksumPolicy::Enforced, 80012);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             auto diag = open_datablock_for_diagnostic(ch);
@@ -440,7 +432,7 @@ int all_policy_consumers_have_heartbeat()
 
             // Two consumers with different policies share the same heartbeat pool
             auto consumer_a = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer_a, nullptr);
 
             uint32_t after_first = diag->header()->active_consumer_count.load(std::memory_order_acquire);
@@ -448,7 +440,7 @@ int all_policy_consumers_have_heartbeat()
 
             // Second consumer (still Sync_reader — same config)
             auto consumer_b = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer_b, nullptr);
 
             uint32_t after_second = diag->header()->active_consumer_count.load(std::memory_order_acquire);
@@ -477,7 +469,6 @@ int sync_reader_producer_respects_consumer_position()
         []()
         {
             std::string ch = make_test_channel_name("PolicySr1");
-            MessageHub &hub = MessageHub::get_instance();
             // 1-slot ring to make backpressure immediate
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -489,11 +480,11 @@ int sync_reader_producer_respects_consumer_position()
             cfg.checksum_policy = ChecksumPolicy::Enforced;
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Producer fills the single slot
@@ -571,11 +562,10 @@ int producer_operator_increment_updates_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyAutoHb1");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80030);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             auto diag = open_datablock_for_diagnostic(ch);
@@ -616,11 +606,10 @@ int consumer_operator_increment_updates_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyAutoHb2");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, ChecksumPolicy::Enforced, 80031);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
-                hub, ch, DataBlockPolicy::RingBuffer, cfg);
+                ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Write one slot for the consumer to read
@@ -636,7 +625,7 @@ int consumer_operator_increment_updates_heartbeat()
                 });
 
             auto consumer = find_datablock_consumer<PolicyFlexZone, PolicyData>(
-                hub, ch, cfg.shared_secret, cfg);
+                ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             auto diag = open_datablock_for_diagnostic(ch);

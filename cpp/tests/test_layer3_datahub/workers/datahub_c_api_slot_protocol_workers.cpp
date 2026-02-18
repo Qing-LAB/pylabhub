@@ -64,13 +64,12 @@ int write_slot_read_slot_roundtrip()
         []()
         {
             std::string channel = make_test_channel_name("CApiRoundtrip");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71001);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -118,10 +117,9 @@ int commit_advances_metrics()
         []()
         {
             std::string channel = make_test_channel_name("CApiCommitMetrics");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71002);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -173,13 +171,12 @@ int abort_does_not_commit()
         []()
         {
             std::string channel = make_test_channel_name("CApiAbort");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71003);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -223,13 +220,12 @@ int latest_only_reads_latest()
         []()
         {
             std::string channel = make_test_channel_name("CApiLatestOnly");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71004);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -274,14 +270,13 @@ int single_reader_reads_sequentially()
         []()
         {
             std::string channel = make_test_channel_name("CApiSingleReader");
-            MessageHub &hub = MessageHub::get_instance();
             // capacity=4 to hold all 3 writes without blocking
             auto cfg = make_config(ConsumerSyncPolicy::Single_reader, 4, 71005);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -330,11 +325,10 @@ int write_returns_null_when_ring_full()
         []()
         {
             std::string channel = make_test_channel_name("CApiRingFull");
-            MessageHub &hub = MessageHub::get_instance();
             // capacity=2: fill both slots without consuming → 3rd acquire must fail
             auto cfg = make_config(ConsumerSyncPolicy::Single_reader, 2, 71006);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -380,13 +374,12 @@ int read_returns_null_on_empty_ring()
         []()
         {
             std::string channel = make_test_channel_name("CApiReadEmpty");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71007);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -414,14 +407,13 @@ int metrics_accumulate_across_writes()
         []()
         {
             std::string channel = make_test_channel_name("CApiMetricsAccum");
-            MessageHub &hub = MessageHub::get_instance();
             // Large capacity to avoid ring-full during the 5 writes
             auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 8, 71008);
 
-            auto producer = create_datablock_producer_impl(hub, channel, DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret, &cfg,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 

@@ -52,11 +52,10 @@ int validate_integrity_on_fresh_datablock()
         []()
         {
             std::string channel = make_test_channel_name("CApiValIntegrity");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(75001);
             auto producer =
-                create_datablock_producer_impl(hub, channel, cfg.policy, cfg, nullptr, nullptr);
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             RecoveryResult r = datablock_validate_integrity(channel.c_str(), false);
@@ -100,11 +99,10 @@ int get_metrics_fresh_has_zero_commits()
         []()
         {
             std::string channel = make_test_channel_name("CApiValMetrics");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(75003);
             auto producer =
-                create_datablock_producer_impl(hub, channel, cfg.policy, cfg, nullptr, nullptr);
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             DataBlockMetrics metrics{};
@@ -130,11 +128,10 @@ int diagnose_slot_fresh_is_free()
         []()
         {
             std::string channel = make_test_channel_name("CApiValDiagSlot");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_valid_config(75004);
             auto producer =
-                create_datablock_producer_impl(hub, channel, cfg.policy, cfg, nullptr, nullptr);
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotDiagnostic diag{};
@@ -161,12 +158,11 @@ int diagnose_all_slots_returns_capacity()
         []()
         {
             std::string channel = make_test_channel_name("CApiValDiagAll");
-            MessageHub &hub = MessageHub::get_instance();
 
             constexpr uint32_t capacity = 3;
             DataBlockConfig cfg = make_valid_config(75005, capacity);
             auto producer =
-                create_datablock_producer_impl(hub, channel, cfg.policy, cfg, nullptr, nullptr);
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotDiagnostic slots[8]{};

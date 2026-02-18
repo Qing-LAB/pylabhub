@@ -55,8 +55,6 @@ int main()
         pylabhub::crypto::GetLifecycleModule(),
         GetLifecycleModule()));
 
-    MessageHub &hub = MessageHub::get_instance();
-
     // ─── Attach consumer ───────────────────────────────────────────────────
     DataBlockConfig expected_config{};
     expected_config.policy               = DataBlockPolicy::RingBuffer;
@@ -69,7 +67,7 @@ int main()
 
     // Schema types are validated at attach time: mismatched types → nullptr.
     auto consumer = find_datablock_consumer<SensorFlexZone, SensorData>(
-        hub, "sensor_data_channel", expected_config.shared_secret, expected_config);
+        "sensor_data_channel", expected_config.shared_secret, expected_config);
     if (!consumer)
     {
         std::cerr << "Failed to attach DataBlockConsumer (producer not running?)\n";

@@ -81,6 +81,10 @@ add_executable(test_layer3_datahub
     # ── Recovery scenarios (facility: zombie detection, force-reset, dead consumer) ──
     test_datahub_recovery_scenarios.cpp
     workers/datahub_recovery_scenario_workers.cpp
+
+    # ── Integrity validation and repair ───────────────────────────────────────────
+    test_datahub_integrity_repair.cpp
+    workers/datahub_integrity_repair_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE workers)

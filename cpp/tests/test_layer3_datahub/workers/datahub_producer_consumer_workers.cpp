@@ -32,7 +32,6 @@ int acquire_consume_slot_timeout_returns_null()
         []()
         {
             std::string channel = make_test_channel_name("ErrTimeout");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -40,11 +39,11 @@ int acquire_consume_slot_timeout_returns_null()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
                                                         &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
             // Producer never writes/commits → consumer must get nullptr on short timeout
@@ -64,7 +63,6 @@ int find_consumer_wrong_secret_returns_null()
         []()
         {
             std::string channel = make_test_channel_name("ErrWrongSecret");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -72,12 +70,12 @@ int find_consumer_wrong_secret_returns_null()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             uint64_t wrong_secret = config.shared_secret + 1;
-            auto consumer = find_datablock_consumer_impl(hub_ref, channel, wrong_secret,
+            auto consumer = find_datablock_consumer_impl(channel, wrong_secret,
                                                         &config, nullptr, nullptr);
             EXPECT_EQ(consumer.get(), nullptr);
 
@@ -93,7 +91,6 @@ int release_write_slot_invalid_handle_returns_false()
         []()
         {
             std::string channel = make_test_channel_name("ErrReleaseWrite");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -101,7 +98,7 @@ int release_write_slot_invalid_handle_returns_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -121,7 +118,6 @@ int release_consume_slot_invalid_handle_returns_false()
         []()
         {
             std::string channel = make_test_channel_name("ErrReleaseConsume");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -129,11 +125,11 @@ int release_consume_slot_invalid_handle_returns_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
                                                         &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
             SlotConsumeHandle invalid_handle;
@@ -153,7 +149,6 @@ int write_bounds_return_false()
         []()
         {
             std::string channel = make_test_channel_name("ErrWriteBounds");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -161,7 +156,7 @@ int write_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -188,7 +183,6 @@ int commit_bounds_return_false()
         []()
         {
             std::string channel = make_test_channel_name("ErrCommitBounds");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -196,7 +190,7 @@ int commit_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -218,7 +212,6 @@ int read_bounds_return_false()
         []()
         {
             std::string channel = make_test_channel_name("ErrReadBounds");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -226,11 +219,11 @@ int read_bounds_return_false()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub_ref, channel, config.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
                                                         &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -263,7 +256,6 @@ int double_release_write_slot_idempotent()
         []()
         {
             std::string channel = make_test_channel_name("ErrDoubleRelease");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -271,7 +263,7 @@ int double_release_write_slot_idempotent()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(hub_ref, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                       DataBlockPolicy::RingBuffer, config,
                                                       nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -294,7 +286,6 @@ int slot_acquire_timeout_returns_error()
         {
             using namespace pylabhub::tests;
             std::string channel = make_test_channel_name("ErrSlotTimeout");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -305,10 +296,10 @@ int slot_acquire_timeout_returns_error()
             config.flex_zone_size = sizeof(EmptyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                hub_ref, channel, config.shared_secret, config);
+                channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // No data written — acquiring a slot must time out.

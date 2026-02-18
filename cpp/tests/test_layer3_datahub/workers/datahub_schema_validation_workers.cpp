@@ -82,17 +82,16 @@ int consumer_connects_with_matching_schema()
         []()
         {
             std::string channel = make_test_channel_name("SchemaValidation");
-            MessageHub &hub_ref = MessageHub::get_instance();
             auto config = make_schema_config(67890);
 
             // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
             auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
             // Consumer: same schemas → must connect
             auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, config.shared_secret, config);
+                channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr) << "Consumer with matching schema must connect successfully";
 
             producer.reset();
@@ -114,17 +113,16 @@ int consumer_fails_to_connect_with_mismatched_schema()
         []()
         {
             std::string channel = make_test_channel_name("SchemaValidationMismatch");
-            MessageHub &hub_ref = MessageHub::get_instance();
             auto config = make_schema_config(67891);
 
             // Producer: DataBlockT = SchemaValidV1
             auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
             // Consumer: DataBlockT = SchemaValidV2 (different fields → schema hash mismatch)
             auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV2>(
-                hub_ref, channel, config.shared_secret, config);
+                channel, config.shared_secret, config);
             ASSERT_EQ(consumer, nullptr) << "Consumer with mismatched DataBlock schema must be rejected";
 
             producer.reset();
@@ -147,19 +145,18 @@ int flexzone_mismatch_rejected()
         []()
         {
             std::string channel = make_test_channel_name("SchemaFzMismatch");
-            MessageHub &hub_ref = MessageHub::get_instance();
             auto config = make_schema_config(67892);
 
             // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
             auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
             // Consumer: FlexZoneT = SchemaValidV2 (mismatch), DataBlockT = SchemaValidV1 (match)
             // flex_zone_size of consumer config must be >= sizeof(SchemaValidV2); reuse same config
             // (both fit within the PAGE_ALIGNMENT-rounded allocation)
             auto consumer = find_datablock_consumer<SchemaValidV2, SchemaValidV1>(
-                hub_ref, channel, config.shared_secret, config);
+                channel, config.shared_secret, config);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with mismatched FlexZone schema must be rejected";
 
@@ -181,17 +178,16 @@ int both_schemas_mismatch_rejected()
         []()
         {
             std::string channel = make_test_channel_name("SchemaBothMismatch");
-            MessageHub &hub_ref = MessageHub::get_instance();
             auto config = make_schema_config(67893);
 
             // Producer: FlexZoneT = SchemaValidV1, DataBlockT = SchemaValidV1
             auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
             // Consumer: both V2 — neither schema matches
             auto consumer = find_datablock_consumer<SchemaValidV2, SchemaValidV2>(
-                hub_ref, channel, config.shared_secret, config);
+                channel, config.shared_secret, config);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with both schemas mismatched must be rejected";
 
@@ -213,13 +209,12 @@ int consumer_mismatched_capacity_rejected()
         []()
         {
             std::string channel = make_test_channel_name("SchemaCfgMismatch");
-            MessageHub &hub_ref = MessageHub::get_instance();
 
             DataBlockConfig prod_cfg = make_schema_config(67894);
             prod_cfg.ring_buffer_capacity = 4;
 
             auto producer = create_datablock_producer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, prod_cfg);
+                channel, DataBlockPolicy::RingBuffer, prod_cfg);
             ASSERT_NE(producer, nullptr);
 
             // Consumer with different ring_buffer_capacity — config mismatch → nullptr
@@ -227,7 +222,7 @@ int consumer_mismatched_capacity_rejected()
             cons_cfg.ring_buffer_capacity = 2; // differs from producer
 
             auto consumer = find_datablock_consumer<SchemaValidV1, SchemaValidV1>(
-                hub_ref, channel, prod_cfg.shared_secret, cons_cfg);
+                channel, prod_cfg.shared_secret, cons_cfg);
             ASSERT_EQ(consumer, nullptr)
                 << "Consumer with mismatched ring_buffer_capacity must be rejected";
 

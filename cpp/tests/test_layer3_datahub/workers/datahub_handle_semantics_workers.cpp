@@ -53,11 +53,10 @@ int move_producer_transfers_ownership()
         []()
         {
             std::string channel = make_test_channel_name("MoveProducer");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(74001);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Move the producer — original should be empty
@@ -101,14 +100,13 @@ int move_consumer_transfers_ownership()
         []()
         {
             std::string channel = make_test_channel_name("MoveConsumer");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(74002);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, cfg.shared_secret, cfg);
+                channel, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Write a slot first
@@ -168,14 +166,13 @@ int default_constructed_handles_are_invalid()
         []()
         {
             std::string channel = make_test_channel_name("DefaultHandles");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(74003);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, cfg.shared_secret, cfg);
+                channel, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Default-constructed handles are invalid — release must return false

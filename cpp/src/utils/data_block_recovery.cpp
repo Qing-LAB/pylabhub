@@ -3,7 +3,6 @@
 #include "plh_platform.hpp"
 #include "utils/data_block.hpp"
 #include "utils/logger.hpp"
-#include "utils/message_hub.hpp"
 
 #include <chrono>
 #include <optional>
@@ -677,7 +676,7 @@ extern "C"
                 pylabhub::hub::ChecksumType::Unset)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer_impl(
-                    pylabhub::hub::MessageHub::get_instance(), ctx->shm_name, expected_config.shared_secret,
+                    ctx->shm_name, expected_config.shared_secret,
                     &expected_config, nullptr, nullptr);
 
                 if (!consumer)
@@ -702,7 +701,7 @@ extern "C"
                                         "checksum for '{}'.",
                                         ctx->shm_name);
                             auto producer = pylabhub::hub::create_datablock_producer_impl(
-                                pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
+                                ctx->shm_name,
                                 expected_config.policy, expected_config, nullptr, nullptr);
                             if (producer && producer->update_checksum_flexible_zone())
                             {
@@ -746,7 +745,7 @@ extern "C"
                                             "{} in '{}'.",
                                             i, ctx->shm_name);
                                 auto producer = pylabhub::hub::create_datablock_producer_impl(
-                                    pylabhub::hub::MessageHub::get_instance(), ctx->shm_name,
+                                    ctx->shm_name,
                                     expected_config.policy, expected_config, nullptr, nullptr);
                                 if (producer && producer->update_checksum_slot(i))
                                 {
