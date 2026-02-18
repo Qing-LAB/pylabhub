@@ -11,13 +11,18 @@
 
 ## Current Status
 
-**Overall**: 🟢 Core infrastructure complete — broker protocol features still pending
+**Overall**: 🟢 Core infrastructure complete — broker server implemented; consumer reg still pending
 
 `Messenger` (renamed from `MessageHub`) provides ZeroMQ-based async communication with a broker:
 - Producer registration (fire-and-forget, async worker thread)
 - Producer discovery (synchronous via std::future/promise)
 - Consumer registration (stub — protocol not yet defined)
 - Consumer coordination
+
+`BrokerService` (`src/broker/`) is the server-side counterpart:
+- Separate `pylabhub-broker` executable (Track B)
+- CurveZMQ keypair generated at startup; public key logged for clients
+- REG_REQ / DISC_REQ / DEREG_REQ handled; in-memory ChannelRegistry; single-threaded
 
 `ZMQContext` module: standalone `zmq::context_t` lifecycle module; also initialized automatically by `GetLifecycleModule()` (DataExchangeHub).
 
@@ -28,12 +33,12 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 ## Current Focus
 
 ### Broker Protocol Definition
-**Status**: 🔴 Blocked - Waiting for broker team
+**Status**: ✅ Implemented (REG/DISC/DEREG)
 
-- [ ] **Define broker message format** – JSON schema for all broker messages
-- [ ] **Version negotiation** – How client and broker agree on protocol version
-- [ ] **Authentication** – Security model for broker connections
-- [ ] **Error handling** – Standardize error responses from broker
+- [x] **Broker message format** – JSON schema in HEP §6.2; REG_REQ/DISC_REQ/DEREG_REQ implemented
+- [x] **Authentication** – CurveZMQ keypair generated at startup; public key logged
+- [x] **Error handling** – Standardized ERROR responses (SCHEMA_MISMATCH, CHANNEL_NOT_FOUND, NOT_REGISTERED)
+- [ ] **Version negotiation** – Deferred; not in HEP §6.2 scope
 
 ### Consumer Registration
 **Status**: 🔴 Blocked - Protocol not defined
@@ -124,12 +129,18 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 - [x] Register/discover when broker unavailable
 - [x] JSON parse failure paths
 
-### Needed Tests (when broker ready)
-- [ ] **Full protocol tests** – All message types with live broker
-- [ ] **Schema registry tests** – Store, retrieve, validate schemas
-- [ ] **Consumer registration tests** – Register, heartbeat, discover
+### Phase C Integration Tests — ✅ Complete (2026-02-18)
+- [x] **ChannelRegistryOps** – Pure ChannelRegistry unit test (register, re-register, schema-mismatch, deregister, list)
+- [x] **RegDiscHappyPath** – Full REG/DISC round-trip via Messenger ↔ real BrokerService (CurveZMQ)
+- [x] **SchemaMismatch** – Re-register same channel with different schema_hash → ERROR SCHEMA_MISMATCH (raw ZMQ)
+- [x] **ChannelNotFound** – Discover unknown channel → Messenger returns nullopt (CHANNEL_NOT_FOUND)
+- [x] **DeregHappyPath** – Register → discover (found) → DEREG_REQ (correct pid) → discover → nullopt
+- [x] **DeregPidMismatch** – DEREG_REQ with wrong pid → NOT_REGISTERED; channel still discoverable (raw ZMQ)
+
+### Needed Tests (still pending)
+- [ ] **Consumer registration tests** – Register, heartbeat, discover (blocked: protocol not defined)
 - [ ] **Broker restart tests** – Graceful reconnection
-- [ ] **Concurrent access tests** – Multiple threads using MessageHub
+- [ ] **Concurrent access tests** – Multiple threads using Messenger
 - [ ] **Error injection tests** – Simulate broker failures
 
 ---
@@ -217,6 +228,16 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 ---
 
 ## Recent Completions
+
+### 2026-02-18
+- ✅ **Phase C broker integration tests** – `DatahubBrokerTest` (6 tests, 390/390 total passing); `start_broker_in_thread` helper with `on_ready` callback; `raw_req` helper supporting optional CurveZMQ; `BrokerService::Config::on_ready` added for dynamic port assignment in tests
+- ✅ **`BrokerService::Config::on_ready` callback** – Called from `run()` after `bind()` with (bound_endpoint, server_public_key); enables tests to use `tcp://127.0.0.1:0` dynamic port assignment without sleep() hacks; bound endpoint now logged instead of config endpoint
+- ✅ **pylabhub-broker implemented** – `src/broker/` directory: `ChannelRegistry`, `BrokerService`, `broker_main.cpp`; standalone `pylabhub-broker` executable; links against `pylabhub::utils`
+- ✅ **CurveZMQ server** – Keypair generated via `zmq_curve_keypair` at construction; public key logged at startup; clients use it for `Messenger::connect()`
+- ✅ **REG_REQ handler** – Validates schema_hash; allows re-registration on producer restart; returns SCHEMA_MISMATCH error on hash mismatch
+- ✅ **DISC_REQ handler** – Looks up channel; returns DISC_ACK with shm_name/schema_hash/schema_version/metadata; or CHANNEL_NOT_FOUND
+- ✅ **DEREG_REQ handler** – Removes channel entry if producer_pid matches; returns NOT_REGISTERED on mismatch
+- ✅ **384/384 tests still pass** – No regressions from broker binary addition
 
 ### 2026-02-17
 - ✅ **MessageHub → Messenger rename** – Clean rename; no compat shims; v1.0 design

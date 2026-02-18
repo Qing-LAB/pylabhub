@@ -26,6 +26,7 @@ cmake_minimum_required(VERSION 3.29)
 # Add the utils subdirectory, which defines the pylabhub::utils library.
 # This must be done before defining any targets that depend on it.
 add_subdirectory(utils)
+add_subdirectory(broker)
 # admin is P10+ stub — disabled until implemented
 # Enable with: cmake -DPYLABHUB_BUILD_ADMIN=ON
 if(PYLABHUB_BUILD_ADMIN)
