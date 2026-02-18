@@ -85,9 +85,18 @@ add_executable(test_layer3_datahub
     # ── Integrity validation and repair ───────────────────────────────────────────
     test_datahub_integrity_repair.cpp
     workers/datahub_integrity_repair_workers.cpp
+
+    # ── Broker service integration tests ─────────────────────────────────────────
+    test_datahub_broker.cpp
+    workers/datahub_broker_workers.cpp
+    ${CMAKE_SOURCE_DIR}/src/broker/broker_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/broker/channel_registry.cpp
 )
 
-target_include_directories(test_layer3_datahub PRIVATE workers)
+target_include_directories(test_layer3_datahub PRIVATE
+    workers
+    ${CMAKE_SOURCE_DIR}/src/broker
+)
 
 target_link_libraries(test_layer3_datahub
     PRIVATE
