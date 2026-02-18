@@ -1,24 +1,27 @@
-# MessageHub TODO
+# Messenger TODO
 
-**Purpose:** Track MessageHub integration, broker protocol development, and channel management for DataHub.
+**Purpose:** Track Messenger integration, broker protocol development, and channel management for DataHub.
 
-**Master TODO:** `docs/TODO_MASTER.md`  
-**Implementation:** `cpp/src/utils/message_hub.cpp`  
-**Design Review:** `docs/IMPLEMENTATION_GUIDANCE.md` § MessageHub code review
+**Master TODO:** `docs/TODO_MASTER.md`
+**Implementation:** `src/utils/messenger.cpp`, `src/utils/zmq_context.cpp`
+**Header:** `src/include/utils/messenger.hpp`, `src/include/utils/zmq_context.hpp`
+**Design Review:** `docs/IMPLEMENTATION_GUIDANCE.md` § Messenger code review
 
 ---
 
 ## Current Status
 
-**Overall**: 🔵 Deferred - Waiting for broker protocol definition
+**Overall**: 🟢 Core infrastructure complete — broker protocol features still pending
 
-MessageHub provides ZeroMQ-based communication with a broker for:
-- Producer registration and discovery
-- Schema registry
-- Channel management
+`Messenger` (renamed from `MessageHub`) provides ZeroMQ-based async communication with a broker:
+- Producer registration (fire-and-forget, async worker thread)
+- Producer discovery (synchronous via std::future/promise)
+- Consumer registration (stub — protocol not yet defined)
 - Consumer coordination
 
-Current state: Basic infrastructure in place, core protocol features pending broker readiness.
+`ZMQContext` module: standalone `zmq::context_t` lifecycle module; also initialized automatically by `GetLifecycleModule()` (DataExchangeHub).
+
+DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_consumer_impl`, `attach_datablock_as_writer_impl`) **no longer** accept or call `Messenger` — the coupling is fully removed. Broker registration is now caller-initiated.
 
 ---
 
@@ -35,7 +38,7 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 ### Consumer Registration
 **Status**: 🔴 Blocked - Protocol not defined
 
-- [ ] **Implement register_consumer** – Currently a stub in message_hub.cpp:378
+- [ ] **Implement register_consumer** – Currently a stub in messenger.cpp (protocol not defined)
 - [ ] **Consumer heartbeat to broker** – Keep broker informed of live consumers
 - [ ] **Consumer discovery** – How producers find consumers via broker
 - [ ] **Naming conventions** – Use `logical_name()` per NAME_CONVENTIONS.md
@@ -77,7 +80,7 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 ## Design Decisions
 
 ### Singleton Pattern
-**Current**: `MessageHub::get_instance()` returns singleton
+**Current**: `Messenger::get_instance()` returns singleton
 
 **Rationale**:
 - One ZeroMQ context per process is recommended
@@ -183,9 +186,12 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 ## Integration Points
 
 ### With DataBlock
-- Producer creation registers with broker
-- Consumer find discovers via broker
-- Schema validation uses broker registry
+- **DataBlock factory functions are fully decoupled from Messenger** — no hub parameter
+- Broker registration is caller-initiated: after `create_datablock_producer_impl()` returns,
+  caller calls `Messenger::get_instance().register_producer(channel, info)`
+- Consumer discovery is caller-initiated: caller calls `discover_producer(channel)` to get
+  the `shm_name`, then passes it to `find_datablock_consumer_impl()`
+- Schema validation uses broker registry (when protocol is defined)
 
 ### With Schema System
 - Schema info sent to broker on producer creation
@@ -193,9 +199,12 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 - Schema versioning managed by broker
 
 ### With Lifecycle
-- MessageHub initialized via `GetLifecycleModule()`
-- Broker connection established during startup
-- Clean disconnect during shutdown
+- Messenger initialized via `GetLifecycleModule()` (DataExchangeHub module name)
+- ZMQ context managed as separate `GetZMQContextModule()` ("ZMQContext"); DataExchangeHub depends on it
+- `g_messenger_instance` (raw pointer) created in `do_hub_startup`, destroyed in `do_hub_shutdown`
+  before `zmq_context_shutdown()` — guarantees socket closed before context destroyed
+- Broker connection is NOT established during startup; caller must call `connect()` explicitly
+- `zmq_context_shutdown()` is idempotent — `nullptr` guard prevents double-delete
 
 ---
 
@@ -208,6 +217,22 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 ---
 
 ## Recent Completions
+
+### 2026-02-17
+- ✅ **MessageHub → Messenger rename** – Clean rename; no compat shims; v1.0 design
+- ✅ **Async command queue** – Worker thread owns ZMQ socket; fire-and-forget `register_producer`; synchronous `discover_producer` via `std::future/promise`
+- ✅ **ZMQContext lifecycle module** – `GetZMQContextModule()` for standalone use; automatically initialized by `GetLifecycleModule()` (DataExchangeHub)
+- ✅ **DataBlock decoupling** – Removed `Messenger &hub` parameter from all DataBlock factory functions; removed `register_with_broker()` and `discover()` methods; broker registration is now caller-initiated
+- ✅ **message_hub.hpp/cpp deleted** – `messenger.hpp/cpp` and `zmq_context.hpp/cpp` replace them
+- ✅ **All 21+ test worker files updated** – hub param removed from factory calls
+- ✅ **in-process broker test (with_broker_happy_path)** – Full round-trip: `register_producer` + `discover_producer` + write/read
+- ✅ **Test class renamed** – `DatahubMessageHubTest` → `DatahubMessengerTest`
+- ✅ **Use-after-free fix in send** – `zmq::buffer(std::string(...))` dangling pointer bug fixed in `RegisterProducerCmd` and `DiscoverProducerCmd` handlers
+- ✅ **ZMQ lifecycle ownership fix** – `Messenger::get_instance()` is NO LONGER a function-local static; `g_messenger_instance` raw pointer managed by `do_hub_startup` / `do_hub_shutdown`; static destruction order hazard eliminated; socket always closed before context destroyed
+- ✅ **Idempotent `zmq_context_shutdown()`** – `nullptr` guard prevents double-delete if both lifecycle modules registered
+- ✅ **Assert message corrected** – `get_instance()` assert reads "called before registration and initialization through Lifecycle"
+- ✅ **HEP-CORE-0002 updated** – Section 2.1 diagram, Section 6.1 characteristics, Section 6.5 (full rewrite: async queue design + Mermaid diagrams), Section 7 code examples; all `MessageHub`/`register_with_broker` references replaced with current Messenger API
+- ✅ **raii_layer_example.cpp fixed** – Removed stale `message_hub.hpp` include; removed hub parameter from factory calls
 
 ### 2026-02-12
 - ✅ MessageHub Phase C groundwork (no-broker paths)
@@ -229,7 +254,7 @@ Current state: Basic infrastructure in place, core protocol features pending bro
 
 ### Broker Dependencies
 
-MessageHub functionality is limited until broker provides:
+Messenger functionality is limited until broker provides:
 1. **Protocol specification** – Message formats and flows
 2. **Schema registry** – Store and serve schema information  
 3. **Consumer coordination** – Track consumer registrations
@@ -245,7 +270,7 @@ Design principle: **DataHub works without broker**
 
 ### ZeroMQ Patterns
 
-**Current**: REQ/REP pattern for broker communication
+**Current**: DEALER/ROUTER pattern for broker communication (async worker thread)
 
 **Considerations**:
 - Simple request/response model
@@ -254,8 +279,8 @@ Design principle: **DataHub works without broker**
 - Could use DEALER/ROUTER for async if needed
 
 **Connection management**:
-- Single socket per MessageHub instance
-- Lazy connection (on first use)
+- Single socket per Messenger instance (lifecycle singleton)
+- Connection is manual: caller calls `connect(endpoint, server_key)`
 - Reconnection with exponential backoff (when implemented)
 
 ### Open Questions

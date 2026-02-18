@@ -123,7 +123,6 @@ int with_write_transaction_success()
         []()
         {
             std::string channel = make_test_channel_name("TxAPIv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -134,11 +133,11 @@ int with_write_transaction_success()
 
             // Create producer with dual-schema
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             
             // Create consumer with matching dual-schema
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // Write using v1.0.0 with_transaction API
@@ -233,7 +232,6 @@ int with_write_transaction_timeout()
         []()
         {
             std::string channel = make_test_channel_name("TxTimeoutv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
@@ -243,10 +241,10 @@ int with_write_transaction_timeout()
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // Write and commit one slot
@@ -342,7 +340,6 @@ int WriteTransactionGuard_exception_releases_slot()
         []()
         {
             std::string channel = make_test_channel_name("TxExv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -352,7 +349,7 @@ int WriteTransactionGuard_exception_releases_slot()
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
 
             // Test exception safety
@@ -432,7 +429,6 @@ int ReadTransactionGuard_exception_releases_slot()
         []()
         {
             std::string channel = make_test_channel_name("TxReadExv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -442,10 +438,10 @@ int ReadTransactionGuard_exception_releases_slot()
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // Producer writes one slot
@@ -546,7 +542,6 @@ int with_typed_write_read_succeeds()
         []()
         {
             std::string channel = make_test_channel_name("TxTypedv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
@@ -556,10 +551,10 @@ int with_typed_write_read_succeeds()
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // Write with typed access
@@ -644,7 +639,6 @@ int raii_slot_iterator_roundtrip()
         []()
         {
             std::string channel = make_test_channel_name("TxIterv1");
-            MessageHub &hub_ref = MessageHub::get_instance();
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
@@ -654,10 +648,10 @@ int raii_slot_iterator_roundtrip()
             config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto producer = create_datablock_producer<TxAPITestFlexZone, TxAPITestMessage>(
-                hub_ref, channel, DataBlockPolicy::RingBuffer, config);
+                channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(producer, nullptr);
             
-            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(hub_ref, channel, config.shared_secret, config);
+            auto consumer = find_datablock_consumer<TxAPITestFlexZone, TxAPITestMessage>(channel, config.shared_secret, config);
             ASSERT_NE(consumer, nullptr);
 
             // Write 3 slots

@@ -88,23 +88,22 @@ int creator_then_writer_attach_basic()
         []()
         {
             std::string channel = make_test_channel_name("WABasic");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_write_attach_config(76001);
 
             // Hub (creator) creates and initializes the segment
-            auto creator = create_datablock_producer_impl(hub, channel,
+            auto creator = create_datablock_producer_impl(channel,
                                                           DataBlockPolicy::RingBuffer,
                                                           cfg, nullptr, nullptr);
             ASSERT_NE(creator, nullptr) << "Creator must create successfully";
 
             // Consumer on the creator side
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr) << "Creator-side consumer must attach";
 
             // Source process: attach R/W (WriteAttach) — no init, no unlink
-            auto writer = attach_datablock_as_writer_impl(hub, channel, cfg.shared_secret,
+            auto writer = attach_datablock_as_writer_impl(channel, cfg.shared_secret,
                                                           &cfg, nullptr, nullptr);
             ASSERT_NE(writer, nullptr) << "WriteAttach must succeed with correct secret";
 
@@ -147,17 +146,16 @@ int writer_attach_validates_secret()
         []()
         {
             std::string channel = make_test_channel_name("WABadSecret");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_write_attach_config(76002);
 
-            auto creator = create_datablock_producer_impl(hub, channel,
+            auto creator = create_datablock_producer_impl(channel,
                                                           DataBlockPolicy::RingBuffer,
                                                           cfg, nullptr, nullptr);
             ASSERT_NE(creator, nullptr);
 
             uint64_t wrong_secret = cfg.shared_secret + 1;
-            auto writer = attach_datablock_as_writer_impl(hub, channel, wrong_secret,
+            auto writer = attach_datablock_as_writer_impl(channel, wrong_secret,
                                                           &cfg, nullptr, nullptr);
             EXPECT_EQ(writer, nullptr) << "WriteAttach must fail with wrong shared_secret";
 
@@ -179,7 +177,6 @@ int writer_attach_validates_schema()
         []()
         {
             std::string channel = make_test_channel_name("WABadSchema");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_write_attach_config(76003);
 
@@ -187,7 +184,7 @@ int writer_attach_validates_schema()
             auto schema_a = pylabhub::schema::generate_schema_info<SchemaWA_A>(
                 "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
-            auto creator = create_datablock_producer_impl(hub, channel,
+            auto creator = create_datablock_producer_impl(channel,
                                                           DataBlockPolicy::RingBuffer,
                                                           cfg, nullptr, &schema_a);
             ASSERT_NE(creator, nullptr);
@@ -196,7 +193,7 @@ int writer_attach_validates_schema()
             auto schema_b = pylabhub::schema::generate_schema_info<SchemaWA_B>(
                 "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
-            auto writer = attach_datablock_as_writer_impl(hub, channel, cfg.shared_secret,
+            auto writer = attach_datablock_as_writer_impl(channel, cfg.shared_secret,
                                                           &cfg, nullptr, &schema_b);
             EXPECT_EQ(writer, nullptr) << "WriteAttach must fail when schema hashes mismatch";
 
@@ -218,16 +215,15 @@ int segment_persists_after_writer_detach()
         []()
         {
             std::string channel = make_test_channel_name("WAPersist");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg = make_write_attach_config(76004);
 
-            auto creator = create_datablock_producer_impl(hub, channel,
+            auto creator = create_datablock_producer_impl(channel,
                                                           DataBlockPolicy::RingBuffer,
                                                           cfg, nullptr, nullptr);
             ASSERT_NE(creator, nullptr);
 
-            auto writer = attach_datablock_as_writer_impl(hub, channel, cfg.shared_secret,
+            auto writer = attach_datablock_as_writer_impl(channel, cfg.shared_secret,
                                                           &cfg, nullptr, nullptr);
             ASSERT_NE(writer, nullptr);
 

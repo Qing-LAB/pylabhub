@@ -83,14 +83,13 @@ int draining_state_entered_on_wraparound()
         []()
         {
             std::string channel = make_test_channel_name("DrainState");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_one_slot_config(72001);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -153,14 +152,13 @@ int draining_rejects_new_readers()
         []()
         {
             std::string channel = make_test_channel_name("DrainReject");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_one_slot_config(72002);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -226,14 +224,13 @@ int draining_resolves_after_reader_release()
         []()
         {
             std::string channel = make_test_channel_name("DrainResolve");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_one_slot_config(72003);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -305,14 +302,13 @@ int draining_timeout_restores_committed()
         []()
         {
             std::string channel = make_test_channel_name("DrainTimeout");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_one_slot_config(72004);
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -383,7 +379,6 @@ int no_reader_races_on_clean_wraparound()
         []()
         {
             std::string channel = make_test_channel_name("DrainNoRace");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -393,11 +388,11 @@ int no_reader_races_on_clean_wraparound()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -450,7 +445,6 @@ int single_reader_ring_full_blocks_not_draining()
         []()
         {
             std::string channel = make_test_channel_name("SRDrainNever");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -460,11 +454,11 @@ int single_reader_ring_full_blocks_not_draining()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
-            auto consumer = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                          &cfg, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr);
 
@@ -541,7 +535,6 @@ int sync_reader_ring_full_blocks_not_draining()
         []()
         {
             std::string channel = make_test_channel_name("SyncDrainNever");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -551,15 +544,15 @@ int sync_reader_ring_full_blocks_not_draining()
             cfg.physical_page_size = DataBlockPageSize::Size4K;
             cfg.checksum_policy = ChecksumPolicy::None;
 
-            auto producer = create_datablock_producer_impl(hub, channel,
+            auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
             // Two independent consumers (each registers its own heartbeat/position slot)
-            auto consumer1 = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer1 = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                           &cfg, nullptr, nullptr);
             ASSERT_NE(consumer1, nullptr);
-            auto consumer2 = find_datablock_consumer_impl(hub, channel, cfg.shared_secret,
+            auto consumer2 = find_datablock_consumer_impl(channel, cfg.shared_secret,
                                                           &cfg, nullptr, nullptr);
             ASSERT_NE(consumer2, nullptr);
 

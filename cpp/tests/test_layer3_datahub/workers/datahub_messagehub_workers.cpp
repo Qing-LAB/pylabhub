@@ -1,5 +1,5 @@
 // tests/test_layer3_datahub/workers/messagehub_workers.cpp
-// Phase C – MessageHub unit tests (no broker and with in-process broker).
+// Phase C – Messenger unit tests (no broker and with in-process broker).
 #include "datahub_messagehub_workers.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
@@ -20,8 +20,7 @@ using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
 
 // Note: create_datablock_producer_impl / find_datablock_consumer_impl are declared in
-// data_block.hpp (plh_datahub.hpp) with SchemaInfo* parameter types. No local forward
-// declarations needed — the header declarations are used directly.
+// data_block.hpp (plh_datahub.hpp) without hub parameter. No local forward declarations needed.
 
 namespace pylabhub::tests::worker::messagehub
 {
@@ -41,14 +40,17 @@ int lifecycle_initialized_follows_state()
         logger_module(), crypto_module(), hub_module());
 }
 
+// send_message / receive_message are internal to Messenger; the equivalent
+// observable behavior is that discover_producer returns nullopt when disconnected.
 int send_message_when_not_connected_returns_nullopt()
 {
     return run_gtest_worker(
         []()
         {
-            MessageHub &hub_ref = MessageHub::get_instance();
-            std::optional<std::string> result = hub_ref.send_message("REG_REQ", "{}", 100);
-            EXPECT_FALSE(result.has_value());
+            Messenger &messenger = Messenger::get_instance();
+            std::optional<ConsumerInfo> result = messenger.discover_producer("test_channel", 100);
+            EXPECT_FALSE(result.has_value())
+                << "discover_producer must return nullopt when Messenger is not connected";
         },
         "messagehub.send_message_when_not_connected_returns_nullopt",
         logger_module(), crypto_module(), hub_module());
@@ -59,26 +61,30 @@ int receive_message_when_not_connected_returns_nullopt()
     return run_gtest_worker(
         []()
         {
-            MessageHub &hub_ref = MessageHub::get_instance();
-            std::optional<std::string> result = hub_ref.receive_message(50);
-            EXPECT_FALSE(result.has_value());
+            Messenger &messenger = Messenger::get_instance();
+            std::optional<ConsumerInfo> result = messenger.discover_producer("test_channel", 50);
+            EXPECT_FALSE(result.has_value())
+                << "discover_producer must return nullopt when Messenger is not connected";
         },
         "messagehub.receive_message_when_not_connected_returns_nullopt",
         logger_module(), crypto_module(), hub_module());
 }
 
+// register_producer is now void (fire-and-forget). Verify it does not throw
+// or crash when the Messenger is not connected.
 int register_producer_when_not_connected_returns_false()
 {
     return run_gtest_worker(
         []()
         {
-            MessageHub &hub_ref = MessageHub::get_instance();
+            Messenger &messenger = Messenger::get_instance();
             ProducerInfo info{};
             info.shm_name = "test_shm";
             info.producer_pid = 12345;
             info.schema_hash.assign(32, '\0');
             info.schema_version = 0;
-            EXPECT_FALSE(hub_ref.register_producer("test_channel", info));
+            // fire-and-forget: must not throw, crash, or block
+            EXPECT_NO_THROW(messenger.register_producer("test_channel", info));
         },
         "messagehub.register_producer_when_not_connected_returns_false",
         logger_module(), crypto_module(), hub_module());
@@ -89,9 +95,10 @@ int discover_producer_when_not_connected_returns_nullopt()
     return run_gtest_worker(
         []()
         {
-            MessageHub &hub_ref = MessageHub::get_instance();
-            std::optional<ConsumerInfo> result = hub_ref.discover_producer("test_channel");
-            EXPECT_FALSE(result.has_value());
+            Messenger &messenger = Messenger::get_instance();
+            std::optional<ConsumerInfo> result = messenger.discover_producer("test_channel", 100);
+            EXPECT_FALSE(result.has_value())
+                << "discover_producer must return nullopt when Messenger is not connected";
         },
         "messagehub.discover_producer_when_not_connected_returns_nullopt",
         logger_module(), crypto_module(), hub_module());
@@ -102,9 +109,9 @@ int disconnect_when_not_connected_idempotent()
     return run_gtest_worker(
         []()
         {
-            MessageHub &hub_ref = MessageHub::get_instance();
-            hub_ref.disconnect();
-            hub_ref.disconnect();
+            Messenger &messenger = Messenger::get_instance();
+            messenger.disconnect();
+            messenger.disconnect();
         },
         "messagehub.disconnect_when_not_connected_idempotent",
         logger_module(), crypto_module(), hub_module());
@@ -219,9 +226,9 @@ int with_broker_happy_path()
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
             std::string channel = make_test_channel_name("MessageHubBroker");
-            MessageHub &hub_ref = MessageHub::get_instance();
-            EXPECT_TRUE(hub_ref.connect(broker_state.endpoint, broker_state.server_public_z85))
-                << "MessageHub connect to in-process broker failed";
+            Messenger &messenger = Messenger::get_instance();
+            EXPECT_TRUE(messenger.connect(broker_state.endpoint, broker_state.server_public_z85))
+                << "Messenger connect to in-process broker failed";
 
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
@@ -231,9 +238,21 @@ int with_broker_happy_path()
             config.physical_page_size = DataBlockPageSize::Size4K;
 
             auto producer =
-                create_datablock_producer_impl(hub_ref, channel, DataBlockPolicy::RingBuffer, config,
+                create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer, config,
                                               nullptr, nullptr);
-            ASSERT_NE(producer, nullptr) << "create_datablock_producer failed (register should succeed with broker)";
+            ASSERT_NE(producer, nullptr) << "create_datablock_producer failed";
+
+            // DataBlock factory no longer calls register_producer automatically.
+            // Manually register so that discover_producer can find the channel.
+            ProducerInfo pinfo{};
+            pinfo.shm_name = channel;
+            pinfo.producer_pid = pylabhub::platform::get_pid();
+            pinfo.schema_hash.assign(32, '\0');
+            pinfo.schema_version = 0;
+            messenger.register_producer(channel, pinfo);
+
+            // Give the async worker thread time to deliver REG_REQ to broker
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
             const char payload[] = "with_broker_happy_path payload";
             const size_t payload_len = sizeof(payload);
@@ -243,12 +262,12 @@ int with_broker_happy_path()
             EXPECT_TRUE(write_handle->commit(payload_len));
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
 
-            std::optional<ConsumerInfo> info = hub_ref.discover_producer(channel);
+            std::optional<ConsumerInfo> info = messenger.discover_producer(channel, 5000);
             ASSERT_TRUE(info.has_value()) << "discover_producer should return ConsumerInfo when broker has registration";
             EXPECT_EQ(info->shm_name, channel);
             EXPECT_EQ(info->schema_version, 0u);
 
-            auto consumer = find_datablock_consumer_impl(hub_ref, info->shm_name, config.shared_secret,
+            auto consumer = find_datablock_consumer_impl(info->shm_name, config.shared_secret,
                                                          &config, nullptr, nullptr);
             ASSERT_NE(consumer, nullptr) << "find_datablock_consumer with discovered shm_name must succeed";
 
@@ -262,7 +281,7 @@ int with_broker_happy_path()
             consume_handle.reset();
             producer.reset();
             consumer.reset();
-            hub_ref.disconnect();
+            messenger.disconnect();
             broker_state.stop.store(true, std::memory_order_release);
             broker_thread.join();
             cleanup_test_datablock(channel);

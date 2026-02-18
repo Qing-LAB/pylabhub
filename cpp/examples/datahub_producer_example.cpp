@@ -64,8 +64,6 @@ int main()
         pylabhub::crypto::GetLifecycleModule(),
         GetLifecycleModule()));
 
-    MessageHub &hub = MessageHub::get_instance();
-
     // ─── Create producer ───────────────────────────────────────────────────
     DataBlockConfig config{};
     config.policy                = DataBlockPolicy::RingBuffer;
@@ -77,7 +75,7 @@ int main()
     config.checksum_policy       = ChecksumPolicy::Enforced;
 
     auto producer = create_datablock_producer<SensorFlexZone, SensorData>(
-        hub, "sensor_data_channel", DataBlockPolicy::RingBuffer, config);
+        "sensor_data_channel", DataBlockPolicy::RingBuffer, config);
     if (!producer)
     {
         std::cerr << "Failed to create DataBlockProducer!\n";

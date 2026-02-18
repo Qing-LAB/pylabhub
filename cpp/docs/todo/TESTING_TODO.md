@@ -46,7 +46,7 @@
 - [x] High-load single reader integrity test
 - [ ] MessageHub broker integration
 - [ ] Consumer registration to broker
-- [ ] Cross-process recovery scenarios
+- [ ] Cross-process recovery scenarios (broker-coordinated; facility-layer tests ✅ done separately)
 
 ### Phase D: High-Load and Edge Cases
 - [ ] Extended duration stress tests (hours)
@@ -85,8 +85,8 @@
 - [ ] Consumer registration to broker (protocol not yet defined)
 - [ ] Broker schema registry tests
 - [ ] MessageHub error paths with broker
-- [ ] Recovery: zombie reader detection and cleanup
-- [ ] Recovery: corrupted header/layout repair
+- [ ] Recovery: cross-process zombie detection (broker-coordinated) — requires broker protocol
+- [ ] Recovery: slot-checksum in-place repair (current repair path reinitialises header; needs WriteAttach mode instead of create)
 
 ### Medium Priority
 - [ ] Flexible zone by-name access edge cases
@@ -101,6 +101,27 @@
 ---
 
 ## Recent Completions
+
+### 2026-02-17 (Integrity validation tests)
+- ✅ **Integrity repair test suite** (`test_datahub_integrity_repair.cpp` + workers) — 3 tests:
+  fresh ChecksumPolicy::Enforced block validates successfully (slot checksum path exercised);
+  layout checksum corruption detected (FAILED on both repair=false and repair=true — not repairable);
+  magic number corruption detected (FAILED). Secrets 78001–78003.
+  Slot-checksum in-place repair deferred: existing repair path uses `create_datablock_producer_impl`
+  which reinitialises the header — incompatible with in-place repair testing.
+  **Total: 384/384 passing.**
+
+### 2026-02-17 (Recovery scenario facility tests)
+- ✅ **Recovery scenario test suite** (`test_datahub_recovery_scenarios.cpp` + workers) — 6 tests:
+  zombie writer (dead PID in write_lock → release_zombie_writer → FREE);
+  zombie readers (reader_count injected → release_zombie_readers → 0);
+  force_reset on dead writer (dead write_lock → force_reset succeeds without force flag);
+  dead consumer cleanup (fake heartbeat with dead PID → cleanup_dead_consumers removes it);
+  is_process_alive sentinel (kDeadPid=INT32_MAX → false; self PID → true);
+  force_reset safety guard (alive write_lock → RECOVERY_UNSAFE; recoveryAPI logs ERROR).
+  Secrets 77001–77004, 77006. **Scope: facility layer only** — full broker-coordinated
+  zombie detection remains deferred (Phase C, requires broker protocol).
+  **Total: 381/381 passing.**
 
 ### 2026-02-17 (WriteAttach mode tests)
 - ✅ **WriteAttach test suite** (`test_datahub_write_attach.cpp` + workers) — 4 tests:

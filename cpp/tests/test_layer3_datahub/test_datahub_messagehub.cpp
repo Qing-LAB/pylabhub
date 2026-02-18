@@ -1,12 +1,12 @@
 /**
- * @file test_message_hub.cpp
- * @brief Phase C – MessageHub unit tests (no broker).
+ * @file test_datahub_messagehub.cpp
+ * @brief Phase C – Messenger unit tests (no broker and with in-process broker).
  *
  * Covers get_instance, lifecycle, and "when not connected" behavior:
- * send_message/receive_message return nullopt, register_producer returns false,
- * discover_producer returns nullopt, disconnect is idempotent.
+ * discover_producer returns nullopt, register_producer is fire-and-forget (no-throw),
+ * disconnect is idempotent.
  * With-broker tests (register_producer, discover_producer, create/find + write/read)
- * require a running broker and are documented as future work.
+ * run against an in-process test broker.
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"
@@ -17,47 +17,50 @@
 using namespace pylabhub::tests;
 using namespace pylabhub::tests::helper;
 
-class DatahubMessageHubTest : public IsolatedProcessTest
+class DatahubMessengerTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DatahubMessageHubTest, LifecycleInitializedFollowsState)
+TEST_F(DatahubMessengerTest, LifecycleInitializedFollowsState)
 {
     auto proc = SpawnWorker("messagehub.lifecycle_initialized_follows_state", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(DatahubMessageHubTest, SendMessageWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessengerTest, SendMessageWhenNotConnectedReturnsNullopt)
 {
+    // Tests that discover_producer returns nullopt when not connected (replaces send_message).
     auto proc = SpawnWorker("messagehub.send_message_when_not_connected_returns_nullopt", {});
-    ExpectWorkerOk(proc, {"MessageHub"});
+    ExpectWorkerOk(proc, {"Messenger"});
 }
 
-TEST_F(DatahubMessageHubTest, ReceiveMessageWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessengerTest, ReceiveMessageWhenNotConnectedReturnsNullopt)
 {
+    // Tests that discover_producer returns nullopt when not connected (replaces receive_message).
     auto proc = SpawnWorker("messagehub.receive_message_when_not_connected_returns_nullopt", {});
+    ExpectWorkerOk(proc, {"Messenger"});
+}
+
+TEST_F(DatahubMessengerTest, RegisterProducerWhenNotConnectedReturnsFalse)
+{
+    // Tests that register_producer (void/fire-and-forget) does not throw when not connected.
+    auto proc = SpawnWorker("messagehub.register_producer_when_not_connected_returns_false", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(DatahubMessageHubTest, RegisterProducerWhenNotConnectedReturnsFalse)
-{
-    auto proc = SpawnWorker("messagehub.register_producer_when_not_connected_returns_false", {});
-    ExpectWorkerOk(proc, {"MessageHub"});
-}
-
-TEST_F(DatahubMessageHubTest, DiscoverProducerWhenNotConnectedReturnsNullopt)
+TEST_F(DatahubMessengerTest, DiscoverProducerWhenNotConnectedReturnsNullopt)
 {
     auto proc = SpawnWorker("messagehub.discover_producer_when_not_connected_returns_nullopt", {});
-    ExpectWorkerOk(proc, {"MessageHub"});
+    ExpectWorkerOk(proc, {"Messenger"});
 }
 
-TEST_F(DatahubMessageHubTest, DisconnectWhenNotConnectedIdempotent)
+TEST_F(DatahubMessengerTest, DisconnectWhenNotConnectedIdempotent)
 {
     auto proc = SpawnWorker("messagehub.disconnect_when_not_connected_idempotent", {});
     ExpectWorkerOk(proc, {});
 }
 
-TEST_F(DatahubMessageHubTest, WithBrokerHappyPath)
+TEST_F(DatahubMessengerTest, WithBrokerHappyPath)
 {
     auto proc = SpawnWorker("messagehub.with_broker_happy_path", {});
     ExpectWorkerOk(proc, {});

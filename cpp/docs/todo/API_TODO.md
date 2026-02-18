@@ -95,7 +95,10 @@ RecoveryResult datablock_validate_integrity(...);
 - [ ] **Performance metrics** – Expose throughput, latency, contention metrics
 
 ### Recovery API Improvements
-- [ ] **Integrity repair path** – Low-level repair using only DiagnosticHandle
+- [ ] **Integrity repair path** – Slot-checksum repair in `validate_integrity` uses
+  `create_datablock_producer_impl` which reinitialises the header on open (since shm_create
+  uses O_CREAT without O_EXCL).  Should use `attach_datablock_as_writer_impl` (WriteAttach mode)
+  instead for safe in-place repair without destroying ring state.
 - [ ] **Graceful degradation** – API for dealing with partially corrupted blocks
 - [ ] **Recovery policies** – Configurable recovery behavior (aggressive vs conservative)
 

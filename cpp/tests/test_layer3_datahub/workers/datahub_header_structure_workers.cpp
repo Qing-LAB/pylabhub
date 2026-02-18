@@ -47,7 +47,6 @@ int schema_hashes_populated_with_template_api()
         []()
         {
             std::string channel = make_test_channel_name("HdrSchemaPopulated");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -60,7 +59,7 @@ int schema_hashes_populated_with_template_api()
 
             // Template API: both schemas generated and stored
             auto producer =
-                create_datablock_producer<TestFlexZone, TestDataBlock>(hub, channel,
+                create_datablock_producer<TestFlexZone, TestDataBlock>(channel,
                                                                         DataBlockPolicy::RingBuffer,
                                                                         cfg);
             ASSERT_NE(producer, nullptr);
@@ -93,7 +92,6 @@ int schema_hashes_zero_without_schema()
         []()
         {
             std::string channel = make_test_channel_name("HdrSchemaZero");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -105,7 +103,7 @@ int schema_hashes_zero_without_schema()
 
             // impl API: no schemas (nullptr)
             auto producer =
-                create_datablock_producer_impl(hub, channel, cfg.policy, cfg, nullptr, nullptr);
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             auto diag = open_datablock_for_diagnostic(channel);
@@ -137,7 +135,6 @@ int different_types_produce_different_hashes()
         {
             std::string ch1 = make_test_channel_name("HdrHashDiffA");
             std::string ch2 = make_test_channel_name("HdrHashDiffB");
-            MessageHub &hub = MessageHub::get_instance();
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
@@ -149,7 +146,7 @@ int different_types_produce_different_hashes()
             cfg.shared_secret = 74003;
             cfg.flex_zone_size = sizeof(TestFlexZone);
             auto prod1 =
-                create_datablock_producer<TestFlexZone, TestDataBlock>(hub, ch1,
+                create_datablock_producer<TestFlexZone, TestDataBlock>(ch1,
                                                                         DataBlockPolicy::RingBuffer,
                                                                         cfg);
             ASSERT_NE(prod1, nullptr);
@@ -157,7 +154,7 @@ int different_types_produce_different_hashes()
             cfg.shared_secret = 74004;
             cfg.flex_zone_size = sizeof(EmptyFlexZone);
             auto prod2 =
-                create_datablock_producer<EmptyFlexZone, MinimalData>(hub, ch2,
+                create_datablock_producer<EmptyFlexZone, MinimalData>(ch2,
                                                                        DataBlockPolicy::RingBuffer,
                                                                        cfg);
             ASSERT_NE(prod2, nullptr);

@@ -65,14 +65,13 @@ int exception_before_publish_aborts_write_slot()
         []()
         {
             std::string channel = make_test_channel_name("ExcBeforePublish");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(73001);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, cfg.shared_secret, cfg);
+                channel, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Throw before auto-publish — slot must be aborted
@@ -156,11 +155,10 @@ int exception_in_write_transaction_leaves_producer_usable()
         []()
         {
             std::string channel = make_test_channel_name("ExcWriteTxn");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(73002);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
 
             // Throw immediately in the lambda (no slot acquired)
@@ -217,14 +215,13 @@ int exception_in_read_transaction_leaves_consumer_usable()
         []()
         {
             std::string channel = make_test_channel_name("ExcReadTxn");
-            MessageHub &hub = MessageHub::get_instance();
             auto cfg = make_config(73003);
 
             auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, DataBlockPolicy::RingBuffer, cfg);
+                channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr);
             auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
-                hub, channel, cfg.shared_secret, cfg);
+                channel, cfg.shared_secret, cfg);
             ASSERT_NE(consumer, nullptr);
 
             // Write slot 1
