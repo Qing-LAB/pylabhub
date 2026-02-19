@@ -4,7 +4,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
-#include "broker_service.hpp"
+#include "utils/broker_service.hpp"
 #include "channel_registry.hpp"
 #include "plh_datahub.hpp"
 
@@ -123,8 +123,11 @@ nlohmann::json raw_req(const std::string& endpoint,
 
     dealer.connect(endpoint);
 
+    // Frame 0: 'C' (control), Frame 1: type string, Frame 2: JSON body
+    static constexpr char kCtrl = 'C';
     const std::string payload_str = payload.dump();
-    std::vector<zmq::const_buffer> send_frames = {zmq::buffer(msg_type),
+    std::vector<zmq::const_buffer> send_frames = {zmq::buffer(&kCtrl, 1),
+                                                  zmq::buffer(msg_type),
                                                   zmq::buffer(payload_str)};
     if (!zmq::send_multipart(dealer, send_frames))
     {
@@ -140,12 +143,13 @@ nlohmann::json raw_req(const std::string& endpoint,
 
     std::vector<zmq::message_t> recv_frames;
     auto result = zmq::recv_multipart(dealer, std::back_inserter(recv_frames));
-    if (!result || recv_frames.size() < 2)
+    // Reply layout: ['C', ack_type_string, body_JSON]
+    if (!result || recv_frames.size() < 3)
     {
         return {};
     }
 
-    // recv_frames[0] = msg_type_ack, recv_frames[1] = body JSON
+    // recv_frames[0] = 'C', recv_frames[1] = ack_type, recv_frames[2] = body JSON
     try
     {
         return nlohmann::json::parse(recv_frames.back().to_string());
@@ -441,6 +445,14 @@ int broker_dereg_pid_mismatch()
             nlohmann::json reg_resp = raw_req(broker.endpoint, "REG_REQ", reg_req);
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
+
+            // Send HEARTBEAT_REQ to transition channel from PendingReady → Ready.
+            // HEARTBEAT_REQ is fire-and-forget (broker sends no reply); raw_req times
+            // out quickly and returns empty json, which we discard.
+            nlohmann::json hb_req;
+            hb_req["channel_name"] = channel;
+            hb_req["producer_pid"] = correct_pid;
+            raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100);
 
             // DEREG_REQ with wrong pid → NOT_REGISTERED error.
             nlohmann::json dereg_req;
