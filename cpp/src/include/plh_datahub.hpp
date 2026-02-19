@@ -3,9 +3,13 @@
  * @file plh_datahub.hpp
  * @brief Layer 3: Data hub modules built on plh_service.
  *
- * Provides JsonConfig, MessageHub, DataBlock, and schema validation for data storage
- * and exchange. Include this when you need configuration, messaging, or shared memory
- * data blocks with schema validation.
+ * Provides the complete Data Exchange Hub API for all three roles:
+ *   - Producer: create_datablock_producer / create_channel (Messenger)
+ *   - Consumer: find_datablock_consumer / connect_channel (Messenger)
+ *   - Broker:   BrokerService (run the central channel discovery hub)
+ *
+ * Include this single header for full DataBlock, Messenger, ChannelHandle,
+ * BrokerService, JsonConfig, and schema validation support.
  */
 #include "plh_service.hpp"
 
@@ -13,5 +17,6 @@
 
 #include "utils/schema_blds.hpp"
 #include "utils/json_config.hpp"
+#include "utils/broker_service.hpp"
 #include "utils/messenger.hpp"
 #include "utils/data_block.hpp"

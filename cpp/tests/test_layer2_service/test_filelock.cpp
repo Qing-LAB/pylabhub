@@ -41,7 +41,9 @@ class FileLockTest : public ::testing::Test
         s_lifecycle = std::make_unique<pylabhub::utils::LifecycleGuard>(
             pylabhub::utils::MakeModDefList(pylabhub::utils::FileLock::GetLifecycleModule(),
                                             pylabhub::utils::Logger::GetLifecycleModule()));
-        g_temp_dir_ = fs::temp_directory_path() / "pylabhub_filelock_tests";
+        g_temp_dir_ = fs::temp_directory_path() /
+                      ("pylabhub_filelock_tests_" +
+                       std::to_string(pylabhub::platform::get_pid()));
         fs::create_directories(g_temp_dir_);
     }
 
@@ -231,7 +233,6 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
         long pid;
         std::string action;
 
-        bool operator<(const LogEntry &other) const { return timestamp < other.timestamp; }
     };
 
     std::ifstream log_stream(log_path);
@@ -252,9 +253,11 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     // The total number of entries should be exactly twice the total number of iterations.
     ASSERT_EQ(entries.size(), PROCS * ITERS_PER_WORKER * 2);
 
-    std::sort(entries.begin(), entries.end());
-
-    // Iterate through the sorted log entries to ensure no overlapping locks.
+    // Iterate through log entries in file order (= lock serialization order, since
+    // every write to the log happens while the exclusive resource lock is held).
+    // No sort needed — and sorting by timestamp would be wrong: if two events share
+    // the same nanosecond timestamp, an unstable sort can swap them, producing a
+    // false "lock acquired while already held" failure.
     int lock_held_count = 0;
     long last_pid_to_acquire = -1;
     for (const auto &entry : entries)

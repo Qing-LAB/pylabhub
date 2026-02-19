@@ -89,13 +89,24 @@ add_executable(test_layer3_datahub
     # ── Broker service integration tests ─────────────────────────────────────────
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
-    ${CMAKE_SOURCE_DIR}/src/broker/broker_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/broker/channel_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/channel_registry.cpp
+
+    # ── Consumer registration protocol tests ─────────────────────────────────────
+    test_datahub_broker_consumer.cpp
+    workers/datahub_broker_consumer_workers.cpp
+
+    # ── End-to-end multi-process integration test ────────────────────────────────
+    test_datahub_e2e.cpp
+    workers/datahub_e2e_workers.cpp
+
+    # ── ChannelHandle integration tests (Phase 6) ────────────────────────────────
+    test_datahub_channel.cpp
+    workers/datahub_channel_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
     workers
-    ${CMAKE_SOURCE_DIR}/src/broker
+    ${CMAKE_SOURCE_DIR}/src/utils
 )
 
 target_link_libraries(test_layer3_datahub
@@ -126,4 +137,4 @@ gtest_discover_tests(test_layer3_datahub
 )
 
 message(STATUS "** Layer 3 (DataHub) tests configured.")
-message(STATUS "  - test_layer3_datahub: facility, c_api, primitive, raii, integration")
+message(STATUS "  - test_layer3_datahub: facility, c_api, primitive, raii, integration, broker_consumer, e2e")
