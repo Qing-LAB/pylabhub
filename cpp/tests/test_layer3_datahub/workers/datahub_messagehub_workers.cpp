@@ -157,14 +157,17 @@ static void run_test_broker(TestBrokerState &state)
         std::vector<zmq::message_t> msgs;
         auto result = zmq::recv_multipart(router, std::back_inserter(msgs),
                                          zmq::recv_flags::dontwait);
-        if (!result || msgs.size() < 3)
+        // Layout: [identity, 'C', msg_type_string, json_body]
+        if (!result || msgs.size() < 4)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
         zmq::message_t &identity = msgs[0];
-        std::string msg_type = msgs[1].to_string();
-        std::string json_str = msgs[2].to_string();
+        // msgs[1] = 'C' type byte (universal framing — ignored here, always control)
+        std::string msg_type = msgs[2].to_string();
+        std::string json_str = msgs[3].to_string();
+        static constexpr char kCtrl = 'C';
 
         if (msg_type == "REG_REQ")
         {
@@ -184,6 +187,7 @@ static void run_test_broker(TestBrokerState &state)
             std::string resp_str = resp.dump();
             zmq::send_multipart(router, std::vector<zmq::const_buffer>{
                                             zmq::buffer(identity.data(), identity.size()),
+                                            zmq::buffer(&kCtrl, 1),
                                             zmq::buffer("REG_RESP"), zmq::buffer(resp_str)});
         }
         else if (msg_type == "DISC_REQ")
@@ -210,6 +214,7 @@ static void run_test_broker(TestBrokerState &state)
             std::string resp_str = resp.dump();
             zmq::send_multipart(router, std::vector<zmq::const_buffer>{
                                             zmq::buffer(identity.data(), identity.size()),
+                                            zmq::buffer(&kCtrl, 1),
                                             zmq::buffer("DISC_RESP"), zmq::buffer(resp_str)});
         }
     }
@@ -250,9 +255,9 @@ int with_broker_happy_path()
             pinfo.schema_hash.assign(32, '\0');
             pinfo.schema_version = 0;
             messenger.register_producer(channel, pinfo);
-
-            // Give the async worker thread time to deliver REG_REQ to broker
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // No sleep needed: register_producer and discover_producer share the same
+            // FIFO command queue. The worker thread fully processes RegisterProducerCmd
+            // (including broker ACK) before it processes DiscoverProducerCmd.
 
             const char payload[] = "with_broker_happy_path payload";
             const size_t payload_len = sizeof(payload);

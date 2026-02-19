@@ -11,7 +11,7 @@
 
 ## Current Status
 
-**Overall**: 🟢 Core infrastructure complete — broker server implemented; consumer reg still pending
+**Overall**: ✅ Consumer registration protocol implemented; end-to-end multi-process test passing
 
 `Messenger` (renamed from `MessageHub`) provides ZeroMQ-based async communication with a broker:
 - Producer registration (fire-and-forget, async worker thread)
@@ -19,10 +19,12 @@
 - Consumer registration (stub — protocol not yet defined)
 - Consumer coordination
 
-`BrokerService` (`src/broker/`) is the server-side counterpart:
-- Separate `pylabhub-broker` executable (Track B)
+`BrokerService` (`src/include/utils/broker_service.hpp`, compiled into `pylabhub-utils`):
+- Full Pimpl ABI-stable API; `BrokerServiceImpl` hides `ChannelRegistry`, ZMQ sockets, private handlers
+- `pylabhub-broker` executable links against `pylabhub::utils` (no raw source duplication)
 - CurveZMQ keypair generated at startup; public key logged for clients
-- REG_REQ / DISC_REQ / DEREG_REQ handled; in-memory ChannelRegistry; single-threaded
+- REG_REQ / DISC_REQ / DEREG_REQ / HEARTBEAT_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ handled
+- CHANNEL_CLOSING_NOTIFY pushed to registered consumers on heartbeat timeout
 
 `ZMQContext` module: standalone `zmq::context_t` lifecycle module; also initialized automatically by `GetLifecycleModule()` (DataExchangeHub).
 
@@ -41,11 +43,15 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 - [ ] **Version negotiation** – Deferred; not in HEP §6.2 scope
 
 ### Consumer Registration
-**Status**: 🔴 Blocked - Protocol not defined
+**Status**: ✅ Complete (2026-02-18)
 
-- [ ] **Implement register_consumer** – Currently a stub in messenger.cpp (protocol not defined)
-- [ ] **Consumer heartbeat to broker** – Keep broker informed of live consumers
-- [ ] **Consumer discovery** – How producers find consumers via broker
+- [x] **CONSUMER_REG_REQ / CONSUMER_REG_ACK** – Broker validates channel exists; stores ConsumerEntry (pid + hostname)
+- [x] **CONSUMER_DEREG_REQ / CONSUMER_DEREG_ACK** – Broker removes consumer by pid; returns NOT_REGISTERED on mismatch
+- [x] **DISC_ACK consumer_count** – DISC_ACK now includes `consumer_count` field (additive, non-breaking)
+- [x] **Messenger::register_consumer()** – Implements fire-and-forget CONSUMER_REG_REQ; pid filled from `platform::get_pid()`
+- [x] **Messenger::deregister_consumer()** – New public method; fire-and-forget CONSUMER_DEREG_REQ
+- [x] **ChannelEntry::consumers** – Vector of ConsumerEntry in ChannelRegistry; 3 new methods (register/deregister/find_consumers)
+- [ ] **Consumer heartbeat to broker** – Keep broker informed of live consumers (deferred: zombie detection)
 - [ ] **Naming conventions** – Use `logical_name()` per NAME_CONVENTIONS.md
 
 ---
@@ -137,8 +143,31 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 - [x] **DeregHappyPath** – Register → discover (found) → DEREG_REQ (correct pid) → discover → nullopt
 - [x] **DeregPidMismatch** – DEREG_REQ with wrong pid → NOT_REGISTERED; channel still discoverable (raw ZMQ)
 
+### Consumer Registration Tests — ✅ Complete (2026-02-18)
+- [x] **ChannelRegistryConsumerOps** – Pure ChannelRegistry CRUD for ConsumerEntry (no ZMQ)
+- [x] **ConsumerRegChannelNotFound** – CONSUMER_REG_REQ for unknown channel → CHANNEL_NOT_FOUND
+- [x] **ConsumerRegHappyPath** – Messenger register_consumer → ACK; DISC_ACK consumer_count ≥ 1
+- [x] **ConsumerDeregHappyPath** – Register consumer, deregister (correct pid) → success; count drops to 0
+- [x] **ConsumerDeregPidMismatch** – Wrong pid → NOT_REGISTERED; consumer still registered
+- [x] **DiscShowsConsumerCount** – consumer_count tracks 0→1 (register) →0 (deregister) via DISC_ACK
+
+### End-to-End Multi-Process Test — ✅ Complete (2026-02-18)
+- [x] **ProducerToConsumerViaRealBroker** – Real producer process writes 5 slots; real consumer process discovers, attaches, reads, verifies; real BrokerService mediates discovery; CurveZMQ encryption end-to-end
+
+### ChannelHandle Phase 6 Tests — ✅ Complete (2026-02-18)
+- [x] **CreateNotConnectedReturnsNullopt** – `create_channel` returns nullopt when Messenger not connected
+- [x] **ConnectNotFoundReturnsNullopt** – `connect_channel` returns nullopt for unknown channel (timeout)
+- [x] **PipelineDataExchange** – Pipeline `create_channel` + `connect_channel` + `send` + `recv`
+- [x] **PubSubDataExchange** – PubSub exchange with retry loop for subscription propagation
+- [x] **ChannelHandleIntrospection** – `channel_name()`, `pattern()`, `has_shm()`, `is_valid()`, move semantics, `invalidate()`
+
+### BrokerService Library Integration — ✅ Complete (2026-02-18)
+- [x] **BrokerService moved into pylabhub-utils** – Pimpl ABI-stable API; `BrokerServiceImpl` hides all ZMQ + ChannelRegistry internals
+- [x] **ChannelPattern canonical header** – Single definition in `utils/channel_pattern.hpp`; broker namespace uses type alias
+- [x] **pylabhub-broker executable** – Links `pylabhub::utils`; only compiles `broker_main.cpp`
+- [x] **Private ChannelRegistry** – In `src/utils/`; not installed; tests compile own copy for white-box unit tests
+
 ### Needed Tests (still pending)
-- [ ] **Consumer registration tests** – Register, heartbeat, discover (blocked: protocol not defined)
 - [ ] **Broker restart tests** – Graceful reconnection
 - [ ] **Concurrent access tests** – Multiple threads using Messenger
 - [ ] **Error injection tests** – Simulate broker failures
@@ -230,6 +259,9 @@ DataBlock factory functions (`create_datablock_producer_impl`, `find_datablock_c
 ## Recent Completions
 
 ### 2026-02-18
+- ✅ **Consumer registration protocol** – CONSUMER_REG_REQ/ACK and CONSUMER_DEREG_REQ/ACK in BrokerService; ConsumerEntry + consumers vector in ChannelRegistry; register/deregister/find_consumers methods; consumer_count field in DISC_ACK; Messenger::register_consumer() implemented (was stub); Messenger::deregister_consumer() new public method; DeregisterConsumerCmd added to MessengerCommand variant
+- ✅ **DatahubBrokerConsumerTest** – 6 tests (391–396): ChannelRegistryConsumerOps, ConsumerRegChannelNotFound, ConsumerRegHappyPath, ConsumerDeregHappyPath, ConsumerDeregPidMismatch, DiscShowsConsumerCount
+- ✅ **DatahubE2ETest** – 1 test (397): ProducerToConsumerViaRealBroker — orchestrator spawns producer+consumer subprocesses; real broker; CurveZMQ; 397/397 tests passing
 - ✅ **Phase C broker integration tests** – `DatahubBrokerTest` (6 tests, 390/390 total passing); `start_broker_in_thread` helper with `on_ready` callback; `raw_req` helper supporting optional CurveZMQ; `BrokerService::Config::on_ready` added for dynamic port assignment in tests
 - ✅ **`BrokerService::Config::on_ready` callback** – Called from `run()` after `bind()` with (bound_endpoint, server_public_key); enables tests to use `tcp://127.0.0.1:0` dynamic port assignment without sleep() hacks; bound endpoint now logged instead of config endpoint
 - ✅ **pylabhub-broker implemented** – `src/broker/` directory: `ChannelRegistry`, `BrokerService`, `broker_main.cpp`; standalone `pylabhub-broker` executable; links against `pylabhub::utils`

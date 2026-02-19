@@ -20,25 +20,6 @@
 - [x] Update `DataBlockLayout::from_config` and `from_header`
 - [x] Remove legacy paths
 
-### Structured Buffer Alignment
-**Status**: 🟡 In Progress
-
-**Problem**: Structured data region was not aligned, causing misalignment for types with `alignof(T) == 8` (e.g., `uint64_t`).
-
-Tasks:
-- [ ] Implement 8-byte alignment for structured buffer start
-- [ ] Update `DataBlockLayout::from_config` with alignment padding
-- [ ] Update `DataBlockLayout::from_header` to match
-- [ ] Verify slot pointers satisfy `alignof(T)` requirements
-- [ ] Test with various struct types (uint64_t, double, custom structs)
-- [ ] Document alignment guarantees in API
-
-**Implementation Notes:**
-- Formula: `structured_buffer_offset = align_up(after_flexible, 8)`
-- Add 0-7 bytes padding before structured region
-- No change to usable space: `structured_buffer_size = slot_count * slot_stride_bytes`
-- Old packed layouts (no padding) are incompatible
-
 ### Layout Validation and Checksum
 **Status**: 🟢 Ready
 
@@ -127,6 +108,11 @@ Per `DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`:
 ---
 
 ## Recent Completions
+
+### 2026-02-18
+- ✅ Structured Buffer Alignment — guaranteed by design: `structured_buffer_offset` is enforced
+  4K-aligned (logic_error at `data_block.cpp:773-777`, `822-827`); `slot_stride_bytes` ≥ 4096;
+  4096 % 8 == 0 so every slot pointer is 8-byte aligned. No code change required.
 
 ### 2026-02-14
 - ✅ Integrity validator handles `flex_zone_size` path

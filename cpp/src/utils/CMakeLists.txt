@@ -32,6 +32,9 @@ set(UTILS_SOURCES
   json_config.cpp
   zmq_context.cpp
   messenger.cpp
+  channel_handle.cpp
+  broker_service.cpp
+  channel_registry.cpp
   data_block.cpp
   data_block_mutex.cpp
   shared_memory_spinlock.cpp
