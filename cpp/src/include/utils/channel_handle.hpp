@@ -35,7 +35,7 @@
 namespace pylabhub::hub
 {
 
-class ChannelHandleImpl;
+struct ChannelHandleImpl;
 
 class PYLABHUB_UTILS_EXPORT ChannelHandle
 {
