@@ -17,7 +17,7 @@
 #include <thread>
 
 // Accept any exit code; we only care about stderr content (used by EXPECT_EXIT in sanitizer tests)
-__attribute__((unused)) static bool any_exit(int) { return true; }
+__attribute__((unused)) static bool any_exit(int /*exit_code*/) { return true; }
 
 // ============================================================================
 // ThreadSanitizer (TSan) Tests
@@ -61,7 +61,7 @@ TEST(SanitizerTest, ASan_DetectsHeapBufferOverflowRead)
 {
     auto trigger = []() {
         int *a = new int[10];
-        (void)(volatile int)a[100];
+        (void)*(volatile int *)(a + 100);
         delete[] a;
         assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
@@ -73,29 +73,30 @@ TEST(SanitizerTest, ASan_DetectsHeapUseAfterFree)
     auto trigger = []() {
         int *a = new int[10];
         delete[] a;
-        (void)(volatile int)a[5];
+        (void)*(volatile int *)(a + 5);
         assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-use-after-free");
 }
 
+// Nested function definitions are a GCC extension rejected by Clang; move to file scope.
 #if defined(_MSC_VER)
-#define NOINLINE __declspec(noinline)
+__declspec(noinline) static void asan_stack_trigger()
 #else
-#define NOINLINE __attribute__((noinline))
+__attribute__((noinline)) static void asan_stack_trigger()
 #endif
+{
+    volatile char buf[256];
+    buf[0] = 1;
+    volatile char *p = buf;
+    p[256] = 0; // NOLINT — intentional OOB for ASan detection test
+    (void)p;
+    assert(false); // force abnormal exit so GTest evaluates the stderr matcher
+}
 
 TEST(SanitizerTest, ASan_DetectsStackBufferOverflow)
 {
-    NOINLINE static void trigger() {
-        volatile char buf[256];
-        buf[0] = 1;
-        volatile char *p = buf;
-        p[256] = 0;
-        (void)p;
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
-    }
-    EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: stack-buffer-overflow");
+    EXPECT_EXIT(asan_stack_trigger(), any_exit, "AddressSanitizer: stack-buffer-overflow");
 }
 
 #endif // PYLABHUB_SANITIZER_IS_ADDRESS

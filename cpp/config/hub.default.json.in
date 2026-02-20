@@ -1,0 +1,26 @@
+{
+  "hub": {
+    "name": "local.hub.default",
+    "description": "pyLabHub instance",
+    "broker_endpoint": "tcp://0.0.0.0:5570",
+    "admin_endpoint": "tcp://127.0.0.1:5600"
+  },
+  "paths": {
+    "scripts_python": "../share/scripts/python",
+    "scripts_lua":    "../share/scripts/lua",
+    "config_dir":     "../config",
+    "data_dir":       "../data"
+  },
+  "security": {
+    "admin_mode": "local",
+    "curve_keys_dir": null
+  },
+  "broker": {
+    "channel_timeout_s": 10,
+    "consumer_liveness_check_s": 5
+  },
+  "python": {
+    "startup_script": null,
+    "requirements": "../share/scripts/python/requirements.txt"
+  }
+}

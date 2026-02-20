@@ -42,6 +42,8 @@ target_link_libraries(test_layer2_framework_selftest
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_framework_selftest)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_framework_selftest
     SUITE_NAME "Layer2_FrameworkSelftest"
@@ -70,6 +72,8 @@ target_link_libraries(test_layer2_backoff_strategy
         GTest::gtest
         GTest::gtest_main
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_backoff_strategy)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer2_backoff_strategy
@@ -103,6 +107,8 @@ target_link_libraries(test_layer2_shared_memory_spinlock
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_shared_memory_spinlock)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_shared_memory_spinlock
     SUITE_NAME "Layer2_SharedMemorySpinlock"
@@ -134,6 +140,8 @@ target_link_libraries(test_layer2_crypto_utils
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_crypto_utils)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_crypto_utils
     SUITE_NAME "Layer2_CryptoUtils"
@@ -162,6 +170,8 @@ target_link_libraries(test_layer2_lifecycle
         GTest::gtest
         GTest::gmock
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_lifecycle)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer2_lifecycle
@@ -192,6 +202,8 @@ target_link_libraries(test_layer2_lifecycle_dynamic
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_lifecycle_dynamic)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_lifecycle_dynamic
     SUITE_NAME "Layer2_LifecycleDynamic"
@@ -221,6 +233,8 @@ target_link_libraries(test_layer2_filelock
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_filelock)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_filelock
     SUITE_NAME "Layer2_FileLock"
@@ -247,6 +261,8 @@ target_link_libraries(test_layer2_filelock_singleprocess
         pylabhub::test_framework
         GTest::gtest
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_filelock_singleprocess)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer2_filelock_singleprocess
@@ -277,6 +293,8 @@ target_link_libraries(test_layer2_logger
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer2_logger)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer2_logger
     SUITE_NAME "Layer2_Logger"
@@ -305,6 +323,8 @@ target_link_libraries(test_layer2_jsonconfig
         GTest::gtest
         GTest::gmock
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_jsonconfig)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer2_jsonconfig
@@ -344,6 +364,8 @@ target_link_libraries(test_layer2_slot_rw_coordinator
         GTest::gtest
         GTest::gtest_main
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_slot_rw_coordinator)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer2_slot_rw_coordinator

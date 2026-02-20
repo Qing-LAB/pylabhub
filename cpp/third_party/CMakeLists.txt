@@ -121,6 +121,7 @@ include(nlohmann_json)
 include(msgpack)
 include(fmt)
 include(cppzmq)
+include(python)
 include(XOPToolKit)
 include(cmake/googletest.cmake)
 
@@ -216,6 +217,7 @@ install(TARGETS
   pylabhub_nlohmann_json # Canonical INTERFACE target for nlohmann_json
   pylabhub_msgpack # Canonical INTERFACE target for msgpack
   pylabhub_cppzmq # Canonical INTERFACE target for cppzmq
+  pylabhub_pybind11_module # Canonical INTERFACE target for Python extension modules
   # Add other targets as they are consistently defined
   EXPORT pylabhubTargets
 )

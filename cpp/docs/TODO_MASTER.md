@@ -20,17 +20,33 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 1: Test Coverage Gaps
-📍 **Status**: Ongoing
+### Priority 1: HubShell — Python + Admin Shell Integration
+📍 **Status**: 🟡 In Progress
+📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
+
+6-phase plan (Phase 1 complete):
+- ✅ **Phase 1**: `HubConfig` lifecycle module + layered JSON config (`hub.default.json` / `hub.user.json`) — 424/424 tests passing (2026-02-20)
+- ✅ **Phase 2**: CMake Python env — offline fallback (`PYLABHUB_PYTHON_LOCAL_ARCHIVE`/`PYLABHUB_PYTHON_WHEELS_DIR`), `prepare_python_env` target, `requirements.txt` (2026-02-20)
+- 🔵 **Phase 3**: Remove `pylabhub-broker` standalone; fold into hubshell
+- 🔵 **Phase 4**: Python lifecycle module + pybind11 bindings
+- 🔵 **Phase 5**: Admin ZMQ shell service (local-only, token auth, exec + JSON response)
+- 🔵 **Phase 6**: hubshell.cpp full integration
+
+### Priority 2: Test Coverage Gaps
+📍 **Status**: Mostly complete
 📋 **Details**: `docs/todo/TESTING_TODO.md`
 
 Key tasks:
 - Recovery scenario tests — facility layer ✅ done; broker-coordinated flow deferred (needs broker protocol)
 - ✅ Messenger broker integration tests — Phase C complete (390/390 tests passing)
 - ✅ Consumer registration protocol + E2E test — 397/397 tests passing
+- ✅ hub::Producer + hub::Consumer active API — 15/15 tests; 417/417 total passing
+- ✅ Broker health and notification — DatahubBrokerHealthTest 5/5 tests; 422/422 total passing
+- ✅ RAII stress tests — DatahubStressRaiiTest 2/2 tests (full-capacity + back-pressure); 424/424 total passing
+- ✅ Pluggable Slot-Processor API (HEP-0006) — push/synced_write/pull/set_write_handler/set_read_handler; WriteProcessorContext/ReadProcessorContext; 424/424 total passing
 
-### Priority 2: Messenger Broker Protocol
-📍 **Status**: ✅ Complete — consumer registration protocol implemented; E2E test passing
+### Priority 3: Messenger Broker Protocol
+📍 **Status**: ✅ Complete — health/notification layer implemented; 424/424 tests passing
 📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
 
 Key tasks:
@@ -38,8 +54,21 @@ Key tasks:
 - [x] CurveZMQ server keypair; REG_REQ / DISC_REQ / DEREG_REQ handlers
 - [x] Phase C broker integration tests — DatahubBrokerTest (6 tests)
 - [x] Consumer registration protocol — CONSUMER_REG_REQ/ACK, CONSUMER_DEREG_REQ/ACK, consumer_count in DISC_ACK
-- [x] `register_consumer` implemented in Messenger; `deregister_consumer` new public method
-- [x] DatahubBrokerConsumerTest (6 tests: 391–396) + DatahubE2ETest (1 test: 397); 397/397 passing
+- [x] DatahubBrokerConsumerTest (6 tests: 391–396) + DatahubE2ETest (1 test: 397)
+- [x] hub::Producer + hub::Consumer active services (15 tests: 403–417)
+- [x] Broker health/notification layer — Cat 1/Cat 2 error taxonomy; CONSUMER_DIED_NOTIFY; CHANNEL_ERROR_NOTIFY; per-channel Messenger callbacks; auto-wire in Producer/Consumer; DatahubBrokerHealthTest (5 tests: 418–422)
+- [x] Cleanup: removed src/admin/ and src/python/ (outdated stubs); updated examples/ (raii_layer_example fixed; hub_active_service_example and hub_health_example added); broker_main updated with CryptoUtils + on_ready pubkey display
+
+### Priority 4 (complete): Pluggable Slot-Processor API
+📍 **Status**: ✅ Complete — 424/424 tests passing (2026-02-19)
+📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md` § "Pluggable Slot-Processor and Messenger Access"
+📐 **HEP**: `docs/HEP/HEP-CORE-0006-SlotProcessor-API.md`
+
+Two modes: Queue (`push`/`synced_write`/`pull`) and Real-time (`set_write_handler`/`set_read_handler`).
+Fully-typed `WriteProcessorContext<F,D>` / `ReadProcessorContext<F,D>` bundles slot + FlexZone +
+messaging + shutdown signal. Renamed APIs (`post_write`→`push`, `write_shm`→`synced_write`,
+`read_shm`→`pull`). Upgraded `on_shm_data` to typed `set_read_handler`.
+stop() notifies CVs in producer write_thread and consumer shm_thread for immediate wakeup.
 
 ### Priority 3: Platform / Windows Verification
 📍 **Status**: Mostly done
@@ -55,14 +84,16 @@ Key tasks (backlog only):
 
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
+| Security / Identity / Provenance | 🔵 Deferred | `docs/todo/SECURITY_TODO.md` | Full design captured; 5 implementation phases; Phase 2 unblocks actor end-to-end |
+| HubShell / HubConfig | 🟡 In Progress | `docs/todo/MESSAGEHUB_TODO.md` | Phase 1 done (HubConfig lifecycle module, layered config); Phases 2–6 pending |
 | RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
-| API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle |
+| API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor in backlog** |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 402/402 passing; remaining: slot-checksum repair, broker-coordinated recovery |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 424/424 passing; remaining: slot-checksum repair, broker-coordinated recovery |
 | Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
-| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | BrokerService moved into pylabhub-utils (Pimpl ABI); ChannelHandle Phase 6 tests; 402/402 tests |
+| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Cat 1/Cat 2 health layer; Slot-Processor API (HEP-0006); 424/424 total |
 
 **Active code reviews:** None. All reviews resolved and archived.
 
@@ -88,6 +119,7 @@ All detailed task tracking, completions, and phase-specific work is maintained i
 
 ### Supporting Systems
 - **`docs/todo/MESSAGEHUB_TODO.md`** — Messenger integration, broker protocol
+- **`docs/todo/SECURITY_TODO.md`** — Hub vault, directory model, identity, connection policy, provenance chain
 - **`docs/todo/RECOVERY_TODO.md`** — Recovery scenarios, diagnostics improvements (to be created)
 
 ---

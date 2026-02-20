@@ -539,13 +539,13 @@ extern "C"
             // NOLINTNEXTLINE(modernize-loop-convert) -- index i required for compare_exchange_strong and logging
             for (size_t i = 0; i < pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS; ++i)
             {
-                uint64_t pid = header->consumer_heartbeats[i].consumer_id.load(
+                uint64_t pid = header->consumer_heartbeats[i].consumer_pid.load(
                     std::memory_order_acquire); // Corrected
                 if (pid != 0 && !pylabhub::platform::is_process_alive(pid))
                 {
 
                     uint64_t expected_pid = pid;
-                    if (header->consumer_heartbeats[i].consumer_id.compare_exchange_strong(
+                    if (header->consumer_heartbeats[i].consumer_pid.compare_exchange_strong(
                             expected_pid, 0, std::memory_order_acq_rel))
                     { // Corrected
                         header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
@@ -817,4 +817,35 @@ extern "C"
         }
         return slot_rw_reset_metrics(ctx->header);
     }
+
+    int datablock_get_channel_identity(const char *shm_name, plh_channel_identity_t *out)
+    {
+        if (shm_name == nullptr || out == nullptr)
+        {
+            return -1;
+        }
+        auto ctx = open_for_recovery(shm_name);
+        if (!ctx)
+        {
+            return -1;
+        }
+        return slot_rw_get_channel_identity(ctx->header, out);
+    }
+
+    int datablock_list_consumers(const char *shm_name, plh_consumer_identity_t *out_array,
+                                 int array_capacity, int *out_count)
+    {
+        if (shm_name == nullptr || out_array == nullptr || array_capacity <= 0 ||
+            out_count == nullptr)
+        {
+            return -1;
+        }
+        auto ctx = open_for_recovery(shm_name);
+        if (!ctx)
+        {
+            return -1;
+        }
+        return slot_rw_list_consumers(ctx->header, out_array, array_capacity, out_count);
+    }
+
 } // extern "C"

@@ -43,7 +43,8 @@ TEST_F(DatahubWriteAttachTest, WriterAttachValidatesSecret)
 TEST_F(DatahubWriteAttachTest, WriterAttachValidatesSchema)
 {
     auto proc = SpawnWorker("write_attach.writer_attach_validates_schema", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // WriteAttach schema mismatch emits LOGGER_ERROR.
+    ExpectWorkerOk(proc, {}, {"WriteAttach: DataBlock schema hash mismatch"});
 }
 
 // ─── Segment lifetime: persists after writer detaches ─────────────────────────

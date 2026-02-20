@@ -145,4 +145,15 @@ size_t ChannelRegistry::size() const
     return m_channels.size();
 }
 
+ChannelEntry* ChannelRegistry::find_channel_mutable(const std::string& channel_name) noexcept
+{
+    auto it = m_channels.find(channel_name);
+    return (it != m_channels.end()) ? &it->second : nullptr;
+}
+
+std::unordered_map<std::string, ChannelEntry>& ChannelRegistry::all_channels() noexcept
+{
+    return m_channels;
+}
+
 } // namespace pylabhub::broker

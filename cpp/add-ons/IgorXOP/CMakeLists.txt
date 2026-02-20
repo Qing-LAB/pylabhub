@@ -344,19 +344,19 @@ set(stage_commands "")
 if(DEFINED PLATFORM_APPLE)
   # For macOS, copy the entire assembled .xop bundle directory.
   list(APPEND stage_commands
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${BUNDLE_DIR}" "${PYLABHUB_STAGING_DIR}/IgorXOP/${XOP_BUNDLE_NAME}.xop"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${BUNDLE_DIR}" "${PYLABHUB_STAGING_DIR}/opt/IgorXOP/${XOP_BUNDLE_NAME}.xop"
   )
 elseif(DEFINED PLATFORM_WIN64)
   # For Windows, copy the final .xop DLL.
   list(APPEND stage_commands
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${XOP_TARGET}>" "${PYLABHUB_STAGING_DIR}/opt/IgorXOP/"
   )
   # Also copy the pylabhub::utils dependency if it is a shared library
   if(TARGET pylabhub::utils)
     get_target_property(_utils_type pylabhub::utils TYPE)
     if(_utils_type STREQUAL "SHARED_LIBRARY" OR _utils_type STREQUAL "MODULE_LIBRARY")
       list(APPEND stage_commands
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub::utils>" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:pylabhub::utils>" "${PYLABHUB_STAGING_DIR}/opt/IgorXOP/"
       )
       message(STATUS "IgorXOP: Adding command to stage dependent library: pylabhub::utils")
     endif()
@@ -368,14 +368,14 @@ endif()
 # as `copy_if_different` requires at least one source file.
 if(_xop_helper_files)
   list(APPEND stage_commands
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/IgorXOP/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_xop_helper_files}" "${PYLABHUB_STAGING_DIR}/opt/IgorXOP/"
   )
 endif()
 
 # Create the unified staging target for this component.
 add_custom_target(stage_${XOP_TARGET}
   ${stage_commands}
-  COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/IgorXOP/"
+  COMMENT "Staging final ${XOP_BUNDLE_NAME}.xop and helper files to ${PYLABHUB_STAGING_DIR}/opt/IgorXOP/"
   VERBATIM
 )
 add_dependencies(stage_${XOP_TARGET} ${XOP_TARGET} create_staging_dirs)

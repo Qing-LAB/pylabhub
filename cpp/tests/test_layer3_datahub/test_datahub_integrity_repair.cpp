@@ -42,8 +42,10 @@ TEST_F(DatahubIntegrityRepairTest, FreshChecksumBlockPasses)
 TEST_F(DatahubIntegrityRepairTest, DetectsLayoutChecksumMismatch)
 {
     auto proc = SpawnWorker("integrity_repair.validate_integrity_detects_layout_checksum_mismatch", {});
-    // Corruption detection emits ERROR logs; repair=true also emits ERROR (still failed).
-    ExpectWorkerOk(proc, {"ERROR"});
+    // Corruption detection emits LOGGER_ERROR for layout checksum mismatch,
+    // then a second LOGGER_ERROR when consumer creation for slot verification also fails.
+    ExpectWorkerOk(proc, {}, {"INTEGRITY_CHECK: Layout checksum mismatch",
+                              "INTEGRITY_CHECK: Could not create a consumer"});
 }
 
 // ─── Magic number corruption ──────────────────────────────────────────────────
@@ -51,6 +53,6 @@ TEST_F(DatahubIntegrityRepairTest, DetectsLayoutChecksumMismatch)
 TEST_F(DatahubIntegrityRepairTest, DetectsMagicNumberCorruption)
 {
     auto proc = SpawnWorker("integrity_repair.validate_integrity_detects_magic_number_corruption", {});
-    // Invalid magic number emits ERROR log.
-    ExpectWorkerOk(proc, {"ERROR"});
+    // Magic number corruption prevents open; recovery API logs LOGGER_ERROR "Failed to open".
+    ExpectWorkerOk(proc, {}, {"recovery: Failed to open"});
 }

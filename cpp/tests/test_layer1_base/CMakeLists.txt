@@ -34,6 +34,8 @@ target_link_libraries(test_layer1_spinlock
         GTest::gtest_main
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer1_spinlock)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer1_spinlock
     SUITE_NAME "Layer1_Spinlock"
@@ -61,6 +63,8 @@ target_link_libraries(test_layer1_recursion_guard
         GTest::gtest
         GTest::gtest_main
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_recursion_guard)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer1_recursion_guard
@@ -90,6 +94,8 @@ target_link_libraries(test_layer1_scope_guard
         GTest::gtest_main
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer1_scope_guard)
+
 pylabhub_register_test_for_staging(
     TARGET test_layer1_scope_guard
     SUITE_NAME "Layer1_ScopeGuard"
@@ -117,6 +123,8 @@ target_link_libraries(test_layer1_format_tools
         GTest::gtest
         GTest::gtest_main
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_format_tools)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer1_format_tools
@@ -149,6 +157,8 @@ target_link_libraries(test_layer1_result
 )
 
 target_compile_features(test_layer1_result PRIVATE cxx_std_20)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_result)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer1_result

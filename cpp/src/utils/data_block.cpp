@@ -1114,12 +1114,21 @@ class DataBlock
             reserved_perf_elem.store(0, std::memory_order_release);
         }
 
-        // Initialize Consumer Heartbeats
+        // Initialize Consumer Heartbeats (128 bytes each; zero all fields)
         for (auto &consumer_heartbeat : m_header->consumer_heartbeats)
         {
-            consumer_heartbeat.consumer_id.store(0, std::memory_order_release);
+            consumer_heartbeat.consumer_pid.store(0, std::memory_order_release);
             consumer_heartbeat.last_heartbeat_ns.store(0, std::memory_order_release);
+            std::memset(consumer_heartbeat.consumer_uid, 0, sizeof(consumer_heartbeat.consumer_uid));
+            std::memset(consumer_heartbeat.consumer_name, 0,
+                        sizeof(consumer_heartbeat.consumer_name));
         }
+
+        // Initialize Channel Identity fields (written by producer create; empty until security phase)
+        std::memset(m_header->hub_uid, 0, sizeof(m_header->hub_uid));
+        std::memset(m_header->hub_name, 0, sizeof(m_header->hub_name));
+        std::memset(m_header->producer_uid, 0, sizeof(m_header->producer_uid));
+        std::memset(m_header->producer_name, 0, sizeof(m_header->producer_name));
 
         // Initialize SharedSpinLock states (same factory logic as in-process spinlock)
         for (auto &spinlock_state : m_header->spinlock_states)
@@ -1724,6 +1733,10 @@ struct DataBlockConsumerImpl
     size_t flex_zone_offset = 0;
     size_t flex_zone_size = 0;
     int heartbeat_slot = -1; // For Sync_reader: index into consumer_heartbeats / read positions
+    // Consumer identity written to the heartbeat slot during register_heartbeat().
+    // Must be populated BEFORE register_heartbeat() is called (set in find_datablock_consumer_impl).
+    char consumer_uid_buf[40]{};   // Null-terminated hex string; empty = not set
+    char consumer_name_buf[32]{};  // Null-terminated name; empty = not set
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
@@ -1740,11 +1753,14 @@ struct DataBlockConsumerImpl
             {
                 uint64_t pid = pylabhub::platform::get_pid();
                 uint64_t expected = pid;
-                if (header->consumer_heartbeats[static_cast<size_t>(heartbeat_slot)]
-                        .consumer_id.compare_exchange_strong(expected, 0,
-                                                             std::memory_order_acq_rel))
+                auto hb_slot = static_cast<size_t>(heartbeat_slot);
+                if (header->consumer_heartbeats[hb_slot].consumer_pid.compare_exchange_strong(
+                        expected, 0, std::memory_order_acq_rel))
                 {
                     header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
+                    // Zero uid/name after releasing pid (slot no longer claimed)
+                    std::memset(header->consumer_heartbeats[hb_slot].consumer_uid, 0, 40);
+                    std::memset(header->consumer_heartbeats[hb_slot].consumer_name, 0, 32);
                 }
                 heartbeat_slot = -1;
             }
@@ -2131,7 +2147,7 @@ void DataBlockProducer::check_consumer_health() noexcept
     for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
     {
         uint64_t consumer_pid =
-            header->consumer_heartbeats[i].consumer_id.load(std::memory_order_acquire);
+            header->consumer_heartbeats[i].consumer_pid.load(std::memory_order_acquire);
         if (consumer_pid != 0)
         {
             if (!pylabhub::platform::is_process_alive(consumer_pid))
@@ -2140,7 +2156,7 @@ void DataBlockProducer::check_consumer_health() noexcept
                     "DataBlock '{}': Detected dead consumer PID {}. Clearing heartbeat slot {}.",
                     pImpl->name, consumer_pid, i);
                 uint64_t expected_pid = consumer_pid;
-                if (header->consumer_heartbeats[i].consumer_id.compare_exchange_strong(
+                if (header->consumer_heartbeats[i].consumer_pid.compare_exchange_strong(
                         expected_pid, 0, std::memory_order_acq_rel))
                 {
                     header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
@@ -2287,7 +2303,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
             uint64_t min_pos = next;
             for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
             {
-                if (header->consumer_heartbeats[i].consumer_id.load(std::memory_order_acquire) != 0)
+                if (header->consumer_heartbeats[i].consumer_pid.load(std::memory_order_acquire) != 0)
                 {
                     uint64_t pos =
                         consumer_next_read_slot_ptr(header, i)->load(std::memory_order_acquire);
@@ -2715,7 +2731,13 @@ int DataBlockConsumer::register_heartbeat()
     for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
     {
         uint64_t expected = 0;
-        if (header->consumer_heartbeats[i].consumer_id.compare_exchange_strong(
+        // Write identity BEFORE the CAS so any reader that sees consumer_pid != 0
+        // via acquire-load also sees consistent uid/name (released by the acq_rel CAS).
+        std::memcpy(header->consumer_heartbeats[i].consumer_uid, pImpl->consumer_uid_buf,
+                    sizeof(pImpl->consumer_uid_buf));
+        std::memcpy(header->consumer_heartbeats[i].consumer_name, pImpl->consumer_name_buf,
+                    sizeof(pImpl->consumer_name_buf));
+        if (header->consumer_heartbeats[i].consumer_pid.compare_exchange_strong(
                 expected, pid, std::memory_order_acq_rel))
         {
             header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
@@ -2724,6 +2746,12 @@ int DataBlockConsumer::register_heartbeat()
             pImpl->heartbeat_slot = static_cast<int>(i);
             return static_cast<int>(i);
         }
+        // CAS failed — another consumer claimed this slot; zero the identity we just wrote
+        // (leaves the slot clean for the real owner)
+        std::memset(header->consumer_heartbeats[i].consumer_uid, 0,
+                    sizeof(pImpl->consumer_uid_buf));
+        std::memset(header->consumer_heartbeats[i].consumer_name, 0,
+                    sizeof(pImpl->consumer_name_buf));
     }
     return -1; // No available slot
 }
@@ -2777,7 +2805,7 @@ void DataBlockConsumer::unregister_heartbeat(int slot)
     auto *header = pImpl->dataBlock->header();
     uint64_t pid = pylabhub::platform::get_pid();
     uint64_t expected = pid; // Expected to be the current process's PID
-    if (header->consumer_heartbeats[slot].consumer_id.compare_exchange_strong(
+    if (header->consumer_heartbeats[slot].consumer_pid.compare_exchange_strong(
             expected, 0, std::memory_order_acq_rel))
     {
         header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
@@ -3374,7 +3402,7 @@ attach_datablock_as_writer_impl(const std::string &name,
 extern "C"
 {
 
-    SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms)
+    PYLABHUB_UTILS_EXPORT SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms)
     {
         if (rw_state == nullptr)
         {
@@ -3383,7 +3411,7 @@ extern "C"
         return acquire_write(rw_state, nullptr, timeout_ms);
     }
 
-    void slot_rw_commit(pylabhub::hub::SlotRWState *rw_state)
+    PYLABHUB_UTILS_EXPORT void slot_rw_commit(pylabhub::hub::SlotRWState *rw_state)
     {
         if (rw_state != nullptr)
         {
@@ -3393,7 +3421,7 @@ extern "C"
         }
     }
 
-    void slot_rw_release_write(pylabhub::hub::SlotRWState *rw_state)
+    PYLABHUB_UTILS_EXPORT void slot_rw_release_write(pylabhub::hub::SlotRWState *rw_state)
     {
         if (rw_state != nullptr)
         {
@@ -3401,7 +3429,7 @@ extern "C"
         }
     }
 
-    SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
+    PYLABHUB_UTILS_EXPORT SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
                                            uint64_t *out_generation)
     {
         if (rw_state == nullptr || out_generation == nullptr)
@@ -3411,7 +3439,7 @@ extern "C"
         return acquire_read(rw_state, nullptr, out_generation);
     }
 
-    bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation)
+    PYLABHUB_UTILS_EXPORT bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation)
     {
         if (rw_state == nullptr)
         {
@@ -3420,7 +3448,7 @@ extern "C"
         return validate_read_impl(rw_state, nullptr, generation);
     }
 
-    void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state)
+    PYLABHUB_UTILS_EXPORT void slot_rw_release_read(pylabhub::hub::SlotRWState *rw_state)
     {
         if (rw_state != nullptr)
         {
@@ -3428,7 +3456,7 @@ extern "C"
         }
     }
 
-    const char *slot_acquire_result_string(SlotAcquireResult result)
+    PYLABHUB_UTILS_EXPORT const char *slot_acquire_result_string(SlotAcquireResult result)
     {
         switch (result)
         {
@@ -3449,7 +3477,7 @@ extern "C"
         }
     }
 
-    int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
+    PYLABHUB_UTILS_EXPORT int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
                             DataBlockMetrics *out_metrics)
     {
         if (shared_memory_header == nullptr || out_metrics == nullptr)
@@ -3525,7 +3553,7 @@ extern "C"
         return 0;
     }
 
-    uint64_t slot_rw_get_total_slots_written(
+    PYLABHUB_UTILS_EXPORT uint64_t slot_rw_get_total_slots_written(
         const pylabhub::hub::SharedMemoryHeader *header)
     {
         return header != nullptr
@@ -3533,19 +3561,19 @@ extern "C"
                    : 0;
     }
 
-    uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header)
+    PYLABHUB_UTILS_EXPORT uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header)
     {
         return header != nullptr
                    ? header->commit_index.load(std::memory_order_relaxed)
                    : 0;
     }
 
-    uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header)
+    PYLABHUB_UTILS_EXPORT uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header)
     {
         return header != nullptr ? pylabhub::hub::detail::get_slot_count(header) : 0;
     }
 
-    int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header)
+    PYLABHUB_UTILS_EXPORT int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header)
     {
         if (shared_memory_header == nullptr)
         {
@@ -3580,6 +3608,63 @@ extern "C"
         shared_memory_header->total_bytes_written.store(0, std::memory_order_release);
         shared_memory_header->total_bytes_read.store(0, std::memory_order_release);
         shared_memory_header->uptime_seconds.store(0, std::memory_order_release);
+        return 0;
+    }
+
+    PYLABHUB_UTILS_EXPORT int slot_rw_get_channel_identity(
+        const pylabhub::hub::SharedMemoryHeader *header, plh_channel_identity_t *out)
+    {
+        if (header == nullptr || out == nullptr)
+        {
+            return -1;
+        }
+        std::memcpy(out->hub_uid, header->hub_uid, sizeof(out->hub_uid));
+        std::memcpy(out->hub_name, header->hub_name, sizeof(out->hub_name));
+        std::memcpy(out->producer_uid, header->producer_uid, sizeof(out->producer_uid));
+        std::memcpy(out->producer_name, header->producer_name, sizeof(out->producer_name));
+        // Guarantee null-termination regardless of what the producer wrote
+        out->hub_uid[sizeof(out->hub_uid) - 1]             = '\0';
+        out->hub_name[sizeof(out->hub_name) - 1]           = '\0';
+        out->producer_uid[sizeof(out->producer_uid) - 1]   = '\0';
+        out->producer_name[sizeof(out->producer_name) - 1] = '\0';
+        return 0;
+    }
+
+    PYLABHUB_UTILS_EXPORT int slot_rw_list_consumers(
+        const pylabhub::hub::SharedMemoryHeader *header, plh_consumer_identity_t *out_array,
+        int array_capacity, int *out_count)
+    {
+        if (header == nullptr || out_array == nullptr || array_capacity <= 0 ||
+            out_count == nullptr)
+        {
+            return -1;
+        }
+        *out_count = 0;
+        for (size_t i = 0; i < pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS; ++i)
+        {
+            uint64_t pid =
+                header->consumer_heartbeats[i].consumer_pid.load(std::memory_order_acquire);
+            if (pid == 0)
+            {
+                continue;
+            }
+            if (*out_count >= array_capacity)
+            {
+                break;
+            }
+            plh_consumer_identity_t &entry = out_array[*out_count];
+            entry.consumer_pid             = pid;
+            entry.last_heartbeat_ns        = header->consumer_heartbeats[i].last_heartbeat_ns.load(
+                std::memory_order_relaxed);
+            entry.slot_index = static_cast<int>(i);
+            std::memcpy(entry.consumer_uid, header->consumer_heartbeats[i].consumer_uid,
+                        sizeof(entry.consumer_uid));
+            entry.consumer_uid[sizeof(entry.consumer_uid) - 1] = '\0';
+            std::memcpy(entry.consumer_name, header->consumer_heartbeats[i].consumer_name,
+                        sizeof(entry.consumer_name));
+            entry.consumer_name[sizeof(entry.consumer_name) - 1] = '\0';
+            (*out_count)++;
+        }
         return 0;
     }
 

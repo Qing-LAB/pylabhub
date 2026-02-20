@@ -18,15 +18,17 @@ class DatahubChannelTest : public IsolatedProcessTest
 TEST_F(DatahubChannelTest, CreateNotConnectedReturnsNullopt)
 {
     // Verify create_channel returns nullopt when Messenger has no broker connection.
+    // Messenger logs LOGGER_ERROR "not connected".
     auto proc = SpawnWorker("channel.create_not_connected", {});
-    ExpectWorkerOk(proc, {"Messenger"});
+    ExpectWorkerOk(proc, {}, {"not connected"});
 }
 
 TEST_F(DatahubChannelTest, ConnectNotFoundReturnsNullopt)
 {
     // Verify connect_channel returns nullopt when the channel has never been registered.
+    // Messenger logs LOGGER_ERROR via discover_producer failing with "not registered".
     auto proc = SpawnWorker("channel.connect_not_found", {});
-    ExpectWorkerOk(proc, {"Messenger"});
+    ExpectWorkerOk(proc, {}, {"discover_producer"});
 }
 
 TEST_F(DatahubChannelTest, PipelineDataExchange)

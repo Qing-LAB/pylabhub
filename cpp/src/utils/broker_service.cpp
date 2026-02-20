@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <vector>
 
 namespace pylabhub::broker
@@ -61,6 +62,10 @@ public:
     ChannelRegistry       registry;
     std::atomic<bool>     stop_requested{false};
 
+    /// Guards registry reads/writes from external threads (e.g., list_channels_json_str).
+    /// The run() thread holds this lock during post-poll registry operations (not during poll).
+    mutable std::mutex    m_query_mu;
+
     void run();
 
     void process_message(zmq::socket_t&       socket,
@@ -68,7 +73,9 @@ public:
                          const std::string&    msg_type,
                          const nlohmann::json& payload);
 
-    nlohmann::json handle_reg_req(const nlohmann::json& req);
+    nlohmann::json handle_reg_req(const nlohmann::json& req,
+                                   const zmq::message_t& identity,
+                                   zmq::socket_t&        socket);
     nlohmann::json handle_disc_req(const nlohmann::json& req);
     nlohmann::json handle_dereg_req(const nlohmann::json& req);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
@@ -77,11 +84,21 @@ public:
     void           handle_heartbeat_req(const nlohmann::json& req);
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
+    void check_dead_consumers(zmq::socket_t& socket);
 
     void send_closing_notify(zmq::socket_t&                    socket,
                              const std::string&                channel_name,
-                             const std::vector<ConsumerEntry>& consumers,
+                             const ChannelEntry&               entry,
                              const std::string&                reason);
+
+    void handle_checksum_error_report(zmq::socket_t&        socket,
+                                      const nlohmann::json& req);
+
+    /// Push an unsolicited message to a specific ZMQ ROUTER identity (raw bytes).
+    static void send_to_identity(zmq::socket_t&     socket,
+                                 const std::string& identity,
+                                 const std::string& msg_type,
+                                 const nlohmann::json& body);
 
     static void send_reply(zmq::socket_t&       socket,
                            const zmq::message_t& identity,
@@ -92,6 +109,9 @@ public:
     static nlohmann::json make_error(const std::string& correlation_id,
                                      const std::string& error_code,
                                      const std::string& message);
+
+    /// Timestamp of last consumer liveness check (for interval gating).
+    std::chrono::steady_clock::time_point m_last_consumer_check{};
 };
 
 // ============================================================================
@@ -124,36 +144,44 @@ void BrokerServiceImpl::run()
 
     while (!stop_requested.load(std::memory_order_acquire))
     {
+        // --- Poll phase (no mutex: zmq_poll blocks up to kPollTimeout, no registry access) ---
         std::vector<zmq::pollitem_t> items = {{router.handle(), 0, ZMQ_POLLIN, 0}};
         zmq::poll(items, kPollTimeout);
 
-        // Check heartbeat timeouts every poll cycle (≈100ms resolution).
-        check_heartbeat_timeouts(router);
+        // --- Post-poll phase (mutex held: all registry reads/writes are protected) ---
+        {
+            std::lock_guard<std::mutex> lock(m_query_mu);
 
-        if ((items[0].revents & ZMQ_POLLIN) == 0)
-        {
-            continue;
-        }
+            // Check heartbeat timeouts and consumer liveness every poll cycle (≈100ms resolution).
+            check_heartbeat_timeouts(router);
+            check_dead_consumers(router);
 
-        std::vector<zmq::message_t> frames;
-        static_cast<void>(zmq::recv_multipart(router, std::back_inserter(frames)));
-        // Expected layout: [identity, 'C', msg_type_string, json_body]
-        if (frames.size() < 4)
-        {
-            LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})", frames.size());
-            continue;
-        }
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                continue;
+            }
 
-        try
-        {
-            const std::string msg_type = frames[2].to_string();
-            nlohmann::json payload = nlohmann::json::parse(frames[3].to_string());
-            process_message(router, frames[0], msg_type, payload);
-        }
-        catch (const nlohmann::json::exception& e)
-        {
-            LOGGER_WARN("Broker: malformed JSON: {}", e.what());
-        }
+            std::vector<zmq::message_t> frames;
+            static_cast<void>(zmq::recv_multipart(router, std::back_inserter(frames)));
+            // Expected layout: [identity, 'C', msg_type_string, json_body]
+            if (frames.size() < 4)
+            {
+                LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})",
+                            frames.size());
+                continue;
+            }
+
+            try
+            {
+                const std::string msg_type = frames[2].to_string();
+                nlohmann::json payload = nlohmann::json::parse(frames[3].to_string());
+                process_message(router, frames[0], msg_type, payload);
+            }
+            catch (const nlohmann::json::exception& e)
+            {
+                LOGGER_WARN("Broker: malformed JSON: {}", e.what());
+            }
+        } // mutex released before next poll
     }
 
     router.close();
@@ -171,7 +199,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
 {
     if (msg_type == "REG_REQ")
     {
-        nlohmann::json resp = handle_reg_req(payload);
+        nlohmann::json resp = handle_reg_req(payload, identity, socket);
         const std::string ack = (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
@@ -206,6 +234,12 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // Fire-and-forget: update timestamp, no reply.
         handle_heartbeat_req(payload);
     }
+    else if (msg_type == "CHECKSUM_ERROR_REPORT")
+    {
+        // Cat 2: producer/consumer reports a slot checksum error.
+        // Fire-and-forget: no reply expected.
+        handle_checksum_error_report(socket, payload);
+    }
     else
     {
         LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
@@ -220,7 +254,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
 // Handlers
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
+                                                   const zmq::message_t& identity,
+                                                   zmq::socket_t&        socket)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -229,26 +265,48 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req)
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
+    const std::string attempted_schema = req.value("schema_hash", "");
+    const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
+
     ChannelEntry entry;
-    entry.shm_name            = req.value("shm_name", "");
-    entry.schema_hash         = req.value("schema_hash", "");
-    entry.schema_version      = req.value("schema_version", uint32_t{0});
-    entry.producer_pid        = req.value("producer_pid", uint64_t{0});
-    entry.producer_hostname   = req.value("producer_hostname", "");
-    entry.has_shared_memory   = req.value("has_shared_memory", false);
-    entry.pattern             = pattern_from_str(req.value("channel_pattern", "PubSub"));
-    entry.zmq_ctrl_endpoint   = req.value("zmq_ctrl_endpoint", "");
-    entry.zmq_data_endpoint   = req.value("zmq_data_endpoint", "");
-    entry.zmq_pubkey          = req.value("zmq_pubkey", "");
+    entry.shm_name          = req.value("shm_name", "");
+    entry.schema_hash       = attempted_schema;
+    entry.schema_version    = req.value("schema_version", uint32_t{0});
+    entry.producer_pid      = attempted_pid;
+    entry.producer_hostname = req.value("producer_hostname", "");
+    entry.has_shared_memory = req.value("has_shared_memory", false);
+    entry.pattern           = pattern_from_str(req.value("channel_pattern", "PubSub"));
+    entry.zmq_ctrl_endpoint = req.value("zmq_ctrl_endpoint", "");
+    entry.zmq_data_endpoint = req.value("zmq_data_endpoint", "");
+    entry.zmq_pubkey        = req.value("zmq_pubkey", "");
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         entry.metadata = req["metadata"];
     }
+    // Producer ZMQ identity: captured here for future unsolicited pushes.
+    entry.producer_zmq_identity.assign(static_cast<const char*>(identity.data()),
+                                        identity.size());
     // status starts as PendingReady (default); last_heartbeat = now() (default).
 
     if (!registry.register_channel(channel_name, std::move(entry)))
     {
-        LOGGER_WARN("Broker: REG_REQ schema mismatch for channel '{}'", channel_name);
+        // Cat 1: schema mismatch — invariant violation. Log + notify existing producer.
+        auto* existing = registry.find_channel_mutable(channel_name);
+        const std::string existing_schema = existing ? existing->schema_hash : "(unknown)";
+        LOGGER_ERROR(
+            "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
+            channel_name, existing_schema, attempted_schema, attempted_pid);
+        if (existing && !existing->producer_zmq_identity.empty())
+        {
+            nlohmann::json err;
+            err["channel_name"]          = channel_name;
+            err["event"]                 = "schema_mismatch_attempt";
+            err["existing_schema_hash"]  = existing_schema;
+            err["attempted_schema_hash"] = attempted_schema;
+            err["attempted_pid"]         = attempted_pid;
+            send_to_identity(socket, existing->producer_zmq_identity, "CHANNEL_ERROR_NOTIFY",
+                             err);
+        }
         return make_error(corr_id, "SCHEMA_MISMATCH",
                           "Schema hash differs from existing registration for channel '" +
                               channel_name + "'");
@@ -445,30 +503,69 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         {
             continue;
         }
-        LOGGER_WARN("Broker: channel '{}' timed out (no heartbeat within {}s); closing",
+        // Cat 1: heartbeat timeout — log + notify all parties + shutdown.
+        LOGGER_WARN("Broker: Cat1 channel '{}' timed out (no heartbeat within {}s); closing",
                     channel_name, cfg.channel_timeout.count());
-        send_closing_notify(socket, channel_name, entry->consumers, "heartbeat_timeout");
+        send_closing_notify(socket, channel_name, *entry, "heartbeat_timeout");
         registry.deregister_channel(channel_name, entry->producer_pid);
     }
 }
 
-void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                    socket,
-                                            const std::string&                channel_name,
-                                            const std::vector<ConsumerEntry>& consumers,
-                                            const std::string&                reason)
+void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
 {
-    if (consumers.empty())
+    if (cfg.consumer_liveness_check_interval.count() <= 0)
     {
         return;
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_last_consumer_check < cfg.consumer_liveness_check_interval)
+    {
+        return;
+    }
+    m_last_consumer_check = now;
 
+    for (auto& [channel_name, entry] : registry.all_channels())
+    {
+        std::vector<ConsumerEntry> dead;
+        for (const auto& c : entry.consumers)
+        {
+            if (!pylabhub::platform::is_process_alive(c.consumer_pid))
+            {
+                dead.push_back(c);
+            }
+        }
+        for (const auto& dead_consumer : dead)
+        {
+            // Cat 2: dead consumer — notify producer + clean registry.
+            LOGGER_WARN(
+                "Broker: Cat2 dead consumer pid={} host='{}' on channel '{}' — removing",
+                dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
+            if (!entry.producer_zmq_identity.empty())
+            {
+                nlohmann::json notify;
+                notify["channel_name"]      = channel_name;
+                notify["consumer_pid"]      = dead_consumer.consumer_pid;
+                notify["consumer_hostname"] = dead_consumer.consumer_hostname;
+                notify["reason"]            = "process_dead";
+                send_to_identity(socket, entry.producer_zmq_identity, "CONSUMER_DIED_NOTIFY",
+                                 notify);
+            }
+            registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
+        }
+    }
+}
+
+void BrokerServiceImpl::send_closing_notify(zmq::socket_t&     socket,
+                                             const std::string& channel_name,
+                                             const ChannelEntry& entry,
+                                             const std::string& reason)
+{
     nlohmann::json body;
     body["channel_name"] = channel_name;
     body["reason"]       = reason;
-    const std::string body_str    = body.dump();
-    const std::string notify_type = "CHANNEL_CLOSING_NOTIFY";
 
-    for (const auto& consumer : consumers)
+    // Notify all registered consumers.
+    for (const auto& consumer : entry.consumers)
     {
         if (consumer.zmq_identity.empty())
         {
@@ -476,23 +573,84 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                    so
         }
         try
         {
-            socket.send(zmq::message_t(consumer.zmq_identity.data(),
-                                       consumer.zmq_identity.size()),
-                        zmq::send_flags::sndmore);
-            socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
-            socket.send(zmq::message_t(notify_type.data(), notify_type.size()),
-                        zmq::send_flags::sndmore);
-            socket.send(zmq::message_t(body_str.data(), body_str.size()),
-                        zmq::send_flags::none);
-            LOGGER_INFO("Broker: sent CHANNEL_CLOSING_NOTIFY for '{}' to consumer pid={}",
+            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_CLOSING_NOTIFY", body);
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' → consumer pid={}",
                         channel_name, consumer.consumer_pid);
         }
         catch (const zmq::error_t& e)
         {
-            LOGGER_WARN("Broker: failed to notify consumer (pid={}) for '{}': {}",
+            LOGGER_WARN("Broker: failed to notify consumer pid={} for '{}': {}",
                         consumer.consumer_pid, channel_name, e.what());
         }
     }
+
+    // Also notify the producer (new: broker now stores producer_zmq_identity).
+    if (!entry.producer_zmq_identity.empty())
+    {
+        try
+        {
+            send_to_identity(socket, entry.producer_zmq_identity, "CHANNEL_CLOSING_NOTIFY",
+                             body);
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' → producer pid={}",
+                        channel_name, entry.producer_pid);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: failed to notify producer for '{}': {}", channel_name,
+                        e.what());
+        }
+    }
+}
+
+void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socket,
+                                                      const nlohmann::json& req)
+{
+    const auto channel   = req.value("channel_name", std::string{});
+    const auto slot      = req.value("slot_index", -1);
+    const auto pid       = req.value("reporter_pid", uint64_t{0});
+    const auto error_str = req.value("error", std::string{});
+    LOGGER_WARN("Broker: Cat2 checksum error on '{}' slot={} pid={} err='{}'", channel, slot,
+                pid, error_str);
+
+    if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
+    {
+        auto entry = registry.find_channel(channel);
+        if (entry)
+        {
+            nlohmann::json fwd = req;
+            fwd["broker_action"] = "notify_only";
+            for (const auto& consumer : entry->consumers)
+            {
+                if (!consumer.zmq_identity.empty())
+                {
+                    send_to_identity(socket, consumer.zmq_identity, "CHANNEL_EVENT_NOTIFY",
+                                     fwd);
+                }
+            }
+            if (!entry->producer_zmq_identity.empty())
+            {
+                send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY",
+                                 fwd);
+            }
+        }
+    }
+    // ChecksumRepairPolicy::Repair — deferred; requires WriteAttach slot repair path.
+}
+
+// ============================================================================
+// send_to_identity — push unsolicited message to a connected DEALER by raw identity
+// ============================================================================
+
+void BrokerServiceImpl::send_to_identity(zmq::socket_t&        socket,
+                                          const std::string&    identity,
+                                          const std::string&    msg_type,
+                                          const nlohmann::json& body)
+{
+    const std::string body_str = body.dump();
+    socket.send(zmq::message_t(identity.data(), identity.size()), zmq::send_flags::sndmore);
+    socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
+    socket.send(zmq::message_t(msg_type.data(), msg_type.size()), zmq::send_flags::sndmore);
+    socket.send(zmq::message_t(body_str.data(), body_str.size()), zmq::send_flags::none);
 }
 
 // ============================================================================
@@ -564,6 +722,30 @@ void BrokerService::run()
 void BrokerService::stop()
 {
     pImpl->stop_requested.store(true, std::memory_order_release);
+}
+
+std::string BrokerService::list_channels_json_str() const
+{
+    nlohmann::json result = nlohmann::json::array();
+    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
+    for (const auto& [name, entry] : pImpl->registry.all_channels())
+    {
+        const char* status_str = "Unknown";
+        switch (entry.status)
+        {
+        case ChannelStatus::PendingReady: status_str = "PendingReady"; break;
+        case ChannelStatus::Ready:        status_str = "Ready";        break;
+        case ChannelStatus::Closing:      status_str = "Closing";      break;
+        }
+        result.push_back(nlohmann::json{
+            {"name",           name},
+            {"schema_hash",    entry.schema_hash},
+            {"consumer_count", static_cast<int>(entry.consumers.size())},
+            {"producer_pid",   entry.producer_pid},
+            {"status",         status_str}
+        });
+    }
+    return result.dump();
 }
 
 } // namespace pylabhub::broker

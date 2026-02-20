@@ -92,7 +92,7 @@ TEST_F(LoggerTest, BadFormatString)
     WorkerProcess proc(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc, {"[FORMAT ERROR]"});
+    expect_worker_ok(proc, {}, {"[FORMAT ERROR]"});
 }
 
 /// Delegates the DefaultSinkAndSwitching test logic to a worker process.

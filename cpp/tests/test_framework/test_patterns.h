@@ -127,7 +127,7 @@ class IsolatedProcessTest : public ::testing::Test
      * @return WorkerProcess handle (call wait_for_exit() or ExpectWorkerOk())
      */
     helper::WorkerProcess SpawnWorker(const std::string &scenario,
-                                      std::vector<std::string> args = {},
+                                      const std::vector<std::string> &args = {},
                                       bool redirect_stderr_to_console = false)
     {
         return helper::WorkerProcess(g_self_exe_path, scenario, args, redirect_stderr_to_console,
@@ -146,7 +146,7 @@ class IsolatedProcessTest : public ::testing::Test
      * @return WorkerProcess handle; call wait_for_ready() before proceeding, then wait_for_exit()
      */
     helper::WorkerProcess SpawnWorkerWithReadySignal(const std::string &scenario,
-                                                      std::vector<std::string> args = {})
+                                                      const std::vector<std::string> &args = {})
     {
         return helper::WorkerProcess(g_self_exe_path, scenario, args, false, true);
     }
@@ -163,13 +163,16 @@ class IsolatedProcessTest : public ::testing::Test
      * @param scenarios List of (scenario, args) pairs
      * @return List of WorkerProcess handles
      */
-    std::list<helper::WorkerProcess>
-    SpawnWorkers(std::vector<std::pair<std::string, std::vector<std::string>>> scenarios,
+    static std::list<helper::WorkerProcess>
+    SpawnWorkers(const std::vector<std::pair<std::string, std::vector<std::string>>> &scenarios,
                  bool redirect_stderr_to_console = false)
     {
         std::list<helper::WorkerProcess> workers;
-        for (auto &[scenario, args] : scenarios)
-            workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console, false);
+        for (const auto &[scenario, args] : scenarios)
+        {
+            workers.emplace_back(g_self_exe_path, scenario, args, redirect_stderr_to_console,
+                                 false);
+        }
         return workers;
     }
 
@@ -177,22 +180,22 @@ class IsolatedProcessTest : public ::testing::Test
      * @brief Waits for a worker and asserts it succeeded.
      *
      * @param proc                    Worker to wait on
-     * @param expected_stderr_substrings  Optional: strings that must appear in stderr
-     * @param allow_expected_logger_errors If true, do not assert absence of "ERROR" in stderr
-     *        (for tests that intentionally trigger ERROR-level logs, e.g. timeout paths).
+     * @param required_substrings  Optional: informational strings that must appear in stderr.
+     * @param expected_error_substrings  Optional: ERROR-level strings that must appear.
+     *        When non-empty, suppresses the "no ERROR" check — each string must be present.
      */
-    void ExpectWorkerOk(helper::WorkerProcess &proc,
-                        std::vector<std::string> expected_stderr_substrings = {},
-                        bool allow_expected_logger_errors = false)
+    static void ExpectWorkerOk(helper::WorkerProcess &proc,
+                               const std::vector<std::string> &required_substrings = {},
+                               const std::vector<std::string> &expected_error_substrings = {})
     {
         proc.wait_for_exit();
-        helper::expect_worker_ok(proc, expected_stderr_substrings, allow_expected_logger_errors);
+        helper::expect_worker_ok(proc, required_substrings, expected_error_substrings);
     }
 
     /**
      * @brief Waits for all workers and asserts all succeeded.
      */
-    void ExpectAllWorkersOk(std::list<helper::WorkerProcess> &workers)
+    static void ExpectAllWorkersOk(std::list<helper::WorkerProcess> &workers)
     {
         for (auto &w : workers)
         {

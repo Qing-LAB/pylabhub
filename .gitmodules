@@ -21,3 +21,6 @@
 [submodule "cpp/third_party/luajit"]
 	path = cpp/third_party/luajit
 	url = https://github.com/LuaJIT/LuaJIT.git
+[submodule "cpp/third_party/pybind11"]
+	path = cpp/third_party/pybind11
+	url = https://github.com/pybind/pybind11.git

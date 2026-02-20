@@ -210,6 +210,69 @@ extern "C"
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
     uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header);
 
+    // === Identity API ===
+
+    /**
+     * @brief Identity of the hub and producer that created a DataBlock channel.
+     *
+     * Fields are null-terminated strings. All fields may be empty (zero-length) if the
+     * security/identity phase has not been implemented yet for this channel.
+     */
+    typedef struct
+    {
+        char hub_uid[40];       ///< Hub unique ID (null-terminated hex string; empty = not set)
+        char hub_name[64];      ///< Hub human-readable name (null-terminated; empty = not set)
+        char producer_uid[40];  ///< Producer unique ID (null-terminated hex string; empty = not set)
+        char producer_name[64]; ///< Producer human-readable name (null-terminated; empty = not set)
+    } plh_channel_identity_t;
+
+    /**
+     * @brief Identity of a single active consumer in the heartbeat table.
+     *
+     * consumer_uid and consumer_name are empty strings if the consumer was registered before
+     * the identity phase was implemented (backward-compat: consumer_pid is always valid).
+     */
+    typedef struct
+    {
+        char consumer_uid[40];      ///< Consumer unique ID (null-terminated hex string; empty = not set)
+        char consumer_name[32];     ///< Consumer human-readable name (null-terminated; empty = not set)
+        uint64_t consumer_pid;      ///< Consumer OS PID (never 0 in a valid entry)
+        uint64_t last_heartbeat_ns; ///< Last heartbeat monotonic timestamp (ns; 0 = no heartbeat)
+        int slot_index;             ///< Heartbeat slot index [0, MAX_CONSUMER_HEARTBEATS)
+    } plh_consumer_identity_t;
+
+    /**
+     * @brief Reads the channel identity block from a SharedMemoryHeader.
+     *
+     * Copies hub_uid, hub_name, producer_uid, producer_name into @p out. All strings are
+     * guaranteed null-terminated. Fields are empty strings if identity has not been set.
+     *
+     * @param header Pointer to the SharedMemoryHeader (must not be null).
+     * @param out    Pointer to a plh_channel_identity_t struct to fill (must not be null).
+     * @return 0 on success, -1 if either pointer is null.
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
+    int slot_rw_get_channel_identity(const pylabhub::hub::SharedMemoryHeader *header,
+                                     plh_channel_identity_t *out);
+
+    /**
+     * @brief Lists all active consumers currently registered in the heartbeat table.
+     *
+     * Iterates the consumer heartbeat slots and returns one entry per occupied slot
+     * (consumer_pid != 0). At most @p array_capacity entries are written.
+     *
+     * @param header          Pointer to the SharedMemoryHeader (must not be null).
+     * @param out_array       Array of plh_consumer_identity_t to fill (must not be null).
+     * @param array_capacity  Maximum number of entries to write (must be > 0).
+     * @param out_count       Set to the number of entries written (must not be null).
+     * @return 0 on success, -1 on invalid arguments.
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
+    int slot_rw_list_consumers(const pylabhub::hub::SharedMemoryHeader *header,
+                               plh_consumer_identity_t *out_array,
+                               int array_capacity,
+                               int *out_count);
+
     // === Error Handling ===
     /**
      * @brief Returns a string representation of a SlotAcquireResult.
