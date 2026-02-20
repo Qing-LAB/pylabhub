@@ -71,6 +71,6 @@ TEST_F(DatahubRecoveryScenariosTest, IsProcessAliveFalseForNonexistent)
 TEST_F(DatahubRecoveryScenariosTest, ForceResetUnsafeWhenWriterAlive)
 {
     auto proc = SpawnWorker("recovery_scenarios.force_reset_unsafe_when_writer_alive", {});
-    // Recovery API logs [ERROR] when returning RECOVERY_UNSAFE (alive writer refused)
-    ExpectWorkerOk(proc, {"ERROR"});
+    // Recovery API logs LOGGER_ERROR when refusing force-reset (writer is alive).
+    ExpectWorkerOk(proc, {}, {"write lock held by ALIVE"});
 }

@@ -124,18 +124,22 @@ class WorkerProcess
  * @brief Asserts that a worker process completed successfully.
  *
  * This function checks that the worker's exit code is 0 and that its
- * stderr stream does not contain common error markers. This provides a
- * robust check for success while allowing for legitimate debug output.
+ * stderr stream does not contain unexpected error markers.
  *
  * @param proc The WorkerProcess instance to check.
- * @param expected_stderr_substrings Optional: substrings that must appear in stderr.
- *        When non-empty, the "no ERROR" check is skipped (scenario may expect ERROR logs).
- * @param allow_expected_logger_errors When true, do not assert absence of "ERROR" in stderr.
- *        Use for tests that intentionally trigger conditions logged at ERROR (e.g. timeouts).
- *        FATAL, PANIC, and [WORKER FAILURE] are still forbidden.
+ * @param required_substrings Informational/operational strings that MUST appear in stderr.
+ *        Pure positive assertions — do NOT suppress the "no ERROR" check.
+ *        Use to verify expected operational log output (e.g., "DataBlock", "Messenger").
+ * @param expected_error_substrings Error-level strings that MUST appear in stderr.
+ *        When non-empty: the broad "no ERROR" check is replaced by an exhaustive check —
+ *        each named string must appear, AND every [ERROR ] line in stderr must be
+ *        accounted for by at least one named string.  Additional unexpected ERRORs
+ *        are not silently ignored.  Name the specific expected ERROR message, not
+ *        just the generic string "ERROR".
+ *        FATAL, PANIC, and [WORKER FAILURE] are always forbidden regardless.
  */
 void expect_worker_ok(const WorkerProcess &proc,
-                      const std::vector<std::string> &expected_stderr_substrings = {},
-                      bool allow_expected_logger_errors = false);
+                      const std::vector<std::string> &required_substrings = {},
+                      const std::vector<std::string> &expected_error_substrings = {});
 
 } // namespace pylabhub::tests::helper

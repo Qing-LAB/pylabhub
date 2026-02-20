@@ -102,6 +102,18 @@ add_executable(test_layer3_datahub
     # ── ChannelHandle integration tests (Phase 6) ────────────────────────────────
     test_datahub_channel.cpp
     workers/datahub_channel_workers.cpp
+
+    # ── Hub Producer/Consumer unified API tests ───────────────────────────────────
+    test_datahub_hub_api.cpp
+    workers/datahub_hub_api_workers.cpp
+
+    # ── Broker/Producer/Consumer health and notification tests ────────────────────
+    test_datahub_broker_health.cpp
+    workers/datahub_broker_health_workers.cpp
+
+    # ── RAII layer stress tests (multi-process, full-capacity, random delays) ─────
+    test_datahub_stress_raii.cpp
+    workers/datahub_stress_raii_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE

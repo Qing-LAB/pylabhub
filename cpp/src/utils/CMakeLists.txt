@@ -35,6 +35,9 @@ set(UTILS_SOURCES
   channel_handle.cpp
   broker_service.cpp
   channel_registry.cpp
+  hub_producer.cpp
+  hub_consumer.cpp
+  hub_config.cpp
   data_block.cpp
   data_block_mutex.cpp
   shared_memory_spinlock.cpp

@@ -27,19 +27,22 @@ TEST_F(DatahubSchemaValidationTest, ConsumerConnectsWithMatchingSchema)
 TEST_F(DatahubSchemaValidationTest, ConsumerFailsToConnectWithMismatchedSchema)
 {
     auto proc = SpawnWorker("schema_validation.consumer_fails_mismatched", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // Consumer open fails with LOGGER_ERROR on schema hash mismatch.
+    ExpectWorkerOk(proc, {}, {"DataBlock schema hash mismatch"});
 }
 
 TEST_F(DatahubSchemaValidationTest, FlexzoneMismatchRejected)
 {
     auto proc = SpawnWorker("schema_validation.flexzone_mismatch_rejected", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // FlexZone schema mismatch emits LOGGER_ERROR.
+    ExpectWorkerOk(proc, {}, {"FlexZone schema hash mismatch"});
 }
 
 TEST_F(DatahubSchemaValidationTest, BothSchemasMismatchRejected)
 {
     auto proc = SpawnWorker("schema_validation.both_schemas_mismatch_rejected", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // FlexZone schema mismatch is checked first and emits LOGGER_ERROR.
+    ExpectWorkerOk(proc, {}, {"FlexZone schema hash mismatch"});
 }
 
 TEST_F(DatahubSchemaValidationTest, ConsumerMismatchedCapacityRejected)

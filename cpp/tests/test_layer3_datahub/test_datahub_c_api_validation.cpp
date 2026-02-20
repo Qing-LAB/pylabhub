@@ -30,8 +30,9 @@ TEST_F(DatahubCApiValidationTest, ValidateIntegrityOnFreshDatablock)
 TEST_F(DatahubCApiValidationTest, ValidateIntegrityNonexistentFails)
 {
     auto proc = SpawnWorker("c_api_validation.validate_integrity_nonexistent_fails", {});
-    // Intentionally triggers a logger ERROR (open fails on nonexistent name).
-    ExpectWorkerOk(proc, {}, true);
+    // DataBlock open on nonexistent name logs LOGGER_ERROR "recovery: Failed to open".
+    // Use expected_substrings to positively verify it appeared (not just silently allow it).
+    ExpectWorkerOk(proc, {}, {"recovery: Failed to open"});
 }
 
 TEST_F(DatahubCApiValidationTest, GetMetricsFreshHasZeroCommits)

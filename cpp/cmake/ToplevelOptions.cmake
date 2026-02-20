@@ -21,6 +21,25 @@ option(PYLABHUB_SANITIZER_VERBOSE "When sanitizer runtime detection fails, print
 # Option to stage third-party headers and libraries.
 option(THIRD_PARTY_INSTALL "Install third-party libraries and headers to the staging directory" ON)
 
+# --- Python environment options ---
+# Path to a local python-build-standalone archive for offline/air-gapped builds.
+# When set, this archive is used instead of downloading from GitHub.
+# The archive must match the expected SHA256 for the current platform.
+set(PYLABHUB_PYTHON_LOCAL_ARCHIVE "" CACHE FILEPATH
+    "Path to a local python-build-standalone .tar.gz archive (offline fallback). Empty = download from GitHub.")
+
+# Path to a directory containing pre-downloaded pip wheel files (.whl).
+# When set, pip install uses --find-links <dir> --no-index (fully offline install).
+# When empty, pip installs from PyPI (requires internet access).
+set(PYLABHUB_PYTHON_WHEELS_DIR "" CACHE PATH
+    "Directory with pre-downloaded pip wheels for offline pip install (empty = online install from PyPI).")
+
+# Whether to automatically run 'pip install -r requirements.txt' as part of the build.
+# The prepare_python_env target installs packages into the staged Python's site-packages.
+# Uses a stamp file for idempotency: only re-runs when requirements.txt changes.
+option(PYLABHUB_PREPARE_PYTHON_ENV
+    "Run pip install -r requirements.txt into the staged Python as part of build (requires THIRD_PARTY_INSTALL=ON)." ON)
+
 # Option to generate the final 'install' target.
 option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the staged directory" ON)
 

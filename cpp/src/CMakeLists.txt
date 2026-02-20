@@ -26,15 +26,18 @@ cmake_minimum_required(VERSION 3.29)
 # Add the utils subdirectory, which defines the pylabhub::utils library.
 # This must be done before defining any targets that depend on it.
 add_subdirectory(utils)
-add_subdirectory(broker)
-# admin is P10+ stub — disabled until implemented
-# Enable with: cmake -DPYLABHUB_BUILD_ADMIN=ON
-if(PYLABHUB_BUILD_ADMIN)
-    add_subdirectory(admin)
-endif()
+
+# Scripted producer/consumer actor host (embeds CPython + pybind11).
+add_subdirectory(actor)
 
 # Define the main application executable.
-add_executable(pylabhub-hubshell hubshell.cpp)
+# hub_python/ sources embed the CPython interpreter + pybind11 bindings.
+add_executable(pylabhub-hubshell
+    hubshell.cpp
+    hub_python/python_interpreter.cpp
+    hub_python/pylabhub_module.cpp
+    hub_python/admin_shell.cpp
+)
 add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
 
 pylabhub_enable_clang_tidy_for_target(pylabhub-hubshell)
@@ -50,8 +53,16 @@ if(PYLABHUB_LOGGER_DEBUG)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
 
-# The app links against the utils library.
-target_link_libraries(pylabhub-hubshell PRIVATE pylabhub::utils)
+# hub_python/ headers are private to the hubshell executable.
+target_include_directories(pylabhub-hubshell PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/hub_python
+)
+
+# The app links against the utils library and embeds CPython via pybind11.
+target_link_libraries(pylabhub-hubshell PRIVATE
+    pylabhub::utils
+    pylabhub::third_party::pybind11_embed
+)
 
 pylabhub_apply_sanitizer_to_target(pylabhub-hubshell)
 

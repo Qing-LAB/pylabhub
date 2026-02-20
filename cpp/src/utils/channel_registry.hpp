@@ -66,6 +66,11 @@ struct ChannelEntry
     std::string    zmq_ctrl_endpoint; ///< Producer ROUTER endpoint (ctrl + heartbeat + Bidir data)
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
+
+    // ── broker → producer notification ────────────────────────────────────────
+    /// ZMQ ROUTER identity bytes captured when producer sent REG_REQ.
+    /// Used to push unsolicited notifications (CHANNEL_CLOSING_NOTIFY, CHANNEL_ERROR_NOTIFY).
+    std::string    producer_zmq_identity;
 };
 
 /**
@@ -130,6 +135,18 @@ public:
 
     [[nodiscard]] std::vector<std::string> list_channels() const;
     [[nodiscard]] size_t size() const;
+
+    /**
+     * @brief Mutable pointer to an entry for in-place field updates (e.g. producer_zmq_identity).
+     * @return nullptr if not found.
+     */
+    ChannelEntry* find_channel_mutable(const std::string& channel_name) noexcept;
+
+    /**
+     * @brief Mutable access to all entries for liveness iteration.
+     *        Caller must not add/remove entries during iteration (single-threaded invariant).
+     */
+    std::unordered_map<std::string, ChannelEntry>& all_channels() noexcept;
 
 private:
     std::unordered_map<std::string, ChannelEntry> m_channels;

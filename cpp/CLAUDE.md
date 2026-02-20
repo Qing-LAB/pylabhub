@@ -76,6 +76,8 @@ Uses GoogleTest. Multi-process IPC tests spawn child worker processes coordinate
 - **Core structure changes** (`SharedMemoryHeader`, `DataBlockConfig`, BLDS schema, etc.) require
   the mandatory review checklist in `docs/IMPLEMENTATION_GUIDANCE.md` § "Core Structure Change Protocol"
   before any modification.
+- **Error handling in broker/producer/consumer**: follow the two-category error taxonomy in
+  `docs/IMPLEMENTATION_GUIDANCE.md` § "Error Taxonomy — Broker, Producer, and Consumer".
 
 ## TODO Bookkeeping (Mandatory)
 

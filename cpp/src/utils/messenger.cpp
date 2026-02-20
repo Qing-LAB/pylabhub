@@ -9,6 +9,7 @@
 #include "cppzmq/zmq_addon.hpp"
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -136,6 +138,16 @@ struct DeregisterConsumerCmd
 {
     std::string channel;
 };
+struct UnregisterChannelCmd
+{
+    std::string channel;
+};
+struct ChecksumErrorReportCmd
+{
+    std::string channel;
+    int32_t     slot_index;
+    std::string error_description;
+};
 struct DiscoverProducerCmd
 {
     std::string channel;
@@ -147,6 +159,7 @@ struct DiscoverProducerCmd
 struct CreateChannelCmd
 {
     std::string    channel;
+    std::string    shm_name;   ///< SHM segment name; equals channel when has_shared_memory=true
     ChannelPattern pattern;
     bool           has_shared_memory;
     std::string    schema_hash; ///< raw bytes (not hex-encoded)
@@ -173,7 +186,8 @@ struct StopCmd
 
 using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProducerCmd,
                                       RegisterConsumerCmd, DiscoverProducerCmd,
-                                      DeregisterConsumerCmd, CreateChannelCmd,
+                                      DeregisterConsumerCmd, UnregisterChannelCmd,
+                                      ChecksumErrorReportCmd, CreateChannelCmd,
                                       ConnectChannelCmd, StopCmd>;
 
 // ============================================================================
@@ -212,9 +226,13 @@ class MessengerImpl
     std::vector<HeartbeatEntry> m_heartbeat_channels;
     std::chrono::steady_clock::time_point m_next_heartbeat{};
 
-    // CHANNEL_CLOSING_NOTIFY callback (guarded by m_cb_mutex for on_channel_closing())
+    // Per-channel event callbacks (guarded by m_cb_mutex).
     std::mutex m_cb_mutex;
-    std::function<void(const std::string &)> m_channel_closing_cb;
+    std::unordered_map<std::string, std::function<void()>>                            m_channel_closing_cbs;
+    std::unordered_map<std::string, std::function<void(uint64_t, std::string)>>       m_consumer_died_cbs;
+    std::unordered_map<std::string, std::function<void(std::string, nlohmann::json)>> m_channel_error_cbs;
+    /// Backward-compat: fires for any channel when no per-channel closing cb registered.
+    std::function<void(const std::string &)> m_global_channel_closing_cb;
 
     MessengerImpl() = default;
 
@@ -330,18 +348,29 @@ class MessengerImpl
             {
                 try
                 {
-                    nlohmann::json body =
-                        nlohmann::json::parse(msgs[2].to_string());
+                    nlohmann::json body = nlohmann::json::parse(msgs[2].to_string());
                     std::string channel = body.value("channel_name", "");
                     LOGGER_INFO("Messenger: CHANNEL_CLOSING_NOTIFY for '{}'", channel);
-                    std::function<void(const std::string &)> cb;
+                    std::function<void()>                    per_cb;
+                    std::function<void(const std::string &)> global_cb;
                     {
                         std::lock_guard<std::mutex> lock(m_cb_mutex);
-                        cb = m_channel_closing_cb;
+                        auto it = m_channel_closing_cbs.find(channel);
+                        if (it != m_channel_closing_cbs.end()) per_cb = it->second;
+                        global_cb = m_global_channel_closing_cb;
                     }
-                    if (cb && !channel.empty())
+                    try
                     {
-                        cb(channel);
+                        if (per_cb) per_cb();
+                        else if (global_cb && !channel.empty()) global_cb(channel);
+                    }
+                    catch (const std::exception &ex)
+                    {
+                        LOGGER_ERROR("Messenger: on_channel_closing callback threw: {}", ex.what());
+                    }
+                    catch (...)
+                    {
+                        LOGGER_ERROR("Messenger: on_channel_closing callback threw unknown exception");
                     }
                 }
                 catch (const nlohmann::json::exception &e)
@@ -349,7 +378,77 @@ class MessengerImpl
                     LOGGER_WARN("Messenger: bad CHANNEL_CLOSING_NOTIFY JSON: {}", e.what());
                 }
             }
-            // Other unsolicited types can be added here in future.
+            else if (msg_type == "CONSUMER_DIED_NOTIFY")
+            {
+                try
+                {
+                    nlohmann::json body = nlohmann::json::parse(msgs[2].to_string());
+                    std::string channel = body.value("channel_name", "");
+                    uint64_t    pid     = body.value("consumer_pid", uint64_t{0});
+                    std::string reason  = body.value("reason", "");
+                    LOGGER_WARN("Messenger: CONSUMER_DIED_NOTIFY '{}' pid={} ({})",
+                                channel, pid, reason);
+                    std::function<void(uint64_t, std::string)> cb;
+                    {
+                        std::lock_guard<std::mutex> lock(m_cb_mutex);
+                        auto it = m_consumer_died_cbs.find(channel);
+                        if (it != m_consumer_died_cbs.end()) cb = it->second;
+                    }
+                    try
+                    {
+                        if (cb) cb(pid, reason);
+                    }
+                    catch (const std::exception &ex)
+                    {
+                        LOGGER_ERROR("Messenger: on_consumer_died callback threw: {}", ex.what());
+                    }
+                    catch (...)
+                    {
+                        LOGGER_ERROR("Messenger: on_consumer_died callback threw unknown exception");
+                    }
+                }
+                catch (const nlohmann::json::exception &e)
+                {
+                    LOGGER_WARN("Messenger: bad CONSUMER_DIED_NOTIFY JSON: {}", e.what());
+                }
+            }
+            else if (msg_type == "CHANNEL_ERROR_NOTIFY" || msg_type == "CHANNEL_EVENT_NOTIFY")
+            {
+                try
+                {
+                    nlohmann::json body    = nlohmann::json::parse(msgs[2].to_string());
+                    std::string    channel = body.value("channel_name", "");
+                    std::string    event   = body.value("event", msg_type);
+                    if (msg_type == "CHANNEL_ERROR_NOTIFY")
+                        LOGGER_ERROR("Messenger: CHANNEL_ERROR_NOTIFY '{}' event={}",
+                                     channel, event);
+                    else
+                        LOGGER_WARN("Messenger: CHANNEL_EVENT_NOTIFY '{}' event={}",
+                                    channel, event);
+                    std::function<void(std::string, nlohmann::json)> cb;
+                    {
+                        std::lock_guard<std::mutex> lock(m_cb_mutex);
+                        auto it = m_channel_error_cbs.find(channel);
+                        if (it != m_channel_error_cbs.end()) cb = it->second;
+                    }
+                    try
+                    {
+                        if (cb) cb(event, body);
+                    }
+                    catch (const std::exception &ex)
+                    {
+                        LOGGER_ERROR("Messenger: on_channel_error callback threw: {}", ex.what());
+                    }
+                    catch (...)
+                    {
+                        LOGGER_ERROR("Messenger: on_channel_error callback threw unknown exception");
+                    }
+                }
+                catch (const nlohmann::json::exception &e)
+                {
+                    LOGGER_WARN("Messenger: bad {} JSON: {}", msg_type, e.what());
+                }
+            }
         }
     }
 
@@ -660,6 +759,109 @@ class MessengerImpl
         return false;
     }
 
+    bool handle_command(UnregisterChannelCmd &cmd, std::optional<zmq::socket_t> &socket)
+    {
+        // Remove from heartbeat list first (even if not connected).
+        m_heartbeat_channels.erase(
+            std::remove_if(m_heartbeat_channels.begin(), m_heartbeat_channels.end(),
+                           [&cmd](const HeartbeatEntry &entry)
+                           { return entry.channel == cmd.channel; }),
+            m_heartbeat_channels.end());
+
+        if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+        {
+            LOGGER_WARN("Messenger: unregister_channel('{}') skipped — not connected.",
+                        cmd.channel);
+            return false;
+        }
+        try
+        {
+            nlohmann::json payload;
+            payload["channel_name"] = cmd.channel;
+            payload["producer_pid"] = pylabhub::platform::get_pid();
+
+            const std::string msg_type    = "DEREG_REQ";
+            const std::string payload_str = payload.dump();
+            std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                                   zmq::buffer(msg_type),
+                                                   zmq::buffer(payload_str)};
+            if (!zmq::send_multipart(*socket, msgs))
+            {
+                LOGGER_ERROR("Messenger: unregister_channel('{}') send failed.", cmd.channel);
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(kDefaultRegisterTimeoutMs));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: unregister_channel('{}') timed out (non-fatal).",
+                            cmd.channel);
+                return false;
+            }
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() >= 3)
+            {
+                try
+                {
+                    nlohmann::json response =
+                        nlohmann::json::parse(recv_msgs.back().to_string());
+                    if (response.value("status", "") != "success")
+                        LOGGER_WARN("Messenger: unregister_channel('{}') broker response: {}",
+                                    cmd.channel,
+                                    response.value("message", std::string("?")));
+                }
+                catch (...)
+                {
+                }
+            }
+            LOGGER_INFO("Messenger: unregister_channel('{}') sent.", cmd.channel);
+        }
+        catch (const zmq::error_t &e)
+        {
+            LOGGER_ERROR("Messenger: ZMQ error in unregister_channel('{}'): {}",
+                         cmd.channel, e.what());
+        }
+        return false;
+    }
+
+    bool handle_command(ChecksumErrorReportCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const
+    {
+        if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+        {
+            LOGGER_WARN("Messenger: report_checksum_error('{}') skipped — not connected.",
+                        cmd.channel);
+            return false;
+        }
+        try
+        {
+            nlohmann::json payload;
+            payload["channel_name"] = cmd.channel;
+            payload["slot_index"]   = cmd.slot_index;
+            payload["error"]        = cmd.error_description;
+            payload["reporter_pid"] = pylabhub::platform::get_pid();
+
+            const std::string msg_type    = "CHECKSUM_ERROR_REPORT";
+            const std::string payload_str = payload.dump();
+            std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                                   zmq::buffer(msg_type),
+                                                   zmq::buffer(payload_str)};
+            if (!zmq::send_multipart(*socket, msgs))
+            {
+                LOGGER_ERROR("Messenger: report_checksum_error('{}') send failed.",
+                             cmd.channel);
+            }
+        }
+        catch (const zmq::error_t &e)
+        {
+            LOGGER_ERROR("Messenger: ZMQ error in report_checksum_error('{}'): {}",
+                         cmd.channel, e.what());
+        }
+        return false;
+    }
+
     /// Send DISC_REQ and return the response JSON. Sends a single request.
     /// Returns nullopt if timeout, parse error, or send failure.
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,
@@ -810,6 +1012,7 @@ class MessengerImpl
         {
             nlohmann::json payload;
             payload["channel_name"]      = cmd.channel;
+            payload["shm_name"]          = cmd.shm_name;
             payload["schema_hash"]       = hex_encode_schema_hash(cmd.schema_hash);
             payload["schema_version"]    = cmd.schema_version;
             payload["producer_pid"]      = cmd.producer_pid;
@@ -1177,6 +1380,7 @@ Messenger::create_channel(const std::string &channel_name,
     auto reg_future = reg_promise.get_future();
     CreateChannelCmd cmd;
     cmd.channel            = channel_name;
+    cmd.shm_name           = has_shared_memory ? channel_name : std::string{};
     cmd.pattern            = pattern;
     cmd.has_shared_memory  = has_shared_memory;
     cmd.schema_hash        = schema_hash;
@@ -1196,8 +1400,10 @@ Messenger::create_channel(const std::string &channel_name,
     }
 
     // Build and return ChannelHandle owning the pre-bound sockets.
+    const std::string producer_shm_name = has_shared_memory ? channel_name : std::string{};
     return make_producer_handle(channel_name, pattern, has_shared_memory,
-                                std::move(ctrl_sock), std::move(data_sock), has_data_sock);
+                                std::move(ctrl_sock), std::move(data_sock), has_data_sock,
+                                producer_shm_name);
 }
 
 std::optional<ChannelHandle>
@@ -1279,13 +1485,66 @@ Messenger::connect_channel(const std::string &channel_name,
 
     // Build and return ChannelHandle owning the connected sockets.
     return make_consumer_handle(channel_name, cinfo->pattern, cinfo->has_shared_memory,
-                                std::move(ctrl_sock), std::move(data_sock), has_data_sock);
+                                std::move(ctrl_sock), std::move(data_sock), has_data_sock,
+                                cinfo->shm_name);
 }
 
 void Messenger::on_channel_closing(std::function<void(const std::string &)> cb)
 {
     std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
-    pImpl->m_channel_closing_cb = std::move(cb);
+    pImpl->m_global_channel_closing_cb = std::move(cb);
+}
+
+void Messenger::on_channel_closing(const std::string &channel, std::function<void()> cb)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
+    if (cb)
+        pImpl->m_channel_closing_cbs[channel] = std::move(cb);
+    else
+        pImpl->m_channel_closing_cbs.erase(channel);
+}
+
+void Messenger::on_consumer_died(
+    const std::string &channel,
+    std::function<void(uint64_t consumer_pid, std::string reason)> cb)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
+    if (cb)
+        pImpl->m_consumer_died_cbs[channel] = std::move(cb);
+    else
+        pImpl->m_consumer_died_cbs.erase(channel);
+}
+
+void Messenger::on_channel_error(
+    const std::string &channel,
+    std::function<void(std::string event, nlohmann::json details)> cb)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
+    if (cb)
+        pImpl->m_channel_error_cbs[channel] = std::move(cb);
+    else
+        pImpl->m_channel_error_cbs.erase(channel);
+}
+
+void Messenger::unregister_channel(const std::string &channel)
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: unregister_channel('{}') — worker not started.", channel);
+        return;
+    }
+    pImpl->enqueue(UnregisterChannelCmd{channel});
+}
+
+void Messenger::report_checksum_error(const std::string &channel, int32_t slot_index,
+                                       std::string_view error_description)
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: report_checksum_error('{}') — worker not started.", channel);
+        return;
+    }
+    pImpl->enqueue(ChecksumErrorReportCmd{channel, slot_index, std::string(error_description)});
 }
 
 Messenger &Messenger::get_instance()

@@ -24,10 +24,10 @@ TEST_F(DatahubBrokerConsumerTest, ChannelRegistryConsumerOps)
 
 TEST_F(DatahubBrokerConsumerTest, ConsumerRegChannelNotFound)
 {
-    // CONSUMER_REG_REQ for an unknown channel → ERROR CHANNEL_NOT_FOUND.
-    // Broker logs WARN for this case.
+    // CONSUMER_REG_REQ for an unknown channel → CHANNEL_NOT_FOUND error response (raw ZMQ).
+    // Broker logs LOGGER_WARN only; no ERROR-level log expected.
     auto proc = SpawnWorker("broker_consumer.consumer_reg_channel_not_found", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc);
 }
 
 TEST_F(DatahubBrokerConsumerTest, ConsumerRegHappyPath)
@@ -46,10 +46,10 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerDeregHappyPath)
 
 TEST_F(DatahubBrokerConsumerTest, ConsumerDeregPidMismatch)
 {
-    // Deregister with wrong pid → ERROR NOT_REGISTERED; consumer still registered.
-    // Broker logs WARN for this case.
+    // Deregister with wrong pid → NOT_REGISTERED error response (raw ZMQ).
+    // Broker logs LOGGER_WARN only; no ERROR-level log expected.
     auto proc = SpawnWorker("broker_consumer.consumer_dereg_pid_mismatch", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc);
 }
 
 TEST_F(DatahubBrokerConsumerTest, DiscShowsConsumerCount)

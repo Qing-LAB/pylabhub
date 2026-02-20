@@ -111,6 +111,9 @@ message(STATUS "STRESS_TEST_LEVEL = ${STRESS_TEST_LEVEL}")
 message(STATUS "PYLABHUB_LOGGER_COMPILE_LEVEL = ${PYLABHUB_LOGGER_COMPILE_LEVEL}")
 message(STATUS "PYLABHUB_ENABLE_DEBUG_MESSAGES = ${PYLABHUB_ENABLE_DEBUG_MESSAGES}")
 message(STATUS "PLH_RECURSION_GUARD_MAX_DEPTH = ${PLH_RECURSION_GUARD_MAX_DEPTH}")
+message(STATUS "PYLABHUB_PYTHON_LOCAL_ARCHIVE = ${PYLABHUB_PYTHON_LOCAL_ARCHIVE}")
+message(STATUS "PYLABHUB_PYTHON_WHEELS_DIR = ${PYLABHUB_PYTHON_WHEELS_DIR}")
+message(STATUS "PYLABHUB_PREPARE_PYTHON_ENV = ${PYLABHUB_PREPARE_PYTHON_ENV}")
 message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")
@@ -138,15 +141,28 @@ message(STATUS "Unified staging directory: ${PYLABHUB_STAGING_DIR}")
 # prevents race conditions and file/directory name conflicts by ensuring
 # the directory structure exists before any artifacts are copied.
 add_custom_target(create_staging_dirs
+    # Core runtime directories
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/bin"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/IgorXOP"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
+    # opt/ — external runtimes and interface ports (Python, IgorXOP, Lua, ...)
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/python"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/IgorXOP"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/lua"
+    # share/ — shared data and user scripts
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts/python"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts/lua"
+    # config/ — hub configuration files (hub.json, key files)
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/config"
+    # data/ — default run data directory
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/data"
+    # Remaining directories
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/docs"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tools"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/config"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/package"
     COMMENT "Initializing staging directories"
 )
@@ -160,6 +176,22 @@ add_custom_target(stage_project_source_headers
 )
 add_dependencies(stage_project_source_headers create_staging_dirs)
 
+# --- Stage Hub Config Files ---
+# hub.default.json  — always updated from source (canonical defaults; safe to overwrite).
+# hub.user.json     — non-destructive: only deployed from template if user file absent.
+add_custom_target(stage_hub_config
+    # Always update the default config (this file is never user-edited).
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/config/hub.default.json.in"
+        "${PYLABHUB_STAGING_DIR}/config/hub.default.json"
+    # Deploy user config template only when missing.
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC="${CMAKE_SOURCE_DIR}/config/hub.default.json.in"
+        -DDST="${PYLABHUB_STAGING_DIR}/config/hub.user.json"
+        -P "${CMAKE_SOURCE_DIR}/cmake/StageIfMissing.cmake"
+    COMMENT "Staging hub config files (hub.default.json updated; hub.user.json non-destructive)"
+)
+add_dependencies(stage_hub_config create_staging_dirs)
 
 # --- Stage Sanitizer Runtimes ---
 include(FindSanitizerRuntime)
@@ -189,7 +221,7 @@ add_custom_target(stage_core_artifacts)
 
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
-add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
+add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers stage_hub_config)
 
 # --- 3.4. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")
@@ -205,11 +237,6 @@ message(STATUS "--- Main Project Configuration Complete ---")
 message(STATUS "")
 
 message(STATUS "--- Configuring Optional Sub-Projects ---")
-if(BUILD_XOP)
-  add_subdirectory(src/IgorXOP)
-else()
-  message(STATUS "Skipping IgorXOP sub-project (BUILD_XOP is OFF).")
-endif()
 
 if(BUILD_TESTS)
   enable_testing()
@@ -325,6 +352,7 @@ message(STATUS "----------------------------------------------")
 message(STATUS "  Install Prefix:      ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Build Type:          ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Utility Library:     pylabhub-utils (SHARED)")
+message(STATUS "  Hubshell:            pylabhub-hubshell")
 message(STATUS "  Build Tests:         ${BUILD_TESTS}")
 message(STATUS "  Build IgorXOP:       ${BUILD_XOP}")
 message(STATUS "  3rd-Party Staging:   ${THIRD_PARTY_INSTALL}")

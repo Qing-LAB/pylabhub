@@ -1143,6 +1143,70 @@ See `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11 for the complete formal proof an
 
 ---
 
+## Error Taxonomy — Broker, Producer, and Consumer
+
+This taxonomy governs all error-handling decisions across `BrokerService`, `hub::Producer`,
+`hub::Consumer`, and `Messenger`. It defines **what to do** when something goes wrong, not
+how to prevent it.
+
+### Category 1 — Serious invariant violations
+
+These indicate a structural or protocol integrity failure. The system cannot continue
+operating the channel safely because a fundamental contract has been broken.
+
+**Examples:**
+- Schema mismatch: a second producer tries to register the same channel with a different schema
+- Heartbeat timeout: producer silently disappeared (dead process, crash, network split)
+- SHM header checksum/magic corruption: shared memory segment is in an unknown state
+- Duplicate producer with conflicting PID: two processes claim to own the same channel
+
+**Required response — always, no exceptions:**
+1. **Log full details** — channel name, what was expected, what was received, PIDs, timestamps
+2. **Notify all parties** — broker pushes `CHANNEL_CLOSING_NOTIFY` (existing) or
+   `CHANNEL_ERROR_NOTIFY` (new) to producer AND all registered consumers
+3. **Shutdown the channel** — broker removes channel from registry; all parties are expected
+   to stop using it
+
+**Repair: never.** The system does not attempt to fix Cat 1 violations. The cause is
+unknown; any repair attempt risks data corruption or deadlock.
+
+### Category 2 — Application-dependent issues
+
+These indicate a problem in the user's application protocol or data. The transport
+infrastructure is still sound; the channel may be able to continue.
+
+**Examples:**
+- Consumer process died without deregistering (PID dead, BYE never sent, slot still held)
+- Slot data checksum wrong — may be intentional (user protocol skips checksum updates for performance)
+- Excessive write/read timeouts — could be load spike, slow consumer, or user protocol bug
+
+**Required response:**
+1. **Log details** — what was detected, channel, PIDs, expected vs. actual
+2. **Notify parties** — broker pushes `CONSUMER_DIED_NOTIFY` (dead consumer) or
+   `CHANNEL_EVENT_NOTIFY` (forwarded report) to the producer
+3. **No channel shutdown** — the channel stays open unless configured otherwise
+
+**Policy exception — slot data checksums:**
+A `ChecksumRepairPolicy` may be configured on `BrokerService` to handle the case where
+slot checksums are known to be wrong (user writes raw data without checksum update):
+- `None` (default): log and ignore
+- `NotifyOnly`: log + forward report to all channel parties
+- `Repair` (future): broker attaches SHM R/W via WriteAttach mode and recalculates
+  checksums — only valid when the user explicitly opts in, knowing the cause
+
+### Applying the taxonomy
+
+| Situation | Category | Action |
+|---|---|---|
+| Schema mismatch on re-registration | Cat 1 | Log + CHANNEL_ERROR_NOTIFY → shutdown |
+| Heartbeat timeout | Cat 1 | Log + CHANNEL_CLOSING_NOTIFY (producer+consumers) → remove |
+| Consumer PID dead (no BYE) | Cat 2 | Log + CONSUMER_DIED_NOTIFY → producer removes from list |
+| Slot data checksum wrong | Cat 2 | Log + ChecksumRepairPolicy applies |
+| SHM header magic/checksum corrupt | Cat 1 | Log + notify all → shutdown |
+| Broker can't reach producer | Cat 1 (timeout) | Already covered by heartbeat path |
+
+---
+
 ## Emergency Recovery Procedures
 
 When DataBlocks encounter failures in production, use the recovery tools to diagnose and recover. This section provides guidance for common failure scenarios.

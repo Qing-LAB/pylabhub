@@ -26,10 +26,14 @@
 #include "utils/channel_pattern.hpp"
 #include "utils/module_def.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace pylabhub::hub
 {
@@ -166,10 +170,45 @@ class PYLABHUB_UTILS_EXPORT Messenger
                     const std::string &schema_hash = {});
 
     /**
-     * @brief Register a callback invoked when the broker pushes CHANNEL_CLOSING_NOTIFY.
+     * @brief Register a global callback invoked when the broker pushes CHANNEL_CLOSING_NOTIFY.
+     *        Fires for any channel when no per-channel callback is registered.
      *        The callback is called from the Messenger worker thread.
      */
     void on_channel_closing(std::function<void(const std::string &channel)> cb);
+
+    /**
+     * @brief Register a per-channel callback for CHANNEL_CLOSING_NOTIFY.
+     *        Per-channel takes priority over the global callback.
+     *        Pass nullptr to deregister.
+     */
+    void on_channel_closing(const std::string &channel, std::function<void()> cb);
+
+    /**
+     * @brief Register a per-channel callback for CONSUMER_DIED_NOTIFY (Cat 2).
+     *        Pass nullptr to deregister. Called from the Messenger worker thread.
+     */
+    void on_consumer_died(const std::string &channel,
+                          std::function<void(uint64_t consumer_pid, std::string reason)> cb);
+
+    /**
+     * @brief Register a per-channel callback for CHANNEL_ERROR_NOTIFY (Cat 1) and
+     *        CHANNEL_EVENT_NOTIFY (Cat 2). Pass nullptr to deregister.
+     */
+    void on_channel_error(const std::string &channel,
+                          std::function<void(std::string event, nlohmann::json details)> cb);
+
+    /**
+     * @brief Remove channel from heartbeat list and send DEREG_REQ to broker.
+     *        Fire-and-forget — errors logged by worker.
+     */
+    void unregister_channel(const std::string &channel);
+
+    /**
+     * @brief Report a Cat 2 slot checksum error to broker (fire-and-forget).
+     *        Broker's ChecksumRepairPolicy determines further action.
+     */
+    void report_checksum_error(const std::string &channel, int32_t slot_index,
+                                std::string_view error_description);
 
     // ── Singleton ─────────────────────────────────────────────────────────────
 

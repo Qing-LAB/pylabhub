@@ -23,25 +23,29 @@ class DatahubConfigValidationTest : public IsolatedProcessTest
 TEST_F(DatahubConfigValidationTest, PolicyUnsetThrows)
 {
     auto proc = SpawnWorker("config_validation.policy_unset_throws", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // Unset policy emits LOGGER_ERROR before throwing std::invalid_argument.
+    ExpectWorkerOk(proc, {}, {"config.policy must be set explicitly"});
 }
 
 TEST_F(DatahubConfigValidationTest, ConsumerSyncPolicyUnsetThrows)
 {
     auto proc = SpawnWorker("config_validation.consumer_sync_policy_unset_throws", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // Unset consumer_sync_policy emits LOGGER_ERROR before throwing std::invalid_argument.
+    ExpectWorkerOk(proc, {}, {"config.consumer_sync_policy must be set explicitly"});
 }
 
 TEST_F(DatahubConfigValidationTest, PhysicalPageSizeUnsetThrows)
 {
     auto proc = SpawnWorker("config_validation.physical_page_size_unset_throws", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // Unset physical_page_size emits LOGGER_ERROR before throwing std::invalid_argument.
+    ExpectWorkerOk(proc, {}, {"config.physical_page_size must be set explicitly"});
 }
 
 TEST_F(DatahubConfigValidationTest, RingBufferCapacityZeroThrows)
 {
     auto proc = SpawnWorker("config_validation.ring_buffer_capacity_zero_throws", {});
-    ExpectWorkerOk(proc, {"DataBlock"});
+    // Zero ring_buffer_capacity emits LOGGER_ERROR before throwing std::invalid_argument.
+    ExpectWorkerOk(proc, {}, {"config.ring_buffer_capacity must be set explicitly"});
 }
 
 TEST_F(DatahubConfigValidationTest, ValidConfigCreatesSuccessfully)

@@ -20,3 +20,6 @@
 #include "utils/broker_service.hpp"
 #include "utils/messenger.hpp"
 #include "utils/data_block.hpp"
+#include "utils/hub_producer.hpp"
+#include "utils/hub_consumer.hpp"
+#include "utils/hub_config.hpp"

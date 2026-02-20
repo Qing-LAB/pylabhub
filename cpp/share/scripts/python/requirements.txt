@@ -1,0 +1,23 @@
+# pyLabHub Python environment requirements
+#
+# Install into the staged standalone Python:
+#   cmake --build build --target prepare_python_env
+#
+# For offline builds, pre-download wheels and set:
+#   cmake -DPYLABHUB_PYTHON_WHEELS_DIR=/path/to/wheels ...
+#
+# --- Data structures and arrays ---
+numpy>=2.0
+# --- Data storage ---
+zarr>=3.0           # primary array storage (Blosc+Zstd compression)
+h5py>=3.10          # HDF5 export and legacy data access
+pyarrow>=17.0       # Parquet (events/metadata) and Arrow IPC
+# --- Scientific data model ---
+xarray>=2024.10     # N-D labelled arrays over zarr/h5py/netCDF4
+pandas>=2.0         # tabular metadata, event logs
+# --- Communication ---
+pyzmq>=26.0         # ZeroMQ bindings (admin shell client, hub inter-process)
+# --- Compression codecs for zarr ---
+numcodecs>=0.13
+# --- Interactive use (not loaded by hubshell server; available locally) ---
+ipython>=8.0

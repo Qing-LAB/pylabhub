@@ -316,9 +316,9 @@ int dead_consumer_cleanup()
                 SharedMemoryHeader *hdr = diag->header();
                 ASSERT_NE(hdr, nullptr);
 
-                // Slot 0 in the heartbeat pool: set consumer_id to dead PID
-                hdr->consumer_heartbeats[0].consumer_id.store(kDeadPid,
-                                                              std::memory_order_release);
+                // Slot 0 in the heartbeat pool: set consumer_pid to dead PID
+                hdr->consumer_heartbeats[0].consumer_pid.store(kDeadPid,
+                                                               std::memory_order_release);
                 // Increment active_consumer_count to reflect this "registered" consumer
                 hdr->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
             }
@@ -334,9 +334,9 @@ int dead_consumer_cleanup()
                 SharedMemoryHeader *hdr = diag->header();
                 ASSERT_NE(hdr, nullptr);
 
-                uint64_t consumer_id =
-                    hdr->consumer_heartbeats[0].consumer_id.load(std::memory_order_acquire);
-                EXPECT_EQ(consumer_id, 0u)
+                uint64_t consumer_pid =
+                    hdr->consumer_heartbeats[0].consumer_pid.load(std::memory_order_acquire);
+                EXPECT_EQ(consumer_pid, 0u)
                     << "Dead consumer's heartbeat slot must be zeroed after cleanup";
 
                 EXPECT_GT(hdr->recovery_actions_count.load(std::memory_order_acquire), 0u)

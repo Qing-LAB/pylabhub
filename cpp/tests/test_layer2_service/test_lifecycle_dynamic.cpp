@@ -73,7 +73,7 @@ TEST_F(LifecycleDynamicTest, RegisterBeforeInitFails)
     ASSERT_TRUE(proc.valid());
     // Worker returns 0 if the registration correctly fails as expected.
     proc.wait_for_exit();
-    expect_worker_ok(proc, {"ERROR: register_dynamic_module called before initialization."});
+    expect_worker_ok(proc, {}, {"ERROR: register_dynamic_module called before initialization."});
 }
 
 TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
@@ -81,7 +81,7 @@ TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.static_dependency_fail", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc,
+    expect_worker_ok(proc, {},
                      {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."});
 }
 
@@ -91,7 +91,7 @@ TEST_F(LifecycleDynamicTest, RegistrationFailsWithUnresolvedDependency)
                        {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc, {"ERROR: Dependency 'DynB' for module 'DynA' not found."});
+    expect_worker_ok(proc, {}, {"ERROR: Dependency 'DynB' for module 'DynA' not found."});
 }
 
 TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
@@ -102,7 +102,7 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
     ASSERT_TRUE(proc.valid());
 
     proc.wait_for_exit();
-    expect_worker_ok(proc,
+    expect_worker_ok(proc, {},
                      {"Re-entrant call to load_module('DynB') detected",
                       "module 'DynA' threw on startup", "re-entrant call and failed as expected"});
 }

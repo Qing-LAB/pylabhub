@@ -77,6 +77,72 @@ RecoveryResult datablock_validate_integrity(...);
 
 ## Backlog
 
+### Header / Include Layering Refactor
+
+**Goal**: Establish a clean, layered include structure across the entire codebase so that each
+header is self-contained at exactly its abstraction level, C-API users are never exposed to
+C++ internals, and compilation time is proportional to what a TU actually uses.
+
+**Motivation** (observed 2026-02-20):
+- `data_block.hpp` (and related DataBlock headers) mix C-API primitives, C++ template
+  abstractions, and implementation details in a single file. A C-API consumer sees the full
+  C++ RAII layer; a high-level C++ user sees raw C-API structs. Neither gets a clean view.
+- Compilation is dominated by the weight of transitive includes — `plh_datahub.hpp` pulls in
+  all of DataBlock, Messenger, BrokerService, JsonConfig, and pybind11 in some TUs that only
+  need one or two of these.
+- Mix of C-API and C++ in the same file makes it harder to audit which symbols are stable ABI
+  vs. which are internal C++ helpers.
+- The `actor_schema.hpp` ↔ `nlohmann::json` coupling (fixed 2026-02-20 with `json_fwd.hpp`)
+  is a symptom of the same problem: headers carrying dependencies they don't structurally need.
+
+**Target structure** (sketch):
+
+```
+Layer 0 — C ABI (extern "C", no C++ constructs)
+  slot_rw_coordinator.h      ← C consumers only need this
+  data_block_c_api.h         ← raw acquire/release/checksum (no templates)
+
+Layer 1 — C++ primitives (no pybind11, no nlohmann, no libzmq)
+  shared_memory_spinlock.hpp
+  data_block_config.hpp      ← DataBlockConfig, enums, constants only
+  data_block_handles.hpp     ← SlotWriteHandle, SlotConsumeHandle
+
+Layer 2 — C++ high-level (full DataBlock, Messenger — not pybind11)
+  data_block.hpp             ← DataBlockProducer, DataBlockConsumer, templates
+  messenger.hpp
+
+Layer 3 — Integration (broker, hub API, JsonConfig)
+  broker_service.hpp
+  hub_producer.hpp / hub_consumer.hpp
+  hub_config.hpp
+
+Umbrella headers (convenience only, include what they promise):
+  plh_datahub.hpp            ← all of Layer 3 + 2 + 1
+  plh_service.hpp            ← Layer 2 minus DataBlock
+```
+
+**Key rules to enforce**:
+1. A header at layer N may not include a header from layer > N.
+2. C-API headers (`extern "C"`) may not include any C++ header.
+3. Internal `.cpp`-only types (Pimpl `Impl`, static helpers) go in `*_internals.hpp` /
+   `*_private.hpp` beside the `.cpp` — never in the installed public header.
+4. Forward declarations (`*_fwd.hpp`) are preferred over full includes in peer headers.
+5. CMake `target_include_directories` should enforce the boundary: C-API targets see only
+   Layer 0 includes; `pylabhub-utils` consumers see Layer 1–3.
+
+**Scope**:
+- [ ] Audit `data_block.hpp` — extract C-API declarations into `data_block_c_api.h`;
+      separate config/enums into `data_block_config.hpp`; keep template layer in `data_block.hpp`
+- [ ] Audit `messenger.hpp` — verify no DataBlock or pybind11 leakage
+- [ ] Audit `broker_service.hpp`, `hub_producer.hpp`, `hub_consumer.hpp` for unnecessary
+      transitive includes
+- [ ] Review `actor_schema.hpp` and `actor_config.hpp` — no json.hpp in public actor headers
+- [ ] Review `plh_*.hpp` umbrella headers — confirm they only include what they document
+- [ ] Add CMake `SYSTEM` / `INTERFACE` include guards to enforce layer boundaries
+- [ ] Measure before/after full-rebuild time (`cmake --build build --target all`) as a metric
+
+**Files most affected**: `data_block.hpp`, `plh_datahub.hpp`, `src/utils/CMakeLists.txt`
+
 ### API Enhancements
 - [ ] **Config builder pattern** – Fluent API for DataBlockConfig construction
 - [ ] **Error callbacks** – Register callbacks for specific error conditions

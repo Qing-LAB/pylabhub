@@ -635,7 +635,7 @@ int consumer_operator_increment_updates_heartbeat()
             uint64_t ts_before = 0;
             for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
             {
-                if (diag->header()->consumer_heartbeats[i].consumer_id.load() != 0)
+                if (diag->header()->consumer_heartbeats[i].consumer_pid.load() != 0)
                 {
                     ts_before = diag->header()->consumer_heartbeats[i].last_heartbeat_ns.load(
                         std::memory_order_acquire);
@@ -658,7 +658,7 @@ int consumer_operator_increment_updates_heartbeat()
             uint64_t ts_after = 0;
             for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
             {
-                if (diag->header()->consumer_heartbeats[i].consumer_id.load() != 0)
+                if (diag->header()->consumer_heartbeats[i].consumer_pid.load() != 0)
                 {
                     ts_after = diag->header()->consumer_heartbeats[i].last_heartbeat_ns.load(
                         std::memory_order_acquire);

@@ -1,0 +1,35 @@
+{
+  "_comment": "Example consumer actor config — logs counter slots from producer_counter.",
+  "role": "consumer",
+  "channel": "lab.examples.counter",
+  "broker": "tcp://127.0.0.1:5570",
+  "script": "consumer_logger.py",
+  "slot_schema": {
+    "_comment": "Must match the producer's slot_schema fields (names + types).",
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"}
+    ]
+  },
+  "flexzone_schema": {
+    "_comment": "Must match the producer's flexzone_schema fields.",
+    "fields": [
+      {"name": "producer_pid",  "type": "uint64"},
+      {"name": "start_time",    "type": "float64"},
+      {"name": "label",         "type": "string", "length": 32}
+    ]
+  },
+  "shm": {
+    "enabled": true,
+    "slot_count": 4,
+    "secret": 1234567890
+  },
+  "validation": {
+    "slot_checksum":     "enforce",
+    "flexzone_checksum": "enforce",
+    "on_checksum_fail":  "pass",
+    "on_python_error":   "continue"
+  },
+  "log_level": "info"
+}
