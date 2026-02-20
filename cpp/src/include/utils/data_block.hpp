@@ -330,6 +330,14 @@ struct DataBlockConfig
      */
     size_t flex_zone_size = 0;
 
+    // === Channel Identity (written into SHM header at creation; empty = not set) ===
+    // These are set by the caller (hub/actor config layer) before calling create_datablock_producer.
+    // Empty strings are written as all-zero fields in the header (backward compatible).
+    std::string hub_uid{};       ///< Hub unique ID (hex string, max 39 chars; empty = not set)
+    std::string hub_name{};      ///< Hub human-readable name (max 63 chars; empty = not set)
+    std::string producer_uid{};  ///< Producer unique ID (hex string, max 39 chars; empty = not set)
+    std::string producer_name{}; ///< Producer human-readable name (max 63 chars; empty = not set)
+
     /** Effective logical unit size (slot stride in bytes). 0 at config means use physical_page_size. */
     size_t effective_logical_unit_size() const
     {
@@ -440,13 +448,27 @@ struct alignas(4096) SharedMemoryHeader
     std::atomic<uint64_t> creation_timestamp_ns;
     std::atomic<uint64_t> reserved_perf[2];
 
-    // === Consumer Heartbeats (512 bytes) ===
+    // === Consumer Heartbeats (1024 bytes) ===
+    // Each slot is 128 bytes: expanded from 64 bytes to carry uid/name identity alongside PID.
+    // Write ordering: consumer_uid/consumer_name must be written BEFORE the CAS on consumer_pid
+    // (store with memory_order_release, or simply before the CAS which is acq_rel).
     struct ConsumerHeartbeat
     {
-        std::atomic<uint64_t> consumer_id;       // PID or UUID
-        std::atomic<uint64_t> last_heartbeat_ns; // Monotonic timestamp
-        uint8_t padding[48];                     // Cache line (64 bytes total)
+        std::atomic<uint64_t> consumer_pid;      //  8 bytes — OS PID (0 = slot free)
+        std::atomic<uint64_t> last_heartbeat_ns; //  8 bytes — Monotonic timestamp (ns)
+        char consumer_uid[40];                   // 40 bytes — Unique ID (null-terminated hex str)
+        char consumer_name[32];                  // 32 bytes — Human-readable name (null-terminated)
+        uint8_t padding[40];                     // 40 bytes — Total: 128 bytes per slot
     } consumer_heartbeats[detail::MAX_CONSUMER_HEARTBEATS];
+
+    // === Channel Identity (208 bytes) ===
+    // Written once at producer creation; read-only for consumers and diagnostics.
+    // hub_uid/hub_name: identify the hub this channel belongs to.
+    // producer_uid/producer_name: identify the process that created this channel.
+    char hub_uid[40];       // Hub unique ID (null-terminated hex string; empty until security phase)
+    char hub_name[64];      // Hub human-readable name (null-terminated; empty until security phase)
+    char producer_uid[40];  // Producer unique ID (null-terminated hex string)
+    char producer_name[64]; // Producer human-readable name (null-terminated)
 
     // === SharedSpinLock States (256 bytes) ===
     SharedSpinLockState spinlock_states[detail::MAX_SHARED_SPINLOCKS];
@@ -461,7 +483,9 @@ struct alignas(4096) SharedMemoryHeader
 
     // === Padding to 4096 bytes ===
     // reserved_header size chosen so total header is exactly 4KB.
-    uint8_t reserved_header[2320]; // 4096 - (offset up to here); exact size for 4KB total
+    // Budget: ConsumerHeartbeats expanded 512→1024 (+512), channel identity added (+208),
+    // so reserved_header reduced from 2320 to 2320 - 512 - 208 = 1600.
+    uint8_t reserved_header[1600]; // 4096 - (offset up to here); exact size for 4KB total
 };
 constexpr size_t raw_size_SharedMemoryHeader =
     offsetof(SharedMemoryHeader, reserved_header) + sizeof(SharedMemoryHeader::reserved_header);
@@ -920,6 +944,13 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * flexzone checksum on transaction exit. Returns ChecksumPolicy::None if pImpl is null. */
     [[nodiscard]] ChecksumPolicy checksum_policy() const noexcept;
 
+    /// Channel identity accessors (read directly from SHM header; empty string if not set).
+    /// These reflect what was written at creation time via DataBlockConfig identity fields.
+    [[nodiscard]] std::string hub_uid() const noexcept;
+    [[nodiscard]] std::string hub_name() const noexcept;
+    [[nodiscard]] std::string producer_uid() const noexcept;
+    [[nodiscard]] std::string producer_name() const noexcept;
+
     /** Construct from implementation (for factory use; Impl is opaque to users). */
     explicit DataBlockProducer(std::unique_ptr<DataBlockProducerImpl> impl);
 
@@ -980,6 +1011,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     [[nodiscard]] bool verify_checksum_flexible_zone() const noexcept;
     /** Returns true if stored checksum matches computed BLAKE2b of data slot. */
     [[nodiscard]] bool verify_checksum_slot(size_t slot_index) const noexcept;
+
+    /// Channel identity accessors (read directly from SHM header; empty string if not set).
+    [[nodiscard]] std::string hub_uid() const noexcept;
+    [[nodiscard]] std::string hub_name() const noexcept;
+    [[nodiscard]] std::string producer_uid() const noexcept;
+    [[nodiscard]] std::string producer_name() const noexcept;
 
     // --- Heartbeat Management ---
     // Heartbeat registration and deregistration are managed automatically:
@@ -1314,7 +1351,9 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
 find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
-                             const pylabhub::schema::SchemaInfo *datablock_schema);
+                             const pylabhub::schema::SchemaInfo *datablock_schema,
+                             const char *consumer_uid  = nullptr,
+                             const char *consumer_name = nullptr);
 
 /**
  * @brief Attach to an existing DataBlock as a writer (WriteAttach mode).
@@ -1444,7 +1483,9 @@ create_datablock_producer(const std::string &name, DataBlockPolicy policy,
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer(const std::string &name, uint64_t shared_secret,
-                        const DataBlockConfig &expected_config)
+                        const DataBlockConfig &expected_config,
+                        const char *consumer_uid  = nullptr,
+                        const char *consumer_name = nullptr)
 {
     // Compile-time validation
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
@@ -1459,9 +1500,10 @@ find_datablock_consumer(const std::string &name, uint64_t shared_secret,
     auto expected_datablock = pylabhub::schema::generate_schema_info<DataBlockT>(
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
-    // Call internal implementation with BOTH schemas for validation
+    // Call internal implementation with BOTH schemas for validation + consumer identity
     return find_datablock_consumer_impl(name, shared_secret, &expected_config,
-                                        &expected_flexzone, &expected_datablock);
+                                        &expected_flexzone, &expected_datablock,
+                                        consumer_uid, consumer_name);
 }
 
 // ============================================================================

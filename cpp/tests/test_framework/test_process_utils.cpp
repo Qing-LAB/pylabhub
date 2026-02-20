@@ -7,6 +7,7 @@
 #include <list>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <string>
 
 #include "test_process_utils.h"
@@ -436,8 +437,8 @@ const std::string &WorkerProcess::get_stderr() const
 }
 
 void expect_worker_ok(const WorkerProcess &proc,
-                      const std::vector<std::string> &expected_stderr_substrings,
-                      bool allow_expected_logger_errors)
+                      const std::vector<std::string> &required_substrings,
+                      const std::vector<std::string> &expected_error_substrings)
 {
     using ::testing::HasSubstr;
     using ::testing::Not;
@@ -460,19 +461,53 @@ void expect_worker_ok(const WorkerProcess &proc,
     }
 
     const auto &stderr_out = proc.get_stderr();
-    const bool skip_error_check =
-        allow_expected_logger_errors || !expected_stderr_substrings.empty();
 
-    if (!skip_error_check)
+    // When expected_error_substrings is empty: no ERROR-level logs are permitted.
+    // When non-empty: each named string must appear, AND every [ERROR ] line in stderr
+    // must be accounted for by at least one of those named strings.
+    // This means additional unexpected ERRORs are NOT silently ignored.
+    if (expected_error_substrings.empty())
     {
         EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
+    }
+    else
+    {
+        // 1. Positive check: each expected error string must appear.
+        for (const auto &substr : expected_error_substrings)
+        {
+            EXPECT_THAT(stderr_out, HasSubstr(substr));
+        }
+        // 2. Exhaustive check: every [ERROR ] line must match at least one expected string.
+        std::istringstream lines(stderr_out);
+        std::string line;
+        while (std::getline(lines, line))
+        {
+            if (line.find("[ERROR ]") == std::string::npos)
+            {
+                continue;
+            }
+            bool matched = false;
+            for (const auto &sub : expected_error_substrings)
+            {
+                if (line.find(sub) != std::string::npos)
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched)
+            {
+                ADD_FAILURE() << "Unexpected ERROR in worker stderr (not in expected_error_substrings):\n"
+                              << "  " << line;
+            }
+        }
     }
     // Always forbid FATAL, PANIC, and worker assertion failure.
     EXPECT_THAT(stderr_out, Not(HasSubstr("FATAL")));
     EXPECT_THAT(stderr_out, Not(HasSubstr("PANIC")));
     EXPECT_THAT(stderr_out, Not(HasSubstr("[WORKER FAILURE]")));
 
-    for (const auto &substr : expected_stderr_substrings)
+    for (const auto &substr : required_substrings)
     {
         EXPECT_THAT(stderr_out, HasSubstr(substr));
     }

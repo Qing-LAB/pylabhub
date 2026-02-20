@@ -10,18 +10,24 @@
 ## Current Focus
 
 ### Phase C: Integration Tests
-**Status**: 🟡 In Progress
+**Status**: ✅ Complete (424/424 passing as of 2026-02-19)
 
-- [ ] **MessageHub and broker tests** – Complete Phase C tests for MessageHub/broker integration
-- [ ] **Multi-process IPC tests** – Producer/consumer across process boundaries
-- [ ] **Cross-platform consistency** – Run same tests on Linux, Windows, macOS, FreeBSD
+- [x] **MessageHub and broker tests** – Phase C broker integration + consumer registration complete
+- [x] **Multi-process IPC tests** – Producer/consumer across process boundaries (E2E test)
+- [x] **hub::Producer + hub::Consumer active API** – 15 tests; HELLO/BYE tracking, SHM callbacks, ctrl messaging, idempotency, destructor-BYE regression
+- [ ] **Cross-platform consistency** – Run same tests on Linux (done), Windows, macOS, FreeBSD
 
 ### Phase D: High-Load and Edge Cases
-**Status**: 🟢 Ready to Start
+**Status**: 🔵 Partial — RAII stress tests added; extended/platform tests deferred
 
-- [ ] **High-load stress tests** – Extended duration, multiple producers/consumers
-- [ ] **Edge case scenarios** – Wraparound, capacity boundaries, race conditions
-- [ ] **Recovery scenarios** – Zombie processes, corrupted state, integrity repair
+- [x] **RAII multi-process ring-buffer stress** — `DatahubStressRaiiTest` (tests 423–424):
+  - `MultiProcessFullCapacityStress`: 500 × 4KB slots, ring=32 (15 wraparounds), 2 racing consumers,
+    enforced BLAKE2b + app-level XOR-fold, random 0–5ms write / 0–10ms read delays
+  - `SingleReaderBackpressure`: 100 slots, ring=8, consumer 0–20ms delays force producer to block
+- [ ] **High-load extended stress** – Hours-long soak tests; multiple producers simultaneously
+- [ ] **Edge case scenarios** – Wraparound at 2^64, slot_id rollover, capacity exhaustion
+- [ ] **Broker-coordinated recovery** – Cross-process zombie detection (blocked on broker protocol extension)
+- [ ] **Slot-checksum in-place repair** – Blocked: existing repair reinitialises header; needs WriteAttach approach
 
 ---
 

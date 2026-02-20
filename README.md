@@ -1,9 +1,12 @@
 # pyLabHub
 
-**pyLabHub** is a modular framework for laboratory data acquisition, hardware control, and experiment management.  
-Its design revolves around three key components: a **central hub** for data streaming and persistence, **adapters** that bridge diverse hardware into a unified interface, and **connectors** that integrate with external programs such as Igor Pro, Python GUIs, or custom clients.
+**pyLabHub** is a cross-platform framework for high-performance scientific data acquisition, instrument control, and experiment management. It connects data-producing instruments — sensors, DAQs, actuators — to consuming applications — storage, analysis, visualization — at sub-millisecond latency, across process and language boundaries.
 
-The core principle of pyLabHub is **data integrity and reproducibility**. It isolates raw experiment data from downstream analysis, ensuring the original record remains uncompromised. At the same time, it provides flexible tools for visualization, real‑time interaction, and automation through scripts that respond dynamically to streaming data. This separation of concerns allows experiments to be both reproducible and openly shareable.
+Its design revolves around three layers: a **high-performance IPC core** built on shared memory and ZeroMQ for zero-copy data exchange; a **broker** that manages channel registration, schema integrity, and process liveness across the system; and **active services** (`hub::Producer` / `hub::Consumer`) that wrap both transports behind a clean, callback-driven API so application code focuses on science, not IPC bookkeeping. Hardware **adapters** bridge instruments into hub channels; language **connectors** (Python first) expose the same channel API to scripts, notebooks, and GUIs.
+
+The design philosophy: **the platform guarantees delivery and invariant validation — protocol correctness is the responsibility of the application**. Errors fall into two categories: structural violations (schema mismatch, heartbeat timeout, SHM corruption) trigger log + notify + shutdown with no silent repair; application-level issues (dead consumer, data checksum anomalies) are reported to the user with a configurable response policy.
+
+The core principle of pyLabHub is **data integrity and reproducibility**. It isolates raw experiment data from downstream analysis, ensuring the original record remains uncompromised while providing flexible tools for real-time visualization, control, and scripted automation.
 
 ---
 

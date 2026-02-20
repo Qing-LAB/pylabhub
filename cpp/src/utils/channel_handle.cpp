@@ -38,6 +38,7 @@ bool poll_readable(zmq::socket_t &socket, int timeout_ms)
 struct ChannelHandleImpl
 {
     std::string    channel;
+    std::string    shm_name;          // SHM segment name; empty if !has_shm
     ChannelPattern pattern{ChannelPattern::PubSub};
     bool           has_shm{false};
     bool           is_producer{false};
@@ -87,6 +88,12 @@ const std::string &ChannelHandle::channel_name() const
 {
     static const std::string kEmpty;
     return pImpl ? pImpl->channel : kEmpty;
+}
+
+const std::string &ChannelHandle::shm_name() const
+{
+    static const std::string kEmpty;
+    return pImpl ? pImpl->shm_name : kEmpty;
 }
 
 bool ChannelHandle::is_valid() const
@@ -379,6 +386,51 @@ bool ChannelHandle::recv_ctrl(std::vector<std::byte> &buf, int timeout_ms,
 }
 
 // ============================================================================
+// send_typed_ctrl() — control frame with caller-specified type string
+// ============================================================================
+
+bool ChannelHandle::send_typed_ctrl(std::string_view type, const void *data, size_t size,
+                                     const std::string &identity)
+{
+    if (!is_valid() || !pImpl->ctrl_socket.has_value())
+    {
+        return false;
+    }
+
+    try
+    {
+        zmq::socket_t &sock = *pImpl->ctrl_socket;
+        const std::string type_str(type);
+
+        if (pImpl->is_producer)
+        {
+            if (identity.empty())
+            {
+                return false;
+            }
+            sock.send(zmq::message_t(identity.data(), identity.size()),
+                      zmq::send_flags::sndmore);
+            sock.send(zmq::message_t(&kTypeControl, 1), zmq::send_flags::sndmore);
+            sock.send(zmq::message_t(type_str.data(), type_str.size()),
+                      zmq::send_flags::sndmore);
+            sock.send(zmq::message_t(data, size), zmq::send_flags::none);
+        }
+        else
+        {
+            sock.send(zmq::message_t(&kTypeControl, 1), zmq::send_flags::sndmore);
+            sock.send(zmq::message_t(type_str.data(), type_str.size()),
+                      zmq::send_flags::sndmore);
+            sock.send(zmq::message_t(data, size), zmq::send_flags::none);
+        }
+        return true;
+    }
+    catch (const zmq::error_t &)
+    {
+        return false;
+    }
+}
+
+// ============================================================================
 // ChannelHandleImpl factory helpers (used by Messenger internals)
 // ============================================================================
 
@@ -387,10 +439,12 @@ ChannelHandle make_producer_handle(const std::string &channel,
                                    bool               has_shm,
                                    zmq::socket_t    &&ctrl_sock,
                                    zmq::socket_t    &&data_sock_or_dummy,
-                                   bool               has_data_sock)
+                                   bool               has_data_sock,
+                                   const std::string &shm_name)
 {
     auto impl = std::make_unique<ChannelHandleImpl>();
     impl->channel     = channel;
+    impl->shm_name    = shm_name;
     impl->pattern     = pattern;
     impl->has_shm     = has_shm;
     impl->is_producer = true;
@@ -408,10 +462,12 @@ ChannelHandle make_consumer_handle(const std::string &channel,
                                    bool               has_shm,
                                    zmq::socket_t    &&ctrl_sock,
                                    zmq::socket_t    &&data_sock_or_dummy,
-                                   bool               has_data_sock)
+                                   bool               has_data_sock,
+                                   const std::string &shm_name)
 {
     auto impl = std::make_unique<ChannelHandleImpl>();
     impl->channel     = channel;
+    impl->shm_name    = shm_name;
     impl->pattern     = pattern;
     impl->has_shm     = has_shm;
     impl->is_producer = false;
@@ -422,6 +478,28 @@ ChannelHandle make_consumer_handle(const std::string &channel,
         impl->data_socket.emplace(std::move(data_sock_or_dummy));
     }
     return ChannelHandle(std::move(impl));
+}
+
+// ============================================================================
+// Internal raw socket accessors (used via channel_handle_internals.hpp)
+// ============================================================================
+
+void *ChannelHandle::internal_ctrl_socket_ptr() noexcept
+{
+    if (!pImpl || !pImpl->ctrl_socket.has_value())
+    {
+        return nullptr;
+    }
+    return &(*pImpl->ctrl_socket);
+}
+
+void *ChannelHandle::internal_data_socket_ptr() noexcept
+{
+    if (!pImpl || !pImpl->data_socket.has_value())
+    {
+        return nullptr;
+    }
+    return &(*pImpl->data_socket);
 }
 
 } // namespace pylabhub::hub

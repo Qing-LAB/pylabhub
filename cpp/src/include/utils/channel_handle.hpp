@@ -116,6 +116,24 @@ class PYLABHUB_UTILS_EXPORT ChannelHandle
     const std::string &channel_name() const;
 
     /**
+     * @brief Returns the shared memory segment name.
+     *
+     * For producer handles: equals channel_name() when has_shm() is true; empty otherwise.
+     * For consumer handles: the shm_name returned by the broker on discovery.
+     */
+    [[nodiscard]] const std::string &shm_name() const;
+
+    /**
+     * @brief Send a control frame with a caller-supplied type string.
+     *
+     * Like send_ctrl(), but allows specifying a custom @p type (e.g. "HELLO", "BYE").
+     * Consumer (DEALER): sends ['C', type, data].
+     * Producer (ROUTER): @p identity must be non-empty; sends [identity, 'C', type, data].
+     */
+    bool send_typed_ctrl(std::string_view type, const void *data, size_t size,
+                         const std::string &identity = {});
+
+    /**
      * @brief Returns false if the handle is empty (default-constructed or moved-from)
      *        or has been invalidated by a CHANNEL_CLOSING_NOTIFY.
      */
@@ -133,6 +151,13 @@ class PYLABHUB_UTILS_EXPORT ChannelHandle
      *        connect_channel.  Not for direct use by application code.
      */
     explicit ChannelHandle(std::unique_ptr<ChannelHandleImpl> impl);
+
+    // ── Internal raw socket access (for hub_producer / hub_consumer only) ──────
+    // Returns a type-erased pointer to the underlying zmq::socket_t.
+    // channel_handle_internals.hpp casts these back to zmq::socket_t*.
+    // Each socket must be used by exactly ONE thread after start().
+    void *internal_ctrl_socket_ptr() noexcept;
+    void *internal_data_socket_ptr() noexcept;
 
   private:
 #if defined(_MSC_VER)

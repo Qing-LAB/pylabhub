@@ -31,31 +31,32 @@ TEST_F(DatahubBrokerTest, RegDiscHappyPath)
 
 TEST_F(DatahubBrokerTest, SchemaMismatch)
 {
-    // Re-register same channel with different schema_hash → ERROR SCHEMA_MISMATCH.
-    // Broker and Messenger both log at WARN/ERROR level for this case.
+    // Re-register same channel with different schema_hash → broker rejects with Cat1 error.
+    // Broker logs LOGGER_ERROR "Cat1 schema mismatch". Positively verify it appeared.
     auto proc = SpawnWorker("broker.broker_schema_mismatch", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch"});
 }
 
 TEST_F(DatahubBrokerTest, ChannelNotFound)
 {
     // Discover unknown channel → Messenger returns nullopt.
-    // Messenger logs ERROR when broker replies CHANNEL_NOT_FOUND.
+    // Messenger logs LOGGER_ERROR "discover_producer(...) failed". Positively verify it appeared.
     auto proc = SpawnWorker("broker.broker_channel_not_found", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc, {}, {"discover_producer"});
 }
 
 TEST_F(DatahubBrokerTest, DeregHappyPath)
 {
     // Register → discover (found) → deregister (correct pid) → discover → nullopt.
-    // Messenger logs ERROR when discover returns CHANNEL_NOT_FOUND after deregister.
+    // Second discover fails with CHANNEL_NOT_FOUND; Messenger logs LOGGER_ERROR. Verify it appeared.
     auto proc = SpawnWorker("broker.broker_dereg_happy_path", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc, {}, {"discover_producer"});
 }
 
 TEST_F(DatahubBrokerTest, DeregPidMismatch)
 {
-    // Deregister with wrong pid → ERROR NOT_REGISTERED; channel still discoverable.
+    // Deregister with wrong pid → NOT_REGISTERED (raw ZMQ); broker logs LOGGER_WARN only.
+    // No ERROR-level log expected; use plain ExpectWorkerOk to catch any unexpected ERRORs.
     auto proc = SpawnWorker("broker.broker_dereg_pid_mismatch", {});
-    ExpectWorkerOk(proc, {}, /*allow_expected_logger_errors=*/true);
+    ExpectWorkerOk(proc);
 }

@@ -39,6 +39,8 @@ target_link_libraries(test_layer0_platform_core
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_core)
+
 # Register for staging
 pylabhub_register_test_for_staging(
     TARGET test_layer0_platform_core
@@ -72,6 +74,8 @@ target_link_libraries(test_layer0_platform_debug
         GTest::gmock
 )
 
+pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_debug)
+
 # Register for staging
 pylabhub_register_test_for_staging(
     TARGET test_layer0_platform_debug
@@ -104,6 +108,8 @@ target_link_libraries(test_layer0_platform_shm
         GTest::gtest_main
         GTest::gmock
 )
+
+pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_shm)
 
 pylabhub_register_test_for_staging(
     TARGET test_layer0_platform_shm

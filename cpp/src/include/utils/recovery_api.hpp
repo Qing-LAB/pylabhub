@@ -215,6 +215,36 @@ extern "C"
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_reset_metrics(const char *shm_name);
 
+    // --- Identity (name-based; same surface as slot_rw_get_channel_identity / slot_rw_list_consumers) ---
+
+    /**
+     * @brief Reads the channel identity block for a DataBlock by name.
+     *
+     * Opens the DataBlock in read-only diagnostic mode and copies the hub/producer identity
+     * fields into @p out. All strings are null-terminated; fields are empty if not set.
+     *
+     * @param shm_name  The name of the shared memory DataBlock (must not be null).
+     * @param out       Pointer to a plh_channel_identity_t struct to fill (must not be null).
+     * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_get_channel_identity(
+        const char *shm_name, plh_channel_identity_t *out);
+
+    /**
+     * @brief Lists active consumers registered in a DataBlock's heartbeat table by name.
+     *
+     * Opens the DataBlock in read-only diagnostic mode and returns occupied heartbeat slots.
+     *
+     * @param shm_name        The name of the shared memory DataBlock (must not be null).
+     * @param out_array       Array of plh_consumer_identity_t to fill (must not be null).
+     * @param array_capacity  Maximum number of entries to write (must be > 0).
+     * @param out_count       Set to the number of entries written (must not be null).
+     * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
+     */
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_list_consumers(
+        const char *shm_name, plh_consumer_identity_t *out_array, int array_capacity,
+        int *out_count);
+
 #ifdef __cplusplus
 }
 #endif
