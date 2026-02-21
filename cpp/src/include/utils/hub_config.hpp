@@ -108,6 +108,15 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /** Human-readable description of this hub. */
     const std::string& hub_description() const noexcept;
 
+    /**
+     * @brief Stable unique identifier for this hub instance.
+     *
+     * Format: @c "HUB-{NAME}-{8HEX}" (e.g. "HUB-MYLABHUB-3A7F2B1C").
+     * Auto-generated from hub_name at first startup if not set in config.
+     * Can be overridden in hub.user.json["hub"]["uid"].
+     */
+    const std::string& hub_uid() const noexcept;
+
     // -----------------------------------------------------------------------
     // Network endpoints
     // -----------------------------------------------------------------------

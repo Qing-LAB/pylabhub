@@ -51,4 +51,10 @@ int producer_consumer_ctrl_messaging(int argc, char **argv);
 /** Consumer destructor (no explicit stop) still sends BYE; connected_consumers empties. */
 int consumer_destructor_bye(int argc, char **argv);
 
+/** Producer with identity: hub_uid/producer_name written to SHM; C API returns correct values. */
+int producer_channel_identity(int argc, char **argv);
+
+/** Consumer with uid/name: heartbeat slot carries identity; list_consumers returns it; close clears. */
+int consumer_identity_in_shm(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::hub_api

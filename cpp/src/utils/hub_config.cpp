@@ -14,6 +14,7 @@
 #include "plh_service.hpp"
 #include "utils/hub_config.hpp"
 #include "utils/json_config.hpp"
+#include "uid_utils.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -173,6 +174,7 @@ struct HubConfig::Impl
     // Resolved values — populated once at startup, read-only afterwards.
     std::string hub_name       {"local.hub.default"};
     std::string hub_description{"pyLabHub instance"};
+    std::string hub_uid        {};  ///< Auto-generated if not in config: "HUB-{NAME}-{8HEX}"
     std::string broker_endpoint{"tcp://0.0.0.0:5570"};
     std::string admin_endpoint {"tcp://127.0.0.1:5600"};
     std::string admin_token    {}; ///< Empty = no auth required.
@@ -200,6 +202,7 @@ struct HubConfig::Impl
             const auto& h = j.at("hub");
             if (h.contains("name"))             hub_name        = h.at("name").get<std::string>();
             if (h.contains("description"))      hub_description = h.at("description").get<std::string>();
+            if (h.contains("uid"))              hub_uid         = h.at("uid").get<std::string>();
             if (h.contains("broker_endpoint"))  broker_endpoint = h.at("broker_endpoint").get<std::string>();
             if (h.contains("admin_endpoint"))   admin_endpoint  = h.at("admin_endpoint").get<std::string>();
         }
@@ -375,7 +378,19 @@ struct HubConfig::Impl
         if (const char* env = std::getenv("PYLABHUB_ADMIN_ENDPOINT"))
             admin_endpoint = env;
 
+        // --- UID: auto-generate if not provided in config ---
+        if (hub_uid.empty())
+        {
+            hub_uid = pylabhub::uid::generate_hub_uid(hub_name);
+        }
+        else if (!pylabhub::uid::has_hub_prefix(hub_uid))
+        {
+            LOGGER_WARN("HubConfig: hub.uid '{}' does not start with 'HUB-'; "
+                        "recommend using generate_hub_uid() format.", hub_uid);
+        }
+
         LOGGER_INFO("HubConfig: hub_name          = {}", hub_name);
+        LOGGER_INFO("HubConfig: hub_uid           = {}", hub_uid);
         LOGGER_INFO("HubConfig: broker_endpoint   = {}", broker_endpoint);
         LOGGER_INFO("HubConfig: admin_endpoint    = {}", admin_endpoint);
         LOGGER_INFO("HubConfig: root_dir          = {}", root_dir.string());
@@ -414,6 +429,7 @@ void HubConfig::load_(const fs::path& override_path)
 
 const std::string& HubConfig::hub_name()        const noexcept { return pImpl->hub_name; }
 const std::string& HubConfig::hub_description() const noexcept { return pImpl->hub_description; }
+const std::string& HubConfig::hub_uid()         const noexcept { return pImpl->hub_uid; }
 const std::string& HubConfig::broker_endpoint() const noexcept { return pImpl->broker_endpoint; }
 const std::string& HubConfig::admin_endpoint()  const noexcept { return pImpl->admin_endpoint; }
 const std::string& HubConfig::admin_token()     const noexcept { return pImpl->admin_token; }

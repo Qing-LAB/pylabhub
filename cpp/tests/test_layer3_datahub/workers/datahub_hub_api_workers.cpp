@@ -1132,6 +1132,117 @@ int consumer_destructor_bye(int /*argc*/, char ** /*argv*/)
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// producer_channel_identity
+// ============================================================================
+
+int producer_channel_identity(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker          = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            const std::string channel = make_test_channel_name("hub.identity");
+
+            // Set identity fields in the SHM config.
+            DataBlockConfig cfg = make_shm_config();
+            cfg.hub_uid         = "hub_uid_test_42";
+            cfg.hub_name        = "TestHub";
+            cfg.producer_uid    = "prod_uid_abc";
+            cfg.producer_name   = "TestProducer";
+
+            ProducerOptions popts;
+            popts.channel_name = channel;
+            popts.pattern      = ChannelPattern::PubSub;
+            popts.has_shm      = true;
+            popts.shm_config   = cfg;
+            popts.timeout_ms   = 3000;
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            ASSERT_TRUE(producer->has_shm());
+
+            // Verify channel identity accessors read back from SHM header.
+            EXPECT_EQ(producer->shm()->hub_uid(),      "hub_uid_test_42");
+            EXPECT_EQ(producer->shm()->hub_name(),     "TestHub");
+            EXPECT_EQ(producer->shm()->producer_uid(), "prod_uid_abc");
+            EXPECT_EQ(producer->shm()->producer_name(), "TestProducer");
+
+            // Consumer also reads the same header — channel identity is shared.
+            ConsumerOptions copts;
+            copts.channel_name      = channel;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.timeout_ms        = 3000;
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            ASSERT_TRUE(consumer->has_shm());
+
+            EXPECT_EQ(consumer->shm()->hub_uid(),      "hub_uid_test_42");
+            EXPECT_EQ(consumer->shm()->hub_name(),     "TestHub");
+            EXPECT_EQ(consumer->shm()->producer_uid(), "prod_uid_abc");
+            EXPECT_EQ(consumer->shm()->producer_name(), "TestProducer");
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.producer_channel_identity",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// consumer_identity_in_shm
+// ============================================================================
+
+int consumer_identity_in_shm(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker          = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            const std::string channel = make_test_channel_name("hub.consumer_id");
+
+            ProducerOptions popts;
+            popts.channel_name = channel;
+            popts.pattern      = ChannelPattern::PubSub;
+            popts.has_shm      = true;
+            popts.shm_config   = make_shm_config();
+            popts.timeout_ms   = 3000;
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            ASSERT_TRUE(producer->has_shm());
+
+            // Consumer sets its own identity via ConsumerOptions.
+            ConsumerOptions copts;
+            copts.channel_name      = channel;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.consumer_uid      = "cuid_abcdef1234";
+            copts.consumer_name     = "MyCoolConsumer";
+            copts.timeout_ms        = 3000;
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            ASSERT_TRUE(consumer->has_shm());
+
+            // Verify the consumer's own identity is stored and readable.
+            EXPECT_EQ(consumer->shm()->consumer_uid(),  "cuid_abcdef1234");
+            EXPECT_EQ(consumer->shm()->consumer_name(), "MyCoolConsumer");
+
+            // Graceful close: uid/name are cleared from the heartbeat slot.
+            consumer->close();
+            EXPECT_FALSE(consumer->is_valid());
+
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.consumer_identity_in_shm",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_api
 
 // ============================================================================
@@ -1189,6 +1300,10 @@ struct HubApiWorkerRegistrar
                     return producer_consumer_ctrl_messaging(argc, argv);
                 if (scenario == "consumer_destructor_bye")
                     return consumer_destructor_bye(argc, argv);
+                if (scenario == "producer_channel_identity")
+                    return producer_channel_identity(argc, argv);
+                if (scenario == "consumer_identity_in_shm")
+                    return consumer_identity_in_shm(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });

@@ -328,8 +328,10 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
         const DataBlockConfig *cfg_ptr =
             opts.expected_shm_config.has_value() ? &(*opts.expected_shm_config) : nullptr;
 
+        const char *uid  = opts.consumer_uid.empty()  ? nullptr : opts.consumer_uid.c_str();
+        const char *cnam = opts.consumer_name.empty() ? nullptr : opts.consumer_name.c_str();
         shm_consumer = find_datablock_consumer_impl(ch->shm_name(), opts.shm_shared_secret,
-                                                     cfg_ptr, nullptr, nullptr);
+                                                     cfg_ptr, nullptr, nullptr, uid, cnam);
         // nullptr is acceptable — secret mismatch or SHM unavailable; ZMQ still works
     }
 

@@ -1,38 +1,48 @@
 {
-  "_comment": "Example producer actor config — publishes a typed counter + timestamp slot.",
-  "role": "producer",
-  "channel": "lab.examples.counter",
-  "broker": "tcp://127.0.0.1:5570",
+  "_comment": "Example producer actor — publishes a typed counter + timestamp slot.",
+  "actor": {
+    "_comment_uid": "UID format: ACTOR-{NAME}-{8HEX}. Omit to auto-generate from 'name'.",
+    "uid":       "ACTOR-COUNTER-00000001",
+    "name":      "CounterProducer",
+    "log_level": "info"
+  },
   "script": "producer_counter.py",
-  "slot_schema": {
-    "_comment": "Slot layout declared once; C++ builds ctypes.LittleEndianStructure at start.",
-    "packing": "natural",
-    "fields": [
-      {"name": "count", "type": "int64"},
-      {"name": "ts",    "type": "float64"}
-    ]
-  },
-  "flexzone_schema": {
-    "_comment": "Producer metadata written once in on_init(); visible to consumers.",
-    "fields": [
-      {"name": "producer_pid",  "type": "uint64"},
-      {"name": "start_time",    "type": "float64"},
-      {"name": "label",         "type": "string", "length": 32}
-    ]
-  },
-  "shm": {
-    "enabled":    true,
-    "slot_count": 4,
-    "_comment_slot_size": "slot_size removed — computed from slot_schema at start()",
-    "secret": 1234567890
-  },
-  "validation": {
-    "slot_checksum":     "enforce",
-    "flexzone_checksum": "enforce",
-    "on_checksum_fail":  "pass",
-    "on_python_error":   "continue"
-  },
-  "write_interval_ms": 0,
-  "_comment_write_interval": "0 = drive at DataBlock acquisition rate (SHM mode)",
-  "log_level": "info"
+
+  "roles": {
+    "counter_out": {
+      "kind":        "producer",
+      "channel":     "lab.examples.counter",
+      "broker":      "tcp://127.0.0.1:5570",
+      "interval_ms": 0,
+      "_comment_interval": "0 = write as fast as SHM slots allow; >0 = sleep N ms; -1 = trigger_write() only",
+
+      "slot_schema": {
+        "_comment": "Slot layout — C++ builds ctypes.LittleEndianStructure at start().",
+        "packing": "natural",
+        "fields": [
+          {"name": "count", "type": "int64"},
+          {"name": "ts",    "type": "float64"}
+        ]
+      },
+      "flexzone_schema": {
+        "_comment": "Persistent producer metadata — readable by any connected consumer.",
+        "fields": [
+          {"name": "producer_pid",  "type": "uint64"},
+          {"name": "start_time",    "type": "float64"},
+          {"name": "label",         "type": "string", "length": 32}
+        ]
+      },
+      "shm": {
+        "enabled":    true,
+        "slot_count": 4,
+        "secret":     1234567890
+      },
+      "validation": {
+        "slot_checksum":     "enforce",
+        "flexzone_checksum": "enforce",
+        "on_checksum_fail":  "skip",
+        "on_python_error":   "continue"
+      }
+    }
+  }
 }
