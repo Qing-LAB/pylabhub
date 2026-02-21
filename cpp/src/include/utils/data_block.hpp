@@ -1018,6 +1018,11 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     [[nodiscard]] std::string producer_uid() const noexcept;
     [[nodiscard]] std::string producer_name() const noexcept;
 
+    /// Consumer identity accessors — return what was set via find_datablock_consumer*
+    /// (i.e., ConsumerOptions::consumer_uid / consumer_name). Empty if not set.
+    [[nodiscard]] std::string consumer_uid() const noexcept;
+    [[nodiscard]] std::string consumer_name() const noexcept;
+
     // --- Heartbeat Management ---
     // Heartbeat registration and deregistration are managed automatically:
     //   - register_heartbeat() is called by find_datablock_consumer<>() at construction.

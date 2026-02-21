@@ -725,18 +725,19 @@ identity chain (hub → producer → consumers) from the SHM alone.
       fields zeroed at header creation (2026-02-20)
 - [x] All `consumer_id` → `consumer_pid` renames: `data_block.cpp`, `data_block_recovery.cpp`,
       test workers (policy enforcement, recovery scenario) — 424/424 tests pass
-- [ ] `DataBlockConfig` — add `hub_uid[40]`, `hub_name[64]`, `producer_uid[40]`, `producer_name[64]`
-- [ ] `create_datablock_producer_impl()` — write all channel identity fields into header
-- [ ] `attach_datablock_as_writer_impl()` — explicitly skip identity fields (do NOT overwrite)
-- [ ] `DataBlockConsumer` attach — claim heartbeat slot; write `consumer_uid` + `consumer_name`
-- [ ] `DataBlockConsumer` detach — zero `consumer_uid` + `consumer_name`; clear `consumer_pid`
-- [ ] `DataBlockProducer` / `DataBlockConsumer` — typed accessors `hub_uid()`, `hub_name()`,
-      `producer_uid()`, `producer_name()`
-- [ ] `hub::Producer::create()` — propagate `actor_uid` + `actor_name` into `DataBlockConfig`
-- [ ] `hub::Consumer::connect_from_parts()` — write `actor_uid` + `actor_name` to heartbeat slot
-- [ ] Update BLDS schema hash computation (layout hash changes with new fields)
-- [ ] Tests: identity round-trip create/attach (C++ and C-API); `datablock_list_consumers()`
-      reflects consumer attach/detach correctly
+- [x] `DataBlockConfig` — add `hub_uid`, `hub_name`, `producer_uid`, `producer_name` string fields
+- [x] `create_datablock_producer_impl()` — write all channel identity fields into header
+- [x] `attach_datablock_as_writer_impl()` — already safe (never initializes header; no code change needed)
+- [x] `DataBlockConsumer` attach — claim heartbeat slot; write `consumer_uid` + `consumer_name`
+      (write-before-CAS ordering; rollback on CAS failure) via `find_datablock_consumer_impl()`
+- [x] `DataBlockConsumer` detach — zero `consumer_uid` + `consumer_name` after CAS (destructor + `unregister_heartbeat()`)
+- [x] `DataBlockProducer` / `DataBlockConsumer` — typed accessors `hub_uid()`, `hub_name()`,
+      `producer_uid()`, `producer_name()`; `DataBlockConsumer` also has `consumer_uid()` / `consumer_name()`
+- [x] `ConsumerOptions` — `consumer_uid` + `consumer_name` fields; propagated through both
+      template and non-template `Consumer::connect()` to `find_datablock_consumer_impl()`
+- [x] Update BLDS schema hash: N/A — schema hash covers slot data format (FlexZone + DataBlock
+      types), not header metadata identity fields
+- [x] Tests: `ProducerChannelIdentity` + `ConsumerIdentityInShm` — 426/426 tests pass (2026-02-21)
 
 ### Phase 5 — HubConfig directory model migration
 
@@ -774,15 +775,18 @@ identity chain (hub → producer → consumers) from the SHM alone.
 
 ## Recent Completions
 
-### 2026-02-20
-- Phase 4 (partial) — C-API identity layer for `SharedMemoryHeader`:
+### 2026-02-21
+- Phase 4 complete — C-API identity layer fully implemented and tested:
   - `ConsumerHeartbeat` expanded 64→128 bytes; `consumer_id` renamed to `consumer_pid`;
-    `consumer_uid[40]` and `consumer_name[32]` added
-  - Channel identity block added (208 bytes): `hub_uid[40]`, `hub_name[64]`,
-    `producer_uid[40]`, `producer_name[64]`
+    `consumer_uid[40]` and `consumer_name[32]` added; write-before-CAS ordering
+  - Channel identity block (208 bytes): `hub_uid[40]`, `hub_name[64]`,
+    `producer_uid[40]`, `producer_name[64]`; written from `DataBlockConfig` at producer creation
   - `reserved_header` reduced 2320→1600; static_assert 4KB still holds
   - New C types: `plh_channel_identity_t`, `plh_consumer_identity_t` in `slot_rw_coordinator.h`
   - New C functions: `slot_rw_get_channel_identity()`, `slot_rw_list_consumers()` (header-ptr)
     and `datablock_get_channel_identity()`, `datablock_list_consumers()` (shm-name wrappers)
-  - All `consumer_id` → `consumer_pid` renames propagated to all call sites in src/ and tests/
-  - 424/424 tests pass
+  - `DataBlockProducer`/`DataBlockConsumer` typed accessors: `hub_uid()`, `hub_name()`,
+    `producer_uid()`, `producer_name()`; consumer also has `consumer_uid()` / `consumer_name()`
+  - `ConsumerOptions`: `consumer_uid` + `consumer_name` propagated through both connect paths
+  - All `consumer_id` → `consumer_pid` renames propagated to all call sites
+  - 426/426 tests pass (2 new: `ProducerChannelIdentity`, `ConsumerIdentityInShm`)

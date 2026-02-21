@@ -1957,6 +1957,51 @@ int DataBlockProducer::reset_metrics() noexcept
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
 }
 
+// ─── Channel Identity Accessors (DataBlockProducer) ───
+
+namespace
+{
+std::string read_id_field(const char *field, size_t max_len) noexcept
+{
+    size_t len = strnlen(field, max_len);
+    return std::string(field, len);
+}
+} // anonymous namespace
+
+std::string DataBlockProducer::hub_uid() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->hub_uid, sizeof(h->hub_uid)) : std::string{};
+}
+
+std::string DataBlockProducer::hub_name() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->hub_name, sizeof(h->hub_name)) : std::string{};
+}
+
+std::string DataBlockProducer::producer_uid() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid))
+                          : std::string{};
+}
+
+std::string DataBlockProducer::producer_name() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->producer_name, sizeof(h->producer_name))
+                          : std::string{};
+}
+
 // ============================================================================
 // Structure Re-Mapping API (Placeholder)
 // ============================================================================
@@ -2809,6 +2854,10 @@ void DataBlockConsumer::unregister_heartbeat(int slot)
             expected, 0, std::memory_order_acq_rel))
     {
         header->active_consumer_count.fetch_sub(1, std::memory_order_relaxed);
+        std::memset(header->consumer_heartbeats[slot].consumer_uid, 0,
+                    sizeof(header->consumer_heartbeats[slot].consumer_uid));
+        std::memset(header->consumer_heartbeats[slot].consumer_name, 0,
+                    sizeof(header->consumer_heartbeats[slot].consumer_name));
         pImpl->heartbeat_slot = -1;
     }
 }
@@ -2831,6 +2880,56 @@ int DataBlockConsumer::reset_metrics() noexcept
     }
     SharedMemoryHeader *header = pImpl->dataBlock->header();
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
+}
+
+// ─── Channel Identity Accessors (DataBlockConsumer) ───
+
+std::string DataBlockConsumer::hub_uid() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->hub_uid, sizeof(h->hub_uid)) : std::string{};
+}
+
+std::string DataBlockConsumer::hub_name() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->hub_name, sizeof(h->hub_name)) : std::string{};
+}
+
+std::string DataBlockConsumer::producer_uid() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid))
+                          : std::string{};
+}
+
+std::string DataBlockConsumer::producer_name() const noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+        return {};
+    auto *h = pImpl->dataBlock->header();
+    return (h != nullptr) ? read_id_field(h->producer_name, sizeof(h->producer_name))
+                          : std::string{};
+}
+
+std::string DataBlockConsumer::consumer_uid() const noexcept
+{
+    if (pImpl == nullptr)
+        return {};
+    return read_id_field(pImpl->consumer_uid_buf, sizeof(pImpl->consumer_uid_buf));
+}
+
+std::string DataBlockConsumer::consumer_name() const noexcept
+{
+    if (pImpl == nullptr)
+        return {};
+    return read_id_field(pImpl->consumer_name_buf, sizeof(pImpl->consumer_name_buf));
 }
 
 // ============================================================================
@@ -3097,6 +3196,17 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
             std::memset(header->datablock_schema_hash, 0, detail::CHECKSUM_BYTES);
             header->schema_version = 0;
         }
+
+        // Write channel identity fields from config
+        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src) {
+            size_t len = src.size() < dst_size ? src.size() : dst_size - 1;
+            std::memcpy(dst, src.c_str(), len);
+            dst[len] = '\0';
+        };
+        write_id_str(header->hub_uid, sizeof(header->hub_uid), config.hub_uid);
+        write_id_str(header->hub_name, sizeof(header->hub_name), config.hub_name);
+        write_id_str(header->producer_uid, sizeof(header->producer_uid), config.producer_uid);
+        write_id_str(header->producer_name, sizeof(header->producer_name), config.producer_name);
     }
 
     return std::make_unique<DataBlockProducer>(std::move(impl));
@@ -3111,7 +3221,9 @@ std::unique_ptr<DataBlockConsumer>
 find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
                              const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
-                             const pylabhub::schema::SchemaInfo *datablock_schema)
+                             const pylabhub::schema::SchemaInfo *datablock_schema,
+                             const char *consumer_uid,
+                             const char *consumer_name)
 {
     if (!lifecycle_initialized())
     {
@@ -3229,6 +3341,18 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
         
         LOGGER_DEBUG("[DataBlock:{}] DataBlock schema validated: {} v{}", 
                      name, datablock_schema->name, datablock_schema->version.to_string());
+    }
+
+    // Store consumer identity before moving impl — register_heartbeat reads these
+    if (consumer_uid != nullptr)
+    {
+        std::strncpy(impl->consumer_uid_buf, consumer_uid, sizeof(impl->consumer_uid_buf) - 1);
+        impl->consumer_uid_buf[sizeof(impl->consumer_uid_buf) - 1] = '\0';
+    }
+    if (consumer_name != nullptr)
+    {
+        std::strncpy(impl->consumer_name_buf, consumer_name, sizeof(impl->consumer_name_buf) - 1);
+        impl->consumer_name_buf[sizeof(impl->consumer_name_buf) - 1] = '\0';
     }
 
     // Create consumer first, then register heartbeat

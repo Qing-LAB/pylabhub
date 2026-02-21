@@ -1,35 +1,48 @@
 {
-  "_comment": "Example consumer actor config — logs counter slots from producer_counter.",
-  "role": "consumer",
-  "channel": "lab.examples.counter",
-  "broker": "tcp://127.0.0.1:5570",
+  "_comment": "Example consumer actor — logs counter slots from producer_counter.",
+  "actor": {
+    "_comment_uid": "UID format: ACTOR-{NAME}-{8HEX}. Omit to auto-generate from 'name'.",
+    "uid":       "ACTOR-LOGGER-00000002",
+    "name":      "CounterLogger",
+    "log_level": "info"
+  },
   "script": "consumer_logger.py",
-  "slot_schema": {
-    "_comment": "Must match the producer's slot_schema fields (names + types).",
-    "packing": "natural",
-    "fields": [
-      {"name": "count", "type": "int64"},
-      {"name": "ts",    "type": "float64"}
-    ]
-  },
-  "flexzone_schema": {
-    "_comment": "Must match the producer's flexzone_schema fields.",
-    "fields": [
-      {"name": "producer_pid",  "type": "uint64"},
-      {"name": "start_time",    "type": "float64"},
-      {"name": "label",         "type": "string", "length": 32}
-    ]
-  },
-  "shm": {
-    "enabled": true,
-    "slot_count": 4,
-    "secret": 1234567890
-  },
-  "validation": {
-    "slot_checksum":     "enforce",
-    "flexzone_checksum": "enforce",
-    "on_checksum_fail":  "pass",
-    "on_python_error":   "continue"
-  },
-  "log_level": "info"
+
+  "roles": {
+    "counter_in": {
+      "kind":       "consumer",
+      "channel":    "lab.examples.counter",
+      "broker":     "tcp://127.0.0.1:5570",
+      "timeout_ms": 5000,
+      "_comment_timeout": "Call on_read(slot=None, timed_out=True) after 5 s without a slot.",
+
+      "slot_schema": {
+        "_comment": "Must match the producer's slot_schema (names + types).",
+        "packing": "natural",
+        "fields": [
+          {"name": "count", "type": "int64"},
+          {"name": "ts",    "type": "float64"}
+        ]
+      },
+      "flexzone_schema": {
+        "_comment": "Must match the producer's flexzone_schema.",
+        "fields": [
+          {"name": "producer_pid",  "type": "uint64"},
+          {"name": "start_time",    "type": "float64"},
+          {"name": "label",         "type": "string", "length": 32}
+        ]
+      },
+      "shm": {
+        "enabled":    true,
+        "slot_count": 4,
+        "secret":     1234567890
+      },
+      "validation": {
+        "slot_checksum":     "enforce",
+        "flexzone_checksum": "enforce",
+        "on_checksum_fail":  "pass",
+        "on_python_error":   "continue"
+      }
+    }
+  }
 }
