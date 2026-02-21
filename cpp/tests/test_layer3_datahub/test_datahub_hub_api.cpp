@@ -128,3 +128,19 @@ TEST_F(DatahubHubApiTest, ConsumerDestructorBye)
     auto proc = SpawnWorker("hub_api.consumer_destructor_bye", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubHubApiTest, ProducerChannelIdentity)
+{
+    // DataBlockConfig identity fields are written to SHM header at producer creation;
+    // hub_uid/hub_name/producer_uid/producer_name are readable from both producer and consumer.
+    auto proc = SpawnWorker("hub_api.producer_channel_identity", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ConsumerIdentityInShm)
+{
+    // ConsumerOptions::consumer_uid/consumer_name propagate into the heartbeat slot;
+    // DataBlockConsumer::consumer_uid()/consumer_name() return those values.
+    auto proc = SpawnWorker("hub_api.consumer_identity_in_shm", {});
+    ExpectWorkerOk(proc);
+}

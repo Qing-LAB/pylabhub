@@ -21,16 +21,16 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 ## Current Sprint Focus
 
 ### Priority 1: HubShell — Python + Admin Shell Integration
-📍 **Status**: 🟡 In Progress
+📍 **Status**: ✅ Complete (2026-02-20)
 📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
 
-6-phase plan (Phase 1 complete):
-- ✅ **Phase 1**: `HubConfig` lifecycle module + layered JSON config (`hub.default.json` / `hub.user.json`) — 424/424 tests passing (2026-02-20)
-- ✅ **Phase 2**: CMake Python env — offline fallback (`PYLABHUB_PYTHON_LOCAL_ARCHIVE`/`PYLABHUB_PYTHON_WHEELS_DIR`), `prepare_python_env` target, `requirements.txt` (2026-02-20)
-- 🔵 **Phase 3**: Remove `pylabhub-broker` standalone; fold into hubshell
-- 🔵 **Phase 4**: Python lifecycle module + pybind11 bindings
-- 🔵 **Phase 5**: Admin ZMQ shell service (local-only, token auth, exec + JSON response)
-- 🔵 **Phase 6**: hubshell.cpp full integration
+All 6 phases complete — 426/426 tests passing:
+- ✅ **Phase 1**: `HubConfig` lifecycle module + layered JSON config
+- ✅ **Phase 2**: CMake Python env (python-build-standalone 3.14, `prepare_python_env`)
+- ✅ **Phase 3**: Removed `src/broker/` standalone; BrokerService stays in pylabhub-utils
+- ✅ **Phase 4**: `PythonInterpreter` lifecycle module + pybind11 bindings
+- ✅ **Phase 5**: `AdminShell` C++ ZMQ REP lifecycle module + `hubshell_client.py`
+- ✅ **Phase 6**: `hubshell.cpp` rewrite (9 lifecycle modules, BrokerService bg thread, double-SIGINT)
 
 ### Priority 2: Test Coverage Gaps
 📍 **Status**: Mostly complete
@@ -84,12 +84,13 @@ Key tasks (backlog only):
 
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
-| Security / Identity / Provenance | 🔵 Deferred | `docs/todo/SECURITY_TODO.md` | Full design captured; 5 implementation phases; Phase 2 unblocks actor end-to-end |
-| HubShell / HubConfig | 🟡 In Progress | `docs/todo/MESSAGEHUB_TODO.md` | Phase 1 done (HubConfig lifecycle module, layered config); Phases 2–6 pending |
+| Security / Identity / Provenance | 🟡 In Progress | `docs/todo/SECURITY_TODO.md` | Phase 4 complete (SHM identity, C-API, ConsumerOptions, 426/426 tests); Phases 1–3, 5 pending |
+| Actor (pylabhub-actor) | ✅ Complete | `docs/tech_draft/ACTOR_DESIGN.md` | Multi-role actor (2026-02-21): ActorHost, ProducerRoleWorker, ConsumerRoleWorker, decorator dispatch, ctypes zero-copy schema, examples; UID format (HUB-/ACTOR-prefix enforcement + auto-gen); SharedSpinLockPy Python API (api.spinlock(idx), context manager); 426/426 tests |
+| HubShell / HubConfig | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | All 6 phases done (2026-02-20): HubConfig, Python env, broker consolidation, PythonInterpreter, AdminShell, hubshell.cpp rewrite |
 | RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor in backlog** |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 424/424 passing; remaining: slot-checksum repair, broker-coordinated recovery |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 426/426 passing; planned: Layer 4 hub+actor integration tests (log-file-based validation) |
 | Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
@@ -121,6 +122,9 @@ All detailed task tracking, completions, and phase-specific work is maintained i
 - **`docs/todo/MESSAGEHUB_TODO.md`** — Messenger integration, broker protocol
 - **`docs/todo/SECURITY_TODO.md`** — Hub vault, directory model, identity, connection policy, provenance chain
 - **`docs/todo/RECOVERY_TODO.md`** — Recovery scenarios, diagnostics improvements (to be created)
+
+### Active Design Drafts
+- **`docs/tech_draft/ACTOR_DESIGN.md`** — pylabhub-actor multi-role design (config, Python API, ctypes schema, C++ architecture, runtime costs, gap analysis)
 
 ---
 

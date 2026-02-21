@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "Multi-role actor example — sensor node that simultaneously:",
+    "  (1) publishes raw sensor measurements ('raw_out' producer role)",
+    "  (2) subscribes to setpoint commands   ('cfg_in'  consumer role)",
+    "Both roles run in separate threads; the actor has one identity (uid)."
+  ],
+  "actor": {
+    "_comment_uid": "UID format: ACTOR-{NAME}-{8HEX}. Omit to auto-generate from 'name'.",
+    "uid":       "ACTOR-SENSOR-00000003",
+    "name":      "TemperatureSensorNode",
+    "log_level": "info",
+    "_comment_auth": "Optional: uncomment to enable CurveZMQ identity authentication.",
+    "_auth": {
+      "keyfile":  "~/.pylabhub/sensor_node_001.key",
+      "password": "env:PLH_ACTOR_PASSWORD"
+    }
+  },
+  "script": "sensor_node.py",
+
+  "roles": {
+    "raw_out": {
+      "_comment": "Producer: publishes temperature measurements at 10 Hz.",
+      "kind":        "producer",
+      "channel":     "lab.sensor.temperature",
+      "broker":      "tcp://127.0.0.1:5570",
+      "interval_ms": 100,
+
+      "slot_schema": {
+        "packing": "natural",
+        "fields": [
+          {"name": "ts",        "type": "float64"},
+          {"name": "value",     "type": "float32"},
+          {"name": "flags",     "type": "uint8"},
+          {"name": "samples",   "type": "float32", "count": 8}
+        ]
+      },
+      "flexzone_schema": {
+        "fields": [
+          {"name": "device_id",   "type": "uint16"},
+          {"name": "sample_rate", "type": "uint32"},
+          {"name": "label",       "type": "string", "length": 32}
+        ]
+      },
+      "shm": {
+        "enabled":    true,
+        "slot_count": 8,
+        "secret":     9876543210
+      },
+      "validation": {
+        "slot_checksum":     "update",
+        "flexzone_checksum": "update",
+        "on_checksum_fail":  "skip",
+        "on_python_error":   "continue"
+      }
+    },
+
+    "cfg_in": {
+      "_comment": "Consumer: receives setpoint commands from a controller.",
+      "kind":       "consumer",
+      "channel":    "lab.config.setpoints",
+      "broker":     "tcp://127.0.0.1:5570",
+      "timeout_ms": 5000,
+
+      "slot_schema": {
+        "fields": [
+          {"name": "setpoint",    "type": "float32"},
+          {"name": "mode",        "type": "uint8"},
+          {"name": "sequence_id", "type": "uint32"}
+        ]
+      },
+      "shm": {
+        "enabled":    true,
+        "slot_count": 4,
+        "secret":     1122334455
+      },
+      "validation": {
+        "slot_checksum":     "enforce",
+        "on_checksum_fail":  "skip",
+        "on_python_error":   "continue"
+      }
+    }
+  }
+}

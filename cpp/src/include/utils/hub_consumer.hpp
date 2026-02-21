@@ -179,6 +179,10 @@ struct ConsumerOptions
     /// SHM config validation (nullopt = no layout check beyond secret).
     std::optional<DataBlockConfig> expected_shm_config{};
 
+    /// Consumer identity — written into the SHM heartbeat slot (empty = anonymous).
+    std::string consumer_uid{};   ///< Unique ID (hex string, max 39 chars)
+    std::string consumer_name{};  ///< Human-readable name (max 31 chars)
+
     int timeout_ms{5000};
 };
 
@@ -400,15 +404,19 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
             }
 
             // Template factory validates both schema types + expected config.
+            const char *uid  = opts.consumer_uid.empty()  ? nullptr : opts.consumer_uid.c_str();
+            const char *cnam = opts.consumer_name.empty() ? nullptr : opts.consumer_name.c_str();
             shm_consumer = find_datablock_consumer<FlexZoneT, DataBlockT>(
-                ch->shm_name(), opts.shm_shared_secret, cfg);
+                ch->shm_name(), opts.shm_shared_secret, cfg, uid, cnam);
         }
         else
         {
             // No config check requested — use impl with null schemas.
+            const char *uid  = opts.consumer_uid.empty()  ? nullptr : opts.consumer_uid.c_str();
+            const char *cnam = opts.consumer_name.empty() ? nullptr : opts.consumer_name.c_str();
             shm_consumer = find_datablock_consumer_impl(ch->shm_name(),
                                                          opts.shm_shared_secret,
-                                                         nullptr, nullptr, nullptr);
+                                                         nullptr, nullptr, nullptr, uid, cnam);
         }
         // A nullptr shm_consumer is acceptable — means secret mismatch or SHM unavailable.
         // ZMQ transport still works.
