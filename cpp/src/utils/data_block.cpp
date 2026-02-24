@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -339,6 +340,36 @@ inline bool spin_elapsed_ms_exceeded(uint64_t start_time_ns, int timeout_ms)
     // Convert threshold to nanoseconds once; compare elapsed_ns directly (no division).
     const uint64_t timeout_ns = static_cast<uint64_t>(timeout_ms) * kNanosecondsPerMillisecond;
     return pylabhub::platform::elapsed_time_ns(start_time_ns) >= timeout_ns;
+}
+
+/// Returns the SHM attach timeout in milliseconds (init handshake only, not runtime ops).
+/// Default: 5000ms. Override via PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS env var.
+/// Set to -1 for infinite wait (test environments with guaranteed cleanup only).
+inline int get_attach_timeout_ms() noexcept
+{
+    const char *env = std::getenv("PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS");
+    if (env)
+    {
+        try { return std::stoi(env); } catch (...) {}
+    }
+    return 5000;
+}
+
+/// Waits for the SHM header magic number to become valid (creator finished initializing).
+/// Uses the same spin_elapsed_ms_exceeded + backoff() pattern as all other spin loops here.
+/// @return true if magic is valid within timeout_ms, false on timeout.
+inline bool wait_for_header_magic_valid(SharedMemoryHeader *header, int timeout_ms)
+{
+    auto start_time = pylabhub::platform::monotonic_time_ns();
+    int iteration = 0;
+    while (true)
+    {
+        if (detail::is_header_magic_valid(&header->magic_number, detail::DATABLOCK_MAGIC_NUMBER))
+            return true;
+        if (spin_elapsed_ms_exceeded(start_time, timeout_ms))
+            return false;
+        backoff(iteration++);
+    }
 }
 
 /// Slot buffer pointer: base + slot_index * slot_stride_bytes (logical stride). Single place for ring-buffer slot addressing.
@@ -1202,18 +1233,8 @@ class DataBlock
         m_size = m_shm.size;
         m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
 
-        // Wait for creator to fully initialize the header (same 5 s timeout as ReadAttach).
-        const int max_wait_ms = 5000;
-        const int poll_interval_ms = 10;
-        int total_wait_ms = 0;
-        while (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER) &&
-               total_wait_ms < max_wait_ms)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
-            total_wait_ms += poll_interval_ms;
-        }
-
-        if (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER))
+        // Wait for creator to fully initialize the header.
+        if (!wait_for_header_magic_valid(m_header, get_attach_timeout_ms()))
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
@@ -1274,19 +1295,7 @@ class DataBlock
         m_header = reinterpret_cast<SharedMemoryHeader *>(m_shm.base);
 
         // Wait for producer to fully initialize the header.
-        // The magic_number being set indicates initialization is complete.
-        // Timeout for robustness against crashed producers.
-        const int max_wait_ms = 5000;
-        const int poll_interval_ms = 10;
-        int total_wait_ms = 0;
-        while (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER) &&
-               total_wait_ms < max_wait_ms)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
-            total_wait_ms += poll_interval_ms;
-        }
-
-        if (!detail::is_header_magic_valid(&m_header->magic_number, detail::DATABLOCK_MAGIC_NUMBER))
+        if (!wait_for_header_magic_valid(m_header, get_attach_timeout_ms()))
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
@@ -1701,6 +1710,16 @@ struct DataBlockProducerImpl
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
+
+    // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
+    LoopPolicy loop_policy{LoopPolicy::MaxRate};
+    uint64_t   period_ms{0};
+    ContextMetrics metrics_;
+    /// Timestamp when the previous slot acquire completed (start of the previous iteration).
+    /// Zero-initialized; set on first successful acquire.
+    ContextMetrics::Clock::time_point t_iter_start_{};
+    /// Timestamp when the current slot was acquired (for last_slot_work_us).
+    ContextMetrics::Clock::time_point t_acquire_done_{};
 };
 
 // ============================================================================
@@ -1740,6 +1759,16 @@ struct DataBlockConsumerImpl
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
+
+    // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
+    LoopPolicy loop_policy{LoopPolicy::MaxRate};
+    uint64_t   period_ms{0};
+    ContextMetrics metrics_;
+    /// Timestamp when the previous slot acquire completed (start of the previous iteration).
+    /// Zero-initialized; set on first successful acquire.
+    ContextMetrics::Clock::time_point t_iter_start_{};
+    /// Timestamp when the current slot was acquired (for last_slot_work_us).
+    ContextMetrics::Clock::time_point t_acquire_done_{};
 
     ~DataBlockConsumerImpl()
     {
@@ -1957,6 +1986,43 @@ int DataBlockProducer::reset_metrics() noexcept
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
 }
 
+// ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockProducer ────────
+
+void DataBlockProducer::set_loop_policy(LoopPolicy policy,
+                                         std::chrono::milliseconds period) noexcept
+{
+    if (pImpl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    pImpl->loop_policy = policy;
+    pImpl->period_ms   = (policy == LoopPolicy::MaxRate)
+                             ? 0ULL
+                             : static_cast<uint64_t>(period.count());
+    pImpl->metrics_.period_ms = pImpl->period_ms;
+}
+
+const ContextMetrics &DataBlockProducer::metrics() const noexcept
+{
+    static const ContextMetrics kEmpty{};
+    return (pImpl != nullptr) ? pImpl->metrics_ : kEmpty;
+}
+
+void DataBlockProducer::clear_metrics() noexcept
+{
+    if (pImpl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    const auto saved_period   = pImpl->metrics_.period_ms;
+    pImpl->metrics_            = ContextMetrics{};
+    pImpl->metrics_.period_ms  = saved_period;
+    pImpl->t_iter_start_       = {};
+    pImpl->t_acquire_done_     = {};
+}
+
 // ─── Channel Identity Accessors (DataBlockProducer) ───
 
 namespace
@@ -2085,6 +2151,9 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         return nullptr;
     }
 
+    // ── ContextMetrics: Domain 2 — iteration-start timestamp (HEP-CORE-0008) ──
+    const auto t_entry = ContextMetrics::Clock::now();
+
     const ConsumerSyncPolicy policy = header->consumer_sync_policy;
     if (policy == ConsumerSyncPolicy::Single_reader || policy == ConsumerSyncPolicy::Sync_reader)
     {
@@ -2136,6 +2205,40 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         return nullptr;
     }
 
+    // ── ContextMetrics: record successful acquisition (HEP-CORE-0008 §4.1) ────
+    {
+        const auto t_acquired = ContextMetrics::Clock::now();
+        auto &m = pImpl->metrics_;
+        const ContextMetrics::Clock::time_point t_zero{};
+        if (pImpl->t_iter_start_ != t_zero)
+        {
+            // Subsequent iteration: compute start-to-start interval.
+            const auto elapsed_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    t_acquired - pImpl->t_iter_start_).count());
+            m.last_iteration_us = elapsed_us;
+            if (elapsed_us > m.max_iteration_us)
+                m.max_iteration_us = elapsed_us;
+            m.context_elapsed_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    t_acquired - m.context_start_time).count());
+            if (pImpl->loop_policy == LoopPolicy::FixedRate && pImpl->period_ms > 0 &&
+                elapsed_us > pImpl->period_ms * 1000ULL)
+                ++m.overrun_count;
+        }
+        else
+        {
+            // First acquisition: set session start time.
+            m.context_start_time = t_acquired;
+        }
+        m.last_slot_wait_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                t_acquired - t_entry).count());
+        ++m.iteration_count;
+        pImpl->t_iter_start_  = t_acquired;
+        pImpl->t_acquire_done_ = t_acquired;
+    }
+
     auto impl = std::make_unique<SlotWriteHandleImpl>();
     impl->owner = pImpl.get();
     impl->dataBlock = pImpl->dataBlock.get();
@@ -2163,6 +2266,16 @@ bool DataBlockProducer::release_write_slot(SlotWriteHandle &handle) noexcept
         return false;
     }
     std::lock_guard<std::mutex> lock(owner->mutex);
+    // ── ContextMetrics: Domain 2 — measure work time (HEP-CORE-0008 §4.2) ────
+    {
+        const ContextMetrics::Clock::time_point t_zero{};
+        if (owner->t_iter_start_ != t_zero)
+        {
+            owner->metrics_.last_slot_work_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    ContextMetrics::Clock::now() - owner->t_iter_start_).count());
+        }
+    }
     return release_write_handle(*handle.pImpl);
 }
 
@@ -2617,6 +2730,9 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         return nullptr;
     }
 
+    // ── ContextMetrics: Domain 2 — iteration-start timestamp (HEP-CORE-0008) ──
+    const auto t_entry = ContextMetrics::Clock::now();
+
     const ConsumerSyncPolicy policy = header->consumer_sync_policy;
     auto start_time = pylabhub::platform::monotonic_time_ns();
     int iteration = 0;
@@ -2675,6 +2791,38 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     {
         release_read(rw_state, header);
         return nullptr;
+    }
+
+    // ── ContextMetrics: record successful acquisition (HEP-CORE-0008 §4.1) ────
+    {
+        const auto t_acquired = ContextMetrics::Clock::now();
+        auto &m = pImpl->metrics_;
+        const ContextMetrics::Clock::time_point t_zero{};
+        if (pImpl->t_iter_start_ != t_zero)
+        {
+            const auto elapsed_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    t_acquired - pImpl->t_iter_start_).count());
+            m.last_iteration_us = elapsed_us;
+            if (elapsed_us > m.max_iteration_us)
+                m.max_iteration_us = elapsed_us;
+            m.context_elapsed_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    t_acquired - m.context_start_time).count());
+            if (pImpl->loop_policy == LoopPolicy::FixedRate && pImpl->period_ms > 0 &&
+                elapsed_us > pImpl->period_ms * 1000ULL)
+                ++m.overrun_count;
+        }
+        else
+        {
+            m.context_start_time = t_acquired;
+        }
+        m.last_slot_wait_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                t_acquired - t_entry).count());
+        ++m.iteration_count;
+        pImpl->t_iter_start_   = t_acquired;
+        pImpl->t_acquire_done_ = t_acquired;
     }
 
     auto handle_impl = make_slot_consume_handle_impl(
@@ -2759,6 +2907,16 @@ bool DataBlockConsumer::release_consume_slot(SlotConsumeHandle &handle) noexcept
         return false;
     }
     std::lock_guard<std::recursive_mutex> lock(owner->mutex);
+    // ── ContextMetrics: Domain 2 — measure work time (HEP-CORE-0008 §4.2) ────
+    {
+        const ContextMetrics::Clock::time_point t_zero{};
+        if (owner->t_iter_start_ != t_zero)
+        {
+            owner->metrics_.last_slot_work_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    ContextMetrics::Clock::now() - owner->t_iter_start_).count());
+        }
+    }
     handle.pImpl->mark_as_consumed = true;
     return release_consume_handle(*handle.pImpl);
 }
@@ -2880,6 +3038,43 @@ int DataBlockConsumer::reset_metrics() noexcept
     }
     SharedMemoryHeader *header = pImpl->dataBlock->header();
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
+}
+
+// ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockConsumer ────────
+
+void DataBlockConsumer::set_loop_policy(LoopPolicy policy,
+                                         std::chrono::milliseconds period) noexcept
+{
+    if (pImpl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
+    pImpl->loop_policy = policy;
+    pImpl->period_ms   = (policy == LoopPolicy::MaxRate)
+                             ? 0ULL
+                             : static_cast<uint64_t>(period.count());
+    pImpl->metrics_.period_ms = pImpl->period_ms;
+}
+
+const ContextMetrics &DataBlockConsumer::metrics() const noexcept
+{
+    static const ContextMetrics kEmpty{};
+    return (pImpl != nullptr) ? pImpl->metrics_ : kEmpty;
+}
+
+void DataBlockConsumer::clear_metrics() noexcept
+{
+    if (pImpl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
+    const auto saved_period   = pImpl->metrics_.period_ms;
+    pImpl->metrics_            = ContextMetrics{};
+    pImpl->metrics_.period_ms  = saved_period;
+    pImpl->t_iter_start_       = {};
+    pImpl->t_acquire_done_     = {};
 }
 
 // ─── Channel Identity Accessors (DataBlockConsumer) ───

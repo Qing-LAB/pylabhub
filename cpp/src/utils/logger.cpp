@@ -1108,10 +1108,15 @@ void do_logger_shutdown(const char *arg)
 
 ModuleDef Logger::GetLifecycleModule()
 {
+    // Lifecycle shutdown timeout: must be >= kShutdownPollIterations * kShutdownPollIntervalMs
+    // (50 * 100 ms = 5 000 ms) to allow do_logger_shutdown() to observe the worker exit.
+    // Logger cannot depend on pylabhub::utils headers, so this constant is defined locally.
+    constexpr auto kLoggerQueueDrainTimeoutMs = std::chrono::milliseconds(5000);
+
     ModuleDef module("pylabhub::utils::Logger");
     // Using the no-argument overloads now.
     module.set_startup(&do_logger_startup);
-    module.set_shutdown(&do_logger_shutdown, std::chrono::milliseconds(5000));
+    module.set_shutdown(&do_logger_shutdown, kLoggerQueueDrainTimeoutMs);
     return module;
 }
 

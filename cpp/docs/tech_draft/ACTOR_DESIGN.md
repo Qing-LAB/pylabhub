@@ -1,6 +1,6 @@
 # pylabhub-actor Design
 
-**Status**: Implemented — 2026-02-21
+**Status**: Implemented — 2026-02-21 (UID format + SharedSpinLockPy added 2026-02-21; LoopTimingPolicy + RoleMetrics diagnostics added 2026-02-23)
 **Supersedes**: previous single-role design (legacy flat JSON format — still accepted with warning)
 
 ---
@@ -34,7 +34,7 @@ The legacy flat single-role format is still accepted with a deprecation warning.
 ```json
 {
   "actor": {
-    "uid":       "sensor_node_001",
+    "uid":       "ACTOR-SENSOR-00000003",
     "name":      "TemperatureSensor",
     "log_level": "info",
     "auth": {
@@ -91,11 +91,29 @@ The legacy flat single-role format is still accepted with a deprecation warning.
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `uid` | no | `""` | Stable unique identifier (UUID or custom string). |
-| `name` | no | `""` | Human-readable name. |
+| `uid` | no | auto-generated | Stable unique identifier. **Format**: `ACTOR-{NAME}-{8HEX}` (e.g. `ACTOR-SENSOR-9E1D4C2A`). Auto-generated from `name` if absent. Non-conforming UIDs are warned but accepted. |
+| `name` | no | `""` | Human-readable name. Used as input for auto-generated UID name component. |
 | `log_level` | no | `"info"` | `debug` / `info` / `warn` / `error` |
 | `auth.keyfile` | no | absent | Path to NaCl keypair file. Activates CurveZMQ. |
 | `auth.password` | no | absent | Passphrase. `"env:VAR"` reads `$VAR` at startup. |
+
+#### UID format
+
+UIDs follow the format `ACTOR-{NAME}-{SUFFIX}` where:
+- `{NAME}` — up to 8 uppercase alphanumeric chars derived from the human name. Non-alnum runs → single `-`; falls back to `NODE`.
+- `{SUFFIX}` — 8 uppercase hex digits from `std::random_device` (or high-res-clock+Knuth hash fallback).
+
+```
+"TemperatureSensor" → ACTOR-TEMPERAT-9E1D4C2A
+"my lab node"       → ACTOR-MYLABNO-3A7F2B1C
+(absent name)       → ACTOR-NODE-B3F12E9A
+```
+
+Generation utility: `pylabhub::uid::generate_actor_uid(name)` in `src/include/utils/uid_utils.hpp`
+(public header, included via `plh_datahub.hpp`).
+
+**HubConfig UID**: The hub identity follows a parallel format: `HUB-{NAME}-{8HEX}`.
+Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.user.json["hub"]["uid"]`.
 
 #### Per-role fields
 
@@ -103,9 +121,11 @@ The legacy flat single-role format is still accepted with a deprecation warning.
 |---|---|---|---|---|
 | `kind` | both | yes | — | `"producer"` or `"consumer"` |
 | `channel` | both | yes | — | Channel name to create/subscribe |
-| `broker` | both | no | `tcp://127.0.0.1:5570` | Broker endpoint |
-| `interval_ms` | producer | no | `0` | `0`=as fast as SHM; `N>0`=sleep N ms; `-1`=trigger_write() only |
-| `timeout_ms` | consumer | no | `-1` | `-1`=wait indefinitely; `N>0`=fire `on_read(timed_out=True)` |
+| `broker` | both | no | `tcp://127.0.0.1:5570` | Broker endpoint. Each role connects its own Messenger to this endpoint in `start()`. |
+| `broker_pubkey` | both | no | `""` (plain TCP) | Broker CurveZMQ server public key (Z85, 40 chars). Required for encrypted broker connections. Empty = no CURVE. |
+| `interval_ms` | producer | no | `0` | `0`=full throughput; `N>0`=deadline-scheduled (see `loop_timing`); `-1`=`trigger_write()` only |
+| `timeout_ms` | consumer | no | `-1` | `-1`=wait indefinitely; `N>0`=fire `on_read(timed_out=True)` on silence (see `loop_timing`) |
+| `loop_timing` | both | no | `"fixed_pace"` | Overrun policy for `interval_ms`/`timeout_ms` deadline advancement. See §3.6. |
 | `slot_schema` | both | yes* | — | ctypes field list for slot. Omit for legacy raw-bytes mode. |
 | `flexzone_schema` | both | no | absent | ctypes field list for flexzone. Absent = no flexzone for this role. |
 | `shm.enabled` | both | no | `false` | Whether to create/attach a DataBlock SHM segment. |
@@ -307,7 +327,140 @@ api.send_ctrl(data: bytes) -> bool       # ZMQ ctrl frame to producer
 api.slot_valid() -> bool                 # False when checksum failed + on_checksum_fail="pass"
 api.verify_flexzone_checksum() -> bool   # verify SHM flexzone BLAKE2b
 api.accept_flexzone_state() -> bool      # accept current flexzone as valid baseline
+
+# ── Shared spinlocks (producer and consumer, requires shm.enabled=true) ───────
+api.spinlock(index: int) -> SharedSpinLockPy   # SHM spinlock at given index (0–7)
+api.spinlock_count() -> int                    # always 8; 0 if SHM not configured
+
+# ── Diagnostics (read-only — collected by C++ host about the script) ──────────
+api.script_error_count() -> int  # Python exceptions in callbacks since role start
+api.loop_overrun_count()  -> int  # write cycles where interval_ms deadline was exceeded
+api.last_cycle_work_us()  -> int  # µs of active work in the last write cycle (producer only)
 ```
+
+### 3.5 LoopTimingPolicy — deadline scheduling for producer and consumer loops
+
+The write loop (producer) and timeout loop (consumer) use deadline-based scheduling
+rather than a simple `sleep(interval_ms)` at the top of each iteration. The deadline
+advances by one `interval_ms` (or `timeout_ms`) tick per iteration, ensuring that the
+average rate converges to the configured target regardless of callback duration.
+
+**Policy choice** (`"loop_timing"` in the role JSON):
+
+| Policy | Formula on overrun | Behaviour |
+|---|---|---|
+| `"fixed_pace"` (default) | `next = now() + interval` | Resets deadline from actual wakeup time; no catch-up burst; instantaneous rate ≤ target |
+| `"compensating"` | `next += interval` | Advances one tick regardless; fires immediately after an overrun until caught up; average rate converges to target |
+
+**On-time case** (body completed before deadline): both policies advance `next += interval` —
+equivalent because wakeup ≈ deadline.
+
+**Overrun detection**: when the timing check finds `now >= next_deadline`, no sleep is taken.
+The loop counts this as an **overrun** (`api.loop_overrun_count()` increments by 1) and the two
+policies diverge in how `next_deadline` is advanced.
+
+```python
+# Example: 100 Hz producer — detect if more than 5% of cycles are overrunning
+@actor.on_write("raw_out")
+def write(slot, fz, api):
+    total = api.loop_overrun_count() + api.script_error_count()
+    if total > 0 and total % 500 == 0:
+        api.log('warn', f"overruns={api.loop_overrun_count()} "
+                        f"work_us={api.last_cycle_work_us()}")
+    slot.ts = time.time()
+    return True
+```
+
+**Consumer timeout policy**: the same `loop_timing` field controls how `last_slot_time` is
+advanced after `on_read(timed_out=True)` fires. `"fixed_pace"` resets from the actual callback
+completion time; `"compensating"` advances by one `timeout_ms` tick.
+
+### 3.6 RoleMetrics — supervised diagnostics
+
+The Python script runs under supervision by the C++ host. The host collects diagnostic
+counters **about** the script's execution and makes them available as read-only attributes
+on the `api` object.
+
+**Design principle**: the script may observe its own health but may **not** reset or write
+these counters. This preserves the integrity of the metrics — the script cannot clear
+evidence of its own misbehaviour. Counters are reset automatically on role restart by the
+C++ host via `reset_all_role_run_metrics()`.
+
+| Getter | Who writes | When | Semantics |
+|---|---|---|---|
+| `api.script_error_count()` | C++ host | Each `py::error_already_set` catch block | Python exceptions in any callback (on_init, on_write, on_read, on_data, on_message, on_stop) |
+| `api.loop_overrun_count()` | C++ host | Each write-loop overrun | Cycles where `interval_ms` deadline was already past (no sleep taken). Producer only; 0 for consumers and when `interval_ms <= 0`. |
+| `api.last_cycle_work_us()` | C++ host | After each successful write | Microseconds from start of acquire through commit + checksum. 0 until first write. Producer only. |
+
+**All counters are per-role-run**: they reset to zero when `start()` is called. A role that
+restarts gets a clean baseline — threshold logic in the script does not need to account for
+errors from previous restart iterations.
+
+**C++ internal write interface** (never accessible from Python):
+```cpp
+api_.increment_script_errors();              // called in every callback catch block
+api_.increment_loop_overruns();              // called in the overrun else-branch
+api_.set_last_cycle_work_us(elapsed_us);     // called after each successful write
+api_.reset_all_role_run_metrics();           // called in start() before running_.store(true)
+```
+
+### 3.7 SharedSpinLockPy — cross-process spinlock for Python
+
+`api.spinlock(idx)` returns a `SharedSpinLockPy` object backed by one of the 8
+`SharedSpinLockState` slots in the SHM header. These slots are shared between all
+processes that open the same channel (producer and all consumers).
+
+All spinlock indices are pre-allocated in the SHM header — there is no reservation step.
+The user's script must agree on which index is used for which purpose (convention, not
+enforcement). The GIL is released while spinning; the lock is cross-process.
+
+```python
+# ── Context manager (preferred — always releases on exception) ─────────────────
+with api.spinlock(0):
+    flexzone.counter += 1
+    api.update_flexzone_checksum()
+
+# ── Explicit lock/unlock (for scopes that cross multiple with-blocks) ──────────
+lk = api.spinlock(1)
+lk.lock()
+try:
+    flexzone.calibration = new_value
+    api.update_flexzone_checksum()
+finally:
+    lk.unlock()
+
+# ── Non-blocking attempt ───────────────────────────────────────────────────────
+lk = api.spinlock(2)
+if lk.try_lock_for(timeout_ms=100):
+    try:
+        flexzone.status = "updating"
+    finally:
+        lk.unlock()
+
+# ── Diagnostic ─────────────────────────────────────────────────────────────────
+lk.is_locked_by_current_process()   # True while this process holds it
+```
+
+**Methods on `SharedSpinLockPy`**:
+
+| Method | Description |
+|---|---|
+| `lock()` | Acquire (blocking spin) |
+| `unlock()` | Release; raises `RuntimeError` if not held by this process |
+| `try_lock_for(timeout_ms)` | Returns `True` on success, `False` on timeout |
+| `is_locked_by_current_process()` | Diagnostic check |
+| `__enter__` / `__exit__` | Context manager support |
+
+**Lifecycle**: The `SharedSpinLockState` struct lives in SHM for the actor's lifetime.
+The returned `SharedSpinLockPy` holds a copy of `SharedSpinLock` (which stores a pointer
+to the SHM state + a 256-byte diagnostic name). Both the original and the copy refer to
+the same SHM state — any process holding the same SHM segment sees the same lock.
+
+**Use case — multi-role within one actor**: A producer role writing to `flexzone` and a
+consumer role reading from it (in the same SHM) can use spinlock 0 to serialize access.
+
+**Use case — cross-actor**: A producer actor and a separate consumer actor (different
+processes, same SHM) can synchronize via the shared spinlock for protocol-level handshake.
 
 ---
 
@@ -405,42 +558,50 @@ The Python actor system wraps `hub::Producer` in `ProducerRoleWorker`:
 namespace pylabhub::actor {
 
 // Constructed by ActorHost::start() for each configured producer role.
-// Owns hub::Producer, ctypes schema objects, and the write loop thread.
+// Owns hub::Producer, hub::Messenger (per-role), ctypes schema objects, and the write loop thread.
 class ProducerRoleWorker {
 public:
     // role_name:    matches key in JSON "roles" map
-    // role_cfg:     from ActorConfig::roles[role_name]
+    // role_cfg:     from ActorConfig::roles[role_name] — carries broker + broker_pubkey
     // actor_uid:    from ActorConfig::actor_uid
-    // messenger:    shared Messenger (one per broker endpoint)
     // shutdown:     shared shutdown flag (all roles watch this)
     // on_init_fn:   py::object from dispatch table — may be py::none()
     // on_write_fn:  py::object (required; role not activated if absent)
     // on_message_fn / on_stop_fn: optional
+    //
+    // NOTE: No messenger parameter — each worker constructs its own hub::Messenger
+    //       and calls messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)
+    //       inside start(). Failed connect logs a warning and continues (degraded mode).
     explicit ProducerRoleWorker(
         const std::string  &role_name,
         const RoleConfig   &role_cfg,
         const std::string  &actor_uid,
-        hub::Messenger     &messenger,
         std::atomic<bool>  &shutdown,
         const py::object   &on_init_fn,
         const py::object   &on_write_fn,
         const py::object   &on_message_fn,
         const py::object   &on_stop_fn);
 
-    bool start();    // build ctypes types; call on_init; start write_thread
+    bool start();    // connect messenger; build ctypes types; call on_init; start write_thread
     void stop();     // signal thread; join; call on_stop
 
     // Called by ActorRoleAPI::trigger_write() — wakes interval_ms==-1 loop
     void notify_trigger();
+
+private:
+    hub::Messenger messenger_;  // owned, per-role (value, not reference)
+    // ...
 };
 
-// One per consumer role — symmetric design.
+// One per consumer role — symmetric design (same owned Messenger pattern).
 class ConsumerRoleWorker { /* ... similar ... */ };
 
 // Entry point — manages all roles.
+// NOTE: ActorHost does NOT hold a Messenger. actor_main.cpp does NOT call
+//       GetLifecycleModule() or Messenger::get_instance(). Each worker is self-contained.
 class ActorHost {
 public:
-    explicit ActorHost(const ActorConfig &config, hub::Messenger &messenger);
+    explicit ActorHost(const ActorConfig &config);
     bool load_script(bool verbose = false);   // import Python, read dispatch table
     bool start();                             // create workers for all registered roles
     void stop();                              // stop all workers
@@ -450,6 +611,18 @@ public:
 
 } // namespace pylabhub::actor
 ```
+
+#### Messenger ownership model
+
+| Component | Messenger ownership | Who calls connect() |
+|---|---|---|
+| `HubShell` | Singleton (`Messenger::get_instance()`) | Lifecycle startup |
+| `ProducerRoleWorker` | Owned value (`hub::Messenger messenger_`) | `start()` → `role_cfg_.broker` |
+| `ConsumerRoleWorker` | Owned value (`hub::Messenger messenger_`) | `start()` → `role_cfg_.broker` |
+| `actor_main.cpp` | None | N/A — no `GetLifecycleModule()` call |
+
+ZMQ context remains process-wide via `GetZMQContextModule()`. Only the Messenger
+lifecycle (singleton) is excluded from the actor's lifecycle list.
 
 ### 4.4 ActorDispatchTable (C++ dispatch)
 
@@ -740,9 +913,247 @@ callbacks short; do not sleep inside callbacks.
 | Limitation | Impact | Mitigation |
 |---|---|---|
 | Storing `slot` beyond its callback | Silent stale data (no crash; SHM mapped) | Python read-only binding adds write protection; `from_buffer` contract is documented |
-| `interval_ms` is best-effort (no drift correction) | Cumulative drift | Use `interval_ms=0` (SHM pacing) for real-time; or `-1` + `trigger_write()` |
+| `interval_ms` overrun on slow callbacks | Body exceeds deadline → immediate next fire | `loop_timing="fixed_pace"` (default) resets deadline from now, capping rate; `"compensating"` catches up. Monitor `api.loop_overrun_count()` and `api.last_cycle_work_us()`. |
 | GIL contention with many concurrent roles | Latency spikes | Keep callbacks short; limit ~4 active roles per actor |
 | Script cannot be hot-reloaded | Restart on script change | By design; reload would require dispatch table reset |
 | Typo in role name in decorator | Role silently not activated | Startup warns; `--validate` shows activation summary |
-| Multiple brokers deferred | All roles share singleton Messenger | Each role's `broker` field is stored but current Messenger uses HubConfig endpoint |
-| `--keygen` not yet implemented | Placeholder message printed | See SECURITY_TODO Phase 5 |
+| CurveZMQ actor ↔ broker (client keypair) | Broker pubkey wired via `broker_pubkey`; actor private key loading deferred to Phase 2 | `--keygen` generates keypair; Phase 2 wires actor secret key into `Messenger::connect()` |
+| `--keygen` not yet implemented | ~~Placeholder message printed~~ | **Implemented 2026-02-21** — `zmq_curve_keypair()` + JSON keypair file |
+
+---
+
+## 11. Gap Analysis — Status After 2026-02-21 Session
+
+This section tracks what is **working**, what was **fixed in this session**, and what
+remains open.  Items marked ✅ Fixed are verified by the 426/426 test suite.
+
+### 11.1 What is ready
+
+| Component | Status | Notes |
+|---|---|---|
+| `pylabhub-broker` executable | ✅ Ready | CurveZMQ keypair; REG/DISC/DEREG; consumer tracking |
+| `pylabhub-actor` executable | ✅ Ready | Multi-role config; ctypes zero-copy schema; decorator dispatch |
+| `hub::Producer` / `hub::Consumer` C++ API | ✅ Ready | Full lifecycle; SHM ring buffer; ZMQ broadcast; HELLO/BYE |
+| Actor validation policy | ✅ Ready | slot/flexzone checksum; on_checksum_fail; on_python_error |
+| SharedSpinLockPy | ✅ Ready | Cross-process spinlock for Python; context manager |
+| UID format enforcement | ✅ Ready | HUB- / ACTOR- prefix; auto-generation; validation warning |
+| `--validate` / `--list-roles` mode | ✅ Ready | Prints ctypes layout + handler activation; exit 0 |
+| Example scripts | ✅ Ready | producer_counter.py/.json + consumer_logger.py/.json |
+| `HubShell` + `AdminShell` | ✅ Ready | Admin REPL; `channels()` JSON; startup script |
+| `HubConfig` layered JSON | ✅ Ready | hub.default.json + hub.user.json; env var overrides |
+| Demo launch scripts | ✅ Fixed 2026-02-21 | `demo.sh` (bash) + `demo.ps1` (PowerShell); not chmod+x by design |
+| `consumer_logger.py` console output | ✅ Fixed 2026-02-21 | `print()` in on_init/on_read/on_stop_c |
+| SHM cleanup on crash | ✅ Already working | `shm_unlink()` before create in data_block.cpp |
+| Schema declaration hash (Layer 2) | ✅ Fixed 2026-02-21 | `compute_schema_hash()` wired into Producer/Consumer opts |
+| `--keygen` implementation | ✅ Fixed 2026-02-21 | `zmq_curve_keypair()` + JSON keypair file; auto-creates parent dir |
+| Timeout constants unified | ✅ Fixed 2026-02-21 | `timeout_constants.hpp`; cmake-overridable; magic numbers replaced |
+
+### 11.2 Remaining open gaps
+
+| Gap | Priority | Status | Description |
+|---|---|---|---|
+| **Actor lifecycle signals** | 🔴 High | Open | No way to cleanly stop an actor from HubShell/external code other than OS signal. Need AdminShell ZMQ endpoint registration at actor startup. |
+| **CurveZMQ actor ↔ broker (server side)** | 🟢 Done | ✅ Fixed 2026-02-22 | `broker_pubkey` (Z85 40-char) added to `RoleConfig`; parsed from JSON; passed to `messenger_.connect(role_cfg_.broker, role_cfg_.broker_pubkey)` in each worker's `start()`. |
+| **CurveZMQ actor ↔ broker (client keypair)** | 🟡 Medium | Open | `auth.keyfile` / `--keygen` generates actor CURVE25519 keypair; but the actor's own secret key is not yet passed to `Messenger::connect()`. Deferred to Security Phase 2. |
+| **Multiple broker endpoints** | 🟢 Done | ✅ Fixed 2026-02-22 | Each role worker owns its own `hub::Messenger` and connects to `role.broker` in `start()`. Roles can point to different brokers. |
+| **FlexZone startup race** | 🟡 Medium | Open | Consumer may call `on_init(flexzone)` before producer writes it. Mitigation: validate checksum in `on_init`; if invalid, treat as not-ready. |
+| **Broker port conflict** | 🟡 Medium | Open | Port 5570 hardcoded in examples; no discovery fallback. |
+| **Dynamic role activation** | 🔵 Low | Open | All roles activated at start(). No runtime enable/disable. |
+| **Lua scripting** | 🔵 Low | Open | HEP-CORE-0005 proposed LuaJIT; not implemented. Python-only. |
+| **Slot throughput metrics** | 🟢 Done | ✅ Fixed 2026-02-23 | `api.script_error_count()`, `api.loop_overrun_count()`, `api.last_cycle_work_us()` — supervised read-only diagnostics via `RoleMetrics` struct. C++ host writes; Python reads. Resets on role restart. |
+| **Broker/producer crash recovery** | — | **By design: not attempted** | See §14. |
+
+---
+
+## 12. Actor Security Model — Public vs. Secret Boundary
+
+This section defines what belongs in the **public actor config** (the `.json` file safe
+to version-control) vs. the **private keyfile** (mode 600, never committed).
+
+### 12.1 Design principle
+
+The rule mirrors standard SSH/TLS practice:
+
+> **Public config** = anything needed to *establish identity or connect*, but that reveals
+> nothing that would allow impersonation.
+> **Private keyfile** = the secret that *proves* the identity claim.
+
+### 12.2 Public actor config (`actor.json`)
+
+These fields belong in the main JSON file and may be committed to a version control system:
+
+| Field | Reason |
+|---|---|
+| `actor.uid`, `actor.name` | Identity labels — public by nature |
+| `actor.log_level` | Operational setting — no security impact |
+| `actor.auth.keyfile` | Path to the keyfile — reveals nothing about the key content |
+| `actor.auth.password` | Must be `"env:PLH_ACTOR_PASSWORD"` — the env var *name* is public; the *value* is secret and never in the file |
+| `roles.*.kind`, `.channel`, `.broker` | Topology — which channels to connect to |
+| `roles.*.broker_pubkey` | Broker's CURVE25519 public key (Z85, 40 chars) — identifies the server to connect to; NOT secret (equivalent to SSH host key) |
+| `roles.*.slot_schema`, `.flexzone_schema` | Field layouts — public protocol description |
+| `roles.*.shm.*` | SHM configuration including `shm.secret` — see note below |
+| `roles.*.interval_ms`, `.timeout_ms` | Timing policy — no security impact |
+| `roles.*.validation` | Checksum policy — no security impact |
+
+**Note on `shm.secret`**: The SHM shared secret is a 64-bit integer used to prevent
+accidental cross-producer attachment; it is *not* a cryptographic secret.  It provides
+partition/namespace isolation (preventing a consumer from accidentally attaching to the
+wrong producer when multiple producers use the same channel name).  It does not provide
+confidentiality.  It may remain in the public config.  For high-security namespacing,
+move it to the keyfile (see §12.3 extension note).
+
+### 12.3 Private keyfile (`actor.key`)
+
+The keyfile is generated by `pylabhub-actor --keygen` and contains:
+
+```json
+{
+  "actor_uid":  "ACTOR-Sensor-DEADBEEF",
+  "public_key": "Z85-encoded CURVE25519 public key (40 chars)",
+  "secret_key": "Z85-encoded CURVE25519 private key (40 chars)",
+  "_note":      "Keep secret_key private."
+}
+```
+
+| Field | Why here |
+|---|---|
+| `public_key` | Included for reference (can be distributed to broker admin); the keyfile is the authoritative source |
+| `secret_key` | The CURVE25519 private key — must NEVER appear in the public config |
+
+**File security**: the keyfile should be `chmod 600`, owned by the user running the actor.
+On systems with a secrets manager (Vault, k8s Secrets), the keyfile content should be
+injected at runtime rather than stored on disk.
+
+**What the broker needs from the actor**: only the `public_key` (to whitelist the actor).
+The actor's `secret_key` never leaves the actor process.
+
+**What the actor needs from the broker**: the broker's server public key.  This is stored
+in `roles.*.broker_pubkey` (Z85, 40 chars) and is now wired to `Messenger::connect()`.
+The broker public key is NOT secret — it is the equivalent of an SSH host key that every
+client must know to verify the server.  Empty = plain TCP (no CURVE).
+
+### 12.4 Future: Argon2id password wrapping
+
+The current keyfile stores the secret key in plaintext Z85.  A future Phase 5 (SECURITY_TODO)
+will wrap the secret key with Argon2id password derivation, so the keyfile at rest is safe
+even if stolen.  The `actor.auth.password` / `"env:..."` field is already reserved for this.
+
+---
+
+## 13. Schema Validation Architecture — Three Independent Layers
+
+pylabhub uses three independent, complementary schema validation mechanisms.
+Each guards a different point in the data lifecycle.
+
+### 13.1 Overview table
+
+| Layer | Name | Where computed | When enforced | Protects against |
+|---|---|---|---|---|
+| **1 — Slot data checksum** | Per-write BLAKE2b | C++ after `on_write()` | Per slot, before consumer reads | Bit-flip / memory corruption during IPC |
+| **2 — Schema declaration hash** | BLAKE2b of field list | C++ at `start()` from JSON | At `Consumer::connect()` | Mismatched field layout between independent actor configs |
+| **3 — BLDS channel registry** | `SchemaBLDS::compute_hash()` | Broker at REG_REQ | Broker-enforced at registration | Channel schema changes while active consumers exist |
+
+### 13.2 Layer 1 — Slot data checksum
+
+**Mechanism**: after `on_write()` commits a slot, C++ calls `update_checksum_slot()` which
+writes a BLAKE2b-256 digest of the slot bytes into the SHM control zone.  On the consumer
+side, `verify_checksum_slot()` re-computes and compares before delivering the slot to Python.
+
+**Config**: `validation.slot_checksum` = `"none"` / `"update"` (default) / `"enforce"`.
+`validation.on_checksum_fail` = `"skip"` / `"pass"` (consumer policy).
+
+**What it does NOT protect**: field layout mismatches.  If both sides have valid checksums
+but different field widths, the data is checksum-correct but semantically wrong.  That is
+Layer 2's job.
+
+### 13.3 Layer 2 — Schema declaration hash
+
+**Mechanism**: `compute_schema_hash()` in `actor_host.cpp` (anonymous namespace) builds a
+canonical string from the parsed `SchemaSpec` field list (name, type, count, length) and
+hashes it with BLAKE2b-256.  The result is set on:
+- `ProducerOptions::schema_hash` — sent to broker in REG_REQ
+- `ConsumerOptions::expected_schema_hash` — validated in `Messenger::connect_channel()`
+  (lines 1116-1134 of messenger.cpp)
+
+**What triggers a mismatch**: any difference in field name, type, count, or length between
+the producer's `slot_schema` / `flexzone_schema` and the consumer's.
+
+**What it does NOT protect**: wire corruption after connect; that is Layer 1's job.
+
+**Canonical format** (for reference / debugging):
+```
+slot:name:type:count:len|name:type:count:len|...[|fz:name:type:count:len|...]
+```
+For numpy_array mode: `slot:numpy_array:dtype[:dim1:dim2:...]`
+
+### 13.4 Layer 3 — BLDS channel registry
+
+**Mechanism**: `SchemaBLDS::compute_hash()` hashes the full broker-level data schema
+descriptor.  Stored by the broker in its channel registry at producer registration.
+Returned to consumers in DISC_ACK.  Prevents a new producer from reusing a channel name
+with an incompatible schema while existing consumers are active.
+
+**What it does NOT protect**: cross-actor field layout agreement (Layer 2).
+
+### 13.5 Why all three are needed
+
+```
+Producer writes slot
+  │
+  ├─ Layer 2: computed once at start(); ensures consumer was configured with
+  │           the same field layout BEFORE the first slot is ever read.
+  │           (Config-time check — catches developer mistakes.)
+  │
+  ├─ Layer 1: per-write checksum; guards in-flight SHM from bit flips or
+  │           partial writes (hardware/OS fault protection).
+  │           (Runtime check — catches infrastructure failures.)
+  │
+  └─ Layer 3: broker registry; prevents schema drift when the producer
+              binary is replaced and channels are reused.
+              (Operational check — catches deployment mistakes.)
+```
+
+---
+
+## 14. Failure Model — What Is Recoverable and What Is Not
+
+### 14.1 Guiding principle
+
+Recovery logic is only justified when the post-crash state is **coherent enough to continue
+correctly**. When it is not — when the attempt would operate on stale, partially-valid
+information and could produce worse outcomes than a clean restart — recovery is the wrong
+abstraction. The right response is a fast, clean exit with a clear error message.
+
+This section identifies which failures fall into each category and what the correct system
+response is for each.
+
+### 14.2 Catastrophic — exit cleanly, do not attempt recovery
+
+| Failure | Why unrecoverable | Correct response |
+|---|---|---|
+| **Broker crash** | All channel registration records, consumer lists, schema hashes, heartbeat timers are lost. The broker's in-memory state cannot be reconstructed from any surviving data. Re-registering with a restarted broker would create a new, empty channel — any consumers still attached to the old SHM would never receive DISC_ACK for it. | Heartbeat timeout fires `CHANNEL_CLOSING_NOTIFY`; `on_channel_closing` callback triggers actor shutdown. Exit cleanly. Operators restart the pipeline. |
+| **Producer crash** (seen by consumer) | The SHM segment is unlinked on producer exit. The consumer holds a mapping to a segment that no longer exists or is being overwritten. There is no way to re-attach to a new producer without full re-discovery via the broker. | Consumer detects stale SHM (sequence number stall or CHANNEL_CLOSING_NOTIFY from broker). Clean exit. |
+| **Consumer crash** (seen by producer) | Already handled. Broker detects dead PID via `check_consumer_health()` (Cat 2 liveness check) and sends `CONSUMER_DIED_NOTIFY`. Producer logs and continues — it does not block on dead consumers. | Already implemented. |
+| **ZMQ context destroyed under active sockets** | Undefined behaviour. The shutdown ordering (`Messenger` → `ZMQContext`) in the lifecycle guard prevents this when lifecycle is managed. Unmanaged code paths must not destroy the context while Messenger is alive. | Lifecycle guard enforces ordering. No workaround needed in actor (no singleton Messenger). |
+
+### 14.3 Manageable — handle gracefully
+
+| Failure | Why manageable | Correct response |
+|---|---|---|
+| **Broker not reachable at startup** | No prior state to lose. Messenger connect fails → worker logs warning → actor runs in degraded mode (SHM write/read still works; no broker registration, no schema validation). | Already implemented: `messenger_.connect()` failure logs warning and continues. |
+| **Broker temporarily unreachable (transient network blip) before first REG_ACK** | Channel not yet live; no consumers. Worst case: `create_channel()` returns `nullopt`. | Producer start fails; actor logs error and skips role. Retry is at operator level (restart). |
+| **Slot checksum failure** | In-flight data corruption (hardware, partial write). Stateless per-slot check; SHM structure intact. | `on_checksum_fail` policy: `"skip"` (discard slot) or `"pass"` (deliver with `slot_valid()=false`). Already implemented. |
+| **Python callback throws** | Script bug; worker continues or stops per `on_python_error` policy. | `"continue"` (log traceback, keep running) or `"stop"` (clean exit). Already implemented. |
+| **SHM segment name collision** | Caught at `shm_open()` — producer detects and fails fast. Existing segment is inspected, not silently overwritten. | Fail fast with clear error at start. Already implemented in `data_block.cpp`. |
+
+### 14.4 Operational contract
+
+The pylabhub IPC stack is a **same-lifetime** system: broker, producers, and consumers are
+expected to start together and stop together. It is not a durable message queue or a
+persistent store. Data in flight at the time of any crash is lost. This is a deliberate
+design choice that keeps the system simple, fast, and correct.
+
+For deployments that require durability across crashes, the correct layer to add it is
+**above** pylabhub — e.g., a supervisor process that restarts the pipeline in the right
+order, or an external buffer (file, database) that the Python script writes to inside
+`on_write`. pylabhub itself does not attempt to solve this.

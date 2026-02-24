@@ -38,6 +38,8 @@ set(UTILS_SOURCES
   hub_producer.cpp
   hub_consumer.cpp
   hub_config.cpp
+  hub_identity.cpp
+  hub_vault.cpp
   data_block.cpp
   data_block_mutex.cpp
   shared_memory_spinlock.cpp

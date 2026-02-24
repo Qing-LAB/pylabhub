@@ -101,7 +101,7 @@ class ProducerRoleWorker
     explicit ProducerRoleWorker(const std::string     &role_name,
                                  const RoleConfig      &role_cfg,
                                  const std::string     &actor_uid,
-                                 hub::Messenger        &messenger,
+                                 const ActorAuthConfig &auth,
                                  std::atomic<bool>     &shutdown,
                                  const py::object      &on_init_fn,
                                  const py::object      &on_write_fn,
@@ -129,10 +129,17 @@ class ProducerRoleWorker
     /// Called by ActorRoleAPI::trigger_write() — wakes the write loop.
     void notify_trigger();
 
+    // ── PylabhubEnv context wiring (F2) ─────────────────────────────────────
+    // Called by ActorHost::start() after construction, before start().
+    void set_env_actor_name(const std::string &n) { api_.set_actor_name(n); }
+    void set_env_log_level (const std::string &l) { api_.set_log_level(l);  }
+    void set_env_script_dir(const std::string &d) { api_.set_script_dir(d); }
+
   private:
     std::string           role_name_;
     RoleConfig            role_cfg_;
-    hub::Messenger       &messenger_;
+    ActorAuthConfig       auth_;
+    hub::Messenger        messenger_;
     std::atomic<bool>    &shutdown_;
 
     std::optional<hub::Producer> producer_;
@@ -177,6 +184,12 @@ class ProducerRoleWorker
     void       call_on_init();
     void       call_on_stop();
     bool       call_on_write_(py::object &slot); ///< true = commit, false = discard
+
+    /// One step of write-loop pacing: handle event-driven trigger (interval_ms == -1),
+    /// deadline sleep/overrun (interval_ms > 0), or no-op (interval_ms == 0).
+    /// Mutates `next_deadline` in place. Returns false if the loop should exit.
+    [[nodiscard]] bool step_write_deadline_(
+        std::chrono::steady_clock::time_point &next_deadline);
 };
 
 // ============================================================================
@@ -193,7 +206,7 @@ class ConsumerRoleWorker
     explicit ConsumerRoleWorker(const std::string     &role_name,
                                  const RoleConfig      &role_cfg,
                                  const std::string     &actor_uid,
-                                 hub::Messenger        &messenger,
+                                 const ActorAuthConfig &auth,
                                  std::atomic<bool>     &shutdown,
                                  const py::object      &on_init_fn,
                                  const py::object      &on_read_fn,
@@ -209,10 +222,16 @@ class ConsumerRoleWorker
 
     [[nodiscard]] bool is_running() const noexcept { return running_.load(); }
 
+    // ── PylabhubEnv context wiring (F2) ─────────────────────────────────────
+    void set_env_actor_name(const std::string &n) { api_.set_actor_name(n); }
+    void set_env_log_level (const std::string &l) { api_.set_log_level(l);  }
+    void set_env_script_dir(const std::string &d) { api_.set_script_dir(d); }
+
   private:
     std::string           role_name_;
     RoleConfig            role_cfg_;
-    hub::Messenger       &messenger_;
+    ActorAuthConfig       auth_;
+    hub::Messenger        messenger_;
     std::atomic<bool>    &shutdown_;
 
     std::optional<hub::Consumer> consumer_;
@@ -246,6 +265,10 @@ class ConsumerRoleWorker
     void       call_on_init();
     void       call_on_stop();
     void       call_on_read_timeout_();  ///< on_read(None, fz, api, timed_out=True)
+
+    /// Check whether timeout_ms has elapsed since last_slot_time; if so, call
+    /// on_read_timeout_() and advance the baseline per LoopTimingPolicy.
+    void check_read_timeout_(std::chrono::steady_clock::time_point &last_slot_time);
 };
 
 // ============================================================================
@@ -258,7 +281,7 @@ class ConsumerRoleWorker
  *
  * Usage:
  * @code{.cpp}
- *   ActorHost host(config, messenger);
+ *   ActorHost host(config);
  *   if (!host.load_script()) return 1;
  *   if (!host.start())       return 1;
  *   host.wait_for_shutdown();
@@ -268,8 +291,7 @@ class ConsumerRoleWorker
 class ActorHost
 {
   public:
-    explicit ActorHost(const ActorConfig &config,
-                        hub::Messenger    &messenger);
+    explicit ActorHost(const ActorConfig &config);
     ~ActorHost();
 
     ActorHost(const ActorHost &) = delete;
@@ -313,7 +335,6 @@ class ActorHost
 
   private:
     ActorConfig    config_;
-    hub::Messenger &messenger_;
     std::atomic<bool> shutdown_{false};
 
     std::unordered_map<std::string,

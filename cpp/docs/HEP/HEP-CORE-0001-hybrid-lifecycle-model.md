@@ -15,7 +15,7 @@
 
 ## Implementation status
 
-All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/include/utils/module_def.hpp`, and `src/utils/lifecycle.cpp`. Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/DATAHUB_TODO.md`.
+All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/include/utils/module_def.hpp`, and `src/utils/lifecycle.cpp`. Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/TODO_MASTER.md` and `docs/todo/`.
 
 ---
 

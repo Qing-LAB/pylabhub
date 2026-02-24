@@ -97,10 +97,24 @@ class PYLABHUB_UTILS_EXPORT Messenger
 
     // ── Broker connection ──────────────────────────────────────────────────────
 
-    /** @brief Connects to the broker, starts the worker thread.
-     *  @return true if connection was established. */
+    /**
+     * @brief Connects to the broker, starts the worker thread.
+     *
+     * @param endpoint     Broker ZMQ endpoint (e.g. "tcp://127.0.0.1:5570"). Required.
+     * @param server_key   Broker CurveZMQ public key (Z85, 40 chars).
+     *                     Empty string = plain TCP (no encryption).
+     * @param client_pubkey Actor's own CurveZMQ public key (Z85, 40 chars).
+     *                     Used only when server_key is non-empty.
+     *                     Empty = generate an ephemeral keypair for this connection.
+     * @param client_seckey Actor's own CurveZMQ secret key (Z85, 40 chars).
+     *                     Must be paired with client_pubkey.
+     * @return true if connection was established.
+     */
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] bool connect(const std::string &endpoint, const std::string &server_key);
+    [[nodiscard]] bool connect(const std::string &endpoint,
+                               const std::string &server_key   = {},
+                               const std::string &client_pubkey = {},
+                               const std::string &client_seckey = {});
 
     /** @brief Closes the broker connection. Worker thread remains running. */
     void disconnect();

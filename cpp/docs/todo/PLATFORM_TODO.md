@@ -16,6 +16,18 @@ No open items. See Backlog for planned work.
 
 ## Backlog
 
+### Clang-Tidy Pass
+
+- [ ] **Full clang-tidy quality pass** — Reconfigure with `CC=clang CXX=clang++` and
+  `-DPYLABHUB_ENABLE_CLANG_TIDY=ON` for a complete static-analysis sweep. GCC build is
+  already clean; clang-tidy provides additional checks (cppcoreguidelines, modernize, etc.).
+  Infrastructure is already wired (`cmake/PlatformAndCompiler.cmake`). Run periodically or
+  before releases.
+  ```bash
+  CC=clang CXX=clang++ cmake -S . -B build-clang -DPYLABHUB_ENABLE_CLANG_TIDY=ON
+  cmake --build build-clang 2>&1 | grep -E "warning:|error:" | grep -v third_party
+  ```
+
 ### Windows (MSVC) — Known Gaps
 
 - [ ] **`/Zc:preprocessor` PUBLIC propagation audit** — Confirm that all consumers of
@@ -87,4 +99,4 @@ No open items. See Backlog for planned work.
 
 `FlexZoneT` and `DataBlockT` must be **trivially copyable** on ALL platforms.
 `std::atomic<T>` members are not allowed. Use plain POD + `std::atomic_ref<T>` at call sites.
-See `docs/DATAHUB_PROTOCOL_AND_POLICY.md` §9 for the full rationale and pattern.
+See `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` §9 for the full rationale and pattern.

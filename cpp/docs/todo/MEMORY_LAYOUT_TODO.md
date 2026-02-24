@@ -40,12 +40,23 @@
 ### Broker-Controlled Remapping
 **Status**: 🔵 Deferred (broker not ready)
 
-Per `DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`:
+Per `docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`:
 - [ ] Define broker protocol for structure remapping
 - [ ] Implement flex zone reconfiguration
 - [ ] Implement ring buffer capacity changes
 - [ ] Test producer/consumer coordination during remap
 - [ ] Document remapping guarantees and limitations
+
+### ⚠️ Code Review Finding: Public API Throws at Runtime (2026-02-21)
+**Source**: code_review_utils_2025-02-21.md item 6
+
+The following public APIs in `data_block.hpp` are callable but throw `std::runtime_error`
+at runtime because the underlying implementation is not complete:
+- `request_structure_remap(...)` — throws "not implemented"
+- `commit_structure_remap(...)` — throws "not implemented"
+
+- [ ] **Header documentation** — Add `///< NOT IMPLEMENTED — deferred, see tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` to both methods
+- [ ] **Implementation** — Requires WriteAttach path and broker protocol; blocked on broker-controlled remapping above
 
 ### Performance Optimizations
 - [ ] **4K-aligned flex zones** – Align each flex zone to page boundary

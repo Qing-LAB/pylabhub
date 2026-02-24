@@ -134,7 +134,7 @@ TEST(SanitizerTest, UBSan_DetectsNullPointerDereference)
         (void)*p;
         assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
     };
-    EXPECT_EXIT(trigger(), any_exit, "runtime error|null|SIGSEGV|signal");
+    EXPECT_EXIT(trigger(), any_exit, "runtime error:.*null.pointer");
 }
 
 #endif // PYLABHUB_SANITIZER_IS_UNDEFINED
