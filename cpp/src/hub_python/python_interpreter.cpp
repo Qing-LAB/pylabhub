@@ -23,9 +23,33 @@ namespace pylabhub
 // Global module state
 // ---------------------------------------------------------------------------
 
-static std::atomic<bool>    g_py_initialized{false};
+/**
+ * @brief Interpreter lifecycle state.
+ *
+ * Written at startup/shutdown; readable via is_interpreter_ready() for future
+ * exec() guards. Using uint8_t backing so the enum fits in std::atomic<uint8_t>.
+ */
+enum class InterpreterReadiness : uint8_t
+{
+    Uninitialized = 0, ///< Before GetLifecycleModule startup fires.
+    Initializing,      ///< Inside startup_() — interpreter starting.
+    Ready,             ///< startup_() complete; exec() may be called.
+    Degraded,          ///< Interpreter up but packages/scripts failed validation.
+    Failed,            ///< Fatal init error; exec() will throw.
+};
+
+static std::atomic<InterpreterReadiness> g_interp_state{InterpreterReadiness::Uninitialized};
+
+/// Internal accessor: true iff the interpreter is fully initialized.
+/// Reserved for future exec() guards — suppress unused-function warning.
+[[maybe_unused]] static bool is_interpreter_ready() noexcept
+{
+    return g_interp_state.load(std::memory_order_acquire)
+               == InterpreterReadiness::Ready;
+}
+
 static std::function<void()> g_shutdown_cb;
-static std::mutex            g_shutdown_cb_mu;
+static std::mutex             g_shutdown_cb_mu;
 
 // ---------------------------------------------------------------------------
 // PythonInterpreter::Impl
@@ -198,13 +222,14 @@ namespace
 {
 void do_python_startup(const char* /*arg*/)
 {
+    g_interp_state.store(InterpreterReadiness::Initializing, std::memory_order_release);
     PythonInterpreter::get_instance().startup_();
-    g_py_initialized.store(true, std::memory_order_release);
+    g_interp_state.store(InterpreterReadiness::Ready, std::memory_order_release);
 }
 
 void do_python_shutdown(const char* /*arg*/)
 {
-    g_py_initialized.store(false, std::memory_order_release);
+    g_interp_state.store(InterpreterReadiness::Uninitialized, std::memory_order_release);
     PythonInterpreter::get_instance().shutdown_();
 }
 } // namespace
@@ -216,7 +241,8 @@ utils::ModuleDef PythonInterpreter::GetLifecycleModule()
     module.add_dependency("pylabhub::utils::Logger");
     module.add_dependency("pylabhub::HubConfig");
     module.set_startup(&do_python_startup);
-    module.set_shutdown(&do_python_shutdown, std::chrono::seconds(5));
+    module.set_shutdown(&do_python_shutdown,
+                        std::chrono::milliseconds(pylabhub::kMidTimeoutMs));
     return module;
 }
 

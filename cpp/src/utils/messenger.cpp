@@ -90,24 +90,8 @@ std::string hex_decode_schema_hash(const std::string &hex_str)
     return out;
 }
 
-/// Convert ChannelPattern enum to JSON wire string.
-constexpr const char *pattern_to_wire(ChannelPattern p) noexcept
-{
-    switch (p)
-    {
-    case ChannelPattern::Pipeline: return "Pipeline";
-    case ChannelPattern::Bidir:    return "Bidir";
-    default:                       return "PubSub";
-    }
-}
-
-/// Parse ChannelPattern from JSON wire string.
-ChannelPattern pattern_from_wire(const std::string &s) noexcept
-{
-    if (s == "Pipeline") return ChannelPattern::Pipeline;
-    if (s == "Bidir")    return ChannelPattern::Bidir;
-    return ChannelPattern::PubSub;
-}
+// channel_pattern_to_str() and channel_pattern_from_str() are defined in
+// utils/channel_pattern.hpp (included via messenger.hpp). No local duplicates needed.
 } // namespace
 
 // ============================================================================
@@ -117,7 +101,9 @@ ChannelPattern pattern_from_wire(const std::string &s) noexcept
 struct ConnectCmd
 {
     std::string endpoint;
-    std::string server_key;
+    std::string server_key;    ///< Broker Z85 public key; empty = plain TCP
+    std::string client_pubkey; ///< Actor Z85 public key; empty = ephemeral (only when CURVE)
+    std::string client_seckey; ///< Actor Z85 secret key; empty = ephemeral (only when CURVE)
     std::promise<bool> result;
 };
 struct DisconnectCmd
@@ -497,32 +483,58 @@ class MessengerImpl
             cmd.result.set_value(false);
             return false;
         }
-        if (!is_valid_z85_key(cmd.server_key))
+
+        const bool use_curve = !cmd.server_key.empty();
+        if (use_curve && !is_valid_z85_key(cmd.server_key))
         {
-            LOGGER_ERROR("Messenger: Invalid broker public key format.");
+            LOGGER_ERROR("Messenger: broker_pubkey must be 40 Z85 chars or empty (plain TCP).");
             cmd.result.set_value(false);
             return false;
         }
+
         try
         {
-            std::array<char, kZ85KeyBufSize> z85_public{};
-            std::array<char, kZ85KeyBufSize> z85_secret{};
-            if (zmq_curve_keypair(z85_public.data(), z85_secret.data()) != 0)
-            {
-                LOGGER_ERROR("Messenger: Failed to generate CurveZMQ key pair.");
-                cmd.result.set_value(false);
-                return false;
-            }
-            m_client_public_key_z85 = z85_public.data();
-            m_client_secret_key_z85 = z85_secret.data();
-
             socket.emplace(get_zmq_context(), zmq::socket_type::dealer);
-            socket->set(zmq::sockopt::curve_serverkey, cmd.server_key);
-            socket->set(zmq::sockopt::curve_publickey, m_client_public_key_z85);
-            socket->set(zmq::sockopt::curve_secretkey, m_client_secret_key_z85);
+
+            if (use_curve)
+            {
+                // Resolve client keypair: use actor's own identity if provided, else ephemeral.
+                const bool have_actor_keys =
+                    is_valid_z85_key(cmd.client_pubkey) &&
+                    is_valid_z85_key(cmd.client_seckey);
+
+                if (have_actor_keys)
+                {
+                    m_client_public_key_z85 = cmd.client_pubkey;
+                    m_client_secret_key_z85 = cmd.client_seckey;
+                    LOGGER_INFO("Messenger: Using actor keypair for CurveZMQ (pubkey: {}...)",
+                                cmd.client_pubkey.substr(0, 8));
+                }
+                else
+                {
+                    std::array<char, kZ85KeyBufSize> z85_public{};
+                    std::array<char, kZ85KeyBufSize> z85_secret{};
+                    if (zmq_curve_keypair(z85_public.data(), z85_secret.data()) != 0)
+                    {
+                        LOGGER_ERROR("Messenger: Failed to generate ephemeral CurveZMQ key pair.");
+                        cmd.result.set_value(false);
+                        socket.reset();
+                        return false;
+                    }
+                    m_client_public_key_z85 = z85_public.data();
+                    m_client_secret_key_z85 = z85_secret.data();
+                    LOGGER_DEBUG("Messenger: Using ephemeral CurveZMQ keypair.");
+                }
+
+                socket->set(zmq::sockopt::curve_serverkey, cmd.server_key);
+                socket->set(zmq::sockopt::curve_publickey, m_client_public_key_z85);
+                socket->set(zmq::sockopt::curve_secretkey, m_client_secret_key_z85);
+            }
+
             socket->connect(cmd.endpoint);
             m_is_connected.store(true, std::memory_order_release);
-            LOGGER_INFO("Messenger: Connected to broker at {}.", cmd.endpoint);
+            LOGGER_INFO("Messenger: Connected to broker at {} ({}).",
+                        cmd.endpoint, use_curve ? "CurveZMQ" : "plain TCP");
             cmd.result.set_value(true);
         }
         catch (const zmq::error_t &e)
@@ -580,7 +592,7 @@ class MessengerImpl
             payload["schema_hash"]         = hex_encode_schema_hash(cmd.info.schema_hash);
             payload["schema_version"]      = cmd.info.schema_version;
             payload["has_shared_memory"]   = cmd.info.has_shared_memory;
-            payload["channel_pattern"]     = pattern_to_wire(cmd.info.pattern);
+            payload["channel_pattern"]     = channel_pattern_to_str(cmd.info.pattern);
             payload["zmq_ctrl_endpoint"]   = cmd.info.zmq_ctrl_endpoint;
             payload["zmq_data_endpoint"]   = cmd.info.zmq_data_endpoint;
             payload["zmq_pubkey"]          = cmd.info.zmq_pubkey;
@@ -921,7 +933,7 @@ class MessengerImpl
         {
             const auto deadline = std::chrono::steady_clock::now() +
                                   std::chrono::milliseconds(cmd.timeout_ms);
-            constexpr int kRetrySliceMs = 500; // per-attempt budget on retry
+            const int kRetrySlice = pylabhub::kRetrySliceMs; // per-attempt budget on retry
 
             while (true)
             {
@@ -936,7 +948,7 @@ class MessengerImpl
                 const int remaining_ms = static_cast<int>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
                         .count());
-                const int slice = std::min(remaining_ms, kRetrySliceMs);
+                const int slice = std::min(remaining_ms, kRetrySlice);
 
                 auto resp = send_disc_req(*socket, cmd.channel, slice);
                 if (!resp.has_value())
@@ -965,7 +977,7 @@ class MessengerImpl
                         hex_decode_schema_hash((*resp)["schema_hash"].get<std::string>());
                     cinfo.schema_version    = (*resp)["schema_version"].get<uint32_t>();
                     cinfo.has_shared_memory = resp->value("has_shared_memory", false);
-                    cinfo.pattern           = pattern_from_wire(
+                    cinfo.pattern           = channel_pattern_from_str(
                         resp->value("channel_pattern", std::string("PubSub")));
                     cinfo.zmq_ctrl_endpoint = resp->value("zmq_ctrl_endpoint", "");
                     cinfo.zmq_data_endpoint = resp->value("zmq_data_endpoint", "");
@@ -981,7 +993,8 @@ class MessengerImpl
                                 "retrying.",
                                 cmd.channel);
                     // Brief sleep so we don't spin-hammer the broker.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(pylabhub::kZmqPollIntervalMs));
                     continue;
                 }
                 // Other errors (CHANNEL_NOT_FOUND, etc.) — give up.
@@ -1017,7 +1030,7 @@ class MessengerImpl
             payload["schema_version"]    = cmd.schema_version;
             payload["producer_pid"]      = cmd.producer_pid;
             payload["has_shared_memory"] = cmd.has_shared_memory;
-            payload["channel_pattern"]   = pattern_to_wire(cmd.pattern);
+            payload["channel_pattern"]   = channel_pattern_to_str(cmd.pattern);
             payload["zmq_ctrl_endpoint"] = cmd.zmq_ctrl_endpoint;
             payload["zmq_data_endpoint"] = cmd.zmq_data_endpoint;
             payload["zmq_pubkey"]        = cmd.zmq_pubkey;
@@ -1249,7 +1262,10 @@ Messenger::~Messenger() = default;
 Messenger::Messenger(Messenger &&) noexcept = default;
 Messenger &Messenger::operator=(Messenger &&) noexcept = default;
 
-bool Messenger::connect(const std::string &endpoint, const std::string &server_key)
+bool Messenger::connect(const std::string &endpoint,
+                         const std::string &server_key,
+                         const std::string &client_pubkey,
+                         const std::string &client_seckey)
 {
     std::lock_guard<std::mutex> lock(pImpl->m_connect_mutex);
     if (pImpl->m_is_connected.load(std::memory_order_acquire))
@@ -1263,7 +1279,7 @@ bool Messenger::connect(const std::string &endpoint, const std::string &server_k
     }
     std::promise<bool> promise;
     auto future = promise.get_future();
-    pImpl->enqueue(ConnectCmd{endpoint, server_key, std::move(promise)});
+    pImpl->enqueue(ConnectCmd{endpoint, server_key, client_pubkey, client_seckey, std::move(promise)});
     return future.get();
 }
 

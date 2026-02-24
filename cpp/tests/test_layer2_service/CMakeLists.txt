@@ -338,6 +338,36 @@ gtest_discover_tests(test_layer2_jsonconfig
         TIMEOUT 60
 )
 
+# ============================================================================
+# Test: HubVault (pure API — no lifecycle, no worker dispatcher)
+# Note: Argon2id KDF takes ~0.5s per call; timeout set to 120s.
+# ============================================================================
+
+add_executable(test_layer2_hub_vault
+    test_hub_vault.cpp
+)
+
+target_link_libraries(test_layer2_hub_vault
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_vault)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_vault
+    SUITE_NAME "Layer2_HubVault"
+)
+layer2_require_staged_utils(test_layer2_hub_vault)
+
+gtest_discover_tests(test_layer2_hub_vault
+    PROPERTIES
+        LABELS "layer2;service;vault;security"
+        TIMEOUT 120
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")

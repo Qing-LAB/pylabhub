@@ -185,11 +185,13 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
               py::list result;
               const ActorDispatchTable &tbl = g_dispatch_table;
               const std::unordered_map<std::string, py::object> *map = nullptr;
-              if (event == "on_write")   map = &tbl.on_write;
+              if (event == "on_write")        map = &tbl.on_write;
               else if (event == "on_read")    map = &tbl.on_read;
               else if (event == "on_init")    map = &tbl.on_init;
               else if (event == "on_data")    map = &tbl.on_data;
               else if (event == "on_message") map = &tbl.on_message;
+              else if (event == "on_stop")    map = &tbl.on_stop_p;
+              else if (event == "on_stop_c")  map = &tbl.on_stop_c;
               if (map != nullptr)
                   for (const auto &[k, _v] : *map)
                       result.append(k);
@@ -245,6 +247,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
         "  log(level, msg)                 — log through the hub logger\n"
         "  uid() -> str                    — actor's own uid\n"
         "  role_name() -> str              — this role's name\n"
+        "  actor_name() -> str             — human-readable actor name\n"
+        "  channel() -> str                — channel name this role operates on\n"
+        "  broker() -> str                 — configured broker endpoint (informational)\n"
+        "  kind() -> str                   — 'producer' or 'consumer'\n"
+        "  log_level() -> str              — configured log level (debug/info/warn/error)\n"
+        "  script_dir() -> str             — absolute directory of the actor script\n"
         "  stop()                          — request actor shutdown (all roles)\n\n"
         "## Producer roles\n"
         "  broadcast(data: bytes) -> bool  — ZMQ broadcast to all consumers\n"
@@ -256,7 +264,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
         "  send_ctrl(data: bytes) -> bool  — send ctrl frame to producer\n"
         "  slot_valid() -> bool            — False if slot checksum failed\n"
         "  verify_flexzone_checksum() -> bool — verify SHM flexzone checksum\n"
-        "  accept_flexzone_state() -> bool — accept current flexzone as valid\n")
+        "  accept_flexzone_state() -> bool — accept current flexzone as valid\n\n"
+        "## Diagnostics (read-only — collected by C++ host about the script)\n"
+        "  script_error_count() -> int    — total Python exceptions in callbacks\n"
+        "  loop_overrun_count() -> int    — write cycles where interval_ms deadline was exceeded\n"
+        "  last_cycle_work_us() -> int    — µs of active work in the last write cycle\n")
 
         // Common
         .def("log",        &ActorRoleAPI::log,
@@ -266,6 +278,18 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Return the actor's unique identifier (from 'actor.uid' in the JSON config).")
         .def("role_name",  &ActorRoleAPI::role_name,
              "Return this role's name (as declared in the JSON 'roles' map).")
+        .def("actor_name", &ActorRoleAPI::actor_name,
+             "Human-readable actor name (from 'actor.name' in config).")
+        .def("channel",    &ActorRoleAPI::channel,
+             "Channel name this role operates on.")
+        .def("broker",     &ActorRoleAPI::broker,
+             "Configured broker endpoint for this role (informational; may not be live).")
+        .def("kind",       &ActorRoleAPI::kind,
+             "Role kind: 'producer' or 'consumer'.")
+        .def("log_level",  &ActorRoleAPI::log_level,
+             "Configured log level (debug/info/warn/error).")
+        .def("script_dir", &ActorRoleAPI::script_dir,
+             "Absolute path to the directory containing this actor's Python script.")
         .def("stop",       &ActorRoleAPI::stop,
              "Request actor shutdown. All roles will stop after their current callback.")
 
@@ -294,6 +318,28 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Accept the current SHM flexzone content as valid (consumer override).\n"
              "Subsequent actor-level checks compare against this snapshot.")
 
+        // Diagnostics — read-only from Python.
+        // The script is under observation by the C++ host; it may read these counters
+        // to observe its own health but cannot reset or write them. Resets happen
+        // automatically when a role restarts (api_.reset_all_metrics() in start()).
+        .def("script_error_count", &ActorRoleAPI::script_error_count,
+             "Total Python exceptions caught in any callback for this role\n"
+             "(on_init, on_write, on_read, on_data, on_message, on_stop).\n"
+             "Resets to zero when the role restarts.\n\n"
+             "Example:\n"
+             "  if api.script_error_count() > 100:\n"
+             "      api.log('error', 'too many errors — stopping')\n"
+             "      api.stop()")
+        .def("loop_overrun_count", &ActorRoleAPI::loop_overrun_count,
+             "Write cycles where the interval_ms deadline was already past at the\n"
+             "timing check (no sleep was needed — the write body exceeded interval_ms).\n"
+             "Producer-only; always 0 for consumers and when interval_ms <= 0.\n"
+             "Resets to zero when the role restarts.")
+        .def("last_cycle_work_us", &ActorRoleAPI::last_cycle_work_us,
+             "Elapsed active-work time in microseconds for the most recently completed\n"
+             "write cycle: acquire_write_slot + on_write + commit + checksum.\n"
+             "0 until the first write completes. Producer-only; always 0 for consumers.")
+
         // Shared spinlocks
         .def("spinlock", &ActorRoleAPI::spinlock, py::arg("index"),
              "Return a SharedSpinLockPy for the SHM spinlock at the given index.\n"
@@ -301,5 +347,22 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Index must be in [0, spinlock_count()). Raises ValueError if SHM not configured.")
         .def("spinlock_count", &ActorRoleAPI::spinlock_count,
              "Number of available shared spinlock slots (8 in the current layout).\n"
-             "Returns 0 if SHM is not configured for this role.");
+             "Returns 0 if SHM is not configured for this role.")
+
+        // Timing metrics (HEP-CORE-0008)
+        .def("metrics", &ActorRoleAPI::metrics,
+             "Returns a dict of timing metrics for this role.\n\n"
+             "Keys (Domains 2+3 from DataBlock Pimpl):\n"
+             "  context_elapsed_us : int — microseconds since first slot acquisition\n"
+             "  iteration_count    : int — successful slot acquisitions this run\n"
+             "  last_iteration_us  : int — start-to-start time between last two acquires (us)\n"
+             "  max_iteration_us   : int — peak start-to-start time this run (us)\n"
+             "  last_slot_wait_us  : int — time blocked waiting for a free slot (us)\n"
+             "  overrun_count      : int — acquire cycles exceeding period_ms target\n"
+             "  last_slot_work_us  : int — time from acquire to release (user code + overhead)\n"
+             "  period_ms          : int — configured target period (0 = MaxRate)\n\n"
+             "Key (Domain 4 — script supervision):\n"
+             "  script_error_count : int — unhandled Python exceptions in callbacks\n\n"
+             "All values reset when the role restarts (clear_metrics is called at start).\n"
+             "See HEP-CORE-0008 for the metric domain model.");
 }

@@ -87,6 +87,89 @@
 
 ## Coverage Gaps
 
+### Layer 4: pylabhub-actor Tests (new — 2026-02-21; updated 2026-02-23)
+**Status**: 🔵 Partial — config + metrics unit tests done; integration tests pending
+
+Unit tests live in `tests/test_layer4_actor/` (53 tests as of 2026-02-23, all passing).
+
+#### ✅ Done (unit layer — no Python init, no live actor)
+- [x] **ActorConfig parsing** — `loop_timing` (fixed_pace / compensating / default / invalid),
+  `broker_pubkey` (present / absent), `broker` endpoint, `interval_ms` / `timeout_ms`,
+  all four `validation` policy fields + defaults + invalid values, uid auto-gen,
+  non-ACTOR- uid warning (no throw), multi-role, empty roles map, all error cases
+  (missing script, missing channel, invalid kind, bad file, malformed JSON).
+- [x] **ActorRoleAPI metrics** — initial zeroes; `increment_script_errors` / `loop_overrun_count`
+  / `set_last_cycle_work_us`; `reset_all_role_run_metrics` clears all three; does not affect
+  identity fields; accumulation after reset; reset on fresh API is no-op; `slot_valid` flag;
+  identity getters round-trip; two instances are independent.
+
+#### Pending integration tests for the `pylabhub-actor` executable:
+
+- [ ] **Actor + Hub round-trip** — spawn broker + producer actor + consumer actor; verify consumer on_read receives correct typed slot data (log-file / ZMQ report-back validation)
+- [ ] **UID auto-generation** — run actor with no uid in config; verify ACTOR-{NAME}-{8HEX} format in stderr
+- [ ] **UID non-conforming warning** — run actor with old-style uid; verify warning log
+- [ ] **Schema declaration hash mismatch** — producer and consumer with different field types in slot_schema; verify consumer connect() fails with "schema mismatch" in log before any data is read (Layer 2 check — `compute_schema_hash()` in actor_host.cpp)
+- [ ] **Schema declaration hash match** — same schema on both sides; verify successful connection
+- [ ] **--keygen** — run with --keygen and keyfile path; verify JSON file created with correct fields; run again; verify file overwritten; verify missing-dir case creates parent dir
+- [ ] **Validation policy: slot_checksum enforce** — consumer verifies checksum; corrupt a slot; verify on_read NOT called (skip) or called with api.slot_valid()=false (pass)
+- [ ] **Validation policy: on_python_error stop** — on_read raises exception; verify actor exits cleanly
+- [ ] **SharedSpinLockPy** — producer and consumer both use api.spinlock(0); verify mutual exclusion via counter increment test (no lost increments)
+- [ ] **Multi-role actor** — one actor JSON with 1 producer + 1 consumer role; verify both threads start; producer writes; consumer reads
+- [ ] **interval_ms=0 producer** — verify write loop runs without delay; measure throughput
+- [ ] **timeout_ms consumer** — verify on_read(slot=None, timed_out=True) fires after timeout with no producer
+- [ ] **--validate mode** — run with --validate; verify ctypes layout printed to stdout; exit(0)
+- [ ] **Legacy flat format** — run with old-format JSON; verify deprecation warning; actor runs correctly
+
+**New scenarios from 2026-02-22 code-review fixes:**
+
+- [ ] **PylabhubEnv getters** — in on_write/on_read callback: assert `api.actor_name()`,
+  `api.channel()`, `api.kind()`, `api.broker()`, `api.log_level()`, `api.script_dir()` all
+  return correct non-empty strings matching the config JSON
+- [ ] **Schema type validation error** — producer JSON with `"type": "badtype"` in slot_schema;
+  verify actor exits at startup with message containing "unknown type" before any data is written
+- [ ] **Schema count=0 error** — producer JSON with `"count": 0` in slot_schema; verify actor
+  exits at startup with message containing "count = 0"
+- [ ] **AdminShell oversized request** — send >1 MB ZMQ payload to AdminShell REP socket;
+  verify response contains `{"error":"request too large"}`; verify subsequent requests work
+- [ ] **on_stop registered roles** — register on_stop/on_stop_c in actor script;
+  verify `_registered_roles("on_stop")` returns non-empty list (B1 regression guard)
+- [ ] **LoopTimingPolicy fixed_pace** — producer with `"loop_timing":"fixed_pace","interval_ms":10`;
+  measure actual call rate → ~100 Hz ±10%; `api.loop_overrun_count()` == 0 under normal load
+- [ ] **LoopTimingPolicy compensating** — same with `"loop_timing":"compensating"`; inject one
+  slow `on_write` cycle; verify overrun increments by 1; average rate recovers
+- [ ] **Metrics overrun via script** — producer with `"interval_ms":1` and `on_write` that
+  sleeps 5ms; verify `api.loop_overrun_count() > 0` after several iterations
+- [ ] **last_cycle_work_us non-zero** — producer with timed `on_write`; read
+  `api.last_cycle_work_us()` from next `on_write`; verify > 0
+
+#### LoopPolicy / ContextMetrics tests (HEP-CORE-0008 Pass 2 — no tests exist yet)
+
+These test the DataBlock Pimpl timing introduced in Pass 2. Single-process tests (no lifecycle
+init needed; use PureApiTest pattern with a created DataBlockProducer/Consumer pair):
+
+- [ ] **ContextMetrics zero on creation** — fresh producer/consumer: all counters 0,
+  `context_start_time == time_point{}`, `period_ms == 0`
+  — `tests/test_layer3_datahub/test_datahub_context_metrics.cpp`
+- [ ] **iteration_count increments** — acquire/release 5 slots; verify `iteration_count == 5`
+- [ ] **last_slot_work_us non-zero** — acquire, sleep 1ms, release; verify `last_slot_work_us >= 1000`
+- [ ] **last_iteration_us measured** — two back-to-back acquires with 2ms sleep between;
+  verify `last_iteration_us >= 2000`
+- [ ] **max_iteration_us tracks peak** — fast acquire, slow acquire (sleep between); verify
+  `max_iteration_us >= slow_us && last_iteration_us == fast_us` after fast acquire
+- [ ] **context_elapsed_us monotonic** — 3 acquires 1ms apart; verify `context_elapsed_us`
+  increases and ≥ 2ms after third acquire
+- [ ] **FixedRate overrun_count** — `set_loop_policy(FixedRate, 1ms)`; acquire, sleep 5ms, acquire;
+  verify `overrun_count == 1`
+- [ ] **MaxRate no overrun** — `set_loop_policy(MaxRate)`; rapid acquires; verify `overrun_count == 0`
+- [ ] **clear_metrics resets** — accumulate counters, call `clear_metrics()`, verify all 0
+  except `period_ms` preserved
+- [ ] **set_loop_policy updates period_ms** — `set_loop_policy(FixedRate, 10ms)`; verify
+  `metrics().period_ms == 10`
+- [ ] **ctx.metrics() pass-through** — via `with_transaction`, verify `ctx.metrics()` returns
+  same ref as `producer.metrics()`
+- [ ] **api.metrics() dict keys** — spawn actor with `interval_ms > 0`; verify all keys present
+  and `period_ms == interval_ms`; `iteration_count > 0` after 3+ iterations
+
 ### High Priority
 - [ ] Consumer registration to broker (protocol not yet defined)
 - [ ] Broker schema registry tests
@@ -107,6 +190,31 @@
 ---
 
 ## Recent Completions
+
+### 2026-02-23
+- ✅ **Layer 2 tests: HubVault** (15 tests) — `tests/test_layer2_service/test_hub_vault.cpp`:
+  create/open/publish_public_key basics, file permissions (0600 vault, 0644 pubkey),
+  Z85 keypair and 64-char hex token validation, entropy (two creates differ), wrong password throws,
+  corrupted vault throws, missing vault throws, `VaultFileDoesNotContainPlaintextSecrets`,
+  `EncryptDecryptRoundTrip`, `DifferentHubUidProducesDifferentCiphertext` (cross-uid open fails).
+  No lifecycle; uses `gtest_main`; Argon2id ~0.5s/call → 120s timeout.
+  **Total: 488/488 passing** (479 pre-existing + 15 new Layer 2 HubVault tests — 1 flaky lifecycle timeout pre-existing, passes in isolation).
+- ✅ **Layer 4 tests: ActorConfig parsing** (32 tests) — `tests/test_layer4_actor/test_actor_config.cpp`:
+  `loop_timing` (fixed_pace/compensating/default/invalid), `broker_pubkey`, `broker` endpoint,
+  `interval_ms`/`timeout_ms`, all four `ValidationPolicy` fields + defaults + invalid values,
+  uid auto-gen / non-conforming (warning, no throw), multi-role, empty roles map, all error cases.
+  No lifecycle init; `LOGGER_COMPILE_LEVEL=0`.
+- ✅ **Layer 4 tests: ActorRoleAPI metrics** (21 tests) — `tests/test_layer4_actor/test_actor_role_metrics.cpp`:
+  initial-zero invariant, `increment_script_errors`, `increment_loop_overruns`,
+  `set_last_cycle_work_us`, `reset_all_role_run_metrics` (all 3 counters; does not reset identity
+  fields; accumulation after reset; no-op on fresh API), `slot_valid` flag, all identity getters,
+  instance independence. All inline methods; no Python interpreter init.
+  **Total: 479/479 passing** (426 pre-existing + 53 new Layer 4 tests).
+
+### 2026-02-21 (gap-fixing session)
+- ✅ **426/426 tests pass** — no regressions after all gap-fix changes (demo scripts, --keygen, schema hash, timeout constants)
+- ✅ **Layer 4 test gap identified** — actor integration test plan updated with schema hash mismatch test and --keygen test
+- ✅ **426/426 tests pass** — no regressions after pylabhub-actor, UID enforcement, SharedSpinLockPy additions (earlier in same day)
 
 ### 2026-02-17 (Integrity validation tests)
 - ✅ **Integrity repair test suite** (`test_datahub_integrity_repair.cpp` + workers) — 3 tests:
@@ -164,7 +272,7 @@
     `tests/test_layer3_datahub/workers/datahub_c_api_draining_workers.cpp`
 - ✅ Proved DRAINING structurally unreachable for Single_reader / Sync_reader
   (ring-full check before fetch_add creates arithmetic barrier) — documented in
-  `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
+  `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
 
 ### 2026-02-14
 - ✅ Writer timeout metrics split test (lock vs reader timeout)

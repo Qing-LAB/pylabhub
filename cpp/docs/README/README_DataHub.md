@@ -8,11 +8,11 @@
 
 | Need | Document |
 |------|----------|
-| **What to do next / checklist** | **`docs/DATAHUB_TODO.md`** (single execution plan) |
+| **What to do next / checklist** | **`docs/TODO_MASTER.md`** (single execution plan) |
 | **How to implement / patterns** | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
-| **Design spec (authoritative)** | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (implementation status there syncs with DATAHUB_TODO) |
+| **Design spec (authoritative)** | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (implementation status there syncs with TODO_MASTER) |
 | **What’s in the HEP / document guide** | This file (§ Document guide below) |
-| **Test plan and Phase A–D** | **`docs/README/README_testing.md`** § DataHub and MessageHub test plan (priorities in DATAHUB_TODO) |
+| **Test plan and Phase A–D** | **`docs/README/README_testing.md`** § DataHub and MessageHub test plan (priorities in TODO_MASTER) |
 | **Design rationale / critical review** | Merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals archived in **`docs/archive/transient-2026-02-13/`** (DATAHUB_DATABLOCK_CRITICAL_REVIEW, DATAHUB_DESIGN_DISCUSSION, DATAHUB_CPP_ABSTRACTION_DESIGN, DATAHUB_POLICY_AND_SCHEMA_ANALYSIS). Code quality/refactoring: **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring (summary); full analysis in **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**. |
 
 See **`docs/DOC_STRUCTURE.md`** for the full documentation layout.
@@ -98,6 +98,6 @@ The **single authoritative spec** is **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
 | **8** Error Handling & Recovery | CLI (diagnose, force-reset, auto-recover), PID liveness, procedures |
 | **9–15** | Performance, security, schema (P9), implementation guidelines, testing, deployment, appendices |
 
-**Archived design docs** (historical only): `docs/archive/data-hub/` — CRITICAL_REVIEW, P7/P8/P9 design docs, old HEP drafts. Use **HEP-CORE-0002** and **DATAHUB_TODO.md** for current plan and status.
+**Archived design docs** (historical only): `docs/archive/data-hub/` — CRITICAL_REVIEW, P7/P8/P9 design docs, old HEP drafts. Use **HEP-CORE-0002** and **TODO_MASTER.md** for current plan and status.
 
-**Audience:** Implementers → §1, §4, §5, §12. Users → §1.2, §7, §5.4. Operators → §8, §14. Execution order and checklist → **`docs/DATAHUB_TODO.md`**.
+**Audience:** Implementers → §1, §4, §5, §12. Users → §1.2, §7, §5.4. Operators → §8, §14. Execution order and checklist → **`docs/TODO_MASTER.md`**.

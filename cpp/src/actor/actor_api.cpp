@@ -151,4 +151,53 @@ uint32_t ActorRoleAPI::spinlock_count() const noexcept
     return 0;
 }
 
+// ── Metrics (HEP-CORE-0008) ───────────────────────────────────────────────────
+
+py::dict ActorRoleAPI::metrics() const
+{
+    // Gather DataBlock Pimpl metrics (Domains 2+3) from producer or consumer SHM handle.
+    const hub::ContextMetrics *cm = nullptr;
+    hub::ContextMetrics cm_consumer_copy{};
+
+    if (producer_ != nullptr && producer_->shm() != nullptr)
+    {
+        cm = &producer_->shm()->metrics();
+    }
+    else if (consumer_ != nullptr && consumer_->shm() != nullptr)
+    {
+        cm_consumer_copy = consumer_->shm()->metrics();
+        cm = &cm_consumer_copy;
+    }
+
+    py::dict d;
+    if (cm != nullptr)
+    {
+        d["context_elapsed_us"] = py::int_(cm->context_elapsed_us);
+        d["iteration_count"]    = py::int_(cm->iteration_count);
+        d["last_iteration_us"]  = py::int_(cm->last_iteration_us);
+        d["max_iteration_us"]   = py::int_(cm->max_iteration_us);
+        d["last_slot_wait_us"]  = py::int_(cm->last_slot_wait_us);
+        d["overrun_count"]      = py::int_(cm->overrun_count);
+        d["last_slot_work_us"]  = py::int_(cm->last_slot_work_us);
+        d["period_ms"]          = py::int_(cm->period_ms);
+    }
+    else
+    {
+        // No SHM: return zeroes so Python code can always access keys unconditionally.
+        d["context_elapsed_us"] = py::int_(0);
+        d["iteration_count"]    = py::int_(0);
+        d["last_iteration_us"]  = py::int_(0);
+        d["max_iteration_us"]   = py::int_(0);
+        d["last_slot_wait_us"]  = py::int_(0);
+        d["overrun_count"]      = py::int_(0);
+        d["last_slot_work_us"]  = py::int_(0);
+        d["period_ms"]          = py::int_(0);
+    }
+
+    // Domain 4 — actor-layer RoleMetrics (always available)
+    d["script_error_count"] = py::int_(metrics_.script_errors);
+
+    return d;
+}
+
 } // namespace pylabhub::actor

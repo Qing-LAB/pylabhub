@@ -1271,7 +1271,8 @@ ModuleDef JsonConfig::GetLifecycleModule()
     module.add_dependency("pylabhub::utils::FileLock");
     module.add_dependency("pylabhub::utils::Logger");
     module.set_startup(&do_jsonconfig_startup);
-    module.set_shutdown(&do_jsonconfig_shutdown, std::chrono::milliseconds(1000));
+    module.set_shutdown(&do_jsonconfig_shutdown,
+                        std::chrono::milliseconds(pylabhub::kShortTimeoutMs));
     return module;
 }
 

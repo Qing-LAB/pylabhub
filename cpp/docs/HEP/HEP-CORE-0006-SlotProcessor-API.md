@@ -5,12 +5,21 @@
 | **HEP**          | `HEP-CORE-0006`                                            |
 | **Title**        | Pluggable Slot-Processor API for Producer and Consumer     |
 | **Author**       | Quan Qing, AI assistant                                    |
-| **Status**       | Design Ready — Pending Implementation                      |
+| **Status**       | ✅ Implemented — 2026-02-21                                |
 | **Category**     | Core                                                       |
 | **Created**      | 2026-02-19                                                 |
+| **Implemented**  | 2026-02-21 via `pylabhub-actor` executable                 |
 | **C++-Standard** | C++20                                                      |
 | **Version**      | 1.0                                                        |
 | **Depends-on**   | HEP-CORE-0002 (DataHub), Messenger/Broker layer            |
+
+> **Implementation note (2026-02-21)**: The Slot-Processor API defined here is fully
+> implemented by the `pylabhub-actor` executable (`src/actor/`). The C++ types
+> `ProducerRoleWorker` and `ConsumerRoleWorker` embody the `WriteProcessorContext` and
+> `ReadProcessorContext` concepts; the Python layer (`ActorRoleAPI`, `SharedSpinLockPy`)
+> provides the scripting surface. The `set_write_handler` / `set_read_handler` Real-time
+> mode is the mechanism used internally by the actor's per-role worker threads.
+> See `docs/tech_draft/ACTOR_DESIGN.md` for the complete design.
 
 ---
 
@@ -177,7 +186,9 @@ struct ReadProcessorContext
 
     // ── Control messaging (to producer) ─────────────────────────────────────
     /// Send a typed ctrl frame upstream to the producer.
-    void send_ctrl(std::string_view type, const void *data, size_t size);
+    bool send_ctrl(std::string_view type, const void *data, size_t size);
+    ///< Returns true if the message was enqueued successfully; false if ctrl socket
+    ///< not connected or queue full. Implementation improvement over spec (void→bool).
 
     // ── Broker channel ───────────────────────────────────────────────────────
     void report_checksum_error(int32_t slot_idx, std::string_view desc);

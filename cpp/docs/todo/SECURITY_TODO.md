@@ -677,8 +677,12 @@ Dependencies flow top-to-bottom within each phase.
 
 ### Phase 1 — Foundation (no existing code changes)
 
-- [ ] `hub_identity.hpp/cpp` — `generate_uuid4()`, `is_valid_uuid4()` (libsodium entropy)
-- [ ] `hub_vault.hpp/cpp` — `HubVault::create()`, `HubVault::open()`, `publish_public_key()`
+- [x] `hub_identity.hpp/cpp` — `generate_uuid4()`, `is_valid_uuid4()` (libsodium entropy)
+  ✅ DONE 2026-02-23 — `src/include/utils/hub_identity.hpp`, `src/utils/hub_identity.cpp`
+- [x] `hub_vault.hpp/cpp` — `HubVault::create()`, `HubVault::open()`, `publish_public_key()`
+  ✅ DONE 2026-02-23 — Argon2id(BLAKE2b-128(hub_uid)) KDF + XSalsa20-Poly1305 secretbox;
+  vault = [nonce(24)][ciphertext+MAC]; 0600 permissions; hub.pubkey written at 0644;
+  `src/include/utils/hub_vault.hpp`, `src/utils/hub_vault.cpp`
 - [ ] `pylabhub-hubshell --init` — directory creation, hub.json, vault, hub.pubkey
 - [ ] `pylabhub-hubshell <hub_dir>` — directory-based invocation, password prompt, vault open
 
@@ -774,6 +778,16 @@ identity chain (hub → producer → consumers) from the SHM alone.
 ---
 
 ## Recent Completions
+
+### 2026-02-23
+- Phase 1 (foundation) complete — `hub_identity` and `hub_vault`:
+  - `hub_identity.hpp/cpp`: `generate_uuid4()` (libsodium randombytes_buf, RFC 4122 v4),
+    `is_valid_uuid4()` format checker. No lifecycle dependency.
+  - `hub_vault.hpp/cpp`: `HubVault::create()` + `HubVault::open()` using
+    Argon2id(BLAKE2b-16(hub_uid)) KDF + XSalsa20-Poly1305 secretbox; stable broker
+    CurveZMQ keypair (zmq_curve_keypair) + 64-char hex admin token; vault = [nonce(24)][ctxt+MAC];
+    0600 vault permissions; `publish_public_key()` writes hub.pubkey at 0644.
+    Pimpl idiom, move-only, throw on any failure. 473/473 tests pass.
 
 ### 2026-02-21
 - Phase 4 complete — C-API identity layer fully implemented and tested:

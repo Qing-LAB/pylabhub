@@ -91,9 +91,19 @@ struct ShutdownOutcome
  * @brief Runs `func` on a thread with a real deadline. Returns without blocking
  *        beyond the deadline even if `func` hangs (the thread is detached on timeout).
  *
- * Unlike `std::async` + `wait_for`, detaching the thread on timeout is safe at process
- * exit (static modules) and acceptable for contaminated dynamic modules (the process
- * continues without them).
+ * @note **Design Rationale for `thread.detach()`**:
+ *       Using `detach()` is a deliberate trade-off. It prevents a misbehaving
+ *       (hanging) module shutdown from blocking the entire application finalization
+ *       process indefinitely. The alternative, `std::async`, is unsuitable because its
+ *       destructor blocks, defeating the purpose of a timeout.
+ *
+ *       **Risk**: A detached thread might continue running after its module's resources
+ *       or other dependent modules have been destroyed, leading to use-after-free
+ *       or other undefined behavior.
+ *
+ *       **Mitigation**: The `LifecycleManager` marks any module that times out as
+ *       "contaminated". This prevents any future attempts to load or interact with
+ *       the module or its dependents, reducing the impact of a runaway thread.
  *
  * @param func       The shutdown callback to invoke. Ignored if empty.
  * @param timeout    Maximum time to wait for `func` to complete.
@@ -107,9 +117,17 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func,
         return {true, false, {}};
     }
 
-    std::atomic<bool> completed{false};
-    std::exception_ptr ex_ptr{nullptr};
-    std::thread thread([&func, &completed, &ex_ptr]()
+    // Shared state lives on the heap so a detached thread can safely write to it
+    // after timedShutdown() returns. Without shared ownership, detach() + return
+    // would destroy completed/ex_ptr while the thread still holds references → UAF/UB.
+    struct SharedState
+    {
+        std::atomic<bool>  completed{false};
+        std::exception_ptr ex_ptr{nullptr};
+    };
+    auto state = std::make_shared<SharedState>();
+
+    std::thread thread([&func, state]()
                   {
                       try
                       {
@@ -117,16 +135,17 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func,
                       }
                       catch (...)
                       {
-                          ex_ptr = std::current_exception();
+                          state->ex_ptr = std::current_exception();
                       }
-                      completed.store(true, std::memory_order_release);
+                      state->completed.store(true, std::memory_order_release);
                   });
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!completed.load(std::memory_order_acquire))
+    while (!state->completed.load(std::memory_order_acquire))
     {
         if (std::chrono::steady_clock::now() >= deadline)
         {
+            // Detach: the thread keeps `state` alive via shared_ptr; no UAF.
             thread.detach();
             return {false, true, {}};
         }
@@ -136,11 +155,11 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func,
 
     thread.join();
 
-    if (ex_ptr)
+    if (state->ex_ptr)
     {
         try
         {
-            std::rethrow_exception(ex_ptr);
+            std::rethrow_exception(state->ex_ptr);
         }
         catch (const std::exception &e)
         {

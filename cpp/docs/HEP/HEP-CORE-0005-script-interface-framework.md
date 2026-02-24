@@ -1,12 +1,45 @@
 # HEP-CORE-0005: Script Interface Abstraction Framework
 
-| Property       | Value                                      |
-| -------------- | ------------------------------------------ |
-| **HEP**        | `HEP-CORE-0005`                            |
-| **Title**      | Script Interface Abstraction Framework     |
-| **Author**     | Gemini CLI Agent                           |
-| **Status**     | Draft                                      |
-| **Created**    | 2026-02-01                                 |
+| Property           | Value                                      |
+| ------------------ | ------------------------------------------ |
+| **HEP**            | `HEP-CORE-0005`                            |
+| **Title**          | Script Interface Abstraction Framework     |
+| **Author**         | Gemini CLI Agent                           |
+| **Status**         | Partially Superseded — see Implementation Note |
+| **Created**        | 2026-02-01                                 |
+| **Superseded by**  | `pylabhub-actor` concrete embedding (2026-02-21) |
+
+## Implementation Note (2026-02-21)
+
+This HEP proposed an abstract `IScriptEngine` / `IScriptContext` interface to decouple
+scripting engines from C++ hub objects. **The Python scripting goal was realized via a
+different, more pragmatic approach**: the standalone `pylabhub-actor` executable that
+directly embeds CPython via **pybind11**, rather than through the generic `IScriptEngine`
+abstraction.
+
+The key design decisions that diverged from this HEP:
+
+| HEP-0005 Proposal | Actual Implementation (`pylabhub-actor`) |
+|---|---|
+| Abstract `IScriptEngine` interface | Direct pybind11 embedding; no abstract layer |
+| `IScriptContext` for C++→script callbacks | `ActorRoleAPI` proxy passed to each callback |
+| `ScriptValue` variant for argument exchange | ctypes `LittleEndianStructure` + memoryview (zero-copy) |
+| `call_function(name, args)` generic dispatch | C++ decorator dispatch table (`unordered_map<string, py::object>`) |
+| Engine sandboxing via Lua `io.*` disable | Per-role JSON validation policy (checksum, on_error) |
+| External Python process mode (ZMQ/MsgPack) | Native embedded interpreter; ZMQ for SHM channel messaging |
+| `LuaJITScriptEngine` as first implementation | Python-only (CPython 3.14 via python-build-standalone) |
+
+**What remains valid from HEP-0005:**
+- The GIL discussion (§ Design Principles 6c) is accurate — `pylabhub-actor` holds one
+  embedded interpreter; the GIL is managed via `py::gil_scoped_acquire/release`.
+- The concurrency model (one script engine per actor process) was adopted.
+- The "External Python Processing via ZMQ/MsgPack" vision remains a future option if
+  multi-process actor federation is needed.
+- LuaJIT integration remains a future option for latency-critical embedded processing.
+
+**See also**: `docs/tech_draft/ACTOR_DESIGN.md` for the full implementation design.
+
+---
 
 ## Abstract
 

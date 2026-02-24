@@ -477,7 +477,8 @@ utils::ModuleDef HubConfig::GetLifecycleModule()
     module.add_dependency("pylabhub::utils::Logger");
     module.add_dependency("pylabhub::utils::JsonConfig");
     module.set_startup(&do_hub_config_startup);
-    module.set_shutdown(&do_hub_config_shutdown, std::chrono::milliseconds(500));
+    module.set_shutdown(&do_hub_config_shutdown,
+                        std::chrono::milliseconds(pylabhub::kShortTimeoutMs));
     return module;
 }
 

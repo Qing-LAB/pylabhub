@@ -657,7 +657,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
         return 2;
 
     // LoadModule("DynA") should fail because its startup callback throws an exception.
-    LoadModule("DynA");
+    (void)LoadModule("DynA");
     return 0;
 }
 

@@ -90,7 +90,8 @@ struct AdminShell::Impl
             {
                 // Short-timeout poll so we can check the stop flag.
                 zmq::pollitem_t items[] = {{socket.handle(), 0, ZMQ_POLLIN, 0}};
-                zmq::poll(items, 1, std::chrono::milliseconds(100));
+                zmq::poll(items, 1,
+                          std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
 
                 if (!running.load(std::memory_order_acquire))
                     break;
@@ -102,6 +103,21 @@ struct AdminShell::Impl
                 auto res = socket.recv(msg, zmq::recv_flags::dontwait);
                 if (!res)
                     continue;
+
+                // Reject oversized payloads before string construction and JSON parse
+                // (Pitfall 14: auth must not fire AFTER OOM — check size first).
+                static constexpr size_t kMaxRequestBytes = 1u << 20; // 1 MB
+                if (msg.size() > kMaxRequestBytes)
+                {
+                    LOGGER_WARN("AdminShell: oversized request ({} bytes) — rejected",
+                                msg.size());
+                    const std::string rej =
+                        nlohmann::json{{"success", false},
+                                       {"output",  ""},
+                                       {"error",   "request too large"}}.dump();
+                    socket.send(zmq::buffer(rej), zmq::send_flags::none);
+                    continue;
+                }
 
                 std::string raw(static_cast<const char*>(msg.data()), msg.size());
                 std::string reply = handle_request(raw);
@@ -237,7 +253,8 @@ utils::ModuleDef AdminShell::GetLifecycleModule()
     module.add_dependency("pylabhub::PythonInterpreter");
     module.add_dependency("ZMQContext");
     module.set_startup(&do_admin_shell_startup);
-    module.set_shutdown(&do_admin_shell_shutdown, std::chrono::seconds(5));
+    module.set_shutdown(&do_admin_shell_shutdown,
+                        std::chrono::milliseconds(pylabhub::kMidTimeoutMs));
     return module;
 }
 

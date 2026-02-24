@@ -24,6 +24,7 @@
  *       "channel":     "lab.sensor.temperature",
  *       "broker":      "tcp://127.0.0.1:5570",
  *       "interval_ms": 100,
+ *       "loop_timing": "fixed_pace",
  *       "slot_schema": {
  *         "packing": "natural",
  *         "fields": [
@@ -53,6 +54,7 @@
  *       "channel":    "lab.config.setpoints",
  *       "broker":     "tcp://127.0.0.1:5570",
  *       "timeout_ms": 5000,
+ *       "loop_timing": "fixed_pace",
  *       "slot_schema": {
  *         "fields": [{"name": "setpoint", "type": "float32"}]
  *       }
@@ -69,6 +71,9 @@
  * A deprecation warning is logged; prefer the new "roles" map format.
  */
 
+#include "utils/data_block.hpp" // hub::LoopPolicy enum (DataBlock pacing)
+
+#include <chrono>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -129,6 +134,21 @@ struct ActorAuthConfig
 {
     std::string keyfile;   ///< Path to NaCl keypair file; empty = no CURVE auth
     std::string password;  ///< Passphrase; "env:VAR" reads $VAR at startup
+
+    // Resolved at runtime by load_keypair() — never parsed from the main JSON config:
+    std::string client_pubkey;  ///< Z85 CURVE25519 public key (40 chars); empty = no client auth
+    std::string client_seckey;  ///< Z85 CURVE25519 secret key (40 chars); never stored in JSON
+
+    /**
+     * @brief Load public and secret keys from the keyfile JSON into client_pubkey / client_seckey.
+     *
+     * No-op if keyfile is empty. Logs LOGGER_WARN and returns false on any error
+     * (file not found, malformed JSON, wrong key length). Must be called after the
+     * Logger lifecycle module is initialized.
+     *
+     * @return true if keys were loaded successfully, false otherwise.
+     */
+    bool load_keypair();
 };
 
 // ============================================================================
@@ -143,21 +163,58 @@ struct RoleConfig
 {
     enum class Kind { Producer, Consumer };
 
+    /**
+     * @brief Write-loop deadline advancement policy (producer only; ignored for consumers).
+     *
+     * Controls how the next write deadline is set after each iteration completes.
+     *
+     * | Policy        | Formula                          | Behaviour on overrun            |
+     * |---------------|----------------------------------|---------------------------------|
+     * | FixedPace     | next = now() + interval          | Resets from actual wakeup time; |
+     * |               |                                  | no catch-up burst; rate ≤ target|
+     * | Compensating  | next += interval                 | Advances by one tick regardless;|
+     * |               |                                  | fires immediately after overrun;|
+     * |               |                                  | average rate converges to target|
+     *
+     * JSON: `"loop_timing": "fixed_pace"` (default) | `"compensating"`.
+     */
+    enum class LoopTimingPolicy
+    {
+        FixedPace,   ///< next_deadline = now() + interval  — safe default; no catch-up
+        Compensating ///< next_deadline += interval         — catches up after slow writes
+    };
+
     Kind        kind{Kind::Producer};
     std::string channel;
     std::string broker{"tcp://127.0.0.1:5570"};
+    /// Broker CurveZMQ public key (Z85, 40 chars). Empty = no CURVE auth.
+    std::string broker_pubkey;
 
     // ── Producer-specific ─────────────────────────────────────────────────────
     /// Write loop interval in ms.
     ///   0  = as fast as SHM slots allow (no sleep)
-    ///  >0  = sleep N ms between writes (best-effort poll)
+    ///  >0  = deadline-scheduled writes; see loop_timing for overrun policy
     ///  -1  = write only on api.trigger_write()
     int interval_ms{0};
 
+    /// Deadline advancement policy for the write loop (interval_ms > 0 only).
+    LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedPace};
+
+    // ── DataBlock LoopPolicy (HEP-CORE-0008) ──────────────────────────────────
+    /// DataBlock-layer acquire pacing policy. Controls overrun detection and
+    /// (in a future pass) the RAII SlotIterator sleep.
+    /// JSON: "loop_policy": "max_rate" | "fixed_rate"  (default: max_rate)
+    hub::LoopPolicy loop_policy{hub::LoopPolicy::MaxRate};
+
+    /// Target start-to-start period for LoopPolicy::FixedRate.
+    /// JSON: "period_ms": <int>  (0 = same as MaxRate)
+    std::chrono::milliseconds period_ms{0};
+
     // ── Consumer-specific ─────────────────────────────────────────────────────
     /// Read loop timeout in ms.
-    ///  -1  = wait indefinitely for a slot
-    ///  >0  = call on_read(slot=None, timed_out=True) after N ms of silence
+    ///  -1  = wait indefinitely for a slot (no timed_out callbacks)
+    ///  >0  = call on_read(slot=None, timed_out=True) after N ms of silence;
+    ///        see loop_timing for how the next timeout window is scheduled
     int timeout_ms{-1};
 
     // ── SHM ───────────────────────────────────────────────────────────────────

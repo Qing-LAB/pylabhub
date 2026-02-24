@@ -30,6 +30,9 @@ namespace
 {
 constexpr int kPeerPollIntervalMs  = 50;  ///< ZMQ poll timeout in peer_thread loop
 constexpr int kWriteSlotTimeoutMs  = 5000; ///< Timeout for acquiring a write slot
+/// Managed producer lifecycle shutdown: waits for DEREG, in-flight ZMQ sends, and SHM
+/// close.  Intentionally longer than kMidTimeoutMs — network operations may be in flight.
+constexpr auto kManagedProducerShutdownMs = std::chrono::milliseconds(10000);
 } // namespace
 
 // ============================================================================
@@ -814,7 +817,7 @@ pylabhub::utils::ModuleDef ManagedProducer::get_module_def()
     pylabhub::utils::ModuleDef def(module_key_);
     def.add_dependency("pylabhub::hub::DataExchangeHub");
     def.set_startup(&ManagedProducer::s_startup, module_key_);
-    def.set_shutdown(&ManagedProducer::s_shutdown, std::chrono::milliseconds(10000),
+    def.set_shutdown(&ManagedProducer::s_shutdown, kManagedProducerShutdownMs,
                      module_key_);
     return def;
 }
