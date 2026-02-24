@@ -14,7 +14,7 @@ This document outlines the architecture of the pyLabHub C++ test suite. Its goal
 ## Related Documents
 
 - [README_Versioning.md](README_Versioning.md) — Version scheme; version API tests live in `test_platform.cpp`
-- **`docs/DATAHUB_TODO.md`** — Execution order and priorities for DataHub; test checklist and Phase C/D items live there.
+- **`docs/TODO_MASTER.md`** — Execution order and priorities for DataHub; test checklist and Phase C/D items live there.
 - **`docs/IMPLEMENTATION_GUIDANCE.md`** — Testing strategy, test patterns, and **MessageHub code review** (DataHub integration).
 
 ---
@@ -591,7 +591,7 @@ See `PlatformTest.PrintStackTrace` in `tests/test_pylabhub_corelib/test_platform
 
 **Purpose:** (1) Plan the tests required for DataBlock/DataHub implementation and protocol. (2) MessageHub code review for C++20, abstraction, and DataHub integration lives in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review.
 
-**Execution order and priorities** are in **`docs/DATAHUB_TODO.md`**. This section provides test rationale and Phase A–D detail; do not use it as a competing roadmap.
+**Execution order and priorities** are in **`docs/TODO_MASTER.md`**. This section provides test rationale and Phase A–D detail; do not use it as a competing roadmap.
 
 **Cross-platform:** All tests must be runnable on every supported platform (Windows, Linux, macOS, FreeBSD). Avoid “skip on platform X” unless justified and documented.
 
@@ -632,7 +632,7 @@ DataBlock depends on these; their correctness must be covered before relying on 
 | D9 | Cross-process writer blocks on reader | P1 | ❌ Not done |
 | D10 | Cross-process multiple rounds | P2 | ❌ Not done |
 
-**Remaining:** D6 (generation mismatch assertion), D8–D10 (cross-process). See **`docs/DATAHUB_TODO.md`** for current priorities.
+**Remaining:** D6 (generation mismatch assertion), D8–D10 (cross-process). See **`docs/TODO_MASTER.md`** for current priorities.
 
 ### Test infrastructure needs
 

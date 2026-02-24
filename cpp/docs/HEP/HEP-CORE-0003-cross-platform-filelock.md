@@ -13,7 +13,7 @@
 
 ## Implementation status
 
-All described APIs are implemented in `src/include/utils/file_lock.hpp` and `src/utils/file_lock.cpp`. Two-layer locking (intra-process registry + OS `flock`/`LockFileEx`), RAII, `try_lock` returning `std::optional<FileLock>`, and timeout constructors are in use. For current plan and priorities, see `docs/DATAHUB_TODO.md`.
+All described APIs are implemented in `src/include/utils/file_lock.hpp` and `src/utils/file_lock.cpp`. Two-layer locking (intra-process registry + OS `flock`/`LockFileEx`), RAII, `try_lock` returning `std::optional<FileLock>`, and timeout constructors are in use. For current plan and priorities, see `docs/TODO_MASTER.md` and `docs/todo/`.
 
 ---
 

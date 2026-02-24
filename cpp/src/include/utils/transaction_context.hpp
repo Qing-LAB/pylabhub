@@ -313,6 +313,34 @@ class TransactionContext
     }
 
     // ====================================================================
+    // ContextMetrics (HEP-CORE-0008)
+    // ====================================================================
+
+    /**
+     * @brief Live view of per-handle timing metrics (pass-through to DataBlock Pimpl).
+     *
+     * Returns a const reference into the underlying DataBlockProducer/Consumer Pimpl storage.
+     * Valid for the lifetime of this handle. Survives across with_transaction() calls.
+     * Call clear_metrics() on the handle to reset counters between role runs.
+     *
+     * @see DataBlockProducer::metrics() / DataBlockConsumer::metrics()
+     */
+    [[nodiscard]] const ContextMetrics &metrics() const noexcept
+    {
+        static const ContextMetrics kEmpty{};
+        return m_handle ? m_handle->metrics() : kEmpty;
+    }
+
+    /**
+     * @brief Consistent steady-clock timestamp (shared with ContextMetrics).
+     * Use for manual overrun/work-time tracking when not using ctx.slots().
+     */
+    [[nodiscard]] static ContextMetrics::Clock::time_point now() noexcept
+    {
+        return ContextMetrics::Clock::now();
+    }
+
+    // ====================================================================
     // Internal Access (for SlotIterator)
     // ====================================================================
 

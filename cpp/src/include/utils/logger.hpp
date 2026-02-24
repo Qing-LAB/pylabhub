@@ -1,106 +1,48 @@
-/*******************************************************************************
+#pragma once
+/**
  * @file logger.hpp
  * @brief High-performance, asynchronous, thread-safe logging utility.
  *
  * @see src/utils/logger.cpp
  * @see tests/logger/test_basic_logging.cpp
  *
- * **Design Philosophy: Decoupled Command-Queue**
+ * ## Design: Decoupled Command-Queue
  *
- * The Logger is engineered for high-throughput applications where logging latency
- * must not impact the performance of critical application threads. It achieves
- * this using a decoupled, asynchronous architecture based on a command-queue
- * pattern.
+ * The Logger is engineered for high-throughput applications where logging
+ * latency must not impact critical application threads.
  *
- * 1.  **Asynchronous by Default**: Calls from application threads (e.g., via the
- *     `LOGGER_INFO(...)` macro) are lightweight. They simply format a log message
- *     and emplace a "command" object onto a thread-safe, lock-free queue. This
- *     is a very fast operation that avoids blocking the calling thread on slow
- *     I/O (disk, console, network, etc.).
+ * 1. **Asynchronous by Default**: Logging macro calls format a message and
+ *    emplace a command onto a lock-free queue — no blocking I/O on the caller.
  *
- * 2.  **Dedicated Worker Thread**: A single background thread is the **sole
- *     consumer** of the command queue. It is responsible for all potentially
- *     blocking operations: writing to the active sink (console, file), flushing
- *     buffers, and managing sink lifetimes (e.g., opening/closing files). This
- *     design isolates I/O latency from application logic and naturally
- *     serializes access to shared resources like file handles, eliminating the
- *     need for complex locking.
+ * 2. **Dedicated Worker Thread**: A single background thread consumes the
+ *    queue and handles all blocking I/O (console, file, syslog). Serializes
+ *    sink access without application-side locking.
  *
- * 3.  **Sink Abstraction**: A `Sink` base class defines a simple interface for
- *     writing and flushing log messages. Concrete implementations like
- *     `ConsoleSink` and `FileSink` encapsulate the details of each log
- *     destination. This makes the logger easily extensible to other outputs
- *     (e.g., network sockets, syslog) in the future.
+ * 3. **Sink Abstraction**: A `Sink` base class defines write/flush. Concrete
+ *    sinks: `ConsoleSink`, `FileSink`, `RotatingFileSink`, `SyslogSink`,
+ *    `WindowsEventLogSink`. Switched via set_console() / set_logfile() / etc.
  *
- * 4.  **Thread Safety & Ordering**: All public methods are thread-safe.
- *     Logging calls and configuration changes (e.g., `set_logfile`) from
- *     multiple threads are all treated as commands that are pushed onto the
- *     queue. The worker thread processes them in the order they were enqueued,
- *     ensuring that log messages and configuration changes are causally ordered.
+ * 4. **Thread Safety & Ordering**: All public methods are thread-safe.
+ *    Commands from multiple threads are processed in enqueue order.
  *
- * 5.  **Explicit Lifecycle Management & Graceful Shutdown**:
- *     - The Logger is a managed module within the `LifecycleManager` framework,
- *       but it no longer registers itself automatically. The user is responsible
- *       for retrieving its module definition via `Logger::GetLifecycleModule()`
- *       and registering it with a `LifecycleGuard` or `LifecycleManager`.
- *     - The worker thread is only started when `LifecycleManager::initialize()`
- *       is called, not in the `Logger`'s constructor.
- *     - Using the logger before its module is initialized has two behaviors:
- *       a. **Silent Drop**: Calling a logging macro (e.g., `LOGGER_INFO`) will
- *          do nothing and the message will be silently dropped.
- *       b. **Fatal Error**: Calling a configuration method (e.g., `set_level`,
- *          `set_logfile`, `flush`) will immediately call `std::abort()` and
- *          terminate the program with a descriptive error message.
- *     - On shutdown, `pylabhub::utils::FinalizeApp()` ensures that the
- *       logger's shutdown method is called, which gracefully flushes all
- *       pending messages before terminating the worker thread.
+ * 5. **Explicit Lifecycle Management**: Register via `GetLifecycleModule()`
+ *    and a `LifecycleGuard`. The worker thread starts only at lifecycle init.
+ *    Before init: macros silently drop; configuration calls abort().
+ *    At shutdown: all pending messages are flushed before the thread exits.
  *
- * **Usage**
- *
- * The logger is a singleton, but it must be explicitly initialized via the
- * `LifecycleManager` before use.
+ * ## Usage
  *
  * ```cpp
- * #include "utils/lifecycle.hpp"
  * #include "utils/logger.hpp"
- * #include "utils/file_lock.hpp" // Other modules may be needed
  *
- * void my_application_logic() {
- *     int user_id = 123;
- *     LOGGER_INFO("User {} logged in successfully.", user_id);
- * }
+ * pylabhub::utils::LifecycleGuard app_lifecycle({
+ *     pylabhub::utils::Logger::GetLifecycleModule(),
+ *     // ... other modules ...
+ * });
  *
- * int main() {
- *     // The user must now explicitly manage the application lifecycle.
- *     // This is typically done by creating a LifecycleGuard in main().
- *     // All required modules must be passed to its constructor.
- *     pylabhub::utils::LifecycleGuard app_lifecycle({
- *         pylabhub::utils::Logger::GetLifecycleModule(),
- *         pylabhub::utils::FileLock::GetLifecycleModule()
- *         // ... other modules ...
- *     });
- *
- *     // It is now safe to use the logger and other utilities.
- *
- *     // Change the log level at runtime.
- *     pylabhub::utils::Logger::instance().set_level(pylabhub::utils::Logger::Level::L_DEBUG);
- *     LOGGER_DEBUG("This is a debug message.");
- *
- *     my_application_logic();
- *
- *     // When `app_lifecycle` goes out of scope at the end of main(), its destructor
- *     // will automatically call `FinalizeApp()`, shutting down all modules
- *     // gracefully.
- *
- *     return 0;
- * }
+ * LOGGER_INFO("User {} logged in.", user_id);
+ * Logger::instance().set_level(Logger::Level::L_DEBUG);
  * ```
- ******************************************************************************/
-
-#pragma once
-/**
- * @file logger.hpp
- * @brief Asynchronous, thread-safe logging utility.
  */
 #include "plh_base.hpp"
 #include "lifecycle.hpp"

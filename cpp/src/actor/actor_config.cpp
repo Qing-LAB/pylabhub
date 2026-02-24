@@ -20,6 +20,51 @@ namespace pylabhub::actor
 {
 
 // ============================================================================
+// ActorAuthConfig::load_keypair
+// ============================================================================
+
+bool ActorAuthConfig::load_keypair()
+{
+    if (keyfile.empty())
+        return true; // no keyfile configured — not an error
+
+    std::ifstream f(keyfile);
+    if (!f.is_open())
+    {
+        LOGGER_WARN("[actor] auth.keyfile '{}': cannot open — actor will use ephemeral CURVE identity",
+                    keyfile);
+        return false;
+    }
+
+    nlohmann::json j;
+    try
+    {
+        j = nlohmann::json::parse(f);
+    }
+    catch (const nlohmann::json::parse_error &e)
+    {
+        LOGGER_WARN("[actor] auth.keyfile '{}': JSON parse error: {} — using ephemeral identity",
+                    keyfile, e.what());
+        return false;
+    }
+
+    const auto pub = j.value("public_key", std::string{});
+    const auto sec = j.value("secret_key", std::string{});
+
+    if (pub.size() != 40 || sec.size() != 40)
+    {
+        LOGGER_WARN("[actor] auth.keyfile '{}': public_key/secret_key must be 40-char Z85 strings "
+                    "— using ephemeral identity", keyfile);
+        return false;
+    }
+
+    client_pubkey = pub;
+    client_seckey = sec;
+    LOGGER_INFO("[actor] Loaded actor keypair from '{}' (pubkey: {}...)", keyfile, pub.substr(0, 8));
+    return true;
+}
+
+// ============================================================================
 // Parsing helpers (anonymous namespace)
 // ============================================================================
 
@@ -52,6 +97,24 @@ ValidationPolicy::OnPyError parse_on_py_error(const std::string &s)
     throw std::runtime_error(
         "Actor config: invalid 'on_python_error' = '" + s +
         "' (must be 'continue' or 'stop')");
+}
+
+RoleConfig::LoopTimingPolicy parse_loop_timing(const std::string &s)
+{
+    if (s == "fixed_pace")   return RoleConfig::LoopTimingPolicy::FixedPace;
+    if (s == "compensating") return RoleConfig::LoopTimingPolicy::Compensating;
+    throw std::runtime_error(
+        "Actor config: invalid 'loop_timing' = '" + s +
+        "' (must be 'fixed_pace' or 'compensating')");
+}
+
+hub::LoopPolicy parse_loop_policy(const std::string &s)
+{
+    if (s == "max_rate")   return hub::LoopPolicy::MaxRate;
+    if (s == "fixed_rate") return hub::LoopPolicy::FixedRate;
+    throw std::runtime_error(
+        "Actor config: invalid 'loop_policy' = '" + s +
+        "' (must be 'max_rate' or 'fixed_rate')");
 }
 
 ValidationPolicy parse_validation(const nlohmann::json &j)
@@ -102,12 +165,21 @@ RoleConfig parse_role(const std::string &role_name, const nlohmann::json &j)
 
     // broker (optional)
     rc.broker = j.value("broker", std::string{"tcp://127.0.0.1:5570"});
+    if (j.contains("broker_pubkey"))
+        rc.broker_pubkey = j.at("broker_pubkey").get<std::string>();
 
     // producer timing
     rc.interval_ms = j.value("interval_ms", int{0});
 
     // consumer timing
     rc.timeout_ms = j.value("timeout_ms", int{-1});
+
+    // loop timing policy (applies to both producer interval and consumer timeout)
+    rc.loop_timing = parse_loop_timing(j.value("loop_timing", std::string{"fixed_pace"}));
+
+    // DataBlock LoopPolicy (HEP-CORE-0008) — pacing for acquire-side overrun detection
+    rc.loop_policy = parse_loop_policy(j.value("loop_policy", std::string{"max_rate"}));
+    rc.period_ms   = std::chrono::milliseconds{j.value("period_ms", int{0})};
 
     // shm block
     if (j.contains("shm") && j["shm"].is_object())
@@ -277,10 +349,10 @@ ActorConfig ActorConfig::from_json_file(const std::string &path)
                      cfg.actor_uid.c_str());
     }
 
-    // roles map (required; at least one entry)
-    if (!j["roles"].is_object() || j["roles"].empty())
+    // roles map (object required; may be empty for keygen/auth-only configs)
+    if (j.contains("roles") && !j["roles"].is_object())
         throw std::runtime_error(
-            "Actor config: 'roles' must be a non-empty object in '" + path + "'");
+            "Actor config: 'roles' must be a JSON object in '" + path + "'");
 
     for (const auto &[role_name, role_json] : j["roles"].items())
     {

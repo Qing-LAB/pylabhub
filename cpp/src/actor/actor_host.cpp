@@ -67,13 +67,6 @@ namespace pylabhub::actor
 namespace
 {
 
-py::object try_get_attr(py::module_ &mod, const char *name)
-{
-    if (py::hasattr(mod, name))
-        return mod.attr(name);
-    return py::none();
-}
-
 bool is_callable(const py::object &obj)
 {
     return !obj.is_none() && py::bool_(py::isinstance<py::function>(obj));
@@ -161,6 +154,77 @@ py::object build_numpy_dtype(const SchemaSpec &spec)
 {
     py::module_ np = py::module_::import("numpy");
     return np.attr("dtype")(spec.numpy_dtype);
+}
+
+/// Build a deterministic canonical string for one buffer schema.
+/// Format (ctypes): "slot:name:type:count:len|name:type:count:len|..."
+/// Format (numpy):  "slot:numpy_array:dtype[:dim...]"
+void append_schema_canonical(std::string &out, const std::string &prefix,
+                              const SchemaSpec &spec)
+{
+    out += prefix;
+    if (spec.exposure == SlotExposure::NumpyArray)
+    {
+        out += "numpy_array:";
+        out += spec.numpy_dtype;
+        for (auto d : spec.numpy_shape)
+        {
+            out += ':';
+            out += std::to_string(d);
+        }
+    }
+    else
+    {
+        bool first = true;
+        for (const auto &f : spec.fields)
+        {
+            if (!first) out += '|';
+            first = false;
+            out += f.name;  out += ':';
+            out += f.type_str;  out += ':';
+            out += std::to_string(f.count);  out += ':';
+            out += std::to_string(f.length);
+        }
+    }
+}
+
+/// @brief Compute the actor-level schema layout declaration hash (Layer 2 of 3).
+///
+/// This is the second of three independent schema validation layers in pylabhub:
+///
+/// | Layer | Name                   | What it fingerprints        | When checked  |
+/// |-------|------------------------|-----------------------------|---------------|
+/// |   1   | Slot data checksum     | Slot memory content (BLAKE2b)| Per write/read|
+/// |   2   | Schema declaration hash| JSON field layout (this fn) | At connect    |
+/// |   3   | BLDS channel registry  | Channel schema registration | At REG/DISC   |
+///
+/// Layer 2 ensures that independent actor processes declared compatible field layouts
+/// in their JSON config before any data exchange begins.  A mismatch here means the
+/// Python scripts would interpret the SHM bytes with different struct overlays —
+/// silent data corruption without this check.
+///
+/// The canonical string is derived from the parsed SchemaSpec (not raw JSON), which
+/// normalises field ordering and whitespace.  Both producer and consumer parse from
+/// the same JSON schema structure, so the canonical string — and hence the hash —
+/// will be identical for compatible configs.
+///
+/// Returns raw 32-byte BLAKE2b-256 digest as std::string.
+/// Returns empty string when no schema is defined (hash enforcement disabled).
+std::string compute_schema_hash(const SchemaSpec &slot_spec, const SchemaSpec &fz_spec)
+{
+    if (!slot_spec.has_schema && !fz_spec.has_schema)
+        return {};
+
+    std::string canonical;
+    canonical.reserve(256);
+    if (slot_spec.has_schema)
+        append_schema_canonical(canonical, "slot:", slot_spec);
+    if (fz_spec.has_schema)
+        append_schema_canonical(canonical, slot_spec.has_schema ? "|fz:" : "fz:", fz_spec);
+
+    const auto hash =
+        pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+    return std::string(reinterpret_cast<const char *>(hash.data()), hash.size());
 }
 
 size_t ctypes_sizeof(const py::object &type_)
@@ -336,18 +400,18 @@ void print_layout(const SchemaSpec &slot_spec, const py::object &slot_type,
 // ProducerRoleWorker
 // ============================================================================
 
-ProducerRoleWorker::ProducerRoleWorker(const std::string  &role_name,
-                                        const RoleConfig   &role_cfg,
-                                        const std::string  &actor_uid,
-                                        hub::Messenger     &messenger,
-                                        std::atomic<bool>  &shutdown,
-                                        const py::object   &on_init_fn,
-                                        const py::object   &on_write_fn,
-                                        const py::object   &on_message_fn,
-                                        const py::object   &on_stop_fn)
+ProducerRoleWorker::ProducerRoleWorker(const std::string   &role_name,
+                                        const RoleConfig    &role_cfg,
+                                        const std::string   &actor_uid,
+                                        const ActorAuthConfig &auth,
+                                        std::atomic<bool>   &shutdown,
+                                        const py::object    &on_init_fn,
+                                        const py::object    &on_write_fn,
+                                        const py::object    &on_message_fn,
+                                        const py::object    &on_stop_fn)
     : role_name_(role_name)
     , role_cfg_(role_cfg)
-    , messenger_(messenger)
+    , auth_(auth)
     , shutdown_(shutdown)
     , py_on_init_(on_init_fn)
     , py_on_write_(on_write_fn)
@@ -358,6 +422,11 @@ ProducerRoleWorker::ProducerRoleWorker(const std::string  &role_name,
     api_.set_actor_uid(actor_uid);
     api_.set_shutdown_flag(&shutdown_);
     api_.set_trigger_fn([this]() { notify_trigger(); });
+    // ── PylabhubEnv: fields available at construction time ────────────────────
+    api_.set_channel(role_cfg_.channel);
+    api_.set_broker(role_cfg_.broker);
+    api_.set_kind_str("producer");
+    // actor_name, log_level, script_dir wired by ActorHost::start() before start().
 }
 
 ProducerRoleWorker::~ProducerRoleWorker()
@@ -417,6 +486,7 @@ bool ProducerRoleWorker::start()
     opts.channel_name = role_cfg_.channel;
     opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = role_cfg_.has_shm;
+    opts.schema_hash  = compute_schema_hash(slot_spec_, fz_spec_);
 
     if (role_cfg_.has_shm)
     {
@@ -447,6 +517,17 @@ bool ProducerRoleWorker::start()
         }
     }
 
+    // Connect to the role's configured broker endpoint.
+    // broker_pubkey empty = plain TCP; non-empty = CurveZMQ.
+    // auth_.client_pubkey/client_seckey: actor's own keypair (from keyfile) or empty = ephemeral.
+    if (!role_cfg_.broker.empty())
+    {
+        if (!messenger_.connect(role_cfg_.broker, role_cfg_.broker_pubkey,
+                                auth_.client_pubkey, auth_.client_seckey))
+            LOGGER_WARN("[actor] Role '{}': broker connect failed ({}); running degraded",
+                        role_name_, role_cfg_.broker);
+    }
+
     auto maybe_producer = hub::Producer::create(messenger_, opts);
     if (!maybe_producer.has_value())
     {
@@ -455,6 +536,13 @@ bool ProducerRoleWorker::start()
         return false;
     }
     producer_ = std::move(maybe_producer);
+
+    // ── Wire LoopPolicy for acquire-side overrun detection (HEP-CORE-0008) ────
+    if (auto *shm = producer_->shm(); shm != nullptr)
+    {
+        shm->set_loop_policy(role_cfg_.loop_policy, role_cfg_.period_ms);
+        shm->clear_metrics();
+    }
 
     // ── Wire on_message callback ──────────────────────────────────────────────
     if (is_callable(py_on_message_))
@@ -473,6 +561,7 @@ bool ProducerRoleWorker::start()
                 }
                 catch (py::error_already_set &e)
                 {
+                    api_.increment_script_errors();
                     LOGGER_ERROR("[actor/{}] on_message error: {}", role_name_, e.what());
                 }
             });
@@ -542,6 +631,7 @@ bool ProducerRoleWorker::start()
     LOGGER_INFO("[actor/{}] producer started on channel '{}'",
                 role_name_, role_cfg_.channel);
 
+    api_.reset_all_role_run_metrics();
     running_.store(true);
     call_on_init();
 
@@ -605,6 +695,7 @@ void ProducerRoleWorker::call_on_init()
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_init error: {}", role_name_, e.what());
     }
     // Update flexzone checksum after on_init writes.
@@ -626,6 +717,7 @@ void ProducerRoleWorker::call_on_stop()
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_stop error: {}", role_name_, e.what());
     }
 }
@@ -639,12 +731,69 @@ bool ProducerRoleWorker::call_on_write_(py::object &slot)
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_write error: {}", role_name_, e.what());
         if (role_cfg_.validation.on_python_error == ValidationPolicy::OnPyError::Stop)
             running_.store(false);
         return false;
     }
     return parse_on_write_return(ret);
+}
+
+bool ProducerRoleWorker::step_write_deadline_(
+    std::chrono::steady_clock::time_point &next_deadline)
+{
+    if (role_cfg_.interval_ms == -1)
+    {
+        // Event-driven: wait for trigger_write() or stop signal.
+        std::unique_lock<std::mutex> lock(trigger_mu_);
+        trigger_cv_.wait(lock, [this]
+        {
+            return trigger_pending_ || !running_.load() || shutdown_.load();
+        });
+        trigger_pending_ = false;
+        if (!running_.load() || shutdown_.load())
+            return false;
+    }
+    else if (role_cfg_.interval_ms > 0)
+    {
+        // Deadline-based rate limiter.
+        //
+        // On time (now < next_deadline):
+        //   Sleep the remaining time; both policies advance by one tick
+        //   (equivalent since wakeup ≈ deadline).
+        //
+        // Overrun (now >= next_deadline — deadline passed without waiting):
+        //   FixedPace   : next = now + interval  — resets from actual time;
+        //                 no catch-up; rate ≤ target.
+        //   Compensating: next += interval        — advances one tick; fires
+        //                 immediately next iteration if still overrun, converging
+        //                 to target rate over time.
+        //
+        // A failed acquire (ring full) does NOT re-sleep — the deadline is
+        // already advanced and the loop retries at full speed until a slot
+        // becomes available.
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_deadline)
+        {
+            // On time: sleep remaining, then advance one tick.
+            std::this_thread::sleep_for(next_deadline - now);
+            next_deadline += std::chrono::milliseconds(role_cfg_.interval_ms);
+        }
+        else
+        {
+            // Overrun: deadline already past — no sleep needed.
+            api_.increment_loop_overruns();
+            if (role_cfg_.loop_timing == RoleConfig::LoopTimingPolicy::Compensating)
+                next_deadline += std::chrono::milliseconds(role_cfg_.interval_ms);
+            else // FixedPace
+                next_deadline = now + std::chrono::milliseconds(role_cfg_.interval_ms);
+        }
+        if (!running_.load() || shutdown_.load())
+            return false;
+    }
+    // interval_ms == 0: run at full throughput — no sleep, no overrun tracking.
+    return true;
 }
 
 void ProducerRoleWorker::run_loop_shm()
@@ -659,33 +808,21 @@ void ProducerRoleWorker::run_loop_shm()
 
     const auto &val = role_cfg_.validation;
 
+    // Deadline initialised to now so the first write fires immediately.
+    auto next_deadline = std::chrono::steady_clock::now();
+
     while (running_.load() && !shutdown_.load())
     {
-        // ── interval_ms timing ────────────────────────────────────────────────
-        if (role_cfg_.interval_ms == -1)
-        {
-            // Event-driven: wait for trigger_write() or stop signal.
-            std::unique_lock<std::mutex> lock(trigger_mu_);
-            trigger_cv_.wait(lock, [this]
-            {
-                return trigger_pending_ || !running_.load() || shutdown_.load();
-            });
-            trigger_pending_ = false;
-            if (!running_.load() || shutdown_.load())
-                break;
-        }
-        else if (role_cfg_.interval_ms > 0)
-        {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(role_cfg_.interval_ms));
-            if (!running_.load() || shutdown_.load())
-                break;
-        }
+        if (!step_write_deadline_(next_deadline))
+            break;
+        // interval_ms == 0: run at full DataBlock throughput (no sleep).
 
         // ── Acquire SHM write slot ────────────────────────────────────────────
+        // Capture start time here — covers acquire + on_write + commit + checksum.
+        const auto work_start = std::chrono::steady_clock::now();
         auto slot_handle = shm->acquire_write_slot(100);
         if (!slot_handle)
-            continue;
+            continue;   // deadline already advanced; retry without extra sleep
         if (!running_.load() || shutdown_.load())
             break;
 
@@ -709,28 +846,27 @@ void ProducerRoleWorker::run_loop_shm()
                 (void)slot_handle->update_checksum_flexible_zone();
         }
         (void)shm->release_write_slot(*slot_handle);
+        if (commit)
+        {
+            api_.set_last_cycle_work_us(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - work_start).count()));
+        }
     }
 }
 
 void ProducerRoleWorker::run_loop_zmq()
 {
-    const auto interval = std::chrono::milliseconds(
-        role_cfg_.interval_ms > 0 ? role_cfg_.interval_ms : 10);
+    auto next_deadline = std::chrono::steady_clock::now();
 
     while (running_.load() && !shutdown_.load())
     {
-        if (role_cfg_.interval_ms == -1)
-        {
-            std::unique_lock<std::mutex> lock(trigger_mu_);
-            trigger_cv_.wait(lock, [this]
-            {
-                return trigger_pending_ || !running_.load() || shutdown_.load();
-            });
-            trigger_pending_ = false;
-            if (!running_.load() || shutdown_.load())
-                break;
-        }
+        if (!step_write_deadline_(next_deadline))
+            break;
+        // interval_ms == 0: run at full ZMQ throughput (no sleep).
 
+        // Capture start time here — covers on_write + ZMQ send.
+        const auto work_start = std::chrono::steady_clock::now();
         bool commit = false;
         {
             py::gil_scoped_acquire g;
@@ -742,9 +878,12 @@ void ProducerRoleWorker::run_loop_zmq()
             if (commit && !zmq_slot_buf_.empty())
                 producer_->send(zmq_slot_buf_.data(), zmq_slot_buf_.size());
         }
-
-        if (role_cfg_.interval_ms >= 0)
-            std::this_thread::sleep_for(interval);
+        if (commit)
+        {
+            api_.set_last_cycle_work_us(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - work_start).count()));
+        }
     }
 }
 
@@ -752,18 +891,18 @@ void ProducerRoleWorker::run_loop_zmq()
 // ConsumerRoleWorker
 // ============================================================================
 
-ConsumerRoleWorker::ConsumerRoleWorker(const std::string  &role_name,
-                                        const RoleConfig   &role_cfg,
-                                        const std::string  &actor_uid,
-                                        hub::Messenger     &messenger,
-                                        std::atomic<bool>  &shutdown,
-                                        const py::object   &on_init_fn,
-                                        const py::object   &on_read_fn,
-                                        const py::object   &on_data_fn,
-                                        const py::object   &on_stop_fn)
+ConsumerRoleWorker::ConsumerRoleWorker(const std::string    &role_name,
+                                        const RoleConfig     &role_cfg,
+                                        const std::string    &actor_uid,
+                                        const ActorAuthConfig &auth,
+                                        std::atomic<bool>    &shutdown,
+                                        const py::object     &on_init_fn,
+                                        const py::object     &on_read_fn,
+                                        const py::object     &on_data_fn,
+                                        const py::object     &on_stop_fn)
     : role_name_(role_name)
     , role_cfg_(role_cfg)
-    , messenger_(messenger)
+    , auth_(auth)
     , shutdown_(shutdown)
     , py_on_init_(on_init_fn)
     , py_on_read_(on_read_fn)
@@ -773,6 +912,11 @@ ConsumerRoleWorker::ConsumerRoleWorker(const std::string  &role_name,
     api_.set_role_name(role_name);
     api_.set_actor_uid(actor_uid);
     api_.set_shutdown_flag(&shutdown_);
+    // ── PylabhubEnv: fields available at construction time ────────────────────
+    api_.set_channel(role_cfg_.channel);
+    api_.set_broker(role_cfg_.broker);
+    api_.set_kind_str("consumer");
+    // actor_name, log_level, script_dir wired by ActorHost::start() before start().
 }
 
 ConsumerRoleWorker::~ConsumerRoleWorker()
@@ -833,8 +977,20 @@ bool ConsumerRoleWorker::start()
         return false;
 
     hub::ConsumerOptions opts;
-    opts.channel_name      = role_cfg_.channel;
-    opts.shm_shared_secret = role_cfg_.has_shm ? role_cfg_.shm_secret : 0U;
+    opts.channel_name         = role_cfg_.channel;
+    opts.shm_shared_secret    = role_cfg_.has_shm ? role_cfg_.shm_secret : 0U;
+    opts.expected_schema_hash = compute_schema_hash(slot_spec_, fz_spec_);
+
+    // Connect to the role's configured broker endpoint.
+    // broker_pubkey empty = plain TCP; non-empty = CurveZMQ.
+    // auth_.client_pubkey/client_seckey: actor's own keypair (from keyfile) or empty = ephemeral.
+    if (!role_cfg_.broker.empty())
+    {
+        if (!messenger_.connect(role_cfg_.broker, role_cfg_.broker_pubkey,
+                                auth_.client_pubkey, auth_.client_seckey))
+            LOGGER_WARN("[actor] Role '{}': broker connect failed ({}); running degraded",
+                        role_name_, role_cfg_.broker);
+    }
 
     auto maybe_consumer = hub::Consumer::connect(messenger_, opts);
     if (!maybe_consumer.has_value())
@@ -844,6 +1000,13 @@ bool ConsumerRoleWorker::start()
         return false;
     }
     consumer_ = std::move(maybe_consumer);
+
+    // ── Wire LoopPolicy for acquire-side overrun detection (HEP-CORE-0008) ────
+    if (auto *shm = consumer_->shm(); shm != nullptr)
+    {
+        shm->set_loop_policy(role_cfg_.loop_policy, role_cfg_.period_ms);
+        shm->clear_metrics();
+    }
 
     wire_zmq_callback();
 
@@ -919,6 +1082,7 @@ bool ConsumerRoleWorker::start()
     LOGGER_INFO("[actor/{}] consumer connected to channel '{}'",
                 role_name_, role_cfg_.channel);
 
+    api_.reset_all_role_run_metrics();
     running_.store(true);
     call_on_init();
 
@@ -973,6 +1137,7 @@ void ConsumerRoleWorker::wire_zmq_callback()
             }
             catch (py::error_already_set &e)
             {
+                api_.increment_script_errors();
                 LOGGER_ERROR("[actor/{}] on_data error: {}", role_name_, e.what());
                 if (role_cfg_.validation.on_python_error ==
                     ValidationPolicy::OnPyError::Stop)
@@ -992,6 +1157,7 @@ void ConsumerRoleWorker::call_on_init()
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_init error: {}", role_name_, e.what());
     }
 }
@@ -1007,8 +1173,33 @@ void ConsumerRoleWorker::call_on_stop()
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_stop error: {}", role_name_, e.what());
     }
+}
+
+void ConsumerRoleWorker::check_read_timeout_(
+    std::chrono::steady_clock::time_point &last_slot_time)
+{
+    if (role_cfg_.timeout_ms <= 0 || !is_callable(py_on_read_))
+        return;
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - last_slot_time).count();
+    if (elapsed < static_cast<long long>(role_cfg_.timeout_ms))
+        return;
+
+    // timeout_ms elapsed without a new slot.
+    // Advance the timeout baseline according to LoopTimingPolicy:
+    //   FixedPace   : reset from now — next timeout fires after a full timeout_ms
+    //                 from callback completion.
+    //   Compensating: advance by one timeout_ms — fires sooner if the callback
+    //                 was slow, converging to the target frequency over time.
+    call_on_read_timeout_();
+    if (role_cfg_.loop_timing == RoleConfig::LoopTimingPolicy::Compensating)
+        last_slot_time += std::chrono::milliseconds(role_cfg_.timeout_ms);
+    else // FixedPace
+        last_slot_time = std::chrono::steady_clock::now();
 }
 
 void ConsumerRoleWorker::call_on_read_timeout_()
@@ -1022,6 +1213,7 @@ void ConsumerRoleWorker::call_on_read_timeout_()
     }
     catch (py::error_already_set &e)
     {
+        api_.increment_script_errors();
         LOGGER_ERROR("[actor/{}] on_read (timeout) error: {}", role_name_, e.what());
         if (role_cfg_.validation.on_python_error == ValidationPolicy::OnPyError::Stop)
             running_.store(false);
@@ -1048,16 +1240,7 @@ void ConsumerRoleWorker::run_loop_shm()
         if (!slot_handle)
         {
             // No slot within the 100 ms poll window.
-            if (role_cfg_.timeout_ms > 0 && is_callable(py_on_read_))
-            {
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - last_slot_time).count();
-                if (elapsed >= static_cast<long long>(role_cfg_.timeout_ms))
-                {
-                    call_on_read_timeout_();
-                    last_slot_time = std::chrono::steady_clock::now();
-                }
-            }
+            check_read_timeout_(last_slot_time);
             continue;
         }
         if (!running_.load() || shutdown_.load())
@@ -1119,6 +1302,7 @@ void ConsumerRoleWorker::run_loop_shm()
             }
             catch (py::error_already_set &e)
             {
+                api_.increment_script_errors();
                 LOGGER_ERROR("[actor/{}] on_read error: {}", role_name_, e.what());
                 if (val.on_python_error == ValidationPolicy::OnPyError::Stop)
                     running_.store(false);
@@ -1133,9 +1317,8 @@ void ConsumerRoleWorker::run_loop_shm()
 // ActorHost
 // ============================================================================
 
-ActorHost::ActorHost(const ActorConfig &config, hub::Messenger &messenger)
+ActorHost::ActorHost(const ActorConfig &config)
     : config_(config)
-    , messenger_(messenger)
 {
 }
 
@@ -1253,11 +1436,19 @@ bool ActorHost::start()
         }
 
         auto worker = std::make_unique<ProducerRoleWorker>(
-            role_name, role_cfg, config_.actor_uid, messenger_, shutdown_,
+            role_name, role_cfg, config_.actor_uid, config_.auth, shutdown_,
             get_fn(tbl.on_init,    role_name),
             get_fn(tbl.on_write,   role_name),
             get_fn(tbl.on_message, role_name),
             get_fn(tbl.on_stop_p,  role_name));
+
+        // ── PylabhubEnv: wire actor-level fields not available at construction ─
+        // role_cfg.broker and broker_pubkey are used by the worker to connect its
+        // own Messenger in start(). api.broker() reflects the per-role endpoint.
+        worker->set_env_actor_name(config_.actor_name);
+        worker->set_env_log_level(config_.log_level);
+        worker->set_env_script_dir(
+            fs::path(config_.script_path).parent_path().string());
 
         if (!worker->start())
         {
@@ -1285,11 +1476,17 @@ bool ActorHost::start()
         }
 
         auto worker = std::make_unique<ConsumerRoleWorker>(
-            role_name, role_cfg, config_.actor_uid, messenger_, shutdown_,
+            role_name, role_cfg, config_.actor_uid, config_.auth, shutdown_,
             get_fn(tbl.on_init,   role_name),
             get_fn(tbl.on_read,   role_name),
             get_fn(tbl.on_data,   role_name),
             get_fn(tbl.on_stop_c, role_name));
+
+        // ── PylabhubEnv: wire actor-level fields not available at construction ─
+        worker->set_env_actor_name(config_.actor_name);
+        worker->set_env_log_level(config_.log_level);
+        worker->set_env_script_dir(
+            fs::path(config_.script_path).parent_path().string());
 
         if (!worker->start())
         {
@@ -1326,7 +1523,8 @@ bool ActorHost::is_running() const noexcept
 void ActorHost::wait_for_shutdown()
 {
     while (!shutdown_.load(std::memory_order_relaxed))
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
 }
 
 void ActorHost::print_role_summary() const

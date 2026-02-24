@@ -1,57 +1,160 @@
-# DataHub Protocol and Policy Reference
+# HEP-CORE-0007: DataHub Protocol and Policy Reference
 
-**Version:** 1.0 (2026-02-15)
-**Status:** Canonical — supersedes any informal protocol notes in previous design drafts.
+| Property         | Value                                                      |
+| ---------------- | ---------------------------------------------------------- |
+| **HEP**          | `HEP-CORE-0007`                                            |
+| **Title**        | DataHub Protocol and Policy Reference                      |
+| **Author**       | Quan Qing, AI assistant                                    |
+| **Status**       | ✅ Active — canonical reference (promoted 2026-02-21)      |
+| **Category**     | Core                                                       |
+| **Created**      | 2026-02-15                                                 |
+| **Promoted**     | 2026-02-21 (was `docs/DATAHUB_PROTOCOL_AND_POLICY.md`)     |
+| **Depends-on**   | HEP-CORE-0002 (DataHub), HEP-CORE-0006 (Slot-Processor)   |
 
-This document is the authoritative reference for DataBlock protocol correctness, policy
-semantics, RAII layer guarantees, and user responsibilities. Update this document whenever
-protocol or policy behavior changes.
+This document is the **authoritative reference for slot-level protocol correctness**, policy
+semantics, RAII layer guarantees, and user responsibilities. It covers the **slot-level
+state machine**, producer/consumer protocol flows, FlexZone access semantics, DRAINING
+policy, and user-facing RAII contracts.
+
+**Scope split with HEP-CORE-0002:**
+
+```mermaid
+graph LR
+    subgraph "HEP-CORE-0002 (Architecture)"
+        A1["Memory layout\n(SharedMemoryHeader, SlotRWState)"]
+        A2["API layers\n(C / C++ / RAII / Script)"]
+        A3["Control plane protocol\n(ZMQ framing, REG/DISC/DEREG)"]
+        A4["Error recovery\n(diagnostics, force-reset)"]
+        A5["Performance & Security"]
+    end
+
+    subgraph "HEP-CORE-0007 (Protocol & Policy)  ← this document"
+        B1["Slot state machine\n(transitions, invariants)"]
+        B2["Producer / Consumer flows\n(step-by-step protocol)"]
+        B3["Heartbeat protocol\n(liveness semantics)"]
+        B4["Policy integration\n(checksum × sync policy matrix)"]
+        B5["RAII guarantees\n(user responsibilities)"]
+        B6["DRAINING reachability\n(formal analysis)"]
+    end
+
+    A1 -. "layout defines" .-> B1
+    A2 -. "RAII wraps" .-> B2
+    A3 -. "broker triggers" .-> B3
+```
+
+Update this document whenever protocol or policy behavior changes.
+
+---
+
+## Table of Contents
+
+1. [Slot State Machine](#1-slot-state-machine)
+2. [Protocol Flow — Producer](#2-protocol-flow--producer)
+3. [Protocol Flow — Consumer](#3-protocol-flow--consumer)
+4. [Heartbeat Protocol](#4-heartbeat-protocol)
+5. [Policy Integration Table](#5-policy-integration-table)
+6. [RAII Layer Guarantees](#6-raii-layer-guarantees)
+7. [Explicit Control Points](#7-explicit-control-points-user-callable)
+8. [User Responsibilities](#8-what-users-are-responsible-for)
+9. [FlexZone and DataBlock Type Requirements](#9-flexzone-and-datablock-type-requirements)
+10. [Invariants the System Maintains](#10-invariants-the-system-maintains)
+11. [DRAINING Reachability by ConsumerSyncPolicy](#11-draining-reachability-by-consumersyncpolicy)
 
 ---
 
 ## 1. Slot State Machine
 
 Each ring-buffer slot transitions through the following states. The state machine is enforced
-by atomic operations in `SlotRWState`.
+by atomic operations in `SlotRWState`. `READING` is not a distinct `slot_state` value — it
+is the logical overlay where `slot_state == COMMITTED` and `reader_count > 0`.
 
-```
-                  acquire_write_slot(timeout)                  acquire_write_slot(timeout)
-FREE ─────────────────────────────────────────► WRITING      [slot was FREE — no readers]
- ▲                                                │
- │  release with committed=false (abort)          │ publish() / auto-publish at loop exit
- │  (exception propagation through SlotIterator)  │
- │                                                ▼
- │              acquire_write_slot           COMMITTED / READY ──────────────────────────►
- │  ◄─────────────────────────────────────── [slot was COMMITTED; write_lock acquired]    │
- │                                                                                         │
- │            DRAINING ──[reader_count==0]───────────────────────────────────────────► WRITING
- │               │                                │ acquire_consume_slot(timeout)
- │  [timeout]    │                                ▼
- │  restore  ────┘                            READING
- │  COMMITTED                                     │
- │                                    release_consume_slot()
- │                                       → validate generation (TOCTTOU)
- │                                       → verify checksums (if Enforced)
- │                                       → release read_lock
- │                                       → Single_reader: advance read_index → FREE
- │  release_consume_slot()               → Sync_reader: advance per-consumer position,
- │  Latest_only:       slot → FREE                        update read_index = min(positions)
- └──────────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+stateDiagram-v2
+    direction LR
+    [*] --> FREE: initialized
+
+    FREE --> WRITING: acquire_write_slot()\nwrite_lock=PID, slot_state=WRITING
+
+    WRITING --> COMMITTED: publish()\nslot_state=COMMITTED, commit_index++
+    WRITING --> FREE: abort / exception\nslot released without commit
+
+    state "COMMITTED\n(reader_count ≥ 0)" as COMMITTED
+    COMMITTED --> WRITING: wrap-around\nreader_count==0\n(fast path, no DRAINING)
+    COMMITTED --> DRAINING: wrap-around\nreader_count>0\n[Latest_only ONLY]
+    COMMITTED --> READING: acquire_consume_slot()\nreader_count++
+
+    state "READING\n(slot_state==COMMITTED\nreader_count>0)" as READING
+    READING --> COMMITTED: release_consume_slot()\nreader_count-- [still >0]
+    READING --> FREE: release_consume_slot()\n[Latest_only: no index advance]
+    READING --> FREE: release_consume_slot()\n[Single/Sync: advance index]
+
+    DRAINING --> WRITING: reader_count→0\n(drain success, write_lock held)
+    DRAINING --> COMMITTED: drain timeout\nslot_state restored, write_lock released
 ```
 
 **State definitions:**
-- `FREE` — available for writing; write_lock == 0
-- `WRITING` — producer holds write_lock (PID-based); slot_state == WRITING
-- `COMMITTED / READY` — data visible to consumers; slot_state == COMMITTED; commit_index advanced
-- `READING` — consumer holds read_lock (reader_count > 0); slot_state == COMMITTED
+- `FREE` — available for writing; `write_lock == 0`
+- `WRITING` — producer holds write_lock (PID-based); `slot_state == WRITING`
+- `COMMITTED / READY` — data visible to consumers; `slot_state == COMMITTED`; `commit_index` advanced
+- `READING` — consumer holds read lock (`reader_count > 0`); `slot_state` stays `COMMITTED`
 - `DRAINING` — write_lock held; producer draining in-progress readers before writing. Entered
-  when `acquire_write` wraps around a previously COMMITTED slot. New readers are rejected
-  (slot_state != COMMITTED → NOT_READY). On drain success: → WRITING. On drain timeout:
-  slot_state restored to COMMITTED (last data still valid); write_lock released.
+  when `acquire_write` wraps around a previously `COMMITTED` slot. New readers are rejected
+  (`slot_state != COMMITTED → NOT_READY`). On drain success: → `WRITING`. On drain timeout:
+  `slot_state` restored to `COMMITTED` (last data still valid); `write_lock` released.
+
+> **Scope note:** For the `SlotRWState` memory layout and the C-API function signatures, see
+> **HEP-CORE-0002 §3.3** and **§4.2**.
 
 ---
 
 ## 2. Protocol Flow — Producer
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant App as Producer App
+    participant TX as with_transaction<FZ,DT>
+    participant Slot as SlotRWCoordinator
+    participant SHM as Shared Memory
+
+    App->>TX: with_transaction(timeout, lambda)
+    TX->>Slot: acquire_write_slot(timeout_ms)
+    alt slot was FREE
+        Slot->>SHM: slot_state: FREE → WRITING
+    else slot was COMMITTED (wrap-around)
+        Slot->>SHM: slot_state: COMMITTED → DRAINING
+        loop spin until reader_count==0
+            Slot->>Slot: check reader_count
+        end
+        Slot->>SHM: slot_state: DRAINING → WRITING
+    end
+    Slot-->>TX: SlotWriteHandle
+
+    TX->>App: lambda(ctx) invoked
+    App->>SHM: ctx.slot().get() = data
+    App-->>SHM: [optional] ctx.flexzone().get() = metadata
+    Note over App,TX: lambda returns normally
+
+    TX->>Slot: commit(sizeof(DataBlockT))
+    Slot->>SHM: slot_state: WRITING → COMMITTED
+    Slot->>SHM: commit_index++ (release ordering)
+    TX->>Slot: release_write_slot()
+    Slot->>SHM: [Enforced] update slot + flexzone checksum
+    Slot->>SHM: write_lock → 0
+    Slot->>SHM: update producer heartbeat
+    TX->>SHM: [normal exit] update_checksum_flexible_zone()
+```
+
+**Exception path:**
+- If an exception propagates through `SlotIterator`, `std::uncaught_exceptions() != 0`,
+  so auto-publish is skipped — slot is released without commit (`slot_state → FREE`).
+- If an exception propagates through `with_transaction`, the flexzone checksum is NOT
+  updated — leaving the stored checksum inconsistent with any partial flexzone writes.
+  This is intentional: the checksum mismatch signals to consumers that the flexzone state
+  is unreliable until the producer recovers and exits `with_transaction` normally.
+
+**Step-by-step detail:**
 
 ```
 1. acquire_write_slot(timeout_ms)
@@ -87,17 +190,60 @@ FREE ─────────────────────────
      → This covers the case where the producer updated the flexzone but did not publish a slot
 ```
 
-**Exception path:**
-- If an exception propagates through `SlotIterator`, `std::uncaught_exceptions() != 0`,
-  so auto-publish is skipped — slot is released without commit (slot_state → FREE).
-- If an exception propagates through `with_transaction`, the flexzone checksum is NOT
-  updated — leaving the stored checksum inconsistent with any partial flexzone writes.
-  This is intentional: the checksum mismatch signals to consumers that the flexzone state
-  is unreliable until the producer recovers and exits `with_transaction` normally.
-
 ---
 
 ## 3. Protocol Flow — Consumer
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant App as Consumer App
+    participant TX as with_transaction<FZ,DT>
+    participant Slot as SlotRWCoordinator
+    participant SHM as Shared Memory
+
+    Note over TX,SHM: At construction
+    TX->>SHM: register_heartbeat() → consumer_heartbeats[i]
+    Note over TX,SHM: [Sync_reader] set per-consumer read position = commit_index
+
+    loop SlotIterator (for each slot)
+        TX->>SHM: update_heartbeat() [before each acquire]
+        TX->>Slot: acquire_consume_slot(timeout_ms)
+        alt Latest_only
+            Slot->>SHM: read commit_index % capacity
+        else Single_reader
+            Slot->>SHM: read read_index (shared tail)
+        else Sync_reader
+            Slot->>SHM: read per-consumer next position
+        end
+        Slot->>SHM: reader_count++ (spin-acquire)
+        Slot->>SHM: capture write_generation (TOCTTOU)
+        Slot-->>TX: SlotConsumeHandle
+
+        TX->>App: lambda(ctx) invoked
+        App->>SHM: ctx.slot().get() → read data
+        Note over App,TX: lambda returns
+
+        TX->>Slot: release_consume_slot()
+        Slot->>Slot: validate_read() — TOCTTOU check
+        Slot->>Slot: [Enforced] verify_checksum_slot() + verify_checksum_flexible_zone()
+        Slot->>SHM: reader_count--
+        alt Latest_only
+            Note over Slot,SHM: no index advance
+        else Single_reader
+            Slot->>SHM: read_index = slot_id + 1
+        else Sync_reader
+            Slot->>SHM: per-consumer position = slot_id + 1
+            Slot->>SHM: read_index = min(all positions)
+        end
+        TX->>SHM: update_heartbeat()
+    end
+
+    Note over TX,SHM: At destruction
+    TX->>SHM: unregister_heartbeat() → consumer_heartbeats[i] = 0
+```
+
+**Step-by-step detail:**
 
 ```
 1. [All policies] Heartbeat auto-registered on consumer construction.
@@ -138,6 +284,31 @@ FREE ─────────────────────────
 ## 4. Heartbeat Protocol
 
 Heartbeats provide liveness signals for broker-level visibility and producer health checks.
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+flowchart TD
+    subgraph Producer["Producer Heartbeat"]
+        PH["reserved_header\nPRODUCER_HEARTBEAT_OFFSET\n{producer_pid, monotonic_ns}"]
+        PU["Updated on:\n• slot commit (release_write_slot)\n• SlotIterator::operator++()\n• ctx.update_heartbeat()\n• producer.update_heartbeat()"]
+        PH --- PU
+    end
+
+    subgraph Consumer["Consumer Heartbeat Pool (max 8)"]
+        CH["consumer_heartbeats[MAX=8]\n{consumer_id=PID, last_heartbeat_ns}"]
+        CU["Updated on:\n• SlotIterator::operator++()\n• ctx.update_heartbeat()"]
+        SR["Sync_reader only:\nheartbeat slot index\n= per-consumer read-position cursor"]
+        CH --- CU
+        CH -.- SR
+    end
+
+    subgraph Liveness["Liveness Detection"]
+        LW["is_writer_alive()\n→ check heartbeat freshness (<5s)\n→ fallback: is_process_alive(PID)"]
+        LC["BrokerService::check_dead_consumers()\n→ is_process_alive(consumer_pid)\n→ CONSUMER_DIED_NOTIFY → producer"]
+        PH --> LW
+        CH --> LC
+    end
+```
 
 ### Producer Heartbeat
 
@@ -184,6 +355,26 @@ for (auto& result : ctx.slots(50ms)) {
 
 ## 5. Policy Integration Table
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph TD
+    subgraph Checksum["ChecksumPolicy"]
+        CN["None\n• no checksum written\n• no checksum verified"]
+        CE["Enforced (default)\n• slot + flexzone checksum\n  written on release_write\n• verified on release_consume\n• fully transparent to user"]
+        CM["Manual\n• user calls update_checksum_slot()\n• user calls verify_checksum_slot()"]
+    end
+
+    subgraph Sync["ConsumerSyncPolicy"]
+        SL["Latest_only\n• writer never blocked\n• old slots may be overwritten\n• DRAINING reachable"]
+        SS["Single_reader\n• one consumer, FIFO\n• ring-full blocks writer\n• DRAINING unreachable"]
+        SR["Sync_reader\n• N consumers, lockstep\n• ring-full blocks writer\n• DRAINING unreachable\n• heartbeat = read cursor"]
+    end
+
+    CE -. "applies to both slot\nand flexzone" .-> SL
+    CE -. applies .-> SS
+    CE -. applies .-> SR
+```
+
 | Policy | Producer Effect | Consumer Effect | RAII Auto-handling |
 |---|---|---|---|
 | `ChecksumPolicy::None` | No checksum computed | No checksum verified | N/A |
@@ -192,9 +383,9 @@ for (auto& result : ctx.slots(50ms)) {
 | `ConsumerSyncPolicy::Latest_only` | Never blocked on readers; old slots may be overwritten | Always reads latest committed slot | No heartbeat needed for read-position tracking; heartbeat still registered for liveness |
 | `ConsumerSyncPolicy::Single_reader` | Blocked when ring full and consumer has not advanced | Reads sequentially; shared `read_index` tracked | Same as above |
 | `ConsumerSyncPolicy::Sync_reader` | Blocked when slowest consumer is behind | Per-consumer read position tracked via heartbeat slot index | Heartbeat slot doubles as read-position cursor; always auto-registered at construction |
+| `DataBlockPolicy::RingBuffer` | N-slot circular; wraps | Reads in policy-defined order | Managed by C API |
 
 **Note — DRAINING reachability by policy.** `SlotState::DRAINING` is only ever entered by `Latest_only` producers. For `Single_reader` and `Sync_reader`, the ring-full check (`write_index - read_index < capacity`, evaluated *before* `write_index.fetch_add`) creates a structural barrier that makes DRAINING unreachable. See § 11 for the formal analysis.
-| `DataBlockPolicy::RingBuffer` | N-slot circular; wraps | Reads in policy-defined order | Managed by C API |
 
 ---
 
@@ -202,10 +393,42 @@ for (auto& result : ctx.slots(50ms)) {
 
 These guarantees are provided by the C++ RAII layer and require no user action.
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant App as Application
+    participant TX as with_transaction
+    participant SI as SlotIterator
+    participant SHM as Shared Memory
+
+    App->>TX: with_transaction(timeout, lambda)
+    TX->>SI: begin iteration
+
+    loop Normal path
+        SI->>SHM: update_heartbeat() ← auto
+        SI->>SHM: acquire_write/consume_slot
+        SI->>App: lambda(ctx)
+        Note over SI: std::uncaught_exceptions() == 0
+        SI->>SHM: commit() ← auto-publish
+        SI->>SHM: release slot
+    end
+
+    alt Exception thrown
+        Note over SI: std::uncaught_exceptions() != 0
+        SI->>SHM: release WITHOUT commit ← auto-abort
+        Note over TX: flexzone checksum NOT updated
+    else Normal return
+        TX->>SHM: update_checksum_flexible_zone() ← auto
+    end
+
+    Note over TX,SHM: At destruction
+    TX->>SHM: unregister_heartbeat() ← auto
+```
+
 | Guarantee | Mechanism |
 |---|---|
 | **Auto-publish on normal SlotIterator exit** | `SlotIterator` destructor checks `std::uncaught_exceptions() == 0`; calls `commit()` if true |
-| **Auto-abort on exception through SlotIterator** | `std::uncaught_exceptions() != 0` → slot released without commit → slot_state → FREE |
+| **Auto-abort on exception through SlotIterator** | `std::uncaught_exceptions() != 0` → slot released without commit → `slot_state → FREE` |
 | **Auto-heartbeat every iterator iteration** | `SlotIterator::operator++()` calls `m_handle->update_heartbeat()` before each slot acquisition |
 | **Auto-update flexzone checksum at with_transaction exit** | Producer `with_transaction` updates flexzone checksum after lambda returns normally (not on exception) |
 | **No flexzone checksum update on exception** | Conservative path: partial flexzone writes leave stale checksum → consumer detects mismatch |
@@ -354,6 +577,33 @@ a bug in the protocol implementation, not user code.
 `SlotState::DRAINING` is only reachable for `ConsumerSyncPolicy::Latest_only`.
 For `Single_reader` and `Sync_reader` it is structurally unreachable; the ring-full
 check creates a hard arithmetic barrier before any drain attempt can occur.
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+flowchart TD
+    W["Writer: acquire_write_slot()\nslot K at wrap-around"]
+
+    subgraph QueuePolicies["Single_reader / Sync_reader"]
+        RC["Ring-full check\nwrite_index − read_index < capacity?"]
+        OK["YES → write_index.fetch_add\n→ WRITING\n(DRAINING unreachable)"]
+        SPIN["NO → spin / TIMEOUT\nwrite_index NOT incremented\n(DRAINING unreachable)"]
+        RC -->|ring not full| OK
+        RC -->|ring full| SPIN
+    end
+
+    subgraph Latest["Latest_only"]
+        UNCO["write_index.fetch_add(1)\nunconditional — no ring-full check"]
+        CHK["reader_count(K) == 0?"]
+        WR["YES → slot_state = WRITING"]
+        DR["NO → slot_state = DRAINING\n(drain readers before writing)"]
+        UNCO --> CHK
+        CHK -->|no readers| WR
+        CHK -->|readers present| DR
+    end
+
+    W --> RC
+    W --> UNCO
+```
 
 ### Proof (ring-full barrier)
 

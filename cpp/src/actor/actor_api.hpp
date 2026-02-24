@@ -49,6 +49,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -81,6 +82,14 @@ class ActorRoleAPI
     void set_actor_uid(std::string uid)          { actor_uid_ = std::move(uid); }
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
 
+    // ── PylabhubEnv setters (called by C++ host at role startup) ──────────────
+    void set_actor_name(std::string n) { actor_name_  = std::move(n); }
+    void set_channel   (std::string c) { channel_     = std::move(c); }
+    void set_broker    (std::string b) { broker_      = std::move(b); }
+    void set_kind_str  (std::string k) { kind_str_    = std::move(k); }
+    void set_log_level (std::string l) { log_level_   = std::move(l); }
+    void set_script_dir(std::string d) { script_dir_  = std::move(d); }
+
     /**
      * @brief Set per-call slot validity.
      *        C++ sets this before each on_read() based on checksum result.
@@ -94,9 +103,38 @@ class ActorRoleAPI
      */
     void set_trigger_fn(std::function<void()> fn) { trigger_fn_ = std::move(fn); }
 
+    // ── C++ internal diagnostic write interface (never exposed to Python) ──────
+    //
+    // All writes to RoleMetrics go through these methods — actor_host.cpp never
+    // touches metrics_ fields directly.  Adding a new metric = one field in
+    // RoleMetrics + one setter here + one read-only getter in the Python section.
+
+    /// Called under the GIL in every Python callback catch block.
+    void increment_script_errors()           noexcept { ++metrics_.script_errors; }
+
+    /// Called in the overrun branch of the producer write-loop timing block
+    /// (deadline was already past — no sleep was needed).
+    void increment_loop_overruns()           noexcept { ++metrics_.loop_overruns; }
+
+    /// Called after each successful write cycle with the elapsed active-work time
+    /// (acquire + on_write + commit), measured from post-sleep wakeup.
+    void set_last_cycle_work_us(uint64_t us) noexcept { metrics_.last_cycle_work_us = us; }
+
+    /// Called by the C++ host when a role restarts to clear stale per-run counters.
+    /// Resets ALL RoleMetrics fields: script_errors, loop_overruns, and
+    /// last_cycle_work_us. All three are per-run values — they reflect the health
+    /// of the current execution instance only. Clearing them on restart ensures
+    /// script threshold checks (e.g. `api.script_error_count() > N`) reflect only
+    /// the current run, not accumulated errors from previous restart iterations.
+    void reset_all_role_run_metrics()        noexcept { metrics_.reset(); }
+
+    // ── C++ validation helpers (internal; called from actor_host.cpp) ──────────
+
     /**
      * @brief True if the given SHM flexzone content matches the consumer's
-     *        accepted snapshot (set via update_flexzone_checksum()).
+     *        accepted snapshot (set via accept_flexzone_state()).
+     *        Used by run_loop_shm to skip checksum verification when the
+     *        flexzone has not changed since the consumer last accepted it.
      */
     [[nodiscard]] bool is_fz_accepted(std::span<const std::byte> current_fz) const noexcept;
 
@@ -110,6 +148,24 @@ class ActorRoleAPI
 
     /// The actor's unique identifier (from the JSON "actor.uid" field).
     [[nodiscard]] const std::string &uid() const noexcept { return actor_uid_; }
+
+    /// Human-readable actor name (from "actor.name" in config).
+    [[nodiscard]] const std::string &actor_name() const noexcept { return actor_name_; }
+
+    /// Channel name this role operates on.
+    [[nodiscard]] const std::string &channel() const noexcept { return channel_; }
+
+    /// Configured broker endpoint for this role (informational; may not be live).
+    [[nodiscard]] const std::string &broker() const noexcept { return broker_; }
+
+    /// Role kind: "producer" or "consumer".
+    [[nodiscard]] const std::string &kind() const noexcept { return kind_str_; }
+
+    /// Configured log level (debug/info/warn/error).
+    [[nodiscard]] const std::string &log_level() const noexcept { return log_level_; }
+
+    /// Absolute path to the directory containing this actor's Python script.
+    [[nodiscard]] const std::string &script_dir() const noexcept { return script_dir_; }
 
     /// Request actor shutdown (all roles). Safe to call from any callback.
     void stop();
@@ -166,6 +222,26 @@ class ActorRoleAPI
      */
     bool accept_flexzone_state();
 
+    // ── Python-accessible — diagnostics (read-only) ───────────────────────────
+    //
+    // Script can observe its own health and react (e.g. call api.stop()), but
+    // cannot reset or write these counters — they are collected by the C++ host
+    // about the script, not data belonging to the script.
+
+    /// Total Python exceptions caught in any callback (on_init, on_write,
+    /// on_read, on_data, on_message, on_stop). Resets on role restart.
+    [[nodiscard]] uint64_t script_error_count()   const noexcept { return metrics_.script_errors; }
+
+    /// Write cycles where the deadline was already past at timing check entry
+    /// (no sleep needed). Indicates the write body exceeded interval_ms.
+    /// Always 0 for interval_ms == 0 or -1 modes. Resets on role restart.
+    [[nodiscard]] uint64_t loop_overrun_count()   const noexcept { return metrics_.loop_overruns; }
+
+    /// Elapsed active-work time (µs) of the most recently completed write cycle:
+    /// acquire_write_slot + on_write callback + commit + checksum.
+    /// 0 until the first write completes. Producer-only; always 0 for consumers.
+    [[nodiscard]] uint64_t last_cycle_work_us()   const noexcept { return metrics_.last_cycle_work_us; }
+
     // ── Python-accessible — shared spinlocks ──────────────────────────────────
 
     /**
@@ -184,6 +260,21 @@ class ActorRoleAPI
     /// Number of available shared spinlock slots (always 8 in current layout).
     uint32_t spinlock_count() const noexcept;
 
+    /**
+     * @brief Returns a dict of all timing metrics for this role.
+     *
+     * Combines:
+     *  - Domains 2+3: ContextMetrics from DataBlock Pimpl (acquire/release timing, loop scheduling)
+     *  - Domain 4: ActorRoleAPI::RoleMetrics (script_error_count)
+     *
+     * Keys: context_elapsed_us, iteration_count, last_iteration_us, max_iteration_us,
+     *       last_slot_wait_us, overrun_count, last_slot_work_us, period_ms,
+     *       script_error_count.
+     *
+     * See HEP-CORE-0008 §6.1 for the full specification.
+     */
+    py::dict metrics() const;
+
   private:
     hub::Producer    *producer_{nullptr};
     hub::Consumer    *consumer_{nullptr};
@@ -193,7 +284,26 @@ class ActorRoleAPI
     std::string role_name_;
     std::string actor_uid_;
 
+    // ── PylabhubEnv fields (set once at role startup via F1 setters) ──────────
+    std::string actor_name_;  ///< ActorConfig::actor_name
+    std::string channel_;     ///< RoleConfig::channel
+    std::string broker_;      ///< RoleConfig::broker (configured, may not be live)
+    std::string kind_str_;    ///< "producer" or "consumer"
+    std::string log_level_;   ///< ActorConfig::log_level
+    std::string script_dir_;  ///< Absolute dir containing the Python script
+
     bool slot_valid_{true};
+
+    /// All diagnostic counters in one place.  C++ host writes through the
+    /// increment_*/set_* methods above; never access fields directly.
+    struct RoleMetrics
+    {
+        uint64_t script_errors{0};       ///< Python exceptions in callbacks
+        uint64_t loop_overruns{0};       ///< Write-loop deadline overruns
+        uint64_t last_cycle_work_us{0};  ///< µs of active work, last write cycle
+        void reset() noexcept { *this = RoleMetrics{}; }
+    };
+    RoleMetrics metrics_{};
 
     /// Consumer-side: accepted flexzone content snapshot (for is_fz_accepted).
     std::vector<std::byte> consumer_fz_accepted_{};

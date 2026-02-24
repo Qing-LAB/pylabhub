@@ -2,13 +2,13 @@
 
 **Purpose:** This document provides **implementation patterns, architectural principles, and best practices** for DataHub and related modules. Use this as your reference during design and implementation to ensure consistency, avoid common pitfalls, and follow established patterns.
 
-**Scope:** This document focuses on **how to implement correctly** — language-level details, architecture patterns, concurrency rules, memory safety, and API design principles. It does NOT track execution order (see `DATAHUB_TODO.md`), historical changes (see `DOC_ARCHIVE_LOG.md`), or test plans (see `README/README_testing.md`).
+**Scope:** This document focuses on **how to implement correctly** — language-level details, architecture patterns, concurrency rules, memory safety, and API design principles. It does NOT track execution order (see `docs/TODO_MASTER.md`), historical changes (see `DOC_ARCHIVE_LOG.md`), or test plans (see `README/README_testing.md`).
 
-**Cross-references:** 
+**Cross-references:**
 - Design specifications → `docs/HEP/` (authoritative design specs)
-- Execution plan → `docs/DATAHUB_TODO.md` (what to do next, priorities)
+- Execution plan → `docs/TODO_MASTER.md` and `docs/todo/` subtopic TODOs
 - Documentation structure → `docs/DOC_STRUCTURE.md` (where information belongs)
-- **Design verification rule** → `docs/DESIGN_VERIFICATION_RULE.md` (all API/design claims must be verified against code; use checkboxes in docs)
+- **Design verification rule** → `docs/CODE_REVIEW_GUIDANCE.md` §2 (all API/design claims must be verified against code; use checkboxes in docs)
 
 ---
 
@@ -319,9 +319,9 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 
 **Rule:** All API and design claims in documentation MUST be verified against actual code. Documentation does not imply implementation.
 
-- **When writing or updating design/API docs:** Trace every described behavior to source (file, function, and relevant branches). In the doc, use a **verification checkbox**: `- [x]` with a **code reference** (file:line or function name) for confirmed behavior; `- [ ]` or "Not yet verified" for anything not yet checked. See **`docs/DESIGN_VERIFICATION_RULE.md`**.
+- **When writing or updating design/API docs:** Trace every described behavior to source (file, function, and relevant branches). In the doc, use a **verification checkbox**: `- [x]` with a **code reference** (file:line or function name) for confirmed behavior; `- [ ]` or "Not yet verified" for anything not yet checked. See **`docs/CODE_REVIEW_GUIDANCE.md`** §2 (Design Verification Rule).
 - **When implementing:** Do not document behavior as done until the code path exists and has been verified. If the doc and code disagree, fix one and update the other; code is the single source of truth.
-- **Checklist:** Use **`docs/DESIGN_VERIFICATION_CHECKLIST.md`** for the current dual-schema design; update it when code or design changes.
+- **Dual-schema verification:** The original `DESIGN_VERIFICATION_CHECKLIST.md` (Phase 4, schema hash) is archived at `docs/archive/transient-2026-02-17/`. The verification principle is now captured in **`docs/CODE_REVIEW_GUIDANCE.md §2`**.
 
 ### Policy and Schema Separation of Concerns
 
@@ -819,7 +819,7 @@ if (!lock.try_lock()) {
 
 ## Testing Strategy
 
-For detailed test plans, phase rationale, and execution priorities, see **`docs/README/README_testing.md`** and **`docs/DATAHUB_TODO.md`**.
+For detailed test plans, phase rationale, and execution priorities, see **`docs/README/README_testing.md`** and **`docs/TODO_MASTER.md`**.
 
 ### Test Organization
 
@@ -888,7 +888,7 @@ Use one of three patterns: **(1) PureApiTest** — pure functions, no lifecycle;
 When a test fails, **scrutinize before coding**:
 
 1. **Classify the failure:** Is this a **logic or design flaw in the test** (wrong assertion, incorrect protocol usage, wrong expectations), or does it **reveal a bug in the implementation**?
-2. **Prefer discovering bugs:** If the test follows the agreed protocol and design (HEP, DATAHUB_TODO, IMPLEMENTATION_GUIDANCE), favor the hypothesis that it has revealed a bug. Do **not** tweak the test merely to produce SUCCESS — use the failure as an opportunity to review and challenge the code.
+2. **Prefer discovering bugs:** If the test follows the agreed protocol and design (HEP, TODO_MASTER, IMPLEMENTATION_GUIDANCE), favor the hypothesis that it has revealed a bug. Do **not** tweak the test merely to produce SUCCESS — use the failure as an opportunity to review and challenge the code.
 3. **Verify test correctness:** On the other hand, test conditions must be correct. Do **not** change the codebase just to satisfy a test; if the test's expectations or protocol usage are wrong, fix the test, not the implementation.
 4. **Reason first:** Any problem shown by tests needs careful reasoning — trace the protocol, verify invariants, and check edge cases — before applying code changes. Avoid quick "make it pass" edits.
 
@@ -1138,8 +1138,85 @@ to safely drain any reader before overwriting a COMMITTED slot.
 (DRAINING entered, Latest_only path). `writer_reader_timeout_count == 0` with `writer_timeout_count > 0`
 means ring-full blocked (ordered policy path; DRAINING never entered).
 
-See `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11 for the complete formal proof and
+See `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` §11 for the complete formal proof and
 `DatahubSlotDrainingTest.{Single,Sync}ReaderRingFullBlocksNotDraining` for live verification.
+
+### Pitfall 12: Config Field Parsed But Not Wired (Silent No-Op)
+
+**Problem**: A config struct field is populated during JSON parsing but is never consumed
+by the runtime code that should use it. The system silently ignores the user's configuration.
+
+**Example** (discovered 2026-02-21):
+
+```cpp
+// actor_config.cpp — parsing side:
+role.broker_endpoint = role_json.value("broker", "");  // ← parsed correctly
+
+// actor_host.cpp — runtime side:
+ProducerOptions opts;
+opts.broker_endpoint = global_config_.broker_endpoint;  // ← uses top-level value
+// role_cfg_.broker_endpoint is NEVER read — per-role broker override silently lost
+```
+
+**Why it's hard to find:** The code compiles, runs, and appears to work. The per-role
+broker override just has no effect. No warning, no error.
+
+**Prevention checklist:**
+- When adding a config field, immediately add a read site in the corresponding runtime path
+- Grep for the field name to confirm it appears in both the parse path and the runtime path
+- Add a test that sets the field to a non-default value and verifies it changes behavior
+
+### Pitfall 13: Public API That Throws "Not Implemented" at Runtime
+
+**Problem**: A public method in a shared library header is callable, compiles cleanly,
+but throws `std::runtime_error("not implemented")` at runtime. This is invisible to callers
+and misleads API consumers.
+
+**Example** (from `data_block.hpp`):
+
+```cpp
+// data_block.hpp — public header, callable from any translation unit:
+bool request_structure_remap(const DataBlockConfig& new_config);  // ← public API
+
+// data_block.cpp — implementation:
+bool DataBlockProducer::Impl::request_structure_remap(const DataBlockConfig&) {
+    throw std::runtime_error("request_structure_remap: not implemented");
+    // ↑ silently broken; caller gets a runtime exception with no compile-time warning
+}
+```
+
+**Correct approach:**
+1. Mark the header declaration with a clear comment: `///< NOT IMPLEMENTED — see tech_draft/...`
+2. Track the gap in the appropriate `docs/todo/` file
+3. Optionally: return a typed error (`std::optional<E>` or `std::expected`) instead of throwing
+
+### Pitfall 14: Input Authentication After Parsing (Security Order Violation)
+
+**Problem**: A network-facing handler reads and parses the entire request body before
+checking authentication. A large or malicious payload can exhaust memory or CPU before
+the auth check fires.
+
+**Example** (AdminShell ZMQ REP handler):
+
+```cpp
+// WRONG order:
+auto msg = zmq_recv_full_body();          // ← read unlimited bytes first
+auto json = nlohmann::json::parse(msg);  // ← parse (can OOM on large input)
+auto token = json["token"];              // ← extract token
+if (token != expected_token_) { ... }   // ← auth check is too late
+
+// CORRECT order:
+auto msg = zmq_recv_bounded(MAX_ADMIN_MSG_BYTES);  // ← bound size first
+if (msg.size() > MAX_ADMIN_MSG_BYTES) { send_error("too large"); return; }
+auto token = extract_token_fast(msg);               // ← auth before parse
+if (token != expected_token_) { send_error("auth"); return; }
+auto json = nlohmann::json::parse(msg);             // ← parse only after auth
+```
+
+**Rule:** For any socket that accepts external input, enforce this order:
+1. Bound the input size (reject oversized messages before any parsing)
+2. Authenticate before processing the body
+3. Parse only after authentication succeeds
 
 ---
 
@@ -1204,6 +1281,29 @@ slot checksums are known to be wrong (user writes raw data without checksum upda
 | Slot data checksum wrong | Cat 2 | Log + ChecksumRepairPolicy applies |
 | SHM header magic/checksum corrupt | Cat 1 | Log + notify all → shutdown |
 | Broker can't reach producer | Cat 1 (timeout) | Already covered by heartbeat path |
+
+### Recovery scope — what pylabhub does NOT attempt
+
+pylabhub is a **same-lifetime** IPC system. Broker, producers, and consumers are expected
+to start and stop together. The following failures are **catastrophic** and are explicitly
+outside recovery scope:
+
+- **Broker crash** — all channel registration records, consumer lists, and heartbeat state
+  are in the broker's process memory. They are gone. Reconnecting to a restarted broker
+  would create empty, incompatible channel state. The correct response is a clean exit.
+  The existing heartbeat → `CHANNEL_CLOSING_NOTIFY` path already achieves this.
+
+- **Producer crash** seen by consumer — the SHM segment is unlinked on producer exit.
+  A consumer holding the old mapping is in an undefined state that cannot be corrected
+  without a full re-discovery. Clean exit is correct.
+
+Do not add reconnection logic for these scenarios. The attempt would silently corrupt
+distributed state worse than starting fresh. Operators restart the pipeline; the system
+reinitialises cleanly from a known-good state.
+
+For durability across crashes, the correct layer is **above** pylabhub: a supervisor that
+restarts the pipeline in order, or an external buffer (file, database) that scripts write
+to inside `on_write`.
 
 ---
 

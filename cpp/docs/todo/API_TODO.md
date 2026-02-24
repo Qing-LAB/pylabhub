@@ -12,7 +12,7 @@
 
 ### API Documentation Gaps
 
-- [ ] **Consumer registration to broker** – `MessageHub::register_consumer` is a stub, protocol not yet defined
+- [x] **Consumer registration to broker** – ✅ Fully implemented 2026-02-18; CONSUMER_REG/DEREG handshake
 - [ ] **stuck_duration_ms in diagnostics** – `SlotDiagnostic::stuck_duration_ms` requires timestamp on acquire
 - [ ] **DataBlockMutex documentation** – Factory vs direct constructor, exception vs optional/expected
 - [ ] **Flexible zone initialization** – Document when flexible_zone_info is populated
@@ -24,6 +24,17 @@
 - [x] **Slot handle lifetime** – Contract documented in data_block.hpp
 - [x] **Recovery error codes** – All codes documented in recovery_api.hpp
 - [ ] **Error code consistency** – Review all APIs for consistent error reporting
+
+### Code Review Open Items (2026-02-21)
+
+- [x] **ChannelPattern duplicate string conversion** ✅ FIXED 2026-02-22 — Shared
+  `channel_pattern_to_str()` / `channel_pattern_from_str()` moved to `channel_pattern.hpp`.
+  Removed duplicate `pattern_to_wire/from_wire` in `messenger.cpp` and
+  `pattern_to_str/from_str` in `broker_service.cpp`.
+  - Source: code_review_utils_2025-02-21.md item 8
+
+- [ ] **Logger header two comment blocks** — Logger public header has two separate comment blocks covering overlapping topics. Merge into one coherent doc block. Low priority.
+  - Source: REVIEW_cpp_src_hep_2026-02-20.md item 3
 
 ---
 
@@ -246,6 +257,32 @@ Mark clearly as experimental, subject to change:
 
 ## Recent Completions
 
+### 2026-02-23
+- ✅ **LoopPolicy Pass 2: ContextMetrics at DataBlock Pimpl (HEP-CORE-0008)**
+  - Added `LoopPolicy` enum + `ContextMetrics` struct to `data_block.hpp`
+  - `DataBlockProducerImpl` / `DataBlockConsumerImpl` gain `loop_policy`, `period_ms`,
+    `metrics_`, `t_iter_start_`, `t_acquire_done_` fields
+  - Timing injected in `acquire_write_slot()` / `acquire_consume_slot()` (Domains 2+3)
+  - Work-time measured in `release_write_slot()` / `release_consume_slot()`
+  - `set_loop_policy()`, `metrics()`, `clear_metrics()` implemented on both classes
+  - `TransactionContext::metrics()` + `now()` const pass-through added
+  - `actor_host.cpp`: wires `set_loop_policy()` from `interval_ms`, `clear_metrics()` at role start
+  - `actor_api.cpp` + `actor_module.cpp`: `api.metrics()` returns Python dict (Domains 2+3+4)
+  — `src/utils/data_block.cpp`, `src/include/utils/data_block.hpp`,
+    `src/include/utils/transaction_context.hpp`,
+    `src/actor/actor_host.cpp`, `src/actor/actor_api.cpp`, `src/actor/actor_module.cpp`
+  **Deferred (Pass 3)**:
+  - `SlotIterator::operator++()` sleep logic for RAII FixedRate path
+  - `"loop_policy"` + `"period_ms"` in `ProducerOptions` / `ConsumerOptions` (hub_producer/consumer.hpp)
+  - Tests for LoopPolicy/ContextMetrics (no tests exist yet — see TESTING_TODO)
+  **488/488 passing.**
+- ✅ **UAF fix in `timedShutdown()`** — `completed` and `ex_ptr` were stack-allocated in `timedShutdown()`
+  but captured by reference in the thread lambda; after `thread.detach()` the function returned and
+  destroyed them, leaving the detached thread with dangling references (UAF/UB on write).
+  Fix: wrapped both in a `shared_ptr<SharedState>` so the detached thread keeps the allocation alive.
+  This was the root cause of the intermittent `LifecycleTest.IsFinalizedFlag` timeout under load.
+  — `src/utils/lifecycle.cpp` (`timedShutdown()`)
+
 ### 2026-02-17 (DataBlock three-mode constructor + WriteAttach)
 
 - ✅ **`DataBlockOpenMode` enum added** — `Create` / `WriteAttach` / `ReadAttach` modes in
@@ -284,7 +321,7 @@ Mark clearly as experimental, subject to change:
   ring-full check (`write_index - read_index < capacity`) fires **before** `write_index.fetch_add(1)`;
   if reader holds slot K then `read_index ≤ K`, making the ring-full condition impossible to
   pass. DRAINING is a `Latest_only`-only live mechanism.
-  — `docs/DATAHUB_PROTOCOL_AND_POLICY.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
+  — `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
 - ✅ **2 new policy-barrier tests** — `SingleReaderRingFullBlocksNotDraining` and
   `SyncReaderRingFullBlocksNotDraining` verify `writer_reader_timeout_count == 0` and no slot
   in DRAINING state when a ring-full timeout occurs (7 draining tests total, 358 overall).
@@ -301,7 +338,7 @@ Mark clearly as experimental, subject to change:
   DRAINING entered, new readers rejected, resolves after release, timeout restores COMMITTED,
   zero reader races on clean wraparound. — `tests/test_layer3_datahub/`
 - ✅ **Protocol doc updated** — State machine and producer flow updated with DRAINING transitions.
-  — `docs/DATAHUB_PROTOCOL_AND_POLICY.md`
+  — `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md`
 
 ### 2026-02-17 (all code review items resolved)
 

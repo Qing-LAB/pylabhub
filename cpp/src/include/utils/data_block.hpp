@@ -17,6 +17,7 @@
 #include "shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
 #include "schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -38,6 +39,63 @@
 
 namespace pylabhub::hub
 {
+
+// ============================================================================
+// Loop Policy and Context Metrics (HEP-CORE-0008)
+// ============================================================================
+
+/**
+ * @enum LoopPolicy
+ * @brief Controls pacing between consecutive slot acquisitions in a write/read loop.
+ *
+ * Set via DataBlockProducer::set_loop_policy() / DataBlockConsumer::set_loop_policy().
+ * Affects both the RAII path (SlotIterator::operator++()) and the actor primitive path
+ * (acquire_write_slot() / acquire_consume_slot()) for overrun detection.
+ *
+ * @note MixTriggered is reserved and not implemented in this version.
+ */
+enum class LoopPolicy : uint8_t
+{
+    MaxRate,      ///< No sleep — run as fast as possible (default).
+    FixedRate,    ///< Start-to-start period: sleep(max(0, period_ms − elapsed)) in SlotIterator.
+    MixTriggered, ///< Reserved — not implemented this version.
+};
+
+/**
+ * @struct ContextMetrics
+ * @brief Per-handle timing metrics for a DataBlock producer or consumer.
+ *
+ * Owned by DataBlockProducer::Impl / DataBlockConsumer::Impl (Pimpl storage).
+ * Updated at acquire and release sites — never stored in shared memory.
+ * Survives across with_transaction() calls; call clear_metrics() to reset counters.
+ *
+ * Access: DataBlockProducer::metrics() / DataBlockConsumer::metrics() (const ref to Pimpl).
+ *         TransactionContext::metrics() is a pass-through to the same storage.
+ *
+ * See HEP-CORE-0008 §3 for the domain model.
+ */
+struct PYLABHUB_UTILS_EXPORT ContextMetrics
+{
+    using Clock = std::chrono::steady_clock;
+
+    // ── Session boundaries ───────────────────────────────────────────────────
+    Clock::time_point context_start_time{};  ///< Set on first acquire; zero until then.
+    uint64_t          context_elapsed_us{0}; ///< Elapsed since context_start_time (us); updated at each acquire.
+    Clock::time_point context_end_time{};    ///< Zero while running; set on handle destruction.
+
+    // ── Domain 2: Acquire/release timing ────────────────────────────────────
+    uint64_t last_slot_wait_us{0};  ///< Time blocked inside acquire_*_slot() (us).
+    uint64_t last_iteration_us{0};  ///< Start-to-start time between the last two acquires (us).
+    uint64_t max_iteration_us{0};   ///< Peak start-to-start time since session start (us).
+    uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
+
+    // ── Domain 3: Loop scheduling ────────────────────────────────────────────
+    uint64_t overrun_count{0};      ///< Iterations where start-to-start gap exceeded period_ms.
+    uint64_t last_slot_work_us{0};  ///< Time from acquire to release (user code + overhead) (us).
+
+    // ── Config reference (informational) ─────────────────────────────────────
+    uint64_t period_ms{0};          ///< Configured target period (0 = MaxRate / no sleep).
+};
 
 // ============================================================================
 // Phase 3: C++ RAII Layer - Forward Declarations
@@ -829,41 +887,65 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      */
     [[nodiscard]] int reset_metrics() noexcept;
 
-    // ─── Structure Re-Mapping API (Placeholder - Future Feature) ───
+    // ─── Loop Policy and Context Metrics (HEP-CORE-0008) ─────────────────────
     /**
-     * @brief Request structure remapping (requires broker coordination).
+     * @brief Configure pacing policy for the write loop.
+     *
+     * Must be called before the first acquire_write_slot() (or before entering
+     * with_transaction) so the timing anchor is correct.
+     * @param policy  LoopPolicy::MaxRate (default) or LoopPolicy::FixedRate.
+     * @param period  Target start-to-start period. Ignored when policy == MaxRate.
+     *               period == 0 with FixedRate is treated as MaxRate (no sleep).
+     * @note Not thread-safe: call from the writer thread only, before acquiring any slot.
+     */
+    void set_loop_policy(LoopPolicy policy,
+                         std::chrono::milliseconds period = {}) noexcept;
+
+    /**
+     * @brief Live view of per-handle timing metrics (process-local; not in SHM).
+     * @return const ref into Pimpl storage. Valid for the lifetime of this producer.
+     */
+    [[nodiscard]] const ContextMetrics &metrics() const noexcept;
+
+    /**
+     * @brief Reset all ContextMetrics counters to zero; preserve context_start_time.
+     * Call at the start of each role run to get per-run statistics.
+     */
+    void clear_metrics() noexcept;
+
+    // ─── Structure Re-Mapping API (NOT IMPLEMENTED) ─────────────────────────
+    /**
+     * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
+     *
+     * Request structure remapping (requires WriteAttach path + broker protocol).
      * @param new_flexzone_schema New flex zone structure info (optional)
      * @param new_datablock_schema New ring buffer slot structure info (optional)
-     * @return RequestId for broker coordination
-     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
-     * 
-     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
-     *       This API ensures our design doesn't block future remapping capability.
-     *       
+     * @return RequestId for broker coordination (never reached)
+     * @throws std::runtime_error always — not yet implemented.
+     *
      * **Future Remapping Protocol:**
      * 1. Producer calls `request_structure_remap()` → broker validates
      * 2. Broker signals all consumers to call `release_for_remap()`
      * 3. Producer calls `commit_structure_remap()` → updates schema_hash
      * 4. Broker signals consumers to call `reattach_after_remap()`
-     * 
-     * See `CHECKSUM_ARCHITECTURE.md` §7.1 for full protocol details.
+     *
+     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
     [[nodiscard]] uint64_t request_structure_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema
     );
-    
+
     /**
-     * @brief Commit structure remapping (after broker approval).
+     * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
+     *
+     * Commit structure remapping (after broker approval).
      * @param request_id From request_structure_remap()
      * @param new_flexzone_schema New flex zone structure (if remapping flex zone)
      * @param new_datablock_schema New slot structure (if remapping slots)
-     * @throws std::runtime_error if broker hasn't approved or remap not in progress
-     * 
-     * @note **PLACEHOLDER API.** Throws "not implemented" until broker is ready.
-     * 
-     * Updates `schema_hash`, `schema_version`, and recomputes checksums.
-     * Must be called with all consumers detached (broker-coordinated).
+     * @throws std::runtime_error always — not yet implemented.
+     *
+     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
     void commit_structure_remap(
         uint64_t request_id,
@@ -1108,6 +1190,17 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * @note Uses slot_rw_reset_metrics() C API internally
      */
     [[nodiscard]] int reset_metrics() noexcept;
+
+    // ─── Loop Policy and Context Metrics (HEP-CORE-0008) ─────────────────────
+    /** @brief Configure pacing policy for the read loop. See DataBlockProducer::set_loop_policy(). */
+    void set_loop_policy(LoopPolicy policy,
+                         std::chrono::milliseconds period = {}) noexcept;
+
+    /** @brief Live view of per-handle timing metrics (process-local; not in SHM). */
+    [[nodiscard]] const ContextMetrics &metrics() const noexcept;
+
+    /** @brief Reset all ContextMetrics counters to zero; preserve context_start_time. */
+    void clear_metrics() noexcept;
 
     // ─── Structure Re-Mapping API (Placeholder - Future Feature) ───
     /**

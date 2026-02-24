@@ -29,6 +29,9 @@ namespace
 {
 constexpr int kCtrlPollIntervalMs = 50;  ///< ZMQ poll timeout in ctrl_thread loop
 constexpr int kDataPollIntervalMs = 50;  ///< ZMQ poll timeout in data_thread loop
+/// Managed consumer lifecycle shutdown: waits for BYE, SHM detach, and ZMQ teardown.
+/// Intentionally longer than kMidTimeoutMs — network operations may be in flight.
+constexpr auto kManagedConsumerShutdownMs = std::chrono::milliseconds(10000);
 
 /// Outgoing ctrl message queued for ctrl_thread to send on the DEALER socket.
 /// Consumer sends only one direction (no identity needed — DEALER routes automatically).
@@ -720,7 +723,7 @@ pylabhub::utils::ModuleDef ManagedConsumer::get_module_def()
     pylabhub::utils::ModuleDef def(module_key_);
     def.add_dependency("pylabhub::hub::DataExchangeHub");
     def.set_startup(&ManagedConsumer::s_startup, module_key_);
-    def.set_shutdown(&ManagedConsumer::s_shutdown, std::chrono::milliseconds(10000),
+    def.set_shutdown(&ManagedConsumer::s_shutdown, kManagedConsumerShutdownMs,
                      module_key_);
     return def;
 }

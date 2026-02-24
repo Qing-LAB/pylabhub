@@ -58,9 +58,10 @@ def counter_in_init(flexzone, api: actor.ActorRoleAPI):
     pid   = flexzone.producer_pid
     label = flexzone.label.decode(errors='replace') if flexzone.label else ''
     fz_ok = api.verify_flexzone_checksum()
-    api.log('info',
-            f"counter_in: connected  uid={api.uid()}  "
-            f"producer_pid={pid}  label='{label}'  flexzone_valid={fz_ok}")
+    msg   = (f"counter_in: connected  uid={api.uid()}  "
+             f"producer_pid={pid}  label='{label}'  flexzone_valid={fz_ok}")
+    api.log('info', msg)
+    print(f"[pylabhub-demo] {msg}", flush=True)
 
 
 @actor.on_read("counter_in")
@@ -78,6 +79,7 @@ def counter_in_read(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool 
         # No data in 5 s — send a heartbeat to the producer.
         api.send_ctrl(b"heartbeat")
         api.log('debug', "counter_in: timeout heartbeat sent")
+        print("[pylabhub-demo] counter_in: timeout — no slot in 5 s", flush=True)
         return
 
     if not api.slot_valid():
@@ -93,9 +95,14 @@ def counter_in_read(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool 
     if skipped > 0:
         api.log('warn', f"counter_in: skipped {skipped} slot(s) at count={count}")
 
+    elapsed = time.time() - start_time
+    rate    = slots_read / elapsed if elapsed > 0 else 0.0
+
+    # Print every slot — visible on console for demo; also log every 1000 via hub logger.
+    print(f"[pylabhub-demo] count={count}  ts={ts:.3f}  "
+          f"rate={rate:.0f}/s  skipped={skipped}", flush=True)
+
     if count % 1000 == 0:
-        elapsed = time.time() - start_time
-        rate = slots_read / elapsed if elapsed > 0 else 0.0
         api.log('info',
                 f"counter_in: slot {count}  ts={ts:.3f}  "
                 f"rate={rate:.0f} slots/s")
@@ -111,6 +118,7 @@ def counter_in_data(data: bytes, api: actor.ActorRoleAPI):
 def counter_in_stop(flexzone, api: actor.ActorRoleAPI):
     """Called once after the read loop exits."""
     elapsed = time.time() - start_time
-    api.log('info',
-            f"counter_in: stopped  read={slots_read} slots  "
-            f"elapsed={elapsed:.1f}s")
+    msg = (f"counter_in: stopped  read={slots_read} slots  "
+           f"elapsed={elapsed:.1f}s")
+    api.log('info', msg)
+    print(f"[pylabhub-demo] {msg}", flush=True)

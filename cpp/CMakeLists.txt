@@ -72,6 +72,16 @@ if(PYLABHUB_ENABLE_DEBUG_MESSAGES)
 endif()
 add_compile_definitions(PLH_RECURSION_GUARD_MAX_DEPTH=${PLH_RECURSION_GUARD_MAX_DEPTH})
 
+# Timeout tier overrides: cmake -DPYLABHUB_SHORT_TIMEOUT_MS=2000 etc.
+# See src/include/utils/timeout_constants.hpp for defaults and documentation.
+foreach(_timeout_tier SHORT MID LONG)
+  set(_timeout_var "PYLABHUB_${_timeout_tier}_TIMEOUT_MS")
+  if(DEFINED ${_timeout_var})
+    add_compile_definitions(${_timeout_var}=${${_timeout_var}})
+    message(STATUS "${_timeout_var} = ${${_timeout_var}}")
+  endif()
+endforeach()
+
 # --- 3.2. Global Setup and Helper Modules ---
 include(PlatformAndCompiler) # Handles platform detection and compiler flags.
 include(StageHelpers)        # Provides `pylabhub_stage_*` functions.

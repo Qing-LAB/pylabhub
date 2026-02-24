@@ -13,8 +13,10 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 **Key Documents:**
 - **Design Spec**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
 - **Implementation Guidance**: `docs/IMPLEMENTATION_GUIDANCE.md`
-- **Memory Layout Design**: `docs/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` (active)
-- **RAII Layer Design**: `docs/DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md` (active)
+- **Memory Layout Design**: `docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` (active — structure remap deferred)
+- **RAII Layer Design**: `docs/archive/transient-2026-02-21/DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md` (archived — implementation complete)
+- **LoopPolicy + Metrics**: `docs/HEP/HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md` (Pass 2 — pending)
+- **Policy Reference**: `docs/HEP/HEP-CORE-0009-Policy-Reference.md` (active cross-reference)
 
 ---
 
@@ -85,12 +87,12 @@ Key tasks (backlog only):
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
 | Security / Identity / Provenance | 🟡 In Progress | `docs/todo/SECURITY_TODO.md` | Phase 4 complete (SHM identity, C-API, ConsumerOptions, 426/426 tests); Phases 1–3, 5 pending |
-| Actor (pylabhub-actor) | ✅ Complete | `docs/tech_draft/ACTOR_DESIGN.md` | Multi-role actor (2026-02-21): ActorHost, ProducerRoleWorker, ConsumerRoleWorker, decorator dispatch, ctypes zero-copy schema, examples; UID format (HUB-/ACTOR-prefix enforcement + auto-gen); SharedSpinLockPy Python API (api.spinlock(idx), context manager); 426/426 tests |
+| Actor (pylabhub-actor) | 🟡 In Progress | `docs/tech_draft/ACTOR_DESIGN.md` | Multi-role actor (2026-02-21): ActorHost, ProducerRoleWorker, ConsumerRoleWorker, decorator dispatch, ctypes zero-copy schema, examples; UID format; SharedSpinLockPy. Code-review fixes (2026-02-22): schema validation, on_stop dispatch, PylabhubEnv getters, InterpreterReadiness, ChannelPattern dedup, CurveZMQ client keypair, per-role Messenger. Actor-layer LoopTimingPolicy + RoleMetrics (2026-02-23): fixed_pace/compensating deadline scheduling, loop_overrun_count, last_cycle_work_us, reset_all_role_run_metrics; 53 Layer 4 unit tests. Pending: ContextMetrics/LoopPolicy at RAII layer (HEP-CORE-0008 Pass 2); actor control-flow deduplication; Layer 4 integration tests |
 | HubShell / HubConfig | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | All 6 phases done (2026-02-20): HubConfig, Python env, broker consolidation, PythonInterpreter, AdminShell, hubshell.cpp rewrite |
 | RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor in backlog** |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 426/426 passing; planned: Layer 4 hub+actor integration tests (log-file-based validation) |
+| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | 479/479 passing (53 new Layer 4 unit tests, 2026-02-23); Layer 4 integration tests pending (require live Python actor) |
 | Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |

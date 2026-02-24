@@ -241,7 +241,7 @@ The old context is invalidated; the new context is active after the producer upd
 
 - **HEP-CORE-0002** — Data Exchange Hub specification
 - **IMPLEMENTATION_GUIDANCE** — Architecture, layout, alignment, facility access
-- **DATAHUB_TODO** — Execution plan and priorities
+- **TODO_MASTER** — Execution plan and priorities
 - **DOC_STRUCTURE** — Documentation layout and merge policy
 
 ---

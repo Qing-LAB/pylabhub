@@ -26,16 +26,16 @@
 - Do not duplicate TODO information across documents
 - See `docs/todo/README.md` for the subtopic TODO system structure
 
-**Legacy**: `docs/DATAHUB_TODO.md` is the old monolithic TODO (847 lines). It should be refactored into the new system and archived.
+**Legacy**: `docs/TODO_MASTER.md` is the old monolithic TODO (847 lines). It should be refactored into the new system and archived.
 
 ### 1.2 Single implementation guidance
 
 | Role | Document | Use |
 |------|----------|-----|
-| **Implementation guidance** | **`docs/IMPLEMENTATION_GUIDANCE.md`** | **THE** reference during design and implementation (architecture, patterns, pitfalls, review checklist). Execution order and checklist remain in DATAHUB_TODO.md. |
+| **Implementation guidance** | **`docs/IMPLEMENTATION_GUIDANCE.md`** | **THE** reference during design and implementation (architecture, patterns, pitfalls, review checklist). Execution order and checklist remain in TODO_MASTER.md. |
 | **Code review** | **`docs/CODE_REVIEW_GUIDANCE.md`** | **THE** reference when reviewing changes: first pass (build, style, includes, [[nodiscard]], exception specs), higher-level requirements (pImpl, lifecycle, concurrency), test integration. Use for every review; do not maintain a separate review checklist elsewhere. |
 
-Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and DATAHUB_TODO.
+Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TODO_MASTER.
 
 ### 1.3 HEP (design specifications)
 
@@ -44,24 +44,24 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and DAT
 | **`docs/HEP/`** | Authoritative design specs: HEP-CORE-0001 (lifecycle), HEP-CORE-0002 (DataHub), HEP-CORE-0003 (filelock), HEP-CORE-0004 (logger), HEP-CORE-0005 (script interface). |
 
 - Keep style and diagrams clear and logical.
-- Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/DATAHUB_TODO.md`."*
-- For not-yet-implemented sections, add: *"Not yet implemented; see DATAHUB_TODO.md for plan and sync."*
+- Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/TODO_MASTER.md`."*
+- For not-yet-implemented sections, add: *"Not yet implemented; see TODO_MASTER.md for plan and sync."*
 
 ### 1.4 Topic summaries (README/)
 
 | Location | Purpose |
 |----------|---------|
-| **`docs/README/`** | Topic-specific summaries. Naming: **`README_<Topic>.md`**. Examples: README.md (index), README_DataHub.md, README_testing.md, README_utils.md, README_CMake_Design.md, README_ThirdParty_CMake.md, README_Versioning.md. |
+| **`docs/README/`** | Topic-specific summaries. Naming: **`README_<Topic>.md`**. Examples: README.md (index), README_DataHub.md, README_testing.md, README_utils.md, README_CMake_Design.md, README_DirectoryLayout.md, README_ThirdParty_CMake.md, README_Versioning.md. |
 
 - One README per major topic; all topic READMEs live only under `docs/README/`.
-- Summarize design/pattern and point to DATAHUB_TODO and IMPLEMENTATION_GUIDANCE where relevant.
-- Prefer DATAHUB_TODO and code over stale README text.
+- Summarize design/pattern and point to TODO_MASTER and IMPLEMENTATION_GUIDANCE where relevant.
+- Prefer TODO_MASTER and code over stale README text.
 
 ### 1.5 Testing documentation
 
 | Document | Role |
 |----------|------|
-| **`docs/README/README_testing.md`** | Test suite architecture, how to run and add tests, **and** DataHub/MessageHub test plan (Phase A–D rationale, Phase D checklist, coverage). Execution order and priorities are in DATAHUB_TODO.md. MessageHub code review for DataHub integration is in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review. |
+| **`docs/README/README_testing.md`** | Test suite architecture, how to run and add tests, **and** DataHub/MessageHub test plan (Phase A–D rationale, Phase D checklist, coverage). Execution order and priorities are in TODO_MASTER.md. MessageHub code review for DataHub integration is in **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review. |
 
 ### 1.6 Example code (usage examples)
 
@@ -115,7 +115,7 @@ See **`docs/code_review/README.md`** for the complete lifecycle process.
 - Prevents drafts from cluttering the root `docs/` directory or mixing with canonical documents (HEP, IMPLEMENTATION_GUIDANCE, README)
 - Recommended naming: `DRAFT_<Topic>_YYYY-MM.md`
 - When content is **agreed upon and finalized**:
-  1. **Merge** the content into the appropriate canonical document (HEP, IMPLEMENTATION_GUIDANCE, DATAHUB_TODO, or README)
+  1. **Merge** the content into the appropriate canonical document (HEP, IMPLEMENTATION_GUIDANCE, TODO_MASTER, or README)
   2. **Move** the draft to **`docs/archive/`** in a dated folder
   3. **Record** the activity in **`docs/DOC_ARCHIVE_LOG.md`**
 - Keep this directory for work in progress only
@@ -161,7 +161,7 @@ Some documents may temporarily exist in the root `docs/` directory during active
 
 1. **Merge** transient document content into the appropriate canonical documents:
    - Design content → HEP or IMPLEMENTATION_GUIDANCE
-   - Tasks and priorities → DATAHUB_TODO or relevant TODO
+   - Tasks and priorities → TODO_MASTER or relevant TODO
    - Topic summaries → relevant README documents
    - Test plans → README_testing.md
 

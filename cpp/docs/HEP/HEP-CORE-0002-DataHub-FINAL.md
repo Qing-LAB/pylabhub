@@ -29,12 +29,12 @@ This is the **authoritative, implementation-ready specification** for the Data E
 - Memory ordering correct
 - ABI stability ensured
 
-### Implementation status (sync with DATAHUB_TODO)
+### Implementation status (sync with TODO_MASTER)
 
-Implementation status and priorities are tracked in **`docs/DATAHUB_TODO.md`** (single execution plan). Summary:
+Implementation status and priorities are tracked in **`docs/TODO_MASTER.md`** and subtopic TODOs under `docs/todo/`. Summary *(last updated 2026-02-22, 426/426 tests passing)*:
 
-- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, WriteAttach mode (broker-owned segment), recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle). **Messenger** (renamed from MessageHub): ZeroMQ-based async command-queue broker client; fire-and-forget `register_producer`; synchronous `discover_producer` via `std::future`/`std::promise`; `register_consumer` stub pending protocol. **ZMQContext**: separate static lifecycle module (`GetZMQContextModule()`); lifecycle-managed context/socket teardown order guaranteed. **DataBlock factory functions are fully decoupled from Messenger** — no hub parameter; broker registration is caller-initiated after factory returns. **All 384 tests passing** including: recovery scenarios (zombie detection, force-reset, dead consumer cleanup), integrity validation (layout checksum, magic number, fresh-block baseline), WriteAttach tests, and complete slot protocol/RAII/policy suite. **DRAINING state** (`SlotState::DRAINING`) is active and tested: entered on ring-buffer wrap of COMMITTED slot, rejects new readers, resolves after reader release; provably unreachable for Single_reader and Sync_reader policies. **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses recursive mutex). **Producer heartbeat** is stored in `reserved_header` at a fixed offset; liveness uses **heartbeat-first**: if heartbeat is fresh the writer is considered alive, else `is_process_alive(pid)` is used. **Layer 1.75** (standalone `SlotRWAccess`) has been **removed**; typed access is via `with_transaction<FlexZoneT, DataBlockT>()` in `data_block.hpp`. The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers ensure multi-thread safety.
-- **Not yet implemented / in progress:** Broker schema registry (1.4), schema versioning (1.5), consumer registration protocol (broker team dependency), broker-coordinated recovery (Phase C — requires broker protocol), slot-checksum in-place repair (requires WriteAttach path in `datablock_validate_integrity`). For any section in this HEP that describes functionality not yet in code, consider it **not yet implemented** and sync with **`docs/TODO_MASTER.md`** and subtopic TODOs for the current plan and next steps.
+- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, WriteAttach mode (broker-owned segment), recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle, `plh_channel_identity_t`/`plh_consumer_identity_t` C API). **DRAINING state** active and tested. **Layer 1.75** (standalone `SlotRWAccess`) removed; typed access via `with_transaction<FlexZoneT, DataBlockT>()`. **C API** (`slot_rw_coordinator.h`, recovery API) does not provide internal locking — callers ensure multi-thread safety. **Messenger**: ZeroMQ DEALER/ROUTER broker client; `register_producer` (fire-and-forget); `discover_producer` (sync via `std::future`); `register_consumer` / `deregister_consumer` (fully implemented with CONSUMER_REG/DEREG handshake); per-channel callbacks (`on_channel_closing`, `on_consumer_died`, `on_channel_error`). **BrokerService** (in `pylabhub-utils`): CurveZMQ; REG/DISC/DEREG/CONSUMER_REG/CONSUMER_DEREG/HEARTBEAT; broker health + notification layer (Cat 1 CHANNEL_ERROR_NOTIFY, Cat 2 CONSUMER_DIED_NOTIFY). **Pluggable Slot-Processor API** (HEP-CORE-0006): `push`/`synced_write`/`pull`, `set_write_handler`/`set_read_handler`, `WriteProcessorContext`/`ReadProcessorContext`. **SHM identity/provenance** (Security Phase 4): `hub_uid`/`hub_name`/`producer_uid`/`producer_name` in header; `ConsumerHeartbeat` expanded to 128 bytes with `consumer_uid`/`consumer_name`. **HubShell** (all 6 phases): `HubConfig`, Python env, `PythonInterpreter`, `AdminShell`, full lifecycle stack. **pylabhub-actor**: multi-role Python actor host with ctypes zero-copy schema, `SharedSpinLockPy`, `--validate`, `--keygen`. **Per-role Messenger** (2026-02-22): each `ProducerRoleWorker` / `ConsumerRoleWorker` owns a `hub::Messenger` value member and calls `messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)` in `start()`; actor does not use `GetLifecycleModule()` or `get_instance()`. Multiple-broker actor deployments now supported. `broker_pubkey` (Z85 40-char) added to `RoleConfig` for server-side CurveZMQ auth.
+- **Not yet implemented / deferred:** Broker schema registry (§1.4), schema versioning (§1.5), broker-coordinated recovery (requires broker protocol extension), slot-checksum in-place repair (requires WriteAttach path in `datablock_validate_integrity`), structure re-mapping API (placeholders exist but throw — see `docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`). Security Phases 1–3 (hub vault, actor directory model, connection policy). For any section describing un-implemented functionality, sync with `docs/TODO_MASTER.md` and subtopic TODOs.
 
 Design rationale and critical review (cross-platform, API consistency, flexible zone, integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**, **DATAHUB_CPP_ABSTRACTION_DESIGN**, and **DATAHUB_POLICY_AND_SCHEMA_ANALYSIS**; key content has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder’s README for the merge map).
 
@@ -617,19 +617,22 @@ static_assert(sizeof(SlotRWState) == 48, "SlotRWState must be 48 bytes");
 static_assert(alignof(SlotRWState) >= 64, "Should be cache-line aligned");
 ```
 
-**State Machine Transitions:**
+**State Machine Transitions (architectural overview):**
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
 stateDiagram-v2
-    [*] --> FREE: Initial state
-    FREE --> WRITING: acquire_write_slot()
-    WRITING --> COMMITTED: commit() + release_write_slot()
-    WRITING --> FREE: Producer crash (recovery)
-    COMMITTED --> DRAINING: Wrap-around with active readers
-    COMMITTED --> FREE: Wrap-around with no readers
-    DRAINING --> FREE: Last reader exits
-    FREE --> FREE: Slot reused
+    [*] --> FREE: initialized
+
+    FREE --> WRITING: acquire_write_slot()\nwrite_lock=PID, slot_state=WRITING
+    WRITING --> COMMITTED: commit() + release_write_slot()\nslot_state=COMMITTED, commit_index++
+    WRITING --> FREE: abort / exception\nslot released without commit
+
+    COMMITTED --> WRITING: wrap-around, reader_count==0\n(fast path — no DRAINING)
+    COMMITTED --> DRAINING: wrap-around, reader_count>0\n[Latest_only ONLY — see §11 of HEP-0007]
+
+    DRAINING --> WRITING: drain success\n(reader_count→0, write_lock held)
+    DRAINING --> COMMITTED: drain timeout\n(slot_state restored, write_lock released)
 
     note right of WRITING
         write_lock = producer PID
@@ -641,16 +644,21 @@ stateDiagram-v2
         Data visible to consumers
         write_generation++
         commit_index++
-        Readers can acquire
+        Readers acquire by reader_count++
+        slot_state stays COMMITTED
     end note
 
     note right of DRAINING
-        Producer wants to reuse
-        but readers still active
-        writer_waiting = 1
-        Waiting for reader_count = 0
+        Producer wants to reuse slot
+        but readers still active [Latest_only]
+        Waiting for reader_count → 0
+        New readers rejected (slot_state≠COMMITTED)
     end note
 ```
+
+> **Authoritative protocol detail:** For the exact step-by-step producer and consumer flows,
+> DRAINING formal proof, RAII guarantees, and user responsibilities, see
+> **HEP-CORE-0007** (DataHub Protocol and Policy Reference).
 
 #### 3.3.1 ConsumerSyncPolicy (reader advancement and writer backpressure)
 
@@ -658,20 +666,24 @@ How readers advance and when the writer may overwrite slots is determined by **C
 
 | Policy | Readers | read_index / positions | Writer backpressure |
 |--------|---------|------------------------|----------------------|
-| **Latest_only** | Any number | No shared read_index; each reader follows `commit_index` only (latest committed slot). | Writer never blocks on readers; older slots may be overwritten. |
-| **Single_reader** | One consumer only | One shared `read_index` (tail); consumer reads in order. | Writer blocks when `(write_index - read_index) >= capacity`. |
-| **Sync_reader** | Multiple consumers | Per-consumer next-read position in `reserved_header`; `read_index = min(positions)`. | Writer blocks when ring full; iterator blocks until slowest reader has consumed. |
+| **Latest_only** | Any number | No shared read_index; each reader follows `commit_index` only (latest committed slot). | Writer never blocks on readers; older slots may be overwritten. DRAINING reachable. |
+| **Single_reader** | One consumer only | One shared `read_index` (tail); consumer reads in order. | Writer blocks when `(write_index - read_index) >= capacity`. DRAINING structurally unreachable. |
+| **Sync_reader** | Multiple consumers | Per-consumer next-read position in `reserved_header`; `read_index = min(positions)`. | Writer blocks when ring full; iterator blocks until slowest reader has consumed. DRAINING structurally unreachable. |
 
 ```
                     Latest_only              Single_reader              Sync_reader
   Writer     commit_index (latest)     write_index, read_index    write_index, min(positions)
   Readers    read commit_index only    one read_index, in order   per-consumer positions
   Backpressure  none                   (write-read)>=cap → block   ring full → block
+  DRAINING      reachable              unreachable (ring-full barrier)  unreachable
 ```
 
 - **Latest_only:** Best for “latest value” semantics; no ordering guarantee across consumers.
 - **Single_reader:** One consumer, FIFO; writer blocks when ring is full.
-- **Sync_reader:** Multiple consumers; all advance in lockstep; writer blocks when ring full; new consumers “join at latest” (see DATAHUB_TODO and implementation).
+- **Sync_reader:** Multiple consumers; all advance in lockstep; writer blocks when ring full; new consumers “join at latest”.
+
+> **Policy interaction with checksum and RAII:** See **HEP-CORE-0007 §5** for the full
+> policy integration table (ChecksumPolicy × ConsumerSyncPolicy matrix and RAII auto-handling).
 
 ### 3.4 Data Buffer Layout (Fixed Slots)
 
@@ -926,6 +938,11 @@ void release_read(SlotRWState* rw) {
     // (writer polls reader_count with acquire ordering)
 }
 ```
+
+> **Note:** The pseudocode in §4.2 is a simplified illustration for memory-ordering analysis.
+> The actual implementation includes DRAINING state handling and ring-full checks not shown
+> above. For the authoritative step-by-step protocol (including DRAINING transitions,
+> policy-specific acquire paths, and TOCTTOU guarantees), see **HEP-CORE-0007 §2–3**.
 
 ### 4.3 Memory Ordering Reference
 
@@ -2060,7 +2077,19 @@ context is destroyed. Any violation would cause `zmq_term()` to block indefinite
 The `zmq_context_shutdown()` function is idempotent — a `nullptr` guard prevents double-delete
 if both `GetZMQContextModule()` and `GetLifecycleModule()` are registered independently.
 
-**Lifecycle-Managed Singleton:**
+**Lifecycle-Managed Singleton (HubShell) vs. Per-Role Owned Instance (Actor):**
+
+There are two valid usage patterns for `Messenger`, depending on the process type:
+
+| Process | Pattern | Who owns Messenger |
+|---|---|---|
+| `pylabhub-hubshell` | Lifecycle singleton | `GetLifecycleModule()` allocates `g_messenger_instance`; `Messenger::get_instance()` returns ref |
+| `pylabhub-actor` role worker | Per-role owned value | Each `ProducerRoleWorker` / `ConsumerRoleWorker` owns `hub::Messenger messenger_` (a value member); `start()` calls `messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)` |
+
+In the actor model: `actor_main.cpp` does **not** call `GetLifecycleModule()`; it does **not** call
+`Messenger::get_instance()`. The ZMQ context (`GetZMQContextModule()`) remains process-wide.
+Each role independently connects its Messenger to its own `role.broker` endpoint. Failed connect
+logs a warning and continues (degraded: SHM still works without broker).
 
 `Messenger::get_instance()` is NOT a function-local static. The instance is allocated in
 `do_hub_startup` and stored in `g_messenger_instance` (a raw pointer in anonymous namespace).

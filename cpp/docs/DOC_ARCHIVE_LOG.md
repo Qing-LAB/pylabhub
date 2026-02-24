@@ -6,6 +6,41 @@
 
 ## Archive batches
 
+### 2026-02-21 (Doc Consolidation + HEP Consistency Session)
+
+Audited and consolidated todo files, code review docs, and HEP consistency.
+
+**Archived to `docs/archive/transient-2026-02-21/`:**
+
+| Archived | Reason |
+|---|---|
+| `DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md` | Phase 3 RAII complete; content in IMPL_GUIDANCE + HEP-0007 |
+| `DATAHUB_TODO.md` | Legacy monolithic TODO; superseded by `docs/todo/` subtopic system |
+| `DESIGN_VERIFICATION_RULE.md` | Content inlined into `CODE_REVIEW_GUIDANCE.md` §2 |
+| `tech_draft/BROKER_DATABLOCK_INTEGRATION.md` | Stable; content in HEP-CORE-0002 §6 |
+| `tech_draft/CHANNEL_EXPANSION_DESIGN.md` | Implemented; design in HEP-CORE-0002 §6.2 |
+| `DATAHUB_NAMING_CONVENTIONS.md` | Outdated (old "Source/Terminal" roles); new conventions in `uid_utils.hpp` + ACTOR_DESIGN.md |
+| `code_review/code_review_utils_2025-02-21.md` | Early untracked review; open items migrated to subtopic TODOs |
+| `code_review/CPP_CODE_REVIEW.md` | 2026-02-20 review (renamed); open items migrated to subtopic TODOs |
+
+**Promoted:**
+- `docs/DATAHUB_PROTOCOL_AND_POLICY.md` → `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md`
+  (full HEP header added; Mermaid diagrams added for state machine, protocol flows, heartbeat, DRAINING)
+
+**Restored to `docs/tech_draft/` (prematurely archived, design not implemented):**
+- `DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` (structure re-mapping APIs throw at runtime)
+
+**Key doc updates:**
+- `HEP-CORE-0002`: fixed incorrect state machine transitions (COMMITTED→FREE, DRAINING→FREE both wrong); added HEP-0007 cross-references
+- `HEP-CORE-0006`: corrected `send_ctrl` return type `void` → `bool`
+- `CODE_REVIEW_GUIDANCE.md`: restructured — principles + pitfall reference table; removed technical detail duplication
+- `MESSAGEHUB_TODO.md`: compacted 489→~150 lines; added 6 open code review items
+- `API_TODO.md`, `RAII_LAYER_TODO.md`, `MEMORY_LAYOUT_TODO.md`: open code review items integrated
+
+See **`docs/archive/transient-2026-02-21/README.md`** for full merge map and open-item disposition.
+
+---
+
 ### 2026-02-17 (Code Review Archived — REVIEW_utils_2026-02-15.md)
 
 All 11 items in `REVIEW_utils_2026-02-15.md` are ✅ FIXED (last items resolved 2026-02-17).

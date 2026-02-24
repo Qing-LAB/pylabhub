@@ -29,24 +29,10 @@ constexpr std::chrono::milliseconds kPollTimeout{100};
 // Universal framing: Frame 0 type byte for all ZMQ messages.
 constexpr char kFrameTypeControl = 'C';
 
-/// Convert a ChannelPattern enum to a JSON-compatible string.
-constexpr const char* pattern_to_str(ChannelPattern p) noexcept
-{
-    switch (p)
-    {
-    case ChannelPattern::Pipeline: return "Pipeline";
-    case ChannelPattern::Bidir:    return "Bidir";
-    default:                       return "PubSub";
-    }
-}
-
-/// Parse a channel pattern string; returns PubSub on unknown values.
-ChannelPattern pattern_from_str(const std::string& s) noexcept
-{
-    if (s == "Pipeline") return ChannelPattern::Pipeline;
-    if (s == "Bidir")    return ChannelPattern::Bidir;
-    return ChannelPattern::PubSub;
-}
+// Bring shared pattern helpers into scope (defined in utils/channel_pattern.hpp,
+// included via channel_registry.hpp → utils/channel_pattern.hpp).
+using pylabhub::hub::channel_pattern_to_str;
+using pylabhub::hub::channel_pattern_from_str;
 } // namespace
 
 // ============================================================================
@@ -162,17 +148,32 @@ void BrokerServiceImpl::run()
             }
 
             std::vector<zmq::message_t> frames;
-            static_cast<void>(zmq::recv_multipart(router, std::back_inserter(frames)));
+            auto num_parts = zmq::recv_multipart(router, std::back_inserter(frames));
+            if (!num_parts.has_value())
+            {
+                LOGGER_WARN("Broker: recv_multipart failed, possible ZMQ error or context termination.");
+                continue;
+            }
+
             // Expected layout: [identity, 'C', msg_type_string, json_body]
-            if (frames.size() < 4)
+            if (*num_parts < 4)
             {
                 LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})",
-                            frames.size());
+                            *num_parts);
                 continue;
             }
 
             try
             {
+                // Reject oversized payloads before string construction and JSON parse.
+                // ROUTER socket: silently drop — no mandatory reply.
+                static constexpr size_t kMaxPayloadBytes = 1u << 20; // 1 MB
+                if (frames[3].size() > kMaxPayloadBytes)
+                {
+                    LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
+                                frames[3].size());
+                    continue;
+                }
                 const std::string msg_type = frames[2].to_string();
                 nlohmann::json payload = nlohmann::json::parse(frames[3].to_string());
                 process_message(router, frames[0], msg_type, payload);
@@ -275,7 +276,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.producer_pid      = attempted_pid;
     entry.producer_hostname = req.value("producer_hostname", "");
     entry.has_shared_memory = req.value("has_shared_memory", false);
-    entry.pattern           = pattern_from_str(req.value("channel_pattern", "PubSub"));
+    entry.pattern           = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
     entry.zmq_ctrl_endpoint = req.value("zmq_ctrl_endpoint", "");
     entry.zmq_data_endpoint = req.value("zmq_data_endpoint", "");
     entry.zmq_pubkey        = req.value("zmq_pubkey", "");
@@ -360,7 +361,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     resp["consumer_count"]    =
         static_cast<uint32_t>(registry.find_consumers(channel_name).size());
     resp["has_shared_memory"] = entry->has_shared_memory;
-    resp["channel_pattern"]   = pattern_to_str(entry->pattern);
+    resp["channel_pattern"]   = channel_pattern_to_str(entry->pattern);
     resp["zmq_ctrl_endpoint"] = entry->zmq_ctrl_endpoint;
     resp["zmq_data_endpoint"] = entry->zmq_data_endpoint;
     resp["zmq_pubkey"]        = entry->zmq_pubkey;

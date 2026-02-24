@@ -35,6 +35,9 @@ enum class ChannelStatus
 /// Defined in utils/channel_pattern.hpp; shared between broker and Messenger API.
 using ChannelPattern = pylabhub::hub::ChannelPattern;
 
+// channel_pattern_to_str() and channel_pattern_from_str() are defined in
+// utils/channel_pattern.hpp (included above). Use those directly.
+
 struct ConsumerEntry
 {
     uint64_t    consumer_pid{0};

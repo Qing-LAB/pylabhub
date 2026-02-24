@@ -1,237 +1,128 @@
 # Code Review Guidance
 
-**Purpose:** Instructions for thorough and critical code review: what to check first, higher-level requirements, and test integration after review. This document is a **draft framework**; improve it with additional discussion and project-specific learnings.
+**Purpose:** Principles, pitfalls, and a lightweight review checklist.
+Technical details (build commands, file locations, concurrency patterns, API contracts)
+live in **`CLAUDE.md`**, **`docs/IMPLEMENTATION_GUIDANCE.md`**, and the **`docs/HEP/`**
+documents. This document cites those — it does not repeat them.
 
-**Doc policy:** This guidance is part of the documentation structure (**`docs/DOC_STRUCTURE.md`** §2.5). It complements **`docs/IMPLEMENTATION_GUIDANCE.md`** (implementation patterns and checklist). Execution plan and priorities live in **`docs/DATAHUB_TODO.md`**. Review findings and follow-ups are recorded in a report; when completed, the report is archived (see DOC_STRUCTURE §8). Latest: **`docs/archive/transient-2026-02-13/CODE_REVIEW_REPORT.md`** (2026-02-13).
-
-**Design verification:** All API and design claims in documentation MUST be verified against actual code. See **`docs/DESIGN_VERIFICATION_RULE.md`** and **`docs/DESIGN_VERIFICATION_CHECKLIST.md`**.
-
----
-
-## Table of Contents
-
-1. [Project Context: Structure and Where to Look](#1-project-context-structure-and-where-to-look)
-2. [First Pass: Basic Checks](#2-first-pass-basic-checks)
-3. [Higher-Level Requirements](#3-higher-level-requirements)
-4. [Design and API Verification (Mandatory)](#4-design-and-api-verification-mandatory)
-5. [Test Integration After Review](#5-test-integration-after-review)
-6. [Review Workflow Summary](#6-review-workflow-summary)
-
-Sections **2.6** and **2.7** integrate code-quality and warning practices (duplication, refactoring, Doxygen, `[[nodiscard]]`, exception specs) as standard review items.
+**Before starting a review:** check `docs/TODO_MASTER.md` (sprint status) and read the
+HEP for the changed component.
 
 ---
 
-## 1. Project Context: Structure and Where to Look
+## 1. Principles
 
-Reviewers should know where code and scripts live, how the build is organized, and which docs to cross-check. Use this section to orient before reviewing.
+### 1.1 Code Is the Authority
 
-### 1.1 Documentation Layout
+Documentation describes intent; code is the truth. Every claim in a HEP or design doc
+must be traceable to actual source. See §2 (Design Verification Rule) for the format.
 
-| Need | Document |
-|------|----------|
-| What to do next / roadmap | **`docs/DATAHUB_TODO.md`** |
-| How to implement / patterns / checklist | **`docs/IMPLEMENTATION_GUIDANCE.md`** |
-| Doc structure and naming | **`docs/DOC_STRUCTURE.md`** |
-| DataHub design spec | **`docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`** (and other HEPs in `docs/HEP/`) |
-| Test plan and Phase A–D | **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`** |
-| Topic summaries | **`docs/README/`** (e.g. README_DataHub.md, README_testing.md, README_CMake_Design.md) |
+### 1.2 Piecemeal Trust
 
-### 1.2 Build System and Targets
+Do not approve because "it looks similar to existing code." Review boundary conditions
+and error paths, not just the happy path. In security-sensitive areas (crypto, IPC
+identity, admin auth, SHM access) apply extra scrutiny regardless of change size.
 
-- **Configure (from `cpp/`):**
-  - `cmake -S . -B build` (default Debug)
-  - `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
-  - `cmake -S . -B build -DPYLABHUB_USE_SANITIZER=Address` (ASan)
-- **Build:** `cmake --build build`; `cmake --build build --target stage_all` stages all artifacts.
-- **Outputs:** `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `include/` (see **`docs/README/README_CMake_Design.md`**).
+### 1.3 Completeness Over Speed
 
-**Key targets:**
+- Config field parsed but not wired → silent no-op. Require completion or removal.
+- Public method that throws `std::runtime_error("not implemented")` → must be documented
+  and tracked in `docs/todo/`. Do not ship unmarked.
+- Struct field declared but never written or read → dead code. Remove or explain.
 
-| Target | Purpose |
-|--------|---------|
-| `pylabhub-basic` | Static lib; Layer 0/1 base (spinlock, guards, platform). Cannot depend on `pylabhub-utils`. |
-| `pylabhub-utils` | Shared lib; Layer 2/3 (Logger, FileLock, Lifecycle, MessageHub, DataBlock). Link via **`pylabhub::utils`**. |
-| `test_layer0_platform` | Platform, version API, `shm_*` |
-| `test_layer1_*` | Spinlock, recursion_guard, scope_guard, formattable |
-| `test_layer2_*` | Lifecycle, FileLock, Logger, JsonConfig, SharedSpinLock, etc. |
-| `test_layer3_datahub` | DataHub: schema, recovery, slot protocol, phase A, error handling, MessageHub |
-| `stage_tests` / `stage_all` | Populate staging directory for running tests and binaries |
+### 1.4 Duplication Is Debt
 
-### 1.3 Source and Script Locations
-
-| Area | Location | Notes |
-|------|----------|--------|
-| **Public headers** | `cpp/src/include/` | Layered umbrella headers: `plh_platform.hpp`, `plh_base.hpp`, `plh_service.hpp`, `plh_datahub.hpp`. Utils under `utils/`. |
-| **Library source** | `cpp/src/utils/` (and other `src/` subdirs) | Implementation (`.cpp`) for `pylabhub-utils`. |
-| **Tests** | `cpp/tests/` | `test_framework/` (shared infra), `test_layer0_platform/`, `test_layer1_base/`, `test_layer2_service/`, `test_layer3_datahub/`. |
-| **Examples** | `cpp/examples/` | e.g. `datahub_producer_example.cpp`. |
-| **Scripts / tools** | `cpp/tools/` | e.g. `format.sh` for code formatting. |
-| **CMake** | Root and per-directory `CMakeLists.txt`, `cmake/` helpers | Cross-reference before proposing build changes. |
-
-### 1.4 Review Scope: Focus on Our Own Code
-
-- **Focus review on our own code.** The main codebase lives under **`src/`**: public headers in `src/include/`, library implementation in `src/utils/` and other `src/` subdirs, plus `tests/`, `examples/`, and `tools/`. Review changes there for correctness, style, and alignment with IMPLEMENTATION_GUIDANCE and DATAHUB_TODO.
-- **`third_party/` is upstream code.** It is mainly submodules or vendored upstream projects; we **do not modify their source** (no patches, no edits inside third_party except as below). Treat third_party as read-only for review purposes unless a specific exception is agreed.
-- **Exception: integration only.** The only changes we make in or around third_party are **CMake scripts** that integrate those dependencies into our build: **`third_party/CMakeLists.txt`** and the **`third_party/cmake/`** subdirectory. Review those integration scripts when build or dependency behavior is in scope; do not review or change the upstream code inside third_party itself.
-
-### 1.5 Conventions (CLAUDE.md)
-
-- **Style:** `.clang-format` (LLVM-based, 4-space indent, 100-char lines, Allman braces). `.clang-tidy` with Clang treats warnings as errors.
-- **Layered includes:** Prefer one umbrella header per layer; they pull in transitive includes.
-- **ABI:** Public classes in `pylabhub-utils` use **pImpl**; destructors defined in `.cpp`.
+Identical logic in two places means two places to break. Flag duplicate conversions,
+control-flow patterns, and validation logic. File a TODO if refactor is deferred.
 
 ---
 
-## 2. First Pass: Basic Checks
+## 2. Design Verification Rule (Mandatory)
 
-Do these before deep design or concurrency review. They catch common issues and ensure the change builds and fits project norms.
+**Rule:** All API and design claims in documentation MUST be verified against actual code.
 
-### 2.1 Build and Sanity
+- [ ] Claims traced to source (file, function, relevant branches) — not "the doc says so"
+- [ ] Implemented behavior marked `- [x]` with a code reference (file:line or function)
+- [ ] Unverified claims marked `- [ ] Not yet verified` until traced
+- [ ] Doc/code disagreement resolved: update the doc (or fix the code and update the doc)
 
-- [ ] **Configure and build** from a clean or incremental build: `cmake -S cpp -B cpp/build && cmake --build cpp/build`. No configure or compile errors.
-- [ ] **Relevant targets** (e.g. library + the test executable that exercises the change) build successfully.
-- [ ] **Staging** (if tests or examples are touched): `cmake --build cpp/build --target stage_tests` (or `stage_all`) completes; runnables are under `build/stage-<buildtype>/`.
+**Checkpoint format** (for design docs):
 
-### 2.2 Style and Linting
-
-- [ ] **Format:** Code conforms to project style (run `./tools/format.sh` from `cpp/` if applicable).
-- [ ] **Linter:** No new clang-tidy (or equivalent) warnings; project may treat warnings as errors.
-- [ ] **No stray debug code:** No commented-out debug prints, temporary `#if 0`, or leftover TODOs that should be tracked in DATAHUB_TODO.
-
-### 2.3 Includes and Exports
-
-- [ ] **Includes:** Correct layer usage (no unnecessary higher-layer includes in lower-layer code). `pylabhub-basic` must not depend on `pylabhub-utils`.
-- [ ] **Exports:** Public API symbols in `pylabhub-utils` use **`PYLABHUB_UTILS_EXPORT`** where required for shared library visibility.
-
-### 2.4 Obvious Correctness
-
-- [ ] **Resource ownership:** RAII where appropriate; no leaks (handles, file descriptors, shared memory).
-- [ ] **Error paths:** Error conditions are handled (return codes in C API; exceptions or returns in C++ where documented); no silent ignore of errors.
-- [ ] **Magic numbers / hardcoded paths:** Avoid; use named constants or config. Document any remaining ones.
-
-### 2.5 Documentation
-
-- [ ] **Comments:** Non-obvious logic and public API contracts are explained.
-- [ ] **Docs in sync:** If behavior or design changed, relevant docs are updated (HEP, IMPLEMENTATION_GUIDANCE, or README as per DOC_STRUCTURE).
-
-### 2.6 Code Quality and Maintainability (common practice)
-
-Reviewers should routinely check the following; see **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring and (archived) **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`** for detailed patterns and priorities.
-
-- [ ] **Duplication and redundancy:** No repeated blocks that could be a shared helper (e.g. timeout/backoff, handle construction, buffer pointer calculation). Obsolete or deprecated code is either removed or clearly marked and tracked.
-- [ ] **Layered design and abstraction:** Public API follows the intended layers (e.g. DataBlock: prefer transaction API; C API only where justified). Common tasks are abstracted; no unnecessary bypass of abstraction.
-- [ ] **Refactoring opportunities:** Where the same logic appears in multiple places, consider extracting a common function; if deferred, note in IMPLEMENTATION_GUIDANCE § Deferred refactoring or DATAHUB_TODO.
-- [ ] **Naming and consistency:** Variable names are consistent (e.g. `slot_index` vs `slot_id`); comments match the code; no misleading or stale comments.
-- [ ] **Developer-friendly comments:** High-risk or subtle areas are commented (e.g. TOCTTOU, zombie reclaim, single-point creation, ABI-sensitive layout). Things that need attention are called out.
-- [ ] **Doxygen and public API:** Public classes and public API functions have Doxygen (`@brief`, `@param`, `@return` as appropriate). Lifetime and thread-safety notes where relevant.
-- [ ] **Build warnings:** Build completes with **zero warnings** (e.g. exception spec mismatch, unused result for `[[nodiscard]]`, unused captures). See §2.7 for `[[nodiscard]]` and exception specs.
-- [ ] **`[[nodiscard]]` usage:** Functions that return a meaningful result (e.g. success/failure) keep `[[nodiscard]]`; call sites must **check and handle** the return (log, propagate error, or fail). Do not ignore with `(void)` unless the API is explicitly documented as best-effort and we have decided not to use `[[nodiscard]]` for it. **We lead by example:** in our own code we check returns from `[[nodiscard]]` APIs and handle failure (e.g. log warning, set error code); otherwise we undermine the expectation that users should check. Remove `[[nodiscard]]` only where the return value is genuinely optional and the API documents that.
-
-### 2.7 Warnings and Exception Specifications
-
-- [ ] **No implicit exception spec mismatch:** Destructors and other functions declared `noexcept` in the header must be defined with `noexcept` in the implementation (e.g. `~Foo() noexcept = default;` in the .cpp).
-- [ ] **No unused-result warnings:** For functions marked `[[nodiscard]]`, every call site **checks and handles** the return (log, propagate, or fail). Use `(void)expr;` only where documented in **`docs/NODISCARD_DECISIONS.md`** (e.g. specific tests that intentionally do not check). Any new “intentionally ignore” site must be added there with rationale for discussion.
+```markdown
+- [x] **Verified** – Producer stores schema hash in header.
+  - Code: data_block.cpp create_datablock_producer_impl() lines 3069–3095.
+```
 
 ---
 
-## 3. Higher-Level Requirements
+## 3. Known Pitfalls (Project-Specific)
 
-After the first pass, check design and project-specific requirements. Use IMPLEMENTATION_GUIDANCE and the relevant HEP as the source of truth.
+Real patterns that have surfaced in this codebase. Full detail (with code examples) is
+in **`docs/IMPLEMENTATION_GUIDANCE.md`** § "Common Pitfalls and Solutions".
 
-### 3.1 Architecture and ABI
-
-- [ ] **pImpl:** All public classes in `pylabhub-utils` use the pImpl idiom; private members only in `Impl` in `.cpp`; destructor defined in `.cpp`.
-- [ ] **Layered API:** DataBlock: prefer Layer 2 (transaction API / guards); use C API or lower layers only when justified (e.g. hot path, C bindings). No inappropriate bypass of abstraction.
-- [ ] **Dual library rule:** `pylabhub-basic` has no dependency on `pylabhub-utils`; link to **`pylabhub::utils`** (alias target), not the raw library name.
-
-### 3.2 Design and Spec Alignment
-
-- [ ] **HEP alignment:** Changes that affect behavior or contract match the relevant HEP (e.g. HEP-CORE-0002 for DataHub). HEP implementation status section (if present) is updated or referenced from DATAHUB_TODO.
-- [ ] **Lifecycle:** If the code registers with the lifecycle (init/shutdown), it uses `ModuleDef` and `GetLifecycleModule()`; ordering and teardown are correct. Code that uses DataBlock/MessageHub must run after the Data Exchange Hub (and typically Logger, CryptoUtils) is initialized via `LifecycleGuard` in main(); factory functions enforce this. See **`docs/IMPLEMENTATION_GUIDANCE.md`** § Lifecycle and **`src/hubshell.cpp`**.
-- [ ] **Config and single point of access:** DataBlock creation validates config **before** any memory creation; required parameters are explicit (no silent defaults for policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity). See IMPLEMENTATION_GUIDANCE and DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.
-
-### 3.3 Concurrency and Correctness
-
-- [ ] **Memory ordering:** Atomics use correct ordering (e.g. acquire/release for cross-thread visibility); ARM and x86 considerations as in IMPLEMENTATION_GUIDANCE.
-- [ ] **TOCTTOU / races:** No time-of-check-time-of-use races (e.g. slot state checked then used); reader/writer protocol and reclaim logic are consistent.
-- [ ] **PID and zombie reclaim:** PID reuse and zombie writer/reader reclaim (e.g. `is_process_alive`) are handled where applicable.
-- [ ] **Checksums and schema:** If checksums or schema validation are in scope, they are validated on the right paths; heartbeats updated for consumers where required.
-
-### 3.4 Error Handling and Observability
-
-- [ ] **C vs C++:** C API uses return codes (no exceptions); C++ may throw for contract/config violations; hot path avoids unnecessary throws.
-- [ ] **noexcept:** Public API that is not supposed to throw is marked `noexcept`; nothing that can throw is marked `noexcept`.
-- [ ] **Logging and metrics:** Errors logged (e.g. LOGGER_ERROR/WARN); metrics updated on error paths where applicable.
-
-### 3.5 Performance (Where Relevant)
-
-- [ ] **Hot path:** No unnecessary exceptions or heavy work in hot paths.
-- [ ] **Atomics:** Relaxed ordering only where safe; backoff for spin loops; no unnecessary barriers.
-
-Use the **Code Review Checklist** in **`docs/IMPLEMENTATION_GUIDANCE.md`** (Before Submitting PR, Design Review, Performance Review) as the authoritative project checklist; this section summarizes and situates it. For duplication, refactoring opportunities, Doxygen gaps, and developer-facing comments, see **`docs/IMPLEMENTATION_GUIDANCE.md`** § Deferred refactoring and the archived **`docs/archive/transient-2026-02-13/CODE_QUALITY_AND_REFACTORING_ANALYSIS.md`**.
+| Pitfall | Short summary | Full detail |
+|---|---|---|
+| **Config field not wired** | Field parsed from JSON, never consumed by runtime (silent no-op) | IMPL_GUIDANCE Pitfall 12; MESSAGEHUB_TODO.md |
+| **API throws at runtime** | Public method callable but throws "not implemented" | IMPL_GUIDANCE Pitfall 13; MEMORY_LAYOUT_TODO.md |
+| **Auth after parse** | Large input exhausts memory before auth check fires | IMPL_GUIDANCE Pitfall 14; MESSAGEHUB_TODO.md |
+| **Dead struct field** | Declared, never written or read | MESSAGEHUB_TODO.md (`PyExecResult::result_repr`) |
+| **Dead module variable** | Written in startup, never read by any code | MESSAGEHUB_TODO.md (`g_py_initialized`) |
+| **Incomplete dispatcher** | Callback registry omits some lifecycle hooks | MESSAGEHUB_TODO.md (`_registered_roles`) |
+| **Duplicate conversion** | Same enum↔string in two files — risk of drift | API_TODO.md (ChannelPattern); IMPL_GUIDANCE §Deferred refactoring |
+| **HEP/code signature mismatch** | Doc says `void`, impl returns `bool` | HEP-CORE-0006 `send_ctrl` (fixed 2026-02-21) |
+| **`std::atomic<T>` in POD struct** | GCC passes, MSVC fails — not portable | HEP-CORE-0007 §9 (full analysis) |
+| **pImpl destructor not in `.cpp`** | `unique_ptr<Impl>` requires complete type | IMPL_GUIDANCE §pImpl |
+| **Shallow schema validation** | Arbitrary strings pass typed-field validation | MESSAGEHUB_TODO.md (actor schema) |
 
 ---
 
-## 4. Design and API Verification (Mandatory)
+## 4. Review Checklist
 
-**Rule:** All API and design claims in documentation MUST be verified against actual code. Documentation does not imply implementation.
+**Meta checks** (code and tests must pass — use CLAUDE.md for exact commands):
 
-- [ ] **Claims checked against code:** For any design doc or API description under review, the reviewer has traced the described behavior to actual source (file, function, and relevant branches). No reliance on "the doc says so" without code verification.
-- [ ] **Verification checkboxes in design docs:** Design and API documents that describe implemented behavior include verification checkboxes (e.g. `- [x]`) with a **code reference** (file:line or function name). Unverified claims are marked (e.g. `- [ ]` or "Not yet verified") so readers treat them as suspect.
-- [ ] **Single source of truth:** Code is the authority. If the doc and code disagree, the doc is wrong until updated to match the code (or the code is fixed to match the intended design, then doc updated).
+- [ ] Build completes with zero warnings
+- [ ] Full test suite passes (no regressions from the 426-test baseline)
+- [ ] Relevant HEP read; change aligns with spec or HEP is updated
 
-See **`docs/DESIGN_VERIFICATION_RULE.md`** for the full rule and checkbox format, and **`docs/DESIGN_VERIFICATION_CHECKLIST.md`** for the current dual-schema design verification and code references.
+**Project-specific pitfall checks** (see §3 for detail; IMPL_GUIDANCE for code examples):
 
----
+- [ ] New config field: parsed AND consumed by runtime (no silent no-op)
+- [ ] New public API: no unguarded runtime throw; tracked in TODO if deferred
+- [ ] New struct field: confirmed write site and read site
+- [ ] New callback registry: all lifecycle hooks listed (on_init, on_stop, etc.)
+- [ ] New conversion function: not already duplicated elsewhere in codebase
+- [ ] HEP/header signature matches actual implementation
+- [ ] `DataBlockT` / `FlexZoneT` struct: plain POD types only (no `std::atomic<T>`)
+- [ ] pImpl class: destructor defined in `.cpp`
+- [ ] External input entry point: size bounded before parse; auth before body
+- [ ] C API tests preserved: never delete `test_slot_rw_coordinator` or `test_recovery_api`
 
-## 5. Test Integration After Review
-
-Before approving, ensure tests exist and are run so that the change is validated in the project’s test environment.
-
-### 5.1 Test Structure (Quick Reference)
-
-- **Layer 0:** `test_layer0_platform` — platform, version, `shm_*`.
-- **Layer 1:** `test_layer1_*` — base utilities (spinlock, guards).
-- **Layer 2:** `test_layer2_*` — services (FileLock, Logger, Lifecycle, etc.); multi-process workers where applicable.
-- **Layer 3:** `test_layer3_datahub` — DataHub protocol, schema, recovery, slot protocol, MessageHub, error handling.
-
-Details: **`docs/README/README_testing.md`**; test plan and phases: **`docs/testing/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md`**.
-
-### 5.2 What to Run After Review
-
-- [ ] **Build and stage tests:** `cmake --build cpp/build --target stage_tests` (or rely on `PYLABHUB_STAGE_ON_BUILD=ON`).
-- [ ] **Full suite (recommended before merge):**  
-  `ctest --test-dir cpp/build --output-on-failure`  
-  or from `cpp/build`: `ctest --output-on-failure`.
-- [ ] **Relevant subset:** Run the layer or suite that covers the change, e.g.  
-  `ctest --test-dir cpp/build -R "^DataBlockTest"`  
-  `ctest --test-dir cpp/build -R "test_layer3_datahub"`  
-  or run the staged executable with a filter, e.g.  
-  `./build/stage-debug/tests/test_layer3_datahub --gtest_filter=SlotProtocolTest.*`
-- [ ] **Sanitizers (if available):** e.g. AddressSanitizer build and run:  
-  `cmake -S cpp -B cpp/build-asan -DPYLABHUB_USE_SANITIZER=Address` then build and run tests. Fix any reported issues before merge.
-- [ ] **Multi-process / concurrency:** If the change affects IPC or concurrency, run the corresponding multi-process or concurrent tests (see test plan and README_testing).
-
-### 5.3 Test Quality
-
-- [ ] **C API tests preserved:** The C API is the foundation; other layers are built on it. **Do not delete C API tests.** See **`docs/C_API_TEST_POLICY.md`** for the list of mandatory test assets (e.g. `test_slot_rw_coordinator.cpp`, `test_recovery_api.cpp`, recovery_workers, slot_protocol_workers C API usage). Any change that removes or disables these must be rejected unless the C API itself is explicitly removed by design.
-- [ ] **New behavior covered:** New or modified behavior has corresponding tests (unit or integration as appropriate).
-- [ ] **No regressions:** Existing tests that touch the changed area still pass; no unnecessary disable or skip without a documented reason.
-- [ ] **Cross-platform:** Tests are run (or documented as skipped) on all supported platforms where applicable; no silent platform-only assumptions.
-- [ ] **Test-fix reasoning:** When reviewing fixes for failing tests, apply the discipline in IMPLEMENTATION_GUIDANCE § “Responding to test failures”: verify whether the failure revealed a bug or a flawed test; avoid tweaking tests to pass without scrutiny, and avoid changing production code just to satisfy incorrect test expectations.
+**Architecture checks** — see **`docs/IMPLEMENTATION_GUIDANCE.md`** § "Before Submitting PR"
+for the full checklist covering pImpl, layers, ABI, concurrency, `[[nodiscard]]`, and
+`noexcept` correctness.
 
 ---
 
-## 6. Review Workflow Summary
+## 5. Workflow
 
-1. **Orient:** Use §1 to locate changed files, build targets, and relevant docs (HEP, IMPLEMENTATION_GUIDANCE, DATAHUB_TODO, test plan).
-2. **First pass (§2):** Build, format/lint, includes/exports, obvious correctness, docs, and code quality (§2.6: duplication, abstraction, naming, comments, Doxygen). Build must be warning-free (§2.7: exception specs, `[[nodiscard]]`).
-3. **Deep pass (§3):** Architecture (pImpl, layers, ABI), design (HEP, lifecycle, config), concurrency (ordering, TOCTTOU, PID), error handling, performance; cross-check with IMPLEMENTATION_GUIDANCE checklist.
-4. **Test integration (§4):** Run appropriate tests (full or subset), sanitizers if applicable, multi-process if relevant; confirm coverage and no regressions.
-5. **Decide:** Approve, request changes, or escalate; capture any project-specific follow-ups (e.g. DATAHUB_TODO items or doc updates).
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+flowchart LR
+    A["Orient\nHEP + TODO_MASTER"] --> B["Build + tests\n(zero warnings, all pass)"]
+    B --> C["Pitfalls scan\n(§3 table)"]
+    C --> D["Verify claims\nagainst code (§2)"]
+    D --> E["Architecture\n(IMPLEMENTATION_GUIDANCE)"]
+    E --> F{"Findings?"}
+    F -->|none| G["Approve"]
+    F -->|blocking| H["Request changes\n+ file TODO items"]
+    F -->|non-blocking| I["Note + approve\n+ file TODO items"]
+```
 
 ---
 
 **Revision History**
 
-- **Draft** (2026-02-13): Initial draft framework for code review guidance; to be refined with additional discussion.
+- **2026-02-21:** Restructured — technical details removed (now cited not repeated);
+  principles in §1; design verification rule inlined (§2, from archived DESIGN_VERIFICATION_RULE.md);
+  pitfalls condensed to reference table (§3); checklist trimmed to non-IMPL_GUIDANCE items.
+- **Draft (2026-02-13):** Initial draft framework.

@@ -6,7 +6,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
+#include <string_view>
 
 namespace pylabhub::actor
 {
@@ -89,6 +92,27 @@ SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
         fd.type_str = f["type"].get<std::string>();
         fd.count    = f.value("count",  uint32_t{1});
         fd.length   = f.value("length", uint32_t{0});
+
+        // Validate type string
+        static constexpr std::array<std::string_view, 13> kValidTypes = {
+            "bool", "int8", "int16", "int32", "int64",
+            "uint8", "uint16", "uint32", "uint64",
+            "float32", "float64", "string", "bytes"};
+        if (!std::any_of(kValidTypes.begin(), kValidTypes.end(),
+                [&fd](std::string_view t) { return t == fd.type_str; }))
+        {
+            throw std::runtime_error(
+                "Schema: field '" + fd.name +
+                "' has unknown type '" + fd.type_str +
+                "' (valid: bool, int8-64, uint8-64, float32/64, string, bytes)");
+        }
+
+        // count must be ≥ 1
+        if (fd.count == 0)
+        {
+            throw std::runtime_error(
+                "Schema: field '" + fd.name + "' has 'count' = 0 (must be >= 1)");
+        }
 
         // Validate length for string/bytes types
         if ((fd.type_str == "string" || fd.type_str == "bytes") && fd.length == 0)
