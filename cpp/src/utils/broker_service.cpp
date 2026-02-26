@@ -9,10 +9,12 @@
 #include <nlohmann/json.hpp>
 #include <zmq.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace pylabhub::broker
@@ -33,6 +35,44 @@ constexpr char kFrameTypeControl = 'C';
 // included via channel_registry.hpp → utils/channel_pattern.hpp).
 using pylabhub::hub::channel_pattern_to_str;
 using pylabhub::hub::channel_pattern_from_str;
+
+/// Returns true if channel_name matches the glob pattern ('*' wildcard only).
+/// Dots are treated as literal characters, not anchors.
+bool channel_name_matches_glob(const std::string& name, const std::string& glob) noexcept
+{
+    const char* n       = name.c_str();
+    const char* g       = glob.c_str();
+    const char* star_g  = nullptr; ///< Position of the last '*' in glob
+    const char* star_n  = nullptr; ///< Saved name position after last '*' mismatch
+
+    while (*n != '\0')
+    {
+        if (*g == '*')
+        {
+            star_g = g++;
+            star_n = n;
+        }
+        else if (*g == *n)
+        {
+            ++g;
+            ++n;
+        }
+        else if (star_g != nullptr)
+        {
+            g = star_g + 1;
+            n = ++star_n;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    while (*g == '*')
+    {
+        ++g;
+    }
+    return *g == '\0';
+}
 } // namespace
 
 // ============================================================================
@@ -98,6 +138,20 @@ public:
 
     /// Timestamp of last consumer liveness check (for interval gating).
     std::chrono::steady_clock::time_point m_last_consumer_check{};
+
+    // ── Connection policy (Phase 3) ────────────────────────────────────────────
+    /// Resolve effective policy for a channel: per-channel override > hub-wide default.
+    [[nodiscard]] ConnectionPolicy effective_policy(const std::string& channel_name) const noexcept;
+
+    /// Check whether the given identity is allowed by the effective policy.
+    /// Returns a non-empty error JSON if the connection should be rejected; std::nullopt if allowed.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<nlohmann::json>
+    check_connection_policy(const std::string& channel_name,
+                            const std::string& actor_name,
+                            const std::string& actor_uid,
+                            const std::string& corr_id,
+                            bool               is_consumer) const;
 };
 
 // ============================================================================
@@ -269,17 +323,28 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
+    // ── Connection policy check (Phase 3) ───────────────────────────────────
+    const std::string actor_name = req.value("actor_name", "");
+    const std::string actor_uid  = req.value("actor_uid", "");
+    if (auto err = check_connection_policy(channel_name, actor_name, actor_uid, corr_id,
+                                           /*is_consumer=*/false))
+    {
+        return *err;
+    }
+
     ChannelEntry entry;
-    entry.shm_name          = req.value("shm_name", "");
-    entry.schema_hash       = attempted_schema;
-    entry.schema_version    = req.value("schema_version", uint32_t{0});
-    entry.producer_pid      = attempted_pid;
-    entry.producer_hostname = req.value("producer_hostname", "");
-    entry.has_shared_memory = req.value("has_shared_memory", false);
-    entry.pattern           = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
-    entry.zmq_ctrl_endpoint = req.value("zmq_ctrl_endpoint", "");
-    entry.zmq_data_endpoint = req.value("zmq_data_endpoint", "");
-    entry.zmq_pubkey        = req.value("zmq_pubkey", "");
+    entry.shm_name              = req.value("shm_name", "");
+    entry.schema_hash           = attempted_schema;
+    entry.schema_version        = req.value("schema_version", uint32_t{0});
+    entry.producer_pid          = attempted_pid;
+    entry.producer_hostname     = req.value("producer_hostname", "");
+    entry.producer_actor_name   = actor_name;
+    entry.producer_actor_uid    = actor_uid;
+    entry.has_shared_memory     = req.value("has_shared_memory", false);
+    entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
+    entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
+    entry.zmq_data_endpoint     = req.value("zmq_data_endpoint", "");
+    entry.zmq_pubkey            = req.value("zmq_pubkey", "");
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         entry.metadata = req["metadata"];
@@ -419,9 +484,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                           "Channel '" + channel_name + "' is not registered");
     }
 
+    // ── Connection policy check (Phase 3) ───────────────────────────────────
+    const std::string actor_name = req.value("consumer_name", "");
+    const std::string actor_uid  = req.value("consumer_uid", "");
+    if (auto err = check_connection_policy(channel_name, actor_name, actor_uid, corr_id,
+                                           /*is_consumer=*/true))
+    {
+        return *err;
+    }
+
     ConsumerEntry entry;
-    entry.consumer_pid      = req.value("consumer_pid", uint64_t{0});
-    entry.consumer_hostname = req.value("consumer_hostname", "");
+    entry.consumer_pid       = req.value("consumer_pid", uint64_t{0});
+    entry.consumer_hostname  = req.value("consumer_hostname", "");
+    entry.actor_name         = actor_name;
+    entry.actor_uid          = actor_uid;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
     registry.register_consumer(channel_name, std::move(entry));
@@ -484,6 +560,77 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
     }
+}
+
+// ============================================================================
+// Connection policy helpers (Phase 3)
+// ============================================================================
+
+ConnectionPolicy BrokerServiceImpl::effective_policy(const std::string& channel_name) const noexcept
+{
+    for (const auto& cp : cfg.channel_policies)
+    {
+        if (channel_name_matches_glob(channel_name, cp.channel_glob))
+        {
+            return cp.policy;
+        }
+    }
+    return cfg.connection_policy;
+}
+
+std::optional<nlohmann::json>
+BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
+                                            const std::string& actor_name,
+                                            const std::string& actor_uid,
+                                            const std::string& corr_id,
+                                            bool               is_consumer) const
+{
+    const ConnectionPolicy policy  = effective_policy(channel_name);
+    const std::string      role_str = is_consumer ? "consumer" : "producer";
+
+    if (policy == ConnectionPolicy::Required || policy == ConnectionPolicy::Verified)
+    {
+        if (actor_name.empty() || actor_uid.empty())
+        {
+            LOGGER_WARN("Broker: policy={} rejected {} for '{}': missing actor_name/uid",
+                        connection_policy_to_str(policy), role_str, channel_name);
+            return make_error(corr_id, "IDENTITY_REQUIRED",
+                              fmt::format("Connection policy '{}' requires actor_name and actor_uid",
+                                          connection_policy_to_str(policy)));
+        }
+    }
+
+    if (policy == ConnectionPolicy::Verified)
+    {
+        const bool found = std::any_of(
+            cfg.known_actors.begin(), cfg.known_actors.end(),
+            [&](const KnownActor& ka)
+            {
+                if (ka.name != actor_name || ka.uid != actor_uid)
+                {
+                    return false;
+                }
+                const bool role_ok = ka.role.empty() || ka.role == "any" || ka.role == role_str;
+                return role_ok;
+            });
+        if (!found)
+        {
+            LOGGER_WARN("Broker: Verified policy rejected {} '{}' uid='{}' for '{}': "
+                        "not in known_actors",
+                        role_str, actor_name, actor_uid, channel_name);
+            return make_error(corr_id, "NOT_IN_KNOWN_ACTORS",
+                              fmt::format("Actor '{}' (uid={}) is not in the hub's known_actors list",
+                                          actor_name, actor_uid));
+        }
+    }
+
+    if (policy != ConnectionPolicy::Open && (!actor_name.empty() || !actor_uid.empty()))
+    {
+        LOGGER_INFO("Broker: {} identity recorded for '{}': name='{}' uid='{}'",
+                    role_str, channel_name, actor_name, actor_uid);
+    }
+
+    return std::nullopt;
 }
 
 // ============================================================================

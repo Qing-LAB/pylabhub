@@ -38,17 +38,17 @@ static std::string make_lock_key(const std::filesystem::path &lockpath)
     try
     {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-        std::wstring longw = pylabhub::format_tools::win32_to_long_path(lockpath);
+        std::wstring long_path_wide = pylabhub::format_tools::win32_to_long_path(lockpath);
 
-        if (longw.empty())
+        if (long_path_wide.empty())
         {
             return lockpath.generic_string();
         }
 
-        for (auto &ch : longw)
+        for (auto &ch : long_path_wide)
             ch = towlower(ch);
 
-        return pylabhub::format_tools::ws2s(longw);
+        return pylabhub::format_tools::ws2s(long_path_wide);
 #else
         // Use the lexically-normal absolute representation for a deterministic key
         try
@@ -103,14 +103,14 @@ struct FileLockImpl
     std::filesystem::path path;
     std::filesystem::path canonical_lock_file_path;
     bool valid = false;
-    std::error_code ec;
+    std::error_code error_code;
     std::string lock_key;
     std::shared_ptr<ProcLockState> proc_state;
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
     void *handle = nullptr;
 #else
-    int fd = -1;
+    int file_descriptor = -1;
 #endif
 };
 
@@ -119,12 +119,6 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *ptr)
     if (ptr == nullptr)
     {
         return;
-    }
-
-    if (ptr->valid)
-    {
-        // This is noisy, so keep it at TRACE level
-        // LOGGER_DEBUG("FileLock: Releasing lock for '{}'", p->path.string());
     }
 
     if (ptr->valid)
@@ -138,13 +132,13 @@ void FileLock::FileLockImplDeleter::operator()(FileLockImpl *ptr)
             ptr->handle = nullptr;
         }
 #else
-        if (ptr->fd != -1)
+        if (ptr->file_descriptor != -1)
         {
             // Release using flock (kernel advisory whole-file unlock)
             // Best-effort: ignore errors on unlock/close path.
-            flock(ptr->fd, LOCK_UN);
-            ::close(ptr->fd);
-            ptr->fd = -1;
+            flock(ptr->file_descriptor, LOCK_UN);
+            ::close(ptr->file_descriptor);
+            ptr->file_descriptor = -1;
         }
 #endif
     }
@@ -279,7 +273,7 @@ bool FileLock::valid() const noexcept
 }
 std::error_code FileLock::error_code() const noexcept
 {
-    return pImpl ? pImpl->ec : std::error_code();
+    return pImpl ? pImpl->error_code : std::error_code();
 }
 
 std::optional<std::filesystem::path> FileLock::get_locked_resource_path() const noexcept
@@ -371,7 +365,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
         return;
     }
     pImpl->valid = false;
-    pImpl->ec.clear();
+    pImpl->error_code.clear();
 
     if (!prepare_lock_path(pImpl, type))
     {
@@ -384,7 +378,7 @@ static void open_and_lock(FileLockImpl *pImpl, ResourceType type, LockMode mode,
 
     if (auto err_code = ensure_lock_directory(pImpl); err_code)
     {
-        pImpl->ec = err_code;
+        pImpl->error_code = err_code;
         rollback_process_local_lock(pImpl);
         return;
     }
@@ -403,7 +397,7 @@ static bool prepare_lock_path(FileLockImpl *pImpl, ResourceType type)
     auto lockpath = FileLock::get_expected_lock_fullname_for(pImpl->path, type);
     if (lockpath.empty())
     {
-        pImpl->ec = std::make_error_code(std::errc::invalid_argument);
+        pImpl->error_code = std::make_error_code(std::errc::invalid_argument);
         return false;
     }
     pImpl->canonical_lock_file_path = lockpath;
@@ -420,11 +414,11 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
     }
     catch (...)
     {
-        pImpl->ec = std::make_error_code(std::errc::io_error);
+        pImpl->error_code = std::make_error_code(std::errc::io_error);
         return false;
     }
 
-    std::unique_lock<std::mutex> regl(g_proc_registry_mtx);
+    std::unique_lock<std::mutex> registry_lock(g_proc_registry_mtx);
     auto &state_ref = g_proc_locks[pImpl->lock_key];
     if (!state_ref)
     {
@@ -436,7 +430,7 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
     {
         if (state_ref->owners > 0)
         {
-            pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
+            pImpl->error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
             pImpl->proc_state.reset();
             return false;
         }
@@ -469,12 +463,12 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
             {
                 if (timeout)
                 {
-                    acquired = state_ref->cv.wait_for(regl, *timeout,
+                    acquired = state_ref->cv.wait_for(registry_lock, *timeout,
                                                       [&] { return state_ref->owners == 0; });
                 }
                 else
                 {
-                    state_ref->cv.wait(regl, [&] { return state_ref->owners == 0; });
+                    state_ref->cv.wait(registry_lock, [&] { return state_ref->owners == 0; });
                     acquired = true;
                 }
             }
@@ -485,7 +479,7 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, LockMode mode,
 
             if (!acquired)
             {
-                pImpl->ec = std::make_error_code(std::errc::timed_out);
+                pImpl->error_code = std::make_error_code(std::errc::timed_out);
                 pImpl->proc_state.reset();
                 return false;
             }
@@ -558,7 +552,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     }
     catch (...)
     {
-        pImpl->ec = std::make_error_code(std::errc::io_error);
+        pImpl->error_code = std::make_error_code(std::errc::io_error);
         return false;
     }
     // IMPORTANT: ALWAYS MAKE SURE THE SHARE FLAGS INCLUDE FILE_SHARE_DELETE !
@@ -568,7 +562,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 
     if (h == INVALID_HANDLE_VALUE)
     {
-        pImpl->ec = std::error_code(GetLastError(), std::system_category());
+        pImpl->error_code = std::error_code(GetLastError(), std::system_category());
         return false;
     }
 
@@ -596,7 +590,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         }
 
         DWORD err = GetLastError();
-        pImpl->ec = std::error_code(static_cast<int>(err), std::system_category());
+        pImpl->error_code = std::error_code(static_cast<int>(err), std::system_category());
 
         if (mode == LockMode::NonBlocking || err != ERROR_LOCK_VIOLATION)
         {
@@ -605,7 +599,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
 
         if (timeout && (std::chrono::steady_clock::now() - start_time >= *timeout))
         {
-            pImpl->ec = std::make_error_code(std::errc::timed_out);
+            pImpl->error_code = std::make_error_code(std::errc::timed_out);
             return false;
         }
         std::this_thread::sleep_for(LOCK_POLLING_INTERVAL);
@@ -629,7 +623,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
     {
         // If O_NOFOLLOW caused ELOOP and we want to permit creation via symlink fallback,
         // we could retry without O_NOFOLLOW. For now, treat ELOOP as an error (safer).
-        pImpl->ec = std::error_code(errno, std::generic_category());
+        pImpl->error_code = std::error_code(errno, std::generic_category());
         return false;
     }
 #ifndef O_CLOEXEC
@@ -659,14 +653,14 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             PLH_DEBUG("PID {} - Successfully acquired blocking flock(fd={}) for {}", getpid(),
                       lock_fd, os_path.string());
-            pImpl->fd = lock_fd;
+            pImpl->file_descriptor = lock_fd;
             pImpl->valid = true;
             return true;
         }
         int err = errno;
         PLH_DEBUG("PID {} - Blocking flock(fd={}) failed for {}. Error: {}", getpid(), lock_fd,
                   os_path.string(), std::strerror(err));
-        pImpl->ec = std::error_code(err, std::generic_category());
+        pImpl->error_code = std::error_code(err, std::generic_category());
         return false;
     }
 
@@ -688,7 +682,7 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         {
             PLH_DEBUG("PID {} - Successfully acquired non-blocking flock(fd={}) for {}", getpid(),
                       lock_fd, os_path.string());
-            pImpl->fd = lock_fd;
+            pImpl->file_descriptor = lock_fd;
             pImpl->valid = true;
             return true;
         }
@@ -700,19 +694,19 @@ static bool run_os_lock_loop(FileLockImpl *pImpl, LockMode mode,
         // else.
         if (err != EWOULDBLOCK && err != EAGAIN)
         {
-            pImpl->ec = std::error_code(err, std::generic_category());
+            pImpl->error_code = std::error_code(err, std::generic_category());
             return false;
         }
 
         if (mode == LockMode::NonBlocking)
         {
-            pImpl->ec = std::make_error_code(std::errc::resource_unavailable_try_again);
+            pImpl->error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
             return false;
         }
 
         if (timeout && (std::chrono::steady_clock::now() - start_time >= *timeout))
         {
-            pImpl->ec = std::make_error_code(std::errc::timed_out);
+            pImpl->error_code = std::make_error_code(std::errc::timed_out);
             return false;
         }
 

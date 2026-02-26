@@ -181,10 +181,11 @@ policy. This is a Cat 2 (non-fatal, recoverable) error path.
 JSON: `"loop_timing": "fixed_pace"` (default) | `"compensating"`.
 Observability: `api.loop_overrun_count()`, `api.last_cycle_work_us()`.
 
-#### 2.6.2 RAII-layer: LoopPolicy (Pass 2 — not yet implemented)
+#### 2.6.2 RAII-layer: LoopPolicy ✅ Implemented (Pass 3 complete 2026-02-25)
 
-**`LoopPolicy`** — `src/include/utils/data_block.hpp` *(planned)*
+**`LoopPolicy`** — `src/include/utils/data_block.hpp`
 **Applied by**: `SlotIterator::operator++()` (sleep); `acquire_write_slot()` (overrun detection).
+See `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` — 5 tests passing.
 
 | Value | Sleep behaviour | Overrun tracking |
 |-------|----------------|-----------------|

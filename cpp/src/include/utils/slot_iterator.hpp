@@ -28,6 +28,7 @@
 #include <chrono>
 #include <iterator>
 #include <memory>
+#include <thread>
 
 namespace pylabhub::hub
 {
@@ -169,6 +170,7 @@ class SlotIterator
           m_current_result(std::move(other.m_current_result)),
           m_done(other.m_done),
           m_first_acquired(other.m_first_acquired),
+          m_last_acquire_(other.m_last_acquire_),
           m_current_slot(std::move(other.m_current_slot))
     {
         if constexpr (IsWrite)
@@ -208,6 +210,7 @@ class SlotIterator
             m_current_result = std::move(other.m_current_result);
             m_done = other.m_done;
             m_first_acquired = other.m_first_acquired;
+            m_last_acquire_ = other.m_last_acquire_;
             m_current_slot = std::move(other.m_current_slot);
 
             if constexpr (IsWrite)
@@ -257,6 +260,8 @@ class SlotIterator
         {
             m_handle->update_heartbeat();
         }
+
+        apply_loop_policy_sleep_();  // FixedRate pacing (HEP-CORE-0008 Pass 3)
 
         try
         {
@@ -338,6 +343,29 @@ class SlotIterator
     // ====================================================================
 
     /**
+     * @brief Sleep to maintain FixedRate pacing (HEP-CORE-0008 Pass 3).
+     *
+     * Uses `m_last_acquire_` as the start-to-start anchor — the same reference
+     * point that `acquire_write_slot()` uses for `overrun_count`, so both
+     * measurements agree. Sleep target = `m_last_acquire_ + period_ms`.
+     *
+     * Called from `operator++()` after heartbeat, before the acquire attempt.
+     * On the first call from `begin()`, `m_last_acquire_` is zero → skip.
+     * Subsequent calls sleep to maintain the configured period.
+     */
+    void apply_loop_policy_sleep_() noexcept
+    {
+        if (!m_handle || m_last_acquire_ == ContextMetrics::Clock::time_point{})
+            return;
+        const auto period_ms = m_handle->metrics().period_ms;
+        if (period_ms == 0)
+            return; // MaxRate — no sleep
+        const auto next = m_last_acquire_ + std::chrono::milliseconds(period_ms);
+        if (const auto now = ContextMetrics::Clock::now(); now < next)
+            std::this_thread::sleep_until(next);
+    }
+
+    /**
      * @brief Acquire next slot (producer version)
      *
      * Clears ctx's raw slot pointer before acquiring (old slot is about to be replaced).
@@ -374,6 +402,7 @@ class SlotIterator
                 *m_ctx_write_slot_ptr = m_current_slot.get();
             }
             m_current_result = ResultType::ok(SlotRefType(m_current_slot.get()));
+            m_last_acquire_ = ContextMetrics::Clock::now();  // FixedRate anchor (Pass 3)
         }
         else
         {
@@ -418,6 +447,7 @@ class SlotIterator
             // Success - wrap in SlotRef
             m_current_slot = std::move(slot_handle);
             m_current_result = ResultType::ok(SlotRefType(m_current_slot.get()));
+            m_last_acquire_ = ContextMetrics::Clock::now();  // FixedRate anchor (Pass 3)
         }
         else
         {
@@ -435,6 +465,7 @@ class SlotIterator
     ResultType m_current_result;
     bool m_done;
     bool m_first_acquired = false;
+    ContextMetrics::Clock::time_point m_last_acquire_{};  ///< FixedRate sleep anchor (HEP-CORE-0008 Pass 3)
 
     // Pointer-to-pointer into TransactionContext::m_current_write_slot (non-owning).
     // Enables ctx.publish() to access the current slot handle. Set by TransactionContext::slots().

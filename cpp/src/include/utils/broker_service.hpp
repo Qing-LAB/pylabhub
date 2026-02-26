@@ -16,11 +16,13 @@
  * All socket I/O is single-threaded (run() loop); only stop() is thread-safe.
  */
 #include "pylabhub_utils_export.h"
+#include "utils/connection_policy.hpp"
 
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace pylabhub::broker
 {
@@ -66,6 +68,18 @@ public:
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
         std::function<void(const std::string& bound_endpoint,
                            const std::string& pubkey)> on_ready;
+
+        // ── Connection policy (Phase 3) ─────────────────────────────────────
+        /// Hub-wide connection policy. Per-channel overrides in channel_policies take
+        /// precedence (first match wins). Defaults to Open (backward compatible).
+        ConnectionPolicy            connection_policy{ConnectionPolicy::Open};
+
+        /// Actors allowed to register when policy is Verified.
+        /// Also consulted for logging in Tracked/Required modes.
+        std::vector<KnownActor>     known_actors;
+
+        /// Per-channel policy overrides (first matching glob wins).
+        std::vector<ChannelPolicy>  channel_policies;
     };
 
     explicit BrokerService(Config cfg);

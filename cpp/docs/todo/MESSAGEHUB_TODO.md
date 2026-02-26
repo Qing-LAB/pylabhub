@@ -11,7 +11,7 @@
 
 ## Current Status
 
-✅ **517/517 tests passing (2026-02-25).** HubShell all 6 phases, pylabhub-actor
+✅ **528/528 tests passing (2026-02-26).** HubShell all 6 phases, pylabhub-actor
 multi-role system with per-role Python packages, broker health layer (Cat 1/Cat 2),
 consumer registration, UID enforcement, SharedSpinLockPy, HEP-CORE-0010 Phases 1–3
 (unified on_iteration, ZMQ thread consolidation, application-level heartbeat),
