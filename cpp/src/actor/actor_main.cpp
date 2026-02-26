@@ -113,30 +113,34 @@ namespace
 
 struct ActorArgs
 {
-    std::string config_path;  ///< Path to actor JSON file (--config mode)
-    std::string actor_dir;    ///< Actor directory (positional-arg mode or --init target)
+    std::string config_path;     ///< Path to actor JSON file (--config mode)
+    std::string actor_dir;       ///< Actor directory (positional-arg mode or --init target)
+    std::string register_hub_dir; ///< --register-with <hub_dir> target
     bool        validate_only{false};
     bool        list_roles{false};
     bool        keygen_only{false};
     bool        init_only{false};
+    bool        register_only{false};
 };
 
 void print_usage(const char *prog)
 {
     std::cout
         << "Usage:\n"
-        << "  " << prog << " --init [<actor_dir>]                   # Create actor directory\n"
-        << "  " << prog << " <actor_dir>                            # Run from directory\n"
+        << "  " << prog << " --init [<actor_dir>]                      # Create actor directory\n"
+        << "  " << prog << " --register-with <hub_dir> [<actor_dir>]   # Add actor to hub's known_actors\n"
+        << "  " << prog << " <actor_dir>                               # Run from directory\n"
         << "  " << prog << " --config <path.json> [--validate | --list-roles | --keygen | --run]\n\n"
         << "Options:\n"
-        << "  --init [dir]      Create actor directory with actor.json template; exit 0\n"
-        << "  <actor_dir>       Actor directory containing actor.json\n"
-        << "  --config <path>   Path to actor JSON config (legacy flat-config mode)\n"
-        << "  --validate        Validate script and print layout; exit 0 on success\n"
-        << "  --list-roles      Show configured roles and activation status; exit 0\n"
-        << "  --keygen          Generate actor NaCl keypair at auth.keyfile path; exit 0\n"
-        << "  --run             Explicit run mode (default when no other mode given)\n"
-        << "  --help            Show this message\n";
+        << "  --init [dir]               Create actor directory with actor.json template; exit 0\n"
+        << "  --register-with <hub_dir>  Append this actor to <hub_dir>/hub.json known_actors; exit 0\n"
+        << "  <actor_dir>                Actor directory containing actor.json\n"
+        << "  --config <path>            Path to actor JSON config (legacy flat-config mode)\n"
+        << "  --validate                 Validate script and print layout; exit 0 on success\n"
+        << "  --list-roles               Show configured roles and activation status; exit 0\n"
+        << "  --keygen                   Generate actor NaCl keypair at auth.keyfile path; exit 0\n"
+        << "  --run                      Explicit run mode (default when no other mode given)\n"
+        << "  --help                     Show this message\n";
 }
 
 ActorArgs parse_args(int argc, char *argv[])
@@ -153,6 +157,16 @@ ActorArgs parse_args(int argc, char *argv[])
         if (arg == "--config" && i + 1 < argc)
         {
             args.config_path = argv[++i];
+        }
+        else if (arg == "--register-with" && i + 1 < argc)
+        {
+            args.register_hub_dir = argv[++i];
+            args.register_only = true;
+            // Optional positional actor_dir after hub_dir.
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+            {
+                args.actor_dir = argv[++i];
+            }
         }
         else if (arg == "--init")
         {
@@ -195,9 +209,11 @@ ActorArgs parse_args(int argc, char *argv[])
             std::exit(1);
         }
     }
-    if (!args.init_only && args.config_path.empty() && args.actor_dir.empty())
+    if (!args.init_only && !args.register_only &&
+        args.config_path.empty() && args.actor_dir.empty())
     {
-        std::cerr << "Error: specify an actor directory, --init, or --config <path>\n\n";
+        std::cerr << "Error: specify an actor directory, --init, --register-with, "
+                     "or --config <path>\n\n";
         print_usage(argv[0]);
         std::exit(1);
     }
@@ -365,6 +381,110 @@ static int do_init(const std::string &actor_dir_str)
 }
 
 // ---------------------------------------------------------------------------
+// do_register_with — append actor to hub's known_actors
+// ---------------------------------------------------------------------------
+
+static int do_register_with(const std::string& hub_dir_str, const std::string& actor_dir_str)
+{
+    namespace fs = std::filesystem;
+
+    const fs::path actor_dir  = actor_dir_str.empty() ? fs::current_path()
+                                                       : fs::path(actor_dir_str);
+    const fs::path hub_dir    = fs::path(hub_dir_str);
+    const fs::path actor_json = actor_dir / "actor.json";
+    const fs::path hub_json   = hub_dir / "hub.json";
+
+    if (!fs::exists(actor_json))
+    {
+        std::cerr << "Error: actor.json not found at '" << actor_json.string()
+                  << "'. Run --init first.\n";
+        return 1;
+    }
+    if (!fs::exists(hub_json))
+    {
+        std::cerr << "Error: hub.json not found at '" << hub_json.string() << "'.\n";
+        return 1;
+    }
+
+    // Read actor identity.
+    std::string actor_name;
+    std::string actor_uid;
+    try
+    {
+        std::ifstream f(actor_json);
+        const auto j = nlohmann::json::parse(f);
+        actor_name = j.at("actor").at("name").get<std::string>();
+        actor_uid  = j.at("actor").at("uid").get<std::string>();
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error reading actor.json: " << e.what() << "\n";
+        return 1;
+    }
+
+    // Read, update, and write hub.json.
+    nlohmann::json hub;
+    try
+    {
+        std::ifstream f(hub_json);
+        hub = nlohmann::json::parse(f);
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error reading hub.json: " << e.what() << "\n";
+        return 1;
+    }
+
+    if (!hub.contains("hub"))
+    {
+        hub["hub"] = nlohmann::json::object();
+    }
+    if (!hub["hub"].contains("known_actors") || !hub["hub"]["known_actors"].is_array())
+    {
+        hub["hub"]["known_actors"] = nlohmann::json::array();
+    }
+
+    // Check for duplicate entry.
+    for (const auto& a : hub["hub"]["known_actors"])
+    {
+        if (a.value("uid", "") == actor_uid)
+        {
+            std::cerr << "Actor uid '" << actor_uid << "' already in known_actors.\n";
+            return 0; // idempotent
+        }
+    }
+
+    nlohmann::json entry;
+    entry["name"] = actor_name;
+    entry["uid"]  = actor_uid;
+    entry["role"] = "any";
+    hub["hub"]["known_actors"].push_back(std::move(entry));
+
+    try
+    {
+        std::ofstream out(hub_json);
+        if (!out)
+        {
+            std::cerr << "Error: cannot write hub.json at '" << hub_json.string() << "'.\n";
+            return 1;
+        }
+        out << hub.dump(2) << "\n";
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error writing hub.json: " << e.what() << "\n";
+        return 1;
+    }
+
+    std::cout << "Registered actor in '" << hub_json.string() << "':\n"
+              << "  name: " << actor_name << "\n"
+              << "  uid:  " << actor_uid  << "\n"
+              << "  role: any\n\n"
+              << "To verify, update hub.json 'connection_policy' to 'verified'.\n";
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -378,7 +498,15 @@ int main(int argc, char *argv[])
 
     // ── Init mode: create actor directory and exit ────────────────────────────
     if (args.init_only)
+    {
         return do_init(args.actor_dir);
+    }
+
+    // ── Register-with mode: append actor to hub known_actors and exit ─────────
+    if (args.register_only)
+    {
+        return do_register_with(args.register_hub_dir, args.actor_dir);
+    }
 
 
     // ── Load config ───────────────────────────────────────────────────────────

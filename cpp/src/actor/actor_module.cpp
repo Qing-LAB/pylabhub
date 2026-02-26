@@ -252,8 +252,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "  overrun_count      : int — acquire cycles exceeding period_ms target\n"
              "  last_slot_work_us  : int — time from acquire to release (user code + overhead)\n"
              "  period_ms          : int — configured target period (0 = MaxRate)\n\n"
-             "Key (Domain 4 — script supervision):\n"
-             "  script_error_count : int — unhandled Python exceptions in callbacks\n\n"
+             "Keys (Domain 4 — script supervision):\n"
+             "  script_error_count : int — unhandled Python exceptions in callbacks\n"
+             "  loop_overrun_count : int — actor write-loop deadline overruns (interval_ms exceeded)\n"
+             "  last_cycle_work_us : int — µs of active work in the last completed write cycle\n\n"
              "All values reset when the role restarts (clear_metrics is called at start).\n"
              "See HEP-CORE-0008 for the metric domain model.");
 }

@@ -386,13 +386,20 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
 std::optional<Consumer>
 Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
                                std::unique_ptr<DataBlockConsumer> shm_consumer,
-                               const ConsumerOptions & /*opts*/)
+                               const ConsumerOptions &opts)
 {
     auto impl       = std::make_unique<ConsumerImpl>();
     impl->handle    = std::move(channel);
     impl->shm       = std::move(shm_consumer);
     impl->messenger = &messenger;
     impl->closed    = false;
+
+    // Wire LoopPolicy (HEP-CORE-0008 Pass 3)
+    if (impl->shm != nullptr &&
+        (opts.loop_policy != LoopPolicy::MaxRate || opts.period_ms.count() > 0))
+    {
+        impl->shm->set_loop_policy(opts.loop_policy, opts.period_ms);
+    }
 
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the
     // heap-stable ConsumerImpl*). The facade itself lives inside ConsumerImpl.
@@ -509,7 +516,7 @@ bool Consumer::start()
     {
         return false;
     }
-    if (pImpl->running.exchange(true, std::memory_order_acquire))
+    if (pImpl->running.exchange(true, std::memory_order_acq_rel))
     {
         return false; // Already running
     }
@@ -538,7 +545,7 @@ void Consumer::stop()
     {
         return;
     }
-    if (!pImpl->running.exchange(false, std::memory_order_acquire))
+    if (!pImpl->running.exchange(false, std::memory_order_acq_rel))
     {
         return; // Was not running
     }
@@ -580,7 +587,7 @@ bool Consumer::start_embedded() noexcept
     // CAS: only transitions running false→true; returns false if already running.
     // Does NOT launch data_thread, ctrl_thread, or shm_thread.
     return pImpl->running.compare_exchange_strong(
-        expected, true, std::memory_order_seq_cst, std::memory_order_relaxed);
+        expected, true, std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
 void *Consumer::data_zmq_socket_handle() const noexcept

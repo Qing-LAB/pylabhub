@@ -201,8 +201,10 @@ py::dict ActorRoleAPI::metrics() const
         d["period_ms"]          = py::int_(0);
     }
 
-    // Domain 4 — actor-layer RoleMetrics (always available)
+    // Domain 4 — actor-layer RoleMetrics (always available regardless of SHM)
     d["script_error_count"] = py::int_(metrics_.script_errors);
+    d["loop_overrun_count"]  = py::int_(metrics_.loop_overruns);
+    d["last_cycle_work_us"]  = py::int_(metrics_.last_cycle_work_us);
 
     return d;
 }

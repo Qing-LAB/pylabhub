@@ -396,13 +396,20 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
 std::optional<Producer>
 Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
                               std::unique_ptr<DataBlockProducer> shm_producer,
-                              const ProducerOptions & /*opts*/)
+                              const ProducerOptions &opts)
 {
     auto impl       = std::make_unique<ProducerImpl>();
     impl->handle    = std::move(channel);
     impl->shm       = std::move(shm_producer);
     impl->messenger = &messenger;
     impl->closed    = false;
+
+    // Wire LoopPolicy (HEP-CORE-0008 Pass 3): actor_host.cpp overrides this after start_embedded().
+    if (impl->shm != nullptr &&
+        (opts.loop_policy != LoopPolicy::MaxRate || opts.period_ms.count() > 0))
+    {
+        impl->shm->set_loop_policy(opts.loop_policy, opts.period_ms);
+    }
 
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the
     // heap-stable ProducerImpl*). The facade itself lives inside ProducerImpl, so
@@ -551,7 +558,7 @@ bool Producer::start()
     {
         return false;
     }
-    if (pImpl->running.exchange(true, std::memory_order_acquire))
+    if (pImpl->running.exchange(true, std::memory_order_acq_rel))
     {
         return false; // Already running
     }
@@ -575,7 +582,7 @@ void Producer::stop()
         return;
     }
 
-    if (!pImpl->running.exchange(false, std::memory_order_acquire))
+    if (!pImpl->running.exchange(false, std::memory_order_acq_rel))
     {
         return; // Was not running
     }
@@ -616,7 +623,7 @@ bool Producer::start_embedded() noexcept
     // CAS: only transitions running false→true; returns false if already running.
     // Does NOT launch peer_thread or write_thread — caller drives ZMQ polling.
     return pImpl->running.compare_exchange_strong(
-        expected, true, std::memory_order_seq_cst, std::memory_order_relaxed);
+        expected, true, std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
 void *Producer::peer_ctrl_socket_handle() const noexcept

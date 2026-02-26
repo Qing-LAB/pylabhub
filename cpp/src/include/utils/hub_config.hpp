@@ -46,11 +46,13 @@
  */
 
 #include "plh_service.hpp"
+#include "utils/connection_policy.hpp"
 #include "utils/json_config.hpp"
 
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace pylabhub
 {
@@ -173,6 +175,38 @@ class PYLABHUB_UTILS_EXPORT HubConfig
      * (connections from localhost are accepted without a token).
      */
     const std::string& admin_token() const noexcept;
+
+    // -----------------------------------------------------------------------
+    // Connection policy (Phase 3)
+    // -----------------------------------------------------------------------
+
+    /** Hub-wide connection policy for channel registration. Default: Open. */
+    broker::ConnectionPolicy connection_policy() const noexcept;
+
+    /** Known actors allowlist. Non-empty only when policy is Verified (or pre-populated). */
+    std::vector<broker::KnownActor> known_actors() const;
+
+    /** Per-channel policy overrides (first matching glob wins over hub-wide policy). */
+    std::vector<broker::ChannelPolicy> channel_policies() const;
+
+    // -----------------------------------------------------------------------
+    // Directory model (Phase 5)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @brief Hub directory path.
+     *
+     * In hub.json mode (`<hub_dir>/hub.json` loaded via set_config_path()), this is the
+     * hub instance directory. In legacy flat-config mode this equals config_dir().
+     */
+    const std::filesystem::path& hub_dir() const noexcept;
+
+    /**
+     * @brief Path to the hub's broker public key file (`<hub_dir>/hub.pubkey`).
+     *
+     * Written at startup by HubVault::publish_public_key(). Empty if hub_dir is not set.
+     */
+    std::filesystem::path hub_pubkey_path() const noexcept;
 
     // -----------------------------------------------------------------------
     // Raw config access (for modules that need custom keys)

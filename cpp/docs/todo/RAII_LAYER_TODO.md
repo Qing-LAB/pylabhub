@@ -26,14 +26,6 @@
 
 ## Backlog
 
-- [ ] **LoopPolicy + ContextMetrics (Pass 2)** — Implement `LoopPolicy` enum
-  (`MaxRate`/`FixedRate`/`MixTriggered`), `ContextMetrics` struct, and per-iteration timing
-  in `SlotIterator::operator++()`. Exposes `api.metrics()` dict to Python actor scripts.
-  Full design spec: `docs/HEP/HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md`.
-  Files affected: `transaction_context.hpp`, `slot_iterator.hpp`, `data_block.hpp`,
-  `data_block.cpp`, `actor_config.hpp/.cpp`, `actor_host.cpp`, `actor_module.cpp`,
-  `hub_producer.hpp`, `hub_consumer.hpp`.
-
 - [ ] **FlexZone atomic-ref usage example** — Add a live test that demonstrates the
   correct `std::atomic_ref<T>` pattern for out-of-transaction lock-free FlexZone access.
   See `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` §9 for the documented pattern.
@@ -51,6 +43,23 @@
 ---
 
 ## Recent Completions
+
+### 2026-02-25 — HEP-CORE-0008 Pass 3 (LoopPolicy sleep + Options fields + api.metrics() completeness)
+
+- ✅ **SlotIterator FixedRate sleep** — `apply_loop_policy_sleep_()` in `operator++()` reads
+  `period_ms` from DataBlock Pimpl; `m_last_acquire_` anchor recorded after each successful
+  acquisition; start-to-start pacing consistent with `acquire_write_slot()` overrun detection.
+  `src/include/utils/slot_iterator.hpp`
+- ✅ **`ProducerOptions::loop_policy` + `period_ms`** — wired in `hub_producer.cpp`
+  `create_from_parts()`. `src/include/utils/hub_producer.hpp`, `src/utils/hub_producer.cpp`
+- ✅ **`ConsumerOptions::loop_policy` + `period_ms`** — wired in `hub_consumer.cpp`
+  `connect_from_parts()`. `src/include/utils/hub_consumer.hpp`, `src/utils/hub_consumer.cpp`
+- ✅ **`api.metrics()` dict completeness** — D4 keys `loop_overrun_count` + `last_cycle_work_us`
+  added; block moved outside if/else so D4 always reflects live `RoleMetrics` values.
+  `src/actor/actor_api.cpp`, `src/actor/actor_module.cpp`
+- ✅ **`DatahubLoopPolicyTest`** — 5 new tests (ProducerMetricsAccumulate, ProducerMetricsClear,
+  ProducerFixedRateOverrunDetect, SlotIteratorFixedRatePacing, ConsumerMetricsAccumulate);
+  528/528 total tests pass (as of 2026-02-26). `tests/test_layer3_datahub/test_datahub_loop_policy.cpp`
 
 ### 2026-02-17 (All code review items resolved)
 

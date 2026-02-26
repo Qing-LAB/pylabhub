@@ -729,12 +729,29 @@ Dependencies flow top-to-bottom within each phase.
 
 ### Phase 3 — Connection policy + collision detection
 
-- [ ] `BrokerService::Config` — `connection_policy`, `known_actors`, `channel_policies`
-- [ ] `HubConfig` — `hub_uid()`, `connection_policy()`, `known_actors()` getters
-- [ ] `ChannelEntry` / `ConsumerEntry` — `actor_name`, `actor_uid`, `hostname`, `connected_at`
-- [ ] `BrokerService` — policy enforcement in `handle_reg_req()` / `handle_consumer_reg_req()`
-- [ ] Collision detection logic (liveness check → replace or reject)
-- [ ] `pylabhub-actor --register-with` — append to hub.json known_actors
+- [x] `BrokerService::Config` — `connection_policy`, `known_actors`, `channel_policies`
+  ✅ DONE 2026-02-26 — `ConnectionPolicy` enum + `KnownActor` + `ChannelPolicy` in new
+  `src/include/utils/connection_policy.hpp`; 3 new fields added to `BrokerService::Config`.
+- [x] `HubConfig` — `connection_policy()`, `known_actors()`, `channel_policies()` getters
+  ✅ DONE 2026-02-26 — Reads `hub.json[connection_policy]`, `hub.json[known_actors]`,
+  `hub.json[channel_policies]`; wired in `hub_config.cpp` `apply_json()`.
+- [x] `ChannelEntry` / `ConsumerEntry` — `actor_name`, `actor_uid`, `connected_at`
+  ✅ DONE 2026-02-26 — Added to both structs in `src/utils/channel_registry.hpp`;
+  `connected_at` initialized to `system_clock::now()` at ConsumerEntry construction.
+- [x] `BrokerService` — policy enforcement in `handle_reg_req()` / `handle_consumer_reg_req()`
+  ✅ DONE 2026-02-26 — `channel_name_matches_glob()` (iterative * wildcard backtracking),
+  `effective_policy()` (per-channel override > hub default), `check_connection_policy()`
+  (Required: rejects absent identity; Verified: rejects not-in-known_actors); identity
+  fields recorded in ChannelEntry/ConsumerEntry on accept.
+- [x] Collision detection logic (liveness check → replace or reject)
+  ✅ DONE 2026-02-26 — `verified` policy: structural (known_actors has one entry per uid,
+  duplicate uid can't be pre-registered). `open`/`tracked`/`required`: existing dead-process
+  liveness check handles stale entries. Full per-policy warning/reject configurable collision
+  detection deferred (see Deferred table).
+- [x] `pylabhub-actor --register-with` — append to hub.json known_actors
+  ✅ DONE 2026-02-26 — `do_register_with(hub_dir, actor_dir)` in `src/actor/actor_main.cpp`;
+  reads actor.json → actor_name/uid, reads/updates/writes hub.json known_actors array
+  (idempotent on duplicate uid via uid-based dedup).
 
 ### Phase 4 — C-API provenance (core structure change — review checklist required)
 
@@ -774,12 +791,18 @@ identity chain (hub → producer → consumers) from the SHM alone.
 
 ### Phase 5 — HubConfig directory model migration
 
+- [x] `HubConfig::hub_uid()` — getter (already wired; reads from hub.json["hub"]["uid"])
+  ✅ DONE 2026-02-26 — present in `hub_config.hpp` + `hub_config.cpp`
+- [x] `HubConfig::hub_dir()` — new getter (returns config_dir in current layered-config mode)
+  ✅ DONE 2026-02-26 — added to `hub_config.hpp`; `hub_dir_` stored in `HubConfig::Impl`
+- [x] `HubConfig::hub_pubkey_path()` — new getter (returns `hub_dir / "hub.pubkey"`)
+  ✅ DONE 2026-02-26 — added to `hub_config.hpp` + `hub_config.cpp`
 - [ ] `HubConfig` — switch from `hub.default.json` + `hub.user.json` to `hub.json` + compiled defaults
-- [ ] `HubConfig::hub_uid()` — new getter
-- [ ] `HubConfig::hub_dir()` — new getter
-- [ ] `hubshell.cpp` — pass `hub_dir` to `HubConfig::load_()`; open vault; supply stable keypair
-      to `BrokerService::Config`
-- [ ] Update `BrokerService` startup to accept keypair from vault instead of generating fresh
+  **Deferred** — layered loading still in place; `hub.default.json.in` CMake template still staged.
+  Unblocked once `hubshell <hub_dir>` fully replaces legacy flat-config invocation.
+- [ ] `hubshell.cpp` — pass `hub_dir` to `HubConfig::load_()` in canonical mode
+  **Deferred** — currently `HubConfig::set_config_path(hub_dir/"hub.json")` routes config loading
+  through the hub directory for `<hub_dir>` invocations, but `load_()` still uses layered logic internally.
 - [ ] Remove stale `hub.default.json.in` template from CMake staging if no longer needed
 
 ---
@@ -807,6 +830,24 @@ identity chain (hub → producer → consumers) from the SHM alone.
 ---
 
 ## Recent Completions
+
+### 2026-02-26 (Phase 3 + Phase 5 getters)
+- Phase 3 (connection policy) complete — 528/528 tests pass after full clean build:
+  - `src/include/utils/connection_policy.hpp` (new): `ConnectionPolicy` enum (Open/Tracked/Required/Verified),
+    `KnownActor`, `ChannelPolicy` in `pylabhub::broker` namespace; inline `_to_str`/`_from_str` helpers
+  - `BrokerService::Config`: 3 new fields (`connection_policy`, `known_actors`, `channel_policies`)
+  - `BrokerServiceImpl`: `channel_name_matches_glob()` (iterative * wildcard), `effective_policy()` (per-channel
+    override > hub default), `check_connection_policy()` (enforces Required/Verified in REG_REQ + CONSUMER_REG_REQ)
+  - `channel_registry.hpp`: `actor_name`, `actor_uid`, `connected_at` added to `ConsumerEntry`;
+    `producer_actor_name`, `producer_actor_uid` added to `ChannelEntry`
+  - `HubConfig`: `connection_policy()`, `known_actors()`, `channel_policies()` getters
+  - `hubshell.cpp`: wires `connection_policy` + `known_actors` + `channel_policies` from HubConfig into BrokerService::Config
+  - `actor_main.cpp`: `--register-with <hub_dir> <actor_dir>` command → `do_register_with()`;
+    idempotent uid-based dedup in hub.json known_actors
+- Phase 5 partial: `hub_dir()` + `hub_pubkey_path()` getters added to `HubConfig`;
+  full layered→single-file migration deferred.
+- Root cause of test regression identified and fixed: stale `.o` files from `git stash`/`stash pop`
+  cycle caused ABI mismatch (BrokerService::Config size change). Fixed with `--clean-first` full rebuild.
 
 ### 2026-02-25 (Phase 2 + actor --init)
 - `pylabhub-actor --init [<actor_dir>]`: creates actor directory, prompts actor name,
