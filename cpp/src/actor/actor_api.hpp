@@ -7,29 +7,27 @@
  * every callback of that role. All methods dispatch immediately to C++ without
  * any Python buffering.
  *
- * ## Python usage (producer role)
+ * ## Python usage (module convention)
  * @code{.py}
  *   import pylabhub_actor as actor
  *
- *   @actor.on_write("raw_out")
- *   def write_raw(slot, flexzone, api) -> bool:
- *       api.log('info', "writing")
- *       api.broadcast(b"extra")
- *       api.update_flexzone_checksum()
- *       return True
- * @endcode
+ *   def on_init(api: actor.ActorRoleAPI):
+ *       api.log('info', "starting")
  *
- * ## Python usage (consumer role)
- * @code{.py}
- *   @actor.on_read("cfg_in")
- *   def read_cfg(slot, flexzone, api, *, timed_out: bool = False):
- *       if timed_out:
- *           api.send_ctrl(b"heartbeat")   # periodic liveness ping
- *           return
- *       if not api.slot_valid():
- *           api.log('warn', "slot checksum failed")
- *           return
- *       process(slot)
+ *   def on_iteration(slot, flexzone, messages, api: actor.ActorRoleAPI) -> bool:
+ *       # slot      — ctypes struct (writable for producer, read-only for consumer),
+ *       #             or None when triggered by Messenger / timeout
+ *       # flexzone  — persistent ctypes struct for this role's flexzone, or None
+ *       # messages  — list of (sender: str, data: bytes) drained since last iteration
+ *       # api       — ActorRoleAPI proxy for this role
+ *       if slot is not None:
+ *           slot.ts = ...
+ *       for sender, data in messages:
+ *           api.broadcast(data)
+ *       return True  # True/None=commit (producer); consumer return ignored
+ *
+ *   def on_stop(api: actor.ActorRoleAPI):
+ *       api.log('info', "stopping")
  * @endcode
  *
  * ## Object lifetime contract
@@ -50,7 +48,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -98,10 +95,10 @@ class ActorRoleAPI
     void set_slot_valid(bool v) noexcept { slot_valid_ = v; }
 
     /**
-     * @brief Set the trigger function for interval_ms == -1 producers.
-     *        The write loop waits for this signal.
+     * @brief Set the flexzone Python object pointer (for api.flexzone() forwarding).
+     *        Called by C++ host after building fz_inst_. Never exposed to Python.
      */
-    void set_trigger_fn(std::function<void()> fn) { trigger_fn_ = std::move(fn); }
+    void set_flexzone_obj(py::object *fz) noexcept { flexzone_obj_ = fz; }
 
     // ── C++ internal diagnostic write interface (never exposed to Python) ──────
     //
@@ -170,6 +167,22 @@ class ActorRoleAPI
     /// Request actor shutdown (all roles). Safe to call from any callback.
     void stop();
 
+    /**
+     * @brief Latch the critical-error flag and trigger graceful shutdown.
+     *        Once set, the flag is never cleared. The current iteration
+     *        completes before the loop exits.
+     */
+    void set_critical_error();
+
+    /// True if set_critical_error() has been called for this role.
+    [[nodiscard]] bool critical_error() const noexcept { return critical_error_.load(); }
+
+    /**
+     * @brief Return the role's persistent flexzone Python object.
+     *        Returns None if no flexzone is configured or SHM is not connected.
+     */
+    [[nodiscard]] py::object flexzone() const;
+
     // ── Python-accessible — producer ──────────────────────────────────────────
 
     /// Broadcast bytes to all connected consumers on the ZMQ data socket.
@@ -180,13 +193,6 @@ class ActorRoleAPI
 
     /// List of ZMQ identity strings of currently connected consumers.
     py::list consumers();
-
-    /**
-     * @brief Notify the write loop to produce one slot.
-     *        Only meaningful when interval_ms == -1 (event-driven mode).
-     *        In all other modes this is a no-op.
-     */
-    void trigger_write();
 
     /**
      * @brief Update the SHM flexzone BLAKE2b checksum (producer side).
@@ -279,7 +285,9 @@ class ActorRoleAPI
     hub::Producer    *producer_{nullptr};
     hub::Consumer    *consumer_{nullptr};
     std::atomic<bool>*shutdown_flag_{nullptr};
-    std::function<void()> trigger_fn_{};
+    py::object       *flexzone_obj_{nullptr};
+
+    std::atomic<bool> critical_error_{false};
 
     std::string role_name_;
     std::string actor_uid_;

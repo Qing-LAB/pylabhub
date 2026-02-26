@@ -11,10 +11,11 @@
 
 ## Current Status
 
-✅ **426/426 tests passing (2026-02-21).** HubShell all 6 phases, pylabhub-actor
-multi-role system, broker health layer (Cat 1/Cat 2), consumer registration,
-UID enforcement, SharedSpinLockPy, timeout constants, --keygen, schema hash,
-demo scripts — all complete.
+✅ **517/517 tests passing (2026-02-25).** HubShell all 6 phases, pylabhub-actor
+multi-role system with per-role Python packages, broker health layer (Cat 1/Cat 2),
+consumer registration, UID enforcement, SharedSpinLockPy, HEP-CORE-0010 Phases 1–3
+(unified on_iteration, ZMQ thread consolidation, application-level heartbeat),
+actor identity + hub_dir wiring, --init flows, embedded-mode unit tests — all complete.
 
 ---
 
@@ -121,6 +122,114 @@ These findings came from `docs/archive/transient-2026-02-21/code_review_utils_20
   log_level, script_dir). All getters registered in pybind11 bindings.
   Files: `src/actor/actor_api.hpp`, `src/actor/actor_host.hpp`, `src/actor/actor_host.cpp`,
   `src/actor/actor_module.cpp`
+
+### Recent Completions — Embedded-Mode Tests + ZMQ_BLOCKY Fix (2026-02-25)
+
+- ✅ **Layer 4 embedded-mode tests pass (2026-02-25)** — 10 new tests in
+  `tests/test_layer4_actor/test_actor_embedded_mode.cpp` (4 Producer, 6 Consumer).
+  All 517 tests pass; each embedded-mode test completes in ~120ms.
+- ✅ **`zmq_context_shutdown()` hang fixed — `ZMQ_BLOCKY=0` at context creation (2026-02-25)**.
+  Root cause: all ZMQ sockets default to `LINGER=-1`; `zmq_ctx_term()` blocked indefinitely
+  waiting for ZMQ's I/O threads to drain pending sends (BYE ctrl frame, SUB unsubscription,
+  heartbeats). Fix: `zmq_ctx_set(ctx, ZMQ_BLOCKY, 0)` in `zmq_context_startup()` — all
+  subsequently created sockets inherit `LINGER=0`. This makes `zmq_close()` and therefore
+  `zmq_ctx_term()` return immediately without waiting for message delivery.
+  The `g_context->shutdown()` call added in the same session (belt-and-suspenders) handles
+  the edge case where a socket is explicitly set to `LINGER > 0` after creation.
+  Production safe: the lifecycle module ordering guarantees messages are delivered before
+  `zmq_ctx_term()` is called; only tests without a full lifecycle are affected.
+  File: `src/utils/zmq_context.cpp`
+
+### Recent Completions — Per-Role Script Packages (2026-02-25)
+
+- ✅ **Per-role script support** (2026-02-25):
+  Each role now resolves its own Python package instead of sharing a single actor-level
+  module. Per-role `"script": {"module": "script", "path": "./roles/<role_name>"}` in the
+  role config. Actor-level `"script"` block still supported as a fallback for roles that
+  omit the per-role key.
+  - `RoleConfig::script_module` / `script_base_dir` fields added and parsed from role `"script"` object.
+    Bare string format throws `std::runtime_error` (must be an object).
+  - `ActorHost::role_modules_` map (`role_name → py::module_`) replaces single `script_module_`.
+  - New `import_role_script_module()` helper: resolves `<base_dir>/<module>/__init__.py` (package)
+    or `<base_dir>/<module>.py` (flat); registers in `sys.modules` under role-unique alias
+    `_plh_{uid_hex}_{role_name}`; sets `submodule_search_locations` to enable `from . import helpers`.
+  - `do_init()` creates `roles/data_out/script/__init__.py` with template callbacks; actor.json
+    template uses per-role `"script"` key.
+  - Standard directory layout: `roles/<role_name>/script/__init__.py` (script/ subdirectory is
+    the Python package; separates Python source from other config files in the role dir).
+  - 6 new Layer 4 unit tests (`ActorConfigPerRoleScript` suite): absent key, object parse,
+    module-only parse, string throws, consumer role, multi-role distinct paths.
+  - `docs/tech_draft/ACTOR_DESIGN.md §3` fully rewritten: §3.1 (package structure + isolation),
+    §3.2 (import guide), §3.3 (callback example with relative imports), §3.4 (callbacks table).
+  - `docs/README/README_DirectoryLayout.md §3` updated with current actor directory layout.
+  - `docs/HEP/HEP-CORE-0005-script-interface-framework.md` updated: per-role package convention note.
+  - 507/507 tests pass.
+  - Files: `actor_config.hpp`, `actor_config.cpp`, `actor_host.hpp`, `actor_host.cpp`,
+           `actor_main.cpp`, `tests/test_layer4_actor/test_actor_config.cpp`.
+
+### Recent Completions — Actor Thread Model Redesign (HEP-CORE-0010)
+
+**HEP**: `docs/HEP/HEP-CORE-0010-Actor-Thread-Model-and-Unified-Script-Interface.md`
+
+- ✅ **Phase 1: Unified script interface (callback-routing approach)** (2026-02-24)
+  - Replaced decorator dispatch table (`actor_dispatch_table.hpp` deleted) with module-based
+    `on_iteration` / `on_init` / `on_stop` attribute lookup
+  - ZMQ callbacks (on_consumer_message, on_zmq_data) now push to `incoming_queue_` (mutex +
+    condvar); loop thread drains before GIL — GIL race eliminated
+  - Unified `on_iteration(slot, flexzone, messages, api)` for both producer and consumer
+  - Script format: `"script": {"module": "...", "path": "..."}` (object only; string rejected)
+  - New config fields: `loop_trigger` (shm/messenger), `messenger_poll_ms`, `heartbeat_interval_ms`
+  - `api.set_critical_error()` latch added; `api.trigger_write()` removed
+  - `run_loop_messenger()` added to both workers for Messenger-triggered loops
+  - Module imported via importlib with synthetic alias `_plh_{uid_hex}_{module_name}`
+  - Layer 4 tests: 66/66 passing (added LoopTrigger, Script, critical_error test sections)
+  - `docs/tech_draft/ACTOR_DESIGN.md` updated: §1, §3, §4.3, §4.4, §6, §7 — all decorator
+    references replaced; section numbering 3.1–3.9 consistent
+  - Files: `actor_config.hpp/cpp`, `actor_host.hpp/cpp`, `actor_api.hpp/cpp`,
+           `actor_module.cpp`, `actor_main.cpp`, `actor_dispatch_table.hpp` (deleted)
+
+- ✅ **Phase 2: Full ZMQ thread consolidation (EmbeddedMode)** (2026-02-24)
+  - Embedded-mode API added to Producer: `start_embedded()`, `peer_ctrl_socket_handle()`,
+    `handle_peer_events_nowait()` — refactored from `run_peer_thread()` helpers
+  - Embedded-mode API added to Consumer: `start_embedded()`, `data_zmq_socket_handle()`,
+    `ctrl_zmq_socket_handle()`, `handle_data_events_nowait()`, `handle_ctrl_events_nowait()`
+  - Actor's `zmq_thread_` (one per role worker) drives `zmq_poll` directly; eliminates
+    `peer_thread` / `data_thread` / `ctrl_thread` — true 2-thread-per-role model
+  - `iteration_count_` (atomic uint64) incremented by `loop_thread_` after each iteration;
+    read by `zmq_thread_` (Phase 3: triggers application-level heartbeat when count advances)
+  - SHM acquire timeout fixed: producer uses `interval_ms` (or 5ms max-rate); consumer uses
+    `timeout_ms` (or 5ms max-rate, or 5000ms indefinite) — was hardcoded 100ms
+  - Consumer `timeout_ms > 0`: `on_iteration(slot=None,...)` now called on slot miss (watchdog use)
+  - `zmq_thread_` launched BEFORE `call_on_init()` to match old `peer_thread`/`ctrl_thread` timing
+  - `stop()` guard updated to check `loop_thread_.joinable() && zmq_thread_.joinable()` — prevents
+    `std::terminate` when `api.stop()` called from `on_init`
+  - Design docs updated: HEP-CORE-0010 §3.5 init sequence, §3.6 mermaid diagram;
+    ACTOR_DESIGN.md §4.3 members, §4.5 thread interaction section added
+  - Files: `hub_producer.hpp/cpp`, `hub_consumer.hpp/cpp`, `actor_host.hpp/cpp`
+
+- ✅ **Phase 3: Application-level heartbeat via zmq_thread_** (2026-02-24)
+  - `Messenger::suppress_periodic_heartbeat(channel, suppress=true)` — disables 2s periodic timer per channel
+  - `Messenger::enqueue_heartbeat(channel)` — thread-safe fire-and-forget HEARTBEAT_REQ via Messenger worker queue
+  - Both implemented via new `SuppressHeartbeatCmd` / `HeartbeatNowCmd` command variants in messenger.cpp
+  - `HeartbeatEntry::suppressed` flag added; `send_heartbeats()` skips suppressed entries
+  - `ProducerRoleWorker::start()`: calls `suppress_periodic_heartbeat` + `enqueue_heartbeat` after `start_embedded()`
+  - `ProducerRoleWorker::run_zmq_thread_()`: sends heartbeat when `iteration_count_` advances,
+    throttled by `hb_interval` (derived from `heartbeat_interval_ms` / `interval_ms` / default 2000ms)
+  - First iteration advance fires immediately (initialised to `now - hb_interval`)
+  - Consumer roles unchanged — consumers don't own channels; no heartbeat responsibility
+  - No broker protocol changes required: existing heartbeat-timeout → CHANNEL_CLOSING_NOTIFY path enforces liveness
+  - 501/501 tests pass
+  - Files: `src/include/utils/messenger.hpp`, `src/utils/messenger.cpp`, `src/actor/actor_host.cpp`
+
+### Deferred / Backlog — Actor Thread Model
+
+- [ ] **Embedded-mode integration tests** — layer 3 tests using `run_gtest_worker()` with lifecycle modules.
+  Tests: `start_embedded()` true/idempotent, `peer_ctrl_socket_handle()` non-null,
+  `ctrl_zmq_socket_handle()` non-null, `data_zmq_socket_handle()` null for Bidir.
+  Deferred from Phase 2: requires live broker in test infrastructure.
+- [ ] **`wake_send`/`wake_recv` inproc PAIR** — low-latency loop→zmq_thread_ notification (Phase 4 if needed).
+  Currently `zmq_thread_` wakes every `messenger_poll_ms` (5ms); wake socket reduces outbound latency for
+  `api.broadcast()` calls inside `on_iteration`.
 
 ### Deferred / Blocked
 

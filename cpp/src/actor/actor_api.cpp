@@ -39,6 +39,19 @@ void ActorRoleAPI::stop()
         shutdown_flag_->store(true, std::memory_order_relaxed);
 }
 
+void ActorRoleAPI::set_critical_error()
+{
+    critical_error_.store(true, std::memory_order_relaxed);
+    stop();
+}
+
+py::object ActorRoleAPI::flexzone() const
+{
+    if (flexzone_obj_ != nullptr && !flexzone_obj_->is_none())
+        return *flexzone_obj_;
+    return py::none();
+}
+
 // ── Producer ──────────────────────────────────────────────────────────────────
 
 bool ActorRoleAPI::broadcast(py::bytes data)
@@ -66,12 +79,6 @@ py::list ActorRoleAPI::consumers()
             result.append(id);
     }
     return result;
-}
-
-void ActorRoleAPI::trigger_write()
-{
-    if (trigger_fn_)
-        trigger_fn_();
 }
 
 bool ActorRoleAPI::update_flexzone_checksum()

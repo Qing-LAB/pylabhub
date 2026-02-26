@@ -100,10 +100,154 @@ struct ProducerImpl
 
     void run_peer_thread();
     void run_write_thread();
+
+    // ── Embedded-mode helpers ────────────────────────────────────────────────
+
+    /// Drain and send all outgoing ctrl/data frames queued via send_ctrl() / send_to().
+    /// Safe to call from any thread that owns the ctrl socket.
+    void drain_ctrl_send_queue_();
+
+    /// Non-blocking: receive and dispatch one ctrl message from the ROUTER ctrl socket.
+    /// Returns true if a message was received (even if malformed); false on EAGAIN/error.
+    /// Fires on_consumer_joined / on_consumer_left / on_consumer_message.
+    bool recv_and_dispatch_ctrl_();
 };
 
 // ============================================================================
 // peer_thread: polls ROUTER ctrl socket, drains outgoing queue
+// ============================================================================
+
+// ============================================================================
+// ProducerImpl::drain_ctrl_send_queue_ — send all queued outbound ctrl/data frames
+// ============================================================================
+
+void ProducerImpl::drain_ctrl_send_queue_()
+{
+    std::lock_guard<std::mutex> lock(ctrl_send_mu);
+    while (!ctrl_send_queue.empty())
+    {
+        PendingCtrlSend &msg = ctrl_send_queue.front();
+        if (msg.is_data)
+        {
+            handle.send(msg.data.data(), msg.data.size(), msg.identity);
+        }
+        else
+        {
+            handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size(), msg.identity);
+        }
+        ctrl_send_queue.pop();
+    }
+}
+
+// ============================================================================
+// ProducerImpl::recv_and_dispatch_ctrl_ — non-blocking receive + dispatch one message
+// ============================================================================
+
+bool ProducerImpl::recv_and_dispatch_ctrl_()
+{
+    zmq::socket_t *ctrl_sock = channel_handle_ctrl_socket(handle);
+    if (!ctrl_sock)
+    {
+        return false;
+    }
+
+    // Non-blocking receive. Throws zmq::error_t(EAGAIN) if no message is waiting.
+    // Expected layout: [identity][type_byte='C'][type_str][body]
+    std::vector<zmq::message_t> frames;
+    try
+    {
+        auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
+                                       zmq::recv_flags::dontwait);
+        (void)res;
+    }
+    catch (const zmq::error_t &)
+    {
+        return false; // EAGAIN or other error — no message available
+    }
+
+    // Need at least: identity + type_byte + type_str + body = 4 frames
+    if (frames.size() < 4 || frames[1].size() < 1)
+    {
+        return true; // Consumed a message (queue decremented) but malformed — continue
+    }
+
+    const char type_byte = *static_cast<const char *>(frames[1].data());
+    if (type_byte != 'C')
+    {
+        return true; // Not a control frame — discard and continue
+    }
+
+    std::string identity(static_cast<const char *>(frames[0].data()), frames[0].size());
+    std::string type_str(static_cast<const char *>(frames[2].data()), frames[2].size());
+    std::span<const std::byte> body(static_cast<const std::byte *>(frames[3].data()),
+                                     frames[3].size());
+
+    if (type_str == "HELLO")
+    {
+        uint64_t cpid = 0;
+        try
+        {
+            std::string body_str(static_cast<const char *>(frames[3].data()), frames[3].size());
+            if (!body_str.empty())
+            {
+                auto body_json = nlohmann::json::parse(body_str);
+                cpid = body_json.value("consumer_pid", uint64_t{0});
+            }
+        }
+        catch (...) {}
+
+        {
+            std::lock_guard<std::mutex> lock(consumer_list_mu);
+            auto it = std::find(consumer_identities.begin(), consumer_identities.end(), identity);
+            if (it == consumer_identities.end())
+            {
+                consumer_identities.push_back(identity);
+                if (cpid != 0)
+                {
+                    pid_to_identity[cpid] = identity;
+                }
+            }
+        }
+        if (on_consumer_joined_cb)
+        {
+            on_consumer_joined_cb(identity);
+        }
+    }
+    else if (type_str == "BYE")
+    {
+        {
+            std::lock_guard<std::mutex> lock(consumer_list_mu);
+            auto it = std::find(consumer_identities.begin(), consumer_identities.end(), identity);
+            if (it != consumer_identities.end())
+            {
+                consumer_identities.erase(it);
+            }
+            for (auto map_it = pid_to_identity.begin(); map_it != pid_to_identity.end();)
+            {
+                if (map_it->second == identity)
+                    map_it = pid_to_identity.erase(map_it);
+                else
+                    ++map_it;
+            }
+        }
+        if (on_consumer_left_cb)
+        {
+            on_consumer_left_cb(identity);
+        }
+    }
+    else
+    {
+        if (on_consumer_message_cb)
+        {
+            on_consumer_message_cb(identity, body);
+        }
+    }
+    return true;
+}
+
+// ============================================================================
+// peer_thread: polls ROUTER ctrl socket, drains outgoing queue
+// Refactored to use drain_ctrl_send_queue_() + recv_and_dispatch_ctrl_() helpers.
 // ============================================================================
 
 void ProducerImpl::run_peer_thread()
@@ -117,23 +261,7 @@ void ProducerImpl::run_peer_thread()
     while (running.load(std::memory_order_relaxed))
     {
         // ── 1. Drain outgoing ctrl/data send queue ──────────────────────────
-        {
-            std::lock_guard<std::mutex> lock(ctrl_send_mu);
-            while (!ctrl_send_queue.empty())
-            {
-                PendingCtrlSend &msg = ctrl_send_queue.front();
-                if (msg.is_data)
-                {
-                    handle.send(msg.data.data(), msg.data.size(), msg.identity);
-                }
-                else
-                {
-                    handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size(),
-                                           msg.identity);
-                }
-                ctrl_send_queue.pop();
-            }
-        }
+        drain_ctrl_send_queue_();
 
         // ── 2. Poll ctrl socket for incoming consumer messages ──────────────
         std::vector<zmq::pollitem_t> items = {{ctrl_sock->handle(), 0, ZMQ_POLLIN, 0}};
@@ -151,117 +279,11 @@ void ProducerImpl::run_peer_thread()
             continue; // Timeout — loop back and drain send queue again
         }
 
-        // ── 3. Receive multipart message from ROUTER ────────────────────────
-        // Expected layout: [identity][type_byte='C'][type_str][body]
-        std::vector<zmq::message_t> frames;
-        try
-        {
-            auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
-                                           zmq::recv_flags::dontwait);
-            (void)res;
-        }
-        catch (const zmq::error_t &)
-        {
-            continue;
-        }
-
-        // Need at least: identity + type_byte + type_str + body = 4 frames
-        if (frames.size() < 4)
-        {
-            continue;
-        }
-
-        if (frames[1].size() < 1)
-        {
-            continue;
-        }
-        const char type_byte = *static_cast<const char *>(frames[1].data());
-        if (type_byte != 'C')
-        {
-            continue; // Not a control frame — ignore data frames on ctrl socket
-        }
-
-        std::string identity(static_cast<const char *>(frames[0].data()), frames[0].size());
-        std::string type_str(static_cast<const char *>(frames[2].data()), frames[2].size());
-        std::span<const std::byte> body(static_cast<const std::byte *>(frames[3].data()),
-                                         frames[3].size());
-
-        // ── 4. Dispatch HELLO / BYE / other ────────────────────────────────
-        if (type_str == "HELLO")
-        {
-            // Parse consumer_pid from HELLO body (consumer includes it in JSON).
-            uint64_t cpid = 0;
-            try
-            {
-                std::string body_str(static_cast<const char *>(frames[3].data()),
-                                     frames[3].size());
-                if (!body_str.empty())
-                {
-                    auto body_json = nlohmann::json::parse(body_str);
-                    cpid = body_json.value("consumer_pid", uint64_t{0});
-                }
-            }
-            catch (...) {}
-
-            {
-                std::lock_guard<std::mutex> lock(consumer_list_mu);
-                auto it = std::find(consumer_identities.begin(), consumer_identities.end(),
-                                    identity);
-                if (it == consumer_identities.end())
-                {
-                    consumer_identities.push_back(identity);
-                    if (cpid != 0)
-                    {
-                        pid_to_identity[cpid] = identity;
-                    }
-                }
-            }
-            if (on_consumer_joined_cb)
-            {
-                on_consumer_joined_cb(identity);
-            }
-        }
-        else if (type_str == "BYE")
-        {
-            {
-                std::lock_guard<std::mutex> lock(consumer_list_mu);
-                auto it = std::find(consumer_identities.begin(), consumer_identities.end(),
-                                    identity);
-                if (it != consumer_identities.end())
-                {
-                    consumer_identities.erase(it);
-                }
-                // Remove the corresponding pid_to_identity entry (find by identity value).
-                for (auto map_it = pid_to_identity.begin(); map_it != pid_to_identity.end();)
-                {
-                    if (map_it->second == identity)
-                        map_it = pid_to_identity.erase(map_it);
-                    else
-                        ++map_it;
-                }
-            }
-            if (on_consumer_left_cb)
-            {
-                on_consumer_left_cb(identity);
-            }
-        }
-        else
-        {
-            if (on_consumer_message_cb)
-            {
-                on_consumer_message_cb(identity, body);
-            }
-        }
+        // ── 3. Receive and dispatch one message ─────────────────────────────
+        recv_and_dispatch_ctrl_();
     }
 
-    // Drain remaining outgoing messages before exit
-    {
-        std::lock_guard<std::mutex> lock(ctrl_send_mu);
-        while (!ctrl_send_queue.empty())
-        {
-            ctrl_send_queue.pop();
-        }
-    }
+    drain_ctrl_send_queue_();
 }
 
 // ============================================================================
@@ -344,7 +366,8 @@ std::optional<Producer>
 Producer::create(Messenger &messenger, const ProducerOptions &opts)
 {
     auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
-                                        opts.schema_hash, opts.schema_version, opts.timeout_ms);
+                                        opts.schema_hash, opts.schema_version, opts.timeout_ms,
+                                        opts.actor_name, opts.actor_uid);
     if (!ch.has_value())
     {
         return std::nullopt;
@@ -577,6 +600,43 @@ void Producer::stop()
 bool Producer::is_running() const noexcept
 {
     return pImpl && pImpl->running.load(std::memory_order_relaxed);
+}
+
+// ============================================================================
+// Producer — embedded mode
+// ============================================================================
+
+bool Producer::start_embedded() noexcept
+{
+    if (!pImpl || !pImpl->handle.is_valid() || pImpl->closed)
+    {
+        return false;
+    }
+    bool expected = false;
+    // CAS: only transitions running false→true; returns false if already running.
+    // Does NOT launch peer_thread or write_thread — caller drives ZMQ polling.
+    return pImpl->running.compare_exchange_strong(
+        expected, true, std::memory_order_seq_cst, std::memory_order_relaxed);
+}
+
+void *Producer::peer_ctrl_socket_handle() const noexcept
+{
+    if (!pImpl || pImpl->closed || !pImpl->handle.is_valid())
+    {
+        return nullptr;
+    }
+    zmq::socket_t *sock = channel_handle_ctrl_socket(pImpl->handle);
+    return sock ? sock->handle() : nullptr;
+}
+
+void Producer::handle_peer_events_nowait() noexcept
+{
+    if (!pImpl || pImpl->closed || !pImpl->running.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    pImpl->drain_ctrl_send_queue_();
+    while (pImpl->recv_and_dispatch_ctrl_()) {}
 }
 
 // ============================================================================

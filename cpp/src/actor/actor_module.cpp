@@ -3,63 +3,52 @@
  * @brief Embedded Python module "pylabhub_actor".
  *
  * Exposes:
- *   - Decorator factory functions for per-role callback registration
- *   - `ActorRoleAPI` class binding for Python type hints
- *   - `_clear_dispatch_table()` utility (called by ActorHost before each script import)
+ *   - `ActorRoleAPI` class binding for Python scripts
+ *   - `SharedSpinLockPy` class binding
  *
- * ## Python usage
+ * ## Script interface (module-convention)
+ *
+ * Scripts are Python modules (not flat `.py` files).  The actor host imports
+ * the module once and looks up well-known function names by attribute access:
  *
  * @code{.py}
+ *   # my_actor/sensor_node.py
  *   import pylabhub_actor as actor
  *
- *   # ── Producer role ──────────────────────────────────────────────────────
- *   @actor.on_init("raw_out")
- *   def raw_out_init(flexzone, api: actor.ActorRoleAPI):
- *       flexzone.device_id = 42
- *       api.update_flexzone_checksum()
+ *   def on_init(api: actor.ActorRoleAPI):
+ *       api.log('info', "sensor_node starting")
  *
- *   @actor.on_write("raw_out")
- *   def write_raw(slot, flexzone, api: actor.ActorRoleAPI) -> bool:
- *       slot.ts = time.time()
- *       return True        # True/None = commit, False = discard
+ *   def on_iteration(slot, flexzone, messages, api: actor.ActorRoleAPI) -> bool:
+ *       """
+ *       Called every loop iteration.
  *
- *   @actor.on_message("raw_out")
- *   def raw_out_ctrl(sender: str, data: bytes, api: actor.ActorRoleAPI):
- *       api.send(sender, b"ack")
+ *       slot      — writable/read-only ctypes struct into SHM slot, or None
+ *                   (Messenger trigger or timeout).
+ *       flexzone  — persistent ctypes struct for the role's flexzone, or None.
+ *       messages  — list of (sender: str, data: bytes) tuples from the ZMQ
+ *                   incoming queue drained since the last iteration.
+ *       api       — ActorRoleAPI proxy (this role's context).
  *
- *   @actor.on_stop("raw_out")          # decorator for producer stop
- *   def raw_out_stop(flexzone, api): ...
+ *       Return value (producer only): True/None = commit, False = discard.
+ *       Consumer return value is ignored.
+ *       """
+ *       if slot is not None:
+ *           slot.ts = ...
+ *       for sender, data in messages:
+ *           api.broadcast(data)
+ *       return True
  *
- *   # ── Consumer role ──────────────────────────────────────────────────────
- *   @actor.on_init("cfg_in")
- *   def cfg_in_init(flexzone, api: actor.ActorRoleAPI):
- *       api.log('info', f"device_id={flexzone.device_id}")
- *
- *   @actor.on_read("cfg_in")
- *   def read_cfg(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool = False):
- *       if timed_out:
- *           api.send_ctrl(b"heartbeat")
- *           return
- *       process(slot.setpoint)
- *
- *   @actor.on_data("cfg_in")           # ZMQ broadcast frames
- *   def zmq_data(data: bytes, api: actor.ActorRoleAPI): ...
- *
- *   @actor.on_stop_c("cfg_in")         # decorator for consumer stop
- *   def cfg_in_stop(flexzone, api): ...
+ *   def on_stop(api: actor.ActorRoleAPI):
+ *       api.log('info', "sensor_node stopping")
  * @endcode
  *
- * ## Decorator mechanics
+ * ## Function lookup
  *
- * `actor.on_write("role")` is called at import time with the role name.
- * It returns a decorator that stores the function in the dispatch table
- * and returns the function unchanged. This is the standard decorator-factory
- * pattern. The decorator itself is never called at runtime — only at import.
- *
- * Registering a duplicate handler for the same event+role raises RuntimeError.
+ * The host looks up `on_init`, `on_iteration`, and `on_stop` by name from the
+ * imported module object.  Missing names are silently skipped (no error).
+ * All three receive `api` as their only or last argument.
  */
 #include "actor_api.hpp"
-#include "actor_dispatch_table.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -67,138 +56,24 @@
 namespace py = pybind11;
 using namespace pylabhub::actor;
 
-// ============================================================================
-// Global dispatch table (owned here; accessed via get_dispatch_table())
-// ============================================================================
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static ActorDispatchTable g_dispatch_table;
-
-ActorDispatchTable &pylabhub::actor::get_dispatch_table()
-{
-    return g_dispatch_table;
-}
-
-// ============================================================================
-// Module definition
-// ============================================================================
-
-namespace
-{
-
-/// Build a decorator factory for a given event map.
-/// Usage: m.def("on_write", make_factory(g_dispatch_table.on_write), ...);
-///
-/// When the script calls `@actor.on_write("role")`:
-///   1. `actor.on_write("role")` calls this factory with role_name = "role".
-///   2. Returns a decorator callable.
-///   3. The decorator stores the user function in the event map and returns it.
-///
-/// Returns a plain C++ lambda so pybind11 can deduce its signature for m.def().
-auto make_factory(std::unordered_map<std::string, py::object> &event_map)
-{
-    return [&event_map](const std::string &role_name) -> py::object
-    {
-        return py::cpp_function(
-            [&event_map, role_name](py::object fn) -> py::object
-            {
-                if (event_map.count(role_name) != 0)
-                {
-                    throw std::runtime_error(
-                        "pylabhub_actor: duplicate handler for role '"
-                        + role_name + "' — each event+role pair may only "
-                        "have one registered callback");
-                }
-                event_map[role_name] = fn;
-                return fn;
-            });
-    };
-}
-
-} // anonymous namespace
-
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
 {
     m.doc() =
-        "pylabhub actor — per-role callback decorators and ActorRoleAPI binding.\n\n"
-        "Usage:\n"
-        "  import pylabhub_actor as actor\n\n"
-        "  @actor.on_write('my_producer')\n"
-        "  def write(slot, flexzone, api) -> bool: ...\n\n"
-        "  @actor.on_read('my_consumer')\n"
-        "  def read(slot, flexzone, api, *, timed_out=False): ...\n\n"
-        "All decorators register handlers at import time. The decorator itself\n"
-        "adds zero per-cycle runtime cost; the C++ dispatch table lookup is ~50 ns.";
-
-    // ── Decorator factories ────────────────────────────────────────────────────
-    //
-    // Producer decorators
-    m.def("on_init",    make_factory(g_dispatch_table.on_init),
-          py::arg("role"),
-          "Register on_init(flexzone, api) for a producer or consumer role.\n"
-          "Called once after SHM is ready, before the write/read loop starts.");
-
-    m.def("on_write",   make_factory(g_dispatch_table.on_write),
-          py::arg("role"),
-          "Register on_write(slot, flexzone, api) -> bool for a producer role.\n"
-          "Return True or None to commit the slot; False to discard.\n"
-          "slot is a writable ctypes struct — valid ONLY during this call.");
-
-    m.def("on_message", make_factory(g_dispatch_table.on_message),
-          py::arg("role"),
-          "Register on_message(sender: str, data: bytes, api) for a producer role.\n"
-          "Called when any consumer sends a ZMQ ctrl frame to this producer.");
-
-    m.def("on_stop",    make_factory(g_dispatch_table.on_stop_p),
-          py::arg("role"),
-          "Register on_stop(flexzone, api) for a producer role.\n"
-          "Called once after the write loop exits.");
-
-    // Consumer decorators
-    m.def("on_read",    make_factory(g_dispatch_table.on_read),
-          py::arg("role"),
-          "Register on_read(slot, flexzone, api, *, timed_out=False) for a consumer role.\n"
-          "slot is a read-only ctypes struct (zero-copy from_buffer on readonly memoryview).\n"
-          "Field writes raise TypeError. Valid ONLY during this call.\n"
-          "When timed_out=True the slot is None (timeout_ms elapsed without a new slot).");
-
-    m.def("on_data",    make_factory(g_dispatch_table.on_data),
-          py::arg("role"),
-          "Register on_data(data: bytes, api) for a consumer role.\n"
-          "Called for each ZMQ broadcast frame received from the producer.");
-
-    m.def("on_stop_c",  make_factory(g_dispatch_table.on_stop_c),
-          py::arg("role"),
-          "Register on_stop(flexzone, api) for a consumer role.\n"
-          "Called once after the read loop exits.\n"
-          "Note: use @actor.on_stop() for producer roles, @actor.on_stop_c() for consumers.");
-
-    // ── Utility ───────────────────────────────────────────────────────────────
-    m.def("_clear_dispatch_table",
-          []() { g_dispatch_table.clear(); },
-          "Clear all registered handlers. Called by ActorHost before each script import.");
-
-    m.def("_registered_roles",
-          [](const std::string &event) -> py::list
-          {
-              py::list result;
-              const ActorDispatchTable &tbl = g_dispatch_table;
-              const std::unordered_map<std::string, py::object> *map = nullptr;
-              if (event == "on_write")        map = &tbl.on_write;
-              else if (event == "on_read")    map = &tbl.on_read;
-              else if (event == "on_init")    map = &tbl.on_init;
-              else if (event == "on_data")    map = &tbl.on_data;
-              else if (event == "on_message") map = &tbl.on_message;
-              else if (event == "on_stop")    map = &tbl.on_stop_p;
-              else if (event == "on_stop_c")  map = &tbl.on_stop_c;
-              if (map != nullptr)
-                  for (const auto &[k, _v] : *map)
-                      result.append(k);
-              return result;
-          },
-          py::arg("event"),
-          "Return list of role names that have a handler for the given event string.");
+        "pylabhub actor — ActorRoleAPI binding for module-convention scripts.\n\n"
+        "Script interface:\n"
+        "  def on_init(api): ...\n"
+        "  def on_iteration(slot, flexzone, messages, api) -> bool: ...\n"
+        "  def on_stop(api): ...\n\n"
+        "The host imports the script as a Python module and looks up these\n"
+        "function names by attribute access.  Missing names are silently skipped.\n\n"
+        "on_iteration is called every loop iteration:\n"
+        "  slot      -- ctypes struct into SHM slot, or None (Messenger / timeout)\n"
+        "  flexzone  -- persistent ctypes struct for the role's flexzone, or None\n"
+        "  messages  -- list of (sender: str, data: bytes) from the incoming queue\n"
+        "  api       -- ActorRoleAPI proxy for this role\n\n"
+        "Producer return: True/None = commit slot; False = discard.\n"
+        "Consumer return: ignored.";
 
     // ── SharedSpinLockPy class binding ─────────────────────────────────────────
     py::class_<SharedSpinLockPy>(m, "SharedSpinLockPy",
@@ -252,13 +127,15 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
         "  broker() -> str                 — configured broker endpoint (informational)\n"
         "  kind() -> str                   — 'producer' or 'consumer'\n"
         "  log_level() -> str              — configured log level (debug/info/warn/error)\n"
-        "  script_dir() -> str             — absolute directory of the actor script\n"
-        "  stop()                          — request actor shutdown (all roles)\n\n"
+        "  script_dir() -> str             — absolute base directory of the actor script\n"
+        "  stop()                          — request actor shutdown (all roles)\n"
+        "  set_critical_error()            — latch critical error flag + request shutdown\n"
+        "  critical_error() -> bool        — True after set_critical_error() was called\n"
+        "  flexzone() -> object            — persistent flexzone object, or None\n\n"
         "## Producer roles\n"
         "  broadcast(data: bytes) -> bool  — ZMQ broadcast to all consumers\n"
         "  send(id: str, data: bytes) -> bool — ZMQ unicast to one consumer\n"
         "  consumers() -> list             — ZMQ identities of connected consumers\n"
-        "  trigger_write()                 — wake write loop (interval_ms=-1 only)\n"
         "  update_flexzone_checksum() -> bool — recompute and store BLAKE2b\n\n"
         "## Consumer roles\n"
         "  send_ctrl(data: bytes) -> bool  — send ctrl frame to producer\n"
@@ -289,9 +166,28 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
         .def("log_level",  &ActorRoleAPI::log_level,
              "Configured log level (debug/info/warn/error).")
         .def("script_dir", &ActorRoleAPI::script_dir,
-             "Absolute path to the directory containing this actor's Python script.")
+             "Absolute base directory prepended to sys.path for this actor's script.")
         .def("stop",       &ActorRoleAPI::stop,
              "Request actor shutdown. All roles will stop after their current callback.")
+        .def("set_critical_error", &ActorRoleAPI::set_critical_error,
+             "Latch the critical-error flag and request graceful shutdown.\n"
+             "The current iteration completes before the loop exits.\n"
+             "Once set, the flag is never cleared.\n\n"
+             "Use this to signal unrecoverable script errors:\n"
+             "  def on_iteration(slot, fz, msgs, api):\n"
+             "      if something_bad:\n"
+             "          api.set_critical_error()\n"
+             "          return False")
+        .def("critical_error", &ActorRoleAPI::critical_error,
+             "True if set_critical_error() has been called for this role.\n"
+             "Reflects the latch state — never resets within a role run.")
+        .def("flexzone", &ActorRoleAPI::flexzone,
+             "Return the persistent flexzone Python object for this role, or None\n"
+             "if no flexzone is configured or SHM is not connected.\n\n"
+             "The flexzone is always available as the second positional argument\n"
+             "to on_iteration(slot, flexzone, messages, api).  This getter is\n"
+             "provided for convenience when flexzone needs to be accessed outside\n"
+             "on_iteration (e.g. from on_init or on_stop).")
 
         // Producer
         .def("broadcast",  &ActorRoleAPI::broadcast, py::arg("data"),
@@ -300,8 +196,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Send bytes to a specific consumer identified by ZMQ identity string.")
         .def("consumers",  &ActorRoleAPI::consumers,
              "Return list of ZMQ identity strings for all connected consumers.")
-        .def("trigger_write", &ActorRoleAPI::trigger_write,
-             "Wake the write loop. Only has effect when interval_ms == -1.")
         .def("update_flexzone_checksum", &ActorRoleAPI::update_flexzone_checksum,
              "Recompute and store the SHM flexzone BLAKE2b checksum (producer).\n"
              "Call from on_init and after any write that modifies flexzone fields.")
@@ -319,12 +213,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Subsequent actor-level checks compare against this snapshot.")
 
         // Diagnostics — read-only from Python.
-        // The script is under observation by the C++ host; it may read these counters
-        // to observe its own health but cannot reset or write them. Resets happen
-        // automatically when a role restarts (api_.reset_all_metrics() in start()).
         .def("script_error_count", &ActorRoleAPI::script_error_count,
              "Total Python exceptions caught in any callback for this role\n"
-             "(on_init, on_write, on_read, on_data, on_message, on_stop).\n"
+             "(on_init, on_iteration, on_stop).\n"
              "Resets to zero when the role restarts.\n\n"
              "Example:\n"
              "  if api.script_error_count() > 100:\n"
@@ -337,7 +228,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_actor, m)
              "Resets to zero when the role restarts.")
         .def("last_cycle_work_us", &ActorRoleAPI::last_cycle_work_us,
              "Elapsed active-work time in microseconds for the most recently completed\n"
-             "write cycle: acquire_write_slot + on_write + commit + checksum.\n"
+             "write cycle: acquire_write_slot + on_iteration + commit + checksum.\n"
              "0 until the first write completes. Producer-only; always 0 for consumers.")
 
         // Shared spinlocks

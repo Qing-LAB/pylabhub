@@ -268,3 +268,32 @@ TEST(ActorRoleMetrics, ResetOnOneInstanceDoesNotAffectOther)
     EXPECT_EQ(api1.script_error_count(), uint64_t{0});
     EXPECT_EQ(api2.script_error_count(), uint64_t{2});
 }
+
+// ============================================================================
+// critical_error latch — inline flag, never cleared by metrics reset
+// ============================================================================
+
+TEST(ActorRoleMetrics, CriticalErrorInitiallyFalse)
+{
+    ActorRoleAPI api;
+    EXPECT_FALSE(api.critical_error());
+}
+
+TEST(ActorRoleMetrics, CriticalErrorNotResetByMetricsReset)
+{
+    // reset_all_role_run_metrics resets counters only; the critical_error latch
+    // must be unaffected (it is a separate one-way flag, not a metric).
+    ActorRoleAPI api;
+    EXPECT_FALSE(api.critical_error());
+    api.reset_all_role_run_metrics();
+    EXPECT_FALSE(api.critical_error());
+}
+
+TEST(ActorRoleMetrics, CriticalErrorIndependentPerInstance)
+{
+    // Two instances must not share the critical_error flag.
+    ActorRoleAPI api1;
+    ActorRoleAPI api2;
+    EXPECT_FALSE(api1.critical_error());
+    EXPECT_FALSE(api2.critical_error());
+}

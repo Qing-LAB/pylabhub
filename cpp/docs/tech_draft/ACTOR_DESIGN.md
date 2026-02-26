@@ -1,7 +1,7 @@
 # pylabhub-actor Design
 
-**Status**: Implemented — 2026-02-21 (UID format + SharedSpinLockPy added 2026-02-21; LoopTimingPolicy + RoleMetrics diagnostics added 2026-02-23)
-**Supersedes**: previous single-role design (legacy flat JSON format — still accepted with warning)
+**Status**: Implemented — 2026-02-21. Updated 2026-02-25: HEP-CORE-0010 Phase 3 complete — application-level heartbeat via `zmq_thread_`; embedded-mode API; per-role Python packages. Phase 1: unified module-based script interface, GIL-race fix, `loop_trigger`, `incoming_queue_`, `set_critical_error()`. Phase 2: 2-thread model (`zmq_thread_` + `loop_thread_`), `start_embedded()`, socket handle API, `iteration_count_`. Phase 3: `suppress_periodic_heartbeat()` + `enqueue_heartbeat()` for application-level liveness.
+**Supersedes**: previous decorator-based design (decorator API removed; `actor_dispatch_table.hpp` deleted)
 
 ---
 
@@ -11,16 +11,18 @@
    channels the actor connects to or in which direction.
 2. **Role palette** — the actor JSON declares a named set of roles (`producer` or
    `consumer`), each with its own channel, broker, schema, and timing policy. The Python
-   script activates whichever subset it needs via per-role decorators.
+   module implements `on_iteration` / `on_init` / `on_stop` by convention — no decorators.
 3. **Typed zero-copy access** — slot and flexzone memory is presented to Python as a
    `ctypes.LittleEndianStructure` built from the JSON schema.  No struct packing/unpacking
    in user code.
 4. **Timer-driven producer** — `interval_ms` makes the write loop a best-effort periodic
-   poll.  `-1` enables event-driven write via `api.trigger_write()`.
-5. **Timeout-aware consumer** — `timeout_ms` fires `on_read(slot=None, timed_out=True)`
-   when no slot arrives, enabling periodic heartbeat or fallback computation.
-6. **Zero per-cycle decorator cost** — decorators run once at import time and store the
-   callable in a C++ `unordered_map`.  At call time: one `~50 ns` hash lookup.
+   poll.  `loop_trigger="messenger"` enables message-event-driven iteration when no SHM
+   channel is needed.
+5. **Timeout-aware consumer** — `timeout_ms` fires `on_iteration(slot=None, ...)` when no
+   new slot arrives, enabling periodic heartbeat or fallback computation.
+6. **GIL-safe ZMQ callbacks** — incoming ZMQ messages are routed to `incoming_queue_`
+   (mutex + condvar) by background threads; the loop thread drains the queue before
+   acquiring the GIL — single-threaded Python call path, no GIL race.
 7. **Authenticated identity** — optional NaCl keypair; `actor_uid` + password-protected
    private key; CurveZMQ broker authentication; provenance chain for SHM identity binding.
 
@@ -28,11 +30,32 @@
 
 ## 2. Config File Format
 
-The new multi-role format uses an `actor` block and a `roles` map.
-The legacy flat single-role format is still accepted with a deprecation warning.
+The multi-role format uses an `actor` block, an optional top-level `script` fallback, and
+a `roles` map where each role may carry its own `"script"` key.  `"script"` wherever it
+appears must be an object `{"module": "...", "path": "..."}` — a bare string is rejected.
+
+### 2.0 Standard actor directory layout
+
+```
+<actor_dir>/
+  actor.json                    ← actor identity + all role configs
+  roles/
+    <role_name>/                ← one subdirectory per role
+      script/                   ← Python package (module name = "script")
+        __init__.py             ← callbacks: on_init / on_iteration / on_stop
+        helpers.py              ← optional helper submodule (from . import helpers)
+  logs/                         ← rotating log files (created at startup)
+  run/
+    actor.pid                   ← PID of the running process
+```
+
+`pylabhub-actor --init <actor_dir>` creates this layout and writes a complete
+`actor.json` + `roles/data_out/script/__init__.py` template.
 
 ```json
 {
+  "hub_dir": "/opt/pylabhub/hubs/lab",
+
   "actor": {
     "uid":       "ACTOR-SENSOR-00000003",
     "name":      "TemperatureSensor",
@@ -42,14 +65,13 @@ The legacy flat single-role format is still accepted with a deprecation warning.
       "password": "env:PLH_ACTOR_PASSWORD"
     }
   },
-  "script": "sensor_node.py",
 
   "roles": {
     "raw_out": {
       "kind":        "producer",
       "channel":     "lab.sensor.temperature",
-      "broker":      "tcp://127.0.0.1:5570",
       "interval_ms": 100,
+      "script":      {"module": "script", "path": "./roles/raw_out"},
       "slot_schema": {
         "packing": "natural",
         "fields": [
@@ -75,8 +97,8 @@ The legacy flat single-role format is still accepted with a deprecation warning.
     "cfg_in": {
       "kind":       "consumer",
       "channel":    "lab.config.setpoints",
-      "broker":     "tcp://127.0.0.1:5570",
       "timeout_ms": 5000,
+      "script":     {"module": "script", "path": "./roles/cfg_in"},
       "slot_schema": {
         "fields": [{"name": "setpoint", "type": "float32"}]
       }
@@ -84,6 +106,11 @@ The legacy flat single-role format is still accepted with a deprecation warning.
   }
 }
 ```
+
+> **Note**: `broker` / `broker_pubkey` are omitted above because they are
+> automatically populated from `<hub_dir>/hub.json` and `<hub_dir>/hub.pubkey`
+> by `ActorConfig::from_directory()` when `hub_dir` is present.
+> Use the explicit `broker` / `broker_pubkey` fields only in legacy flat-config mode.
 
 ### 2.1 Field reference
 
@@ -121,11 +148,15 @@ Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.u
 |---|---|---|---|---|
 | `kind` | both | yes | — | `"producer"` or `"consumer"` |
 | `channel` | both | yes | — | Channel name to create/subscribe |
-| `broker` | both | no | `tcp://127.0.0.1:5570` | Broker endpoint. Each role connects its own Messenger to this endpoint in `start()`. |
-| `broker_pubkey` | both | no | `""` (plain TCP) | Broker CurveZMQ server public key (Z85, 40 chars). Required for encrypted broker connections. Empty = no CURVE. |
-| `interval_ms` | producer | no | `0` | `0`=full throughput; `N>0`=deadline-scheduled (see `loop_timing`); `-1`=`trigger_write()` only |
-| `timeout_ms` | consumer | no | `-1` | `-1`=wait indefinitely; `N>0`=fire `on_read(timed_out=True)` on silence (see `loop_timing`) |
-| `loop_timing` | both | no | `"fixed_pace"` | Overrun policy for `interval_ms`/`timeout_ms` deadline advancement. See §3.6. |
+| `broker` | both | no | `tcp://127.0.0.1:5570` | Broker endpoint. Overridden by `hub_dir` resolution. |
+| `broker_pubkey` | both | no | `""` (plain TCP) | Broker CurveZMQ server public key (Z85, 40 chars). Overridden by `hub_dir`. |
+| `script` | both | no* | — | Per-role Python package: `{"module": "script", "path": "./roles/<role>"}`. Falls back to top-level `"script"` if absent. At least one of per-role or top-level must be present. |
+| `interval_ms` | producer | no | `0` | `0`=full throughput; `N>0`=deadline-scheduled (see `loop_timing`) |
+| `timeout_ms` | consumer | no | `-1` | `-1`=wait indefinitely; `N>0`=fire `on_iteration(slot=None)` on silence (see `loop_timing`) |
+| `loop_timing` | both | no | `"fixed_pace"` | Overrun policy for `interval_ms`/`timeout_ms` deadline advancement. See §3.7. |
+| `loop_trigger` | both | no | `"shm"` | Loop blocking strategy: `"shm"` (block on acquire_*_slot; requires `shm.enabled=true`) or `"messenger"` (block on incoming ZMQ message / poll timeout). |
+| `messenger_poll_ms` | both | no | `5` | Poll wait time when `loop_trigger="messenger"`. Values ≥ 10 warn at config load. |
+| `heartbeat_interval_ms` | producer | no | `0` | `0` = 10×interval_ms. Reserved for Phase 2 heartbeat. |
 | `slot_schema` | both | yes* | — | ctypes field list for slot. Omit for legacy raw-bytes mode. |
 | `flexzone_schema` | both | no | absent | ctypes field list for flexzone. Absent = no flexzone for this role. |
 | `shm.enabled` | both | no | `false` | Whether to create/attach a DataBlock SHM segment. |
@@ -139,7 +170,7 @@ Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.u
 |---|---|---|
 | `slot_checksum` | `"update"` | `"none"` / `"update"` / `"enforce"` |
 | `flexzone_checksum` | `"update"` | same |
-| `on_checksum_fail` | `"skip"` | `"skip"` (discard slot) / `"pass"` (call on_read with `api.slot_valid()==false`) |
+| `on_checksum_fail` | `"skip"` | `"skip"` (discard slot) / `"pass"` (call `on_iteration` with `api.slot_valid()==false`) |
 | `on_python_error` | `"continue"` | `"continue"` (log traceback, keep running) / `"stop"` |
 
 ### 2.2 Slot schema field types
@@ -164,162 +195,242 @@ Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.u
 
 ## 3. Python Script Interface
 
-### 3.1 Decorator pattern
+### 3.1 Script structure — per-role Python package
 
-The embedded `pylabhub_actor` module exposes decorator factories. Scripts register
-per-role handlers at import time. Handlers are stored in the C++ dispatch table.
+Each role has its own Python **package** directory. Keeping Python files separate from other
+role-specific files (config, data, etc.) is the key reason for the `script/` subdirectory:
 
-**Key property**: `@actor.on_write("raw_out")` runs exactly **once** — at import time.
-At call time, C++ does a single `~50 ns` `unordered_map::find`. Zero per-cycle overhead.
-
-```python
-import pylabhub_actor as actor
-import time, os
-
-# ── Module-level state (replaces any ctx.state concept) ───────────────────────
-count    = 0
-setpoint = 20.0
-
-# ── Producer role "raw_out" ───────────────────────────────────────────────────
-
-@actor.on_init("raw_out")
-def raw_out_init(flexzone, api: actor.ActorRoleAPI):
-    """
-    Called once per role after SHM is created and ready.
-    flexzone: writable ctypes struct backed by SHM flexible-zone region.
-    Write device metadata and stamp the checksum here.
-    """
-    flexzone.device_id   = 42
-    flexzone.sample_rate = 1000
-    flexzone.label       = b"lab.sensor.temperature"
-    api.update_flexzone_checksum()
-    api.log('info', f"raw_out: started  uid={api.uid()}  pid={os.getpid()}")
-
-@actor.on_write("raw_out")
-def raw_out_write(slot, flexzone, api: actor.ActorRoleAPI) -> bool:
-    """
-    Called every interval_ms (or as fast as SHM allows if interval_ms=0).
-
-    slot:     writable ctypes.LittleEndianStructure — zero-copy into SHM slot.
-              Valid ONLY during this call.  Do not store.
-    flexzone: persistent writable ctypes struct — safe to read/write and store.
-    Returns True or None to commit; False to discard (no SHM commit, no ZMQ broadcast).
-    """
-    global count
-    count += 1
-    slot.ts    = time.time()
-    slot.value = setpoint + 0.1   # simulated reading
-    slot.flags = 0x01
-    return True
-
-@actor.on_message("raw_out")
-def raw_out_message(sender: str, data: bytes, api: actor.ActorRoleAPI):
-    """Called when a consumer sends a ZMQ ctrl frame to this producer role."""
-    api.log('debug', f"raw_out: ctrl from {sender}: {data!r}")
-    api.send(sender, b"ack")
-
-@actor.on_stop("raw_out")
-def raw_out_stop(flexzone, api: actor.ActorRoleAPI):
-    api.log('info', f"raw_out: stopped after {count} writes")
-
-# ── Consumer role "cfg_in" ────────────────────────────────────────────────────
-
-@actor.on_init("cfg_in")
-def cfg_in_init(flexzone, api: actor.ActorRoleAPI):
-    """Called once before the consumer read loop starts."""
-    api.log('info', f"cfg_in: connected  uid={api.uid()}")
-    api.send_ctrl(b"hello")
-
-@actor.on_read("cfg_in")
-def cfg_in_read(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool = False):
-    """
-    slot:      read-only ctypes struct — zero-copy from_buffer on readonly memoryview.
-               Field writes raise TypeError.  Valid ONLY during this call.
-    timed_out: True when no slot arrived within timeout_ms.  slot is None then.
-    api.slot_valid(): False when checksum failed and on_checksum_fail='pass'.
-    """
-    global setpoint
-    if timed_out:
-        api.send_ctrl(b"heartbeat")
-        return
-    if not api.slot_valid():
-        api.log('warn', "cfg_in: checksum failed")
-        return
-    setpoint = slot.setpoint
-
-@actor.on_data("cfg_in")
-def cfg_in_data(data: bytes, api: actor.ActorRoleAPI):
-    """Called for each ZMQ broadcast frame from the producer."""
-    api.log('debug', f"cfg_in: zmq broadcast {len(data)} bytes")
-
-@actor.on_stop_c("cfg_in")
-def cfg_in_stop(flexzone, api: actor.ActorRoleAPI):
-    api.log('info', "cfg_in: stopped")
+```
+roles/
+  raw_out/              ← role directory (non-Python files live here)
+    script/             ← Python package (module name = "script")
+      __init__.py       ← entry point: on_init / on_iteration / on_stop
+      calibration.py    ← optional helper submodule
+      filters.py        ← another helper
+  cfg_in/
+    script/
+      __init__.py
 ```
 
-### 3.2 Callback inventory
+The `"script"` key inside each role config points the actor at this package:
 
-All callbacks are **per-role**. There is no global `on_init` / `on_stop`.
-Each role's `on_init` / `on_stop` handles its own lifecycle.
-`@actor.on_stop` is for producer roles; `@actor.on_stop_c` is for consumer roles.
+```json
+"raw_out": {
+  "kind":   "producer",
+  "script": {"module": "script", "path": "./roles/raw_out"},
+  ...
+}
+```
 
-#### Producer callbacks
+`path` is added as the **parent** of the `script/` package (i.e. `./roles/raw_out`).
+The package is loaded via `importlib.util.spec_from_file_location` under the unique
+alias `_plh_{uid_hex}_{role_name}` — even when two roles share the module name `"script"`,
+each gets a fully isolated module object with its own state.
 
-| Decorator | Signature | When called |
-|---|---|---|
-| `@actor.on_init("role")` | `(flexzone, api)` | Once per role — SHM created and ready |
-| `@actor.on_write("role")` | `(slot, flexzone, api) -> bool` | Every `interval_ms`; `True`/`None`=commit, `False`=discard |
-| `@actor.on_message("role")` | `(sender: str, data: bytes, api)` | ZMQ ctrl frame from any consumer |
-| `@actor.on_stop("role")` | `(flexzone, api)` | Once per role — after write loop exits |
+#### Fallback: actor-level script
 
-#### Consumer callbacks
+For simple single-role actors or actors where all roles share common logic, a top-level
+`"script"` block can be used as a fallback for any role without a per-role `"script"` key:
 
-| Decorator | Signature | When called |
-|---|---|---|
-| `@actor.on_init("role")` | `(flexzone, api)` | Once per role — after SHM attach |
-| `@actor.on_read("role")` | `(slot, flexzone, api, *, timed_out=False)` | Per slot; or on `timeout_ms` |
-| `@actor.on_data("role")` | `(data: bytes, api)` | Per ZMQ broadcast frame |
-| `@actor.on_stop_c("role")` | `(flexzone, api)` | Once per role — after read loop exits |
+```json
+{
+  "script": {"module": "sensor_node", "path": "/opt/scripts"},
+  "roles": {
+    "raw_out": { ... },   ← uses sensor_node (no per-role "script")
+    "cfg_in":  { ... }    ← also uses sensor_node; dispatch on api.role_name()
+  }
+}
+```
+
+### 3.2 Importing within the script package
+
+```python
+# roles/raw_out/script/__init__.py
+
+import pylabhub_actor as actor   # C++ embedded module — always available
+import time, numpy as np         # standard/installed packages — normal imports
+
+from . import calibration        # relative import → ./calibration.py
+from .filters import ButterworthLP  # named import from sibling
+```
+
+**What works:**
+- `import pylabhub_actor as actor` — always available (C++ embedded module)
+- `import numpy`, `import scipy`, etc. — any installed package
+- `from . import helpers` — relative imports within the `script/` package
+- `from .subpkg import func` — nested sub-packages within `script/`
+
+**What does NOT work:**
+- `import script` — the module is registered under a role-unique alias, not as `"script"`
+- Cross-role imports — each role's module is isolated; use hub channels to share data
+
+### 3.3 Callback reference
+
+```python
+# roles/raw_out/script/__init__.py
+import pylabhub_actor as actor
+import time
+from . import calibration    # example relative import
+
+# Module-level state is private to this role (isolated module object)
+count = 0
+
+def on_init(api: actor.ActorRoleAPI) -> None:
+    """Called once per role before the loop starts."""
+    api.log('info', f"on_init: role={api.role_name()} uid={api.uid()}")
+    fz = api.flexzone()
+    if fz is not None:
+        fz.device_id   = 42
+        fz.sample_rate = 1000
+        fz.label       = b"lab.sensor.temperature"
+        api.update_flexzone_checksum()
+
+def on_iteration(slot, flexzone, messages, api: actor.ActorRoleAPI) -> bool:
+    """
+    Called every loop iteration.
+
+    slot:     ctypes.LittleEndianStructure (writable for producer, read-only for
+              consumer), or None when triggered by Messenger timeout / no SHM slot.
+    flexzone: persistent ctypes struct for this role's flexzone, or None.
+    messages: list of (sender: str, data: bytes) drained from the incoming ZMQ queue
+              since the last iteration. May be empty even for SHM-triggered loops.
+    api:      ActorRoleAPI proxy for this role.
+
+    Producer return: True/None = commit the slot; False = discard.
+    Consumer return value is ignored.
+    """
+    global count
+
+    for sender, data in messages:
+        api.log('debug', f"msg from {sender}: {data!r}")
+
+    if slot is None:
+        return None  # Messenger trigger or timeout; slot not available
+
+    if api.kind() == "producer":
+        count += 1
+        slot.ts    = time.time()
+        slot.value = calibration.apply(count)
+        slot.flags = 0x01
+        return True
+    else:
+        # Consumer: slot is read-only; field writes raise TypeError
+        if not api.slot_valid():
+            api.log('warn', "checksum failed — discarding")
+            return None
+        api.log('debug', f"received setpoint={slot.setpoint}")
+    return None
+
+def on_stop(api: actor.ActorRoleAPI) -> None:
+    """Called once per role after the loop exits."""
+    api.log('info', f"on_stop: role={api.role_name()} count={count}")
+```
+
+### 3.4 Callbacks
+
+| Function name | Signature | When called | Required |
+|---|---|---|---|
+| `on_init` | `(api)` | Once per role — before loop starts | No |
+| `on_iteration` | `(slot, flexzone, messages, api) -> bool` | Every loop iteration | Yes (role skipped if absent) |
+| `on_stop` | `(api)` | Once per role — after loop exits | No |
+
+All three are looked up by `py::getattr(module, name, py::none())`. Absent functions are
+silently skipped. With per-role modules, each role's module has **its own** `on_iteration`
+function with its own module-level state — no need to dispatch on `api.role_name()`.
+(Dispatch on `api.role_name()` is still available when using the actor-level fallback where
+multiple roles share a single module.)
 
 #### Call order
 
 1. Parse JSON → build `ActorConfig`; load/generate NaCl keypair if `auth` present
-2. `_clear_dispatch_table()` — resets any prior registration
-3. Import script (`exec_script_file`) — decorators populate dispatch table
-4. For each role in config that has matching handlers: create `ProducerRoleWorker` or `ConsumerRoleWorker`
-5. For each active role: `on_init(flexzone, api)`, then start loop thread
-6. On shutdown: stop all loop threads → `on_stop(flexzone, api)` per role
+2. `load_script()`: for each role, load per-role `script/` package via
+   `spec_from_file_location` (or actor-level module as fallback)
+3. For each role: check `on_iteration` attribute → if absent, skip role (log warning)
+4. `ActorHost::start()`: create `ProducerRoleWorker` / `ConsumerRoleWorker` for active roles
+5. For each active role: call `on_init(api)`, then start loop and ZMQ threads
+6. On shutdown: stop all threads → call `on_stop(api)` per role
+
+### 3.5 Callbacks
+
+| Function name | Signature | When called | Required |
+|---|---|---|---|
+| `on_init` | `(api)` | Once per role — before loop starts | No |
+| `on_iteration` | `(slot, flexzone, messages, api) -> bool` | Every loop iteration | Yes (role skipped if absent) |
+| `on_stop` | `(api)` | Once per role — after loop exits | No |
+
+All three are looked up by `py::getattr(module, name, py::none())`. Absent functions are
+silently skipped (no error). All roles in a module share the **same** `on_iteration` function;
+use `api.role_name()` or `api.kind()` to dispatch role-specific logic.
+
+#### Call order
+
+1. Parse JSON → build `ActorConfig`; load/generate NaCl keypair if `auth` present
+2. Import module via `importlib` — no side effects; no decorator registration
+3. For each role in config: check `on_iteration` attribute → if absent, skip role (log warning)
+4. `ActorHost::start()`: create `ProducerRoleWorker` / `ConsumerRoleWorker` for active roles
+5. For each active role: call `on_init(api)`, then start loop thread
+6. On shutdown: stop all loop threads → call `on_stop(api)` per role
 
 ### 3.3 Object lifetimes
 
 | Object | Valid window | Notes |
 |---|---|---|
-| `slot` (producer) | During `on_write` only | Writable `from_buffer` into SHM. **Do not store.** |
-| `slot` (consumer) | During `on_read` only | Zero-copy `from_buffer` on read-only memoryview. Writing a field raises `TypeError`. **Do not store.** |
-| `slot` (timed_out) | N/A | `None` when `timed_out=True`. |
+| `slot` (producer) | During `on_iteration` only | Writable `from_buffer` into SHM. **Do not store.** |
+| `slot` (consumer) | During `on_iteration` only | Zero-copy `from_buffer` on read-only memoryview. Writing a field raises `TypeError`. **Do not store.** |
+| `slot` (no SHM / timeout) | N/A | `None` when Messenger-triggered or `timeout_ms` fires. |
 | `flexzone` | Entire role lifetime | Persistent `from_buffer` into SHM. Safe to read, write (producer), or store. |
 | `api` | Entire role lifetime | Stateless proxy. Safe to store. |
 
 Producer `flexzone`: writable, backed by the SHM flexible-zone region.
 Consumer `flexzone`: read-only zero-copy view of the producer's same region.
 
-### 3.4 `ActorRoleAPI` proxy
+### 3.4 Incoming message queue (GIL-race fix)
 
-One `ActorRoleAPI` instance per active role. Passed by reference to every callback of
-that role. Stateless — all methods dispatch to C++ immediately. No heap allocation per call.
+ZMQ callbacks (`peer_thread` for producers, `data_thread` for consumers) no longer call
+Python directly. Instead they push `IncomingMessage{sender, data}` into `incoming_queue_`
+under `incoming_mu_` and notify `incoming_cv_`. The loop thread drains the queue **before**
+acquiring the GIL, ensuring a single-threaded Python call path.
+
+The queue is bounded by `kMaxIncomingQueue = 256`. If full, new messages are dropped with a
+`LOGGER_WARN` log. The `messages` list passed to `on_iteration` is built from all messages
+drained in one pass; it may be empty (`[]`) even for SHM-triggered loops.
+
+### 3.5 `loop_trigger` — loop thread blocking strategy
+
+| Config value | Loop thread blocks on | Requires SHM |
+|---|---|---|
+| `"shm"` (default) | `acquire_*_slot(timeout)` | Yes (`shm.enabled=true`) |
+| `"messenger"` | `incoming_cv_.wait_for(messenger_poll_ms)` | No |
+
+When `loop_trigger="shm"`, `on_iteration` fires once per SHM slot available, with slot and
+messages in the same call. When `loop_trigger="messenger"`, `on_iteration` fires when an
+incoming ZMQ message arrives or after `messenger_poll_ms` timeout; `slot` is always `None`.
+
+### 3.6 `ActorRoleAPI` proxy
+
+One `ActorRoleAPI` instance per active role. Passed to every lifecycle callback of that
+role. All methods dispatch to C++ immediately.
 
 ```python
 # ── Common (all roles) ────────────────────────────────────────────────────────
 api.log(level: str, msg: str)            # log through hub logger
 api.uid() -> str                         # actor uid from config
 api.role_name() -> str                   # name of this role ("raw_out", "cfg_in", ...)
+api.actor_name() -> str                  # human-readable actor name
+api.channel() -> str                     # channel name for this role
+api.broker() -> str                      # configured broker endpoint
+api.kind() -> str                        # "producer" or "consumer"
+api.log_level() -> str                   # configured log level
+api.script_dir() -> str                  # directory containing the Python module
 api.stop()                               # request actor shutdown (all roles)
+api.set_critical_error()                 # latch + stop(); use for unrecoverable errors
+api.critical_error() -> bool             # True if set_critical_error() was called
+api.flexzone() -> ctypes.Structure|None  # persistent flexzone object, or None
 
 # ── Producer roles ────────────────────────────────────────────────────────────
 api.broadcast(data: bytes) -> bool       # ZMQ to all connected consumers
 api.send(identity: str, data: bytes) -> bool  # ZMQ unicast to one consumer
 api.consumers() -> list                  # ZMQ identity strings of connected consumers
-api.trigger_write()                      # wake write loop (interval_ms == -1 only)
 api.update_flexzone_checksum() -> bool   # recompute and store BLAKE2b on SHM flexzone
 
 # ── Consumer roles ────────────────────────────────────────────────────────────
@@ -336,9 +447,10 @@ api.spinlock_count() -> int                    # always 8; 0 if SHM not configur
 api.script_error_count() -> int  # Python exceptions in callbacks since role start
 api.loop_overrun_count()  -> int  # write cycles where interval_ms deadline was exceeded
 api.last_cycle_work_us()  -> int  # µs of active work in the last write cycle (producer only)
+api.metrics() -> dict              # all timing metrics (HEP-CORE-0008 domains 2–4)
 ```
 
-### 3.5 LoopTimingPolicy — deadline scheduling for producer and consumer loops
+### 3.7 LoopTimingPolicy — deadline scheduling for producer and consumer loops
 
 The write loop (producer) and timeout loop (consumer) use deadline-based scheduling
 rather than a simple `sleep(interval_ms)` at the top of each iteration. The deadline
@@ -361,8 +473,7 @@ policies diverge in how `next_deadline` is advanced.
 
 ```python
 # Example: 100 Hz producer — detect if more than 5% of cycles are overrunning
-@actor.on_write("raw_out")
-def write(slot, fz, api):
+def on_iteration(slot, fz, messages, api):
     total = api.loop_overrun_count() + api.script_error_count()
     if total > 0 and total % 500 == 0:
         api.log('warn', f"overruns={api.loop_overrun_count()} "
@@ -372,10 +483,10 @@ def write(slot, fz, api):
 ```
 
 **Consumer timeout policy**: the same `loop_timing` field controls how `last_slot_time` is
-advanced after `on_read(timed_out=True)` fires. `"fixed_pace"` resets from the actual callback
-completion time; `"compensating"` advances by one `timeout_ms` tick.
+advanced after `on_iteration(slot=None, ...)` fires on timeout. `"fixed_pace"` resets from the
+actual callback completion time; `"compensating"` advances by one `timeout_ms` tick.
 
-### 3.6 RoleMetrics — supervised diagnostics
+### 3.8 RoleMetrics — supervised diagnostics
 
 The Python script runs under supervision by the C++ host. The host collects diagnostic
 counters **about** the script's execution and makes them available as read-only attributes
@@ -388,7 +499,7 @@ C++ host via `reset_all_role_run_metrics()`.
 
 | Getter | Who writes | When | Semantics |
 |---|---|---|---|
-| `api.script_error_count()` | C++ host | Each `py::error_already_set` catch block | Python exceptions in any callback (on_init, on_write, on_read, on_data, on_message, on_stop) |
+| `api.script_error_count()` | C++ host | Each `py::error_already_set` catch block | Python exceptions in any callback (`on_init`, `on_iteration`, `on_stop`) |
 | `api.loop_overrun_count()` | C++ host | Each write-loop overrun | Cycles where `interval_ms` deadline was already past (no sleep taken). Producer only; 0 for consumers and when `interval_ms <= 0`. |
 | `api.last_cycle_work_us()` | C++ host | After each successful write | Microseconds from start of acquire through commit + checksum. 0 until first write. Producer only. |
 
@@ -404,7 +515,7 @@ api_.set_last_cycle_work_us(elapsed_us);     // called after each successful wri
 api_.reset_all_role_run_metrics();           // called in start() before running_.store(true)
 ```
 
-### 3.7 SharedSpinLockPy — cross-process spinlock for Python
+### 3.9 SharedSpinLockPy — cross-process spinlock for Python
 
 `api.spinlock(idx)` returns a `SharedSpinLockPy` object backed by one of the 8
 `SharedSpinLockState` slots in the SHM header. These slots are shared between all
@@ -561,36 +672,44 @@ namespace pylabhub::actor {
 // Owns hub::Producer, hub::Messenger (per-role), ctypes schema objects, and the write loop thread.
 class ProducerRoleWorker {
 public:
-    // role_name:    matches key in JSON "roles" map
-    // role_cfg:     from ActorConfig::roles[role_name] — carries broker + broker_pubkey
-    // actor_uid:    from ActorConfig::actor_uid
-    // shutdown:     shared shutdown flag (all roles watch this)
-    // on_init_fn:   py::object from dispatch table — may be py::none()
-    // on_write_fn:  py::object (required; role not activated if absent)
-    // on_message_fn / on_stop_fn: optional
+    // role_name:     matches key in JSON "roles" map
+    // role_cfg:      from ActorConfig::roles[role_name] — carries broker + broker_pubkey
+    // actor_uid:     from ActorConfig::actor_uid
+    // auth:          from ActorConfig::auth — keyfile path for CurveZMQ
+    // shutdown:      shared shutdown flag (all roles watch this)
+    // script_module: imported Python module — on_iteration/on_init/on_stop looked up by attribute
     //
     // NOTE: No messenger parameter — each worker constructs its own hub::Messenger
     //       and calls messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)
     //       inside start(). Failed connect logs a warning and continues (degraded mode).
     explicit ProducerRoleWorker(
-        const std::string  &role_name,
-        const RoleConfig   &role_cfg,
-        const std::string  &actor_uid,
-        std::atomic<bool>  &shutdown,
-        const py::object   &on_init_fn,
-        const py::object   &on_write_fn,
-        const py::object   &on_message_fn,
-        const py::object   &on_stop_fn);
+        const std::string        &role_name,
+        const RoleConfig         &role_cfg,
+        const std::string        &actor_uid,
+        const ActorAuthConfig    &auth,
+        std::atomic<bool>        &shutdown,
+        const py::module_        &script_module);
 
-    bool start();    // connect messenger; build ctypes types; call on_init; start write_thread
+    bool start();    // connect messenger; build ctypes types; call on_init; start loop_thread
     void stop();     // signal thread; join; call on_stop
 
-    // Called by ActorRoleAPI::trigger_write() — wakes interval_ms==-1 loop
-    void notify_trigger();
-
 private:
-    hub::Messenger messenger_;  // owned, per-role (value, not reference)
+    hub::Messenger  messenger_;      // owned, per-role (value, not reference)
+    py::object      py_on_iteration_; // looked up from script_module at construction
+    py::object      py_on_init_;
+    py::object      py_on_stop_;
+    std::deque<IncomingMessage>  incoming_queue_;
+    std::mutex                   incoming_mu_;
+    std::condition_variable      incoming_cv_;
     // ...
+
+    void run_loop_shm();       // loop_trigger=Shm  — blocks on acquire_write_slot
+    void run_loop_messenger(); // loop_trigger=Messenger — blocks on incoming_cv_
+    void run_zmq_thread_();    // Phase 2: polls peer ctrl socket; routes events to incoming_queue_
+
+    std::thread            loop_thread_{};
+    std::thread            zmq_thread_{};        // Phase 2: owns ZMQ socket polling
+    std::atomic<uint64_t>  iteration_count_{0};  // Phase 2: incremented per iteration; read by zmq_thread_
 };
 
 // One per consumer role — symmetric design (same owned Messenger pattern).
@@ -602,8 +721,8 @@ class ConsumerRoleWorker { /* ... similar ... */ };
 class ActorHost {
 public:
     explicit ActorHost(const ActorConfig &config);
-    bool load_script(bool verbose = false);   // import Python, read dispatch table
-    bool start();                             // create workers for all registered roles
+    bool load_script(bool verbose = false);   // import Python module; look up on_iteration/on_init/on_stop
+    bool start();                             // create workers for all configured roles
     void stop();                              // stop all workers
     void wait_for_shutdown();
     void signal_shutdown() noexcept;
@@ -624,33 +743,175 @@ public:
 ZMQ context remains process-wide via `GetZMQContextModule()`. Only the Messenger
 lifecycle (singleton) is excluded from the actor's lifecycle list.
 
-### 4.4 ActorDispatchTable (C++ dispatch)
+### 4.4 Module-convention callback resolution
 
-The embedded `pylabhub_actor` module owns a global dispatch table:
+There is no dispatch table. `ActorHost::load_script()` imports the configured Python module
+via `importlib` with a synthetic alias, then passes the `py::module_` directly to each worker
+constructor. Workers resolve callbacks at construction time via `py::getattr`:
 
 ```cpp
-struct ActorDispatchTable {
-    // Shared (both producer and consumer use on_init / on_stop)
-    std::unordered_map<std::string, py::object> on_init;     // role → fn(flexzone, api)
-    std::unordered_map<std::string, py::object> on_stop_p;   // producer: fn(flexzone, api)
-    std::unordered_map<std::string, py::object> on_stop_c;   // consumer: fn(flexzone, api)
-
-    // Producer
-    std::unordered_map<std::string, py::object> on_write;    // fn(slot, fz, api) -> bool
-    std::unordered_map<std::string, py::object> on_message;  // fn(sender, data, api)
-
-    // Consumer
-    std::unordered_map<std::string, py::object> on_read;     // fn(slot, fz, api, *, timed_out=False)
-    std::unordered_map<std::string, py::object> on_data;     // fn(data, api)
-
-    void clear();
-};
-
-// Accessor — declared in actor_dispatch_table.hpp; defined in actor_module.cpp
-ActorDispatchTable &get_dispatch_table();
+// In ProducerRoleWorker / ConsumerRoleWorker constructor:
+py::gil_scoped_acquire g;
+py_on_iteration_ = py::getattr(script_module, "on_iteration", py::none());
+py_on_init_      = py::getattr(script_module, "on_init",      py::none());
+py_on_stop_      = py::getattr(script_module, "on_stop",      py::none());
 ```
 
-### 4.5 ctypes schema binding (zero-copy)
+The module is imported with a unique alias to avoid sys.modules collisions when multiple
+roles share the same underlying module:
+
+```cpp
+// Synthetic module name: _plh_{uid_8hex}_{module_name}
+// Example: _plh_12345678_sensor_node
+std::string alias = "_plh_" + uid_8hex + "_" + config_.script_module;
+auto importlib   = py::module_::import("importlib");
+script_module_   = importlib.attr("import_module")(config_.script_module);
+py::module_::import("sys").attr("modules")[alias] = script_module_;
+```
+
+**Absence of `on_iteration`**: not an error. `ActorHost::start()` logs a warning and skips
+the role. `on_init` and `on_stop` absence is silently tolerated.
+
+**`actor_dispatch_table.hpp`**: deleted. All decorator factory functions (`make_factory()`,
+`g_dispatch_table`, `on_write`, `on_read`, etc.) are removed from the embedded module.
+The `pylabhub_actor` pybind11 module now only exposes `ActorRoleAPI` bindings.
+
+### 4.5 Thread Interaction (Phase 2 — embedded mode)
+
+Each role worker owns exactly **two threads**: `loop_thread_` and `zmq_thread_`.
+
+#### 4.5.1 Thread responsibilities
+
+| Thread | Responsibility |
+|--------|---------------|
+| `loop_thread_` | SHM acquire/release; GIL + Python `on_iteration()` calls; increments `iteration_count_` |
+| `zmq_thread_` | `zmq_poll()` on peer/consumer ZMQ sockets; routes events to `incoming_queue_`; Phase 3: heartbeat |
+
+#### 4.5.2 Initialization sequence
+
+```
+Main thread (ActorHost::start)
+────────────────────────────────────────────────────────────────────────────────
+messenger_.connect(broker)
+Producer::create() / Consumer::connect()   ← all broker ACKs received here (blocking)
+start_embedded()                           ← running_=true; NO threads launched
+[build flexzone view under GIL]
+running_.store(true)
+zmq_thread_ starts    ← BEFORE on_init: mirrors old peer_thread/ctrl_thread timing
+call_on_init()        ← ZMQ events during on_init are processed by running zmq_thread_
+loop_thread_ starts
+```
+
+**Why `zmq_thread_` launches before `on_init`**: The old `peer_thread`/`ctrl_thread` inside
+hub::Producer/Consumer were started by `start()` before `on_init` was called. Phase 2 preserves
+this ordering so that ZMQ sends from `on_init` (e.g. `api.broadcast()`) are processed
+immediately rather than queued until after `on_init` returns.
+
+**`stop()` guard**: normal `if (!running_) return;` is replaced by
+`if (!running_ && !loop_thread_.joinable() && !zmq_thread_.joinable()) return;`
+This ensures `zmq_thread_` is always joined, even when `api.stop()` is called from `on_init`
+(which sets `running_=false` while `zmq_thread_` is still joinable).
+
+#### 4.5.3 Acquire timeout — policy-derived
+
+The SHM acquire timeout is derived from the loop policy, not hardcoded:
+
+**Producer (`run_loop_shm`):**
+```
+acquire_ms = (interval_ms > 0) ? interval_ms : kShmMaxRateMs (= 5 ms)
+```
+Rationale: after `step_write_deadline_()` returns, `next_deadline` is `interval_ms` away.
+Using `interval_ms` as the acquire budget means a slot miss is treated as an overrun on
+the next `step_write_deadline_()` call — no false overruns from a shorter timeout.
+
+**Consumer (`run_loop_shm`):**
+```
+acquire_ms = (timeout_ms > 0)  ? timeout_ms         // timed: fire on_iteration(None) on miss
+           : (timeout_ms == 0) ? kShmMaxRateMs       // max-rate: 5 ms; no callback on miss
+           :                     kShmBlockMs         // indefinite (-1): 5000 ms; no callback
+```
+When `timeout_ms > 0` and no slot is acquired within `timeout_ms`: `on_iteration(None, fz, msgs, api)`
+is called, delivering any queued ZMQ messages and notifying the script of the silence interval.
+This supports watchdog and heartbeat use cases.
+
+#### 4.5.4 Application-level heartbeat (Phase 3 — complete)
+
+**Phase 3 (complete 2026-02-25)**: `zmq_thread_` (producer only) takes over per-channel
+heartbeat responsibility from the Messenger's internal worker thread.
+
+- `messenger_.suppress_periodic_heartbeat(channel)` — disables Messenger's own periodic
+  HEARTBEAT_REQ for this channel.
+- `messenger_.enqueue_heartbeat(channel)` — sends one immediate heartbeat (called at
+  start to keep the channel alive during `on_init`).
+- `zmq_thread_` sends a heartbeat only when **`iteration_count_` has advanced** since the
+  last heartbeat AND the throttle window (`hb_interval`) has elapsed.
+
+`hb_interval` is derived from config:
+```
+heartbeat_interval_ms > 0  → use directly
+heartbeat_interval_ms = 0, interval_ms > 0  → 10 × interval_ms
+heartbeat_interval_ms = 0, interval_ms = 0  → 2000 ms (max-rate default)
+```
+
+**Why application-level heartbeat**: a stalled Python loop (GIL deadlock, SHM full, slow
+script) stops heartbeats even if TCP is alive — the broker's consumer-liveness timeout
+eventually fires `CHANNEL_CLOSING_NOTIFY`, giving consumers a clean notification instead
+of a silent channel disappearance.
+
+**Consumer roles** do not own their channel — heartbeat responsibility stays with the
+producer's `zmq_thread_`. Consumer `zmq_thread_` tracks `iteration_count_` for future
+metrics but does not send heartbeats.
+
+#### 4.5.5 Thread interaction diagram
+
+```mermaid
+sequenceDiagram
+    participant LT as Loop Thread
+    participant IQ as incoming_queue_
+    participant ZT as ZMQ Thread
+    participant P as Producer/Consumer<br/>(embedded mode)
+    participant NET as ZMQ Network
+
+    Note over LT,ZT: start() — zmq_thread_ launches BEFORE on_init; loop_thread_ after
+
+    loop Each SHM iteration (loop_trigger=shm)
+        LT->>P: acquire_slot(timeout_ms / kShmMaxRateMs / kShmBlockMs)
+        P-->>LT: slot_handle or null
+        LT->>IQ: drain_incoming_queue_()
+        IQ-->>LT: messages[]
+        Note over LT: acquire GIL
+        LT->>LT: on_iteration(slot, fz, messages, api)
+        Note over LT: release GIL
+        LT->>P: commit / release_slot
+        LT-->>ZT: iteration_count_.fetch_add(1) [atomic relaxed]
+    end
+
+    loop ZMQ poll (messenger_poll_ms = 5 ms default)
+        ZT->>P: zmq_poll(peer/data/ctrl socket, 5 ms)
+        NET-->>ZT: POLLIN event
+        ZT->>P: handle_*_events_nowait()
+        P-->>IQ: push IncomingMessage
+        IQ-->>LT: incoming_cv_.notify_one()
+        ZT->>ZT: iter advanced + hb_interval elapsed?
+        ZT->>NET: messenger_.enqueue_heartbeat() [producer only]
+    end
+
+    Note over LT,ZT: stop() — running_=false; incoming_cv_.notify_all()
+    LT->>LT: finish iteration; call_on_stop(api)
+    ZT->>ZT: zmq_poll wakes (≤5 ms timeout)
+    ZT->>ZT: exit loop
+    Note over LT,ZT: stop() joins loop_thread_ then zmq_thread_
+    Note over LT,ZT: producer_->stop(); producer_->close() (sends BYE + DEREG)
+```
+
+**Key ordering invariant**: `zmq_thread_` starts before `loop_thread_`, so any ZMQ sends in
+`on_init` (e.g. `api.broadcast()`) are dispatched immediately by the running `zmq_thread_`.
+
+**Stop guard**: `if (!running_ && !loop_thread_.joinable() && !zmq_thread_.joinable()) return`
+ensures `zmq_thread_` is joined even when `api.stop()` is called from `on_init` (which
+clears `running_` before `loop_thread_` is launched).
+
+### 4.6 ctypes schema binding (zero-copy)
 
 At `start()`, C++ builds a `ctypes.LittleEndianStructure` subclass from the JSON schema:
 
@@ -795,12 +1056,13 @@ See `share/scripts/python/examples/sensor_node.json` and `sensor_node.py` for a 
 multi-role actor with one producer (`raw_out`) and one consumer (`cfg_in`).
 
 Key points demonstrated:
-- Producer `raw_out` writes a typed slot (ts, value, flags, samples[8]) at 10 Hz
+- One module (`sensor_node.py`) implements `on_init`, `on_iteration`, `on_stop` for both roles
+- Producer `raw_out` writes a typed slot (ts, value, flags, samples[8]) at 10 Hz; returns `True`
 - Producer flexzone carries device metadata (device_id, sample_rate, label)
 - Consumer `cfg_in` receives setpoints from a separate controller channel
-- Consumer uses `timed_out=True` path to send heartbeats
-- Both roles share `current_setpoint` module-level variable (GIL serialises access)
-- `@actor.on_stop` (producer) and `@actor.on_stop_c` (consumer) for distinct lifecycle hooks
+- Consumer loop fires with `slot=None` on timeout — used for periodic heartbeat
+- Both roles share `current_setpoint` as a module-level variable (GIL serialises access)
+- `messages` list carries ZMQ-routed data from the `incoming_queue_` (arrived since last iteration)
 
 ```
 Usage:
@@ -841,13 +1103,13 @@ Role: raw_out  (producer)
     slot_checksum=update  flexzone_checksum=update
     on_checksum_fail=skip  on_python_error=continue
 
-  Python handler: on_write ✓   on_init ✓   on_message ✓   on_stop ✓
+  Python handler: on_iteration ✓   on_init ✓   on_stop ✓
 
 Role: cfg_in   (consumer)
   Channel:  lab.config.setpoints
   timeout_ms: 5000
   Slot: setpoint(float32)
-  Python handler: on_read ✓   on_init ✓   on_stop_c ✓
+  Python handler: on_iteration ✓   on_init ✓   on_stop ✓
 ```
 
 ### 7.2 Startup validation
@@ -855,9 +1117,10 @@ Role: cfg_in   (consumer)
 | Check | When | On failure |
 |---|---|---|
 | `ctypes.sizeof(SlotFrame) == SHM logical_unit_size` | At `start()` per role | Fail fast, clear error |
-| Role name in decorator matches config `roles` key | At `load_script()` | Warning logged; role not activated |
-| Required handler present (`on_write` for producer, `on_read` or `on_data` for consumer) | At `start()` | Role not activated (warning) |
-| Duplicate decorator for same event+role | At import time | `RuntimeError` from Python |
+| `on_iteration` attribute found in module | At `ActorHost::start()` | Warning logged; role not activated |
+| `loop_trigger=shm` and `shm.enabled=false` | At `ActorConfig::from_json_file()` | `std::runtime_error`; actor exits |
+| `"script"` field is an object (not a string) | At `ActorConfig::from_json_file()` | `std::runtime_error`; actor exits |
+| Schema type is a known BLDS type | At `from_json_file()` per field | `std::runtime_error`; actor exits |
 
 ---
 
@@ -942,7 +1205,7 @@ remains open.  Items marked ✅ Fixed are verified by the 426/426 test suite.
 | `HubShell` + `AdminShell` | ✅ Ready | Admin REPL; `channels()` JSON; startup script |
 | `HubConfig` layered JSON | ✅ Ready | hub.default.json + hub.user.json; env var overrides |
 | Demo launch scripts | ✅ Fixed 2026-02-21 | `demo.sh` (bash) + `demo.ps1` (PowerShell); not chmod+x by design |
-| `consumer_logger.py` console output | ✅ Fixed 2026-02-21 | `print()` in on_init/on_read/on_stop_c |
+| `consumer_logger.py` console output | ✅ Fixed 2026-02-21 | `print()` in on_init/on_iteration/on_stop |
 | SHM cleanup on crash | ✅ Already working | `shm_unlink()` before create in data_block.cpp |
 | Schema declaration hash (Layer 2) | ✅ Fixed 2026-02-21 | `compute_schema_hash()` wired into Producer/Consumer opts |
 | `--keygen` implementation | ✅ Fixed 2026-02-21 | `zmq_curve_keypair()` + JSON keypair file; auto-creates parent dir |
@@ -1049,13 +1312,13 @@ Each guards a different point in the data lifecycle.
 
 | Layer | Name | Where computed | When enforced | Protects against |
 |---|---|---|---|---|
-| **1 — Slot data checksum** | Per-write BLAKE2b | C++ after `on_write()` | Per slot, before consumer reads | Bit-flip / memory corruption during IPC |
+| **1 — Slot data checksum** | Per-write BLAKE2b | C++ after `on_iteration()` commits | Per slot, before consumer reads | Bit-flip / memory corruption during IPC |
 | **2 — Schema declaration hash** | BLAKE2b of field list | C++ at `start()` from JSON | At `Consumer::connect()` | Mismatched field layout between independent actor configs |
 | **3 — BLDS channel registry** | `SchemaBLDS::compute_hash()` | Broker at REG_REQ | Broker-enforced at registration | Channel schema changes while active consumers exist |
 
 ### 13.2 Layer 1 — Slot data checksum
 
-**Mechanism**: after `on_write()` commits a slot, C++ calls `update_checksum_slot()` which
+**Mechanism**: after `on_iteration()` returns `True` and commits a slot, C++ calls `update_checksum_slot()` which
 writes a BLAKE2b-256 digest of the slot bytes into the SHM control zone.  On the consumer
 side, `verify_checksum_slot()` re-computes and compares before delivering the slot to Python.
 
@@ -1156,4 +1419,4 @@ design choice that keeps the system simple, fast, and correct.
 For deployments that require durability across crashes, the correct layer to add it is
 **above** pylabhub — e.g., a supervisor process that restarts the pipeline in the right
 order, or an external buffer (file, database) that the Python script writes to inside
-`on_write`. pylabhub itself does not attempt to solve this.
+`on_iteration`. pylabhub itself does not attempt to solve this.

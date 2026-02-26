@@ -263,6 +263,42 @@ class PYLABHUB_UTILS_EXPORT Consumer
     bool start();
 
     /**
+     * @brief Embedded mode: set running=true WITHOUT launching data_thread/ctrl_thread/shm_thread.
+     * Use when the caller (actor ZMQ thread) drives all ZMQ polling itself via
+     * data_zmq_socket_handle() / ctrl_zmq_socket_handle() + handle_*_events_nowait().
+     * @return true if successfully transitioned to running; false if already running or invalid.
+     */
+    [[nodiscard]] bool start_embedded() noexcept;
+
+    /**
+     * @brief Returns the raw ZMQ SUB/PULL data socket handle for use in zmq_pollitem_t.
+     * Returns nullptr for Bidir pattern (data arrives via ctrl socket) or if invalid.
+     * MUST be called only in embedded mode.
+     */
+    [[nodiscard]] void *data_zmq_socket_handle() const noexcept;
+
+    /**
+     * @brief Returns the raw ZMQ DEALER ctrl socket handle for use in zmq_pollitem_t.
+     * Returns nullptr if not valid.
+     * MUST be called only in embedded mode.
+     */
+    [[nodiscard]] void *ctrl_zmq_socket_handle() const noexcept;
+
+    /**
+     * @brief Non-blocking: process all pending POLLIN on the data socket.
+     * Fires on_zmq_data callback for each received data frame.
+     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     */
+    void handle_data_events_nowait() noexcept;
+
+    /**
+     * @brief Non-blocking: drain ctrl send queue + process all pending POLLIN on ctrl socket.
+     * Fires on_producer_message (and on_zmq_data for Bidir) callbacks.
+     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     */
+    void handle_ctrl_events_nowait() noexcept;
+
+    /**
      * @brief Graceful stop: joins all threads. Idempotent.
      */
     void stop();
@@ -375,7 +411,8 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
 
     // Connect the ZMQ channel (sends HELLO, gets ConsumerInfo from broker).
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
-                                         opts.expected_schema_hash);
+                                         opts.expected_schema_hash,
+                                         opts.consumer_uid, opts.consumer_name);
     if (!ch.has_value())
     {
         return std::nullopt;

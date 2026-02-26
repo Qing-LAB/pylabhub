@@ -39,6 +39,17 @@ The key design decisions that diverged from this HEP:
 
 **See also**: `docs/tech_draft/ACTOR_DESIGN.md` for the full implementation design.
 
+**Further superseded by HEP-CORE-0010** (2026-02-24): the `pylabhub-actor` decorator-based
+callback interface (`@actor.on_write`, `@actor.on_read`, `@actor.on_data`, `@actor.on_message`)
+is replaced by a unified `on_iteration(slot, flexzone, messages, api)` function in a
+per-role Python package. See `HEP-CORE-0010-Actor-Thread-Model-and-Unified-Script-Interface.md`.
+
+**Per-role Python package convention** (2026-02-25): each actor role has its own Python
+package at `roles/<role_name>/script/__init__.py`. The module name is always `"script"`;
+isolation between roles is achieved via `importlib.util.spec_from_file_location` with a
+role-unique alias in `sys.modules`. See `docs/tech_draft/ACTOR_DESIGN.md §3` for the
+complete script interface documentation.
+
 ---
 
 ## Abstract
