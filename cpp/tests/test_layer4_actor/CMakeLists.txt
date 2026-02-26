@@ -3,8 +3,12 @@
 # Layer 4 (Actor) tests — pylabhub-actor configuration and role API
 #
 # Structure:
-#   test_actor_config.cpp       — ActorConfig::from_json_file() parsing
-#   test_actor_role_metrics.cpp — ActorRoleAPI metric/diagnostic methods (inline, no Python init)
+#   test_actor_config.cpp          — ActorConfig::from_json_file() parsing
+#   test_actor_role_metrics.cpp    — ActorRoleAPI metric/diagnostic methods (inline, no Python init)
+#   test_actor_embedded_mode.cpp   — Producer/Consumer embedded-mode API (HEP-CORE-0010 Phase 2)
+#                                    Uses an in-process BrokerService (no CURVE encryption).
+#                                    zmq_context_startup/shutdown called directly; Logger silently
+#                                    drops messages when not initialised (checked in logger.cpp).
 #
 # Design notes:
 #   - actor_config.cpp is compiled directly into the test binary (it is not part of any library).
@@ -22,6 +26,7 @@ message(STATUS "** Configuring Layer 4 (Actor) tests...")
 add_executable(test_layer4_actor
     test_actor_config.cpp
     test_actor_role_metrics.cpp
+    test_actor_embedded_mode.cpp
     ${CMAKE_SOURCE_DIR}/src/actor/actor_config.cpp
 )
 
@@ -55,4 +60,4 @@ gtest_discover_tests(test_layer4_actor
 )
 
 message(STATUS "** Layer 4 (Actor) tests configured.")
-message(STATUS "  - test_layer4_actor: actor_config parsing, role metrics API")
+message(STATUS "  - test_layer4_actor: actor_config parsing, role metrics API, embedded-mode API")

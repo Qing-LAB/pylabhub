@@ -172,45 +172,74 @@ vault is cryptographically bound to the hub identity.
 
 ## 3. Actor Instance Directory
 
-Each actor has a **persistent identity directory**. Contains its config and Python
-callback script.
+Each actor has a **persistent identity directory**. Contains its config and per-role
+Python script packages.
 
 Created by: `pylabhub-actor --init <actor_dir>`
 Started by: `pylabhub-actor <actor_dir>`
 
 ```
 <actor_dir>/
-  actor.json        ← actor_name, actor_uid, role, channel, hub_dir,
-  |                     slot_schema, flexzone_schema, validation policy
-  script.py         ← Python callbacks (on_write / on_read / on_timeout / on_error)
-  |                     path referenced from actor.json["roles"][*]["script"]
+  actor.json        ← actor_name, actor_uid, hub_dir, roles (each with script ref)
+  roles/
+    <role_name>/    ← one subdirectory per role (e.g. "data_out", "cfg_in")
+      script/       ← Python package for this role
+        __init__.py ← callbacks: on_init, on_iteration, on_stop
+        helpers.py  ← optional submodule (from . import helpers)
   logs/             ← log files (optional; created at startup)
   run/
     actor.pid       ← PID of running process
 ```
+
+Each role's script is a **Python package** — a directory named `script/` containing
+`__init__.py`. The package is loaded with `importlib.util.spec_from_file_location`
+using a role-unique `sys.modules` alias (`_plh_<uid_hex>_<role_name>`), ensuring
+isolation between roles even when they share the same module name `"script"`.
+
+Relative imports within the package work: `from . import helpers` in `__init__.py`
+imports `roles/<role_name>/script/helpers.py`.
 
 ### actor.json schema (key fields)
 
 ```json
 {
   "actor_name": "lab.daq.sensor1",
-  "actor_uid":  "e7a9f3b2-xxxx-4xxx-yxxx-xxxxxxxxxxxx",
+  "actor_uid":  "ACTOR-lab.daq.sensor1-A1B2C3D4",
   "hub_dir":    "/opt/pylabhub/hubs/daq1",
   "roles": [
     {
-      "name": "sensor1_producer",
-      "type": "producer",
+      "name":    "data_out",
+      "kind":    "producer",
       "channel": "lab.daq.sensor1.raw",
-      "broker": "<resolved from hub_dir/hub.json at startup>",
-      "broker_pubkey": "<read from hub_dir/hub.pubkey at startup>",
       "interval_ms": 100,
       "slot_schema": { ... },
       "flexzone_schema": { ... },
-      "script": "script.py"
+      "script": {
+        "module": "script",
+        "path":   "./roles/data_out"
+      }
+    },
+    {
+      "name":    "cfg_in",
+      "kind":    "consumer",
+      "channel": "lab.daq.sensor1.config",
+      "timeout_ms": 1000,
+      "slot_schema": { ... },
+      "script": {
+        "module": "script",
+        "path":   "./roles/cfg_in"
+      }
     }
   ]
 }
 ```
+
+`hub_dir` is resolved at startup to read `hub.json` (broker endpoint) and `hub.pubkey`
+(CurveZMQ public key). Role names (`"data_out"`, `"cfg_in"`) are user-defined semantic
+identifiers; the role type (`"kind"`) is always separate.
+
+See `docs/tech_draft/ACTOR_DESIGN.md §2–3` for the complete config and script
+interface documentation.
 
 `hub_dir` is the only external reference an actor needs:
 - `<hub_dir>/hub.json` → `broker_endpoint`
@@ -268,34 +297,36 @@ The crypto primitives (`HubVault::create()`, `HubVault::open()`, `generate_uuid4
 are already implemented. What remains is wiring them in `hubshell.cpp` and adding
 `--init` CLI argument handling. See `docs/todo/SECURITY_TODO.md §Phase 1`.
 
-### Actor directory — current state (flat JSON file)
+### Actor directory — current state (actor_dir model, complete)
 
-The actor process reads a JSON file at any path:
+The actor process accepts either a JSON file path (`--config`) or an actor directory
+positional argument:
 
 ```bash
-pylabhub-actor <path_to_actor.json>   # current: any path, no --init
+# Directory-based startup (standard)
+pylabhub-actor <actor_dir>
+  # → reads actor.json from the directory
+  # → resolves broker_endpoint from hub_dir/hub.json
+  # → reads hub.pubkey from hub_dir/hub.pubkey → connects with CurveZMQ
+  # → loads each role's script package from roles/<role_name>/script/__init__.py
+  # → runs role workers (loop_thread_ + zmq_thread_ per role)
+
+# Init flow (creates a new actor directory)
+pylabhub-actor --init <actor_dir>
+  # → prompts: actor_name
+  # → generates actor_uid (ACTOR-{name}-{8HEX})
+  # → writes actor.json (with example data_out role)
+  # → creates logs/, run/ subdirectories
+  # → creates roles/data_out/script/__init__.py with template callbacks
+
+# Legacy: config file at any path (backward compat)
+pylabhub-actor --config <path_to_actor.json>
 ```
 
-The JSON file contains inline config for all roles. There are no standard `actor_dir`
-subdirectories yet (`logs/`, `run/` do not exist).
-
-### Actor directory — target state (Phase 2, not yet implemented)
+### Actor directory — target state (Phase 3 and beyond, not yet implemented)
 
 ```bash
-# First-time setup
-pylabhub-actor --init <actor_dir>
-  # → prompts: actor_name, hub_dir, role, channel, schema
-  # → generates actor_uid (UUID4 via generate_uuid4())
-  # → writes actor.json
-  # → creates logs/ and run/ subdirectories
-
-# Run
-pylabhub-actor <actor_dir>
-  # → reads actor.json → resolves broker_endpoint from hub_dir/hub.json
-  # → reads hub.pubkey from hub_dir/hub.pubkey → connects with CurveZMQ
-  # → runs role workers
-
-# Register with hub (for 'verified' policy)
+# Register with hub (for 'verified' connection policy)
 pylabhub-actor --register-with <hub_dir> <actor_dir>
   # → appends actor_name + actor_uid to hub.json known_actors
 ```
@@ -372,8 +403,8 @@ All paths in `hub.default.json.in` use relative references (`../share/scripts/py
 | Hub vault creation | Not yet called from hubshell | `--init` flow (Phase 2) |
 | CurveZMQ keypair stability | Regenerated on every restart | Read from vault (Phase 5) |
 | Admin token source | `hub.user.json["admin"]["token"]` (plaintext) | Read from vault (Phase 5) |
-| Actor config path | `actor.json` at any path | `<actor_dir>/actor.json` (Phase 2) |
-| Hub pubkey distribution | Not yet written to disk | `HubVault::publish_public_key()` (Phase 2) |
+| Actor config path | `actor.json` at any path | ✅ `<actor_dir>/actor.json` — `from_directory()` + `--init` complete (2026-02-25) |
+| Hub pubkey distribution | Not yet written to disk | ✅ `HubVault::publish_public_key()` — complete (2026-02-25) |
 
 ### Hub and actor directories are NOT in the install tree
 

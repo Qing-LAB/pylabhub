@@ -683,20 +683,49 @@ Dependencies flow top-to-bottom within each phase.
   ✅ DONE 2026-02-23 — Argon2id(BLAKE2b-128(hub_uid)) KDF + XSalsa20-Poly1305 secretbox;
   vault = [nonce(24)][ciphertext+MAC]; 0600 permissions; hub.pubkey written at 0644;
   `src/include/utils/hub_vault.hpp`, `src/utils/hub_vault.cpp`
-- [ ] `pylabhub-hubshell --init` — directory creation, hub.json, vault, hub.pubkey
-- [ ] `pylabhub-hubshell <hub_dir>` — directory-based invocation, password prompt, vault open
+- [x] `pylabhub-hubshell --init` — directory creation, hub.json, vault, hub.pubkey
+  ✅ DONE 2026-02-25 — `do_init()` in `src/hubshell.cpp`; creates logs/run dirs, prompts
+  hub_name + password (confirm), generates UUID4, `HubVault::create()`, writes hub.json
+  (with admin_token from vault — Phase 1 pragmatic; Phase 5 removes this); 501/501 tests.
+- [x] `pylabhub-hubshell <hub_dir>` — directory-based invocation, password prompt, vault open
+  ✅ DONE 2026-02-25 — `do_run(hub_dir, dev_mode)` in `src/hubshell.cpp`; reads hub_uid
+  from hub.json, `HubVault::open()`, `publish_public_key()`, passes stable keypair to
+  `BrokerService::Config::server_secret_key/server_public_key`; `--dev` skips vault.
+  `BrokerService` constructor uses provided keypair when non-empty, else generates ephemeral.
 
 ### Phase 2 — Actor identity + connection wiring
 
-- [ ] `ActorConfig` — directory model, `actor_uid`, `actor_name`, `hub_dir` fields
-- [ ] `ActorConfig::from_directory()` — read actor.json, resolve hub endpoint + pubkey
-- [ ] `actor_main.cpp` — call `Messenger::connect(endpoint, pubkey)` before host creation
-- [ ] `pylabhub-actor --init` — directory creation, actor.json, UUID4 generation
-- [ ] `ProducerOptions` / `ConsumerOptions` — add `actor_name`, `actor_uid`
-- [ ] `ProducerInfo` / `ConsumerInfo` — add `actor_name`, `actor_uid`
-- [ ] Update REG_REQ / CONSUMER_REG_REQ JSON bodies to include identity fields
+- [x] `ActorConfig` — `hub_dir` field added; `actor_uid`/`actor_name` already present
+  ✅ DONE 2026-02-25 — `hub_dir` field in `ActorConfig`; populated by `from_directory()`
+- [x] `ActorConfig::from_directory()` — read actor.json, resolve hub endpoint + pubkey
+  ✅ DONE 2026-02-25 — reads `<actor_dir>/actor.json`, checks top-level `"hub_dir"` key,
+  reads `<hub_dir>/hub.json` → `broker_endpoint`, reads `<hub_dir>/hub.pubkey` → broker pubkey
+  (Z85 40-char), overrides `broker` + `broker_pubkey` in all roles.
+- [x] `actor_main.cpp` — `<actor_dir>` positional argument calls `from_directory()`
+  ✅ DONE 2026-02-25 — `pylabhub-actor <actor_dir>` positional mode added; `--config <path>`
+  flat-config mode preserved for backward compat.
+- [x] `pylabhub-actor --init` — directory creation, actor.json, UUID4 generation
+  ✅ DONE 2026-02-25 — `do_init(actor_dir)` in `src/actor/actor_main.cpp`;
+  creates `<actor_dir>/logs/` + `run/`, prompts actor_name, calls
+  `pylabhub::uid::generate_actor_uid()`, writes `actor.json` template with
+  hub_dir placeholder + example producer role schema; prints next-steps summary.
+  `parse_args()` extended: `--init [<actor_dir>]` sets `init_only=true`; if no
+  dir given, defaults to current directory. 501/501 tests pass.
+- [x] `ProducerOptions` / `ConsumerOptions` — add `actor_name`, `actor_uid`
+  ✅ DONE 2026-02-25 — `actor_name`/`actor_uid` added to `ProducerOptions`;
+  `ConsumerOptions` already had `consumer_uid`/`consumer_name` (Phase 4, for SHM heartbeat).
+- [x] `ProducerInfo` / `ConsumerInfo` — add `actor_name`, `actor_uid`
+  ✅ DONE 2026-02-25 — `actor_name`/`actor_uid` in `ProducerInfo`;
+  `consumer_uid`/`consumer_name` in `ConsumerInfo` (both in `messenger.hpp`).
+- [x] Update REG_REQ / CONSUMER_REG_REQ JSON bodies to include identity fields
+  ✅ DONE 2026-02-25 — `actor_name`/`actor_uid` in `CreateChannelCmd` → REG_REQ payload;
+  `consumer_uid`/`consumer_name` in `ConnectChannelCmd` → CONSUMER_REG_REQ payload
+  (omitted when empty for backward compat). `create_channel()`/`connect_channel()` API extended.
+- [x] `actor_host.cpp` — wire identity into `ProducerOptions`/`ConsumerOptions`
+  ✅ DONE 2026-02-25 — `opts.actor_name/uid` from `api_.actor_name()/uid()` in producer start;
+  `opts.consumer_uid/name` in consumer start. 501/501 tests pass.
 
-**Milestone: `pylabhub-actor <actor_dir>` runs end-to-end against a live hub.**
+**Milestone: `pylabhub-actor <actor_dir>` runs end-to-end against a live hub.** ✅ Complete (including `--init`)
 
 ### Phase 3 — Connection policy + collision detection
 
@@ -778,6 +807,41 @@ identity chain (hub → producer → consumers) from the SHM alone.
 ---
 
 ## Recent Completions
+
+### 2026-02-25 (Phase 2 + actor --init)
+- `pylabhub-actor --init [<actor_dir>]`: creates actor directory, prompts actor name,
+  generates `ACTOR-{NAME}-{8HEX}` UID, writes `actor.json` template (hub_dir placeholder,
+  example producer role + schema, logs/run subdirs), prints next-steps summary.
+  `--init` exits before lifecycle startup (no Python interpreter loaded).
+- Actor identity + connection wiring complete:
+  - `ProducerOptions`: added `actor_name`/`actor_uid` fields
+  - `ConsumerOptions`: `consumer_uid`/`consumer_name` already present (Phase 4 SHM);
+    now also propagated to `connect_channel()` → CONSUMER_REG_REQ broker payload
+  - `ProducerInfo`/`ConsumerInfo` in `messenger.hpp`: added identity fields
+  - `Messenger::create_channel()` extended with `actor_name`/`actor_uid` params (defaulted)
+  - `Messenger::connect_channel()` extended with `consumer_uid`/`consumer_name` params (defaulted)
+  - `CreateChannelCmd`/`ConnectChannelCmd` carry identity through the Messenger worker queue
+  - REG_REQ/CONSUMER_REG_REQ JSON payloads include identity when non-empty (backward compat)
+  - `ActorConfig::hub_dir` field; `from_directory(actor_dir)` static factory
+  - `actor_main.cpp`: `<actor_dir>` positional arg → `from_directory()`; `--config` mode preserved
+  - `actor_host.cpp`: producer/consumer start wires `api_.actor_name()/uid()` into options
+  - 501/501 tests pass.
+
+### 2026-02-25 (Phase 1 CLI)
+- Phase 1 complete (CLI + stable keypair):
+  - `pylabhub-hubshell --init [<hub_dir>]`: prompts hub_name + password (with confirmation),
+    generates UUID4 via `generate_uuid4()`, calls `HubVault::create()`, writes hub.json
+    (hub_name, hub_uid, defaults, admin_token from vault). Creates logs/ and run/ subdirs.
+    Password source: `PYLABHUB_MASTER_PASSWORD` env var or interactive `getpass()`.
+  - `pylabhub-hubshell <hub_dir>`: reads hub_uid from hub.json, `HubVault::open()`,
+    `publish_public_key()` (writes hub.pubkey at 0644), passes stable keypair to
+    `BrokerService::Config`. `HubConfig::set_config_path(hub_dir/"hub.json")` routes
+    config loading through the hub directory instead of flat config discovery.
+  - `pylabhub-hubshell <hub_dir> --dev`: uses hub.json for config, ephemeral keypair,
+    no vault, no password.
+  - `BrokerService::Config`: new `server_secret_key`/`server_public_key` fields; constructor
+    uses them when both non-empty, else falls back to `zmq_curve_keypair()` (ephemeral).
+  - 501/501 tests pass.
 
 ### 2026-02-23
 - Phase 1 (foundation) complete — `hub_identity` and `hub_vault`:

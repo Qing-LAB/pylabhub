@@ -57,6 +57,9 @@ struct ProducerInfo
     std::string    zmq_ctrl_endpoint; ///< Producer ROUTER endpoint
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
+    // ── actor identity (Phase 2) ─────────────────────────────────────────────
+    std::string actor_name; ///< Human-readable actor name; empty = anonymous
+    std::string actor_uid;  ///< Actor UUID4 or ACTOR-{NAME}-{8HEX}; empty = anonymous
 };
 
 struct ConsumerInfo
@@ -72,6 +75,9 @@ struct ConsumerInfo
     std::string    zmq_data_endpoint;
     std::string    zmq_pubkey;
     uint32_t       consumer_count{0};
+    // ── actor identity (Phase 2) ─────────────────────────────────────────────
+    std::string consumer_uid;  ///< Consumer actor UUID4; empty = anonymous
+    std::string consumer_name; ///< Human-readable consumer actor name; empty = anonymous
 };
 
 /**
@@ -162,7 +168,9 @@ class PYLABHUB_UTILS_EXPORT Messenger
                    bool               has_shared_memory = false,
                    const std::string &schema_hash       = {},
                    uint32_t           schema_version    = 0,
-                   int                timeout_ms        = 5000);
+                   int                timeout_ms        = 5000,
+                   const std::string &actor_name        = {},
+                   const std::string &actor_uid         = {});
 
     /**
      * @brief Consumer side: discover channel (retrying until Ready), connect P2C
@@ -180,8 +188,10 @@ class PYLABHUB_UTILS_EXPORT Messenger
      */
     [[nodiscard]] std::optional<ChannelHandle>
     connect_channel(const std::string &channel_name,
-                    int                timeout_ms  = 5000,
-                    const std::string &schema_hash = {});
+                    int                timeout_ms    = 5000,
+                    const std::string &schema_hash   = {},
+                    const std::string &consumer_uid  = {},
+                    const std::string &consumer_name = {});
 
     /**
      * @brief Register a global callback invoked when the broker pushes CHANNEL_CLOSING_NOTIFY.
@@ -216,6 +226,33 @@ class PYLABHUB_UTILS_EXPORT Messenger
      *        Fire-and-forget — errors logged by worker.
      */
     void unregister_channel(const std::string &channel);
+
+    // ── Phase 3: actor zmq_thread_ heartbeat integration ──────────────────────
+
+    /**
+     * @brief Suppress or restore the periodic heartbeat for @p channel (thread-safe,
+     *        fire-and-forget).
+     *
+     * When @p suppress is true, the Messenger worker skips @p channel in its
+     * periodic heartbeat loop. The caller (actor zmq_thread_) is responsible for
+     * sending application-level HEARTBEAT_REQ via enqueue_heartbeat() instead.
+     *
+     * No-op if @p channel is not registered for heartbeat (e.g., consumer roles)
+     * or if the worker is not running.
+     */
+    void suppress_periodic_heartbeat(const std::string &channel,
+                                     bool               suppress = true) noexcept;
+
+    /**
+     * @brief Enqueue an immediate HEARTBEAT_REQ for @p channel (thread-safe,
+     *        fire-and-forget).
+     *
+     * Used by the actor's zmq_thread_ to deliver application-level heartbeats
+     * when @c iteration_count_ has advanced, proving the Python loop is progressing.
+     *
+     * No-op if @p channel is not registered for heartbeat, or if not connected.
+     */
+    void enqueue_heartbeat(const std::string &channel) noexcept;
 
     /**
      * @brief Report a Cat 2 slot checksum error to broker (fire-and-forget).

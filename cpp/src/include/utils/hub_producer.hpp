@@ -213,6 +213,10 @@ struct ProducerOptions
     uint32_t    schema_version{0};
 
     int timeout_ms{5000};
+
+    // ── actor identity (Phase 2) ──────────────────────────────────────────────
+    std::string actor_name{}; ///< Human-readable actor name; empty = anonymous
+    std::string actor_uid{};  ///< Actor UID (ACTOR-{NAME}-{8HEX}); empty = anonymous
 };
 
 // ============================================================================
@@ -297,6 +301,29 @@ class PYLABHUB_UTILS_EXPORT Producer
      * @return true if started successfully; false if already running or not valid.
      */
     bool start();
+
+    /**
+     * @brief Embedded mode: set running=true WITHOUT launching peer_thread/write_thread.
+     * Use when the caller (actor ZMQ thread) drives all ZMQ polling itself via
+     * peer_ctrl_socket_handle() + handle_peer_events_nowait().
+     * @return true if successfully transitioned to running; false if already running or invalid.
+     */
+    [[nodiscard]] bool start_embedded() noexcept;
+
+    /**
+     * @brief Returns the raw ZMQ ROUTER ctrl socket handle for use in zmq_pollitem_t.
+     * MUST be called only in embedded mode (peer_thread not running).
+     * Returns nullptr if not valid or no ctrl socket.
+     */
+    [[nodiscard]] void *peer_ctrl_socket_handle() const noexcept;
+
+    /**
+     * @brief Non-blocking: drain ctrl send queue + process all pending POLLIN on ctrl socket.
+     * Fires on_consumer_joined / on_consumer_left / on_consumer_message callbacks synchronously.
+     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     * No-op if not valid.
+     */
+    void handle_peer_events_nowait() noexcept;
 
     /**
      * @brief Graceful stop: joins peer_thread and write_thread. Idempotent.
@@ -454,7 +481,8 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
 
     // Create ZMQ channel
     auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
-                                        opts.schema_hash, opts.schema_version, opts.timeout_ms);
+                                        opts.schema_hash, opts.schema_version, opts.timeout_ms,
+                                        opts.actor_name, opts.actor_uid);
     if (!ch.has_value())
     {
         return std::nullopt;

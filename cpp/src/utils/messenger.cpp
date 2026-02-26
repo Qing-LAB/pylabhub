@@ -155,6 +155,9 @@ struct CreateChannelCmd
     std::string    zmq_data_endpoint;
     std::string    zmq_pubkey; ///< Z85 producer public key for P2C sockets
     int            timeout_ms;
+    // Phase 2: actor identity included in REG_REQ payload.
+    std::string actor_name; ///< Human-readable actor name; empty = omit from payload
+    std::string actor_uid;  ///< Actor UUID4; empty = omit from payload
     std::promise<bool> result; ///< true = broker accepted (REG_ACK received)
 };
 /// Internal: sent by connect_channel() to discover and register as consumer.
@@ -164,17 +167,34 @@ struct ConnectChannelCmd
     std::string channel;
     int         timeout_ms;
     std::string expected_schema_hash; ///< raw bytes; empty = accept any
+    // Phase 2: consumer identity included in CONSUMER_REG_REQ payload.
+    std::string consumer_uid;  ///< Consumer actor UUID4; empty = omit from payload
+    std::string consumer_name; ///< Consumer actor name; empty = omit from payload
     std::promise<std::optional<ConsumerInfo>> result;
 };
 struct StopCmd
 {
+};
+/// Phase 3: suppress or restore the periodic heartbeat for one channel.
+/// When suppressed, the actor's zmq_thread_ takes over heartbeat responsibility.
+struct SuppressHeartbeatCmd
+{
+    std::string channel;
+    bool        suppress; ///< true = suppress periodic; false = restore
+};
+/// Phase 3: send HEARTBEAT_REQ immediately for one channel (fire-and-forget).
+/// Used by the actor's zmq_thread_ to deliver application-level heartbeats.
+struct HeartbeatNowCmd
+{
+    std::string channel;
 };
 
 using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProducerCmd,
                                       RegisterConsumerCmd, DiscoverProducerCmd,
                                       DeregisterConsumerCmd, UnregisterChannelCmd,
                                       ChecksumErrorReportCmd, CreateChannelCmd,
-                                      ConnectChannelCmd, StopCmd>;
+                                      ConnectChannelCmd, StopCmd,
+                                      SuppressHeartbeatCmd, HeartbeatNowCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -184,6 +204,7 @@ struct HeartbeatEntry
 {
     std::string channel;
     uint64_t    producer_pid;
+    bool        suppressed{false}; ///< Phase 3: true when actor zmq_thread_ owns this heartbeat
 };
 
 class MessengerImpl
@@ -444,6 +465,8 @@ class MessengerImpl
     {
         for (const auto &entry : m_heartbeat_channels)
         {
+            if (entry.suppressed)
+                continue; // Phase 3: actor zmq_thread_ owns this channel's heartbeat
             try
             {
                 nlohmann::json payload;
@@ -1034,6 +1057,9 @@ class MessengerImpl
             payload["zmq_ctrl_endpoint"] = cmd.zmq_ctrl_endpoint;
             payload["zmq_data_endpoint"] = cmd.zmq_data_endpoint;
             payload["zmq_pubkey"]        = cmd.zmq_pubkey;
+            // Phase 2: actor identity (omitted when empty for backward compat).
+            if (!cmd.actor_name.empty()) payload["actor_name"] = cmd.actor_name;
+            if (!cmd.actor_uid.empty())  payload["actor_uid"]  = cmd.actor_uid;
 
             const std::string msg_type   = "REG_REQ";
             const std::string payload_str = payload.dump();
@@ -1149,9 +1175,12 @@ class MessengerImpl
 
             // Register this process as a consumer with the broker.
             nlohmann::json reg_payload;
-            reg_payload["channel_name"]     = cmd.channel;
-            reg_payload["consumer_pid"]     = pylabhub::platform::get_pid();
+            reg_payload["channel_name"]      = cmd.channel;
+            reg_payload["consumer_pid"]      = pylabhub::platform::get_pid();
             reg_payload["consumer_hostname"] = "";
+            // Phase 2: actor identity (omitted when empty for backward compat).
+            if (!cmd.consumer_uid.empty())  reg_payload["consumer_uid"]  = cmd.consumer_uid;
+            if (!cmd.consumer_name.empty()) reg_payload["consumer_name"] = cmd.consumer_name;
             const std::string msg_type   = "CONSUMER_REG_REQ";
             const std::string reg_str    = reg_payload.dump();
             std::vector<zmq::const_buffer> reg_msgs = {zmq::buffer(&kFrameTypeControl, 1),
@@ -1197,6 +1226,38 @@ class MessengerImpl
                          e.what());
             cmd.result.set_value(std::nullopt);
         }
+        return false;
+    }
+
+    // Phase 3 ────────────────────────────────────────────────────────────────
+
+    bool handle_command(SuppressHeartbeatCmd &cmd,
+                        std::optional<zmq::socket_t> & /*socket*/)
+    {
+        for (auto &entry : m_heartbeat_channels)
+        {
+            if (entry.channel == cmd.channel)
+            {
+                entry.suppressed = cmd.suppress;
+                LOGGER_DEBUG("Messenger: periodic heartbeat for '{}' {}.",
+                             cmd.channel, cmd.suppress ? "suppressed" : "restored");
+                return false;
+            }
+        }
+        // Channel not in heartbeat list (e.g. consumer role); silently ignore.
+        return false;
+    }
+
+    bool handle_command(HeartbeatNowCmd &cmd, std::optional<zmq::socket_t> &socket)
+    {
+        if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+            return false;
+        auto it = std::find_if(m_heartbeat_channels.begin(), m_heartbeat_channels.end(),
+                               [&](const HeartbeatEntry &e)
+                               { return e.channel == cmd.channel; });
+        if (it == m_heartbeat_channels.end())
+            return false; // Channel not registered; silently ignore.
+        send_immediate_heartbeat(*socket, it->channel, it->producer_pid);
         return false;
     }
 
@@ -1344,7 +1405,9 @@ Messenger::create_channel(const std::string &channel_name,
                            bool               has_shared_memory,
                            const std::string &schema_hash,
                            uint32_t           schema_version,
-                           int                timeout_ms)
+                           int                timeout_ms,
+                           const std::string &actor_name,
+                           const std::string &actor_uid)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -1406,6 +1469,8 @@ Messenger::create_channel(const std::string &channel_name,
     cmd.zmq_data_endpoint  = data_endpoint;
     cmd.zmq_pubkey         = pubkey;
     cmd.timeout_ms         = timeout_ms;
+    cmd.actor_name         = actor_name;
+    cmd.actor_uid          = actor_uid;
     cmd.result             = std::move(reg_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -1425,7 +1490,9 @@ Messenger::create_channel(const std::string &channel_name,
 std::optional<ChannelHandle>
 Messenger::connect_channel(const std::string &channel_name,
                             int                timeout_ms,
-                            const std::string &schema_hash)
+                            const std::string &schema_hash,
+                            const std::string &consumer_uid,
+                            const std::string &consumer_name)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -1440,6 +1507,8 @@ Messenger::connect_channel(const std::string &channel_name,
     cmd.channel              = channel_name;
     cmd.timeout_ms           = timeout_ms;
     cmd.expected_schema_hash = schema_hash;
+    cmd.consumer_uid         = consumer_uid;
+    cmd.consumer_name        = consumer_name;
     cmd.result               = std::move(cc_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -1561,6 +1630,22 @@ void Messenger::report_checksum_error(const std::string &channel, int32_t slot_i
         return;
     }
     pImpl->enqueue(ChecksumErrorReportCmd{channel, slot_index, std::string(error_description)});
+}
+
+// Phase 3 — actor zmq_thread_ heartbeat integration
+
+void Messenger::suppress_periodic_heartbeat(const std::string &channel, bool suppress) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return; // worker not started; silently ignore
+    pImpl->enqueue(SuppressHeartbeatCmd{channel, suppress});
+}
+
+void Messenger::enqueue_heartbeat(const std::string &channel) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return; // worker not started; silently ignore
+    pImpl->enqueue(HeartbeatNowCmd{channel});
 }
 
 Messenger &Messenger::get_instance()

@@ -697,14 +697,24 @@ BrokerService::BrokerService(Config cfg) : pImpl(std::make_unique<BrokerServiceI
     pImpl->cfg = std::move(cfg);
     if (pImpl->cfg.use_curve)
     {
-        std::array<char, kZ85KeyBufSize> pub{};
-        std::array<char, kZ85KeyBufSize> sec{};
-        if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
+        if (!pImpl->cfg.server_secret_key.empty() && !pImpl->cfg.server_public_key.empty())
         {
-            throw std::runtime_error("BrokerService: zmq_curve_keypair failed");
+            // Stable keypair supplied from HubVault — use as-is.
+            pImpl->server_secret_z85 = pImpl->cfg.server_secret_key;
+            pImpl->server_public_z85 = pImpl->cfg.server_public_key;
         }
-        pImpl->server_public_z85.assign(pub.data(), kZ85KeyLen);
-        pImpl->server_secret_z85.assign(sec.data(), kZ85KeyLen);
+        else
+        {
+            // Generate ephemeral keypair (dev mode / legacy flat-config mode).
+            std::array<char, kZ85KeyBufSize> pub{};
+            std::array<char, kZ85KeyBufSize> sec{};
+            if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
+            {
+                throw std::runtime_error("BrokerService: zmq_curve_keypair failed");
+            }
+            pImpl->server_public_z85.assign(pub.data(), kZ85KeyLen);
+            pImpl->server_secret_z85.assign(sec.data(), kZ85KeyLen);
+        }
     }
 }
 
