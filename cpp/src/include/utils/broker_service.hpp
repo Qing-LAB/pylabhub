@@ -55,6 +55,13 @@ public:
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
 
+        /// Optional: stable broker CurveZMQ keypair from HubVault.
+        /// When both fields are non-empty, the broker uses these keys instead of
+        /// generating an ephemeral keypair on every startup. Supply via
+        /// HubVault::broker_curve_secret_key() / broker_curve_public_key().
+        std::string server_secret_key; ///< Z85 secret key (40 chars). Empty = generate ephemeral.
+        std::string server_public_key; ///< Z85 public key (40 chars). Empty = generate ephemeral.
+
         /// Optional: called from run() after bind() with (bound_endpoint, server_public_key).
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
         std::function<void(const std::string& bound_endpoint,

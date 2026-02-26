@@ -85,10 +85,145 @@ struct ConsumerImpl
     void run_data_thread();
     void run_ctrl_thread();
     void run_shm_thread();
+
+    // ── Embedded-mode helpers ────────────────────────────────────────────────
+
+    /// Drain and send all queued outbound ctrl frames (from send_ctrl() calls).
+    void drain_ctrl_send_queue_();
+
+    /// Non-blocking: receive and dispatch one data frame from data socket.
+    /// Returns true if a message was received; false on EAGAIN/error.
+    bool recv_and_dispatch_data_();
+
+    /// Non-blocking: receive and dispatch one ctrl (or Bidir data) frame from ctrl socket.
+    /// Returns true if a message was received; false on EAGAIN/error.
+    bool recv_and_dispatch_ctrl_();
 };
 
 // ============================================================================
+// ConsumerImpl::drain_ctrl_send_queue_ — send all queued outbound ctrl frames
+// ============================================================================
+
+void ConsumerImpl::drain_ctrl_send_queue_()
+{
+    std::lock_guard<std::mutex> lock(ctrl_send_mu);
+    while (!ctrl_send_queue.empty())
+    {
+        PendingConsumerCtrlSend &msg = ctrl_send_queue.front();
+        handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size());
+        ctrl_send_queue.pop();
+    }
+}
+
+// ============================================================================
+// ConsumerImpl::recv_and_dispatch_data_ — non-blocking receive + dispatch one data frame
+// ============================================================================
+
+bool ConsumerImpl::recv_and_dispatch_data_()
+{
+    zmq::socket_t *data_sock = channel_handle_data_socket(handle);
+    if (!data_sock)
+    {
+        return false;
+    }
+
+    // Receive: [type_byte='A'][payload] (non-blocking)
+    std::vector<zmq::message_t> frames;
+    try
+    {
+        auto res = zmq::recv_multipart(*data_sock, std::back_inserter(frames),
+                                       zmq::recv_flags::dontwait);
+        (void)res;
+    }
+    catch (const zmq::error_t &)
+    {
+        return false; // EAGAIN or other error
+    }
+
+    if (frames.size() < 2 || frames[0].size() < 1)
+    {
+        return true; // Consumed but malformed
+    }
+
+    const char type_byte = *static_cast<const char *>(frames[0].data());
+    if (type_byte != 'A')
+    {
+        return true; // Not a data frame — discard
+    }
+
+    if (on_zmq_data_cb)
+    {
+        std::span<const std::byte> payload(
+            static_cast<const std::byte *>(frames[1].data()), frames[1].size());
+        on_zmq_data_cb(payload);
+    }
+    return true;
+}
+
+// ============================================================================
+// ConsumerImpl::recv_and_dispatch_ctrl_ — non-blocking receive + dispatch one ctrl frame
+// ============================================================================
+
+bool ConsumerImpl::recv_and_dispatch_ctrl_()
+{
+    zmq::socket_t *ctrl_sock = channel_handle_ctrl_socket(handle);
+    if (!ctrl_sock)
+    {
+        return false;
+    }
+
+    // Receive from DEALER: [type_byte='C'][type_str][body]
+    // (For Bidir, data frames ['A'][payload] may also arrive here)
+    std::vector<zmq::message_t> frames;
+    try
+    {
+        auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
+                                       zmq::recv_flags::dontwait);
+        (void)res;
+    }
+    catch (const zmq::error_t &)
+    {
+        return false; // EAGAIN or other error
+    }
+
+    if (frames.size() < 2 || frames[0].size() < 1)
+    {
+        return true; // Consumed but malformed
+    }
+
+    const char type_byte = *static_cast<const char *>(frames[0].data());
+
+    if (type_byte == 'A')
+    {
+        // Data frame on ctrl socket (Bidir pattern)
+        if (on_zmq_data_cb && frames.size() >= 2)
+        {
+            std::span<const std::byte> payload(
+                static_cast<const std::byte *>(frames[1].data()), frames[1].size());
+            on_zmq_data_cb(payload);
+        }
+        return true;
+    }
+
+    if (type_byte != 'C' || frames.size() < 3)
+    {
+        return true; // Unknown frame type or too short
+    }
+
+    std::string_view type_str(static_cast<const char *>(frames[1].data()), frames[1].size());
+    std::span<const std::byte> body(static_cast<const std::byte *>(frames[2].data()),
+                                     frames[2].size());
+
+    if (on_producer_message_cb)
+    {
+        on_producer_message_cb(type_str, body);
+    }
+    return true;
+}
+
+// ============================================================================
 // data_thread: polls SUB/PULL data socket for ZMQ data frames
+// Refactored to use recv_and_dispatch_data_() helper.
 // ============================================================================
 
 void ConsumerImpl::run_data_thread()
@@ -116,46 +251,13 @@ void ConsumerImpl::run_data_thread()
             continue;
         }
 
-        // Receive: [type_byte='A'][payload]
-        std::vector<zmq::message_t> frames;
-        try
-        {
-            auto res = zmq::recv_multipart(*data_sock, std::back_inserter(frames),
-                                           zmq::recv_flags::dontwait);
-            (void)res;
-        }
-        catch (const zmq::error_t &)
-        {
-            continue;
-        }
-
-        // Expect at least [type_byte, payload] = 2 frames
-        if (frames.size() < 2)
-        {
-            continue;
-        }
-
-        if (frames[0].size() < 1)
-        {
-            continue;
-        }
-        const char type_byte = *static_cast<const char *>(frames[0].data());
-        if (type_byte != 'A')
-        {
-            continue; // Not a data frame — ignore
-        }
-
-        if (on_zmq_data_cb)
-        {
-            std::span<const std::byte> payload(
-                static_cast<const std::byte *>(frames[1].data()), frames[1].size());
-            on_zmq_data_cb(payload);
-        }
+        recv_and_dispatch_data_();
     }
 }
 
 // ============================================================================
 // ctrl_thread: polls DEALER ctrl socket for control frames from producer
+// Refactored to use drain_ctrl_send_queue_() + recv_and_dispatch_ctrl_() helpers.
 // ============================================================================
 
 void ConsumerImpl::run_ctrl_thread()
@@ -169,17 +271,7 @@ void ConsumerImpl::run_ctrl_thread()
     while (running.load(std::memory_order_relaxed))
     {
         // ── 1. Drain outgoing ctrl send queue ───────────────────────────────
-        // send_ctrl() from other threads queues here; ctrl_thread is the only
-        // sender on this DEALER socket, keeping ZMQ thread ownership correct.
-        {
-            std::lock_guard<std::mutex> lock(ctrl_send_mu);
-            while (!ctrl_send_queue.empty())
-            {
-                PendingConsumerCtrlSend &msg = ctrl_send_queue.front();
-                handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size());
-                ctrl_send_queue.pop();
-            }
-        }
+        drain_ctrl_send_queue_();
 
         // ── 2. Poll ctrl socket for incoming producer messages ───────────────
         std::vector<zmq::pollitem_t> items = {{ctrl_sock->handle(), 0, ZMQ_POLLIN, 0}};
@@ -197,63 +289,7 @@ void ConsumerImpl::run_ctrl_thread()
             continue;
         }
 
-        // Receive from DEALER: [type_byte='C'][type_str][body]
-        // (For Bidir, data frames ['A'][payload] may also arrive here)
-        std::vector<zmq::message_t> frames;
-        try
-        {
-            auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
-                                           zmq::recv_flags::dontwait);
-            (void)res;
-        }
-        catch (const zmq::error_t &)
-        {
-            continue;
-        }
-
-        if (frames.size() < 2)
-        {
-            continue;
-        }
-
-        if (frames[0].size() < 1)
-        {
-            continue;
-        }
-        const char type_byte = *static_cast<const char *>(frames[0].data());
-
-        if (type_byte == 'A')
-        {
-            // Data frame received on ctrl socket (Bidir pattern)
-            if (on_zmq_data_cb && frames.size() >= 2)
-            {
-                std::span<const std::byte> payload(
-                    static_cast<const std::byte *>(frames[1].data()), frames[1].size());
-                on_zmq_data_cb(payload);
-            }
-            continue;
-        }
-
-        if (type_byte != 'C')
-        {
-            continue; // Unknown frame type
-        }
-
-        // Control frame: [type_byte='C'][type_str][body]
-        if (frames.size() < 3)
-        {
-            continue;
-        }
-
-        std::string_view type_str(static_cast<const char *>(frames[1].data()),
-                                   frames[1].size());
-        std::span<const std::byte> body(static_cast<const std::byte *>(frames[2].data()),
-                                         frames[2].size());
-
-        if (on_producer_message_cb)
-        {
-            on_producer_message_cb(type_str, body);
-        }
+        recv_and_dispatch_ctrl_();
     }
 }
 
@@ -318,7 +354,8 @@ std::optional<Consumer>
 Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
 {
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
-                                         opts.expected_schema_hash);
+                                         opts.expected_schema_hash,
+                                         opts.consumer_uid, opts.consumer_name);
     if (!ch.has_value())
     {
         return std::nullopt;
@@ -527,6 +564,62 @@ void Consumer::stop()
 bool Consumer::is_running() const noexcept
 {
     return pImpl && pImpl->running.load(std::memory_order_relaxed);
+}
+
+// ============================================================================
+// Consumer — embedded mode
+// ============================================================================
+
+bool Consumer::start_embedded() noexcept
+{
+    if (!pImpl || !pImpl->handle.is_valid() || pImpl->closed)
+    {
+        return false;
+    }
+    bool expected = false;
+    // CAS: only transitions running false→true; returns false if already running.
+    // Does NOT launch data_thread, ctrl_thread, or shm_thread.
+    return pImpl->running.compare_exchange_strong(
+        expected, true, std::memory_order_seq_cst, std::memory_order_relaxed);
+}
+
+void *Consumer::data_zmq_socket_handle() const noexcept
+{
+    if (!pImpl || pImpl->closed)
+    {
+        return nullptr;
+    }
+    zmq::socket_t *sock = channel_handle_data_socket(pImpl->handle);
+    return sock ? sock->handle() : nullptr;
+}
+
+void *Consumer::ctrl_zmq_socket_handle() const noexcept
+{
+    if (!pImpl || pImpl->closed)
+    {
+        return nullptr;
+    }
+    zmq::socket_t *sock = channel_handle_ctrl_socket(pImpl->handle);
+    return sock ? sock->handle() : nullptr;
+}
+
+void Consumer::handle_data_events_nowait() noexcept
+{
+    if (!pImpl || pImpl->closed || !pImpl->running.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    while (pImpl->recv_and_dispatch_data_()) {}
+}
+
+void Consumer::handle_ctrl_events_nowait() noexcept
+{
+    if (!pImpl || pImpl->closed || !pImpl->running.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    pImpl->drain_ctrl_send_queue_();
+    while (pImpl->recv_and_dispatch_ctrl_()) {}
 }
 
 // ============================================================================
