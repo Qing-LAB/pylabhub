@@ -12,6 +12,7 @@
  *     — process-level overrides applied after file loading
  */
 #include "plh_service.hpp"
+#include "utils/connection_policy.hpp"
 #include "utils/hub_config.hpp"
 #include "utils/json_config.hpp"
 #include "uid_utils.hpp"
@@ -190,6 +191,11 @@ struct HubConfig::Impl
     fs::path python_startup_script;
     fs::path python_requirements;
 
+    // ── Connection policy (Phase 3) ──────────────────────────────────────────
+    broker::ConnectionPolicy             connection_policy{broker::ConnectionPolicy::Open};
+    std::vector<broker::KnownActor>      known_actors;
+    std::vector<broker::ChannelPolicy>   channel_policies;
+
     utils::JsonConfig cfg; ///< Holds the merged JSON for raw access.
 
     // ------------------------------------------------------------------
@@ -205,6 +211,57 @@ struct HubConfig::Impl
             if (h.contains("uid"))              hub_uid         = h.at("uid").get<std::string>();
             if (h.contains("broker_endpoint"))  broker_endpoint = h.at("broker_endpoint").get<std::string>();
             if (h.contains("admin_endpoint"))   admin_endpoint  = h.at("admin_endpoint").get<std::string>();
+
+            // ── Connection policy (Phase 3) ──────────────────────────────────
+            if (h.contains("connection_policy") && h.at("connection_policy").is_string())
+            {
+                const std::string policy_str = h.at("connection_policy").get<std::string>();
+                connection_policy = broker::connection_policy_from_str(policy_str);
+                if (connection_policy == broker::ConnectionPolicy::Open &&
+                    policy_str != "open" && !policy_str.empty())
+                {
+                    LOGGER_WARN(
+                        "HubConfig: unknown connection_policy '{}' — defaulting to 'open'. "
+                        "Valid values: open, tracked, required, verified.",
+                        policy_str);
+                }
+            }
+            if (h.contains("known_actors") && h.at("known_actors").is_array())
+            {
+                known_actors.clear();
+                for (const auto& a : h.at("known_actors"))
+                {
+                    broker::KnownActor ka;
+                    ka.name = a.value("name", "");
+                    ka.uid  = a.value("uid", "");
+                    ka.role = a.value("role", "any");
+                    if (!ka.name.empty() && !ka.uid.empty())
+                    {
+                        known_actors.push_back(std::move(ka));
+                    }
+                }
+            }
+            if (h.contains("channel_policies") && h.at("channel_policies").is_array())
+            {
+                channel_policies.clear();
+                for (const auto& cp : h.at("channel_policies"))
+                {
+                    const std::string glob = cp.value("channel", "");
+                    const std::string pstr = cp.value("connection_policy", "open");
+                    if (!glob.empty())
+                    {
+                        const auto pol = broker::connection_policy_from_str(pstr);
+                        if (pol == broker::ConnectionPolicy::Open &&
+                            pstr != "open" && !pstr.empty())
+                        {
+                            LOGGER_WARN(
+                                "HubConfig: unknown channel_policy '{}' for glob '{}' — "
+                                "defaulting to 'open'.", pstr, glob);
+                        }
+                        channel_policies.push_back({glob, pol});
+                    }
+                }
+            }
         }
         if (j.contains("admin"))
         {
@@ -223,15 +280,15 @@ struct HubConfig::Impl
         if (j.contains("paths") && !config_dir.empty())
         {
             const auto& p = j.at("paths");
-            auto r = [&](const char* key) -> std::string {
+            auto get_str = [&](const char* key) -> std::string {
                 return p.contains(key) ? p.at(key).get<std::string>() : std::string{};
             };
-            auto sv = r("scripts_python");
-            auto sl = r("scripts_lua");
-            auto sd = r("data_dir");
-            if (!sv.empty()) scripts_python_dir = resolve_path(config_dir, sv);
-            if (!sl.empty()) scripts_lua_dir    = resolve_path(config_dir, sl);
-            if (!sd.empty()) data_dir           = resolve_path(config_dir, sd);
+            auto python_path = get_str("scripts_python");
+            auto lua_path    = get_str("scripts_lua");
+            auto data_path   = get_str("data_dir");
+            if (!python_path.empty()) scripts_python_dir = resolve_path(config_dir, python_path);
+            if (!lua_path.empty())    scripts_lua_dir    = resolve_path(config_dir, lua_path);
+            if (!data_path.empty())   data_dir           = resolve_path(config_dir, data_path);
         }
         if (j.contains("python") && !config_dir.empty())
         {
@@ -446,6 +503,32 @@ const fs::path& HubConfig::python_startup_script() const noexcept { return pImpl
 const fs::path& HubConfig::python_requirements()   const noexcept { return pImpl->python_requirements; }
 
 const utils::JsonConfig& HubConfig::json_config() const noexcept { return pImpl->cfg; }
+
+// ── Connection policy (Phase 3) ─────────────────────────────────────────────
+broker::ConnectionPolicy HubConfig::connection_policy() const noexcept
+{
+    return pImpl->connection_policy;
+}
+std::vector<broker::KnownActor> HubConfig::known_actors() const
+{
+    return pImpl->known_actors;
+}
+std::vector<broker::ChannelPolicy> HubConfig::channel_policies() const
+{
+    return pImpl->channel_policies;
+}
+
+// ── Directory model (Phase 5) ───────────────────────────────────────────────
+const fs::path& HubConfig::hub_dir() const noexcept { return pImpl->config_dir; }
+
+std::filesystem::path HubConfig::hub_pubkey_path() const noexcept
+{
+    if (pImpl->config_dir.empty())
+    {
+        return {};
+    }
+    return pImpl->config_dir / "hub.pubkey";
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle startup / shutdown

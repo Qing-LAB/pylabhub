@@ -184,6 +184,10 @@ struct ConsumerOptions
     std::string consumer_name{};  ///< Human-readable name (max 31 chars)
 
     int timeout_ms{5000};
+
+    // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
+    LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
+    std::chrono::milliseconds period_ms{};                      ///< FixedRate target period
 };
 
 // ============================================================================

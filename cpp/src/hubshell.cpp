@@ -45,6 +45,7 @@
 #include "hub_python/pylabhub_module.hpp"
 
 #include "utils/broker_service.hpp"
+#include "utils/connection_policy.hpp"
 #include "utils/hub_identity.hpp"
 #include "utils/hub_vault.hpp"
 #include "utils/zmq_context.hpp"
@@ -88,7 +89,7 @@ static void signal_handler(int /*sig*/) noexcept
         // Double SIGINT / SIGTERM: fast exit without waiting for cleanup.
         std::_Exit(1);
     }
-    g_shutdown_requested.store(true, std::memory_order_relaxed);
+    g_shutdown_requested.store(true, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +306,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // Wire Python's pylabhub.shutdown() into our shutdown flag.
     pylabhub::PythonInterpreter::set_shutdown_callback([]()
     {
-        g_shutdown_requested.store(true, std::memory_order_relaxed);
+        g_shutdown_requested.store(true, std::memory_order_release);
     });
 
     // -----------------------------------------------------------------------
@@ -343,10 +344,19 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     broker_cfg.consumer_liveness_check_interval = hub_cfg.consumer_liveness_check();
     broker_cfg.server_secret_key                = vault_broker_secret; // empty → ephemeral
     broker_cfg.server_public_key                = vault_broker_public;
+    broker_cfg.connection_policy                = hub_cfg.connection_policy();
+    broker_cfg.known_actors                     = hub_cfg.known_actors();
+    broker_cfg.channel_policies                 = hub_cfg.channel_policies();
     broker_cfg.on_ready = [](const std::string& endpoint, const std::string& pubkey)
     {
         LOGGER_INFO("HubShell: broker ready at {} (pubkey={})", endpoint, pubkey);
     };
+    if (hub_cfg.connection_policy() != pylabhub::broker::ConnectionPolicy::Open)
+    {
+        LOGGER_INFO("HubShell: connection_policy={} known_actors={}",
+                    pylabhub::broker::connection_policy_to_str(hub_cfg.connection_policy()),
+                    hub_cfg.known_actors().size());
+    }
 
     pylabhub::broker::BrokerService broker(broker_cfg);
 
@@ -420,7 +430,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // -----------------------------------------------------------------------
     LOGGER_INFO("HubShell: running. Send SIGINT or call pylabhub.shutdown() to stop.");
 
-    while (!g_shutdown_requested.load(std::memory_order_relaxed))
+    while (!g_shutdown_requested.load(std::memory_order_acquire))
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
     }

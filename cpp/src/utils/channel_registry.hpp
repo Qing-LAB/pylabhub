@@ -45,6 +45,11 @@ struct ConsumerEntry
     /// ZMQ ROUTER identity bytes (as raw string) captured when consumer first contacted broker.
     /// Used to send CHANNEL_CLOSING_NOTIFY to this consumer.
     std::string zmq_identity;
+
+    // ── Identity (Phase 3) ────────────────────────────────────────────────────
+    std::string actor_name;  ///< Human name if provided in CONSUMER_REG_REQ; empty otherwise.
+    std::string actor_uid;   ///< Actor UID if provided in CONSUMER_REG_REQ; empty otherwise.
+    std::chrono::system_clock::time_point connected_at{std::chrono::system_clock::now()};
 };
 
 struct ChannelEntry
@@ -55,6 +60,10 @@ struct ChannelEntry
     uint32_t       schema_version{0};
     uint64_t       producer_pid{0};
     std::string    producer_hostname;
+
+    // ── Identity (Phase 3) ────────────────────────────────────────────────────
+    std::string    producer_actor_name; ///< Human name if provided in REG_REQ; empty otherwise.
+    std::string    producer_actor_uid;  ///< Actor UID if provided in REG_REQ; empty otherwise.
     nlohmann::json metadata;          ///< ring_buffer_capacity, policy, etc.
     std::vector<ConsumerEntry> consumers;
 

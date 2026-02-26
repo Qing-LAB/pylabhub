@@ -217,6 +217,10 @@ struct ProducerOptions
     // ── actor identity (Phase 2) ──────────────────────────────────────────────
     std::string actor_name{}; ///< Human-readable actor name; empty = anonymous
     std::string actor_uid{};  ///< Actor UID (ACTOR-{NAME}-{8HEX}); empty = anonymous
+
+    // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
+    LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
+    std::chrono::milliseconds period_ms{};                      ///< FixedRate target period
 };
 
 // ============================================================================

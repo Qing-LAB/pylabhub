@@ -69,6 +69,7 @@ add_executable(test_layer3_datahub
     workers/datahub_exception_safety_workers.cpp
     test_datahub_handle_semantics.cpp
     workers/datahub_handle_semantics_workers.cpp
+    test_datahub_loop_policy.cpp
 
     # ── Integration / Scenario ────────────────────────────────────────────────
     test_datahub_messagehub.cpp
@@ -90,6 +91,9 @@ add_executable(test_layer3_datahub
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/channel_registry.cpp
+
+    # ── Connection policy enforcement tests (Phase 3) ─────────────────────────
+    test_datahub_connection_policy.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     test_datahub_broker_consumer.cpp
