@@ -225,6 +225,9 @@ void MessengerImpl::process_incoming(zmq::socket_t &socket)
 
 void MessengerImpl::send_heartbeats(zmq::socket_t &socket)
 {
+    // m_heartbeat_channels is written only by command handlers (create_channel, disconnect)
+    // and read only by send_heartbeats() — all of which execute sequentially on the single
+    // worker thread. No concurrent access occurs, so no locking is required here.
     for (const auto &entry : m_heartbeat_channels)
     {
         if (entry.suppressed)
@@ -310,6 +313,7 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
                 }
                 m_client_public_key_z85 = z85_public.data();
                 m_client_secret_key_z85 = z85_secret.data();
+                sodium_memzero(z85_secret.data(), z85_secret.size()); // zero secret key stack buffer
                 LOGGER_DEBUG("Messenger: Using ephemeral CurveZMQ keypair.");
             }
 
@@ -534,6 +538,7 @@ Messenger::create_channel(const std::string &channel_name,
     }
     const std::string pubkey(z85_pub.data(), 40);
     const std::string seckey(z85_sec.data(), 40);
+    sodium_memzero(z85_sec.data(), z85_sec.size()); // zero secret key stack buffer
 
     // Bind P2C sockets in the calling thread (sockets will be owned by ChannelHandle).
     zmq::context_t &ctx = get_zmq_context();
@@ -640,6 +645,7 @@ Messenger::connect_channel(const std::string &channel_name,
             ctrl_sock.set(zmq::sockopt::curve_serverkey, cinfo->zmq_pubkey);
             ctrl_sock.set(zmq::sockopt::curve_publickey, std::string(cli_pub.data(), 40));
             ctrl_sock.set(zmq::sockopt::curve_secretkey, std::string(cli_sec.data(), 40));
+            sodium_memzero(cli_sec.data(), cli_sec.size()); // zero secret key stack buffer
         }
     }
     if (!cinfo->zmq_ctrl_endpoint.empty())
@@ -667,6 +673,7 @@ Messenger::connect_channel(const std::string &channel_name,
                               std::string(cli_pub.data(), 40));
                 data_sock.set(zmq::sockopt::curve_secretkey,
                               std::string(cli_sec.data(), 40));
+                sodium_memzero(cli_sec.data(), cli_sec.size()); // zero secret key stack buffer
             }
         }
         if (cinfo->pattern == ChannelPattern::PubSub)

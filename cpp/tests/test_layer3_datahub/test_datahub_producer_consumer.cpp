@@ -76,3 +76,10 @@ TEST_F(DatahubProducerConsumerTest, SlotAcquireTimeoutReturnsError)
     auto proc = SpawnWorker("error_handling.slot_acquire_timeout_returns_error", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
+
+TEST_F(DatahubProducerConsumerTest, SubPageLogicalSizeRoundTrip)
+{
+    auto proc = SpawnWorker("error_handling.sub_page_logical_size_round_trip", {});
+    // 64-byte logical_unit_size with 4K physical_page_size: sub-page slot round-trip.
+    ExpectWorkerOk(proc, {"DataBlock"});
+}

@@ -135,12 +135,31 @@ classDiagram
 
 ## Public API Reference
 
-### Enums
+### Constructor Parameters (bool-based)
 
-| Enum | Values | Description |
-|------|--------|-------------|
-| `LockMode` | `Blocking`, `NonBlocking` | Wait indefinitely vs return immediately |
-| `ResourceType` | `File`, `Directory` | Determines lock file suffix (`.lock` vs `.dir.lock`) |
+Early drafts of this HEP described `LockMode` and `ResourceType` enums. The implementation
+uses plain `bool` parameters instead — simpler and equally expressive.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `is_directory` | `bool` | `false` | `true` → directory (`.dir.lock` suffix); `false` → file (`.lock` suffix) |
+| `blocking` | `bool` | `true` | `true` → wait indefinitely; `false` → return immediately if lock unavailable |
+
+**Constructor and factory signatures:**
+
+```cpp
+// Blocking or non-blocking constructor:
+FileLock(const fs::path& path, bool is_directory = false, bool blocking = true) noexcept;
+
+// Timeout constructor:
+FileLock(const fs::path& path, bool is_directory, std::chrono::milliseconds timeout) noexcept;
+
+// Non-blocking factory (returns nullopt on failure):
+static std::optional<FileLock> try_lock(const fs::path& path,
+    bool is_directory = false, bool blocking = true) noexcept;
+static std::optional<FileLock> try_lock(const fs::path& path,
+    bool is_directory, std::chrono::milliseconds timeout) noexcept;
+```
 
 ### FileLock Class
 

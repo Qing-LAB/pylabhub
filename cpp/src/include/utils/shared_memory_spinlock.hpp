@@ -8,7 +8,7 @@
  * shared-memory layout (e.g. DataBlock header, or a standalone shm segment).
  *
  * Layout: Same 32-byte state is used by in-process token mode (see
- * utils/in_process_spin_state.hpp). Spin loops use utils::ExponentialBackoff.
+ * utils/in_process_spin_state.hpp). Spin loops use utils::ThreePhaseBackoff.
  * For organization and fundamental facilities, see docs/SPINLOCK_HEADER_AND_SOURCE_LAYOUT.md
  * and docs/UTILS_FUNDAMENTAL_FACILITIES.md.
  */
@@ -47,7 +47,8 @@ struct SharedSpinLockState
     std::atomic<uint64_t> owner_tid{0};
     std::atomic<uint64_t> generation{0};
     std::atomic<uint32_t> recursion_count{0};
-    uint8_t padding[4];
+    uint8_t padding[4]; // Struct padding to 32 bytes; never read by sync logic or hash computation;
+                        // uninitialized intentionally (value is irrelevant to correctness).
 };
 
 /**

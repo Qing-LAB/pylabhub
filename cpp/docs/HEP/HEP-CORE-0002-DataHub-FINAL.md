@@ -577,7 +577,11 @@ struct alignas(4096) SharedMemoryHeader {
     DataBlockPolicy         policy;               // Single / DoubleBuffer / RingBuffer
     ConsumerSyncPolicy      consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
     uint32_t physical_page_size;   // Physical page size (bytes); allocation granularity
-    uint32_t logical_unit_size;    // Logical slot size; 0 = use physical_page_size (legacy)
+    uint32_t logical_unit_size;    // Effective per-slot user data stride (bytes); always a non-zero multiple
+                                   // of 64 (cache-line size). Any requested value is rounded up to the next
+                                   // 64-byte boundary before being stored. physical_page_size controls SHM
+                                   // allocation granularity only; many sub-page slots pack into one OS page.
+                                   // Never 0 in header (0 at config time → resolves to physical_page_size).
     uint32_t ring_buffer_capacity; // Number of slots in TABLE 2
     uint32_t flexible_zone_size;   // Total TABLE 1 size (bytes)
     uint8_t  checksum_type;        // ChecksumType (always BLAKE2b in V1.0)
@@ -1397,7 +1401,7 @@ Correct use of the following **helper modules** is required for consistent layou
 - **physical_page_size** — Allocation granularity (e.g. 4K, 4M).
 - **ring_buffer_capacity** — Number of slots (≥ 1).
 
-**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size), shared_secret (0 = generate or discovery), checksum_policy, flexible_zone_configs. checksum_type is mandatory (default BLAKE2b). See implementation docs for full list.
+**Optional / sentinel semantics:** logical_unit_size (0 = use physical_page_size; any non-zero value is silently rounded up to the nearest 64-byte cache-line boundary before use — no error thrown), shared_secret (0 = generate or discovery), checksum_policy, flexible_zone_configs. checksum_type is mandatory (default BLAKE2b). See implementation docs for full list.
 
 **Correct use:**
 1. **Producer:** Build a `DataBlockConfig` with all required fields set, then call the creator (e.g. factory that ultimately calls the creator constructor). Do not rely on implicit defaults for policy, consumer_sync_policy, physical_page_size, or ring_buffer_capacity.

@@ -1,7 +1,7 @@
 #include "utils/logger_sinks/syslog_sink.hpp"
 #include "utils/logger_sinks/sink.hpp"
 
-#if !defined(PLATFORM_WIN64)
+#if !defined(PYLABHUB_PLATFORM_WIN64)
 #include <syslog.h>
 
 namespace pylabhub::utils

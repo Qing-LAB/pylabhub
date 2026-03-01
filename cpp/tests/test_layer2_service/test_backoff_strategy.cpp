@@ -3,7 +3,7 @@
  * @brief CRITICAL Layer 2 tests for backoff_strategy.hpp (BLOCKS DataBlock tests)
  *
  * Tests cover all four backoff strategies:
- * - ExponentialBackoff (3-phase: yield → 1us sleep → exponential)
+ * - ThreePhaseBackoff (3-phase: yield → 1us sleep → linear)
  * - ConstantBackoff (fixed delay)
  * - NoBackoff (no-op for testing)
  * - AggressiveBackoff (quadratic growth)
@@ -39,15 +39,15 @@ uint64_t measure_backoff_time_us(BackoffStrategy &strategy, int iteration)
 }
 
 // ============================================================================
-// ExponentialBackoff Tests
+// ThreePhaseBackoff Tests
 // ============================================================================
 
 /**
- * Test ExponentialBackoff Phase 1: yield() for iterations 0-3
+ * Test ThreePhaseBackoff Phase 1: yield() for iterations 0-3
  */
-TEST(BackoffStrategyTest, Exponential_Phase1_Yield)
+TEST(BackoffStrategyTest, ThreePhase_Phase1_Yield)
 {
-    ExponentialBackoff backoff;
+    ThreePhaseBackoff backoff;
 
     for (int i = 0; i < 4; ++i)
     {
@@ -60,11 +60,11 @@ TEST(BackoffStrategyTest, Exponential_Phase1_Yield)
 }
 
 /**
- * Test ExponentialBackoff Phase 2: 1us sleep for iterations 4-9
+ * Test ThreePhaseBackoff Phase 2: 1us sleep for iterations 4-9
  */
-TEST(BackoffStrategyTest, Exponential_Phase2_Microsleep)
+TEST(BackoffStrategyTest, ThreePhase_Phase2_Microsleep)
 {
-    ExponentialBackoff backoff;
+    ThreePhaseBackoff backoff;
 
     for (int i = 4; i < 10; ++i)
     {
@@ -77,11 +77,11 @@ TEST(BackoffStrategyTest, Exponential_Phase2_Microsleep)
 }
 
 /**
- * Test ExponentialBackoff Phase 3: exponential growth (iteration * 10us)
+ * Test ThreePhaseBackoff Phase 3: linear growth (iteration * 10us)
  */
-TEST(BackoffStrategyTest, Exponential_Phase3_ExponentialGrowth)
+TEST(BackoffStrategyTest, ThreePhase_Phase3_LinearGrowth)
 {
-    ExponentialBackoff backoff;
+    ThreePhaseBackoff backoff;
 
     // Test specific iterations with known expected times
     struct TestCase
@@ -111,16 +111,16 @@ TEST(BackoffStrategyTest, Exponential_Phase3_ExponentialGrowth)
 }
 
 /**
- * Test ExponentialBackoff is monotonically increasing
+ * Test ThreePhaseBackoff is monotonically increasing
  */
-TEST(BackoffStrategyTest, Exponential_IsMonotonicallyIncreasing)
+TEST(BackoffStrategyTest, ThreePhase_IsMonotonicallyIncreasing)
 {
     // Take the minimum over several runs to suppress OS scheduler jitter.
     // sleep_for() sleeps AT LEAST the requested duration, so the minimum over
     // multiple runs converges to the actual sleep floor rather than scheduler-inflated values.
     auto min_time_us = [](int iter, int runs)
     {
-        ExponentialBackoff b;
+        ThreePhaseBackoff b;
         uint64_t min = UINT64_MAX;
         for (int r = 0; r < runs; ++r)
         {
@@ -144,9 +144,9 @@ TEST(BackoffStrategyTest, Exponential_IsMonotonicallyIncreasing)
 }
 
 /**
- * Test ExponentialBackoff helper function
+ * Test ThreePhaseBackoff helper function (via backoff() free function)
  */
-TEST(BackoffStrategyTest, Exponential_HelperFunction)
+TEST(BackoffStrategyTest, ThreePhase_HelperFunction)
 {
     // Test the convenience function backoff(iteration)
     auto start = std::chrono::high_resolution_clock::now();
@@ -334,9 +334,9 @@ TEST(BackoffStrategyTest, Aggressive_HasMaxCap)
 // ============================================================================
 
 /**
- * Test ExponentialBackoff vs AggressiveBackoff growth rates
+ * Test ThreePhaseBackoff vs AggressiveBackoff growth rates
  */
-TEST(BackoffStrategyTest, Comparison_ExponentialVsAggressive)
+TEST(BackoffStrategyTest, Comparison_ThreePhaseVsAggressive)
 {
     // Take minimum over several runs to suppress OS scheduler jitter.
     // sleep_for() sleeps at least the requested duration, so minimums converge
@@ -345,7 +345,7 @@ TEST(BackoffStrategyTest, Comparison_ExponentialVsAggressive)
     uint64_t exp_min = UINT64_MAX, agg_min = UINT64_MAX;
     for (int r = 0; r < RUNS; ++r)
     {
-        ExponentialBackoff eb;
+        ThreePhaseBackoff eb;
         AggressiveBackoff ab;
         uint64_t et = measure_backoff_time_us(eb, 20);
         uint64_t at = measure_backoff_time_us(ab, 20);
@@ -356,10 +356,10 @@ TEST(BackoffStrategyTest, Comparison_ExponentialVsAggressive)
     }
 
     // Aggressive: 20^2 * 10 = 4000us
-    // Exponential: 20 * 10 = 200us
+    // ThreePhase:  20  * 10 = 200us
     // Minimum measurements should reflect this 20x ratio reliably.
     EXPECT_GT(agg_min, exp_min) << "AggressiveBackoff(iter=20, ~4000us) should sleep longer than "
-                                   "ExponentialBackoff(iter=20, ~200us)";
+                                   "ThreePhaseBackoff(iter=20, ~200us)";
 }
 
 /**
@@ -387,7 +387,7 @@ TEST(BackoffStrategyTest, Comparison_NoBackoffVsConstant)
  */
 TEST(BackoffStrategyTest, UsagePattern_RetryLoop)
 {
-    ExponentialBackoff backoff;
+    ThreePhaseBackoff backoff;
     int max_iterations = 20;
     bool success = false;
     int iteration = 0;
