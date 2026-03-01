@@ -6,7 +6,7 @@
  * with Argon2id KDF + XSalsa20-Poly1305 (libsodium secretbox).
  *
  * Vault file format (binary):
- *   [nonce (24 bytes)] [ciphertext + MAC (16 bytes appended by secretbox)]
+ *   [nonce (24 bytes)] [MAC (16 bytes) || ciphertext]
  *
  * Decrypted payload is UTF-8 JSON:
  * @code{.json}

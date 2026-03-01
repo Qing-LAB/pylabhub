@@ -28,7 +28,9 @@ set(UTILS_SOURCES
   service/lifecycle_dynamic.cpp
   service/file_lock.cpp
   service/crypto_utils.cpp
+  service/vault_crypto.cpp
   service/hub_vault.cpp
+  service/actor_vault.cpp
 
   # --- logging: async logger + pluggable sinks ---
   logging/logger.cpp
@@ -170,6 +172,14 @@ pylabhub_apply_standard_msvc_options(pylabhub-utils)
 if (PYLABHUB_LOGGER_DEBUG)
     target_compile_definitions(pylabhub-utils PRIVATE _LOGGER_DEBUG_ENABLED=1)
     message(STATUS "Building pylabhub-utils with logger debug enabled.")
+endif()
+
+# Vault KDF security level (INTERACTIVE default; SENSITIVE when high-security requested).
+if(PYLABHUB_VAULT_HIGH_SECURITY)
+    target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_VAULT_HIGH_SECURITY)
+    message(STATUS "[pylabhub-vault] KDF: Argon2id SENSITIVE (1 GB RAM, ~5 s/hash) — HIGH SECURITY build")
+else()
+    message(STATUS "[pylabhub-vault] KDF: Argon2id INTERACTIVE (64 MB RAM, ~100 ms/hash)")
 endif()
 
 # Define the public include directory for consumers of this library.

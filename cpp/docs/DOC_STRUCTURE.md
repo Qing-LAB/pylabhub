@@ -41,7 +41,24 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 
 | Location | Purpose |
 |----------|---------|
-| **`docs/HEP/`** | Authoritative design specs: HEP-CORE-0001 (lifecycle), HEP-CORE-0002 (DataHub), HEP-CORE-0003 (filelock), HEP-CORE-0004 (logger), HEP-CORE-0005 (script interface). |
+| **`docs/HEP/`** | Authoritative design specs. Current index (HEP-CORE-0001 through -0014 + REVISION_SUMMARY): |
+
+| HEP | Title | Status |
+|-----|-------|--------|
+| HEP-CORE-0001 | Hybrid Lifecycle Model | Implemented |
+| HEP-CORE-0002 | Data Exchange Hub — Final Unified Specification | Implemented |
+| HEP-CORE-0003 | Cross-Platform File Lock | Implemented |
+| HEP-CORE-0004 | High-Performance Asynchronous Logger | Implemented |
+| HEP-CORE-0005 | Script Interface Abstraction Framework | Superseded by HEP-CORE-0011 |
+| HEP-CORE-0006 | Pluggable Slot-Processor API | Implemented |
+| HEP-CORE-0007 | DataHub Protocol and Policy Reference | Implemented |
+| HEP-CORE-0008 | LoopPolicy and Iteration Metrics | Implemented (Pass 3) |
+| HEP-CORE-0009 | Policy Reference (ConnectionPolicy, Identity) | Implemented |
+| HEP-CORE-0010 | Actor Thread Model and Unified Script Interface | Implemented (Phases 1-3 + ActorScriptHost) |
+| HEP-CORE-0011 | ScriptHost Abstraction Framework | Implemented |
+| HEP-CORE-0012 | Processor Role (`pylabhub-processor`) | Planned |
+| HEP-CORE-0013 | Channel Identity and Provenance | Implemented |
+| HEP-CORE-0014 | Actor Framework Design | Implemented |
 
 - Keep style and diagrams clear and logical.
 - Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/TODO_MASTER.md`."*

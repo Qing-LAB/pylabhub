@@ -167,13 +167,14 @@ new directory creates a fresh hub.
   hub.vault               ← encrypted secrets (binary; 0600 permissions)
   hub.pubkey              ← broker CurveZMQ public key, Z85 40-char (0644; world-readable)
   script/
-    __init__.py           ← hub script package (callbacks: on_start, on_tick, on_stop)
+    python/
+      __init__.py         ← hub script package (callbacks: on_start, on_tick, on_stop)
   logs/                   ← rotating log files (created at startup if absent)
   run/
     hub.pid               ← PID of the running hub process
 ```
 
-Files created by `--init`: `hub.json`, `hub.vault`, `logs/`, `run/`, `script/__init__.py` (template).
+Files created by `--init`: `hub.json`, `hub.vault`, `logs/`, `run/`, `script/python/__init__.py` (template).
 Files created at every startup: `hub.pubkey` (overwritten from vault on each start).
 
 ### 4.2 Initialising a hub
@@ -185,7 +186,7 @@ pylabhub-hubshell --init <hub_dir>
 If `<hub_dir>` is omitted, the current directory is used.
 
 The init flow:
-1. Creates `<hub_dir>/logs/`, `<hub_dir>/run/`, `<hub_dir>/script/`
+1. Creates `<hub_dir>/logs/`, `<hub_dir>/run/`, `<hub_dir>/script/python/`
 2. Prompts for **hub name** (reverse-domain format, e.g. `lab.physics.daq1`)
 3. Prompts for **master password** (twice, for confirmation)
    - Or reads `PYLABHUB_MASTER_PASSWORD` env var (no prompt)
@@ -194,7 +195,7 @@ The init flow:
    - Generates a stable CurveZMQ broker keypair (written to vault)
    - Generates a random 64-hex admin token (written to vault)
 6. Writes `hub.json` with hub_name, hub_uid, and defaults
-7. Writes `script/__init__.py` with a starter template (callbacks: on_start, on_tick, on_stop)
+7. Writes `script/python/__init__.py` with a starter template (callbacks: on_start, on_tick, on_stop)
 
 Re-initialising is refused if `hub.json` already exists. To reset: remove `hub.json`
 and `hub.vault` manually.
@@ -236,11 +237,14 @@ stored here. Edit this file directly to change configuration.
     "scripts_lua":    "../share/scripts/lua",
     "data_dir":       "../data"
   },
-  "python": {
-    "script":                 "./script",
+  "script": {
+    "type":                   "python",
+    "path":                   "./script",
     "tick_interval_ms":       1000,
-    "health_log_interval_ms": 60000,
-    "requirements":           "../share/scripts/python/requirements.txt"
+    "health_log_interval_ms": 60000
+  },
+  "python": {
+    "requirements": "../share/scripts/python/requirements.txt"
   }
 }
 ```
@@ -281,13 +285,19 @@ All paths may be absolute or relative to `hub.json`'s parent directory.
 | `scripts_lua` | `"../share/scripts/lua"` | Lua scripts directory (future). |
 | `data_dir` | `"../data"` | Default run-data output directory. |
 
-#### `python` block
+#### `script` block (language-neutral hub script configuration)
 
 | Field | Default | Description |
 |---|---|---|
-| `script` | `"./script"` | Path to the hub script package directory (must contain `__init__.py`). Relative to `hub.json` directory. See §4.5. |
+| `type` | `"python"` | Script host type. `"python"` selects the Python HubScript host (only type currently supported). |
+| `path` | `"./script"` | Base directory for script packages. The actual package is at `<path>/<type>/`, e.g. `./script/python/`. Relative to `hub.json` directory. See §4.5. |
 | `tick_interval_ms` | `1000` | Tick period in milliseconds. The C++ tick thread calls `on_tick(api, tick)` at this interval. |
 | `health_log_interval_ms` | `60000` | How often the C++ tick runner logs a channel health summary (milliseconds). |
+
+#### `python` block (Python-specific settings)
+
+| Field | Default | Description |
+|---|---|---|
 | `requirements` | `"../share/scripts/python/requirements.txt"` | `pip install -r` requirements file used when `prepare_python_env` runs. |
 
 ### 4.4 Running the hub
@@ -302,8 +312,8 @@ pylabhub-hubshell <hub_dir>
 # Development: ephemeral keypair, no vault
 pylabhub-hubshell <hub_dir> --dev
 
-# Legacy flat-config (no hub_dir; reads config/hub.*.json next to binary)
-pylabhub-hubshell
+# Error: hub_dir is required without --dev
+# pylabhub-hubshell  ← returns error; use --dev for ephemeral testing
 ```
 
 **Shutdown:** send `SIGINT` (Ctrl-C) once to request graceful shutdown. A second
@@ -321,11 +331,12 @@ pylabhub-hubshell
 
 ### 4.5 Hub script package
 
-The hub loads a Python **package** from `hub.json["python"]["script"]` (default `./script`).
+The hub loads a Python **package** from `hub.json["script"]["path"]/<type>/` (default
+`./script/python/`). `type` selects the script host (`"python"` is the only supported value).
 The package must contain `__init__.py` with up to three optional callbacks:
 
 ```
-<hub_dir>/script/__init__.py   ← loaded by HubScript on startup
+<hub_dir>/script/python/__init__.py   ← loaded by HubScript on startup
 ```
 
 `--init` writes the default template automatically. The default template renders a
@@ -698,6 +709,20 @@ pylabhub-actor --register-with <hub_dir> <actor_dir>
 | `uid` | no | auto-generated | Stable `ACTOR-{NAME}-{8HEX}` identifier. Generated from `name` if absent. Keep stable across restarts — changing it changes the actor's identity. |
 | `name` | no | `""` | Human name used as input for UID generation. Convention: reverse-domain format matching channel names. |
 | `log_level` | no | `"info"` | `"debug"` / `"info"` / `"warn"` / `"error"` |
+| `auth.keyfile` | no | `""` | Path to the encrypted actor vault file (created by `--keygen`). When set, the actor decrypts this vault at startup to load its CurveZMQ client keypair. Password via `PYLABHUB_ACTOR_PASSWORD` env var or interactive prompt. Empty = ephemeral keypair (dev/test only). |
+
+**Actor vault setup (for production CurveZMQ identity):**
+```bash
+# 1. Set auth.keyfile in actor.json (e.g. "actor.key"), then generate the vault:
+pylabhub-actor --config ./actor.json --keygen
+# → prompts for vault password (or reads PYLABHUB_ACTOR_PASSWORD)
+# → creates encrypted vault at the keyfile path
+# → prints the 40-char Z85 public key
+
+# 2. Run the actor — prompts for vault password at startup:
+pylabhub-actor ./my-actor
+# → or: PYLABHUB_ACTOR_PASSWORD=<password> pylabhub-actor ./my-actor
+```
 
 #### Top-level fields
 

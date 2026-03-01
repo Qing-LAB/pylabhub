@@ -69,11 +69,11 @@
 #include "actor_script_host.hpp"
 
 #include "plh_datahub.hpp"
+#include "utils/actor_vault.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/zmq_context.hpp"
 
 #include <nlohmann/json.hpp>
-#include <zmq.h>
 
 #include <atomic>
 #include <csignal>
@@ -221,6 +221,38 @@ ActorArgs parse_args(int argc, char *argv[])
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
+// Password helpers (vault unlock)
+// ---------------------------------------------------------------------------
+
+/// Read a password from the terminal with echo suppressed.
+static std::string read_password_interactive(const char *prompt)
+{
+#if defined(PYLABHUB_IS_POSIX)
+    char *pw = ::getpass(prompt);
+    if (!pw)
+    {
+        std::fprintf(stderr, "actor: failed to read password from terminal\n");
+        return {};
+    }
+    return pw;
+#else
+    std::fprintf(stderr, "%s", prompt);
+    std::fflush(stderr);
+    std::string pw;
+    std::getline(std::cin, pw);
+    return pw;
+#endif
+}
+
+/// Get actor vault password: PYLABHUB_ACTOR_PASSWORD env var, then interactive prompt.
+static std::string get_actor_password(const char *prompt)
+{
+    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
+        return env;
+    return read_password_interactive(prompt);
+}
+
+// ---------------------------------------------------------------------------
 // do_init — create actor directory with actor.json template
 // ---------------------------------------------------------------------------
 
@@ -268,9 +300,12 @@ static int do_init(const std::string &actor_dir_str)
     // hub_dir: left as a placeholder — set by the user after --init
     j["hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
 
-    j["actor"]["uid"]       = actor_uid;
-    j["actor"]["name"]      = actor_name;
-    j["actor"]["log_level"] = "info";
+    j["actor"]["uid"]                 = actor_uid;
+    j["actor"]["name"]                = actor_name;
+    j["actor"]["log_level"]           = "info";
+    // auth.keyfile: set to a valid path, then run --keygen to create the encrypted vault.
+    // Password is supplied interactively or via PYLABHUB_ACTOR_PASSWORD env var — never stored.
+    j["actor"]["auth"]["keyfile"]     = "";
 
     // Minimal example producer role — per-role script points to ./roles/data_out/script/
     nlohmann::json &role = j["roles"]["data_out"];
@@ -371,10 +406,13 @@ static int do_init(const std::string &actor_dir_str)
               << "  script     : " << init_py.string() << "\n\n"
               << "Next steps:\n"
               << "  1. Edit actor.json — set 'hub_dir' to your hub directory path\n"
-              << "  2. Edit actor.json — define your roles and their slot_schema\n"
-              << "  3. Edit roles/data_out/script/__init__.py — implement on_iteration\n"
+              << "  2. Edit actor.json — set 'actor.auth.keyfile' to a path (e.g. \"actor.key\"),\n"
+              << "     then generate the keypair:\n"
+              << "       pylabhub-actor --config " << json_path.string() << " --keygen\n"
+              << "  3. Edit actor.json — define your roles and their slot_schema\n"
+              << "  4. Edit roles/data_out/script/__init__.py — implement on_iteration\n"
               << "     Add helpers.py (or other submodules) beside __init__.py as needed.\n"
-              << "  4. Run: pylabhub-actor " << actor_dir.string() << "\n";
+              << "  5. Run: pylabhub-actor " << actor_dir.string() << "\n";
     return 0;
 }
 
@@ -527,55 +565,44 @@ int main(int argc, char *argv[])
     {
         if (config.auth.keyfile.empty())
         {
-            std::cerr << "Error: --keygen requires 'actor.auth.keyfile' in config\n";
+            std::cerr << "Error: --keygen requires 'actor.auth.keyfile' in config\n"
+                      << "  Set \"actor\": { \"auth\": { \"keyfile\": \"actor.key\" } } in actor.json\n";
             return 1;
         }
 
-        // Generate Z85-encoded CURVE25519 keypair via libsodium CSPRNG.
-        // zmq_curve_keypair() is hardware-seeded; no interactive entropy needed.
-        std::array<char, 41> z85_pub{};
-        std::array<char, 41> z85_sec{};
-        if (zmq_curve_keypair(z85_pub.data(), z85_sec.data()) != 0)
+        // Get vault password with confirmation (no stored password anywhere).
+        std::string password;
+        if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
         {
-            std::cerr << "Error: zmq_curve_keypair() failed — libsodium not available?\n";
-            return 1;
+            password = env;
         }
-
-        // Ensure parent directory exists.
-        std::filesystem::path keypath(config.auth.keyfile);
-        if (keypath.has_parent_path())
+        else
         {
-            std::error_code ec;
-            std::filesystem::create_directories(keypath.parent_path(), ec);
-            if (ec)
+            password = read_password_interactive("Actor vault password (empty = no encryption): ");
+            const std::string confirm = read_password_interactive("Confirm password: ");
+            if (password != confirm)
             {
-                std::cerr << "Error: cannot create directory '"
-                          << keypath.parent_path().string() << "': " << ec.message() << "\n";
+                std::cerr << "Error: passwords do not match\n";
                 return 1;
             }
         }
 
-        // Write JSON keypair file.
-        nlohmann::json kf;
-        kf["actor_uid"]  = config.actor_uid;
-        kf["public_key"] = std::string(z85_pub.data(), 40);
-        kf["secret_key"] = std::string(z85_sec.data(), 40);
-        kf["_note"]      = "Z85 CURVE keypair generated by pylabhub-actor --keygen. "
-                           "Keep secret_key private.";
-
-        std::ofstream out(keypath);
-        if (!out)
+        // ActorVault::create: generates keypair, encrypts, writes vault at keyfile path.
+        try
         {
-            std::cerr << "Error: cannot write keypair to '" << config.auth.keyfile << "'\n";
+            const auto vault = pylabhub::utils::ActorVault::create(
+                config.auth.keyfile, config.actor_uid, password);
+
+            std::cout << "Actor vault written to: " << config.auth.keyfile << "\n"
+                      << "  actor_uid : " << config.actor_uid << "\n"
+                      << "  public_key: " << vault.public_key() << "\n"
+                      << "  (secret_key encrypted in vault — keep vault file private)\n";
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
             return 1;
         }
-        out << kf.dump(2) << "\n";
-        out.close();
-
-        std::cout << "Actor keypair written to: " << config.auth.keyfile << "\n"
-                  << "  actor_uid : " << config.actor_uid << "\n"
-                  << "  public_key: " << std::string(z85_pub.data(), 40) << "\n"
-                  << "  (secret_key stored in file — keep private)\n";
         return 0;
     }
 
@@ -589,11 +616,14 @@ int main(int argc, char *argv[])
     ));
 
     // ── Load actor keypair (if keyfile configured) ────────────────────────────
-    // No Python interpreter needed for this step.
-    // Populates config.auth.client_pubkey / client_seckey for CurveZMQ client auth.
-    // No-op when auth.keyfile is empty; logs warning and continues on failure.
+    // Decrypt the actor vault using the password from env or interactive prompt.
+    // No-op when auth.keyfile is empty (ephemeral CURVE identity).
+    // Throws on wrong password or corrupted vault (fatal — actor will not start).
     if (!config.auth.keyfile.empty())
-        config.auth.load_keypair();
+    {
+        const std::string vault_password = get_actor_password("Actor vault password: ");
+        config.auth.load_keypair(config.actor_uid, vault_password);
+    }
 
     // ── Actor script host ─────────────────────────────────────────────────────
     // ActorScriptHost owns the Python interpreter lifetime via PythonScriptHost.

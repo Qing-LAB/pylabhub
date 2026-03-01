@@ -412,43 +412,85 @@ sequenceDiagram
 
 ```
 ┌────────────────────────────────────────────────────┐ Offset 0
-│ SharedMemoryHeader (~4 KB)                         │
+│ SharedMemoryHeader (exactly 4 KB)                  │
 │ ┌────────────────────────────────────────────────┐ │
-│ │ Magic Number (0x504C4842)                      │ │ +0
-│ │ Version (major.minor.patch)                    │ │ +4
-│ │ Block Size (total bytes)                       │ │ +8
+│ │ Magic Number (0x504C4842 / 'PLHB')             │ │
+│ │ Version (major/minor), Block Size (u64)        │ │
+│ │ ≈ 16 bytes                                     │ │
 │ ├────────────────────────────────────────────────┤ │
-│ │ Shared Secret (64 bytes)                       │ │ +16
-│ │ Schema Hash (32 bytes)                         │ │ +80
-│ │ Schema Version (4 bytes)                       │ │ +112
+│ │ Security and Schema                            │ │
+│ │ - Shared Secret (64 bytes)                     │ │
+│ │ - FlexZone Schema Hash (BLAKE2b-256, 32 bytes) │ │ ← Phase 4: dual schema
+│ │ - DataBlock Schema Hash (BLAKE2b-256, 32 bytes)│ │ ← Phase 4: dual schema
+│ │ - Schema Version (u32)                         │ │
+│ │ ≈ 132 bytes                                    │ │
 │ ├────────────────────────────────────────────────┤ │
-│ │ Ring Buffer Metadata                           │ │ +128
-│ │ - atomic<uint64_t> write_index                 │ │
-│ │ - atomic<uint64_t> commit_index                │ │
-│ │ - atomic<uint64_t> read_index                  │ │
-│ │ - ring_buffer_capacity (const)                 │ │
-│ │ - unit_block_size (const)                      │ │
+│ │ Ring Buffer Configuration                      │ │
 │ │ - policy (Single/DoubleBuffer/RingBuffer)      │ │
+│ │ - consumer_sync_policy, page/unit sizes        │ │
+│ │ - ring_buffer_capacity, flexible_zone_size     │ │
+│ │ - checksum_type, checksum_policy               │ │
+│ │ ≈ 32 bytes                                     │ │
 │ ├────────────────────────────────────────────────┤ │
-│ │ Metrics Section (256 bytes)                    │ │ +256
-│ │ - Slot coordination counters (64 bytes)        │ │
+│ │ Ring Buffer State (Hot Path)                   │ │
+│ │ - write_index, commit_index, read_index (u64)  │ │
+│ │ - active_consumer_count (u32)                  │ │
+│ │ ≈ 32 bytes                                     │ │
+│ ├────────────────────────────────────────────────┤ │
+│ │ Metrics Section (~280 bytes)                   │ │
+│ │ - Slot coordination counters (88 bytes)        │ │ ← 11 u64 counters
+│ │   · writer_timeout_count                       │ │
+│ │   · writer_lock_timeout_count  ← Phase 3 new  │ │
+│ │   · writer_reader_timeout_count ← Phase 3 new │ │
+│ │   · writer_blocked_total_ns                    │ │
+│ │   · write_lock_contention, write_gen_wraps     │ │
+│ │   · reader_not_ready, race, validation, peak   │ │
+│ │   · reader_timeout_count ← Phase 3 new        │ │
 │ │ - Error tracking (96 bytes)                    │ │
 │ │ - Heartbeat stats (32 bytes)                   │ │
 │ │ - Performance counters (64 bytes)              │ │
 │ ├────────────────────────────────────────────────┤ │
-│ │ Consumer Heartbeats (512 bytes)                │ │ +512
-│ │ - ConsumerHeartbeat[8]                         │ │
-│ │   * atomic<uint64_t> consumer_id               │ │
-│ │   * atomic<uint64_t> last_heartbeat_ns         │ │
-│ │   * padding[48] (cache line aligned)           │ │
+│ │ Consumer Heartbeats (1024 bytes)               │ │ ← expanded from 512
+│ │ - ConsumerHeartbeat[8] × 128 bytes each        │ │
+│ │   * consumer_pid  (atomic<u64>, 8 bytes)       │ │
+│ │   * last_heartbeat_ns (atomic<u64>, 8 bytes)   │ │
+│ │   * consumer_uid[40]  (char, identity UID)     │ │ ← Phase 2 new
+│ │   * consumer_name[32] (char, display name)     │ │ ← Phase 2 new
+│ │   * padding[40]                                │ │
 │ ├────────────────────────────────────────────────┤ │
-│ │ SharedSpinLock States (256 bytes)              │ │ +1024
-│ │ - SharedSpinLockState[8]                       │ │
-│ │   * atomic<uint64_t> lock_owner_pid            │ │
-│ │   * atomic<uint32_t> recursion_count           │ │
-│ │   * atomic<uint64_t> generation                │ │
-│ │   * padding[12] (32 bytes each)                │ │
+│ │ Channel Identity (208 bytes)                   │ │ ← Phase 2 new
+│ │ Written once at producer creation; read-only.  │ │
+│ │   * hub_uid[40]      (hub unique ID, null-term)│ │
+│ │   * hub_name[64]     (hub display name)        │ │
+│ │   * producer_uid[40] (producer unique ID)      │ │
+│ │   * producer_name[64](producer display name)   │ │
+│ │ See HEP-CORE-0013 for full provenance chain.   │ │
+│ ├────────────────────────────────────────────────┤ │
+│ │ SharedSpinLock States (256 bytes)              │ │
+│ │ - SharedSpinLockState[8] × 32 bytes each       │ │
+│ │   * lock_owner_pid (atomic<u64>, 8 bytes)      │ │
+│ │   * recursion_count (atomic<u32>, 4 bytes)     │ │
+│ │   * generation (atomic<u64>, 8 bytes)          │ │
+│ │   * padding[12]                                │ │
+│ ├────────────────────────────────────────────────┤ │
+│ │ Flexible Zone Checksums (512 bytes)            │ │ ← new
+│ │ - FlexibleZoneChecksumEntry[8] × 64 bytes each │ │
+│ │   * checksum_bytes[32] (BLAKE2b-256)           │ │
+│ │   * valid (atomic<u8>, 1 byte)                 │ │
+│ │   * padding[31]                                │ │
+│ ├────────────────────────────────────────────────┤ │
+│ │ reserved_header (1600 bytes)                   │ │
+│ │ Contains fixed-offset sub-fields:              │ │
+│ │   [  0.. 31] Header layout hash (BLAKE2b-256)  │ │
+│ │   [ 32.. 63] Layout checksum (BLAKE2b-256)     │ │
+│ │   [ 64..127] Consumer read positions (8×u64,   │ │
+│ │              Sync_reader next-read slot ids)   │ │
+│ │   [128..143] Producer heartbeat:               │ │
+│ │              producer_pid (u64) +              │ │
+│ │              producer_last_heartbeat_ns (u64)  │ │
+│ │              Stale threshold: 5 000 000 000 ns │ │
 │ └────────────────────────────────────────────────┘ │
+│  Total: 4096 bytes (static_assert validated)       │
 ├────────────────────────────────────────────────────┤ +4096
 │ SlotRWState Array                                  │
 │ (ring_buffer_capacity × 48 bytes, cache-aligned)   │
@@ -495,47 +537,73 @@ sequenceDiagram
 
 ### 3.2 SharedMemoryHeader Structure
 
-```cpp
-struct SharedMemoryHeader {
-    // === Identification and Versioning ===
-    uint32_t magic_number;          // 0x504C4842 ('PLHB')
-    uint16_t version_major;         // ABI compatibility
-    uint16_t version_minor;
-    uint64_t total_block_size;      // Total shared memory size
+The definitive layout lives in `src/include/utils/data_block.hpp`. The struct below
+mirrors the actual code; refer to the header for the authoritative field list.
+ABI layout constants are in `namespace pylabhub::hub::detail`.
 
-    // === Security ===
-    uint8_t shared_secret[64];      // Access capability token
-    uint8_t schema_hash[32];        // BLAKE2b hash of data schema
-    uint32_t schema_version;        // Schema version number
-    uint8_t padding_sec[28];        // Align to cache line
+```cpp
+// ABI layout constants (namespace pylabhub::hub::detail)
+inline constexpr uint16_t HEADER_VERSION_MAJOR              = 1;
+inline constexpr uint16_t HEADER_VERSION_MINOR              = 0;
+inline constexpr size_t   MAX_SHARED_SPINLOCKS              = 8;
+inline constexpr size_t   MAX_CONSUMER_HEARTBEATS           = 8;
+inline constexpr size_t   MAX_FLEXIBLE_ZONE_CHECKSUMS       = 8;
+inline constexpr size_t   CHECKSUM_BYTES                    = 32;
+
+// reserved_header sub-field offsets (byte offsets within reserved_header[]):
+inline constexpr size_t   HEADER_LAYOUT_HASH_OFFSET         = 0;   // BLAKE2b-256 (32 bytes)
+inline constexpr size_t   LAYOUT_CHECKSUM_OFFSET            = 32;  // BLAKE2b-256 (32 bytes)
+inline constexpr size_t   CONSUMER_READ_POSITIONS_OFFSET    = 64;  // 8 x u64 (Sync_reader)
+inline constexpr size_t   PRODUCER_HEARTBEAT_OFFSET         = 128; // pid(u64) + ts_ns(u64)
+inline constexpr uint64_t PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS = 5'000'000'000ULL; // 5 s
+
+struct alignas(4096) SharedMemoryHeader {
+
+    // === Identification and Versioning ===
+    std::atomic<uint32_t> magic_number;  // 0x504C4842 ('PLHB')
+    uint16_t version_major;              // ABI compatibility (break on mismatch)
+    uint16_t version_minor;
+    uint64_t total_block_size;           // Total shared memory size (bytes)
+
+    // === Security and Schema ===
+    uint8_t shared_secret[64];           // Access capability token
+    // Phase 4: Dual schema — FlexZone and DataBlock schemas tracked independently.
+    // Producers set both hashes at create_channel(); consumers validate at attach.
+    uint8_t flexzone_schema_hash[32];    // BLAKE2b-256 of the FlexZone type schema
+    uint8_t datablock_schema_hash[32];   // BLAKE2b-256 of the slot/DataBlock schema
+    uint32_t schema_version;             // Monotonically increasing schema version
 
     // === Ring Buffer Configuration ===
-    DataBlockPolicy policy;             // Single/DoubleBuffer/RingBuffer
-    ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
-    uint32_t unit_block_size;           // Bytes per slot (power of 2)
-    uint32_t ring_buffer_capacity;     // Number of slots
-    size_t flexible_zone_size;         // Total TABLE 1 size
-    uint8_t checksum_type;              // ChecksumType; mandatory (BLAKE2b)
-    ChecksumPolicy checksum_policy;     // Manual or Enforced
+    DataBlockPolicy         policy;               // Single / DoubleBuffer / RingBuffer
+    ConsumerSyncPolicy      consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
+    uint32_t physical_page_size;   // Physical page size (bytes); allocation granularity
+    uint32_t logical_unit_size;    // Logical slot size; 0 = use physical_page_size (legacy)
+    uint32_t ring_buffer_capacity; // Number of slots in TABLE 2
+    uint32_t flexible_zone_size;   // Total TABLE 1 size (bytes)
+    uint8_t  checksum_type;        // ChecksumType (always BLAKE2b in V1.0)
+    ChecksumPolicy checksum_policy; // Manual or Enforced
 
     // === Ring Buffer State (Hot Path) ===
-    std::atomic<uint64_t> write_index;   // Next slot to write (producer)
-    std::atomic<uint64_t> commit_index;  // Last committed slot (producer)
-    std::atomic<uint64_t> read_index;    // Oldest unread slot (system)
+    std::atomic<uint64_t> write_index;          // Next slot to write (producer)
+    std::atomic<uint64_t> commit_index;         // Last committed slot (producer)
+    std::atomic<uint64_t> read_index;           // Oldest unread slot (Sync/Single_reader)
     std::atomic<uint32_t> active_consumer_count;
 
-    // === Metrics Section (256 bytes) ===
-    // Slot Coordination (64 bytes)
-    std::atomic<uint64_t> writer_timeout_count;
-    std::atomic<uint64_t> writer_blocked_total_ns;
+    // === Metrics Section ===
+    // Slot Coordination — 11 x u64 = 88 bytes
+    std::atomic<uint64_t> writer_timeout_count;         // All writer timeouts (any cause)
+    std::atomic<uint64_t> writer_lock_timeout_count;    // Timeouts waiting for write_lock
+    std::atomic<uint64_t> writer_reader_timeout_count;  // Timeouts draining readers (DRAINING)
+    std::atomic<uint64_t> writer_blocked_total_ns;      // Cumulative blocked time
     std::atomic<uint64_t> write_lock_contention;
     std::atomic<uint64_t> write_generation_wraps;
     std::atomic<uint64_t> reader_not_ready_count;
     std::atomic<uint64_t> reader_race_detected;
     std::atomic<uint64_t> reader_validation_failed;
     std::atomic<uint64_t> reader_peak_count;
+    std::atomic<uint64_t> reader_timeout_count;
 
-    // Error Tracking (96 bytes)
+    // Error Tracking — 96 bytes
     std::atomic<uint64_t> last_error_timestamp_ns;
     std::atomic<uint32_t> last_error_code;
     std::atomic<uint32_t> error_sequence;
@@ -549,13 +617,13 @@ struct SharedMemoryHeader {
     std::atomic<uint64_t> schema_mismatch_count;
     std::atomic<uint64_t> reserved_errors[2];
 
-    // Heartbeat Statistics (32 bytes)
+    // Heartbeat Statistics — 32 bytes
     std::atomic<uint64_t> heartbeat_sent_count;
     std::atomic<uint64_t> heartbeat_failed_count;
     std::atomic<uint64_t> last_heartbeat_ns;
     std::atomic<uint64_t> reserved_hb;
 
-    // Performance Counters (64 bytes)
+    // Performance Counters — 64 bytes
     std::atomic<uint64_t> total_slots_written;
     std::atomic<uint64_t> total_slots_read;
     std::atomic<uint64_t> total_bytes_written;
@@ -564,27 +632,82 @@ struct SharedMemoryHeader {
     std::atomic<uint64_t> creation_timestamp_ns;
     std::atomic<uint64_t> reserved_perf[2];
 
-    // === Consumer Heartbeats (512 bytes) ===
+    // === Consumer Heartbeats — 8 x 128 bytes = 1024 bytes ===
+    // Expanded from 64 bytes to 128 bytes to carry per-consumer identity (uid + name).
+    // Write ordering: write consumer_uid/consumer_name BEFORE the CAS on consumer_pid
+    // (CAS is acq_rel; preceding stores must be release-ordered or just before the CAS).
     struct ConsumerHeartbeat {
-        std::atomic<uint64_t> consumer_id;        // PID or UUID
-        std::atomic<uint64_t> last_heartbeat_ns;  // Monotonic timestamp
-        uint8_t padding[48];                       // Cache line (64 bytes total)
-    } consumer_heartbeats[8];  // Max 8 consumers
+        std::atomic<uint64_t> consumer_pid;      //  8 bytes — OS PID (0 = slot free)
+        std::atomic<uint64_t> last_heartbeat_ns; //  8 bytes — Monotonic timestamp (ns)
+        char consumer_uid[40];                   // 40 bytes — Identity UID (null-terminated)
+        char consumer_name[32];                  // 32 bytes — Display name (null-terminated)
+        uint8_t padding[40];                     // 40 bytes — pad to 128 bytes total
+    } consumer_heartbeats[MAX_CONSUMER_HEARTBEATS]; // 8 x 128 = 1024 bytes
 
-    // === SharedSpinLock States (256 bytes) ===
-    struct SharedSpinLockState {
-        std::atomic<uint64_t> lock_owner_pid;     // PID of lock holder
-        std::atomic<uint32_t> recursion_count;    // For recursive locks
-        std::atomic<uint64_t> generation;         // Change counter
-        uint8_t padding[12];                       // 32 bytes total
-    } spinlock_states[8];  // Fixed pool for flexible zones
+    // === Channel Identity — 208 bytes ===
+    // Written once by the producer at create_channel(); treated as read-only by
+    // consumers and diagnostics tools. Enables provenance tracking without broker
+    // interaction. See HEP-CORE-0013 for the full provenance chain and verification.
+    char hub_uid[40];       // Hub unique ID (HUB-<name>-<8hex>, null-terminated)
+    char hub_name[64];      // Hub display name (null-terminated)
+    char producer_uid[40];  // Producer unique ID (ACTOR-<name>-<8hex>)
+    char producer_name[64]; // Producer display name (null-terminated)
 
-    // === Padding to 4096 bytes ===
-    uint8_t reserved_header[/* calculated */];
+    // === SharedSpinLock States — 8 x 32 bytes = 256 bytes ===
+    SharedSpinLockState spinlock_states[MAX_SHARED_SPINLOCKS];
+
+    // === Flexible Zone Checksums — 8 x 64 bytes = 512 bytes ===
+    // Per-zone BLAKE2b-256 checksums; the `valid` atomic guards each entry independently.
+    // Populated when checksum_policy = Enforced.
+    struct FlexibleZoneChecksumEntry {
+        uint8_t              checksum_bytes[32]; // BLAKE2b-256 digest
+        std::atomic<uint8_t> valid{0};           // 1 = checksum present and valid
+        uint8_t              padding[31];        // pad to 64 bytes
+    } flexible_zone_checksums[MAX_FLEXIBLE_ZONE_CHECKSUMS]; // 8 x 64 = 512 bytes
+
+    // === Reserved Header — 1600 bytes ===
+    // Budget: 4096 - ~492 (id+sec+cfg+state+metrics) - 1024 - 208 - 256 - 512 = 1600
+    // Fixed-offset sub-fields within reserved_header[]:
+    //   [  0.. 31] Header layout hash  (BLAKE2b-256; protocol version check)
+    //   [ 32.. 63] Layout checksum     (BLAKE2b-256; covers layout-defining scalars)
+    //   [ 64..127] Consumer read positions (8 x uint64_t; Sync_reader per-consumer offsets)
+    //   [128..143] Producer heartbeat: producer_pid (u64) + producer_last_heartbeat_ns (u64)
+    //              Stale if (now - last_heartbeat_ns) > PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS
+    uint8_t reserved_header[1600];
 };
 
 static_assert(sizeof(SharedMemoryHeader) == 4096, "Header must be exactly 4KB");
+static_assert(alignof(SharedMemoryHeader) >= 4096, "Header must be page-aligned");
 ```
+
+#### 3.2.1 DataBlockConfig Identity Fields
+
+`DataBlockConfig` (the struct passed to `create_channel()`) carries the same identity
+fields that the producer writes into the header's Channel Identity block at creation:
+
+| Field | Written from | Purpose |
+|---|---|---|
+| `hub_uid` | `HubConfig::hub_uid()` | Identify managing hub (empty outside hub context) |
+| `hub_name` | `HubConfig::hub_name()` | Human-readable hub name |
+| `producer_uid` | `ProducerOptions::actor_uid` | Identify creating actor/process |
+| `producer_name` | `ProducerOptions::actor_name` | Human-readable producer name |
+| `flexzone_schema_name` | Role FlexZone schema | Used to derive `flexzone_schema_hash` |
+| `datablock_schema_name` | Role DataBlock schema | Used to derive `datablock_schema_hash` |
+
+#### 3.2.2 Schema Hash Derivation (Phase 4 — Dual Schema)
+
+Before Phase 4, a single `schema_hash[32]` covered the entire data layout. Phase 4
+splits this into two independent hashes so that FlexZone and DataBlock schemas can
+evolve independently:
+
+| Hash field | Covers | Used by |
+|---|---|---|
+| `flexzone_schema_hash` | Field layout of the FlexZone struct | Consumer checks before `flexible_zone<T>()` calls |
+| `datablock_schema_hash` | Field layout of the slot data struct | Consumer checks before reading slot buffers |
+
+Both hashes are BLAKE2b-256 digests computed from `generate_schema_info()` (BLDS
+schema descriptor). A mismatch increments `schema_mismatch_count` and raises a
+`std::runtime_error` at `connect_channel()` time.
 
 ### 3.3 SlotRWState Structure
 

@@ -49,9 +49,11 @@ the identity — copying it clones the identity; `--init` on a new directory cre
 
 ```
 <actor_dir>/
-  actor.json        ← actor_name, actor_uid, role, channel, hub_dir,
-  |                     slot_schema, flexzone_schema, validation policy
-  script.py         ← Python callbacks (name referenced from actor.json)
+  actor.json                    ← actor_name, actor_uid, roles config, hub_dir
+  roles/
+    <role_name>/                ← one subdirectory per role
+      script/                   ← Python package (always module name "script")
+        __init__.py             ← callbacks: on_init / on_iteration / on_stop
   logs/
   run/
     actor.pid
@@ -85,9 +87,9 @@ which is too fast to be safe for password-derived keys (brute-forceable at GB/s)
 ```
 key[32] = crypto_pwhash(
     password,
-    salt = hub_uid,            ← hub_uid serves as the salt
-    OPSLIMIT_INTERACTIVE,      ← tunable time cost (~0.5s on reference hardware)
-    MEMLIMIT_INTERACTIVE       ← ~64 MB memory cost; GPU-resistant
+    salt = BLAKE2b-16(hub_uid),  ← hub_uid hashed to 16 bytes via BLAKE2b (kVaultSaltBytes)
+    OPSLIMIT_INTERACTIVE,        ← tunable time cost (~0.5s on reference hardware)
+    MEMLIMIT_INTERACTIVE         ← ~64 MB memory cost; GPU-resistant
 )
 ```
 
@@ -792,6 +794,40 @@ identity chain (hub → producer → consumers) from the SHM alone.
       types), not header metadata identity fields
 - [x] Tests: `ProducerChannelIdentity` + `ConsumerIdentityInShm` — 426/426 tests pass (2026-02-21)
 
+### Phase 6 — ActorVault: encrypted actor keypair store
+
+- [x] `PYLABHUB_VAULT_HIGH_SECURITY` CMake option
+  ✅ DONE 2026-02-28 — `cmake/ToplevelOptions.cmake`: selects Argon2id SENSITIVE (1 GB, ~5s) vs
+  INTERACTIVE (64 MB, ~100ms); PRIVATE compile definition on `pylabhub-utils`. Vaults incompatible
+  between settings (re-keygen required). Printed as CMake STATUS message.
+- [x] `vault_crypto.hpp/.cpp` — shared internal crypto layer
+  ✅ DONE 2026-02-28 — `src/utils/service/vault_crypto.hpp` + `src/utils/service/vault_crypto.cpp`:
+  `vault_require_sodium()`, `vault_derive_key(password, uid)` (Argon2id + BLAKE2b-16 salt),
+  `vault_write(path, json_payload, password, uid)`, `vault_read(path, password, uid)`.
+  Used by both `HubVault` and `ActorVault`. KDF constants selected at compile time.
+- [x] `HubVault` — refactored to use shared `vault_crypto` layer
+  ✅ DONE 2026-02-28 — `src/utils/service/hub_vault.cpp` rewritten: all inline crypto helpers
+  removed; `create()` + `open()` delegate to `detail::vault_write` / `detail::vault_read`.
+  Public API unchanged.
+- [x] `ActorVault` — new encrypted actor keypair store
+  ✅ DONE 2026-02-28 — `src/include/utils/actor_vault.hpp` + `src/utils/service/actor_vault.cpp`:
+  `ActorVault::create(vault_path, actor_uid, password)` — generates CurveZMQ keypair, creates parent
+  dirs, calls `detail::vault_write`; `ActorVault::open(...)` — `detail::vault_read`, parse JSON,
+  validate 40-char Z85 keys; pimpl, move-only; payload: `{"actor_uid","public_key","secret_key"}`.
+- [x] `actor_config.cpp` — `load_keypair(actor_uid, password)` uses `ActorVault::open()`
+  ✅ DONE 2026-02-28 — `auth.password` field removed from `ActorAuthConfig` (was dead code);
+  `load_keypair` signature extended with `actor_uid` + `password` params; file-not-found →
+  LOGGER_WARN + ephemeral fallback; wrong password → `std::runtime_error` (fatal).
+- [x] `actor_main.cpp` — `--keygen` creates encrypted vault; runtime prompts for password
+  ✅ DONE 2026-02-28 — `--keygen` block rewritten: `get_actor_password()` checks
+  `PYLABHUB_ACTOR_PASSWORD` env var or calls `getpass()` with confirmation; calls
+  `ActorVault::create()`; prints public key to stdout. Runtime path: prompts for vault password
+  before `load_keypair()`. `do_init()` template: `auth.password` removed; only `auth.keyfile`.
+- [x] Actor CLI tests updated for vault format
+  ✅ DONE 2026-02-28 — `test_actor_cli.cpp`: uses `ActorVault::open()` to verify vault contents;
+  `::setenv("PYLABHUB_ACTOR_PASSWORD", "", 1)` before spawning `WorkerProcess` for all keygen tests;
+  stdout check updated to "Actor vault written to". All 12 CLI tests pass. 585/585 total.
+
 ### Phase 5 — HubConfig directory model migration
 
 - [x] `HubConfig::hub_uid()` — getter (already wired; reads from hub.json["hub"]["uid"])
@@ -838,6 +874,17 @@ identity chain (hub → producer → consumers) from the SHM alone.
 ---
 
 ## Recent Completions
+
+### 2026-02-28 (Phase 6 complete — ActorVault)
+- ActorVault fully implemented: encrypted actor keypair store matching HubVault design.
+  - `vault_crypto.hpp/.cpp`: shared Argon2id+XSalsa20-Poly1305 internal layer; eliminates crypto duplication
+  - `hub_vault.cpp` refactored to use shared layer (public API unchanged)
+  - `ActorVault::create()` + `ActorVault::open()`: vault_path + actor_uid + password; 40-char Z85 keys
+  - `auth.password` field removed from `actor.json` (was dead code); `load_keypair` takes explicit password arg
+  - `actor_main.cpp` `--keygen`: prompts with confirmation, creates encrypted vault, prints public key
+  - Runtime actor startup prompts for vault password before `load_keypair()`
+  - `PYLABHUB_VAULT_HIGH_SECURITY` CMake option: INTERACTIVE (default, 64 MB/~100ms) vs SENSITIVE (1 GB/~5s)
+  - All 12 ActorCli tests pass with vault format; 585/585 total tests pass
 
 ### 2026-02-27 (Phase 5 complete + Deployment Guide)
 - Phase 5 complete: full HubConfig directory model migration.

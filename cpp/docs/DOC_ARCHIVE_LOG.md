@@ -6,6 +6,26 @@
 
 ## Archive batches
 
+### 2026-02-28 (Actor Framework HEP Promotion)
+
+Promoted `docs/tech_draft/ACTOR_DESIGN.md` to canonical HEP status. Created
+**HEP-CORE-0014** (Actor Framework Design) as the authoritative developer-facing spec
+for the actor framework API. Trimmed HEP-CORE-0010 §4 and §8 to cross-references.
+
+**Archived to `docs/archive/transient-2026-02-28/`:**
+
+| Archived | Reason |
+|---|---|
+| `tech_draft/ACTOR_DESIGN.md` | Promoted to HEP-CORE-0014; §11 Gap Analysis dropped (stale) |
+
+**New HEP:** `docs/HEP/HEP-CORE-0014-Actor-Framework-Design.md` — covers config format,
+Python script interface, C++ class architecture, auth/security, schema validation, and
+failure model. HEP-CORE-0010 retains threading internals; §4 and §8 now cross-reference 0014.
+
+See **`docs/archive/transient-2026-02-28/README.md`** for full merge map.
+
+---
+
 ### 2026-02-27 (Code Review Archive — post P1–P8 restructure + security phases)
 
 End-of-sprint cleanup after `src/utils/` subdirectory restructure (P1–P8 source splits)
