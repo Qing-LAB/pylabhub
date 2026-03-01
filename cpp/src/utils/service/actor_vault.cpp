@@ -72,6 +72,8 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
         throw std::runtime_error("ActorVault: zmq_curve_keypair failed");
     const std::string pub_str(pub.data(), kZ85KeyLen);
     const std::string sec_str(sec.data(), kZ85KeyLen);
+    sodium_memzero(sec.data(), sec.size()); // zero secret key stack buffer after copying to sec_str
+    sodium_memzero(pub.data(), pub.size()); // zero public key stack buffer after copying to pub_str
 
     // Ensure parent directory exists.
     if (vault_path.has_parent_path())

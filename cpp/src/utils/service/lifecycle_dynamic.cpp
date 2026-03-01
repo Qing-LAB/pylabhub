@@ -588,6 +588,9 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
             m_marked_for_unload.erase(node_name);
 
             // Clean up this node's entry in each dependency's `dependents` list.
+            // NOTE: m_module_graph.erase(module_iterator) at line 605 runs AFTER this loop
+            // completes, so all `n->name` dereferences inside the lambda are valid — the
+            // removed node's map entry still exists for the duration of this loop.
             if (module_iterator != m_module_graph.end())
             {
                 for (const auto &dep_name : deps_copy)

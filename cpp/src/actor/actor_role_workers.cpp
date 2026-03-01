@@ -151,9 +151,13 @@ bool ProducerRoleWorker::start()
 
         if (schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4K))
         {
+            // Pass the raw schema size; effective_logical_unit_size() rounds it up to
+            // the nearest 64-byte cache-line boundary automatically.
+            // physical_page_size stays Size4K — it controls OS allocation granularity.
+            // Use 1 (not 0) when schema_slot_size_ is zero so that effective_logical_unit_size()
+            // does not fall back to the "use physical_page_size" default (0 is the sentinel).
             opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size4K;
-            opts.shm_config.logical_unit_size  =
-                static_cast<size_t>(hub::DataBlockPageSize::Size4K);
+            opts.shm_config.logical_unit_size  = (schema_slot_size_ == 0) ? 1 : schema_slot_size_;
         }
         else if (schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4M))
         {
@@ -216,6 +220,8 @@ bool ProducerRoleWorker::start()
     if (!producer_->start_embedded())
     {
         LOGGER_ERROR("[actor/{}] producer->start_embedded() failed", role_name_);
+        // Cleanup handled by RAII: producer_ optional<Producer> is destroyed on scope
+        // exit, which calls Producer's destructor and releases all ZMQ resources.
         return false;
     }
 
@@ -675,7 +681,8 @@ py::object ConsumerRoleWorker::make_slot_view_readonly_(const void *data,
         return py::bytes(reinterpret_cast<const char *>(data), size);
 
     if (slot_spec_.exposure == SlotExposure::Ctypes)
-        return slot_type_.attr("from_buffer")(mv);
+        // from_buffer_copy() accepts read-only memoryviews; from_buffer() requires writable
+        return slot_type_.attr("from_buffer_copy")(mv);
 
     py::module_ np  = py::module_::import("numpy");
     py::object  arr = np.attr("frombuffer")(mv, slot_type_);
@@ -747,6 +754,8 @@ bool ConsumerRoleWorker::start()
     }
 
     auto maybe_consumer = hub::Consumer::connect(messenger_, opts);
+    // connect() returns empty optional on failure (broker reject / timeout).
+    // Move into consumer_ only after confirming has_value() to avoid UB.
     if (!maybe_consumer.has_value())
     {
         LOGGER_ERROR("[actor/{}] Failed to connect consumer to channel '{}'",
@@ -809,7 +818,8 @@ bool ConsumerRoleWorker::start()
                         /*readonly=*/true);
 
                     if (fz_spec_.exposure == SlotExposure::Ctypes)
-                        fz_inst_ = fz_type_.attr("from_buffer")(fz_mv_);
+                        // from_buffer_copy() accepts read-only memoryviews; from_buffer() requires writable
+                        fz_inst_ = fz_type_.attr("from_buffer_copy")(fz_mv_);
                     else
                     {
                         py::module_ np = py::module_::import("numpy");

@@ -414,7 +414,8 @@ HubConfig& HubConfig::get_instance()
     return instance;
 }
 
-// Called by the lifecycle startup function.
+// Called once during lifecycle init, before any worker threads are started.
+// After init completes the config is read-only; no locking is needed on accessors.
 void HubConfig::load_(const fs::path& override_path)
 {
     pImpl->load(override_path);

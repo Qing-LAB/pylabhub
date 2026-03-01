@@ -204,8 +204,11 @@ struct SchemaInfo
     size_t struct_size = 0;                 ///< sizeof(T) for validation
 
     /**
-     * @brief Computes the BLAKE2b-256 hash of the BLDS string.
-     * @details Uses libsodium via crypto_utils module.
+     * @brief Computes the BLAKE2b-256 hash of the canonical BLDS string.
+     * @details The hash is derived purely from the BLDS string (field-name:type pairs,
+     *          optionally with @offset:size for layout validation). No RTTI or typeid()
+     *          is used — the hash is deterministic and platform-independent.
+     *          Uses libsodium via crypto_utils module.
      */
     void compute_hash()
     {

@@ -11,6 +11,11 @@
 
 ---
 
+> **[UNIMPLEMENTED — FUTURE WORK]** This HEP describes a planned feature with no corresponding
+> implementation. Do not reference this document for existing functionality.
+
+---
+
 ## 1. Motivation
 
 The current actor framework provides two role kinds:

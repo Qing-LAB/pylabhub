@@ -170,7 +170,9 @@ struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
     std::atomic<uint64_t> write_generation; // Incremented on each commit
 
     // === Padding ===
-    uint8_t padding[24]; // Pad to 48 bytes
+    uint8_t padding[24]; // Cache-line padding to reach 48 bytes; not part of any hash or
+                         // synchronization logic; value is never read or written by any
+                         // protocol code — this is structural padding only.
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -220,7 +222,7 @@ struct alignas(4096) SharedMemoryHeader
     DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
     ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
     uint32_t physical_page_size;          // Physical page size (bytes); allocation granularity
-    uint32_t logical_unit_size;           // Logical slot size (bytes); always >= physical_page_size (legacy 0 = use physical)
+    uint32_t logical_unit_size;           // Effective per-slot stride (bytes); rounded to 64-byte cache-line boundary at creation; never 0 in header
     uint32_t ring_buffer_capacity;        // Number of slots
     uint32_t flexible_zone_size;    // Total TABLE 1 size (u32: 4 GB max is sufficient for metadata)
     uint8_t checksum_type;          // ChecksumType; always present (BLAKE2b)

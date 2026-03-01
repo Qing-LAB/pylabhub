@@ -15,11 +15,11 @@
  * - Testable: Can inject NoBackoff for fast unit tests
  *
  * Usage Scenarios:
- * - SharedSpinLock: ExponentialBackoff (contention rare, yield quickly)
- * - InProcessSpinState: ExponentialBackoff (token-mode spin loops)
+ * - SharedSpinLock: ThreePhaseBackoff (contention rare, yield quickly)
+ * - InProcessSpinState: ThreePhaseBackoff (token-mode spin loops)
  * - SlotRWState / data_block: backoff() (writer/reader acquisition)
- * - FileLock: ExponentialBackoff (I/O latency varies)
- * - MessageHub: ExponentialBackoff (network reconnect)
+ * - FileLock: ThreePhaseBackoff (I/O latency varies)
+ * - MessageHub: ThreePhaseBackoff (network reconnect)
  * - Unit Tests: NoBackoff (fast test execution)
  *
  * @see docs/UTILS_FUNDAMENTAL_FACILITIES.md — reuse and separation of backoff, state, guards.
@@ -45,10 +45,6 @@ namespace pylabhub::utils
  * Phase 2 (iterations 4-9): 1us sleep - transition to light sleep
  * Phase 3 (iterations 10+): linear sleep (N*10us) - reduce bus traffic
  *
- * Note: Despite the struct name, Phase 3 grows linearly (not exponentially).
- * The name is historical and retained for API compatibility — do not rename
- * without updating all callsites (SharedSpinLock, FileLock, MessageHub, etc.).
- *
  * Total backoff time at iteration N:
  * - N=0-3:  ~0us (just yield)
  * - N=4-9:  ~1us per iteration = 6us total
@@ -63,14 +59,14 @@ namespace pylabhub::utils
  * - FileLock (POSIX advisory locks)
  *
  * @example
- * ExponentialBackoff backoff;
+ * ThreePhaseBackoff backoff;
  * int iteration = 0;
  * while (!lock.try_acquire()) {
  *     backoff(iteration++);
  *     if (iteration > 1000) { timeout(); break; }
  * }
  */
-struct ExponentialBackoff
+struct ThreePhaseBackoff
 {
     /**
      * @brief Performs backoff based on iteration count.
@@ -267,7 +263,7 @@ struct AggressiveBackoff
  */
 inline void backoff(int iteration) noexcept
 {
-    ExponentialBackoff{}(iteration);
+    ThreePhaseBackoff{}(iteration);
 }
 
 } // namespace pylabhub::utils

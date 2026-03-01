@@ -205,6 +205,11 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.is_dynamic = true;
     node.is_persistent = def.is_persistent;
 
+    // `&node` is a pointer to the newly-inserted map value. std::map provides
+    // reference/pointer stability: insertions do not invalidate references to
+    // existing elements, and `node` itself was just inserted above. The pointer
+    // remains valid until the element is explicitly erased (see unregister path
+    // in lifecycle_dynamic.cpp::processOneUnloadInThread).
     for (const auto &dep_name : def.dependencies)
     {
         auto iter = m_module_graph.find(dep_name);

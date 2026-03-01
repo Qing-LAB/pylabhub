@@ -325,6 +325,65 @@ int slot_acquire_timeout_returns_error()
         "slot_acquire_timeout_returns_error", logger_module(), crypto_module(), hub_module());
 }
 
+int sub_page_logical_size_round_trip()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("SubPageRoundTrip");
+            DataBlockConfig config{};
+            config.policy               = DataBlockPolicy::RingBuffer;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+            config.shared_secret        = 60010;
+            config.ring_buffer_capacity = 128;
+            config.physical_page_size   = DataBlockPageSize::Size4K;
+            config.logical_unit_size    = 64; // sub-page: 64 B slots, 4 K pages
+            config.checksum_policy      = ChecksumPolicy::None;
+
+            auto producer = create_datablock_producer_impl(channel,
+                                                           DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+
+            auto consumer = find_datablock_consumer_impl(channel, config.shared_secret,
+                                                         &config, nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            // Write a 32-byte sentinel pattern into the 64-byte slot.
+            const char kPayload[32] = {
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+                0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
+
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+
+            auto wspan = write_handle->buffer_span();
+            ASSERT_GE(wspan.size_bytes(), sizeof(kPayload));
+            EXPECT_EQ(wspan.size_bytes(), 64u) << "slot buffer must equal logical_unit_size";
+
+            std::memcpy(wspan.data(), kPayload, sizeof(kPayload));
+            EXPECT_TRUE(write_handle->commit(sizeof(kPayload)));
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+            auto read_handle = consumer->acquire_consume_slot(5000);
+            ASSERT_NE(read_handle, nullptr);
+
+            auto rspan = read_handle->buffer_span();
+            ASSERT_GE(rspan.size_bytes(), sizeof(kPayload));
+            EXPECT_EQ(0, std::memcmp(rspan.data(), kPayload, sizeof(kPayload)))
+                << "data read back must match data written";
+
+            EXPECT_TRUE(consumer->release_consume_slot(*read_handle));
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "sub_page_logical_size_round_trip", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::error_handling
 
 namespace
@@ -362,6 +421,8 @@ struct ErrorHandlingWorkerRegistrar
                     return double_release_write_slot_idempotent();
                 if (scenario == "slot_acquire_timeout_returns_error")
                     return slot_acquire_timeout_returns_error();
+                if (scenario == "sub_page_logical_size_round_trip")
+                    return sub_page_logical_size_round_trip();
                 fmt::print(stderr, "ERROR: Unknown error_handling scenario '{}'\n", scenario);
                 return 1;
             });

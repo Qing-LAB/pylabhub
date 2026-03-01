@@ -39,6 +39,29 @@ static std::mutex             g_shutdown_cb_mu;
 
 struct PythonInterpreter::Impl
 {
+    // Shared reset implementation (no lock, no GIL acquire). Called by both reset_namespace()
+    // (which holds exec_mu and the GIL) and reset_namespace_unlocked() (exec_mu already held
+    // by exec(); GIL re-acquired by the caller before calling this).
+    static void do_reset(py::dict &ns_dict)
+    {
+        auto to_keep = py::set();
+        to_keep.add(py::str("__builtins__"));
+        to_keep.add(py::str("__name__"));
+        to_keep.add(py::str("__doc__"));
+        to_keep.add(py::str("__package__"));
+        to_keep.add(py::str("__spec__"));
+        to_keep.add(py::str("pylabhub"));
+
+        py::list keys_to_delete;
+        for (auto item : ns_dict)
+            if (!to_keep.contains(item.first))
+                keys_to_delete.append(item.first);
+
+        for (auto k : keys_to_delete)
+            PyDict_DelItem(ns_dict.ptr(), k.ptr());
+
+        LOGGER_INFO("PythonInterpreter: namespace reset");
+    }
     // Persistent execution namespace — shared across all exec() calls.
     // NOTE: py::object (not py::dict) — py::dict eagerly calls PyDict_New() in its
     // default constructor, which crashes if constructed before Py_Initialize() runs.
@@ -182,6 +205,15 @@ PyExecResult PythonInterpreter::exec(const std::string& code)
         sys.attr("stdout") = buf;
         sys.attr("stderr") = buf;
 
+        // Guard: restore stdout/stderr even if py::exec() throws a non-Python exception
+        // (std::bad_alloc, pybind11::cast_error, etc.) that the inner catch doesn't handle.
+        // Normal path dismisses this guard and restores explicitly below so output can be
+        // captured from `buf` before the restore happens.
+        auto restore_guard = pylabhub::basics::make_scope_guard([&]() noexcept {
+            try { sys.attr("stdout") = old_out; sys.attr("stderr") = old_err; }
+            catch (...) {}
+        });
+
         try
         {
             py::exec(code, pImpl->ns);
@@ -193,6 +225,7 @@ PyExecResult PythonInterpreter::exec(const std::string& code)
             result.error   = e.what();
         }
 
+        restore_guard.dismiss(); // normal path: dismiss guard, restore inline below
         sys.attr("stdout") = old_out;
         sys.attr("stderr") = old_err;
         result.output = buf.attr("getvalue")().cast<std::string>();
@@ -213,27 +246,23 @@ void PythonInterpreter::reset_namespace()
     std::lock_guard exec_lock(pImpl->exec_mu);
     py::gil_scoped_acquire gil;
 
-    // Clear user-defined names; preserve builtins and the pylabhub module.
-    auto to_keep = py::set();
-    to_keep.add(py::str("__builtins__"));
-    to_keep.add(py::str("__name__"));
-    to_keep.add(py::str("__doc__"));
-    to_keep.add(py::str("__package__"));
-    to_keep.add(py::str("__spec__"));
-    to_keep.add(py::str("pylabhub"));
-
     // ns is stored as py::object; borrow as py::dict for dict-specific iteration.
     auto ns_dict = py::reinterpret_borrow<py::dict>(pImpl->ns.ptr());
+    Impl::do_reset(ns_dict);
+}
 
-    py::list keys_to_delete;
-    for (auto item : ns_dict)
-        if (!to_keep.contains(item.first))
-            keys_to_delete.append(item.first);
+void PythonInterpreter::reset_namespace_unlocked()
+{
+    if (!pImpl->ready_.load(std::memory_order_acquire))
+        return;
 
-    for (auto k : keys_to_delete)
-        PyDict_DelItem(ns_dict.ptr(), k.ptr());
+    // exec_mu is already held by the calling exec() invocation.
+    // The pybind11 binding releases the GIL via py::gil_scoped_release before calling
+    // this function — re-acquire it here for the Python dict operations.
+    py::gil_scoped_acquire gil;
 
-    LOGGER_INFO("PythonInterpreter: namespace reset");
+    auto ns_dict = py::reinterpret_borrow<py::dict>(pImpl->ns.ptr());
+    Impl::do_reset(ns_dict);
 }
 
 // ---------------------------------------------------------------------------

@@ -212,8 +212,13 @@ Example::
 
     m.def("reset", []()
     {
+        // Use the unlocked variant: exec() holds exec_mu when it runs py::exec(),
+        // and this binding is called from within that py::exec() invocation.
+        // Calling the locked reset_namespace() here would re-enter exec_mu on the
+        // same thread → permanent deadlock. reset_namespace_unlocked() assumes
+        // exec_mu is already held by the caller and only acquires the GIL.
         py::gil_scoped_release release;
-        pylabhub::PythonInterpreter::get_instance().reset_namespace();
+        pylabhub::PythonInterpreter::get_instance().reset_namespace_unlocked();
     },
     R"doc(
 Reset the interpreter namespace, clearing all user-defined variables.

@@ -26,5 +26,7 @@ int read_bounds_return_false();
 int double_release_write_slot_idempotent();
 /** ctx.slots(timeout) yields a timeout error when no slot is available. */
 int slot_acquire_timeout_returns_error();
+/** Sub-page logical_unit_size (64 B) with 4 K physical page: write/read round-trip. */
+int sub_page_logical_size_round_trip();
 
 } // namespace pylabhub::tests::worker::error_handling

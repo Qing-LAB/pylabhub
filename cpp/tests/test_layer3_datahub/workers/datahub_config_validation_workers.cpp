@@ -158,6 +158,39 @@ int valid_config_creates_successfully()
         "valid_config_creates_successfully", logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// 6. sub_cache_line_logical_size_rounds_up
+// ============================================================================
+
+int sub_cache_line_logical_size_rounds_up()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("CfgSubCacheLine");
+
+            DataBlockConfig cfg = make_valid_config(73006);
+            // 48 is not a multiple of 64.  The library silently rounds up to 64.
+            cfg.logical_unit_size = 48;
+
+            auto producer = create_datablock_producer_impl(channel, cfg.policy,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr)
+                << "create_datablock_producer_impl must succeed: library rounds up logical_unit_size";
+
+            // Verify the slot buffer is 64 bytes (rounded from 48).
+            auto write_handle = producer->acquire_write_slot(5000);
+            ASSERT_NE(write_handle, nullptr);
+            EXPECT_EQ(write_handle->buffer_span().size_bytes(), 64u)
+                << "slot buffer must be rounded up from 48 to the next 64-byte boundary (64)";
+            EXPECT_TRUE(producer->release_write_slot(*write_handle));
+
+            producer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "sub_cache_line_logical_size_rounds_up", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::config_validation
 
 // ============================================================================
@@ -192,6 +225,8 @@ struct ConfigValidationWorkerRegistrar
                     return ring_buffer_capacity_zero_throws();
                 if (scenario == "valid_config_creates_successfully")
                     return valid_config_creates_successfully();
+                if (scenario == "sub_cache_line_logical_size_rounds_up")
+                    return sub_cache_line_logical_size_rounds_up();
                 fmt::print(stderr, "ERROR: Unknown config_validation scenario '{}'\n", scenario);
                 return 1;
             });
