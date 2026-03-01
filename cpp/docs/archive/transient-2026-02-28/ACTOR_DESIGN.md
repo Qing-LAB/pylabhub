@@ -744,7 +744,21 @@ public:
 ZMQ context remains process-wide via `GetZMQContextModule()`. Only the Messenger
 lifecycle (singleton) is excluded from the actor's lifecycle list.
 
-### 4.4 Module-convention callback resolution
+### 4.4 ActorScriptHost — Python Interpreter Ownership
+
+> **Authoritative reference:** **HEP-CORE-0010 §3.7** contains the full `ActorScriptHost`
+> specification: class interface, interpreter thread lifecycle diagram, GIL handoff sequence,
+> `PyConfig.install_signal_handlers=0` rationale, and shutdown paths.
+>
+> **HEP-CORE-0011** defines the abstract `ScriptHost` / `PythonScriptHost` framework that
+> `ActorScriptHost` inherits.
+
+Summary: `ActorScriptHost` (`src/actor/actor_script_host.hpp/.cpp`) owns the CPython
+interpreter on a dedicated interpreter thread. `actor_main.cpp` calls `startup_()` which
+blocks until scripts are loaded and roles started, then waits on `g_shutdown`. On
+`SIGINT`/`SIGTERM` or `api.stop()`, `shutdown_()` joins the interpreter thread cleanly.
+
+### 4.5 Module-Convention Callback Resolution
 
 There is no dispatch table. `ActorHost::load_script()` imports the configured Python module
 via `importlib` with a synthetic alias, then passes the `py::module_` directly to each worker

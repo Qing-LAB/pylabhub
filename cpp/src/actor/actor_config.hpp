@@ -179,29 +179,32 @@ struct ValidationPolicy
  * @struct ActorAuthConfig
  * @brief Optional NaCl keypair auth for actor identity on ZMQ connections.
  *
- * When keyfile is non-empty, the actor uses CurveZMQ CURVE client mode for
- * all broker connections. The private key is protected by password.
- * "env:VAR" in the password field reads from the named environment variable.
+ * When keyfile is non-empty, the actor vault is decrypted at startup using the
+ * password provided interactively or via PYLABHUB_ACTOR_PASSWORD env var.
+ * No password is stored in any config file.
  */
 struct ActorAuthConfig
 {
-    std::string keyfile;   ///< Path to NaCl keypair file; empty = no CURVE auth
-    std::string password;  ///< Passphrase; "env:VAR" reads $VAR at startup
+    std::string keyfile;  ///< Path to encrypted actor vault file; empty = no CURVE auth
 
-    // Resolved at runtime by load_keypair() — never parsed from the main JSON config:
+    // Resolved at runtime by load_keypair() — never parsed from JSON config:
     std::string client_pubkey;  ///< Z85 CURVE25519 public key (40 chars); empty = no client auth
-    std::string client_seckey;  ///< Z85 CURVE25519 secret key (40 chars); never stored in JSON
+    std::string client_seckey;  ///< Z85 CURVE25519 secret key (40 chars); never stored on disk
 
     /**
-     * @brief Load public and secret keys from the keyfile JSON into client_pubkey / client_seckey.
+     * @brief Decrypt the vault at keyfile and populate client_pubkey / client_seckey.
      *
-     * No-op if keyfile is empty. Logs LOGGER_WARN and returns false on any error
-     * (file not found, malformed JSON, wrong key length). Must be called after the
-     * Logger lifecycle module is initialized.
+     * No-op if keyfile is empty (ephemeral CURVE identity).
+     * Logs LOGGER_WARN and returns false if the vault file does not exist.
+     * Throws std::runtime_error (fatal) if the file exists but decryption fails
+     * (wrong password or corrupted vault).
+     * Must be called after the Logger lifecycle module is initialized.
      *
-     * @return true if keys were loaded successfully, false otherwise.
+     * @param actor_uid  Actor UID — used as Argon2id KDF domain separator.
+     * @param password   Vault password (already resolved from env or prompt by caller).
+     * @return true if keys were loaded, false if keyfile is absent (no CURVE auth).
      */
-    bool load_keypair();
+    bool load_keypair(const std::string &actor_uid, const std::string &password);
 };
 
 // ============================================================================
