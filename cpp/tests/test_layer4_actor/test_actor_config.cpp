@@ -374,8 +374,8 @@ TEST(ActorConfigValidation, DefaultPolicies)
     const auto &v = ActorConfig::from_json_file(f.path()).roles.at("out").validation;
     EXPECT_EQ(v.slot_checksum,     ValidationPolicy::Checksum::Update);
     EXPECT_EQ(v.flexzone_checksum, ValidationPolicy::Checksum::Update);
-    EXPECT_EQ(v.on_checksum_fail,  ValidationPolicy::OnFail::Skip);
-    EXPECT_EQ(v.on_python_error,   ValidationPolicy::OnPyError::Continue);
+    EXPECT_TRUE(v.skip_on_validation_error);   // "skip" = true (discard+warn)
+    EXPECT_FALSE(v.stop_on_python_error);      // "continue" = false (log+proceed)
 }
 
 TEST(ActorConfigValidation, AllFieldsParsed)
@@ -390,8 +390,8 @@ TEST(ActorConfigValidation, AllFieldsParsed)
     const auto &v = ActorConfig::from_json_file(f.path()).roles.at("out").validation;
     EXPECT_EQ(v.slot_checksum,     ValidationPolicy::Checksum::Enforce);
     EXPECT_EQ(v.flexzone_checksum, ValidationPolicy::Checksum::None);
-    EXPECT_EQ(v.on_checksum_fail,  ValidationPolicy::OnFail::Pass);
-    EXPECT_EQ(v.on_python_error,   ValidationPolicy::OnPyError::Stop);
+    EXPECT_FALSE(v.skip_on_validation_error);  // "pass" = false (call handler)
+    EXPECT_TRUE(v.stop_on_python_error);       // "stop" = true (log+stop actor)
 }
 
 TEST(ActorConfigValidation, ChecksumNoneRoundTrip)
@@ -639,4 +639,44 @@ TEST(ActorConfigPerRoleScript, MultiRoleEachHasOwnScript)
     // Paths are distinct — each role loads an isolated module.
     EXPECT_NE(cfg.roles.at("raw_out").script_base_dir,
               cfg.roles.at("cfg_in").script_base_dir);
+}
+
+// ============================================================================
+// script.type field parsing (HEP-CORE-0011 §7 — script subdir layout)
+// ============================================================================
+
+TEST(ActorConfigScriptType, DefaultIsPython)
+{
+    // When "type" is absent from "script", default is "python".
+    TmpJsonFile f(make_producer_json(
+        R"("script": {"module": "script", "path": "./roles/out"})"));
+    const auto cfg = ActorConfig::from_json_file(f.path());
+    EXPECT_EQ(cfg.roles.at("out").script_type, "python");
+}
+
+TEST(ActorConfigScriptType, ExplicitPython)
+{
+    TmpJsonFile f(make_producer_json(
+        R"("script": {"type": "python", "module": "script", "path": "./roles/out"})"));
+    const auto cfg = ActorConfig::from_json_file(f.path());
+    EXPECT_EQ(cfg.roles.at("out").script_type,     "python");
+    EXPECT_EQ(cfg.roles.at("out").script_module,   "script");
+    EXPECT_EQ(cfg.roles.at("out").script_base_dir, "./roles/out");
+}
+
+TEST(ActorConfigScriptType, ExplicitLua)
+{
+    // "lua" is a valid type for future LuaScriptHost support.
+    TmpJsonFile f(make_producer_json(
+        R"("script": {"type": "lua", "module": "script", "path": "./roles/out"})"));
+    const auto cfg = ActorConfig::from_json_file(f.path());
+    EXPECT_EQ(cfg.roles.at("out").script_type, "lua");
+}
+
+TEST(ActorConfigScriptType, AbsentScriptKeyDefaultsToDefaultType)
+{
+    // No "script" key at all → default script_type = "python".
+    TmpJsonFile f(make_producer_json());
+    const auto cfg = ActorConfig::from_json_file(f.path());
+    EXPECT_EQ(cfg.roles.at("out").script_type, "python");
 }

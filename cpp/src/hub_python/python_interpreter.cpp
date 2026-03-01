@@ -1,6 +1,14 @@
 /**
  * @file python_interpreter.cpp
  * @brief PythonInterpreter lifecycle module implementation.
+ *
+ * In the new design the CPython interpreter (`py::scoped_interpreter`) is
+ * owned by `HubScript::hub_thread_fn_()`.  This module is a lifecycle
+ * registration placeholder (startup/shutdown are no-ops) that provides:
+ *   - The persistent `__main__` namespace for `exec()` (set up / torn down
+ *     by `init_namespace_()` / `release_namespace_()` called from hub_thread_)
+ *   - `exec()` for AdminShell (thread-safe, guarded by `ready_` flag)
+ *   - `set_shutdown_callback()` / `request_shutdown()` for `pylabhub.shutdown()`
  */
 #include "python_interpreter.hpp"
 #include "plh_datahub.hpp"
@@ -11,7 +19,6 @@
 
 #include <atomic>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <string>
 
@@ -23,31 +30,6 @@ namespace pylabhub
 // Global module state
 // ---------------------------------------------------------------------------
 
-/**
- * @brief Interpreter lifecycle state.
- *
- * Written at startup/shutdown; readable via is_interpreter_ready() for future
- * exec() guards. Using uint8_t backing so the enum fits in std::atomic<uint8_t>.
- */
-enum class InterpreterReadiness : uint8_t
-{
-    Uninitialized = 0, ///< Before GetLifecycleModule startup fires.
-    Initializing,      ///< Inside startup_() — interpreter starting.
-    Ready,             ///< startup_() complete; exec() may be called.
-    Degraded,          ///< Interpreter up but packages/scripts failed validation.
-    Failed,            ///< Fatal init error; exec() will throw.
-};
-
-static std::atomic<InterpreterReadiness> g_interp_state{InterpreterReadiness::Uninitialized};
-
-/// Internal accessor: true iff the interpreter is fully initialized.
-/// Reserved for future exec() guards — suppress unused-function warning.
-[[maybe_unused]] static bool is_interpreter_ready() noexcept
-{
-    return g_interp_state.load(std::memory_order_acquire)
-               == InterpreterReadiness::Ready;
-}
-
 static std::function<void()> g_shutdown_cb;
 static std::mutex             g_shutdown_cb_mu;
 
@@ -57,21 +39,44 @@ static std::mutex             g_shutdown_cb_mu;
 
 struct PythonInterpreter::Impl
 {
-    // The scoped_interpreter owns Py_Initialize / Py_Finalize.
-    // Must be alive for the entire lifetime of any Python operation.
-    std::unique_ptr<py::scoped_interpreter> guard;
-
     // Persistent execution namespace — shared across all exec() calls.
-    py::dict ns;
+    // NOTE: py::object (not py::dict) — py::dict eagerly calls PyDict_New() in its
+    // default constructor, which crashes if constructed before Py_Initialize() runs.
+    // py::object default-constructs to a null handle (safe).
+    // The real dict is assigned in init_namespace() after Py_Initialize.
+    py::object ns;
 
     // Serialise concurrent exec() callers (GIL serialises Python itself, but
     // we also want to serialise the surrounding StringIO redirect logic).
     std::mutex exec_mu;
 
+    // True between init_namespace() and release_namespace().
+    std::atomic<bool> ready_{false};
+
+    // -----------------------------------------------------------------------
+    // Lifecycle hooks — no-ops; interpreter is owned by HubScript::hub_thread_.
+    // -----------------------------------------------------------------------
+
     void startup()
     {
-        guard = std::make_unique<py::scoped_interpreter>();
+        // Interpreter is now owned by HubScript::hub_thread_fn_().
+        // This function exists only so the LifecycleManager can sequence
+        // AdminShell after PythonInterpreter.
+        LOGGER_INFO("PythonInterpreter: lifecycle startup (interpreter owned by HubScript::hub_thread_)");
+    }
 
+    void shutdown()
+    {
+        LOGGER_INFO("PythonInterpreter: lifecycle shutdown (no-op; interpreter finalized by HubScript)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Namespace management — called from HubScript::hub_thread_fn_()
+    // -----------------------------------------------------------------------
+
+    void init_namespace()
+    {
+        // GIL must be held on entry (called from hub_thread_ with GIL held).
         // Bootstrap the persistent namespace from __main__.
         auto main_mod = py::module_::import("__main__");
         ns = main_mod.attr("__dict__").cast<py::dict>();
@@ -87,18 +92,22 @@ struct PythonInterpreter::Impl
             LOGGER_WARN("PythonInterpreter: could not import 'pylabhub': {}", e.what());
         }
 
-        LOGGER_INFO("PythonInterpreter: interpreter ready (Python {})", Py_GetVersion());
+        // Mark interpreter as ready — exec() callers may proceed.
+        ready_.store(true, std::memory_order_release);
+        LOGGER_INFO("PythonInterpreter: namespace initialized (Python {})", Py_GetVersion());
     }
 
-    void shutdown()
+    void release_namespace()
     {
-        // Release the namespace first (it holds py::object refs; must happen before
-        // Py_Finalize, which is triggered by destroying the scoped_interpreter).
-        {
-            py::gil_scoped_acquire gil;
-            ns = py::dict();
-        }
-        guard.reset(); // calls Py_Finalize
+        // GIL must be held on entry (called from hub_thread_ with GIL held).
+        // Mark interpreter as not ready — exec() will return error immediately.
+        ready_.store(false, std::memory_order_release);
+
+        // Release the namespace dict (holds py::object refs; must happen
+        // before Py_Finalize, which is triggered by hub_thread_'s
+        // scoped_interpreter destructor).
+        ns = py::object(); // null handle; destructor is a no-op
+        LOGGER_INFO("PythonInterpreter: namespace released");
     }
 };
 
@@ -142,8 +151,22 @@ void PythonInterpreter::request_shutdown()
     }
 }
 
+bool PythonInterpreter::is_ready() const noexcept
+{
+    return pImpl->ready_.load(std::memory_order_acquire);
+}
+
 PyExecResult PythonInterpreter::exec(const std::string& code)
 {
+    // Guard: interpreter must be initialized and namespace set up.
+    if (!pImpl->ready_.load(std::memory_order_acquire))
+    {
+        PyExecResult result;
+        result.success = false;
+        result.error   = "Python interpreter not ready (HubScript is still initializing)";
+        return result;
+    }
+
     std::lock_guard exec_lock(pImpl->exec_mu);
     py::gil_scoped_acquire gil;
 
@@ -184,6 +207,9 @@ PyExecResult PythonInterpreter::exec(const std::string& code)
 
 void PythonInterpreter::reset_namespace()
 {
+    if (!pImpl->ready_.load(std::memory_order_acquire))
+        return;
+
     std::lock_guard exec_lock(pImpl->exec_mu);
     py::gil_scoped_acquire gil;
 
@@ -196,23 +222,33 @@ void PythonInterpreter::reset_namespace()
     to_keep.add(py::str("__spec__"));
     to_keep.add(py::str("pylabhub"));
 
+    // ns is stored as py::object; borrow as py::dict for dict-specific iteration.
+    auto ns_dict = py::reinterpret_borrow<py::dict>(pImpl->ns.ptr());
+
     py::list keys_to_delete;
-    for (auto item : pImpl->ns)
+    for (auto item : ns_dict)
         if (!to_keep.contains(item.first))
             keys_to_delete.append(item.first);
 
     for (auto k : keys_to_delete)
-        PyDict_DelItem(pImpl->ns.ptr(), k.ptr());
+        PyDict_DelItem(ns_dict.ptr(), k.ptr());
 
     LOGGER_INFO("PythonInterpreter: namespace reset");
 }
 
 // ---------------------------------------------------------------------------
-// Private startup / shutdown (called by lifecycle hooks)
+// Private startup / shutdown (called by lifecycle hooks — no-ops in new design)
 // ---------------------------------------------------------------------------
 
-void PythonInterpreter::startup_() { pImpl->startup(); }
+void PythonInterpreter::startup_()  { pImpl->startup(); }
 void PythonInterpreter::shutdown_() { pImpl->shutdown(); }
+
+// ---------------------------------------------------------------------------
+// Namespace management wrappers (called by HubScript::hub_thread_fn_())
+// ---------------------------------------------------------------------------
+
+void PythonInterpreter::init_namespace_()    { pImpl->init_namespace(); }
+void PythonInterpreter::release_namespace_() { pImpl->release_namespace(); }
 
 // ---------------------------------------------------------------------------
 // Lifecycle startup / shutdown free functions
@@ -222,14 +258,11 @@ namespace
 {
 void do_python_startup(const char* /*arg*/)
 {
-    g_interp_state.store(InterpreterReadiness::Initializing, std::memory_order_release);
     PythonInterpreter::get_instance().startup_();
-    g_interp_state.store(InterpreterReadiness::Ready, std::memory_order_release);
 }
 
 void do_python_shutdown(const char* /*arg*/)
 {
-    g_interp_state.store(InterpreterReadiness::Uninitialized, std::memory_order_release);
     PythonInterpreter::get_instance().shutdown_();
 }
 } // namespace

@@ -1,19 +1,24 @@
 #pragma once
 /**
  * @file plh_datahub.hpp
- * @brief Layer 3: Data hub modules built on plh_service.
+ * @brief Layer 3 umbrella — full DataHub API (producers, consumers, broker, config).
  *
- * Provides the complete Data Exchange Hub API for all three roles:
- *   - Producer: create_datablock_producer / create_channel (Messenger)
- *   - Consumer: find_datablock_consumer / connect_channel (Messenger)
- *   - Broker:   BrokerService (run the central channel discovery hub)
+ * **What is exposed** (all three hub roles):
+ *   - Client API: DataBlock SHM, Messenger, hub::Producer, hub::Consumer, ChannelHandle
+ *   - Server API: BrokerService, JsonConfig, HubConfig, ChannelAccessPolicy
+ *   - Schema:     schema_blds (BLDS layout validation)
  *
- * Include this single header for full DataBlock, Messenger, ChannelHandle,
- * BrokerService, JsonConfig, and schema validation support.
+ * **Include cost**: nlohmann/json.hpp, plh_service.hpp (lifecycle + logger + filelock + crypto).
+ * Use individual component headers when you need only a subset:
+ *   - DataBlock SHM only:  utils/data_block.hpp
+ *   - Client (actor/script): utils/hub_producer.hpp or utils/hub_consumer.hpp
+ *   - Server (hub admin):  utils/broker_service.hpp + utils/hub_config.hpp
+ *
+ * @note `nlohmann/json.hpp` is not included here directly — it arrives transitively
+ *       via messenger.hpp. Add your own #include <nlohmann/json.hpp> if you need it
+ *       explicitly in a TU that does not include any Messenger/hub headers.
  */
 #include "plh_service.hpp"
-
-#include <nlohmann/json.hpp>
 
 #include "utils/schema_blds.hpp"
 #include "utils/json_config.hpp"

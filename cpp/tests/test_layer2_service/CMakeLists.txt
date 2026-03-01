@@ -368,6 +368,37 @@ gtest_discover_tests(test_layer2_hub_vault
         TIMEOUT 120
 )
 
+# ============================================================================
+# Test: ScriptHost threading model (pure unit test — no lifecycle, no Python)
+# ============================================================================
+
+add_executable(test_layer2_script_host
+    test_script_host.cpp
+)
+
+target_link_libraries(test_layer2_script_host
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_layer2_script_host PRIVATE LOGGER_COMPILE_LEVEL=0)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_script_host)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_script_host
+    SUITE_NAME "Layer2_ScriptHost"
+)
+layer2_require_staged_utils(test_layer2_script_host)
+
+gtest_discover_tests(test_layer2_script_host
+    PROPERTIES
+        LABELS "layer2;service;scripting"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")
@@ -378,6 +409,7 @@ message(STATUS "  - test_layer2_filelock           (multi-process IPC)")
 message(STATUS "  - test_layer2_filelock_singleprocess (pure API)")
 message(STATUS "  - test_layer2_logger             (multi-process)")
 message(STATUS "  - test_layer2_jsonconfig         (multi-process)")
+message(STATUS "  - test_layer2_script_host        (pure unit, ScriptHost threading)")
 
 # SlotRWCoordinator is a pure C API over SlotRWState + SharedMemoryHeader.
 # The dedicated test below exercises it in isolation (no DataBlock / shm),

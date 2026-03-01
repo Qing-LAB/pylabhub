@@ -90,10 +90,10 @@ add_executable(test_layer3_datahub
     # ── Broker service integration tests ─────────────────────────────────────────
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/channel_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/ipc/channel_registry.cpp
 
-    # ── Connection policy enforcement tests (Phase 3) ─────────────────────────
-    test_datahub_connection_policy.cpp
+    # ── Channel access policy enforcement tests (Phase 3) ─────────────────────
+    test_datahub_channel_access_policy.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     test_datahub_broker_consumer.cpp
@@ -118,11 +118,15 @@ add_executable(test_layer3_datahub
     # ── RAII layer stress tests (multi-process, full-capacity, random delays) ─────
     test_datahub_stress_raii.cpp
     workers/datahub_stress_raii_workers.cpp
+
+    # ── HubConfig script-block fields (lifecycle unit tests) ──────────────────
+    test_datahub_hub_config_script.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
     workers
     ${CMAKE_SOURCE_DIR}/src/utils
+    ${CMAKE_SOURCE_DIR}/src/utils/ipc
 )
 
 target_link_libraries(test_layer3_datahub

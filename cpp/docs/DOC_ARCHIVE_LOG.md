@@ -6,6 +6,24 @@
 
 ## Archive batches
 
+### 2026-02-27 (Code Review Archive — post P1–P8 restructure + security phases)
+
+End-of-sprint cleanup after `src/utils/` subdirectory restructure (P1–P8 source splits)
+and HEP-CORE-0002 restructuring. Both active code reviews confirmed complete.
+
+**Archived to `docs/archive/transient-2026-02-27/`:**
+
+| Archived | Reason |
+|---|---|
+| `REVIEW_2026-02-26_data-hub-branch.md` | All P0/P1/P2/P3 items ✅ FIXED or ⚠️ DEFERRED (documented); 550/550 tests |
+| `CODE_REVIEW.md` | All C/H items ✅ FALSE POSITIVE; M items ⚠️ DEFERRED in subtopic TODOs; no ❌ OPEN items |
+
+**Active review table in `TODO_MASTER.md` cleared.**
+
+See **`docs/archive/transient-2026-02-27/README.md`** for full item disposition.
+
+---
+
 ### 2026-02-21 (Doc Consolidation + HEP Consistency Session)
 
 Audited and consolidated todo files, code review docs, and HEP consistency.

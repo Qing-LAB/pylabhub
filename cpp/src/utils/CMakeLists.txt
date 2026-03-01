@@ -16,39 +16,63 @@ message(STATUS "-- start configuring pylabhub::utils dynamic lib...")
 # automatically compiled.
 
 set(UTILS_SOURCES
-  format_tools.cpp
-  debug_info.cpp
-  platform.cpp
-  crypto_utils.cpp
-  lifecycle.cpp
-  file_lock.cpp
-  logger_sinks/sink.cpp
-  logger_sinks/base_file_sink.cpp
-  logger_sinks/rotating_file_sink.cpp
-  logger_sinks/file_sink.cpp
-  logger_sinks/syslog_sink.cpp
-  logger_sinks/event_log_sink.cpp
-  logger.cpp
-  json_config.cpp
-  zmq_context.cpp
-  messenger.cpp
-  channel_handle.cpp
-  broker_service.cpp
-  channel_registry.cpp
-  hub_producer.cpp
-  hub_consumer.cpp
-  hub_config.cpp
-  hub_identity.cpp
-  hub_vault.cpp
-  data_block.cpp
-  data_block_mutex.cpp
-  shared_memory_spinlock.cpp
-  data_block_recovery.cpp
-  slot_diagnostics.cpp
-  slot_recovery.cpp
-  heartbeat_manager.cpp
-  integrity_validator.cpp
-  # Add any new .cpp files for this library to the list above.
+  # --- core: basic utilities (no external deps) ---
+  core/format_tools.cpp
+  core/debug_info.cpp
+  core/platform.cpp
+  core/uuid_utils.cpp
+
+  # --- service: lifecycle, I/O, crypto, secrets ---
+  service/lifecycle.cpp
+  service/lifecycle_topology.cpp
+  service/lifecycle_dynamic.cpp
+  service/file_lock.cpp
+  service/crypto_utils.cpp
+  service/hub_vault.cpp
+
+  # --- logging: async logger + pluggable sinks ---
+  logging/logger.cpp
+  logging/logger_sinks/sink.cpp
+  logging/logger_sinks/base_file_sink.cpp
+  logging/logger_sinks/rotating_file_sink.cpp
+  logging/logger_sinks/file_sink.cpp
+  logging/logger_sinks/syslog_sink.cpp
+  logging/logger_sinks/event_log_sink.cpp
+
+  # --- config: JSON config and hub identity ---
+  config/json_config.cpp
+  config/hub_config.cpp
+
+  # --- shm: shared memory DataBlock layer ---
+  shm/data_block.cpp
+  shm/data_block_slot_ops.cpp
+  shm/data_block_c_api.cpp
+  shm/data_block_schema.cpp
+  shm/data_block_mutex.cpp
+  shm/shared_memory_spinlock.cpp
+  shm/data_block_recovery.cpp
+  shm/slot_diagnostics.cpp
+  shm/slot_recovery.cpp
+  shm/integrity_validator.cpp
+
+  # --- ipc: ZMQ, Messenger, channel registry, broker ---
+  ipc/zmq_context.cpp
+  ipc/messenger.cpp
+  ipc/messenger_protocol.cpp
+  ipc/heartbeat_manager.cpp
+  ipc/channel_handle.cpp
+  ipc/channel_registry.cpp
+  ipc/broker_service.cpp
+
+  # --- hub: high-level Producer/Consumer API ---
+  hub/hub_producer.cpp
+  hub/hub_consumer.cpp
+
+  # --- scripting: abstract ScriptHost base + LuaJIT concrete implementation ---
+  scripting/script_host.cpp
+  scripting/lua_script_host.cpp
+
+  # Add any new .cpp files to the appropriate group above.
 )
 
 # Define the shared library target.
@@ -100,6 +124,8 @@ target_include_directories(pylabhub-utils
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
     $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
     $<INSTALL_INTERFACE:include>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 # Generate version header for C++ access (pylabhub::platform::get_version_*).

@@ -83,6 +83,12 @@ Example::
     },
     "Return the hub name in reverse-domain format (e.g. 'asu.lab.main').");
 
+    m.def("hub_uid", []() -> std::string
+    {
+        return pylabhub::HubConfig::get_instance().hub_uid();
+    },
+    "Return the stable hub UID (format: 'HUB-NAME-HEXSUFFIX').");
+
     m.def("hub_description", []() -> std::string
     {
         return pylabhub::HubConfig::get_instance().hub_description();
@@ -136,14 +142,18 @@ Example::
     {
         const auto& c = pylabhub::HubConfig::get_instance();
         py::dict d;
-        d["root_dir"]           = c.root_dir().string();
-        d["config_dir"]         = c.config_dir().string();
-        d["scripts_python"]     = c.scripts_python_dir().string();
-        d["scripts_lua"]        = c.scripts_lua_dir().string();
-        d["data_dir"]           = c.data_dir().string();
-        d["python_requirements"]= c.python_requirements().string();
-        auto ss = c.python_startup_script();
-        d["python_startup_script"] = ss.empty() ? py::object(py::none()) : py::object(py::str(ss.string()));
+        d["root_dir"]            = c.root_dir().string();
+        d["config_dir"]          = c.config_dir().string();
+        d["scripts_python"]      = c.scripts_python_dir().string();
+        d["scripts_lua"]         = c.scripts_lua_dir().string();
+        d["data_dir"]            = c.data_dir().string();
+        d["python_requirements"] = c.python_requirements().string();
+        const auto& sd = c.hub_script_dir();
+        d["hub_script_dir"] = sd.empty() ? py::object(py::none()) : py::object(py::str(sd.string()));
+        const auto& hd = c.hub_dir();
+        d["log_file"] = hd.empty()
+            ? py::object(py::none())
+            : py::object(py::str((hd / "logs" / "hub.log").string()));
         return d;
     },
     R"doc(

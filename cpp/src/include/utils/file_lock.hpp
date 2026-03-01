@@ -79,9 +79,8 @@
  *     ));
  *
  *     // Attempt to acquire a lock with a 5-second timeout.
- *     pylabhub::utils::FileLock lock(resource,
- *                                 pylabhub::utils::ResourceType::File,
- *                                 std::chrono::seconds(5));
+ *     // is_directory=false (file), blocking=true (wait up to 5 s via timeout overload)
+ *     pylabhub::utils::FileLock lock(resource, false, std::chrono::seconds(5));
  *
  *     if (lock.valid()) {
  *         // ... perform work ...
@@ -106,6 +105,7 @@
 #include <thread>
 
 #include "pylabhub_utils_export.h"
+#include "utils/module_def.hpp"
 
 // Disable warning C4251 on MSVC for the std::unique_ptr Pimpl member.
 #if defined(_MSC_VER)
@@ -116,28 +116,6 @@
 namespace pylabhub::utils
 {
 
-/**
- * @brief Specifies the behavior when trying to acquire a lock that is already held.
- */
-enum class LockMode
-{
-    Blocking,    ///< Wait indefinitely until the lock is acquired.
-    NonBlocking, ///< Return immediately if the lock cannot be acquired.
-};
-
-/**
- * @brief Specifies the type of resource being locked.
- *
- * This is used to generate an unambiguous lock file name, preventing collisions
- * between a lock for a file and a lock for a directory with the same name.
- * - File: `/path/to/resource.txt` -> `/path/to/resource.txt.lock`
- * - Directory: `/path/to/resource/` -> `/path/to/resource.dir.lock`
- */
-enum class ResourceType
-{
-    File,      ///< The lock target is a file.
-    Directory, ///< The lock target is a directory.
-};
 
 // Forward-declare the implementation struct for the Pimpl idiom.
 struct FileLockImpl;
@@ -184,29 +162,28 @@ class PYLABHUB_UTILS_EXPORT FileLock
      *         Returns an empty path on failure.
      */
     static std::filesystem::path get_expected_lock_fullname_for(const std::filesystem::path &path,
-                                                                ResourceType type) noexcept;
+                                                                bool is_directory = false) noexcept;
 
     /**
      * @brief Constructs a FileLock and attempts to acquire the lock.
      *
-     * @param path The path to the file or resource to be locked.
-     * @param type The type of resource (`File` or `Directory`), which determines
-     *             the lock file's naming convention.
-     * @param mode The locking mode (`Blocking` or `NonBlocking`).
+     * @param path         The path to the file or resource to be locked.
+     * @param is_directory True if the target is a directory (uses `.dir.lock` suffix),
+     *                     false (default) for a file (uses `.lock` suffix).
+     * @param blocking     True (default): wait indefinitely. False: return immediately
+     *                     if the lock cannot be acquired.
      */
-    explicit FileLock(const std::filesystem::path &path, ResourceType type,
-                      LockMode mode = LockMode::Blocking) noexcept;
+    explicit FileLock(const std::filesystem::path &path, bool is_directory = false,
+                      bool blocking = true) noexcept;
 
     /**
      * @brief Constructs a FileLock and attempts to acquire the lock within a given time.
      *
-     * @param path The path to the file or resource to be locked.
-     * @param type The type of resource (`File` or `Directory`).
-     * @param timeout The maximum duration to wait for the lock. If the lock is not
-     *                acquired within this time, the constructor returns and `valid()`
-     *                will be false.
+     * @param path         The path to the file or resource to be locked.
+     * @param is_directory True if the target is a directory, false for a file.
+     * @param timeout      Maximum duration to wait. `valid()` will be false on timeout.
      */
-    explicit FileLock(const std::filesystem::path &path, ResourceType type,
+    explicit FileLock(const std::filesystem::path &path, bool is_directory,
                       std::chrono::milliseconds timeout) noexcept;
 
     /**
@@ -217,40 +194,32 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * method returns an `std::optional<FileLock>`, which contains a value only on
      * success.
      *
-     * @param path The path to the resource to be locked.
-     * @param type The type of resource (`File` or `Directory`).
-     * @param mode The locking mode.
-     *             - `LockMode::Blocking` (Default): Waits indefinitely until the
-     *               lock is acquired. Returns `std::nullopt` only on a
-     *               non-recoverable error (e.g., invalid arguments).
-     *             - `LockMode::NonBlocking`: Returns immediately. Returns a
-     *               `FileLock` if acquired, otherwise `std::nullopt`.
+     * @param path         The path to the resource to be locked.
+     * @param is_directory True if locking a directory, false (default) for a file.
+     * @param blocking     True (default): wait indefinitely. False: return `std::nullopt`
+     *                     immediately if the lock is already held.
      * @return An `std::optional<FileLock>` containing a valid lock on success.
      *
      * @code
-     * if (auto lock = FileLock::try_lock(path, ResourceType::File, LockMode::NonBlocking)) {
-     *     // Safely use the lock, which is valid and scoped to this block.
-     *     // lock->get_locked_resource_path()...
-     * } else {
-     *     // Handle lock failure (e.g., already locked by another process).
-     * }
+     * // Non-blocking attempt on a file:
+     * if (auto lock = FileLock::try_lock(path, false, false)) { ... }
      * @endcode
      */
     [[nodiscard]] static std::optional<FileLock>
-    try_lock(const std::filesystem::path &path, ResourceType type,
-             LockMode mode = LockMode::Blocking) noexcept;
+    try_lock(const std::filesystem::path &path, bool is_directory = false,
+             bool blocking = true) noexcept;
 
     /**
      * @brief Attempts to acquire a lock within a given time.
      *
-     * @param path The path to the resource to be locked.
-     * @param type The type of resource (`File` or `Directory`).
-     * @param timeout The maximum duration to wait for the lock.
+     * @param path         The path to the resource to be locked.
+     * @param is_directory True if locking a directory, false for a file.
+     * @param timeout      Maximum duration to wait.
      * @return An `std::optional<FileLock>` containing a valid lock on success,
      *         or `std::nullopt` if the lock was not acquired within the timeout.
      */
     [[nodiscard]] static std::optional<FileLock>
-    try_lock(const std::filesystem::path &path, ResourceType type,
+    try_lock(const std::filesystem::path &path, bool is_directory,
              std::chrono::milliseconds timeout) noexcept;
 
     /**

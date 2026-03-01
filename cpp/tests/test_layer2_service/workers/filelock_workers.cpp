@@ -36,16 +36,16 @@ int test_basic_non_blocking(const std::string &resource_path_str)
             std::filesystem::path resource_path(resource_path_str);
             {
                 // First lock should succeed
-                FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+                FileLock lock(resource_path, /*is_directory=*/false, /*blocking=*/false);
                 ASSERT_TRUE(lock.valid());
                 ASSERT_FALSE(lock.error_code());
 
                 // Second non-blocking lock on the same resource should fail immediately
-                FileLock lock2(resource_path, ResourceType::File, LockMode::NonBlocking);
+                FileLock lock2(resource_path, /*is_directory=*/false, /*blocking=*/false);
                 ASSERT_FALSE(lock2.valid()) << "Second non-blocking lock should fail.";
             }
             // After the first lock is out of scope and released, a new lock should succeed
-            FileLock lock3(resource_path, ResourceType::File, LockMode::NonBlocking);
+            FileLock lock3(resource_path, /*is_directory=*/false, /*blocking=*/false);
             ASSERT_TRUE(lock3.valid());
         },
         "filelock::test_basic_non_blocking", FileLock::GetLifecycleModule(),
@@ -63,7 +63,7 @@ int test_blocking_lock(const std::string &resource_path_str)
 
             // Main thread acquires a blocking lock
             auto main_lock =
-                std::make_unique<FileLock>(resource_path, ResourceType::File, LockMode::Blocking);
+                std::make_unique<FileLock>(resource_path, /*is_directory=*/false);
             ASSERT_TRUE(main_lock->valid());
 
             // Spawn a second thread that will block trying to acquire the same lock
@@ -71,7 +71,7 @@ int test_blocking_lock(const std::string &resource_path_str)
                 [&]()
                 {
                     auto start = std::chrono::steady_clock::now();
-                    FileLock thread_lock(resource_path, ResourceType::File, LockMode::Blocking);
+                    FileLock thread_lock(resource_path, /*is_directory=*/false);
                     auto end = std::chrono::steady_clock::now();
                     if (thread_lock.valid())
                         thread_valid.store(true);
@@ -101,12 +101,12 @@ int test_timed_lock(const std::string &resource_path_str)
             std::filesystem::path resource_path(resource_path_str);
             {
                 // Acquire a lock so the timed lock will fail
-                FileLock main_lock(resource_path, ResourceType::File, LockMode::Blocking);
+                FileLock main_lock(resource_path, /*is_directory=*/false);
                 ASSERT_TRUE(main_lock.valid());
 
                 // Attempt to acquire a timed lock, which should time out
                 auto start = std::chrono::steady_clock::now();
-                FileLock timed_lock_fail(resource_path, ResourceType::File, 100ms);
+                FileLock timed_lock_fail(resource_path, /*is_directory=*/false, 100ms);
                 auto end = std::chrono::steady_clock::now();
 
                 ASSERT_FALSE(timed_lock_fail.valid());
@@ -117,7 +117,7 @@ int test_timed_lock(const std::string &resource_path_str)
             }
 
             // Now that the main lock is released, a timed lock should succeed
-            FileLock timed_lock_succeed(resource_path, ResourceType::File, 100ms);
+            FileLock timed_lock_succeed(resource_path, /*is_directory=*/false, 100ms);
             ASSERT_TRUE(timed_lock_succeed.valid());
         },
         "filelock::test_timed_lock", FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
@@ -132,7 +132,7 @@ int test_move_semantics(const std::string &resource1_str, const std::string &res
             std::filesystem::path resource2(resource2_str);
 
             {
-                FileLock lock1(resource1, ResourceType::File, LockMode::NonBlocking);
+                FileLock lock1(resource1, /*is_directory=*/false, /*blocking=*/false);
                 ASSERT_TRUE(lock1.valid());
                 // Move constructor: lock2 should take ownership
                 FileLock lock2(std::move(lock1));
@@ -142,7 +142,7 @@ int test_move_semantics(const std::string &resource1_str, const std::string &res
 
             // Verify that the lock on resource1 was released
             {
-                FileLock lock1_again(resource1, ResourceType::File, LockMode::NonBlocking);
+                FileLock lock1_again(resource1, /*is_directory=*/false, /*blocking=*/false);
                 ASSERT_TRUE(lock1_again.valid());
             }
         },
@@ -158,13 +158,13 @@ int test_directory_creation(const std::string &base_dir_str)
             std::filesystem::path new_dir(base_dir_str);
             auto resource_to_lock = new_dir / "resource.txt";
             auto actual_lock_file =
-                FileLock::get_expected_lock_fullname_for(resource_to_lock, ResourceType::File);
+                FileLock::get_expected_lock_fullname_for(resource_to_lock, /*is_directory=*/false);
 
             std::filesystem::remove_all(new_dir);
             ASSERT_FALSE(std::filesystem::exists(new_dir));
             {
                 // Acquiring a lock for a resource in a non-existent directory should create it
-                FileLock lock(resource_to_lock, ResourceType::File, LockMode::NonBlocking);
+                FileLock lock(resource_to_lock, /*is_directory=*/false, /*blocking=*/false);
                 ASSERT_TRUE(lock.valid());
                 ASSERT_TRUE(std::filesystem::exists(new_dir));
                 ASSERT_TRUE(std::filesystem::exists(actual_lock_file));
@@ -185,8 +185,8 @@ int test_directory_path_locking(const std::string &base_dir_str)
 
             // Test locking a directory itself, not a file within it
             auto expected_dir_lock_file =
-                FileLock::get_expected_lock_fullname_for(dir_to_lock, ResourceType::Directory);
-            FileLock lock(dir_to_lock, ResourceType::Directory, LockMode::NonBlocking);
+                FileLock::get_expected_lock_fullname_for(dir_to_lock, /*is_directory=*/true);
+            FileLock lock(dir_to_lock, /*is_directory=*/true, /*blocking=*/false);
             ASSERT_TRUE(lock.valid());
             ASSERT_TRUE(std::filesystem::exists(expected_dir_lock_file));
         },
@@ -231,7 +231,7 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
                             start_of_iteration_barrier.arrive_and_wait();
 
                             // Attempt the non-blocking lock exactly once this phase
-                            FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+                            FileLock lock(resource_path, /*is_directory=*/false, /*blocking=*/false);
                             if (lock.valid())
                             {
                                 // Record success for this iteration
@@ -278,7 +278,7 @@ int nonblocking_acquire(const std::string &resource_path_str)
         {
             // This worker is spawned by a test that already holds the lock.
             // The non-blocking acquisition must fail.
-            FileLock lock(resource_path_str, ResourceType::File, LockMode::NonBlocking);
+            FileLock lock(resource_path_str, /*is_directory=*/false, /*blocking=*/false);
             ASSERT_FALSE(lock.valid());
         },
         "filelock::nonblocking_acquire", FileLock::GetLifecycleModule(),
@@ -306,7 +306,7 @@ int contention_log_access(const std::string &resource_path_str, const std::strin
                 // Random sleep to increase contention likelihood at different points
                 std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 20000));
 
-                FileLock filelock(resource_path, ResourceType::File, LockMode::Blocking);
+                FileLock filelock(resource_path, /*is_directory=*/false);
                 ASSERT_TRUE(filelock.valid()) << "Failed to acquire lock, PID: " << pid;
 
                 // Log the timestamp and PID upon acquiring the lock
@@ -344,7 +344,7 @@ int parent_child_block(const std::string &resource_path_str)
             // This worker is spawned by a parent process that holds the lock.
             // This blocking call should wait until the parent releases the lock.
             auto start = std::chrono::steady_clock::now();
-            FileLock lock(resource_path, ResourceType::File, LockMode::Blocking);
+            FileLock lock(resource_path, /*is_directory=*/false);
             auto end = std::chrono::steady_clock::now();
 
             ASSERT_TRUE(lock.valid());
@@ -364,7 +364,7 @@ int try_lock_nonblocking(const std::string &resource_path_str)
             // This worker is spawned by a test that already holds the lock.
             // The non-blocking try_lock must fail and return nullopt.
             auto lock_opt =
-                FileLock::try_lock(resource_path_str, ResourceType::File, LockMode::NonBlocking);
+                FileLock::try_lock(resource_path_str, /*is_directory=*/false, /*blocking=*/false);
             ASSERT_FALSE(lock_opt.has_value());
         },
         "filelock::try_lock_nonblocking", FileLock::GetLifecycleModule(),
@@ -376,7 +376,7 @@ int use_without_lifecycle_aborts()
     // No LifecycleGuard - FileLock module not initialized.
     // Creating FileLock should PLH_PANIC and abort.
     std::filesystem::path path("/tmp/pylabhub_filelock_no_lifecycle.lock");
-    FileLock lock(path, ResourceType::File, LockMode::NonBlocking);
+    FileLock lock(path, /*is_directory=*/false, /*blocking=*/false);
     return 1;  // Should not reach here
 }
 

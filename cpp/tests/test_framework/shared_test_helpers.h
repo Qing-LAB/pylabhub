@@ -327,7 +327,7 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
  * @code
  *   ThreadRacer racer(8);
  *   bool ok = racer.race([&](int thread_id) {
- *       FileLock lock(path, ResourceType::File, LockMode::NonBlocking);
+ *       FileLock lock(path, false, false); // is_directory=false, blocking=false
  *       // ... assertions ...
  *   });
  *   if (!ok) {

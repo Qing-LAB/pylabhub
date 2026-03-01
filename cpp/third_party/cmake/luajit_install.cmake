@@ -12,7 +12,7 @@ file(TO_CMAKE_PATH "${_src_dir}/jit" _src_jit_dir)
 file(TO_CMAKE_PATH "${_install_dir}/lib" _dest_lib_dir)
 file(TO_CMAKE_PATH "${_install_dir}/bin" _dest_bin_dir)
 file(TO_CMAKE_PATH "${_install_dir}/include" _dest_include_dir)
-file(TO_CMAKE_PATH "${_install_dir}/share/luajit/jit" _dest_jit_dir)
+file(TO_CMAKE_PATH "${_install_dir}/opt/luajit/jit" _dest_jit_dir)
 
 message(STATUS "LuaJIT install helper")
 message(STATUS "  src dir: ${_src_dir}")

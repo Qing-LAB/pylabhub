@@ -27,6 +27,10 @@ cmake_minimum_required(VERSION 3.29)
 # This must be done before defining any targets that depend on it.
 add_subdirectory(utils)
 
+# PythonScriptHost static lib (thin CPython embedding layer; keeps libpython
+# out of pure-C++ consumers of pylabhub-utils).
+add_subdirectory(scripting)
+
 # Scripted producer/consumer actor host (embeds CPython + pybind11).
 add_subdirectory(actor)
 
@@ -37,6 +41,8 @@ add_executable(pylabhub-hubshell
     hub_python/python_interpreter.cpp
     hub_python/pylabhub_module.cpp
     hub_python/admin_shell.cpp
+    hub_python/hub_script_api.cpp   # HubScriptAPI, ChannelInfo, HubTickInfo + pybind11 module
+    hub_python/hub_script.cpp       # HubScript tick thread + script loading
 )
 add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
 
@@ -53,14 +59,18 @@ if(PYLABHUB_LOGGER_DEBUG)
   message(STATUS "Building pylabhub-hubshell with logger debug enabled.")
 endif()
 
-# hub_python/ headers are private to the hubshell executable.
+# hub_python/ and scripting/ headers are private to the hubshell executable.
 target_include_directories(pylabhub-hubshell PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/hub_python
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripting
 )
 
-# The app links against the utils library and embeds CPython via pybind11.
+# The app links against the utils library, the PythonScriptHost static lib,
+# and embeds CPython via pybind11 (the latter is transitively pulled in by
+# pylabhub::scripting, but listed explicitly for clarity).
 target_link_libraries(pylabhub-hubshell PRIVATE
     pylabhub::utils
+    pylabhub::scripting
     pylabhub::third_party::pybind11_embed
 )
 

@@ -10,7 +10,7 @@
  * hardware. Each test that invokes create() or open() will therefore take ~0.5–1 s.
  * The suite timeout is set to 120 s to accommodate this.
  */
-#include "utils/hub_identity.hpp"
+#include "utils/uuid_utils.hpp"
 #include "utils/hub_vault.hpp"
 
 #include <gtest/gtest.h>

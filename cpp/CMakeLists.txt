@@ -45,10 +45,14 @@ if(UNIX)
   if(APPLE)
     # On macOS, @loader_path is similar to $ORIGIN but is correctly handled by dyld.
     # We also need to ensure that the executable is marked as allowing rpath.
-    set(CMAKE_INSTALL_RPATH "@loader_path/../lib")
+    # opt/python/lib — standalone Python runtime, always relative to our binary.
+    set(CMAKE_INSTALL_RPATH "@loader_path/../lib;@loader_path/../opt/python/lib")
     set(CMAKE_MACOSX_RPATH ON)
   else()
-    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+    # opt/python/lib — standalone Python runtime (libpython3.14.so.1.0).
+    # Must come before any system path so the dynamic linker never falls through
+    # to the system Python installation.
+    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:$ORIGIN/../opt/python/lib")
   endif()
 endif()
 # CMAKE_BUILD_WITH_INSTALL_RPATH tells CMake to use the install RPATH for
@@ -124,6 +128,7 @@ message(STATUS "PLH_RECURSION_GUARD_MAX_DEPTH = ${PLH_RECURSION_GUARD_MAX_DEPTH}
 message(STATUS "PYLABHUB_PYTHON_LOCAL_ARCHIVE = ${PYLABHUB_PYTHON_LOCAL_ARCHIVE}")
 message(STATUS "PYLABHUB_PYTHON_WHEELS_DIR = ${PYLABHUB_PYTHON_WHEELS_DIR}")
 message(STATUS "PYLABHUB_PREPARE_PYTHON_ENV = ${PYLABHUB_PREPARE_PYTHON_ENV}")
+message(STATUS "PYLABHUB_PYTHON_REQUIREMENTS_FILE = ${PYLABHUB_PYTHON_REQUIREMENTS_FILE}")
 message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "===============================================================")
 message(STATUS "")
@@ -160,7 +165,8 @@ add_custom_target(create_staging_dirs
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/python"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/IgorXOP"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/lua"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/luajit"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/luajit/jit"
     # share/ — shared data and user scripts
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts"
@@ -186,22 +192,9 @@ add_custom_target(stage_project_source_headers
 )
 add_dependencies(stage_project_source_headers create_staging_dirs)
 
-# --- Stage Hub Config Files ---
-# hub.default.json  — always updated from source (canonical defaults; safe to overwrite).
-# hub.user.json     — non-destructive: only deployed from template if user file absent.
-add_custom_target(stage_hub_config
-    # Always update the default config (this file is never user-edited).
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/config/hub.default.json.in"
-        "${PYLABHUB_STAGING_DIR}/config/hub.default.json"
-    # Deploy user config template only when missing.
-    COMMAND ${CMAKE_COMMAND}
-        -DSRC="${CMAKE_SOURCE_DIR}/config/hub.default.json.in"
-        -DDST="${PYLABHUB_STAGING_DIR}/config/hub.user.json"
-        -P "${CMAKE_SOURCE_DIR}/cmake/StageIfMissing.cmake"
-    COMMENT "Staging hub config files (hub.default.json updated; hub.user.json non-destructive)"
-)
-add_dependencies(stage_hub_config create_staging_dirs)
+# Hub config files (hub.json) are created by `pylabhub-hubshell --init <hub_dir>`.
+# They live in user-chosen hub instance directories, not in the staging tree.
+# No staging step required — the build system does not manage hub.json files.
 
 # --- Stage Sanitizer Runtimes ---
 include(FindSanitizerRuntime)
@@ -231,7 +224,7 @@ add_custom_target(stage_core_artifacts)
 
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
-add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers stage_hub_config)
+add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
 
 # --- 3.4. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")

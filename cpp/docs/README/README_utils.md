@@ -24,7 +24,8 @@ Common, robust utilities for C++ applications in scientific and laboratory envir
 | **0** | `plh_platform.hpp` | Platform detection (`PYLABHUB_PLATFORM_WIN64`, etc.), Windows headers, version API (`get_version_*`) |
 | **1** | `plh_base.hpp` | `format_tools`, `debug_info`, `in_process_spin_state` (InProcessSpinState, SpinGuard), `recursion_guard`, `scope_guard`, `module_def` |
 | **2** | `plh_service.hpp` | `lifecycle`, `file_lock`, `logger` |
-| **3** | `plh_datahub.hpp` | `json_config`, `message_hub`, `data_block` |
+| **3a** | `plh_datahub_client.hpp` | Layer 2 + DataBlock SHM, `hub_producer`, `hub_consumer`. **No** BrokerService / JsonConfig / HubConfig. For actors and scripts only. |
+| **3b** | `plh_datahub.hpp` | Full DataHub API: Layer 2 + `broker_service`, `json_config`, `hub_config`, `schema_blds`, `messenger`, DataBlock SHM, `hub_producer`, `hub_consumer`. |
 
 **Choose the smallest umbrella that covers your needs:**
 
@@ -33,7 +34,8 @@ Common, robust utilities for C++ applications in scientific and laboratory envir
 | Platform macros only | `#include "plh_platform.hpp"` |
 | Formatting, guards, `ModuleDef` | `#include "plh_base.hpp"` |
 | Lifecycle, FileLock, Logger | `#include "plh_service.hpp"` |
-| Config, MessageHub, DataBlock | `#include "plh_datahub.hpp"` |
+| Actor / script (Producer + Consumer, no server) | `#include "plh_datahub_client.hpp"` |
+| Hub server / admin (BrokerService, HubConfig, JsonConfig) | `#include "plh_datahub.hpp"` |
 
 **Benefits:** No include-order issues, single include per layer, clear dependency hierarchy. Including a higher layer pulls in everything below it; use the smallest layer that has what you need.
 
@@ -418,7 +420,8 @@ Use `LOGGER_*_SYNC` sparingly—it acquires the sink mutex and performs I/O on t
 | Platform | `plh_platform.hpp` |
 | Base | `plh_base.hpp` |
 | Service | `plh_service.hpp` |
-| DataHub | `plh_datahub.hpp` |
+| DataHub (actors/scripts) | `plh_datahub_client.hpp` |
+| DataHub (full, incl. server) | `plh_datahub.hpp` |
 
 **Individual module headers:**
 

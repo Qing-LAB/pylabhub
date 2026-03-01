@@ -20,7 +20,9 @@ add_executable(pylabhub-actor
     actor_api.cpp
     actor_config.cpp
     actor_module.cpp
-    actor_host.cpp
+    actor_role_workers.cpp   # ProducerRoleWorker + ConsumerRoleWorker implementations
+    actor_host.cpp           # ActorHost orchestrator
+    actor_script_host.cpp    # ActorScriptHost — PythonScriptHost for the actor process
 )
 add_executable(pylabhub::actor ALIAS pylabhub-actor)
 
@@ -38,12 +40,16 @@ if(PYLABHUB_LOGGER_DEBUG)
 endif()
 
 # actor/ headers are private to this executable.
+# ${CMAKE_CURRENT_SOURCE_DIR}/../scripting exposes scripting/python_script_host.hpp
+# (the scripting library uses PRIVATE includes, so consumers must add the path themselves).
 target_include_directories(pylabhub-actor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../scripting
 )
 
 target_link_libraries(pylabhub-actor PRIVATE
     pylabhub::utils
+    pylabhub::scripting
     pylabhub::third_party::pybind11_embed
 )
 

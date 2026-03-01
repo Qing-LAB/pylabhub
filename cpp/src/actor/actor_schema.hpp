@@ -38,7 +38,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 namespace pylabhub::actor
 {
@@ -49,12 +49,34 @@ namespace pylabhub::actor
 
 /**
  * @enum SlotExposure
- * @brief How the slot/flexzone buffer is presented to Python callbacks.
+ * @brief How the slot buffer is presented to Python callbacks.
+ *
+ * **Where set:** ActorSchemaBuilder::build() (actor_schema.cpp) parses the JSON
+ *   schema's optional `"expose_as"` key. Absent or `"ctypes_struct"` → Ctypes;
+ *   `"numpy_array"` → NumpyArray.
+ * **Where applied:** actor_api.cpp — build_slot_view() constructs the Python object
+ *   passed to on_iteration(slot, flexzone, messages, api) on every iteration.
+ *
+ * | Value      | Python callback receives                  | Best suited for              |
+ * |------------|-------------------------------------------|------------------------------|
+ * | Ctypes     | ctypes.LittleEndianStructure subclass      | Heterogeneous named fields   |
+ * |            | with typed attribute access (slot.ts, …)   | (timestamps, flags, scalars) |
+ * |            | Fields declared by "fields" in schema.     | Human-readable scripts       |
+ * | NumpyArray | numpy.ndarray, dtype+shape from schema.   | Homogeneous arrays           |
+ * |            | Zero-copy frombuffer() view of SHM slot.   | Vectorized NumPy operations  |
+ * |            | No named attributes — direct array access. | DSP / signal processing      |
+ *
+ * Note: the flexzone buffer is always exposed as a ctypes struct regardless of
+ * the slot mode (flexzone has heterogeneous fields by nature).
+ *
+ * JSON schema `"expose_as"` values: absent | `"ctypes_struct"` → Ctypes;
+ * `"numpy_array"` → NumpyArray.
+ * **Design doc:** HEP-CORE-0010-Actor-Thread-Model.md §4.1
  */
 enum class SlotExposure
 {
-    Ctypes,    ///< ctypes.LittleEndianStructure with named fields (default)
-    NumpyArray ///< numpy.ndarray with a single dtype (zero-copy frombuffer)
+    Ctypes,    ///< ctypes.LittleEndianStructure with typed named fields (default)
+    NumpyArray ///< numpy.ndarray(dtype, shape) — zero-copy frombuffer view of SHM slot
 };
 
 // ============================================================================

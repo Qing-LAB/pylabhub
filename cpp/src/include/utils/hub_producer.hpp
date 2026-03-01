@@ -19,7 +19,7 @@
  *   - `set_write_handler<F,D>(nullptr)` — remove handler; returns to Queue mode.
  *
  * Mode is selected implicitly: installing a handler enters Real-time; removing it returns
- * to Queue. Mode is queryable via `shm_processing_mode()`.
+ * to Queue mode. Queryable via `has_realtime_handler()`.
  *
  * Both modes receive a fully-typed `WriteProcessorContext<FlexZoneT, DataBlockT>` that
  * bundles: typed FlexZone access, the full WriteTransactionContext, peer messaging, and
@@ -54,20 +54,6 @@ namespace pylabhub::hub
 {
 
 // ============================================================================
-// ShmProcessingMode
-// ============================================================================
-
-/**
- * @enum ShmProcessingMode
- * @brief Indicates whether the producer/consumer SHM thread is in Queue or Real-time mode.
- */
-enum class ShmProcessingMode
-{
-    Queue,   ///< Caller-driven: push() / synced_write() / pull()
-    RealTime ///< Framework-driven: set_write_handler() / set_read_handler() continuous loop
-};
-
-// ============================================================================
 // ProducerMessagingFacade — type-erased messaging bridge (internal use)
 // ============================================================================
 
@@ -77,8 +63,15 @@ enum class ShmProcessingMode
  *        ProducerImpl internals (defined in .cpp). Function pointers are filled by
  *        Producer::create_from_parts(); context points to the ProducerImpl on the heap.
  *
- * This is an implementation detail exposed in the header solely so that the template
- * WriteProcessorContext<F,D> can reference it without knowing ProducerImpl.
+ * **Internal use only — do not use directly.**
+ * This struct is exposed in the header solely so that the template WriteProcessorContext<F,D>
+ * can reference it without knowing ProducerImpl. It is an implementation detail, not part
+ * of the public API.
+ *
+ * **ABI note:** The function pointer fields and their signatures are **frozen** for the
+ * lifetime of the pylabhub-utils shared library ABI. Any change to field order, types, or
+ * count requires a SOVERSION bump. New fields must be appended at the end, never inserted.
+ * Callers may rely on all fields being null-initialized (defaulted to nullptr) in the struct.
  */
 struct PYLABHUB_UTILS_EXPORT ProducerMessagingFacade
 {
@@ -403,8 +396,8 @@ class PYLABHUB_UTILS_EXPORT Producer
     void set_write_handler(
         std::function<void(WriteProcessorContext<FlexZoneT, DataBlockT> &)> fn);
 
-    /// Returns the current SHM processing mode (Queue or RealTime).
-    [[nodiscard]] ShmProcessingMode shm_processing_mode() const noexcept;
+    /// Returns true when a real-time write handler has been installed via set_write_handler().
+    [[nodiscard]] bool has_realtime_handler() const noexcept;
 
     // ── Consumer list (thread-safe) ────────────────────────────────────────────
 

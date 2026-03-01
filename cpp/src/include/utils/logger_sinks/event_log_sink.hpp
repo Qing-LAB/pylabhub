@@ -15,7 +15,7 @@ class EventLogSink : public Sink
   public:
     EventLogSink(const wchar_t *source_name);
     ~EventLogSink() override;
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override;
+    void write(const LogMessage &msg, bool sync_flag) override;
     void flush() override;
     std::string description() const override;
 

@@ -90,7 +90,7 @@
 ### Layer 4: pylabhub-actor Tests (new — 2026-02-21; updated 2026-02-23)
 **Status**: 🔵 Partial — config + metrics unit tests done; integration tests pending
 
-Unit tests live in `tests/test_layer4_actor/` (53 tests as of 2026-02-23, all passing).
+Unit tests live in `tests/test_layer4_actor/` (86 tests as of 2026-02-28, all passing).
 
 #### ✅ Done (unit layer — no Python init, no live actor)
 - [x] **ActorConfig parsing** — `loop_timing` (fixed_pace / compensating / default / invalid),
@@ -170,6 +170,27 @@ init needed; use PureApiTest pattern with a created DataBlockProducer/Consumer p
 - [ ] **api.metrics() dict keys** — spawn actor with `interval_ms > 0`; verify all keys present
   and `period_ms == interval_ms`; `iteration_count > 0` after 3+ iterations
 
+### ScriptHost / PythonScriptHost threading model (tests done — 2026-02-28)
+**Status**: ✅ Complete — 10 tests in `tests/test_layer2_service/test_script_host.cpp`
+
+- [x] **ScriptHost base threading** — threaded startup/shutdown, idempotent shutdown, early-stop
+- [x] **ScriptHost exception in do_initialize** — exception propagated via future to caller
+- [x] **ScriptHost returns false without signal** — set exception on promise; base_startup_ throws
+- [x] **ScriptHost direct mode (Lua path)** — do_initialize on calling thread; signal_ready by base
+
+### HubConfig script-block fields (tests done — 2026-02-28)
+**Status**: ✅ Complete — 9 tests in `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`
+
+- [x] **`hub_script_dir()` from JSON** — resolves to `<hub_dir>/my_script/python`
+- [x] **`script_type()` from JSON** — reads `"type"` field correctly
+- [x] **`tick_interval_ms()` override** — `"tick_interval_ms":500`; verify 500
+- [x] **`health_log_interval_ms()` override** — `"health_log_interval_ms":30000`; verify 30000
+- [x] **`hub_dir()` matches config path parent** — lifecycle sets hub_dir correctly
+- [x] **`tick_interval_ms()` default** — omit key; verify 1000 ms default
+- [x] **`health_log_interval_ms()` default** — verify 60000 ms default
+- [x] **`hub_script_dir()` default absent** — no `"script"` block; verify empty path
+- [x] **`script_type()` default absent** — no `"script"` block; verify empty string
+
 ### High Priority
 - [ ] Consumer registration to broker (protocol not yet defined)
 - [ ] Broker schema registry tests
@@ -190,6 +211,40 @@ init needed; use PureApiTest pattern with a created DataBlockProducer/Consumer p
 ---
 
 ## Recent Completions
+
+### 2026-02-28 (ScriptHost + HubConfig script-block tests + CMake option)
+- ✅ **Layer 2 tests: ScriptHost threading model** (10 tests) — `tests/test_layer2_service/test_script_host.cpp`:
+  `test_layer2_script_host` executable; mock subclasses; threaded mode (startup/shutdown/idempotent/
+  early-stop/exception propagation/false-without-signal); direct mode (startup-ready/shutdown-finalizes/
+  failure-throws). Note: `ThreadedEarlyStop` checks `is_ready()` only AFTER `shutdown()` (join provides
+  happens-before; earlier check is racy vs thread_fn_ clearing `ready_`).
+- ✅ **Layer 3 tests: HubConfig script-block fields** (9 tests) — `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`:
+  two lifecycle fixtures (Logger + CryptoUtils + FileLock + JsonConfig + HubConfig); configured fixture
+  (hub.json with all script/python fields; 5 tests); defaults fixture (absent script/python block; 4 tests).
+- ✅ **CMake: `PYLABHUB_PYTHON_REQUIREMENTS_FILE`** — `cmake/ToplevelOptions.cmake` FILEPATH cache var;
+  `third_party/cmake/python.cmake` uses variable (+ existence check); `CMakeLists.txt` status message.
+  **Total: 573/573 passing**
+
+### 2026-02-27 (LoopPolicy edge-case tests + code review fixes)
+- ✅ **Layer 3 tests: LoopPolicy edge cases** (11 tests) — extended `test_datahub_loop_policy.cpp`:
+  - 7 edge-case tests (secrets 80006–80012): ZeroOnCreation, MaxRateNoOverrun, LastSlotWorkUsPopulated,
+    LastIterationUsPopulated, MaxIterationUsPeak, ContextElapsedUsMonotonic, CtxMetricsPassThrough
+  - 4 RAII-specific tests (secrets 80013–80016): RaiiProducerLastSlotWorkUsMultiIter,
+    RaiiProducerMetricsViaSlots, RaiiProducerOverrunViaSlots, RaiiConsumerLastSlotWorkUs
+  - Fixed RAII release path: `last_slot_work_us` set in `release_write_handle()` and
+    `release_consume_handle()` (symmetric RAII destructor + explicit call paths)
+  - Fixed RAII multi-iter producer race: `SlotWriteHandle`/`SlotConsumeHandle` store per-handle
+    `t_slot_acquired_` (not `owner->t_iter_start_` which gets overwritten between iterations)
+  **Total: 550/550 passing**
+- ✅ **CODE_REVIEW.md triage complete** (2026-02-27): All 8 critical + 12 high items verified
+  as false positives or pre-existing fixes; deferred medium items documented in review.
+
+### 2026-02-26 (Connection policy + security identity)
+- ✅ **Layer 3 tests: ConnectionPolicy enforcement** (11 tests) — new `test_datahub_connection_policy.cpp`:
+  - Suite 1 (4 tests): `to_str`/`from_str` round-trips, unknown-string fallback to Open
+  - Suite 2 (7 tests): Open/Required/Verified broker enforcement, per-channel glob override,
+    ephemeral port (`tcp://127.0.0.1:0`) prevents parallel ctest-j collisions
+  **Total: 539/539 passing** (528 pre-existing + 11 new Phase 3 connection policy tests)
 
 ### 2026-02-23
 - ✅ **Layer 2 tests: HubVault** (15 tests) — `tests/test_layer2_service/test_hub_vault.cpp`:

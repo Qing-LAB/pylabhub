@@ -361,6 +361,17 @@ class ActorHost
     void signal_shutdown() noexcept { shutdown_.store(true); }
 
     /**
+     * @brief True if a shutdown was requested (via signal_shutdown() or api.stop()).
+     *
+     * Used by ActorScriptHost::do_python_work() to detect internal shutdown and
+     * propagate it to the main thread's wait loop.
+     */
+    [[nodiscard]] bool is_shutdown_requested() const noexcept
+    {
+        return shutdown_.load(std::memory_order_acquire);
+    }
+
+    /**
      * @brief Print a summary of configured roles and which are activated.
      *        Used by --list-roles.
      */
@@ -379,6 +390,11 @@ class ActorHost
         std::unique_ptr<ProducerRoleWorker>> producers_;
     std::unordered_map<std::string,
         std::unique_ptr<ConsumerRoleWorker>> consumers_;
+
+    // Holds the GIL release injected by start() so the main wait loop and
+    // worker loop_threads can acquire the GIL freely.  Destroyed (= GIL
+    // re-acquired) at the start of stop().
+    std::optional<py::gil_scoped_release> main_thread_release_;
 };
 
 } // namespace pylabhub::actor

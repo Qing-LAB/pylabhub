@@ -462,7 +462,7 @@ class SlotIterator
 
     std::conditional_t<IsWrite, DataBlockProducer *, DataBlockConsumer *> m_handle;
     std::chrono::milliseconds m_timeout;
-    ResultType m_current_result;
+    mutable ResultType m_current_result; ///< mutable so const operator* can return non-const ref
     bool m_done;
     bool m_first_acquired = false;
     ContextMetrics::Clock::time_point m_last_acquire_{};  ///< FixedRate sleep anchor (HEP-CORE-0008 Pass 3)

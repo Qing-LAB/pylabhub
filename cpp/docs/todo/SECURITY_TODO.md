@@ -265,7 +265,8 @@ This section identifies every layer that needs modification, ordered from lowest
 
 ### 1. UUID utility (new — no dependencies)
 
-New file: `src/include/utils/hub_identity.hpp` + `src/utils/hub_identity.cpp`
+New file: `src/include/utils/uuid_utils.hpp` + `src/utils/uuid_utils.cpp`
+*(Originally planned as `hub_identity.hpp/cpp`; renamed 2026-02-26 to better reflect scope.)*
 
 ```cpp
 namespace pylabhub::utils
@@ -677,8 +678,9 @@ Dependencies flow top-to-bottom within each phase.
 
 ### Phase 1 — Foundation (no existing code changes)
 
-- [x] `hub_identity.hpp/cpp` — `generate_uuid4()`, `is_valid_uuid4()` (libsodium entropy)
-  ✅ DONE 2026-02-23 — `src/include/utils/hub_identity.hpp`, `src/utils/hub_identity.cpp`
+- [x] `uuid_utils.hpp/cpp` — `generate_uuid4()`, `is_valid_uuid4()` (libsodium entropy)
+  ✅ DONE 2026-02-23 — `src/include/utils/uuid_utils.hpp`, `src/utils/uuid_utils.cpp`
+  *(Renamed from `hub_identity.hpp/cpp` on 2026-02-26.)*
 - [x] `hub_vault.hpp/cpp` — `HubVault::create()`, `HubVault::open()`, `publish_public_key()`
   ✅ DONE 2026-02-23 — Argon2id(BLAKE2b-128(hub_uid)) KDF + XSalsa20-Poly1305 secretbox;
   vault = [nonce(24)][ciphertext+MAC]; 0600 permissions; hub.pubkey written at 0644;
@@ -730,8 +732,9 @@ Dependencies flow top-to-bottom within each phase.
 ### Phase 3 — Connection policy + collision detection
 
 - [x] `BrokerService::Config` — `connection_policy`, `known_actors`, `channel_policies`
-  ✅ DONE 2026-02-26 — `ConnectionPolicy` enum + `KnownActor` + `ChannelPolicy` in new
-  `src/include/utils/connection_policy.hpp`; 3 new fields added to `BrokerService::Config`.
+  ✅ DONE 2026-02-26 — `ConnectionPolicy` enum + `KnownActor` + `ChannelPolicy` in
+  `src/include/utils/channel_access_policy.hpp` *(renamed from `connection_policy.hpp` on 2026-02-26)*;
+  3 new fields added to `BrokerService::Config`.
 - [x] `HubConfig` — `connection_policy()`, `known_actors()`, `channel_policies()` getters
   ✅ DONE 2026-02-26 — Reads `hub.json[connection_policy]`, `hub.json[known_actors]`,
   `hub.json[channel_policies]`; wired in `hub_config.cpp` `apply_json()`.
@@ -797,13 +800,17 @@ identity chain (hub → producer → consumers) from the SHM alone.
   ✅ DONE 2026-02-26 — added to `hub_config.hpp`; `hub_dir_` stored in `HubConfig::Impl`
 - [x] `HubConfig::hub_pubkey_path()` — new getter (returns `hub_dir / "hub.pubkey"`)
   ✅ DONE 2026-02-26 — added to `hub_config.hpp` + `hub_config.cpp`
-- [ ] `HubConfig` — switch from `hub.default.json` + `hub.user.json` to `hub.json` + compiled defaults
-  **Deferred** — layered loading still in place; `hub.default.json.in` CMake template still staged.
-  Unblocked once `hubshell <hub_dir>` fully replaces legacy flat-config invocation.
-- [ ] `hubshell.cpp` — pass `hub_dir` to `HubConfig::load_()` in canonical mode
-  **Deferred** — currently `HubConfig::set_config_path(hub_dir/"hub.json")` routes config loading
-  through the hub directory for `<hub_dir>` invocations, but `load_()` still uses layered logic internally.
-- [ ] Remove stale `hub.default.json.in` template from CMake staging if no longer needed
+- [x] `HubConfig` — switch from layered `hub.default.json` + `hub.user.json` to `hub.json` + compiled defaults
+  ✅ COMPLETE 2026-02-27 — `discover_config_dir()`, `json_merge()`, and the layered load branch
+  removed from `hub_config.cpp`. `load_()` now reads a single file: either the path from
+  `set_config_path()` (canonical mode) or `PYLABHUB_CONFIG_FILE` env var (CI/scripted), or falls
+  back to compiled-in C++ defaults. Legacy flat-config path is gone.
+- [x] `hubshell.cpp` — pass `hub_dir` to `HubConfig::load_()` in canonical mode
+  ✅ COMPLETE 2026-02-27 — `do_run()` calls `HubConfig::set_config_path(hub_json_path)` before
+  lifecycle startup. Error returned when `hub_dir` is empty and `--dev` is not specified.
+- [x] Remove stale `hub.default.json.in` template from CMake staging
+  ✅ COMPLETE 2026-02-27 — `stage_hub_config` CMake target removed from `CMakeLists.txt`;
+  `config/hub.default.json.in` file deleted; `config/` directory removed from source tree.
 
 ---
 
@@ -811,6 +818,7 @@ identity chain (hub → producer → consumers) from the SHM alone.
 
 | Item | Reason |
 |---|---|
+| CurveZMQ secret key erasure | Keys stored in plain `std::string` in `messenger.cpp`; no `sodium_memzero()` on key buffers before destruction. Tracked as CODE_REVIEW M18. Use `sodium_memzero()` or a secure string allocator. |
 | `signed` policy level | Requires PKI design; actor key distribution mechanism not defined |
 | Cross-hub identity federation | Multiple-hub topologies; depends on hub naming convention being stable |
 | Actor key rotation | Re-encrypting vault with new password; procedure not defined |
@@ -831,9 +839,29 @@ identity chain (hub → producer → consumers) from the SHM alone.
 
 ## Recent Completions
 
+### 2026-02-27 (Phase 5 complete + Deployment Guide)
+- Phase 5 complete: full HubConfig directory model migration.
+  - `discover_config_dir()` and `json_merge()` removed from `hub_config.cpp`
+  - Layered load (`hub.default.json` + `hub.user.json`) eliminated entirely
+  - `load_()` now reads single `hub.json` (override_path or PYLABHUB_CONFIG_FILE env var)
+  - `hubshell.cpp` returns error when `hub_dir` is empty without `--dev`
+  - `config/hub.default.json.in` deleted; `stage_hub_config` CMake target removed
+  - All docs and comments updated: no "backward compat", "legacy flat-config", or layered load references
+- Created `docs/README/README_Deployment.md` — comprehensive user-facing deployment guide:
+  - Quick start (5 commands: build → init hub → init actor → run hub → run actor)
+  - Complete hub.json field reference with descriptions and defaults
+  - Complete actor.json field reference (all top-level, actor, per-role fields)
+  - Python script authoring guide: package structure, on_init/on_iteration/on_stop, ctypes field
+    types, ActorRoleAPI methods, flexzone patterns, ZMQ messaging, error handling
+  - Connection policy setup (open/tracked/required/verified)
+  - Common topologies (single producer→multi-consumer, multi-role actor, message-driven, bridge)
+  - Operational patterns (systemd units, recommended directory layout)
+  - Troubleshooting section (10 common issues with solutions)
+
 ### 2026-02-26 (Phase 3 + Phase 5 getters)
 - Phase 3 (connection policy) complete — 528/528 tests pass after full clean build:
-  - `src/include/utils/connection_policy.hpp` (new): `ConnectionPolicy` enum (Open/Tracked/Required/Verified),
+  - `src/include/utils/channel_access_policy.hpp` *(renamed from `connection_policy.hpp` on 2026-02-26)*:
+    `ConnectionPolicy` enum (Open/Tracked/Required/Verified),
     `KnownActor`, `ChannelPolicy` in `pylabhub::broker` namespace; inline `_to_str`/`_from_str` helpers
   - `BrokerService::Config`: 3 new fields (`connection_policy`, `known_actors`, `channel_policies`)
   - `BrokerServiceImpl`: `channel_name_matches_glob()` (iterative * wildcard), `effective_policy()` (per-channel

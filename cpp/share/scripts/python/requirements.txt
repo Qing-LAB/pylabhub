@@ -19,5 +19,7 @@ pandas>=2.0         # tabular metadata, event logs
 pyzmq>=26.0         # ZeroMQ bindings (admin shell client, hub inter-process)
 # --- Compression codecs for zarr ---
 numcodecs>=0.13
+# --- Terminal UI (used by the default hub dashboard script) ---
+rich>=13.0
 # --- Interactive use (not loaded by hubshell server; available locally) ---
 ipython>=8.0
