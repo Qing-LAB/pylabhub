@@ -6,6 +6,24 @@
 
 ## Archive batches
 
+### 2026-03-01 (Code Review Round 2 — Complete)
+
+Code Review Round 2 resolved. 7 confirmed bugs fixed; 11 items classified as false positives.
+`ExponentialBackoff` renamed to `ThreePhaseBackoff` (Phase 3 is linear); HEP-0003/0012 doc fixes applied.
+
+**Archived to `docs/archive/transient-2026-03-01/`:**
+
+| Archived | Reason |
+|---|---|
+| `code_review/CODE_REVIEW_2026-03-01_hub-python-actor-headers.md` | All items resolved: HP-C1 HP-C2 AF-H2 ✅ FIXED; PH-C1 PH-C2 PH-C3 AF-H1 PH-H5 ❌ FALSE POSITIVE |
+| `code_review/CODE_REVIEW_2026-03-01_utils-actor-hep.md` | All items resolved: NC3 NC4 NH1 NH2 ✅ FIXED; NC1 NC2 NH4 NH5 NM11 NM12 NM13 ❌ FALSE POSITIVE |
+
+**Active review table in `TODO_MASTER.md` cleared.**
+
+See **`docs/archive/transient-2026-03-01/README.md`** for full item disposition and fix summary.
+
+---
+
 ### 2026-02-28 (Actor Framework HEP Promotion)
 
 Promoted `docs/tech_draft/ACTOR_DESIGN.md` to canonical HEP status. Created

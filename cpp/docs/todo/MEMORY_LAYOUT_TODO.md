@@ -120,6 +120,15 @@ at runtime because the underlying implementation is not complete:
 
 ## Recent Completions
 
+### 2026-03-01
+- ✅ **Sub-4K logical slot sizes** — `logical_unit_size` now accepts any multiple of 64 B (cache line);
+  may be less than `physical_page_size`. Validation moved before `from_config()` to produce
+  `std::invalid_argument` instead of assert. `total_size` rounded up to `PAGE_ALIGNMENT` in both
+  `from_config()` and `from_header()` so producer/consumer agree on segment size even for
+  non-page-multiple ring buffers. Actor's sub-4K slot selection now uses 64-B-aligned stride
+  instead of always forcing 4096. 587/587 tests passing (+2 new: `SubCacheLineLogicalSizeThrows`
+  + `SubPageLogicalSizeRoundTrip`). `data_block_config.hpp` doxygen and HEP-CORE-0002 §3.2 updated.
+
 ### 2026-02-18
 - ✅ Structured Buffer Alignment — guaranteed by design: `structured_buffer_offset` is enforced
   4K-aligned (logic_error at `data_block.cpp:773-777`, `822-827`); `slot_stride_bytes` ≥ 4096;

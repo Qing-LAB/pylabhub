@@ -113,9 +113,19 @@ class PythonInterpreter
      * @brief Clears all user-defined names from the persistent namespace.
      *
      * Built-in names and imported modules that were set up at startup are
-     * preserved. Thread-safe.  No-op if interpreter is not ready.
+     * preserved. Thread-safe (acquires exec_mu).  No-op if interpreter is not ready.
      */
     void reset_namespace();
+
+    /**
+     * @brief Reset namespace without locking exec_mu. Call only from within an exec() context
+     * (e.g., from a pybind11 binding invoked during py::exec()). Caller must hold exec_mu.
+     *
+     * Avoids deadlock when Python code calls `pylabhub.reset()` from inside exec():
+     * exec() holds exec_mu; calling the locked reset_namespace() on the same thread
+     * would re-enter the mutex → permanent deadlock.
+     */
+    void reset_namespace_unlocked();
 
     /**
      * @brief Returns true if the Python interpreter is ready and exec() may be called.

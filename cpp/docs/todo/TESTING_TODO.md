@@ -172,6 +172,19 @@ All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_data
 - [x] **ScriptHost returns false without signal** — set exception on promise; base_startup_ throws
 - [x] **ScriptHost direct mode (Lua path)** — do_initialize on calling thread; signal_ready by base
 
+### PythonInterpreter / Admin Shell / Actor consumer ctypes (coverage gaps — 2026-03-01)
+**Status**: 🔵 No automated tests — identified by code review `CODE_REVIEW_2026-03-01_hub-python-actor-headers.md`
+
+- [ ] **HP-C1 — `pylabhub.reset()` deadlock regression** — spawn admin shell; from a running script
+  call `pylabhub.reset()`; verify hub does NOT freeze and subsequent commands execute normally.
+  (Fix: `reset_namespace_unlocked()` called by binding; `exec_mu` no longer re-entered.)
+- [ ] **HP-C2 — stdout/stderr leak on exec() exception** — trigger a non-Python exception inside
+  `py::exec()` path (e.g., `buf.getvalue()` encoding error); verify subsequent admin shell commands
+  still produce output (not silently discarded). (Fix: `make_scope_guard` restores stdout/stderr.)
+- [ ] **AF-H2 — Consumer ctypes.from_buffer_copy round-trip** — run a consumer actor with
+  `"exposure": "ctypes"` slot schema; verify on_read receives a valid ctypes struct (not TypeError).
+  (Fix: `from_buffer()` → `from_buffer_copy()` for read-only memoryviews.)
+
 ### HubConfig script-block fields (tests done — 2026-02-28)
 **Status**: ✅ Complete — 9 tests in `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`
 

@@ -53,3 +53,10 @@ TEST_F(DatahubConfigValidationTest, ValidConfigCreatesSuccessfully)
     auto proc = SpawnWorker("config_validation.valid_config_creates_successfully", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
+
+TEST_F(DatahubConfigValidationTest, SubCacheLineLogicalSizeRoundsUp)
+{
+    auto proc = SpawnWorker("config_validation.sub_cache_line_logical_size_rounds_up", {});
+    // logical_unit_size=48 is rounded up to 64 transparently; slot buffer must be 64 bytes.
+    ExpectWorkerOk(proc, {"DataBlock"});
+}

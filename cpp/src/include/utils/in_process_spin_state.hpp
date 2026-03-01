@@ -81,7 +81,7 @@ class InProcessSpinState
     /** Spin until acquired using the given token (caller-owned). */
     void lock_with_token(uint64_t token) noexcept
     {
-        pylabhub::utils::ExponentialBackoff backoff;
+        pylabhub::utils::ThreePhaseBackoff backoff;
         int i = 0;
         while (!detail::try_acquire_token(&state_, token))
             backoff(i++);
@@ -96,7 +96,7 @@ class InProcessSpinState
             return false;
         auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeout_ms);
-        pylabhub::utils::ExponentialBackoff backoff;
+        pylabhub::utils::ThreePhaseBackoff backoff;
         int iteration = 0;
         while (std::chrono::steady_clock::now() < deadline)
         {

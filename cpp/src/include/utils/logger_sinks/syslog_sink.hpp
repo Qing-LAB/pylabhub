@@ -5,7 +5,7 @@
 namespace pylabhub::utils
 {
 
-#if !defined(PLATFORM_WIN64)
+#if !defined(PYLABHUB_PLATFORM_WIN64)
 class SyslogSink : public Sink
 {
   public:

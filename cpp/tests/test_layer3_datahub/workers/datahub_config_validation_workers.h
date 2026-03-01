@@ -9,5 +9,6 @@ int consumer_sync_policy_unset_throws();
 int physical_page_size_unset_throws();
 int ring_buffer_capacity_zero_throws();
 int valid_config_creates_successfully();
+int sub_cache_line_logical_size_rounds_up();
 
 } // namespace pylabhub::tests::worker::config_validation

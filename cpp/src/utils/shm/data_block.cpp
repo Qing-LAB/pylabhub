@@ -149,7 +149,14 @@ struct DataBlockLayout
                       "This violates the memory layout design.");
         }
         
-        layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
+        // Round total_size up to PAGE_ALIGNMENT: with sub-4K slots the ring buffer
+        // size may not be a page multiple (e.g. 100 × 64 B = 6400 B), but the OS
+        // always allocates/maps in page-sized chunks.  Making total_size agree with
+        // the OS rounding avoids mismatches between producer and consumer.
+        layout.total_size =
+            (layout.structured_buffer_offset + layout.structured_buffer_size +
+             detail::PAGE_ALIGNMENT - 1) &
+            ~(detail::PAGE_ALIGNMENT - 1);
         return layout;
     }
 
@@ -198,7 +205,13 @@ struct DataBlockLayout
                       "This violates the memory layout design.");
         }
         
-        layout.total_size = layout.structured_buffer_offset + layout.structured_buffer_size;
+        // Round up to PAGE_ALIGNMENT (same reason as from_config: sub-4K slots may
+        // leave the raw sum non-page-aligned; explicit rounding keeps producer/consumer
+        // in agreement without relying on implicit OS rounding of ftruncate/mmap).
+        layout.total_size =
+            (layout.structured_buffer_offset + layout.structured_buffer_size +
+             detail::PAGE_ALIGNMENT - 1) &
+            ~(detail::PAGE_ALIGNMENT - 1);
         return layout;
     }
 
@@ -263,8 +276,12 @@ struct DataBlockLayout
             return false;
         }
         
-        // Validate total size
-        if (total_size != structured_buffer_offset + structured_buffer_size)
+        // Validate total size: total_size is rounded up to PAGE_ALIGNMENT so sub-4K
+        // ring buffers agree with the OS mmap granularity.  Accept the rounded value.
+        const size_t expected_total =
+            (structured_buffer_offset + structured_buffer_size +
+             detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
+        if (total_size != expected_total)
         {
             return false;
         }
@@ -364,6 +381,9 @@ class DataBlock
             LOGGER_ERROR("DataBlock '{}': config.checksum_type must be set (e.g. BLAKE2b). Checksum is mandatory.", name);
             throw std::invalid_argument("DataBlockConfig::checksum_type must be set");
         }
+        // Note: logical_unit_size is intentionally not validated for alignment here.
+        // effective_logical_unit_size() rounds up to the nearest 64-byte cache-line boundary
+        // (and further to physical_page_size for multi-page slots) transparently.
         m_layout = DataBlockLayout::from_config(config);
         m_size = m_layout.total_size;
 #if !defined(NDEBUG)
@@ -406,21 +426,7 @@ class DataBlock
         m_header->consumer_sync_policy = config.consumer_sync_policy;
         m_header->physical_page_size = static_cast<uint32_t>(to_bytes(config.physical_page_size));
         {
-            const size_t physical = to_bytes(config.physical_page_size);
             const size_t logical = config.effective_logical_unit_size();
-            if (config.logical_unit_size != 0 && config.logical_unit_size < physical)
-            {
-                LOGGER_ERROR("DataBlock '{}': logical_unit_size ({}) must be >= physical_page_size ({}); "
-                             "there is no case where logical < physical.",
-                             m_name, config.logical_unit_size, physical);
-                throw std::invalid_argument("logical_unit_size must be >= physical_page_size");
-            }
-            if (config.logical_unit_size != 0 && (config.logical_unit_size % physical != 0))
-            {
-                LOGGER_ERROR("DataBlock '{}': logical_unit_size ({}) must be a multiple of physical_page_size ({})",
-                             m_name, config.logical_unit_size, physical);
-                throw std::invalid_argument("logical_unit_size must be a multiple of physical_page_size");
-            }
             if (logical > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
             {
                 throw std::invalid_argument("logical_unit_size exceeds maximum storable in header");
@@ -1683,9 +1689,12 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
     }
     else if (impl.rw_state != nullptr)
     {
-        // If not committed, simply release the write lock
+        // Abort path: slot was not committed, so return it to FREE.
+        // State must transition to FREE before the write_lock is released.
+        // See release_write() in data_block_slot_ops.cpp for the ordering rationale.
+        impl.rw_state->slot_state.store(SlotRWState::SlotState::FREE,
+                                        std::memory_order_release);
         impl.rw_state->write_lock.store(0, std::memory_order_release);
-        impl.rw_state->slot_state.store(SlotRWState::SlotState::FREE, std::memory_order_release);
     }
 
     // No thread guard exit needed here, as acquire_write doesn't use it.

@@ -56,7 +56,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
     }
 
     uint64_t start_ns = pylabhub::platform::monotonic_time_ns();
-    pylabhub::utils::ExponentialBackoff backoff_strategy;
+    pylabhub::utils::ThreePhaseBackoff backoff_strategy;
     int iteration = 0;
 
     // CAS loop with timeout (use platform monotonic time for consistency with data_block)

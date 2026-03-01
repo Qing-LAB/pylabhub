@@ -92,9 +92,14 @@ struct DataBlockConfig
     DataBlockPageSize physical_page_size = DataBlockPageSize::Unset;
 
     /**
-     * Logical slot size in bytes. Must be >= physical_page_size and a multiple of it.
-     * 0 at config time means "use physical_page_size" (resolved before writing to header).
-     * Stored value in the header is always >= physical_page_size (never 0).
+     * Requested slot size in bytes. Any non-negative value is accepted:
+     *   - 0        → use physical_page_size (legacy default; header stores physical_page_size).
+     *   - > 0      → rounded up to the nearest 64-byte cache-line boundary by
+     *                effective_logical_unit_size() before being stored in the header.
+     * physical_page_size is the OS SHM allocation granularity only; it does NOT constrain
+     * the slot stride.  Many sub-page slots can be packed into one physical page.
+     * The actual slot stride used for all buffer arithmetic is effective_logical_unit_size(),
+     * not this field.  This field preserves the user's original request.
      */
     size_t logical_unit_size = 0;
 
@@ -133,12 +138,33 @@ struct DataBlockConfig
 
     // ── Derived helpers ───────────────────────────────────────────────────────
 
-    /** Effective slot stride in bytes. Returns physical_page_size when logical_unit_size == 0. */
+    /**
+     * Effective slot stride in bytes (the value stored in the header and used for all
+     * buffer arithmetic). The library rounds transparently — no error is thrown for
+     * non-aligned requested sizes:
+     *
+     *  - logical_unit_size == 0 → returns physical_page_size (legacy default).
+     *  - logical_unit_size  > 0 → rounded up to the nearest 64-byte cache-line boundary.
+     *
+     * physical_page_size is the OS SHM allocation granularity and does NOT influence the
+     * slot stride.  Slots are always packed at 64-byte boundaries; multiple sub-page slots
+     * fit within a single OS page.
+     *
+     * logical_unit_size itself is never modified; callers that want to know the
+     * user-requested size can read it directly.
+     */
     size_t effective_logical_unit_size() const
     {
-        if (logical_unit_size != 0)
-            return logical_unit_size;
-        return to_bytes(physical_page_size);
+        if (logical_unit_size == 0)
+        {
+            return to_bytes(physical_page_size);
+        }
+        // Round up to the nearest 64-byte cache-line boundary.
+        // physical_page_size is the OS SHM allocation granularity only; it does NOT
+        // constrain the slot stride.  Slots are always packed at 64-byte alignment
+        // regardless of how many physical pages the total ring buffer occupies.
+        constexpr size_t kCacheLineSize = 64;
+        return (logical_unit_size + kCacheLineSize - 1) & ~(kCacheLineSize - 1);
     }
 
     /** Total ring buffer size in bytes (slot_count * effective_logical_unit_size). */
