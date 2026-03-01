@@ -62,6 +62,19 @@ option(PYLABHUB_LOGGER_DEBUG "Enable debug logging in the pyLabHub logger" OFF)
 
 option(PYLABHUB_STAGE_ON_BUILD "Make 'stage_all' run as part of the default build." ON)
 
+# Vault KDF security level.
+# OFF (default): Argon2id INTERACTIVE — 64 MB RAM, ~100 ms per hash. Suitable for development
+#                and workstations where actors restart frequently.
+# ON:            Argon2id SENSITIVE  — 1 GB RAM,  ~5 s  per hash. Recommended for production
+#                deployments with long-running actors and strong password requirements.
+#
+# WARNING: Vault files created with one setting CANNOT be opened with the other.
+#          Re-run --keygen after toggling this option.
+option(PYLABHUB_VAULT_HIGH_SECURITY
+    "Use Argon2id SENSITIVE parameters for vault KDF (1 GB RAM, ~5 s/hash). \
+Vaults are incompatible between INTERACTIVE and SENSITIVE builds — re-keygen after changing."
+    OFF)
+
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 

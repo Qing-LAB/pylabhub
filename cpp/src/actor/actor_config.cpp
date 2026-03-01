@@ -8,12 +8,14 @@
  */
 #include "actor_config.hpp"
 
+#include "utils/actor_vault.hpp"  // ActorVault::open
 #include "utils/logger.hpp"
 #include "utils/uid_utils.hpp"    // generate_actor_uid, has_actor_prefix
 
 #include <cstdio>                 // std::fprintf (for pre-lifecycle warnings)
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -24,44 +26,26 @@ namespace pylabhub::actor
 // ActorAuthConfig::load_keypair
 // ============================================================================
 
-bool ActorAuthConfig::load_keypair()
+bool ActorAuthConfig::load_keypair(const std::string &actor_uid, const std::string &password)
 {
     if (keyfile.empty())
-        return true; // no keyfile configured — not an error
+        return false; // no vault configured — use ephemeral CURVE identity
 
-    std::ifstream f(keyfile);
-    if (!f.is_open())
+    // If the vault file does not exist, warn and fall back to ephemeral.
+    if (!std::filesystem::exists(keyfile))
     {
-        LOGGER_WARN("[actor] auth.keyfile '{}': cannot open — actor will use ephemeral CURVE identity",
+        LOGGER_WARN("[actor] auth.keyfile '{}': not found — using ephemeral CURVE identity",
                     keyfile);
         return false;
     }
 
-    nlohmann::json j;
-    try
-    {
-        j = nlohmann::json::parse(f);
-    }
-    catch (const nlohmann::json::parse_error &e)
-    {
-        LOGGER_WARN("[actor] auth.keyfile '{}': JSON parse error: {} — using ephemeral identity",
-                    keyfile, e.what());
-        return false;
-    }
+    // vault_read throws on wrong password or corrupted file — treat as fatal.
+    const auto vault = pylabhub::utils::ActorVault::open(keyfile, actor_uid, password);
 
-    const auto pub = j.value("public_key", std::string{});
-    const auto sec = j.value("secret_key", std::string{});
-
-    if (pub.size() != 40 || sec.size() != 40)
-    {
-        LOGGER_WARN("[actor] auth.keyfile '{}': public_key/secret_key must be 40-char Z85 strings "
-                    "— using ephemeral identity", keyfile);
-        return false;
-    }
-
-    client_pubkey = pub;
-    client_seckey = sec;
-    LOGGER_INFO("[actor] Loaded actor keypair from '{}' (pubkey: {}...)", keyfile, pub.substr(0, 8));
+    client_pubkey = vault.public_key();
+    client_seckey = vault.secret_key();
+    LOGGER_INFO("[actor] Loaded actor vault from '{}' (pubkey: {}...)",
+                keyfile, vault.public_key().substr(0, 8));
     return true;
 }
 
@@ -139,17 +123,6 @@ ValidationPolicy parse_validation(const nlohmann::json &j)
     v.skip_on_validation_error = parse_on_fail(j.value("on_checksum_fail",  "skip"));
     v.stop_on_python_error     = parse_on_py_error(j.value("on_python_error", "continue"));
     return v;
-}
-
-/// Resolve "env:VAR" → actual environment variable; otherwise return s unchanged.
-std::string resolve_env_value(const std::string &s)
-{
-    if (s.size() > 4 && s.substr(0, 4) == "env:")
-    {
-        const char *val = std::getenv(s.c_str() + 4);
-        return (val != nullptr) ? std::string(val) : std::string{};
-    }
-    return s;
 }
 
 RoleConfig parse_role(const std::string &role_name, const nlohmann::json &j)
@@ -314,8 +287,7 @@ ActorConfig ActorConfig::from_json_file(const std::string &path)
         if (a.contains("auth") && a["auth"].is_object())
         {
             const auto &auth = a["auth"];
-            cfg.auth.keyfile  = auth.value("keyfile",  std::string{});
-            cfg.auth.password = resolve_env_value(auth.value("password", std::string{}));
+            cfg.auth.keyfile = auth.value("keyfile", std::string{});
         }
     }
     else

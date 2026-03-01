@@ -1,6 +1,6 @@
 # HEP-CORE-0008: LoopPolicy and Iteration Metrics
 
-**Status**: Pass 3 complete (2026-02-25) — SlotIterator FixedRate sleep, ProducerOptions/ConsumerOptions loop_policy fields, api.metrics() dict completeness (D4 keys added); 528/528 tests passing (as of 2026-02-26 with Phase 3 broker policy tests added)
+**Status**: Pass 3 complete (2026-02-25) — SlotIterator FixedRate sleep, ProducerOptions/ConsumerOptions loop_policy fields, api.metrics() dict completeness (D4 keys added); **585/585 tests passing** (as of 2026-02-28)
 **Created**: 2026-02-22
 **Area**: DataHub RAII Layer / Actor Framework
 **Depends on**: HEP-CORE-0002 (DataHub), HEP-CORE-0005 (Script Interface), HEP-CORE-0006 (SlotProcessor API)

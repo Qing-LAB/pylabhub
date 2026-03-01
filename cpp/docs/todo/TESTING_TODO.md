@@ -103,6 +103,21 @@ Unit tests live in `tests/test_layer4_actor/` (86 tests as of 2026-02-28, all pa
   identity fields; accumulation after reset; reset on fresh API is no-op; `slot_valid` flag;
   identity getters round-trip; two instances are independent.
 
+#### ✅ Done (CLI tier — no Python/broker)
+`test_layer4_actor_cli` binary (12 tests, 2026-02-28):
+- [x] **--keygen writes keypair** — JSON file created with `actor_uid/public_key/secret_key` (40-char Z85)
+- [x] **--keygen missing keyfile field** — exits non-zero, "keyfile" in stderr
+- [x] **--keygen creates parent dir** — nested key path; parent created automatically
+- [x] **--keygen overwrites existing** — second keygen produces different keys (CSPRNG draw)
+- [x] **--register-with appends entry** — actor uid+name appear in hub.json known_actors
+- [x] **--register-with duplicate idempotent** — already-registered uid → exit 0, no duplicate
+- [x] **--register-with missing actor.json** — error mentioning "actor.json", non-zero exit
+- [x] **--register-with missing hub.json** — error mentioning "hub.json", non-zero exit
+- [x] **Config malformed JSON** — "Config error" in stderr, non-zero exit (before lifecycle)
+- [x] **Config missing roles key** — "Config error" in stderr, non-zero exit
+- [x] **Config invalid role kind** — "Config error" in stderr, non-zero exit
+- [x] **Config file not found** — "Config error" in stderr, non-zero exit
+
 #### Pending integration tests for the `pylabhub-actor` executable:
 
 - [ ] **Actor + Hub round-trip** — spawn broker + producer actor + consumer actor; verify consumer on_read receives correct typed slot data (log-file / ZMQ report-back validation)
@@ -110,7 +125,6 @@ Unit tests live in `tests/test_layer4_actor/` (86 tests as of 2026-02-28, all pa
 - [ ] **UID non-conforming warning** — run actor with old-style uid; verify warning log
 - [ ] **Schema declaration hash mismatch** — producer and consumer with different field types in slot_schema; verify consumer connect() fails with "schema mismatch" in log before any data is read (Layer 2 check — `compute_schema_hash()` in actor_host.cpp)
 - [ ] **Schema declaration hash match** — same schema on both sides; verify successful connection
-- [ ] **--keygen** — run with --keygen and keyfile path; verify JSON file created with correct fields; run again; verify file overwritten; verify missing-dir case creates parent dir
 - [ ] **Validation policy: slot_checksum enforce** — consumer verifies checksum; corrupt a slot; verify on_read NOT called (skip) or called with api.slot_valid()=false (pass)
 - [ ] **Validation policy: on_python_error stop** — on_read raises exception; verify actor exits cleanly
 - [ ] **SharedSpinLockPy** — producer and consumer both use api.spinlock(0); verify mutual exclusion via counter increment test (no lost increments)
@@ -142,33 +156,13 @@ Unit tests live in `tests/test_layer4_actor/` (86 tests as of 2026-02-28, all pa
 - [ ] **last_cycle_work_us non-zero** — producer with timed `on_write`; read
   `api.last_cycle_work_us()` from next `on_write`; verify > 0
 
-#### LoopPolicy / ContextMetrics tests (HEP-CORE-0008 Pass 2 — no tests exist yet)
+#### LoopPolicy / ContextMetrics tests (HEP-CORE-0008 Pass 2 — ✅ complete 2026-02-27)
 
-These test the DataBlock Pimpl timing introduced in Pass 2. Single-process tests (no lifecycle
-init needed; use PureApiTest pattern with a created DataBlockProducer/Consumer pair):
+All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_datahub_loop_policy.cpp`
+(tests 6–16, secrets 80006–80016). The Python actor-level test remains:
 
-- [ ] **ContextMetrics zero on creation** — fresh producer/consumer: all counters 0,
-  `context_start_time == time_point{}`, `period_ms == 0`
-  — `tests/test_layer3_datahub/test_datahub_context_metrics.cpp`
-- [ ] **iteration_count increments** — acquire/release 5 slots; verify `iteration_count == 5`
-- [ ] **last_slot_work_us non-zero** — acquire, sleep 1ms, release; verify `last_slot_work_us >= 1000`
-- [ ] **last_iteration_us measured** — two back-to-back acquires with 2ms sleep between;
-  verify `last_iteration_us >= 2000`
-- [ ] **max_iteration_us tracks peak** — fast acquire, slow acquire (sleep between); verify
-  `max_iteration_us >= slow_us && last_iteration_us == fast_us` after fast acquire
-- [ ] **context_elapsed_us monotonic** — 3 acquires 1ms apart; verify `context_elapsed_us`
-  increases and ≥ 2ms after third acquire
-- [ ] **FixedRate overrun_count** — `set_loop_policy(FixedRate, 1ms)`; acquire, sleep 5ms, acquire;
-  verify `overrun_count == 1`
-- [ ] **MaxRate no overrun** — `set_loop_policy(MaxRate)`; rapid acquires; verify `overrun_count == 0`
-- [ ] **clear_metrics resets** — accumulate counters, call `clear_metrics()`, verify all 0
-  except `period_ms` preserved
-- [ ] **set_loop_policy updates period_ms** — `set_loop_policy(FixedRate, 10ms)`; verify
-  `metrics().period_ms == 10`
-- [ ] **ctx.metrics() pass-through** — via `with_transaction`, verify `ctx.metrics()` returns
-  same ref as `producer.metrics()`
 - [ ] **api.metrics() dict keys** — spawn actor with `interval_ms > 0`; verify all keys present
-  and `period_ms == interval_ms`; `iteration_count > 0` after 3+ iterations
+  and `period_ms == interval_ms`; `iteration_count > 0` after 3+ iterations (Layer 4 actor integration)
 
 ### ScriptHost / PythonScriptHost threading model (tests done — 2026-02-28)
 **Status**: ✅ Complete — 10 tests in `tests/test_layer2_service/test_script_host.cpp`
@@ -211,6 +205,15 @@ init needed; use PureApiTest pattern with a created DataBlockProducer/Consumer p
 ---
 
 ## Recent Completions
+
+### 2026-02-28 (Actor CLI integration tests)
+- ✅ **Layer 4 CLI tests: `pylabhub-actor` CLI integration** (12 tests) — `test_layer4_actor_cli`
+  executable using `pylabhub::test_framework` (`WorkerProcess`/`g_self_exe_path`); actor binary
+  derived from staged path (`../bin/pylabhub-actor` relative to test binary); covers:
+  `--keygen` (write/missing-keyfile/create-parent-dir/overwrite), `--register-with`
+  (append/idempotent/missing-actor/missing-hub), config error paths (malformed JSON,
+  missing roles, invalid kind, file not found). Fixed: `auth.keyfile` is inside `actor` block,
+  not top-level. All Tier 1 (no Python/broker). Total: **585/585 passing**.
 
 ### 2026-02-28 (ScriptHost + HubConfig script-block tests + CMake option)
 - ✅ **Layer 2 tests: ScriptHost threading model** (10 tests) — `tests/test_layer2_service/test_script_host.cpp`:

@@ -81,22 +81,22 @@ The synchronous variants (`LOGGER_TRACE_SYNC`, `LOGGER_DEBUG_SYNC`, `LOGGER_INFO
 
 ### Implementation
 
-- **`log_fmt_sync`** → **`write_sync`** → acquires `m_sink_mutex` → **`sink_->write(msg, Sink::SYNC_WRITE)`**
+- **`log_fmt_sync`** → **`write_sync`** → acquires `m_sink_mutex` → **`sink_->write(msg, /*sync_flag=*/true)`**
 - No queue involvement; the calling thread performs the I/O directly
 - Sync messages are prefixed with `[LOGGER_SYNC]` in the output to distinguish them from async messages
 
 ### Sink Write Modes
 
 ```cpp
-// In Sink interface (sink.hpp)
-enum WRITE_MODE { ASYNC_WRITE, SYNC_WRITE };
-virtual void write(const LogMessage &msg, WRITE_MODE mode) = 0;
+// In Sink interface (src/include/utils/logger_sinks/sink.hpp)
+// sync_flag: false = normal async path (worker thread); true = emergency sync path.
+virtual void write(const LogMessage &msg, bool sync_flag) = 0;
 ```
 
-| Mode | Caller | Output Prefix |
-|------|--------|---------------|
-| `ASYNC_WRITE` | Worker thread (from queue) | `[LOGGER]` |
-| `SYNC_WRITE` | Calling thread (direct) | `[LOGGER_SYNC]` |
+| `sync_flag` | Caller | Output Prefix |
+|---|---|---|
+| `false` | Worker thread (from queue) | `[LOGGER]` |
+| `true` | Calling thread (direct) | `[LOGGER_SYNC]` |
 
 ### Trade-offs
 
@@ -251,7 +251,7 @@ sequenceDiagram
 
     Worker->>Queue: dequeue()
     Queue-->>Worker: LogMessage
-    Worker->>Sink: write(msg, ASYNC_WRITE)
+    Worker->>Sink: write(msg, false)
     Sink-->>Worker: done
 ```
 
@@ -270,7 +270,7 @@ sequenceDiagram
     Logger->>Logger: fmt::format_to(buffer, ...)
     Logger->>Logger: write_sync(lvl, buffer)
     Logger->>Logger: lock(m_sink_mutex)
-    Logger->>Sink: write(msg, SYNC_WRITE)
+    Logger->>Sink: write(msg, true)
     Sink-->>Logger: done
     Logger->>Logger: unlock(m_sink_mutex)
     Logger-->>App: return (after I/O completes)

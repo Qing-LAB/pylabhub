@@ -4,10 +4,10 @@
 |---------------|-----------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0010`                                                 |
 | **Title**     | Actor Thread Model Redesign and Unified Script Interface        |
-| **Status**    | Phase 1 complete (2026-02-24) — Phase 2 complete (2026-02-24) — Phase 3 complete (2026-02-24) |
+| **Status**    | Phase 1 complete (2026-02-24) — Phase 2 complete (2026-02-24) — Phase 3 complete (2026-02-24) — ActorScriptHost (2026-02-28) |
 | **Created**   | 2026-02-24                                                      |
 | **Area**      | Actor Framework (`pylabhub-actor`)                              |
-| **Depends on**| HEP-CORE-0005 (Script Interface), HEP-CORE-0007 (DataHub Protocol), HEP-CORE-0008 (LoopPolicy) |
+| **Depends on**| HEP-CORE-0007 (DataHub Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost Framework) |
 | **Supersedes**| HEP-CORE-0005 (partially, on threading and callback model)      |
 
 ---
@@ -17,6 +17,7 @@
 **Phase 1 complete (2026-02-24).** Unified script interface and GIL-race fix are live.
 **Phase 2 complete (2026-02-24).** True 2-thread-per-role model; embedded-mode API on hub::Producer/Consumer.
 **Phase 3 complete (2026-02-24).** Application-level heartbeat: `zmq_thread_` sends `HEARTBEAT_REQ` only when `iteration_count_` advances.
+**ActorScriptHost complete (2026-02-28).** Dedicated interpreter thread via `PythonScriptHost`; `PyConfig.install_signal_handlers=0`; `main_thread_release_` GIL handoff. See §3.7 and HEP-CORE-0011.
 
 ### Phase 1 — complete
 
@@ -384,176 +385,111 @@ sequenceDiagram
     Note over LT,ZT: producer_->stop(); producer_->close() — BYE + DEREG via Messenger
 ```
 
+### 3.7 ActorScriptHost — Interpreter Thread Owner
+
+`ActorScriptHost` (`src/actor/actor_script_host.hpp/.cpp`) is the actor's concrete
+`PythonScriptHost` subclass (see **HEP-CORE-0011** for the abstract `ScriptHost`
+base class and `PythonScriptHost` threading model). It owns the CPython interpreter
+lifetime and drives all role workers from a single dedicated interpreter thread.
+
+#### 3.7.1 Class Responsibilities
+
+| Responsibility | How |
+|---|---|
+| Own `py::scoped_interpreter` | Interpreter thread; `do_python_work()` holds it for full lifetime |
+| Drive `ActorHost` lifecycle | `load_script()` → `start()` → wait → `stop()` inside `do_python_work()` |
+| Propagate external shutdown | `signal_shutdown()` → `ActorHost::signal_shutdown()` |
+| Report results to main thread | `script_load_ok_` / `has_active_roles_` set before `signal_ready_()` |
+| Support diagnostic modes | `set_validate_only()`, `set_list_roles()` — exit early with report |
+
+```cpp
+class ActorScriptHost : public scripting::PythonScriptHost {
+public:
+    void set_config(ActorConfig config);
+    void set_shutdown_flag(std::atomic<bool>* flag) noexcept;
+    void set_validate_only(bool v) noexcept;
+    void set_list_roles(bool v) noexcept;
+
+    void startup_() noexcept;   // spawns interpreter thread; blocks until ready
+    void shutdown_() noexcept;  // sets stop_, joins interpreter thread; idempotent
+    void signal_shutdown() noexcept; // signal handler path → ActorHost::signal_shutdown()
+
+    bool script_load_ok() const noexcept;    // available after startup_()
+    bool has_active_roles() const noexcept;  // available after startup_()
+
+protected:
+    void do_python_work(const std::filesystem::path& script_path) override;
+};
+```
+
+#### 3.7.2 Interpreter Thread Lifecycle
+
+```
+actor_main.cpp:                          Interpreter Thread (spawned by PythonScriptHost):
+  actor_script.set_config(config);
+  actor_script.set_shutdown_flag(&g_shutdown);
+  actor_script.startup_();            ─── spawns thread ──────────────────────────────────>
+                                                           Py_Initialize (py::scoped_interpreter)
+                                                           PyConfig: install_signal_handlers=0 ①
+                                                           PYTHONHOME from exe/../opt/python
+                                                           ActorHost::load_script() [GIL held]
+                                                           ActorHost::start()
+                                                             emplace main_thread_release_ ② → GIL released
+                                                             role worker loop_threads launched
+                                                           signal_ready_()  ③
+  <── startup_() returns ─────────────── unblocked by ③
+  check script_load_ok() / has_active_roles()
+  wait loop on g_shutdown ────────────────────────────────> wait (stop_ || g_shutdown)
+                                                           [loop_threads run; GIL acquired per on_iteration]
+  SIGINT / api.stop() ─────────────────> g_shutdown=true  signal_shutdown() ④
+  actor_script.shutdown_() ──────────── stop_=true         ActorHost::stop():
+                                          wakes wait          reset main_thread_release_ ⑤ → GIL re-acquired
+                                                              join loop_threads (py::gil_scoped_release ⑥)
+                                                              call_on_stop() for each role
+                                                           Py_Finalize (py::scoped_interpreter destructor)
+  <── shutdown_() returns (join)
+```
+
+**Annotations:**
+- ① `PyConfig.install_signal_handlers = 0` — preserves C++ SIGINT/SIGTERM handlers;
+  Python's default handler would intercept `SIGINT` before the C++ handler.
+- ② `main_thread_release_.emplace()` — `std::optional<py::gil_scoped_release>` member in
+  `ActorHost`; releasing the GIL here allows role `loop_thread_`s to acquire it.
+- ③ `signal_ready_()` — `PythonScriptHost` base sets `ready_ = true` and notifies
+  `init_promise_`; `startup_()` on the main thread unblocks from `init_future_.get()`.
+- ④ `signal_shutdown()` — called from the C++ signal handler (`SIGINT`/`SIGTERM`) or
+  from `ActorRoleAPI::stop()` inside a Python script.
+- ⑤ `reset()` on `main_thread_release_` — re-acquires the GIL before `stop()` joins
+  the role workers; the GIL must be held to call Python callbacks in `on_stop`.
+- ⑥ `py::gil_scoped_release` around each `join()` — the `loop_thread_` may still hold
+  the GIL during its current `on_iteration`; the interpreter thread must not hold it
+  while waiting for the join to avoid deadlock.
+
+#### 3.7.3 Signal Handler Safety
+
+`PyConfig.install_signal_handlers = 0` is set inside `PythonScriptHost::do_initialize()`
+before `Py_Initialize`. This is required because:
+
+1. CPython installs a `SIGINT` handler that raises `KeyboardInterrupt` — this would
+   prevent the C++ SIGINT handler (`g_shutdown_ = true`) from running.
+2. The actor uses `std::signal(SIGINT, ...)` in `actor_main.cpp` to set the shutdown
+   flag. If Python's handler fires first, the C++ handler never runs.
+3. Python scripts that need `KeyboardInterrupt` can register their own handler via
+   `signal.signal()` after initialization — the default `SIG_DFL` is preserved.
+
 ---
 
 ## 4. Script Interface
 
-### 4.1 Module Format Requirement
-
-Scripts must be organized as a **Python module or package**:
-
-```
-my_role/            ← Python package (preferred for multi-file scripts)
-├── __init__.py
-└── helpers.py
-
-my_role.py          ← Single-file module (acceptable for simple scripts)
-```
-
-The config field `script_module` specifies the **module name** (not a file path).
-The config field `script_path` specifies the **directory to add to `sys.path`**.
-
-For multiple roles in the same actor process, each module is imported under a
-**synthetic unique name** (`_plh_role_{role_name}_{actor_uid_8hex}`) to prevent
-`sys.modules` collisions and allow per-role state isolation.
-
-### 4.2 Callback Signatures
-
-#### Module-level code (framework-agnostic init)
-
-Runs at `import` time, once per role. Should not access `api` or SHM — both are
-unavailable at module level. Use for creating global data structures, importing
-dependencies, etc.
-
-```python
-import numpy as np          # OK — framework-agnostic
-CALIBRATION = np.zeros(8)   # OK — module-level data
-```
-
-#### `on_init(api)` — optional
-
-Called once after the interpreter is prepared, the module is imported, and SHM is
-ready. `api` is the persistent `ActorRoleAPI` object for this role.
-
-```python
-def on_init(api):
-    api.log("info", "sensor initialized")
-    # For producers: flexzone is accessible via api if has_shm
-```
-
-If `on_init` raises, the role logs the exception and **aborts init** — BYE/DEREG is
-sent to the broker, no HELLO is sent, and the role stops without entering the loop.
-
-#### `on_iteration(slot, flexzone, messages, api)` — required
-
-Called every iteration. All four parameters are always present; some may be `None`
-or empty depending on what was available this iteration.
-
-```python
-def on_iteration(slot, flexzone, messages, api):
-    # slot:     ctypes struct (writable for producer, read-only for consumer)
-    #           May be None on timeout or when loop_trigger="messenger"
-    # flexzone: ctypes struct (writable for producer, read-only for consumer)
-    #           May be None if no flexzone_schema defined
-    # messages: list of (sender: str, data: bytes) tuples — may be empty
-    # api:      ActorRoleAPI object — persistent for role lifetime
-
-    if slot is not None:
-        slot.ts = time.time()
-        slot.value = read_sensor()
-
-    for sender, data in messages:
-        handle_command(sender, data, api)
-
-    return True  # Producer: True/None = commit, False = discard
-                 # Consumer: return value is ignored
-```
-
-**Parameter guarantees:**
-- `slot` is `None` when: timeout occurred, `loop_trigger="messenger"`, or `has_shm=False`.
-- `flexzone` is `None` when: `flexzone_schema` is not defined.
-- `messages` is always a `list` (may be empty `[]`).
-- `api` is always the live `ActorRoleAPI` object.
-
-**Slot lifetime**: `slot` is valid **only during this call**. Do not store a reference
-to `slot` beyond `on_iteration`. The underlying memory is released immediately after
-the call returns.
-
-**Producer return value**: `True` or `None` = commit the slot to SHM. `False` = discard.
-
-**Consumer return value**: ignored.
-
-#### `on_stop(api)` — optional
-
-Called once during graceful shutdown, after the loop exits and SHM is released,
-but before the ZMQ thread sends BYE/DEREG. Use for cleanup and final logging.
-
-```python
-def on_stop(api):
-    api.log("info", "role stopping — flushing buffers")
-    flush_to_disk()
-```
-
-### 4.3 Callback Registration
-
-Callbacks are registered by **defining functions with the expected names** in the
-module's top-level scope. The actor framework looks up `on_init`, `on_iteration`,
-and `on_stop` by name using `getattr(module, name, None)`.
-
-This replaces the decorator-based registration (`@actor.on_write`, `@actor.on_read`, etc.)
-with a plain convention: if the function exists by name, it is called.
-
-```python
-# Old (current, decorator-based):
-@actor.on_write("raw_out")
-def write_raw(slot, flexzone, api) -> bool: ...
-
-@actor.on_read("cfg_in")
-def read_cfg(slot, flexzone, api, *, timed_out=False): ...
-
-# New (convention-based, module format):
-# In my_role.py (mapped to role "raw_out"):
-def on_iteration(slot, flexzone, messages, api):
-    ...
-    return True
-```
-
-### 4.4 API Object (`ActorRoleAPI`)
-
-The `api` object is created once at role startup and passed as the fourth argument
-to every callback. It provides:
-
-**Common (both roles):**
-- `api.log(level, msg)` — log with `[ACTOR-uid/role_name]` prefix
-- `api.role_name()` → `str`
-- `api.uid()` → `str` (actor UID)
-- `api.actor_name()` → `str`
-- `api.channel()` → `str`
-- `api.broker()` → `str` (configured endpoint, may not be live)
-- `api.kind()` → `"producer"` or `"consumer"`
-- `api.stop()` — request actor shutdown (all roles, graceful)
-- `api.set_critical_error()` — latch a critical error flag, initiate immediate graceful exit
-- `api.metrics()` → `dict` — timing/performance metrics for this role
-
-**Producer:**
-- `api.broadcast(data: bytes)` — send to all connected consumers via ZMQ
-- `api.send(identity: str, data: bytes)` — send to one consumer
-- `api.consumers()` → `list[str]` — ZMQ identities of connected consumers
-- `api.update_flexzone_checksum()` — update SHM flexzone BLAKE2b checksum
-- `api.spinlock(idx)` — SHM spinlock context manager
-
-**Consumer:**
-- `api.send_ctrl(data: bytes)` — send ctrl frame to producer
-- `api.slot_valid()` → `bool` — checksum result for current slot
-- `api.verify_flexzone_checksum()` → `bool`
-- `api.accept_flexzone_state()` → `bool`
-- `api.spinlock(idx)` — SHM spinlock context manager
-
-**Removed in new design** (no longer needed with unified callback):
-- `api.trigger_write()` — replaced by `loop_trigger` config and `incoming_cv_`
-
-### 4.5 Critical Error Handling
-
-`api.set_critical_error()` is a **one-way latch**: once set, it cannot be cleared.
-
-The C++ framework checks `critical_error_` at the top of each iteration:
-1. Sets `running_ = false`
-2. Calls `incoming_cv_.notify_all()` (unblocks loop thread if waiting)
-3. Loop thread completes its current iteration normally (including SHM release)
-4. Graceful exit sequence begins (see §6)
-
-No auto-restart is performed on critical error. The actor process exits cleanly.
-
+> **Authoritative reference: HEP-CORE-0014** (Actor Framework Design) §3 covers the
+> complete Python script interface: module format, callback signatures (`on_init`,
+> `on_iteration`, `on_stop`), `ActorRoleAPI` methods, `loop_trigger` strategy,
+> `LoopTimingPolicy`, `RoleMetrics`, and `SharedSpinLockPy`.
+>
+> This HEP (§3) owns the threading model: how the loop thread acquires the GIL and calls
+> Python callbacks, how `zmq_thread_` routes events to `incoming_queue_`, and how the
+> 2-thread-per-role model works internally. HEP-CORE-0014 §3 owns the developer-facing
+> API contract.
 ---
 
 ## 5. Message Model
@@ -705,90 +641,14 @@ before the loop exits.
 
 ## 8. Configuration
 
-### 8.1 New Config Fields
-
-The JSON config gains a logical grouping structure. Existing flat fields remain
-valid for backward compatibility with a deprecation warning.
-
-```json
-{
-  "actor": { "uid": "...", "name": "..." },
-
-  "roles": {
-    "raw_out": {
-      "kind":    "producer",
-      "channel": "lab.sensor.temperature",
-      "broker":  "tcp://127.0.0.1:5570",
-      "broker_pubkey": "",
-
-      "loop": {
-        "trigger":    "shm",
-        "interval_ms": 100,
-        "timing":     "fixed_pace",
-        "policy":     "fixed_rate",
-        "period_ms":  100
-      },
-
-      "messenger": {
-        "poll_ms":             5,
-        "heartbeat_interval_ms": 1000
-      },
-
-      "script": {
-        "module": "sensor_role",
-        "path":   "/home/user/scripts"
-      },
-
-      "shm": { "enabled": true, "slot_count": 8, "secret": 0 },
-      "slot_schema": { ... },
-      "flexzone_schema": { ... },
-      "validation": { ... }
-    }
-  }
-}
-```
-
-### 8.2 New `RoleConfig` Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `loop_trigger` | enum `LoopTrigger` | `Shm` | Primary blocking mechanism for Phase 1 |
-| `messenger_poll_ms` | `int` | `5` | ZMQ poll timeout; MUST be < 10 ms (warn if ≥ 10) |
-| `heartbeat_interval_ms` | `int` | `0` (auto) | Broker heartbeat interval; 0 = 10× interval_ms |
-| `script_module` | `std::string` | `""` | Python module name (replaces single-file `script_path`) |
-| `script_path` | `std::string` | `""` | Directory added to sys.path for module discovery |
-
-**Validation rules enforced at `from_json_file()`:**
-
-| Condition | Action |
-|-----------|--------|
-| `loop_trigger = "shm"` but `has_shm = false` | `throw std::runtime_error` — deny init |
-| `messenger_poll_ms >= 10` | `LOGGER_WARN` at startup |
-| `heartbeat_interval_ms < interval_ms × 10` | `LOGGER_WARN` at startup |
-
-### 8.3 `LoopTrigger` Enum
-
-```cpp
-enum class LoopTrigger
-{
-    Shm,       ///< Phase 1 blocks on acquire_slot(timeout=interval_ms)  [default]
-    Messenger  ///< Phase 1 blocks on incoming_cv_.wait_for(messenger_poll_ms)
-               ///<   — use when there is no SHM channel (ZMQ-only role)
-};
-```
-
-### 8.4 `ActorConfig` Changes
-
-`script_path` (single flat field pointing to a `.py` file) is replaced by:
-- `script_module`: module name
-- `script_path`: directory for `sys.path`
-
-The old format is accepted with a deprecation warning (backward compatibility):
-```json
-{ "script": "sensor_node.py" }
-// parsed as: script_module = "sensor_node", script_path = dirname(config_file)
-```
-
+> **Authoritative reference: HEP-CORE-0014** (Actor Framework Design) §2 covers the
+> complete configuration reference: actor directory layout, `actor.json` field reference,
+> per-role fields, `LoopTrigger` enum values, `validation` sub-block, and slot schema
+> field types.
+>
+> Threading-relevant config fields (`loop_trigger`, `messenger_poll_ms`,
+> `heartbeat_interval_ms`) are described in HEP-CORE-0014 §2.3; the threading behavior
+> they control is specified in §3 of this HEP.
 ---
 
 ## 9. Removed / Replaced Items
