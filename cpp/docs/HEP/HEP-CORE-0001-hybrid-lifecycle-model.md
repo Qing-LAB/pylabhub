@@ -15,7 +15,13 @@
 
 ## Implementation status
 
-All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/include/utils/module_def.hpp`, and `src/utils/lifecycle.cpp`. Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/TODO_MASTER.md` and `docs/todo/`.
+All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/include/utils/module_def.hpp`, and three implementation files:
+- `src/utils/service/lifecycle.cpp` — public API, ModuleDef, initialize/finalize, log sink
+- `src/utils/service/lifecycle_topology.cpp` — buildStaticGraph, topologicalSort, printStatusAndAbort
+- `src/utils/service/lifecycle_dynamic.cpp` — all dynamic module operations (load/unload/wait/computeClosure/dynShutdownThread)
+
+They share the private header `src/utils/service/lifecycle_impl.hpp` (not installed).
+Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/TODO_MASTER.md` and `docs/todo/`.
 
 ---
 
@@ -224,7 +230,15 @@ struct InternalGraphNode {
     std::atomic<int> ref_count;
 };
 
-enum class DynamicModuleStatus { UNLOADED, LOADING, LOADED, FAILED };
+enum class DynamicModuleStatus {
+    UNLOADED,
+    LOADING,          // Startup in progress (cycle-detection sentinel)
+    LOADED,
+    FAILED,           // Startup threw or returned error
+    UNLOADING,        // Marked for shutdown; dyn-shutdown thread will process
+    SHUTDOWN_TIMEOUT, // Shutdown callback timed out; module may be in undefined state
+    FAILED_SHUTDOWN   // Shutdown callback threw; module may be in undefined state
+};
 ```
 
 Cycle detection during `load_module` uses `LOADING` to detect recursive load.

@@ -8,7 +8,7 @@
  */
 #include "actor_config.hpp"
 
-#include "plh_service.hpp"        // LOGGER_WARN (used for post-lifecycle contexts)
+#include "utils/logger.hpp"
 #include "utils/uid_utils.hpp"    // generate_actor_uid, has_actor_prefix
 
 #include <cstdio>                 // std::fprintf (for pre-lifecycle warnings)
@@ -82,19 +82,19 @@ ValidationPolicy::Checksum parse_checksum(const std::string &s, const std::strin
         "' (must be 'none', 'update', or 'enforce')");
 }
 
-ValidationPolicy::OnFail parse_on_fail(const std::string &s)
+bool parse_on_fail(const std::string &s)
 {
-    if (s == "skip") return ValidationPolicy::OnFail::Skip;
-    if (s == "pass") return ValidationPolicy::OnFail::Pass;
+    if (s == "skip") return true;
+    if (s == "pass") return false;
     throw std::runtime_error(
         "Actor config: invalid 'on_checksum_fail' = '" + s +
         "' (must be 'skip' or 'pass')");
 }
 
-ValidationPolicy::OnPyError parse_on_py_error(const std::string &s)
+bool parse_on_py_error(const std::string &s)
 {
-    if (s == "continue") return ValidationPolicy::OnPyError::Continue;
-    if (s == "stop")     return ValidationPolicy::OnPyError::Stop;
+    if (s == "continue") return false;
+    if (s == "stop")     return true;
     throw std::runtime_error(
         "Actor config: invalid 'on_python_error' = '" + s +
         "' (must be 'continue' or 'stop')");
@@ -136,8 +136,8 @@ ValidationPolicy parse_validation(const nlohmann::json &j)
         parse_checksum(j.value("slot_checksum", "update"), "slot_checksum");
     v.flexzone_checksum =
         parse_checksum(j.value("flexzone_checksum", "update"), "flexzone_checksum");
-    v.on_checksum_fail  = parse_on_fail(j.value("on_checksum_fail",  "skip"));
-    v.on_python_error   = parse_on_py_error(j.value("on_python_error", "continue"));
+    v.skip_on_validation_error = parse_on_fail(j.value("on_checksum_fail",  "skip"));
+    v.stop_on_python_error     = parse_on_py_error(j.value("on_python_error", "continue"));
     return v;
 }
 
@@ -250,7 +250,8 @@ RoleConfig parse_role(const std::string &role_name, const nlohmann::json &j)
             throw std::runtime_error(
                 "Actor config: role '" + role_name +
                 "': 'script' must be an object "
-                "{\"module\": \"...\", \"path\": \"...\"}");
+                "{\"type\": \"python\", \"module\": \"...\", \"path\": \"...\"}");
+        rc.script_type     = s.value("type",   std::string{"python"});
         rc.script_module   = s.value("module", std::string{});
         rc.script_base_dir = s.value("path",   std::string{});
     }

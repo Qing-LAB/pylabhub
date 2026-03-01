@@ -215,7 +215,7 @@ void AdminShell::startup_()
     const auto& cfg    = HubConfig::get_instance();
     const auto  endpoint = cfg.admin_endpoint();
 
-    // Optional pre-shared token from hub.user.json ["admin"]["token"].
+    // Optional pre-shared token from hub.json ["admin"]["token"].
     // If absent, token is empty (any local connection is accepted).
     const std::string auth_token = cfg.admin_token();
 

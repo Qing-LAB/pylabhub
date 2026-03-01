@@ -4,13 +4,14 @@
  * @file hub_config.hpp
  * @brief HubConfig — central hub configuration singleton lifecycle module.
  *
- * Reads `config/hub.json` (relative to the binary's location), resolves all
- * paths to absolute, and exposes typed getters to every module in the process.
+ * Reads `hub.json` from the hub instance directory (set via set_config_path() before
+ * lifecycle startup), resolves all paths to absolute, and exposes typed getters.
  *
  * ## Lifecycle
  *
  * Register via `LifecycleGuard`:
  * @code
+ *   HubConfig::set_config_path(hub_dir / "hub.json");  // call before lifecycle
  *   LifecycleGuard lifecycle(MakeModDefList(
  *       Logger::GetLifecycleModule(),
  *       pylabhub::crypto::GetLifecycleModule(),
@@ -20,23 +21,13 @@
  *
  * Startup order: `Logger → CryptoUtils → HubConfig → ...`
  *
- * ## Config loading — layered (priority low → high)
+ * ## Config loading (priority low → high)
  *
- *  1. Built-in C++ defaults (always applied first)
- *  2. `config/hub.default.json` — canonical defaults staged by the build system;
- *     always updated on rebuild, **never** edited by users
- *  3. `config/hub.user.json` — user customisations merged on top of defaults;
- *     deployed once from a template and **never overwritten** by the build
- *  4. `PYLABHUB_CONFIG_FILE` env var — explicit single-file override; bypasses
- *     the default/user layering (useful for CI or scripted deployments)
- *  5. `PYLABHUB_HUB_NAME` / `PYLABHUB_BROKER_ENDPOINT` / `PYLABHUB_ADMIN_ENDPOINT`
+ *  1. Built-in C++ defaults (hard-coded in Impl; always applied first)
+ *  2. `hub.json` from hub instance directory — loaded when set_config_path() is called
+ *  3. `PYLABHUB_CONFIG_FILE` env var — explicit single-file override (CI / scripted)
+ *  4. `PYLABHUB_HUB_NAME` / `PYLABHUB_BROKER_ENDPOINT` / `PYLABHUB_ADMIN_ENDPOINT`
  *     — highest-priority env var overrides applied after file loading
- *
- * The config directory is discovered (in order):
- *  - `<binary_dir>/../config/` (standard staged layout: bin/ + config/)
- *  - `<binary_dir>/config/`   (flat layout)
- *
- * If no config directory is found, HubConfig starts with built-in defaults.
  *
  * ## Environment overrides (applied after file load)
  *
@@ -45,8 +36,8 @@
  *  - `PYLABHUB_ADMIN_ENDPOINT`       — overrides hub.admin_endpoint
  */
 
-#include "plh_service.hpp"
-#include "utils/connection_policy.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/channel_access_policy.hpp"
 #include "utils/json_config.hpp"
 
 #include <chrono>
@@ -115,7 +106,7 @@ class PYLABHUB_UTILS_EXPORT HubConfig
      *
      * Format: @c "HUB-{NAME}-{8HEX}" (e.g. "HUB-MYLABHUB-3A7F2B1C").
      * Auto-generated from hub_name at first startup if not set in config.
-     * Can be overridden in hub.user.json["hub"]["uid"].
+     * Set via hub.json["hub"]["uid"].
      */
     const std::string& hub_uid() const noexcept;
 
@@ -158,11 +149,47 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /** Default data output directory. */
     const std::filesystem::path& data_dir() const noexcept;
 
-    /** Optional Python startup script (empty if not configured). */
-    const std::filesystem::path& python_startup_script() const noexcept;
+    /**
+     * @brief Hub script package directory (type-specific subdirectory of the script path).
+     *
+     * Resolved from `hub.json["script"]["path"]` + `hub.json["script"]["type"]`.
+     * For example, `path = "./script"` + `type = "python"` → `<hub_dir>/script/python/`.
+     * `HubScript` loads `<hub_script_dir>/__init__.py` as a Python package.
+     *
+     * Empty when not configured or no hub directory is in use (dev/test mode).
+     *
+     * Backward compat: old hubs with `"python": {"script": "./script"}` get
+     * `hub_script_dir = <hub_dir>/script/` (flat, no type subdir appended).
+     */
+    const std::filesystem::path& hub_script_dir() const noexcept;
+
+    /**
+     * @brief The scripting language type configured for this hub.
+     *
+     * Set via `hub.json["script"]["type"]`. Empty when not configured.
+     * Required when `hub.json["script"]["path"]` is also set; omitting it
+     * leaves `hub_script_dir()` empty so the hub runs without a user script.
+     * Valid values: `"python"`, `"lua"`.
+     */
+    const std::string& script_type() const noexcept;
 
     /** Path to requirements.txt for Python environment setup. */
     const std::filesystem::path& python_requirements() const noexcept;
+
+    /**
+     * @brief Tick interval for the hub's periodic tick thread (milliseconds).
+     *
+     * Set via `hub.json["python"]["tick_interval_ms"]`. Default: 1000 ms.
+     */
+    int tick_interval_ms() const noexcept;
+
+    /**
+     * @brief How often the C++ tick runner logs a channel health summary (milliseconds).
+     *
+     * Set via `hub.json["python"]["health_log_interval_ms"]`. Default: 60000 ms.
+     * The actual log fires when `tick_count % (health_log_interval_ms / tick_interval_ms) == 0`.
+     */
+    int health_log_interval_ms() const noexcept;
 
     // -----------------------------------------------------------------------
     // Security settings
@@ -171,7 +198,7 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /**
      * @brief Optional pre-shared token for the admin shell.
      *
-     * Read from `hub.user.json["admin"]["token"]`. Empty string means no auth
+     * Read from `hub.json["admin"]["token"]`. Empty string means no auth
      * (connections from localhost are accepted without a token).
      */
     const std::string& admin_token() const noexcept;
@@ -196,8 +223,8 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /**
      * @brief Hub directory path.
      *
-     * In hub.json mode (`<hub_dir>/hub.json` loaded via set_config_path()), this is the
-     * hub instance directory. In legacy flat-config mode this equals config_dir().
+     * The hub instance directory (parent of hub.json). Set via set_config_path().
+     * Empty when running without a hub directory (dev/test mode using built-in defaults).
      */
     const std::filesystem::path& hub_dir() const noexcept;
 

@@ -169,6 +169,39 @@ add_dependencies(stage_third_party_deps stage_python_runtime)
 message(STATUS "[pylabhub-third-party] Python will be staged to '${PYLABHUB_STAGING_DIR}/opt/python'.")
 
 # ===========================================================================
+# PART 3b: WINDOWS — stage Python DLLs to bin/ and tests/
+#
+# On Windows there is no RPATH.  The OS DLL search order checks the executable's
+# own directory before PATH, so python3.dll and python3XX.dll (e.g. python314.dll)
+# must live next to every .exe that embeds Python.  This mirrors the convention
+# used for other third-party DLLs (libzmq, libsodium, …) in StageHelpers.cmake.
+#
+# The extension modules (.pyd files) and stdlib do NOT need to be in bin/ — they
+# are resolved via PYTHONHOME which we set in python_interpreter.cpp.
+# ===========================================================================
+if(PLATFORM_WIN64)
+  # Derive DLL name from the Python version set by find_package(Python).
+  # Python 3.14 → python314.dll
+  set(_py_major_minor "${Python_VERSION_MAJOR}${Python_VERSION_MINOR}")
+  set(_py_dll         "${_py_root}/python${_py_major_minor}.dll")
+  set(_py_stable_dll  "${_py_root}/python3.dll")
+
+  add_custom_target(stage_python_dlls_win
+      # bin/ — for the hubshell executable
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_py_stable_dll}" "${PYLABHUB_STAGING_DIR}/bin/python3.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_py_dll}"        "${PYLABHUB_STAGING_DIR}/bin/python${_py_major_minor}.dll"
+      # tests/ — for embedded-Python test binaries
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_py_stable_dll}" "${PYLABHUB_STAGING_DIR}/tests/python3.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_py_dll}"        "${PYLABHUB_STAGING_DIR}/tests/python${_py_major_minor}.dll"
+      DEPENDS stage_python_runtime
+      COMMENT "Staging Python DLLs (python3.dll, python${_py_major_minor}.dll) to bin/ and tests/"
+      VERBATIM
+  )
+  add_dependencies(stage_third_party_deps stage_python_dlls_win)
+  message(STATUS "[pylabhub-third-party] Windows: Python DLLs will be staged to bin/ and tests/.")
+endif()
+
+# ===========================================================================
 # PART 4: PREPARE_PYTHON_ENV — pip install requirements into staged Python
 # ===========================================================================
 if(NOT PYLABHUB_PREPARE_PYTHON_ENV)
@@ -176,7 +209,13 @@ if(NOT PYLABHUB_PREPARE_PYTHON_ENV)
   return()
 endif()
 
-set(_requirements_src "${CMAKE_SOURCE_DIR}/share/scripts/python/requirements.txt")
+set(_requirements_src "${PYLABHUB_PYTHON_REQUIREMENTS_FILE}")
+if(NOT EXISTS "${_requirements_src}")
+  message(FATAL_ERROR
+    "[pylabhub-third-party] PYLABHUB_PYTHON_REQUIREMENTS_FILE not found: '${_requirements_src}'\n"
+    "  Set -DPYLABHUB_PYTHON_REQUIREMENTS_FILE=<path> to a valid requirements file.")
+endif()
+message(STATUS "[pylabhub-third-party] pip requirements: ${_requirements_src}")
 set(_requirements_dst "${PYLABHUB_STAGING_DIR}/share/scripts/python/requirements.txt")
 set(_pip_stamp        "${PYLABHUB_STAGING_DIR}/opt/python/.pip_env_ready")
 

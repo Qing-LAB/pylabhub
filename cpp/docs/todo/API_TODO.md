@@ -88,6 +88,71 @@ RecoveryResult datablock_validate_integrity(...);
 
 ## Backlog
 
+### Pure C++ Actor / Hub Template (CppRoleHost)
+
+**Goal**: Provide a header-only CRTP/virtual template so users can implement high-performance
+producer/consumer roles in C++ without Python, while reusing the same `actor.json` / `hub.json`
+config, `hub::Producer` / `hub::Consumer` services, and RAII slot lifecycle.
+
+**Motivation**: Python scripting adds GIL overhead (~150 ns/iter uncontested + CPython call dispatch
+~3–5 µs/iter). At >10 kHz loop rates or when squeezing max throughput, a pure C++ path eliminates
+this overhead entirely while keeping the same deployment model (same hub, same channels, same config).
+
+**Key requirement from user (2026-02-28)**: must operate on the same hub/actor directory config
+(`actor.json` + `actor_dir`) — no separate config format.
+
+**Design sketch:**
+```cpp
+// User writes only this:
+struct SensorSlot {
+    double timestamp;
+    float  value;
+    static constexpr SchemaDesc schema() {
+        return {{"timestamp","float64"}, {"value","float32"}};
+    }
+};
+
+class MySensor : public pylabhub::CppProducer<SensorSlot>
+{
+    bool on_iteration(SensorSlot& slot) override
+    {
+        slot.timestamp = platform::now_s();
+        slot.value     = read_adc();
+        return true; // commit
+    }
+};
+
+int main()
+{
+    pylabhub::CppActorHost host("actor.json"); // same actor.json, same hub.json
+    host.add_producer<MySensor>("data_out");
+    host.run(); // SIGINT + graceful shutdown included
+}
+```
+
+**What's already available (no new infra needed):**
+- `hub::Producer` / `hub::Consumer` full API — connect, acquire, commit, close
+- `SlotIterator` / `TransactionContext` RAII acquire/release with LoopPolicy
+- `hub::Messenger` — ZMQ peer-to-peer, heartbeat
+- Signal handling pattern (established by GIL fixes)
+- `RoleConfig` / `ActorConfig` parser — reads `actor.json`, `hub_dir`, channel config
+
+**What to write:**
+- `CppRoleHost` header-only template (CRTP or virtual base) — run loop without Python/GIL
+- `CppActorHost` wrapper — SIGINT, graceful shutdown, LoopPolicy pacing (mirrors ActorHost)
+- Compile-time schema descriptor (`SchemaDesc::schema()`) → runtime schema validation at connect
+- Optional: `CppConsumer<SlotType>` mirror
+
+**Design questions to resolve at implementation time:**
+1. Schema declaration — `static constexpr SchemaDesc schema()` vs external JSON reuse
+2. Flexzone — typed template parameter or `void*` + size
+3. ZMQ messaging — typed `send<T>()` / `recv<T>()` or just wrap `Messenger` directly
+4. Config — reuse `RoleConfig` directly (broker endpoint, channel name, interval_ms all there)
+
+**Estimated effort:** 2–3 days. Not urgent — Python scripting covers all current use cases.
+
+---
+
 ### Header / Include Layering Refactor
 
 **Goal**: Establish a clean, layered include structure across the entire codebase so that each
@@ -141,18 +206,127 @@ Umbrella headers (convenience only, include what they promise):
 5. CMake `target_include_directories` should enforce the boundary: C-API targets see only
    Layer 0 includes; `pylabhub-utils` consumers see Layer 1–3.
 
-**Scope**:
-- [ ] Audit `data_block.hpp` — extract C-API declarations into `data_block_c_api.h`;
-      separate config/enums into `data_block_config.hpp`; keep template layer in `data_block.hpp`
-- [ ] Audit `messenger.hpp` — verify no DataBlock or pybind11 leakage
-- [ ] Audit `broker_service.hpp`, `hub_producer.hpp`, `hub_consumer.hpp` for unnecessary
-      transitive includes
-- [ ] Review `actor_schema.hpp` and `actor_config.hpp` — no json.hpp in public actor headers
-- [ ] Review `plh_*.hpp` umbrella headers — confirm they only include what they document
-- [ ] Add CMake `SYSTEM` / `INTERFACE` include guards to enforce layer boundaries
-- [ ] Measure before/after full-rebuild time (`cmake --build build --target all`) as a metric
+**Phase A complete (2026-02-26) — 550/550 tests passing:**
+- [x] `data_block_policy.hpp` — 6 policy enums (DataBlockPolicy, ConsumerSyncPolicy,
+      DataBlockOpenMode, ChecksumType, ChecksumPolicy, LoopPolicy)
+- [x] `data_block_metrics.hpp` — ContextMetrics struct only
+- [x] `data_block_config.hpp` — DataBlockConfig + DataBlockPageSize + TIMEOUT_* constants;
+      includes data_block_policy.hpp
+- [x] `data_block_fwd.hpp` — forward declarations (DataBlockProducer/Consumer/SlotHandles)
+- [x] `src/include/nlohmann/json_fwd.hpp` shim — REMOVED 2026-02-27 (was a no-op; json_config.hpp
+      needs full json.hpp in template bodies anyway; no compile-time saving possible without
+      a deeper restructure). Public headers now use `<nlohmann/json.hpp>` directly.
+- [x] `messenger.hpp`, `hub_producer.hpp`, `hub_consumer.hpp` → `<nlohmann/json.hpp>` (direct)
 
-**Files most affected**: `data_block.hpp`, `plh_datahub.hpp`, `src/utils/CMakeLists.txt`
+**Full audit completed 2026-02-26 (explore agent). Findings:**
+
+**Critical entanglements to resolve (in priority order):**
+
+**[x] P1 — Bool-disguise enum cleanup ✅ DONE 2026-02-27:**
+- Removed 7 two-value enums that were bool-disguises:
+  `LockMode`, `ResourceType` (file_lock.hpp), `ShmProcessingMode` (deleted),
+  `CommitDecision` (json_config.hpp), `Sink::WRITE_MODE` (sink.hpp),
+  `ValidationPolicy::OnFail`, `ValidationPolicy::OnPyError` (actor_config.hpp)
+- Replaced with plain `bool` parameters and `bool` struct fields with named comments
+- API change: `FileLock(path, is_directory, blocking)`, `Sink::write(msg, sync_flag)`,
+  `ValidationPolicy::skip_on_validation_error`, `ValidationPolicy::stop_on_python_error`,
+  `Producer/Consumer::has_realtime_handler()`
+- Updated all 20+ call sites across src/ and tests/
+- Added extensive doc comments to all remaining (non-bool-disguise) enums
+- Updated HEP-CORE-0009 policy reference document
+- 550/550 tests pass
+
+**[x] P2 — Split `data_block.cpp` (3969L → 4 files + private header) ✅ DONE 2026-02-27 — 550/550 tests:**
+```
+shm/data_block_internal.hpp   — private header: detail:: inline helpers + internal:: constants
+                                 + coordination function declarations (~310L)
+shm/data_block_slot_ops.cpp   — acquire_write/read/release, state machine transitions (~180L)
+shm/data_block_c_api.cpp      — all extern "C" functions from slot_rw_coordinator.h (~270L)
+shm/data_block_schema.cpp     — schema info + layout checksum (BLAKE2b, no DataBlock dep) (~135L)
+shm/data_block.cpp            — DataBlockLayout, DataBlock class, impl structs, public API,
+                                 factory functions (~2894L; was 3969L)
+```
+Private header pattern (same as lifecycle_impl.hpp): detail::/internal:: namespaces shared
+across slot_ops, c_api, and data_block.cpp; coordination functions declared in
+namespace pylabhub::hub (no internal:: sub-namespace, matching public header convention).
+
+**[x] P3 — `src/utils/` subdirectory restructure ✅ DONE 2026-02-27 — 550/550 tests:**
+```
+core/       — format_tools.cpp, debug_info.cpp, platform.cpp, uuid_utils.cpp
+service/    — lifecycle.cpp, file_lock.cpp, crypto_utils.cpp, hub_vault.cpp
+logging/    — logger.cpp + logger_sinks/ (moved from utils root)
+config/     — json_config.cpp, hub_config.cpp
+shm/        — data_block.cpp, data_block_mutex.cpp, data_block_recovery.cpp,
+               shared_memory_spinlock.cpp, slot_diagnostics.cpp, slot_recovery.cpp,
+               integrity_validator.cpp
+ipc/        — zmq_context.cpp, messenger.cpp, heartbeat_manager.cpp,
+               channel_handle.cpp, channel_registry.cpp, broker_service.cpp
+hub/        — hub_producer.cpp, hub_consumer.cpp
+```
+Private headers moved alongside their .cpp (channel_registry.hpp, channel_handle_factory.hpp
+→ ipc/; channel_handle_internals.hpp → hub/; uid_utils.hpp → config/).
+portable_atomic_shared_ptr.hpp stays at src/utils/ root (cross-group).
+Added PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} to target_include_directories in CMakeLists.txt.
+test_layer3_datahub CMakeLists.txt: added src/utils/ipc to PRIVATE includes (for channel_registry.hpp).
+test_layer3_datahub CMakeLists.txt: channel_registry.cpp source path updated to ipc/channel_registry.cpp.
+
+**[x] P4 — Extract ZMQ protocol marshaling from `messenger.cpp` (1707L) ✅ DONE 2026-02-27 — 550/550 tests:**
+- `ipc/messenger_internal.hpp` (275L): private header — `internal::` constants + inline helpers
+  (`kFrameTypeControl`, `kDefaultRegisterTimeoutMs`, `hex_encode/decode_schema_hash`, etc.),
+  all command structs, `HeartbeatEntry`, `MessengerImpl` class declaration (inline: dtor/enqueue/start_worker)
+- `ipc/messenger_protocol.cpp` (665L): all broker protocol `handle_command` overloads
+  (RegisterProducer, RegisterConsumer, DeregisterConsumer, UnregisterChannel, ChecksumErrorReport,
+  DiscoverProducer, CreateChannel, ConnectChannel), `send_disc_req`, `send_immediate_heartbeat`
+- `ipc/messenger.cpp` reduced to ~811L: worker loop, process_incoming, send_heartbeats,
+  ConnectCmd/DisconnectCmd/StopCmd/SuppressHeartbeatCmd/HeartbeatNowCmd handlers, public API, lifecycle
+
+**P5 — `plh_datahub.hpp` → `json_fwd.hpp` [1 h]:**
+- Line 16: `#include <nlohmann/json.hpp>` → `#include <nlohmann/json_fwd.hpp>`
+- Update TUs that need full json to include it explicitly
+
+**[x] P6 — Split `actor_host.cpp` (1928L) role workers ✅ DONE 2026-02-27 — 550/550 tests:**
+- `actor_role_workers.cpp` (1164L): ProducerRoleWorker + ConsumerRoleWorker implementations
+- `actor_worker_helpers.hpp` (469L): anonymous-namespace helpers shared by both workers
+- `actor_host.cpp` (284L): ActorHost orchestrator only
+- `#pragma GCC diagnostic push/pop` suppresses unused-function warnings for helpers
+  not used in every TU
+
+**[x] P7 — Split `lifecycle.cpp` (1771L) ✅ DONE 2026-02-27 — 550/550 tests:**
+- `lifecycle_impl.hpp` (354L): private header — includes, validate_module_name/timedShutdown
+  helpers, lifecycle_internal types, LifecycleManagerImpl class definition
+- `lifecycle_topology.cpp` (137L): buildStaticGraph, topologicalSort, printStatusAndAbort
+- `lifecycle_dynamic.cpp` (811L): loadModule/Internal, unloadModule, shutdownModuleWithTimeout,
+  computeUnloadClosure, dynShutdownThread*, processOneUnloadInThread, waitForUnload,
+  getDynamicModuleState, recalculateReferenceCounts
+- `lifecycle.cpp` (501L): ModuleDef API, ~LifecycleManagerImpl, register/init/finalize,
+  log sink, LifecycleManager public delegation
+
+**[x] P8 — Umbrella header split: client API vs server API ✅ DONE 2026-02-27 — 550/550 tests:**
+Rationale: `plh_datahub.hpp` exposes BrokerService (server infra) alongside DataBlock/hub API.
+Actors/scripts only need client API; hub server needs full API.
+
+Completed:
+- Removed redundant direct `<nlohmann/json.hpp>` from plh_datahub.hpp (transitive via messenger.hpp)
+- Created `src/include/plh_datahub_client.hpp` (Layer 3a):
+  plh_service.hpp + data_block.hpp + hub_producer.hpp + hub_consumer.hpp
+  (no BrokerService, no JsonConfig, no HubConfig, no schema_blds)
+  Note: nlohmann/json.hpp still arrives transitively via messenger.hpp — unavoidable
+  without restructuring Messenger public API
+- Updated docs: README_utils.md umbrella table, README_DirectoryLayout.md §1 (install tree)
+
+**P9 — `hub_config_keys.hpp` [1–2 h, after Phase 5]:**
+- Decouple config schema (keys, defaults, field accessors) from lifecycle module registration
+- Small consumers can include config keys without dragging in lifecycle/ModuleDef
+
+**Remaining items:**
+- [ ] Audit `messenger.hpp` — verify no DataBlock or pybind11 leakage
+- [ ] Audit `broker_service.hpp` for unnecessary transitive includes
+- [ ] Review `actor_schema.hpp` and `actor_config.hpp` — no json.hpp in public actor headers
+- [ ] Add CMake `SYSTEM` / `INTERFACE` include guards to enforce layer boundaries
+- [ ] Measure full-rebuild time before/after as validation metric
+
+**Files most affected**: `data_block.cpp`, `data_block.hpp`, `hub_consumer.hpp`,
+`plh_datahub.hpp`, `src/utils/CMakeLists.txt`, actor layer
 
 ### API Enhancements
 - [ ] **Config builder pattern** – Fluent API for DataBlockConfig construction
@@ -257,6 +431,56 @@ Mark clearly as experimental, subject to change:
 
 ## Recent Completions
 
+### 2026-02-27 (P4: messenger.cpp split)
+- ✅ **P4 — Split `messenger.cpp` (1707L)** — private header + new protocol file, 550/550 tests
+  - `ipc/messenger_internal.hpp` (275L): private header with `internal::` constants/inline helpers
+    + all command structs + HeartbeatEntry + MessengerImpl class declaration
+  - `ipc/messenger_protocol.cpp` (665L): all broker protocol handlers (8 handle_command overloads)
+    + send_disc_req + send_immediate_heartbeat
+  - `ipc/messenger.cpp` reduced to 811L: worker loop, connection management, public API, lifecycle
+  - CMakeLists.txt updated with `ipc/messenger_protocol.cpp`
+
+### 2026-02-27 (HEP-CORE-0002 restructuring)
+- ✅ **HEP-CORE-0002 restructured** — 3259L → 2676L:
+  - New **§6 RAII Abstraction Layer** (§6.1–§6.10): design guarantees, TransactionContext,
+    SlotIterator, SlotRef/ZoneRef, handles, DataBlockProducer/Consumer API tables,
+    hub::Producer/Consumer active services, Slot-Processor API cross-ref (HEP-CORE-0006)
+  - **§7 Control Plane Protocol** stub → authoritative reference HEP-CORE-0007
+  - **§5** retitled "C Interface — Layer 0 (ABI-Stable)"; stale §5.3/§5.4/§5.5 removed;
+    §5.6 → §5.3 (Helper Modules); layer overview diagram replaced with table
+  - Implementation status block replaced with pointer to TODO_MASTER.md
+  - Sections §6–§15 renumbered to §7–§16; all inline cross-refs updated
+
+### 2026-02-27 (P2: data_block.cpp split)
+- ✅ **P2 — Split `data_block.cpp` (3969L)** — private header + 3 new source files, 550/550 tests
+  - `data_block_internal.hpp` (310L): private header with `detail::` inline helpers, `internal::`
+    constants/inlines (promoted from anon namespace), coordination function declarations
+  - `data_block_slot_ops.cpp` (180L): acquire_write/commit_write/release_write/acquire_read/
+    validate_read_impl/release_read + is_writer_alive — pure state-machine functions, no DataBlock dep
+  - `data_block_c_api.cpp` (270L): all extern "C" wrappers from slot_rw_coordinator.h
+  - `data_block_schema.cpp` (135L): get_shared_memory_header_schema_info + layout checksum
+    (BLAKE2b), no DataBlock dependency — uses only public headers
+  - `data_block.cpp` reduced to 2894L (from 3969L); CMakeLists.txt updated with new files
+
+### 2026-02-27 (HEP + README docs audit)
+- ✅ **Docs audit** — checked all HEP and README files for consistency with reorganization:
+  - HEP-CORE-0001: lifecycle.cpp impl status updated to 3-file split (`service/lifecycle.cpp`,
+    `lifecycle_topology.cpp`, `lifecycle_dynamic.cpp` + `lifecycle_impl.hpp`);
+    `DynamicModuleStatus` enum corrected (4→7 states, added UNLOADING/SHUTDOWN_TIMEOUT/FAILED_SHUTDOWN)
+  - HEP-CORE-0003: impl status path `file_lock.cpp` → `service/file_lock.cpp`
+  - HEP-CORE-0004: impl status path `logger.cpp` → `logging/logger.cpp`
+  - HEP-CORE-0009 §2.1-2.3, §2.6.2, §5: DataBlockPolicy/ConsumerSyncPolicy/ChecksumPolicy/LoopPolicy
+    updated to reference `data_block_policy.hpp` (direct definition) instead of `data_block.hpp`
+  - README_utils.md: added `plh_datahub_client.hpp` (Layer 3a) to umbrella headers table + API ref table
+  - README_DirectoryLayout.md §4-6: updated Phase 1 status (--init complete), removed
+    `hub_identity.hpp/cpp` reference (replaced by `uuid_utils.hpp/cpp`), corrected "What needs attention" table
+  - REVIEW_2026-02-26: fixed `connection_policy.hpp` → `channel_access_policy.hpp` in §2.5, §2.6, §4 table
+  - CODE_REVIEW.md M21 triage: marked ✅ FALSE POSITIVE (requires(!IsWrite) already in code)
+  - CODE_REVIEW.md: added missing M18 to triage table
+  - SECURITY_TODO.md: added CurveZMQ secret key erasure to Deferred table
+  - MESSAGEHUB_TODO.md: updated impl file paths to subdirectory layout
+  - IMPLEMENTATION_GUIDANCE.md: updated source file references to subdirectory paths
+
 ### 2026-02-23
 - ✅ **LoopPolicy Pass 2: ContextMetrics at DataBlock Pimpl (HEP-CORE-0008)**
   - Added `LoopPolicy` enum + `ContextMetrics` struct to `data_block.hpp`
@@ -281,7 +505,8 @@ Mark clearly as experimental, subject to change:
   destroyed them, leaving the detached thread with dangling references (UAF/UB on write).
   Fix: wrapped both in a `shared_ptr<SharedState>` so the detached thread keeps the allocation alive.
   This was the root cause of the intermittent `LifecycleTest.IsFinalizedFlag` timeout under load.
-  — `src/utils/lifecycle.cpp` (`timedShutdown()`)
+  — `src/utils/service/lifecycle_impl.hpp` (`timedShutdown()`, anonymous namespace)
+  *(File was at `src/utils/lifecycle.cpp` before the 2026-02-27 lifecycle.cpp split.)*
 
 ### 2026-02-17 (DataBlock three-mode constructor + WriteAttach)
 
@@ -350,7 +575,8 @@ Mark clearly as experimental, subject to change:
   authoritative "lock free" signal; ordering invariant documented in code
   — `src/utils/shared_memory_spinlock.cpp`
 - ✅ **[A-4] Shutdown timeout no-op** — Verified: redesigned to real detachable threads,
-  not `std::async`; comment in `lifecycle.cpp:37` confirms — `src/utils/lifecycle.cpp`
+  not `std::async`; comment confirms — `src/utils/service/lifecycle_impl.hpp`
+  *(File was at `src/utils/lifecycle.cpp` before the 2026-02-27 lifecycle.cpp split.)*
 - ✅ **[A-5] Handle destructors silent errors** — Verified: `LOGGER_WARN` emitted inside
   `release_write_handle()` for checksum failures — `src/utils/data_block.cpp`
 - ✅ **[A-9] namespace inside extern "C"** — Verified: namespace placed before `extern "C"`
