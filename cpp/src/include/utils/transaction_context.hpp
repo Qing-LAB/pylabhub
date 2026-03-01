@@ -154,9 +154,13 @@ class TransactionContext
     }
 
     /**
-     * @brief Get const reference to flexible zone (always read-only)
+     * @brief Get const reference to flexible zone (always read-only, consumer contexts only)
+     *
+     * Not available for write contexts: a write context's handle is a DataBlockProducer *
+     * which cannot construct ReadZoneRef (read-only, requires DataBlockConsumer *).
+     * Call the non-const flexzone() on a write context to get a WriteZoneRef instead.
      */
-    [[nodiscard]] ReadZoneRef<FlexZoneT> flexzone() const
+    [[nodiscard]] ReadZoneRef<FlexZoneT> flexzone() const requires(!IsWrite)
     {
         return ReadZoneRef<FlexZoneT>(m_handle);
     }

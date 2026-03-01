@@ -14,6 +14,8 @@
  * or docs/IMPLEMENTATION_GUIDANCE.md.
  */
 #include "pylabhub_utils_export.h"
+#include "utils/data_block_config.hpp"   // Layer 1: DataBlockConfig, DataBlockPageSize, timeouts, policy enums
+#include "utils/data_block_metrics.hpp"  // Layer 1: ContextMetrics
 #include "shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
 #include "schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
@@ -39,63 +41,6 @@
 
 namespace pylabhub::hub
 {
-
-// ============================================================================
-// Loop Policy and Context Metrics (HEP-CORE-0008)
-// ============================================================================
-
-/**
- * @enum LoopPolicy
- * @brief Controls pacing between consecutive slot acquisitions in a write/read loop.
- *
- * Set via DataBlockProducer::set_loop_policy() / DataBlockConsumer::set_loop_policy().
- * Affects both the RAII path (SlotIterator::operator++()) and the actor primitive path
- * (acquire_write_slot() / acquire_consume_slot()) for overrun detection.
- *
- * @note MixTriggered is reserved and not implemented in this version.
- */
-enum class LoopPolicy : uint8_t
-{
-    MaxRate,      ///< No sleep — run as fast as possible (default).
-    FixedRate,    ///< Start-to-start period: sleep(max(0, period_ms − elapsed)) in SlotIterator.
-    MixTriggered, ///< Reserved — not implemented this version.
-};
-
-/**
- * @struct ContextMetrics
- * @brief Per-handle timing metrics for a DataBlock producer or consumer.
- *
- * Owned by DataBlockProducer::Impl / DataBlockConsumer::Impl (Pimpl storage).
- * Updated at acquire and release sites — never stored in shared memory.
- * Survives across with_transaction() calls; call clear_metrics() to reset counters.
- *
- * Access: DataBlockProducer::metrics() / DataBlockConsumer::metrics() (const ref to Pimpl).
- *         TransactionContext::metrics() is a pass-through to the same storage.
- *
- * See HEP-CORE-0008 §3 for the domain model.
- */
-struct PYLABHUB_UTILS_EXPORT ContextMetrics
-{
-    using Clock = std::chrono::steady_clock;
-
-    // ── Session boundaries ───────────────────────────────────────────────────
-    Clock::time_point context_start_time{};  ///< Set on first acquire; zero until then.
-    uint64_t          context_elapsed_us{0}; ///< Elapsed since context_start_time (us); updated at each acquire.
-    Clock::time_point context_end_time{};    ///< Zero while running; set on handle destruction.
-
-    // ── Domain 2: Acquire/release timing ────────────────────────────────────
-    uint64_t last_slot_wait_us{0};  ///< Time blocked inside acquire_*_slot() (us).
-    uint64_t last_iteration_us{0};  ///< Start-to-start time between the last two acquires (us).
-    uint64_t max_iteration_us{0};   ///< Peak start-to-start time since session start (us).
-    uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
-
-    // ── Domain 3: Loop scheduling ────────────────────────────────────────────
-    uint64_t overrun_count{0};      ///< Iterations where start-to-start gap exceeded period_ms.
-    uint64_t last_slot_work_us{0};  ///< Time from acquire to release (user code + overhead) (us).
-
-    // ── Config reference (informational) ─────────────────────────────────────
-    uint64_t period_ms{0};          ///< Configured target period (0 = MaxRate / no sleep).
-};
 
 // ============================================================================
 // Phase 3: C++ RAII Layer - Forward Declarations
@@ -235,182 +180,6 @@ constexpr size_t raw_size_SlotRWState =
     offsetof(SlotRWState, padding) + sizeof(SlotRWState::padding);
 static_assert(raw_size_SlotRWState == 48, "SlotRWState must be 48 bytes");
 static_assert(alignof(SlotRWState) >= 64, "SlotRWState should be cache-line aligned");
-
-/** @enum DataBlockPageSize
- *  @brief Physical page size for allocation. Each slot is aligned to page boundaries.
- *  Unset is a sentinel; must not be stored in header; config must set explicitly. */
-enum class DataBlockPageSize : uint32_t
-{
-    Unset = 0,       ///< Sentinel: must not be stored in header
-    Size4K = 4096u,
-    Size4M = 4194304u,
-    Size16M = 16777216u
-};
-
-/** @brief Return byte size for DataBlockPageSize (e.g. 4096 for Size4K).
- *  @return Size in bytes; 0 for Unset. */
-inline size_t to_bytes(DataBlockPageSize u)
-
-{
-
-    return static_cast<size_t>(u);
-}
-
-/**
-
- * @enum DataBlockPolicy
-
- * @brief Defines the buffer management strategy for a DataBlock.
-
- */
-
-enum class DataBlockPolicy : uint32_t
-{
-    Single = 0,
-    DoubleBuffer = 1,
-    RingBuffer = 2,
-    Unset = 255 // Sentinel: must not be stored in header; config must set Single/DoubleBuffer/RingBuffer
-};
-
-/**
- * @enum ChecksumType
- * @brief Algorithm used for slot and flexible-zone checksums. Always one active.
- */
-enum class ChecksumType
-{
-    BLAKE2b = 0,
-    Unset = 255 // Sentinel: must not be stored; config must set BLAKE2b (or future algorithm)
-};
-
-/**
- * @enum ChecksumPolicy
- * @brief When to run update/verify. Checksum storage is always present (ChecksumType).
- *
- * - None: No enforcement (update/verify are no-ops or optional).
- * - Manual: Caller must call update_checksum_* and verify_checksum_* explicitly.
- * - Enforced: System automatically updates on release_write_slot and verifies on release_consume_slot.
- */
-enum class ChecksumPolicy
-{
-    None,    // No checksum enforcement
-    Manual,  // User calls update/verify explicitly
-    Enforced // Automatic update on write release, verify on consume release
-};
-
-/**
- * @enum ConsumerSyncPolicy
- * @brief How the reader(s) advance and when the writer may overwrite slots.
- *
- * - Latest_only: Reader only follows the latest committed slot; older slots may be
- *   overwritten. No per-consumer or global read_index; writer never blocks on readers.
- * - Single_reader: One consumer only. One shared read_index (tail); consumer reads in
- *   order; writer blocks when (write_index - read_index) >= capacity. Simplest ordered mode.
- * - Sync_reader: Multiple consumers. Per-consumer positions; read_index = min(positions).
- *   Iterator blocks until slowest reader has consumed; writer blocks when ring full.
- */
-enum class ConsumerSyncPolicy : uint32_t
-{
-    Latest_only = 0,  // Reader follows latest committed only; writer can overwrite
-    Single_reader = 1, // One consumer, one read_index; read in order; writer blocks when full
-    Sync_reader = 2,   // Multi-consumer; read_index = min(positions); writer blocks when full
-    Unset = 255        // Sentinel: must not be stored in header; config must set one of the above
-};
-
-/**
- * @enum DataBlockOpenMode
- * @brief Determines role and ownership when creating or attaching a DataBlock.
- *
- * - Create:      Hub process creates and initializes the shared memory segment.
- *                The DataBlock owns the segment and unlinks it on destruction.
- * - WriteAttach: Source process attaches to an existing segment with R/W access.
- *                No initialization; no unlink on destruction.
- * - ReadAttach:  Terminal/consumer process attaches to an existing segment read-only.
- *                No initialization; no unlink on destruction.
- */
-enum class DataBlockOpenMode : uint8_t
-{
-    Create,       ///< Hub: create + initialize; unlinks on destruction
-    WriteAttach,  ///< Source: attach R/W to existing; no init, no unlink
-    ReadAttach    ///< Terminal: attach read-only to existing; no init, no unlink
-};
-
-/// @name Slot acquire timeout sentinel values (pass as timeout_ms to acquire_*_slot)
-/// @{
-inline constexpr int TIMEOUT_IMMEDIATE = 0;   ///< Non-blocking: return nullptr immediately if not available
-inline constexpr int TIMEOUT_DEFAULT   = 100; ///< Default poll interval: 100 ms
-inline constexpr int TIMEOUT_INFINITE  = -1;  ///< Block indefinitely until a slot is available
-/// @}
-
-/**
- * @struct DataBlockConfig
- * @brief Configuration for creating a new DataBlock.
- *
- * @note FlexibleZoneConfig was removed in Phase 2 refactoring (2026-02-15).
- *       Use flex_zone_size field instead for single flexible zone configuration.
- */
-
-struct DataBlockConfig
-{
-
-    std::string name;
-
-    /** 0 = generate random; non-zero = use for discovery/capability. */
-    uint64_t shared_secret = 0;
-
-    /** Physical page size (allocation granularity). Must be set explicitly (no default). */
-    DataBlockPageSize physical_page_size = DataBlockPageSize::Unset;
-    /**
-     * Logical slot size (bytes per ring-buffer slot). Must be >= physical_page_size and a multiple
-     * of physical_page_size. 0 at config input means "use physical" (resolved to physical_page_size).
-     * Stored value is always >= physical_page_size (never 0).
-     */
-    size_t logical_unit_size = 0;
-
-    /** Slot count: 1=Single, 2=Double, N=RingBuffer. Must be set explicitly (>= 1); 0 = unset, will fail at create. */
-    uint32_t ring_buffer_capacity = 0;
-
-    /** Buffer policy. Must be set explicitly (no default). */
-    DataBlockPolicy policy = DataBlockPolicy::Unset;
-
-    /** Consumer sync policy. Must be set explicitly (no default). */
-    ConsumerSyncPolicy consumer_sync_policy = ConsumerSyncPolicy::Unset;
-
-    /** Checksum algorithm. Always present; default BLAKE2b. */
-    ChecksumType checksum_type = ChecksumType::BLAKE2b;
-
-    /** When to update/verify checksums. */
-    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
-
-    /**
-     * Single flexible zone size in bytes.
-     * Must be 0 (no flex zone) or a multiple of 4096 (page size).
-     * This replaces the old flexible_zone_configs vector.
-     */
-    size_t flex_zone_size = 0;
-
-    // === Channel Identity (written into SHM header at creation; empty = not set) ===
-    // These are set by the caller (hub/actor config layer) before calling create_datablock_producer.
-    // Empty strings are written as all-zero fields in the header (backward compatible).
-    std::string hub_uid{};       ///< Hub unique ID (hex string, max 39 chars; empty = not set)
-    std::string hub_name{};      ///< Hub human-readable name (max 63 chars; empty = not set)
-    std::string producer_uid{};  ///< Producer unique ID (hex string, max 39 chars; empty = not set)
-    std::string producer_name{}; ///< Producer human-readable name (max 63 chars; empty = not set)
-
-    /** Effective logical unit size (slot stride in bytes). 0 at config means use physical_page_size. */
-    size_t effective_logical_unit_size() const
-    {
-        if (logical_unit_size != 0)
-            return logical_unit_size;
-        return to_bytes(physical_page_size);
-    }
-
-    /** Total structured buffer size (slot_count * effective_logical). slot_count >= 1, so at least one logical unit fits. */
-    size_t structured_buffer_size() const
-    {
-        uint32_t slots = (ring_buffer_capacity > 0) ? ring_buffer_capacity : 1u;
-        return slots * effective_logical_unit_size();
-    }
-};
 
 /**
 
@@ -934,7 +703,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     [[nodiscard]] uint64_t request_structure_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema
-    );
+    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     /**
      * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
@@ -951,7 +720,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
         uint64_t request_id,
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema
-    );
+    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     // ====================================================================
     // Phase 3: C++ RAII Layer - Type-Safe Transaction API
@@ -1202,41 +971,43 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** @brief Reset all ContextMetrics counters to zero; preserve context_start_time. */
     void clear_metrics() noexcept;
 
-    // ─── Structure Re-Mapping API (Placeholder - Future Feature) ───
+    // ─── Structure Re-Mapping API (NOT IMPLEMENTED) ─────────────────────────
     /**
-     * @brief Release context for structure remapping.
+     * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
+     *
+     * Release context for structure remapping.
      * Called in response to broker signal when remapping is requested.
      * Consumer waits for broker approval before reattaching.
-     * 
-     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
-     * 
-     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
-     * 
+     *
+     * @throws std::runtime_error always — not yet implemented.
+     *
      * **Future Protocol:**
      * 1. Broker signals consumer → consumer calls `release_for_remap()`
      * 2. Consumer detaches, waits for broker "remap complete" signal
      * 3. Consumer calls `reattach_after_remap()` with new schema
-     * 
-     * See `CHECKSUM_ARCHITECTURE.md` §7.1 for full protocol details.
+     *
+     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
-    void release_for_remap();
-    
+    void release_for_remap(); ///< NOT IMPLEMENTED — always throws std::runtime_error
+
     /**
-     * @brief Reattach after structure remapping.
+     * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
+     *
+     * Reattach after structure remapping.
      * @param new_flexzone_schema Expected flex zone structure
      * @param new_datablock_schema Expected slot structure
      * @throws SchemaMismatchException if reattach with wrong schema
-     * @throws std::runtime_error("Remapping requires broker - not yet implemented")
-     * 
-     * @note **PLACEHOLDER API.** Implementation deferred until broker is ready.
-     * 
+     * @throws std::runtime_error always — not yet implemented.
+     *
      * Revalidates schema against producer's updated `schema_hash`.
      * If schema matches, consumer resumes normal operations.
+     *
+     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
     void reattach_after_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema
-    );
+    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     // ====================================================================
     // Phase 3: C++ RAII Layer - Type-Safe Transaction API

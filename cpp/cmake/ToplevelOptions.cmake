@@ -40,6 +40,15 @@ set(PYLABHUB_PYTHON_WHEELS_DIR "" CACHE PATH
 option(PYLABHUB_PREPARE_PYTHON_ENV
     "Run pip install -r requirements.txt into the staged Python as part of build (requires THIRD_PARTY_INSTALL=ON)." ON)
 
+# Path to the requirements file used by the prepare_python_env target.
+# Defaults to the project's built-in share/scripts/python/requirements.txt.
+# Override with a custom path for site-specific package sets or offline builds.
+set(PYLABHUB_PYTHON_REQUIREMENTS_FILE
+    "${CMAKE_SOURCE_DIR}/share/scripts/python/requirements.txt"
+    CACHE FILEPATH
+    "Path to requirements.txt used by prepare_python_env (default: project built-in)."
+)
+
 # Option to generate the final 'install' target.
 option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the staged directory" ON)
 

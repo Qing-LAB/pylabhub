@@ -34,7 +34,7 @@
  *
  * @see HEP-CORE-0002-DataHub-FINAL.md Section 11 (Schema Validation)
  */
-#include "plh_service.hpp" // For crypto_utils
+#include "utils/crypto_utils.hpp"
 #include <array>
 #include <atomic>
 #include <string>

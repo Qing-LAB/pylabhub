@@ -476,6 +476,18 @@ These are user-callable methods for cases where the automatic behavior is insuff
    warning is logged. Design your application so the total number of concurrent consumers on
    a single DataBlock does not exceed 8.
 
+6. **Reconnect = Re-register invariant (broker layer)**: If a producer or consumer
+   disconnects and reconnects at the ZMQ transport layer (e.g., due to a network flap or
+   process restart), the broker's ROUTER socket assigns a **new ROUTER identity** to the
+   reconnected peer. The old ROUTER identity in the broker's channel registry is now stale
+   and will be purged on the next heartbeat timeout.
+   - A reconnected **producer** must send a fresh `REG_REQ` to get its new identity
+     registered. The broker does not automatically detect reconnection — it waits for
+     the heartbeat to expire and issues `CHANNEL_CLOSING_NOTIFY`.
+   - A reconnected **consumer** must send a fresh `CONSUMER_REG_REQ`.
+   - **Design implication**: reconnect handling is identical to a fresh start. No
+     special reconnect path exists; the producer/consumer bootstrap sequence covers it.
+
 ---
 
 ## 9. FlexZone and DataBlock Type Requirements

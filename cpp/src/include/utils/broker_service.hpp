@@ -16,7 +16,7 @@
  * All socket I/O is single-threaded (run() loop); only stop() is thread-safe.
  */
 #include "pylabhub_utils_export.h"
-#include "utils/connection_policy.hpp"
+#include "utils/channel_access_policy.hpp"
 
 #include <chrono>
 #include <functional>
@@ -36,6 +36,32 @@ enum class ChecksumRepairPolicy
     None,       ///< Log the report and ignore (default).
     NotifyOnly, ///< Log + forward report to all channel parties via CHANNEL_EVENT_NOTIFY.
     // Repair — deferred; requires WriteAttach-based slot repair path.
+};
+
+/// POD snapshot of a single channel, safe to copy across thread boundaries.
+struct ChannelSnapshotEntry
+{
+    std::string name;
+    std::string status;               ///< "Ready" | "PendingReady" | "Closing"
+    int         consumer_count{0};
+    uint64_t    producer_pid{0};
+    std::string schema_hash;
+    std::string producer_actor_name;
+    std::string producer_actor_uid;
+};
+
+/// Thread-safe snapshot of all channels at a point in time.
+struct ChannelSnapshot
+{
+    std::vector<ChannelSnapshotEntry> channels;
+
+    int count_by_status(const std::string& s) const noexcept
+    {
+        int n = 0;
+        for (const auto& ch : channels)
+            if (ch.status == s) ++n;
+        return n;
+    }
 };
 
 class PYLABHUB_UTILS_EXPORT BrokerService
@@ -66,12 +92,19 @@ public:
 
         /// Optional: called from run() after bind() with (bound_endpoint, server_public_key).
         /// Useful for tests using dynamic port assignment (endpoint="tcp://127.0.0.1:0").
+        ///
+        /// **Lifetime**: run() holds a copy of Config for the duration of the broker loop.
+        /// The callback and any objects it captures must outlive the run() call. Typical
+        /// pattern: Config is stack-allocated at the call site and run() blocks until
+        /// shutdown, so the callback naturally outlives it. Capturing by raw pointer is
+        /// safe when the pointed-to object is in the same or outer scope. Capturing by
+        /// raw pointer to a heap object that may be destroyed before run() returns is unsafe.
         std::function<void(const std::string& bound_endpoint,
                            const std::string& pubkey)> on_ready;
 
         // ── Connection policy (Phase 3) ─────────────────────────────────────
         /// Hub-wide connection policy. Per-channel overrides in channel_policies take
-        /// precedence (first match wins). Defaults to Open (backward compatible).
+        /// precedence (first match wins). Defaults to Open.
         ConnectionPolicy            connection_policy{ConnectionPolicy::Open};
 
         /// Actors allowed to register when policy is Verified.
@@ -118,6 +151,27 @@ public:
      * @endcode
      */
     [[nodiscard]] std::string list_channels_json_str() const;
+
+    /**
+     * @brief Returns a typed snapshot of all channels.
+     *
+     * Thread-safe: locks the internal query mutex briefly to copy channel data.
+     * Prefer this over list_channels_json_str() when strongly-typed access is needed
+     * (e.g. from HubScript tick thread).
+     */
+    [[nodiscard]] ChannelSnapshot query_channel_snapshot() const;
+
+    /**
+     * @brief Request that the broker close a channel by name.
+     *
+     * Thread-safe.  The request is queued and drained during the next poll
+     * iteration of the broker run() loop.  The broker will send
+     * CHANNEL_CLOSING_NOTIFY to all parties and remove the channel from the
+     * registry, exactly as a heartbeat timeout would.
+     *
+     * @param name  Channel name to close.  Silently ignored if not registered.
+     */
+    void request_close_channel(const std::string& name);
 
 private:
 #if defined(_MSC_VER)

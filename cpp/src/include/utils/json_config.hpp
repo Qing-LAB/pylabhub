@@ -38,7 +38,8 @@
  * exposed. All methods that require access to internal state are defined in
  * the corresponding `.cpp` file.
  */
-#include "plh_service.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/lifecycle.hpp"
 
 #include <nlohmann/json.hpp>
 #include <list>
@@ -112,25 +113,6 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
     }
 
-    /**
-     * @enum CommitDecision
-     * @brief Return type for a write lambda to control whether a commit occurs.
-     *
-     * If a write transaction is initiated with the `CommitAfter` flag, the
-     * lambda can return this enum to either proceed with or veto the commit.
-     */
-    enum class CommitDecision
-    {
-        /**
-         * @brief Proceed with the disk commit if the `CommitAfter` flag is set.
-         */
-        Commit,
-        /**
-         * @brief Veto the disk commit, even if the `CommitAfter` flag is set.
-         * The changes will remain in-memory and the object will be marked as dirty.
-         */
-        SkipCommit
-    };
 
     /**
      * @class TransactionProxy
@@ -214,7 +196,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
          * If the lambda throws an exception, all changes are rolled back.
          *
          * @tparam F A callable type with the signature `void(nlohmann::json& j)` or
-         *           `CommitDecision(nlohmann::json& j)`.
+         *           `bool(nlohmann::json& j)` (return true to commit, false to skip commit).
          * @param fn The lambda or function to execute.
          * @param ec Optional. A `std::error_code` to receive any errors.
          * @param loc Source location for improved debugging. Do not specify manually.
@@ -575,8 +557,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         using R = std::invoke_result_t<F, nlohmann::json &>;
 
         static_assert(
-            std::is_void_v<R> || std::is_same_v<R, CommitDecision>,
-            "JsonConfig::write() lambda must return either void or JsonConfig::CommitDecision");
+            std::is_void_v<R> || std::is_same_v<R, bool>,
+            "JsonConfig::write() lambda must return either void or bool (true=commit, false=skip)");
 
         if (!is_initialized())
         {
@@ -631,7 +613,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                     *ec = std::make_error_code(std::errc::not_connected);
                 return;
             }
-            fLock.emplace(path, ResourceType::File, LockMode::Blocking);
+            fLock.emplace(path);
             if (!fLock->valid())
             {
                 destroy_transaction_internal(id);
@@ -680,7 +662,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         }
 
         // 7) Run user lambda
-        CommitDecision commit_decision = CommitDecision::Commit;
+        bool do_commit = true;
         try
         {
             if constexpr (std::is_void_v<R>)
@@ -689,7 +671,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             }
             else
             {
-                commit_decision = fn(wlock.json());
+                do_commit = fn(wlock.json());
             }
         }
         catch (const std::exception &ex)
@@ -754,7 +736,7 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         // 9) CommitAfter: snapshot and commit to disk (we already have the process lock)
         if ((static_cast<int>(flags) & static_cast<int>(AccessFlags::CommitAfter)) != 0)
         {
-            if (commit_decision == CommitDecision::Commit)
+            if (do_commit)
             {
                 nlohmann::json snapshot;
                 try

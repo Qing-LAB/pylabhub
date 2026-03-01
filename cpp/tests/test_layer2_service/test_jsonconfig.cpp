@@ -987,9 +987,8 @@ TEST_F(JsonConfigTest, DirtyFlagLogic)
 
 /**
  * @brief Tests the ability to veto a commit from within a write transaction.
- * Verifies that returning `CommitDecision::SkipCommit` from a write lambda
- * prevents the changes from being written to disk, even when `CommitAfter`
- * is specified.
+ * Verifies that returning `false` from a write lambda prevents the changes
+ * from being written to disk, even when `CommitAfter` is specified.
  */
 TEST_F(JsonConfigTest, WriteVetoCommit)
 {
@@ -1008,10 +1007,10 @@ TEST_F(JsonConfigTest, WriteVetoCommit)
     // 2. Transaction that vetoes its own commit
     cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
         .write(
-            [&](json &j) -> JsonConfig::CommitDecision
+            [&](json &j) -> bool
             {
                 j["val"] = 2; // Change in-memory
-                return JsonConfig::CommitDecision::SkipCommit;
+                return false; // veto the commit
             },
             &ec);
     ASSERT_FALSE(ec);

@@ -27,19 +27,14 @@ struct LogMessage
 class Sink
 {
   public:
-    enum WRITE_MODE
-    {
-        ASYNC_WRITE,
-        SYNC_WRITE
-    };
-
     virtual ~Sink() = default;
-    virtual void write(const LogMessage &msg, Sink::WRITE_MODE mode) = 0;
+    /// @param sync_flag false = normal async path (worker thread); true = emergency sync path.
+    virtual void write(const LogMessage &msg, bool sync_flag) = 0;
     virtual void flush() = 0;
     virtual std::string description() const = 0;
 
     static const char *level_to_string_internal(int lvl);
-    static std::string format_logmsg(const LogMessage &msg, Sink::WRITE_MODE mode);
+    static std::string format_logmsg(const LogMessage &msg, bool sync_flag);
 };
 
 } // namespace pylabhub::utils

@@ -52,10 +52,14 @@ int main(int argc, char **argv)
     g_self_exe_path = (argc >= 1) ? argv[0] : "";
 
     // Check if invoked in worker mode: first arg is "module.scenario[.subsection]".
+    // Worker mode is identified by the presence of '.' in the first argument.
+    // If a worker argument is given but no dispatcher claims it, this is a fatal
+    // configuration error — do NOT silently fall through to the gtest runner, as
+    // that would cause the parent test to hang waiting for a well-behaved subprocess.
     if (argc > 1)
     {
         std::string mode_str = argv[1];
-        if (mode_str.find('.') != std::string::npos)
+        if (mode_str.find('.') != std::string::npos && mode_str[0] != '-')
         {
             // Try each registered dispatcher in order.
             for (auto fn : worker_dispatchers())
@@ -64,6 +68,12 @@ int main(int argc, char **argv)
                 if (r != -1) // -1 means "no matching scenario here, try next"
                     return r;
             }
+            // No dispatcher claimed this scenario — hard error to prevent silent hang.
+            fmt::print(stderr,
+                       "[test_entrypoint] ERROR: No dispatcher matched worker scenario '{}'. "
+                       "Check that the worker file is linked into this test binary.\n",
+                       mode_str);
+            return 127; // Conventionally: command not found
         }
     }
 

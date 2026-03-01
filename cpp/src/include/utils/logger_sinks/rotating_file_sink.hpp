@@ -31,7 +31,7 @@ class RotatingFileSink : public Sink, private BaseFileSink
     ~RotatingFileSink() override = default;
 
     // --- Sink Interface ---
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override;
+    void write(const LogMessage &msg, bool sync_flag) override;
     void flush() override;
     std::string description() const override;
 

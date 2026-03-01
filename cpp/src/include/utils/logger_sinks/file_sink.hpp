@@ -14,7 +14,7 @@ class FileSink : public Sink, private BaseFileSink
 
     ~FileSink() override;
 
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override;
+    void write(const LogMessage &msg, bool sync_flag) override;
 
     void flush() override;
 

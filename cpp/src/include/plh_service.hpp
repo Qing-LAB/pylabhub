@@ -15,4 +15,5 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/logger.hpp"
+#include "utils/script_host.hpp"
 #include "utils/timeout_constants.hpp"

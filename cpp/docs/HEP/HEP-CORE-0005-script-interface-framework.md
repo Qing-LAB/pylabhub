@@ -5,9 +5,9 @@
 | **HEP**            | `HEP-CORE-0005`                            |
 | **Title**          | Script Interface Abstraction Framework     |
 | **Author**         | Gemini CLI Agent                           |
-| **Status**         | Partially Superseded — see Implementation Note |
+| **Status**         | Superseded                                 |
 | **Created**        | 2026-02-01                                 |
-| **Superseded by**  | `pylabhub-actor` concrete embedding (2026-02-21) |
+| **Superseded by**  | `HEP-CORE-0011` ScriptHost Abstraction Framework (2026-02-28) |
 
 ## Implementation Note (2026-02-21)
 

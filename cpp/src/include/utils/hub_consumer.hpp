@@ -20,7 +20,7 @@
  *   - `set_read_handler<F,D>(nullptr)` — remove handler; returns to Queue mode.
  *
  * Mode is selected implicitly: installing a handler enters Real-time; removing it returns
- * to Queue. Mode is queryable via `shm_processing_mode()`.
+ * to Queue mode. Queryable via `has_realtime_handler()`.
  *
  * Both modes receive a fully-typed `ReadProcessorContext<FlexZoneT, DataBlockT>` that
  * bundles: typed const FlexZone access, the full ReadTransactionContext, ctrl messaging,
@@ -32,11 +32,7 @@
  * **Thread safety**: All public methods are thread-safe unless documented otherwise.
  */
 
-// hub_producer.hpp is included for shared types (ShmProcessingMode) and because the
-// umbrella header includes both in order. No circular include: producer does not
-// include consumer.
-#include "utils/hub_producer.hpp"
-
+#include "pylabhub_utils_export.h"
 #include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
@@ -66,8 +62,15 @@ namespace pylabhub::hub
  *        ConsumerImpl internals (defined in .cpp). Function pointers are filled by
  *        Consumer::connect_from_parts(); context points to the ConsumerImpl on the heap.
  *
- * This is an implementation detail exposed in the header solely so that the template
- * ReadProcessorContext<F,D> can reference it without knowing ConsumerImpl.
+ * **Internal use only — do not use directly.**
+ * This struct is exposed in the header solely so that the template ReadProcessorContext<F,D>
+ * can reference it without knowing ConsumerImpl. It is an implementation detail, not part
+ * of the public API.
+ *
+ * **ABI note:** The function pointer fields and their signatures are **frozen** for the
+ * lifetime of the pylabhub-utils shared library ABI. Any change to field order, types, or
+ * count requires a SOVERSION bump. New fields must be appended at the end, never inserted.
+ * Callers may rely on all fields being null-initialized (defaulted to nullptr) in the struct.
  */
 struct PYLABHUB_UTILS_EXPORT ConsumerMessagingFacade
 {
@@ -360,8 +363,8 @@ class PYLABHUB_UTILS_EXPORT Consumer
     void set_read_handler(
         std::function<void(ReadProcessorContext<FlexZoneT, DataBlockT> &)> fn);
 
-    /// Returns the current SHM processing mode (Queue or RealTime).
-    [[nodiscard]] ShmProcessingMode shm_processing_mode() const noexcept;
+    /// Returns true when a real-time read handler has been installed via set_read_handler().
+    [[nodiscard]] bool has_realtime_handler() const noexcept;
 
     // ── Introspection ─────────────────────────────────────────────────────────
 

@@ -127,29 +127,48 @@ namespace pylabhub::actor
  */
 struct ValidationPolicy
 {
+    /**
+     * @enum ValidationPolicy::Checksum
+     * @brief Per-cycle checksum computation and verification policy for one role.
+     *
+     * Applied independently to the slot data region (`slot_checksum`) and the
+     * flexible zone (`flexzone_checksum`) via two separate fields in ValidationPolicy.
+     *
+     * **Where set:** actor_config.cpp — parse_checksum() parses JSON string values.
+     *   JSON keys inside role `"validation"` block:
+     *   `"slot_checksum"`: "none" | "update" (default) | "enforce"
+     *   `"flexzone_checksum"`: "none" | "update" (default) | "enforce"
+     * **Where applied:** actor_host.cpp —
+     *   ProducerRoleWorker: calls update_slot_checksum() / update_flexzone_checksum()
+     *     on the slot before committing, when Checksum != None.
+     *   ConsumerRoleWorker: calls verify_slot_checksum() / verify_flexzone_checksum()
+     *     on the acquired slot when Checksum == Enforce; flags api.slot_valid() = false
+     *     on mismatch (behaviour then determined by skip_on_validation_error).
+     *
+     * | Value   | Producer side                  | Consumer side                       |
+     * |---------|-------------------------------|--------------------------------------|
+     * | None    | No checksum written            | No checksum verified                 |
+     * | Update  | Writes BLAKE2b hash on commit  | Does NOT verify — slot used as-is    |
+     * | Enforce | Writes BLAKE2b hash on commit  | Verifies hash; sets slot_valid=false |
+     * |         |                                | and logs Cat-2 warning on mismatch   |
+     *
+     * **Design doc:** HEP-CORE-0007-DataHub-Protocol-and-Policy.md §5.2
+     */
     enum class Checksum
     {
-        None,    ///< No checksum calls
-        Update,  ///< Producer writes checksum; consumer does NOT verify
-        Enforce  ///< Producer writes; consumer verifies before on_read
+        None,    ///< No checksum operations — fastest path, no integrity guarantee
+        Update,  ///< Producer writes hash; consumer reads without verification (default)
+        Enforce  ///< Producer writes hash; consumer verifies; mismatch → slot_valid=false
     };
 
-    enum class OnFail
-    {
-        Skip, ///< Discard slot; do NOT call on_read(). Log Cat 2 warning.
-        Pass  ///< Call on_read() with api.slot_valid() == false.
-    };
-
-    enum class OnPyError
-    {
-        Continue, ///< Log full traceback and keep running
-        Stop      ///< Log traceback and stop the actor cleanly
-    };
-
-    Checksum  slot_checksum{Checksum::Update};
-    Checksum  flexzone_checksum{Checksum::Update};
-    OnFail    on_checksum_fail{OnFail::Skip};
-    OnPyError on_python_error{OnPyError::Continue};
+    Checksum slot_checksum{Checksum::Update};
+    Checksum flexzone_checksum{Checksum::Update};
+    /// true (default): discard slot and log Cat 2 warning on checksum failure.
+    /// false: call on_iteration() with api.slot_valid() == false.
+    bool skip_on_validation_error{true};
+    /// false (default): log traceback and keep running on Python exception.
+    /// true: log traceback and stop the actor cleanly.
+    bool stop_on_python_error{false};
 };
 
 // ============================================================================
@@ -195,43 +214,89 @@ struct ActorAuthConfig
  */
 struct RoleConfig
 {
+    /**
+     * @enum RoleConfig::Kind
+     * @brief Fundamental role type — determines which DataBlock API and loop path to use.
+     *
+     * **Where set:** actor_config.cpp — JSON `"kind"` field inside a role object.
+     * **Where checked:** actor_host.cpp — ActorHost::create_role_worker() dispatches
+     *   on this value to instantiate either ProducerRoleWorker or ConsumerRoleWorker.
+     *
+     * | Value    | DataBlock / hub API              | Loop worker class         |
+     * |----------|----------------------------------|---------------------------|
+     * | Producer | hub::Producer, DataBlockProducer | ProducerRoleWorker        |
+     * | Consumer | hub::Consumer, DataBlockConsumer | ConsumerRoleWorker        |
+     *
+     * JSON values: `"producer"` | `"consumer"`. No default — must be explicit.
+     */
     enum class Kind { Producer, Consumer };
 
     /**
+     * @enum RoleConfig::LoopTimingPolicy
      * @brief Write-loop deadline advancement policy (producer only; ignored for consumers).
      *
-     * Controls how the next write deadline is set after each iteration completes.
+     * Controls how the next iteration deadline is computed after on_iteration() returns.
+     * This is the **actor layer** policy — distinct from hub::LoopPolicy, which is
+     * the **DataBlock layer** policy that controls sleep inside acquire_write_slot().
      *
-     * | Policy        | Formula                          | Behaviour on overrun            |
-     * |---------------|----------------------------------|---------------------------------|
-     * | FixedPace     | next = now() + interval          | Resets from actual wakeup time; |
-     * |               |                                  | no catch-up burst; rate ≤ target|
-     * | Compensating  | next += interval                 | Advances by one tick regardless;|
-     * |               |                                  | fires immediately after overrun;|
-     * |               |                                  | average rate converges to target|
+     * **Where set:** actor_config.cpp — JSON `"loop_timing"` field inside a role object.
+     * **Where checked:** actor_host.cpp — ProducerRoleWorker::run_loop_thread_():
+     *   after each on_iteration() call, the next deadline is computed based on this value.
+     *   Only active when interval_ms > 0; ignored for interval_ms == 0 (max-rate mode).
+     *
+     * | Policy       | Formula                    | Behaviour on overrun                    |
+     * |--------------|----------------------------|-----------------------------------------|
+     * | FixedPace    | next = now() + interval_ms | Resets from actual wakeup time.         |
+     * |              |                            | No catch-up burst. Rate ≤ target.       |
+     * |              |                            | Suitable for most production uses.      |
+     * | Compensating | next += interval_ms        | Advances deadline by one tick each run. |
+     * |              |                            | Fires immediately after an overrun to   |
+     * |              |                            | catch up. Average rate converges to     |
+     * |              |                            | target over time. Use only when         |
+     * |              |                            | average throughput matters more than    |
+     * |              |                            | burst avoidance.                        |
+     *
+     * **Contrast with hub::LoopPolicy:**
+     *   LoopTimingPolicy governs *when the next wakeup is scheduled* (actor layer).
+     *   hub::LoopPolicy governs *how long acquire_write_slot() sleeps* (DataBlock layer).
      *
      * JSON: `"loop_timing": "fixed_pace"` (default) | `"compensating"`.
+     * **Design doc:** HEP-CORE-0010-Actor-Thread-Model.md §3.2
      */
     enum class LoopTimingPolicy
     {
-        FixedPace,   ///< next_deadline = now() + interval  — safe default; no catch-up
-        Compensating ///< next_deadline += interval         — catches up after slow writes
+        FixedPace,   ///< next_deadline = now() + interval_ms  — safe default; no catch-up
+        Compensating ///< next_deadline += interval_ms         — catches up after slow writes
     };
 
     /**
-     * @brief Loop thread blocking strategy (Phase 1 implementation).
+     * @enum RoleConfig::LoopTrigger
+     * @brief What event drives each iteration of the role loop thread.
      *
-     * | Policy    | Loop thread blocks on                          | Requires SHM |
-     * |-----------|------------------------------------------------|--------------|
-     * | Shm       | acquire_*_slot(timeout)                        | Yes          |
-     * | Messenger | incoming_cv_.wait_for(messenger_poll_ms)        | No           |
+     * Determines the primary blocking call in the zmq_thread_ and loop_thread_ pair
+     * (HEP-CORE-0010 Phase 2). Both threads are always started; LoopTrigger controls
+     * only which one acts as the iteration clock.
+     *
+     * **Where set:** actor_config.cpp — JSON `"loop_trigger"` field inside a role object.
+     * **Where checked:** actor_host.cpp — ProducerRoleWorker::start() and
+     *   ConsumerRoleWorker::start() use this to select run_loop_shm_() or
+     *   run_loop_messenger_() as the loop body.
+     *
+     * | Value     | Loop thread blocks on                     | Requires SHM enabled |
+     * |-----------|-------------------------------------------|----------------------|
+     * | Shm       | acquire_*_slot(timeout_ms or interval_ms) | Yes (has_shm = true) |
+     * | Messenger | incoming_queue_ condvar (messenger_poll_ms)| No                   |
+     *
+     * **Constraint:** `Shm` requires `"shm": {"enabled": true}` in the role config;
+     *   parsing throws std::runtime_error if Shm is selected without SHM enabled.
      *
      * JSON: `"loop_trigger": "shm"` (default) | `"messenger"`.
+     * **Design doc:** HEP-CORE-0010-Actor-Thread-Model.md §2.1
      */
     enum class LoopTrigger
     {
-        Shm,      ///< Phase 1: block on acquire_*_slot(timeout) [default; requires SHM]
-        Messenger ///< Phase 1: block on incoming_cv_.wait_for(messenger_poll_ms)
+        Shm,      ///< Block on acquire_*_slot(timeout) — requires has_shm = true [default]
+        Messenger ///< Block on incoming_queue_ condvar — messenger-only roles
     };
 
     Kind        kind{Kind::Producer};
@@ -293,6 +358,10 @@ struct RoleConfig
     ValidationPolicy validation{};
 
     // ── Script (per-role, optional) ───────────────────────────────────────────
+    /// Scripting language type for this role.  Default: `"python"`.
+    /// Future: `"lua"` — selects LuaScriptHost.
+    /// JSON: `"script": {"type": "python", "module": "...", "path": "..."}`.
+    std::string script_type{"python"};
     /// Python module/package name for this role.  Empty = use actor-level "script" fallback.
     /// Standard: `"script"` (loads `<script_base_dir>/script/__init__.py` as a package).
     std::string script_module{};

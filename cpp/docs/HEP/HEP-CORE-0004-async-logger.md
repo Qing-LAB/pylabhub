@@ -13,7 +13,7 @@
 
 ## Implementation status
 
-All described APIs and sinks are implemented in `src/include/utils/logger.hpp`, `src/utils/logger.cpp`, and `src/utils/logger_sinks/`. Async queue, sync variants, sink abstraction (Console, File, RotatingFile, Syslog, EventLog), and lifecycle integration are in use. For current plan and priorities, see `docs/TODO_MASTER.md` and `docs/todo/`.
+All described APIs and sinks are implemented in `src/include/utils/logger.hpp`, `src/utils/logging/logger.cpp`, and `src/utils/logging/logger_sinks/`. Async queue, sync variants, sink abstraction (Console, File, RotatingFile, Syslog, EventLog), and lifecycle integration are in use. For current plan and priorities, see `docs/TODO_MASTER.md` and `docs/todo/`.
 
 ---
 

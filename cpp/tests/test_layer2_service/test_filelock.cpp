@@ -65,12 +65,12 @@ class FileLockTest : public ::testing::Test
     /// Helper to remove a lock file for a given resource to ensure a clean state.
     /// Tests clear lock files before each run for isolation (no process holds the lock).
     /// In production, .lock files are harmless; the library does not remove them on shutdown.
-    void clear_lock_file(const fs::path &resource_path, pylabhub::utils::ResourceType type)
+    void clear_lock_file(const fs::path &resource_path, bool is_directory = false)
     {
         try
         {
-            fs::remove(
-                pylabhub::utils::FileLock::get_expected_lock_fullname_for(resource_path, type));
+            fs::remove(pylabhub::utils::FileLock::get_expected_lock_fullname_for(resource_path,
+                                                                                  is_directory));
         }
         catch (...)
         {
@@ -86,7 +86,7 @@ std::unique_ptr<pylabhub::utils::LifecycleGuard> FileLockTest::s_lifecycle;
 TEST_F(FileLockTest, BasicNonBlocking)
 {
     auto resource_path = temp_dir() / "basic_resource.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
     WorkerProcess proc(g_self_exe_path, "filelock.test_basic_non_blocking",
                        {resource_path.string()});
     ASSERT_TRUE(proc.valid());
@@ -98,7 +98,7 @@ TEST_F(FileLockTest, BasicNonBlocking)
 TEST_F(FileLockTest, BlockingLock)
 {
     auto resource_path = temp_dir() / "blocking_resource.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
     WorkerProcess proc(g_self_exe_path, "filelock.test_blocking_lock", {resource_path.string()});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
@@ -109,7 +109,7 @@ TEST_F(FileLockTest, BlockingLock)
 TEST_F(FileLockTest, TimedLock)
 {
     auto resource_path = temp_dir() / "timed.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
     WorkerProcess proc(g_self_exe_path, "filelock.test_timed_lock", {resource_path.string()});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
@@ -121,8 +121,8 @@ TEST_F(FileLockTest, MoveSemantics)
 {
     auto resource1 = temp_dir() / "move1.txt";
     auto resource2 = temp_dir() / "move2.txt";
-    clear_lock_file(resource1, pylabhub::utils::ResourceType::File);
-    clear_lock_file(resource2, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource1);
+    clear_lock_file(resource2);
     WorkerProcess proc(g_self_exe_path, "filelock.test_move_semantics",
                        {resource1.string(), resource2.string()});
     ASSERT_TRUE(proc.valid());
@@ -155,7 +155,7 @@ TEST_F(FileLockTest, DirectoryPathLocking)
 TEST_F(FileLockTest, MultiThreadedNonBlocking)
 {
     auto resource_path = temp_dir() / "multithread.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
     WorkerProcess proc(g_self_exe_path, "filelock.test_multithreaded_non_blocking",
                        {resource_path.string()});
     ASSERT_TRUE(proc.valid());
@@ -173,11 +173,10 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
 TEST_F(FileLockTest, MultiProcessNonBlocking)
 {
     auto resource_path = temp_dir() / "multiprocess.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
 
     // Acquire lock in the main test process
-    pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File,
-                                        pylabhub::utils::LockMode::Blocking);
+    pylabhub::utils::FileLock main_lock(resource_path);
     ASSERT_TRUE(main_lock.valid());
 
     // Spawn a worker that will try to acquire the same lock non-blockingly and should fail.
@@ -203,7 +202,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     // Clear previous run files
     fs::remove(resource_path);
     fs::remove(log_path);
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
 
     const int PROCS = 8;
     const int ITERS_PER_WORKER = 100;
@@ -290,11 +289,10 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
 TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 {
     auto resource_path = temp_dir() / "parent_child_block.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
 
     // Acquire lock in the parent process.
-    auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(
-        resource_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::Blocking);
+    auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(resource_path);
     ASSERT_TRUE(parent_lock->valid());
 
     // Spawn child process, which should block trying to acquire the same lock.
@@ -318,11 +316,10 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 TEST_F(FileLockTest, MultiProcessTryLock)
 {
     auto resource_path = temp_dir() / "multiprocess_try_lock.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
 
     // Acquire a lock in the main test process
-    pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File,
-                                        pylabhub::utils::LockMode::Blocking);
+    pylabhub::utils::FileLock main_lock(resource_path);
     ASSERT_TRUE(main_lock.valid());
 
     // Spawn a worker that will try to acquire the same lock using the non-blocking
@@ -343,13 +340,12 @@ TEST_F(FileLockTest, MultiProcessTryLock)
 TEST_F(FileLockTest, TryLockPattern)
 {
     auto resource_path = temp_dir() / "try_lock_pattern.txt";
-    clear_lock_file(resource_path, pylabhub::utils::ResourceType::File);
+    clear_lock_file(resource_path);
 
     // 1. Success Case: Non-blocking lock on an available resource
     {
-        auto lock_opt =
-            pylabhub::utils::FileLock::try_lock(resource_path, pylabhub::utils::ResourceType::File,
-                                                pylabhub::utils::LockMode::NonBlocking);
+        auto lock_opt = pylabhub::utils::FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                              /*blocking=*/false);
 
         ASSERT_TRUE(lock_opt.has_value());
         EXPECT_TRUE(lock_opt->valid());
@@ -357,23 +353,22 @@ TEST_F(FileLockTest, TryLockPattern)
 
     // 2. Failure Case: Non-blocking attempt on a held resource
     {
-        pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File);
+        pylabhub::utils::FileLock main_lock(resource_path);
         ASSERT_TRUE(main_lock.valid());
 
-        auto lock_opt =
-            pylabhub::utils::FileLock::try_lock(resource_path, pylabhub::utils::ResourceType::File,
-                                                pylabhub::utils::LockMode::NonBlocking);
+        auto lock_opt = pylabhub::utils::FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                              /*blocking=*/false);
 
         EXPECT_FALSE(lock_opt.has_value());
     } // main_lock is released here
 
     // 3. Failure Case: Timed attempt on a held resource
     {
-        pylabhub::utils::FileLock main_lock(resource_path, pylabhub::utils::ResourceType::File);
+        pylabhub::utils::FileLock main_lock(resource_path);
         ASSERT_TRUE(main_lock.valid());
 
-        auto lock_opt = pylabhub::utils::FileLock::try_lock(
-            resource_path, pylabhub::utils::ResourceType::File, std::chrono::milliseconds(50));
+        auto lock_opt = pylabhub::utils::FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                              std::chrono::milliseconds(50));
 
         EXPECT_FALSE(lock_opt.has_value());
     } // main_lock is released here
@@ -398,14 +393,13 @@ TEST_F(FileLockTest, InvalidResourcePath)
     fs::path invalid_path(std::string_view(invalid_p, sizeof(invalid_p) - 1));
 
     // The constructor should not throw but the lock should be invalid.
-    pylabhub::utils::FileLock lock(invalid_path, pylabhub::utils::ResourceType::File,
-                                   pylabhub::utils::LockMode::NonBlocking);
+    pylabhub::utils::FileLock lock(invalid_path, /*is_directory=*/false, /*blocking=*/false);
     ASSERT_FALSE(lock.valid());
     // The error should be invalid_argument because get_expected_lock_fullname_for fails.
     ASSERT_EQ(lock.error_code(), std::errc::invalid_argument);
 
     // The try_lock static method should return nullopt for the same reason.
-    auto lock_opt = pylabhub::utils::FileLock::try_lock(
-        invalid_path, pylabhub::utils::ResourceType::File, pylabhub::utils::LockMode::NonBlocking);
+    auto lock_opt = pylabhub::utils::FileLock::try_lock(invalid_path, /*is_directory=*/false,
+                                                         /*blocking=*/false);
     ASSERT_FALSE(lock_opt.has_value());
 }

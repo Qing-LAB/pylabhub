@@ -13,12 +13,16 @@
  *       First-time setup: prompt hub_name + password, generate UUID4,
  *       write hub.json and encrypted hub.vault.  Defaults to current dir.
  *
- *   pylabhub-hubshell [<hub_dir>] [--dev]
- *       Normal run.  When <hub_dir> is given (and --dev is absent), the
- *       master password is read to unlock hub.vault; the stable broker
- *       CurveZMQ keypair is loaded from the vault.  With --dev an ephemeral
- *       keypair is generated and no password is required.  When <hub_dir>
- *       is omitted the legacy flat-config mode is used (backward compat).
+ *   pylabhub-hubshell <hub_dir> [--dev]
+ *       Normal run.  Without --dev the master password is read to unlock
+ *       hub.vault; the stable broker CurveZMQ keypair is loaded from the
+ *       vault.  With --dev an ephemeral keypair is used and no password
+ *       is required.
+ *
+ *   pylabhub-hubshell --dev
+ *       Development / test mode without a hub directory.  Uses built-in
+ *       defaults (hub_name, broker at tcp://0.0.0.0:5570) and an ephemeral
+ *       CurveZMQ keypair.  No hub.json required.
  *
  * Password sources (checked in order)
  * ------------------------------------
@@ -41,12 +45,14 @@
  */
 #include "plh_datahub.hpp"
 #include "hub_python/admin_shell.hpp"
+#include "hub_python/hub_script.hpp"
 #include "hub_python/python_interpreter.hpp"
 #include "hub_python/pylabhub_module.hpp"
 
 #include "utils/broker_service.hpp"
-#include "utils/connection_policy.hpp"
-#include "utils/hub_identity.hpp"
+#include "utils/channel_access_policy.hpp"
+#include "utils/uid_utils.hpp"
+#include "utils/uuid_utils.hpp"
 #include "utils/hub_vault.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -56,12 +62,14 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -82,13 +90,39 @@ using namespace pylabhub::utils;
 
 static std::atomic<bool> g_shutdown_requested{false};
 
+// Set on first SIGINT so the second one initiates shutdown (Jupyter-style).
+// Using a separate flag avoids any ambiguity between "warned" and "shutdown".
+static std::atomic<bool> g_shutdown_warned{false};
+
+// Async-signal-safe message write helper.
+static void write_stderr_signal(const char* msg, std::size_t len) noexcept
+{
+#if defined(PYLABHUB_IS_POSIX)
+    ::write(STDERR_FILENO, msg, len);
+#else
+    // Not strictly async-signal-safe, but acceptable on non-POSIX targets.
+    (void)std::fwrite(msg, 1, len, stderr);
+#endif
+}
+
 static void signal_handler(int /*sig*/) noexcept
 {
     if (g_shutdown_requested.load(std::memory_order_relaxed))
     {
-        // Double SIGINT / SIGTERM: fast exit without waiting for cleanup.
+        // Third Ctrl+C (second during active teardown): fast exit.
         std::_Exit(1);
     }
+
+    // First Ctrl+C: warn and continue running.
+    // Second Ctrl+C: initiate graceful shutdown.
+    if (!g_shutdown_warned.exchange(true, std::memory_order_acq_rel))
+    {
+        static const char kMsg[] =
+            "\r\nHub is still running. Press Ctrl+C again to stop.\r\n";
+        write_stderr_signal(kMsg, sizeof(kMsg) - 1);
+        return; // do NOT set g_shutdown_requested yet
+    }
+
     g_shutdown_requested.store(true, std::memory_order_release);
 }
 
@@ -133,8 +167,9 @@ static int do_init(const fs::path& hub_dir)
 {
     // Create directory structure.
     std::error_code ec;
-    fs::create_directories(hub_dir / "logs", ec);
-    fs::create_directories(hub_dir / "run",  ec);
+    fs::create_directories(hub_dir / "logs",            ec);
+    fs::create_directories(hub_dir / "run",             ec);
+    fs::create_directories(hub_dir / "script" / "python", ec);
     if (ec)
     {
         std::fprintf(stderr, "hubshell --init: cannot create directory '%s': %s\n",
@@ -180,8 +215,8 @@ static int do_init(const fs::path& hub_dir)
         }
     }
 
-    // Generate hub_uid (UUID4 via libsodium).
-    const std::string hub_uid = pylabhub::utils::generate_uuid4();
+    // Generate hub_uid in the canonical HUB-NAME-HEXSUFFIX format.
+    const std::string hub_uid = pylabhub::uid::generate_hub_uid(hub_name);
 
     try
     {
@@ -205,6 +240,19 @@ static int do_init(const fs::path& hub_dir)
             {"broker", {
                 {"channel_timeout_s",         10},
                 {"consumer_liveness_check_s",  5}
+            }},
+            // Language-neutral hub script configuration.
+            // "type" selects the ScriptHost subclass; "path" is the base directory.
+            // Python scripts live at <path>/python/__init__.py.
+            {"script", {
+                {"type",                   "python"},
+                {"path",                   "./script"},
+                {"tick_interval_ms",       1000},
+                {"health_log_interval_ms", 60000}
+            }},
+            // Python-specific settings (requirements only; script path moved to "script").
+            {"python", {
+                {"requirements", "../share/scripts/python/requirements.txt"}
             }}
         };
 
@@ -218,11 +266,167 @@ static int do_init(const fs::path& hub_dir)
             f << hub_json.dump(2) << '\n';
         }
 
+        // Write the hub script package template (Python variant).
+        {
+            std::ofstream f(hub_dir / "script" / "python" / "__init__.py");
+            if (f)
+            {
+                f << R"("""
+Hub script for )" << hub_name << R"PY(.
+
+Callbacks called by the C++ hub runtime:
+  on_start(api)        -- Called once after the hub lifecycle is fully started.
+  on_tick(api, tick)   -- Called every tick_interval_ms (default: every second).
+  on_stop(api)         -- Called once before the hub shuts down.
+
+Default dashboard: channels table (top) + rolling log tail (bottom).
+The log is read from <hub_dir>/logs/hub.log which receives all hub output
+once the file logger is active.  Replace on_tick() for custom logic.
+"""
+import pylabhub
+from rich.live import Live
+from rich.layout import Layout
+from rich.table import Table
+from rich.text import Text
+from rich.panel import Panel
+from rich import box
+
+_live = None
+_layout = None
+_log_file = None
+
+STATUS_COLORS = {
+    "Ready": "green",
+    "PendingReady": "yellow",
+    "Closing": "red",
+}
+
+
+def _tail_log(path, n=18):
+    """Return the last n lines of a file, or a placeholder on error."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            if end == 0:
+                return ["(log file empty)"]
+            chunk = min(end, 8192)
+            f.seek(-chunk, 2)
+            data = f.read(chunk).decode("utf-8", errors="replace")
+            return data.splitlines()[-n:]
+    except OSError:
+        return ["(log file not yet available)"]
+
+
+def _make_channels_table(api, tick):
+    uptime_s = tick.uptime_ms() / 1000.0
+    h = int(uptime_s // 3600)
+    m = int((uptime_s % 3600) // 60)
+    s = int(uptime_s % 60)
+
+    table = Table(
+        title=(
+            f"[bold]{api.hub_name()}[/bold]"
+            f"  \u2502  uptime {h:02d}:{m:02d}:{s:02d}"
+            f"  \u2502  tick #{tick.tick_count()}"
+            f"  \u2502  {tick.channels_ready()} ready"
+            f"  {tick.channels_pending()} pending"
+            f"  {tick.channels_closing()} closing"
+        ),
+        box=box.SIMPLE_HEAVY,
+        expand=True,
+    )
+    table.add_column("Channel", style="cyan", no_wrap=True)
+    table.add_column("Status", justify="center")
+    table.add_column("Consumers", justify="right")
+    table.add_column("PID", justify="right", style="dim")
+    table.add_column("Actor", style="magenta")
+    table.add_column("Actor UID", style="dim")
+
+    channels = api.channels()
+    if not channels:
+        table.add_row("[dim]no channels registered[/dim]", "", "", "", "", "")
+    else:
+        for ch in channels:
+            color = STATUS_COLORS.get(ch.status(), "white")
+            table.add_row(
+                ch.name(),
+                f"[{color}]{ch.status()}[/{color}]",
+                str(ch.consumer_count()),
+                str(ch.producer_pid()) if ch.producer_pid() else "\u2014",
+                ch.producer_actor_name() or "\u2014",
+                ch.producer_actor_uid() or "\u2014",
+            )
+    return table
+
+
+def _make_log_panel(log_file):
+    if log_file is None:
+        return Panel(
+            "[dim]no log file (--dev mode without hub_dir)[/dim]",
+            title="Log",
+            border_style="dim",
+        )
+    text = Text(overflow="fold")
+    for line in _tail_log(log_file):
+        if " ERR " in line or "[ERR]" in line:
+            style = "red"
+        elif " WRN " in line or "[WRN]" in line:
+            style = "yellow"
+        elif " DBG " in line or "[DBG]" in line:
+            style = "dim"
+        elif " SYS " in line or "[SYS]" in line:
+            style = "bold magenta"
+        else:
+            style = ""
+        text.append(line + "\n", style=style)
+    return Panel(text, title="Log", border_style="dim", padding=(0, 1))
+
+
+def on_start(api):
+    global _live, _layout, _log_file
+    _log_file = pylabhub.paths().get("log_file")
+    api.log("info", f"Hub '{api.hub_name()}' dashboard started (uid={api.hub_uid()})")
+    print(f"[hub_script] on_start: hub={api.hub_name()} uid={api.hub_uid()}", flush=True)
+    _layout = Layout()
+    _layout.split_column(
+        Layout(name="channels", ratio=2),
+        Layout(name="logs", ratio=1),
+    )
+    _live = Live(_layout, auto_refresh=False, screen=False)
+    _live.start()
+
+
+def on_tick(api, tick):
+    if tick.tick_count() <= 3:
+        print(f"[hub_script] on_tick #{tick.tick_count()}: "
+              f"{tick.channels_ready()} ready, "
+              f"{tick.channels_pending()} pending, "
+              f"uptime={tick.uptime_ms()}ms", flush=True)
+    if _live is None:
+        return
+    _layout["channels"].update(_make_channels_table(api, tick))
+    _layout["logs"].update(_make_log_panel(_log_file))
+    _live.refresh()
+
+
+def on_stop(api):
+    global _live
+    print("[hub_script] on_stop called", flush=True)
+    if _live is not None:
+        _live.stop()
+        _live = None
+    api.log("info", "Hub dashboard stopped")
+)PY";
+            }
+        }
+
         const fs::path abs_dir = fs::weakly_canonical(hub_dir);
         std::printf("\nHub initialized successfully.\n");
         std::printf("  Location : %s\n", abs_dir.string().c_str());
         std::printf("  hub_name : %s\n", hub_name.c_str());
         std::printf("  hub_uid  : %s\n", hub_uid.c_str());
+        std::printf("  script   : %s/script/python/__init__.py\n", abs_dir.string().c_str());
         std::printf("\nRun with: pylabhub-hubshell %s\n", abs_dir.string().c_str());
     }
     catch (const std::exception& e)
@@ -285,7 +489,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
             return 1;
         }
 
-        // Point HubConfig at hub.json (replaces flat-config discovery).
+        // Point HubConfig at hub.json.
         pylabhub::HubConfig::set_config_path(hub_json_path);
     }
     else if (!hub_dir.empty() && dev_mode)
@@ -295,7 +499,18 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         if (fs::exists(hub_json_path))
             pylabhub::HubConfig::set_config_path(hub_json_path);
     }
-    // else: legacy flat-config mode — HubConfig discovers config on its own.
+    else if (hub_dir.empty() && !dev_mode)
+    {
+        // No hub_dir without --dev: require explicit directory.
+        std::fprintf(stderr,
+                     "hubshell: <hub_dir> is required.\n"
+                     "  Usage: pylabhub-hubshell <hub_dir>          (production)\n"
+                     "         pylabhub-hubshell <hub_dir> --dev    (dev, no vault)\n"
+                     "         pylabhub-hubshell --dev              (dev, built-in defaults)\n"
+                     "         pylabhub-hubshell --init [<hub_dir>] (first-time setup)\n");
+        return 1;
+    }
+    // else: hub_dir empty + dev_mode → built-in defaults, ephemeral keypair.
 
     // -----------------------------------------------------------------------
     // Signal handling — must be set up before lifecycle starts.
@@ -331,6 +546,26 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         pylabhub::PythonInterpreter::GetLifecycleModule(),
         pylabhub::AdminShell::GetLifecycleModule()
     ));
+
+    // -----------------------------------------------------------------------
+    // Switch to rotating log file as early as possible so console output is
+    // replaced by the rich UI dashboard rendered by the hub script.
+    // Skipped in pure --dev mode (no persistent hub directory).
+    // -----------------------------------------------------------------------
+    if (!hub_dir.empty())
+    {
+        const auto logs_dir = hub_dir / "logs";
+        std::error_code mkdir_ec;
+        fs::create_directories(logs_dir, mkdir_ec);
+        const auto log_path = logs_dir / "hub.log";
+        std::error_code log_ec;
+        if (!pylabhub::utils::Logger::instance().set_rotating_logfile(
+                log_path, 10ULL * 1024 * 1024, 3, log_ec))
+        {
+            fmt::print(stderr, "hubshell: warning: could not open log file '{}': {}\n",
+                       log_path.string(), log_ec.message());
+        }
+    }
 
     // -----------------------------------------------------------------------
     // BrokerService — built from HubConfig, runs in its own thread.
@@ -398,52 +633,112 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         });
 
     // -----------------------------------------------------------------------
-    // Execute Python startup script (if configured).
+    // HubScript — loads as a dynamic lifecycle module.
+    //
+    // hub_thread_ (spawned inside startup_()) owns the full CPython interpreter
+    // lifetime: Py_Initialize → init_namespace → load script → on_start →
+    // [tick loop] → on_stop → release_namespace → Py_Finalize.
+    //
+    // LoadModule() blocks until hub_thread_ signals "Python ready" so that
+    // subsequent code (e.g., the main wait loop) can rely on exec() working.
     // -----------------------------------------------------------------------
-    const auto startup_script = hub_cfg.python_startup_script();
-    if (!startup_script.empty() && fs::exists(startup_script))
+    pylabhub::HubScript::get_instance().set_broker(&broker);
+    pylabhub::HubScript::get_instance().set_shutdown_flag(&g_shutdown_requested);
+
+    if (!RegisterDynamicModule(pylabhub::HubScript::GetLifecycleModule()))
     {
-        LOGGER_INFO("HubShell: executing startup script: {}", startup_script.string());
-        std::ifstream f(startup_script);
-        if (f)
-        {
-            std::ostringstream ss;
-            ss << f.rdbuf();
-            auto result = pylabhub::PythonInterpreter::get_instance().exec(ss.str());
-            if (!result.success)
-            {
-                LOGGER_ERROR("HubShell: startup script failed: {}", result.error);
-            }
-            if (!result.output.empty())
-            {
-                LOGGER_INFO("HubShell: startup script output:\n{}", result.output);
-            }
-        }
-        else
-        {
-            LOGGER_WARN("HubShell: could not open startup script: {}", startup_script.string());
-        }
+        LOGGER_ERROR("HubShell: failed to register HubScript dynamic module");
+        broker.stop();
+        broker_thread.join();
+        return 1;
     }
+
+    if (!LoadModule("pylabhub::HubScript"))
+    {
+        LOGGER_ERROR("HubShell: Python environment initialization failed");
+        broker.stop();
+        broker_thread.join();
+        return 1;
+    }
+
+    LOGGER_INFO("HubShell: Python environment ready");
 
     // -----------------------------------------------------------------------
     // Main loop — block until shutdown is requested.
+    // The main thread holds no GIL.  hub_thread_ releases the GIL between
+    // ticks so AdminShell::exec() calls can proceed concurrently.
     // -----------------------------------------------------------------------
     LOGGER_INFO("HubShell: running. Send SIGINT or call pylabhub.shutdown() to stop.");
+
+    // Track when the first Ctrl+C warning was shown so we can expire it.
+    std::optional<std::chrono::steady_clock::time_point> warn_time;
+    static constexpr int kWarnTimeoutS = 5;
 
     while (!g_shutdown_requested.load(std::memory_order_acquire))
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
+
+        // Jupyter-style Ctrl+C: if the second press does not arrive within
+        // kWarnTimeoutS seconds, silently reset the warning so the next Ctrl+C
+        // is treated as a fresh first press again.
+        if (g_shutdown_warned.load(std::memory_order_acquire))
+        {
+            if (!warn_time)
+                warn_time = std::chrono::steady_clock::now();
+            else if (std::chrono::steady_clock::now() - *warn_time
+                     > std::chrono::seconds(kWarnTimeoutS))
+            {
+                g_shutdown_warned.store(false, std::memory_order_release);
+                warn_time.reset();
+            }
+        }
+        else
+        {
+            warn_time.reset();
+        }
     }
 
     // -----------------------------------------------------------------------
-    // Graceful shutdown.
+    // Graceful shutdown sequence (order is critical for correctness).
+    //
+    // Logger is in file mode — write the notice to stderr so the user sees
+    // feedback even when the rich dashboard is active.
     // -----------------------------------------------------------------------
-    LOGGER_INFO("HubShell: shutdown requested — stopping broker...");
+    std::fprintf(stderr, "\nHubShell: shutting down (press Ctrl+C again to force exit)...\n");
+    LOGGER_INFO("HubShell: shutdown requested, beginning graceful teardown.");
+
+    // Step 1: Stop AdminShell — prevents new Python exec() calls arriving
+    //         while hub_thread_ is still running (and holding the GIL).
+    //         AdminShell::shutdown_() is idempotent; the LifecycleGuard will
+    //         call it again during static-module finalization (a no-op).
+    LOGGER_INFO("HubShell: stopping admin shell...");
+    pylabhub::AdminShell::get_instance().shutdown_();
+
+    // Step 2: Schedule HubScript unload (asynchronous).
+    //         The lifecycle's async shutdown thread calls hub_script.shutdown_(),
+    //         which sets stop_ and joins hub_thread_ (on_stop + Py_Finalize).
+    LOGGER_INFO("HubShell: unloading HubScript (on_stop + Py_Finalize will run async)...");
+    (void)UnloadModule("pylabhub::HubScript");
+
+    // Step 3: Stop the broker.  This can run concurrently with hub_thread_
+    //         finishing up its on_stop callback.
+    LOGGER_INFO("HubShell: stopping broker...");
     broker.stop();
     broker_thread.join();
     LOGGER_INFO("HubShell: broker stopped.");
 
-    // LifecycleGuard destructor handles the rest (AdminShell → PythonInterpreter → ...).
+    // Step 4: Wait for hub_thread_ to finish (on_stop + Py_Finalize).
+    //         After this call, Python is fully finalized.
+    LOGGER_INFO("HubShell: waiting for Python finalization...");
+    WaitForUnload("pylabhub::HubScript");
+    LOGGER_INFO("HubShell: Python finalized.");
+
+    // LifecycleGuard destructor handles the rest:
+    //   AdminShell (no-op, already stopped) → PythonInterpreter (no-op) → ...
+    LOGGER_INFO("HubShell: termination requested by user, shutdown initiated.");
+    std::fprintf(stderr,
+                 "[DBG] Termination requested by user, shutdown initiated"
+                 " — this may take a few seconds.\n");
     return 0;
 }
 
@@ -470,7 +765,8 @@ int main(int argc, char* argv[])
             std::fprintf(stderr,
                          "Usage:\n"
                          "  pylabhub-hubshell --init [<hub_dir>]\n"
-                         "  pylabhub-hubshell [<hub_dir>] [--dev]\n");
+                         "  pylabhub-hubshell <hub_dir> [--dev]\n"
+                         "  pylabhub-hubshell --dev\n");
             return 1;
         }
         else

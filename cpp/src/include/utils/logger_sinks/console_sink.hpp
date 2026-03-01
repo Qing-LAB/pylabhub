@@ -9,9 +9,9 @@ namespace pylabhub::utils
 class ConsoleSink : public Sink
 {
   public:
-    void write(const LogMessage &msg, Sink::WRITE_MODE mode) override
+    void write(const LogMessage &msg, bool sync_flag) override
     {
-        fmt::print(stderr, "{}", pylabhub::utils::Sink::format_logmsg(msg, mode));
+        fmt::print(stderr, "{}", pylabhub::utils::Sink::format_logmsg(msg, sync_flag));
     }
     void flush() override { fflush(stderr); }
     std::string description() const override { return "Console"; }

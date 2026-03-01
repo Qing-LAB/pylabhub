@@ -151,7 +151,7 @@ if(THIRD_PARTY_INSTALL)
   pylabhub_register_directory_for_staging(
     SOURCE_DIR "${PREREQ_INSTALL_DIR}"
     ATTACH_TO stage_third_party_deps
-    SUBDIRS "bin;lib;include;share" # Stage common directories
+    SUBDIRS "bin;lib;include;share;opt" # Stage common directories (opt/ includes luajit/ and python/)
     CLEAN_RESIDUE # Remove autotools residue (Makefile.in, etc.) before copying
   )
 

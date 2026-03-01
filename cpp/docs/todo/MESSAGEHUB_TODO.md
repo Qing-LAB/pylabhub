@@ -3,7 +3,7 @@
 **Purpose:** Track Messenger, BrokerService, HubShell, and pylabhub-actor open items.
 
 **Master TODO:** `docs/TODO_MASTER.md`
-**Implementation:** `src/utils/messenger.cpp`, `src/utils/broker_service.cpp`
+**Implementation:** `src/utils/ipc/messenger.cpp`, `src/utils/ipc/broker_service.cpp`
 **HEP:** `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md` §6 (control-plane protocol)
 **Actor Design:** `docs/tech_draft/ACTOR_DESIGN.md`
 
@@ -11,11 +11,75 @@
 
 ## Current Status
 
-✅ **528/528 tests passing (2026-02-26).** HubShell all 6 phases, pylabhub-actor
+✅ **550/550 tests passing (2026-02-27).** HubShell all 6 phases, pylabhub-actor
 multi-role system with per-role Python packages, broker health layer (Cat 1/Cat 2),
 consumer registration, UID enforcement, SharedSpinLockPy, HEP-CORE-0010 Phases 1–3
 (unified on_iteration, ZMQ thread consolidation, application-level heartbeat),
-actor identity + hub_dir wiring, --init flows, embedded-mode unit tests — all complete.
+actor identity + hub_dir wiring, --init flows, embedded-mode unit tests,
+Hub Script Package + tick thread, GIL/signal handler unified interface — all complete.
+
+---
+
+## Recent Completions — GIL / Signal Handler Unified Interface (2026-02-28)
+
+- ✅ **GIL/signal handler unified interface** (2026-02-28): Fixed all GIL-race and signal
+  handler override bugs across hub and actor. Introduced `std::optional<py::gil_scoped_release>
+  main_thread_release_` in both `HubScript` and `ActorHost` for encapsulated GIL management.
+  - **Signal fix**: `PyConfig.install_signal_handlers = 0` applied in `python_interpreter.cpp`
+    (hub, via lifecycle) and `actor_main.cpp` (actor, direct `py::scoped_interpreter`) —
+    prevents Python's `Py_Initialize` from overriding C++ SIGINT/SIGTERM handlers.
+  - **Hub GIL fix**: `HubScript::startup_()` uses IIFE `[&]()->void{...}()` pattern so
+    `main_thread_release_.emplace()` fires unconditionally despite early returns (no script dir,
+    no `__init__.py`, import error). `shutdown_()` calls `main_thread_release_.reset()` first,
+    then `py::gil_scoped_release` around `tick_thread_.join()` to prevent deadlock.
+  - **Actor GIL fix**: `ActorHost::start()` calls `main_thread_release_.emplace()` before
+    returning. `ActorHost::stop()` calls `main_thread_release_.reset()` then `py::gil_scoped_release`
+    around all worker `stop()` + `join()` calls.
+  - **Callers clean**: `hubshell.cpp` and `actor_main.cpp` have zero `py::` GIL management —
+    plain wait loop and plain `host.stop()` call.
+  - Files: `src/hub_python/hub_script.hpp`, `src/hub_python/hub_script.cpp`,
+           `src/actor/actor_host.hpp`, `src/actor/actor_host.cpp`, `src/actor/actor_main.cpp`,
+           `src/hubshell.cpp`.
+
+---
+
+## Recent Completions — Hub Script Package + Tick Thread (2026-02-27)
+
+- ✅ **Hub script package structure** (2026-02-27): Replaced flat `startup_script` with
+  `<hub_dir>/script/__init__.py` Python package pattern (mirrors actor role scripts).
+  - `HubConfig`: `hub_script_dir()` / `tick_interval_ms()` / `health_log_interval_ms()` added;
+    `python_startup_script()` removed. JSON key: `python.script` (relative path).
+  - `do_init()`: creates `script/` dir + `__init__.py` template (on_start / on_tick / on_stop).
+  - `hub.json` written with `"python": {"script": "./script", "tick_interval_ms": 1000, …}`.
+  - Files: `src/include/utils/hub_config.hpp`, `src/utils/config/hub_config.cpp`, `src/hubshell.cpp`.
+
+- ✅ **HubScriptAPI, ChannelInfo, HubTickInfo** (2026-02-27): Typed Python API analogous to
+  `ActorRoleAPI`. Exposed via `hub_script_api` embedded module (PYBIND11_EMBEDDED_MODULE).
+  - `HubScriptAPI`: `hub_name()`, `hub_uid()`, `log()`, `shutdown()`, `channels()`,
+    `ready_channels()`, `pending_channels()`, `channel(name)`.
+  - `ChannelInfo`: typed snapshot (name, status, consumer_count, producer_pid, schema_hash,
+    producer_actor_name/uid) + `request_close()` back-pointer pattern.
+  - `HubTickInfo`: tick_count, elapsed_ms, uptime_ms, channels_ready/pending/closing.
+  - Files: `src/hub_python/hub_script_api.hpp`, `src/hub_python/hub_script_api.cpp`.
+
+- ✅ **HubScript tick thread** (2026-02-27): Dedicated `tick_thread_` for periodic
+  health logging + `on_tick` callback dispatch. No GIL held during non-Python work.
+  - Automatic health log every `health_log_interval_ms` (no script needed).
+  - Script-requested closes collected after `on_tick` returns; dispatched without GIL
+    via `BrokerService::request_close_channel()`.
+  - `HubScript::startup_()`/`shutdown_()` managed manually in `do_run()` (like BrokerService).
+  - Files: `src/hub_python/hub_script.hpp`, `src/hub_python/hub_script.cpp`, `src/CMakeLists.txt`.
+
+- ✅ **BrokerService**: `query_channel_snapshot()` + `request_close_channel()` (2026-02-27):
+  - `ChannelSnapshotEntry` / `ChannelSnapshot` structs: typed thread-safe channel snapshot.
+  - `close_request_queue_` (mutex-protected deque) drained in run() post-poll phase.
+  - Files: `src/include/utils/broker_service.hpp`, `src/utils/ipc/broker_service.cpp`.
+
+- ✅ **pylabhub module**: `hub_uid()` added; `paths()` updated (`hub_script_dir` replaces
+  `python_startup_script`). File: `src/hub_python/pylabhub_module.cpp`.
+
+- ✅ **Docs**: `docs/README/README_Deployment.md` §4.5 rewritten (hub script package,
+  HubScriptAPI methods, ChannelInfo, HubTickInfo, example).
 
 ---
 

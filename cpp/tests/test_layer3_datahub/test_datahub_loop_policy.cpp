@@ -17,6 +17,20 @@
  *   3. ProducerFixedRateOverrunDetect — overrun_count > 0 after body sleeps past period_ms
  *   4. SlotIteratorFixedRatePacing — ctx.slots() sleeps maintain start-to-start interval
  *   5. ConsumerMetricsAccumulate   — consumer iteration_count rises with each acquire/release
+ *   6. ZeroOnCreation              — all ContextMetrics fields are zero before first acquire
+ *   7. MaxRateNoOverrun            — MaxRate policy never increments overrun_count
+ *   8. LastSlotWorkUsPopulated     — last_slot_work_us > 0 after measurable body sleep
+ *   9. LastIterationUsPopulated    — last_iteration_us > 0 after two acquires
+ *  10. MaxIterationUsPeak          — max_iteration_us tracks the peak and never decreases
+ *  11. ContextElapsedUsMonotonic   — context_elapsed_us grows between acquires
+ *  12. CtxMetricsPassThrough               — ctx.metrics() is a reference to the same Pimpl storage
+ *
+ * RAII path tests (via with_transaction + ctx.slots()):
+ *  13. RaiiProducerLastSlotWorkUsMultiIter — key regression: per-handle t_slot_acquired_ fix
+ *      (pre-fix: last_slot_work_us was ~0 due to t_iter_start_ being overwritten by next acquire)
+ *  14. RaiiProducerMetricsViaSlots        — iteration_count/last/max_iteration_us via ctx.slots()
+ *  15. RaiiProducerOverrunViaSlots        — overrun detection works through RAII slot loop
+ *  16. RaiiConsumerLastSlotWorkUs         — consumer RAII destructor records last_slot_work_us
  *
  * Shared-memory names are generated via make_test_channel_name() (timestamp-unique), so
  * tests can run in parallel (ctest -j2) without collisions.
@@ -247,4 +261,379 @@ TEST_F(DatahubLoopPolicyTest, ConsumerMetricsAccumulate)
     const auto &m = consumer->metrics();
     ASSERT_EQ(m.iteration_count, uint64_t{3});
     ASSERT_GE(m.last_slot_wait_us, uint64_t{0});
+}
+
+// ============================================================================
+// Test 6: ZeroOnCreation
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
+{
+    const std::string channel = make_test_channel_name("LPZeroOnCreation");
+    auto cfg = make_lp_config(80006);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // Before any acquire, all metric counters and context_start_time must be zero.
+    const auto &m = producer->metrics();
+    EXPECT_EQ(m.iteration_count,    uint64_t{0});
+    EXPECT_EQ(m.overrun_count,      uint64_t{0});
+    EXPECT_EQ(m.last_slot_wait_us,  uint64_t{0});
+    EXPECT_EQ(m.last_iteration_us,  uint64_t{0});
+    EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
+    EXPECT_EQ(m.last_slot_work_us,  uint64_t{0});
+    EXPECT_EQ(m.context_elapsed_us, uint64_t{0});
+    EXPECT_EQ(m.period_ms,          uint64_t{0});
+    EXPECT_EQ(m.context_start_time, ContextMetrics::Clock::time_point{});
+}
+
+// ============================================================================
+// Test 7: MaxRateNoOverrun
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
+{
+    const std::string channel = make_test_channel_name("LPMaxRateNoOverrun");
+    auto cfg = make_lp_config(80007);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // MaxRate (period_ms = 0) disables overrun detection entirely.
+    producer->set_loop_policy(LoopPolicy::MaxRate);
+
+    // Slow body: would overrun a FixedRate 1 ms policy, but MaxRate never counts overruns.
+    for (int i = 0; i < 3; ++i)
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        std::this_thread::sleep_for(5ms);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    EXPECT_EQ(producer->metrics().overrun_count, uint64_t{0});
+    EXPECT_EQ(producer->metrics().period_ms,     uint64_t{0});
+}
+
+// ============================================================================
+// Test 8: LastSlotWorkUsPopulated
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, LastSlotWorkUsPopulated)
+{
+    const std::string channel = make_test_channel_name("LPLastSlotWork");
+    auto cfg = make_lp_config(80008);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        std::this_thread::sleep_for(2ms); // measurable body time
+        (void)h->commit(sizeof(TestDataBlock));
+        // h destructor calls release_write_handle() which records last_slot_work_us.
+    }
+
+    EXPECT_GT(producer->metrics().last_slot_work_us, uint64_t{0});
+}
+
+// ============================================================================
+// Test 9: LastIterationUsPopulated
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, LastIterationUsPopulated)
+{
+    const std::string channel = make_test_channel_name("LPLastIteration");
+    auto cfg = make_lp_config(80009);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // First acquire sets the timing anchor; second produces the first last_iteration_us measurement.
+    for (int i = 0; i < 2; ++i)
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    EXPECT_GT(producer->metrics().last_iteration_us, uint64_t{0});
+}
+
+// ============================================================================
+// Test 10: MaxIterationUsPeak
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, MaxIterationUsPeak)
+{
+    const std::string channel = make_test_channel_name("LPMaxIterPeak");
+    auto cfg = make_lp_config(80010);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // Iteration 1: fast (sets timing anchor).
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    // Inject a delay: start-to-start for iteration 2 should be > 5 ms.
+    std::this_thread::sleep_for(5ms);
+
+    // Iteration 2: slower — drives max_iteration_us to a measurable peak.
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    const uint64_t peak_after_2 = producer->metrics().max_iteration_us;
+
+    // Iteration 3: fast (no sleep before it) — last_iteration_us should be small.
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    const auto &m = producer->metrics();
+    // max_iteration_us must never decrease.
+    EXPECT_GE(m.max_iteration_us, peak_after_2);
+    // max_iteration_us must always be >= last_iteration_us.
+    EXPECT_GE(m.max_iteration_us, m.last_iteration_us);
+}
+
+// ============================================================================
+// Test 11: ContextElapsedUsMonotonic
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, ContextElapsedUsMonotonic)
+{
+    const std::string channel = make_test_channel_name("LPContextElapsed");
+    auto cfg = make_lp_config(80011);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // First acquire sets context_start_time and captures the first elapsed value.
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+    const uint64_t elapsed_1 = producer->metrics().context_elapsed_us;
+
+    std::this_thread::sleep_for(2ms); // ensure the clock advances
+
+    // Second acquire must see a larger context_elapsed_us.
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+    const uint64_t elapsed_2 = producer->metrics().context_elapsed_us;
+
+    EXPECT_GE(elapsed_2, elapsed_1) << "context_elapsed_us must be non-decreasing";
+}
+
+// ============================================================================
+// Test 12: CtxMetricsPassThrough
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, CtxMetricsPassThrough)
+{
+    const std::string channel = make_test_channel_name("LPCtxPassThrough");
+    auto cfg = make_lp_config(80012);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    const ContextMetrics *outer_ptr = &producer->metrics();
+    const ContextMetrics *inner_ptr = nullptr;
+
+    producer->with_transaction<EmptyFlexZone, TestDataBlock>(
+        1000ms,
+        [&inner_ptr](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+        {
+            // ctx.metrics() must be a pass-through reference into the same Pimpl storage.
+            inner_ptr = &ctx.metrics();
+        });
+
+    ASSERT_NE(inner_ptr, nullptr);
+    EXPECT_EQ(inner_ptr, outer_ptr)
+        << "ctx.metrics() must reference the same Pimpl storage as producer->metrics()";
+}
+
+// ============================================================================
+// Test 13: RaiiProducerLastSlotWorkUsMultiIter
+// ============================================================================
+
+/**
+ * Key regression test for the per-handle t_slot_acquired_ fix (HEP-CORE-0008 §4.2).
+ *
+ * RAII multi-iteration issue (pre-fix):
+ *   SlotIterator::acquire_next_slot() acquires the NEW slot (updating owner->t_iter_start_)
+ *   BEFORE the OLD handle's unique_ptr is replaced, which fires ~SlotWriteHandle().
+ *   If release_write_handle() used owner->t_iter_start_, it would see the NEW slot's
+ *   acquire time → last_slot_work_us ≈ 0 (wrong).
+ *
+ * Post-fix: each SlotWriteHandle stores its own t_slot_acquired_ at creation time.
+ *   ~SlotWriteHandle() uses impl.t_slot_acquired_ → correctly records body time.
+ */
+TEST_F(DatahubLoopPolicyTest, RaiiProducerLastSlotWorkUsMultiIter)
+{
+    const std::string channel = make_test_channel_name("LPRaiiProdWork");
+    auto cfg = make_lp_config(80013);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    producer->with_transaction<EmptyFlexZone, TestDataBlock>(
+        2000ms,
+        [](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+        {
+            int count = 0;
+            for (auto &result : ctx.slots(100ms))
+            {
+                if (!result.is_ok())
+                    continue;
+                std::this_thread::sleep_for(5ms); // measurable body time
+                result.content().get().sequence = static_cast<uint64_t>(++count);
+                if (count >= 2)
+                    break; // second break: destructor releases last slot via RAII
+            }
+            EXPECT_EQ(count, 2);
+        });
+
+    // Without the per-handle fix, the RAII multi-iter path recorded ~0 here
+    // because t_iter_start_ was overwritten by the next acquire before ~SlotWriteHandle fired.
+    EXPECT_GE(producer->metrics().last_slot_work_us, uint64_t{3000})
+        << "RAII multi-iter: last_slot_work_us should reflect body sleep (~5 ms)";
+}
+
+// ============================================================================
+// Test 14: RaiiProducerMetricsViaSlots
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, RaiiProducerMetricsViaSlots)
+{
+    const std::string channel = make_test_channel_name("LPRaiiProdMetrics");
+    auto cfg = make_lp_config(80014);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    producer->with_transaction<EmptyFlexZone, TestDataBlock>(
+        5000ms,
+        [](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+        {
+            int count = 0;
+            for (auto &result : ctx.slots(100ms))
+            {
+                if (!result.is_ok())
+                    continue;
+                result.content().get().sequence = static_cast<uint64_t>(++count);
+                if (count >= 5)
+                    break;
+            }
+            EXPECT_EQ(count, 5);
+        });
+
+    const auto &m = producer->metrics();
+    EXPECT_EQ(m.iteration_count, uint64_t{5});
+    EXPECT_GT(m.last_iteration_us, uint64_t{0});
+    EXPECT_GE(m.max_iteration_us, m.last_iteration_us);
+}
+
+// ============================================================================
+// Test 15: RaiiProducerOverrunViaSlots
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, RaiiProducerOverrunViaSlots)
+{
+    const std::string channel = make_test_channel_name("LPRaiiProdOverrun");
+    auto cfg = make_lp_config(80015);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    // FixedRate 1 ms + 5 ms body sleep guarantees overruns via the RAII ctx.slots() path.
+    producer->set_loop_policy(LoopPolicy::FixedRate, 1ms);
+
+    producer->with_transaction<EmptyFlexZone, TestDataBlock>(
+        5000ms,
+        [](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+        {
+            int count = 0;
+            for (auto &result : ctx.slots(100ms))
+            {
+                if (!result.is_ok())
+                    continue;
+                std::this_thread::sleep_for(5ms);
+                result.content().get().sequence = static_cast<uint64_t>(++count);
+                if (count >= 3)
+                    break;
+            }
+            EXPECT_EQ(count, 3);
+        });
+
+    EXPECT_GT(producer->metrics().overrun_count, uint64_t{0});
+}
+
+// ============================================================================
+// Test 16: RaiiConsumerLastSlotWorkUs
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, RaiiConsumerLastSlotWorkUs)
+{
+    const std::string channel = make_test_channel_name("LPRaiiConsumerWork");
+    auto cfg = make_lp_config(80016);
+
+    auto producer = create_datablock_producer<EmptyFlexZone, TestDataBlock>(
+        channel, DataBlockPolicy::RingBuffer, cfg);
+    ASSERT_NE(producer, nullptr);
+
+    auto consumer = find_datablock_consumer<EmptyFlexZone, TestDataBlock>(
+        channel, cfg.shared_secret, cfg);
+    ASSERT_NE(consumer, nullptr);
+
+    // Write a slot so the consumer has data to read.
+    {
+        auto h = producer->acquire_write_slot(1000);
+        ASSERT_TRUE(h);
+        (void)h->commit(sizeof(TestDataBlock));
+    }
+
+    // Consumer reads via RAII ctx.slots() — break after one slot.
+    // The SlotIterator destructor releases the handle via ~SlotConsumeHandle()
+    // → release_consume_handle() records last_slot_work_us using per-handle t_slot_acquired_.
+    consumer->with_transaction<EmptyFlexZone, TestDataBlock>(
+        2000ms,
+        [](ReadTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+        {
+            for (auto &result : ctx.slots(100ms))
+            {
+                if (!result.is_ok())
+                    continue;
+                std::this_thread::sleep_for(2ms); // measurable body time
+                break; // RAII: SlotIterator destructor releases handle on loop exit
+            }
+        });
+
+    EXPECT_GT(consumer->metrics().last_slot_work_us, uint64_t{0})
+        << "RAII consumer: last_slot_work_us should reflect body sleep (~2 ms)";
 }

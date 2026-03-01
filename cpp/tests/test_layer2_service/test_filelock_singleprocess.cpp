@@ -59,11 +59,11 @@ class FileLockSingleProcessTest : public ::testing::Test
             try
             {
                 // Try to remove both possible lock file types since we don't store the type.
-                auto file_lock_path = FileLock::get_expected_lock_fullname_for(p, ResourceType::File);
+                auto file_lock_path = FileLock::get_expected_lock_fullname_for(p);
                 if (fs::exists(file_lock_path))
                     fs::remove(file_lock_path);
 
-                auto dir_lock_path = FileLock::get_expected_lock_fullname_for(p, ResourceType::Directory);
+                auto dir_lock_path = FileLock::get_expected_lock_fullname_for(p, /*is_directory=*/true);
                 if (fs::exists(dir_lock_path))
                     fs::remove(dir_lock_path);
 
@@ -92,10 +92,10 @@ class FileLockSingleProcessTest : public ::testing::Test
         {
             if (fs::exists(p))
                 fs::remove(p);
-            auto file_lock = FileLock::get_expected_lock_fullname_for(p, ResourceType::File);
+            auto file_lock = FileLock::get_expected_lock_fullname_for(p);
             if (fs::exists(file_lock))
                 fs::remove(file_lock);
-            auto dir_lock = FileLock::get_expected_lock_fullname_for(p, ResourceType::Directory);
+            auto dir_lock = FileLock::get_expected_lock_fullname_for(p, /*is_directory=*/true);
             if (fs::exists(dir_lock))
                 fs::remove(dir_lock);
         }
@@ -124,13 +124,13 @@ TEST_F(FileLockSingleProcessTest, BasicNonBlocking)
 
     // Acquire lock
     {
-        FileLock lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+        FileLock lock(resource_path, /*is_directory=*/false, /*blocking=*/false);
         ASSERT_TRUE(lock.valid()) << "Failed to acquire lock: " << lock.error_code().message();
         EXPECT_TRUE(lock.valid());
     } // Lock released here
 
     // Can acquire again after release
-    FileLock lock2(resource_path, ResourceType::File, LockMode::NonBlocking);
+    FileLock lock2(resource_path, /*is_directory=*/false, /*blocking=*/false);
     ASSERT_TRUE(lock2.valid());
     EXPECT_TRUE(lock2.valid());
 }
@@ -144,7 +144,7 @@ TEST_F(FileLockSingleProcessTest, BlockingLockTimeout)
     auto resource_path = GetTempLockPath("blocking_timeout");
 
     // Main thread holds lock
-    FileLock main_lock(resource_path, ResourceType::File);
+    FileLock main_lock(resource_path);
     ASSERT_TRUE(main_lock.valid());
 
     // Spawn thread that tries to acquire with timeout
@@ -156,7 +156,7 @@ TEST_F(FileLockSingleProcessTest, BlockingLockTimeout)
         {
             auto start = std::chrono::steady_clock::now();
 
-            FileLock lock(resource_path, ResourceType::File, std::chrono::milliseconds(100));
+            FileLock lock(resource_path, /*is_directory=*/false, std::chrono::milliseconds(100));
 
             auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -202,7 +202,7 @@ TEST_F(FileLockSingleProcessTest, MultiThreadedContention)
             [&, i]()
             {
                 auto lock_opt =
-                    FileLock::try_lock(resource_path, ResourceType::File, LockMode::NonBlocking);
+                    FileLock::try_lock(resource_path, /*is_directory=*/false, /*blocking=*/false);
 
                 if (lock_opt.has_value())
                 {
@@ -246,7 +246,7 @@ TEST_F(FileLockSingleProcessTest, MoveSemantics)
     auto resource_path2 = GetTempLockPath("move_semantics2");
 
     // Create lock1
-    FileLock lock1(resource_path1, ResourceType::File);
+    FileLock lock1(resource_path1);
     ASSERT_TRUE(lock1.valid());
 
     // Move construction: lock2 takes ownership from lock1
@@ -257,7 +257,7 @@ TEST_F(FileLockSingleProcessTest, MoveSemantics)
     EXPECT_FALSE(lock1.valid());
 
     // Move assignment: create lock3 on different path, then move lock2 into it
-    FileLock lock3(resource_path2, ResourceType::File);
+    FileLock lock3(resource_path2);
     ASSERT_TRUE(lock3.valid());
 
     lock3 = std::move(lock2);
@@ -278,12 +278,12 @@ TEST_F(FileLockSingleProcessTest, DirectoryPathLocking)
     fs::create_directories(dir_path);
 
     // Lock directory
-    FileLock dir_lock(dir_path, ResourceType::Directory);
+    FileLock dir_lock(dir_path, /*is_directory=*/true);
     ASSERT_TRUE(dir_lock.valid()) << "Failed to lock directory: "
                                   << dir_lock.error_code().message();
 
     // Try to acquire again in same process (should fail)
-    auto lock_opt = FileLock::try_lock(dir_path, ResourceType::Directory, LockMode::NonBlocking);
+    auto lock_opt = FileLock::try_lock(dir_path, /*is_directory=*/true, /*blocking=*/false);
     EXPECT_FALSE(lock_opt.has_value()) << "Should not acquire same directory lock twice";
 }
 
@@ -296,7 +296,7 @@ TEST_F(FileLockSingleProcessTest, TimedLock)
     auto resource_path = GetTempLockPath("timed_lock");
 
     // Main thread holds lock
-    FileLock main_lock(resource_path, ResourceType::File);
+    FileLock main_lock(resource_path);
     ASSERT_TRUE(main_lock.valid());
 
     // Thread tries timed acquisition
@@ -308,8 +308,8 @@ TEST_F(FileLockSingleProcessTest, TimedLock)
             auto start = std::chrono::steady_clock::now();
 
             // Try to acquire with 50ms timeout
-            auto lock_opt = FileLock::try_lock(resource_path, ResourceType::File,
-                                               std::chrono::milliseconds(50));
+            auto lock_opt =
+                FileLock::try_lock(resource_path, /*is_directory=*/false, std::chrono::milliseconds(50));
 
             auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -334,7 +334,7 @@ TEST_F(FileLockSingleProcessTest, SequentialAcquireRelease)
 
     for (int i = 0; i < 5; ++i)
     {
-        FileLock lock(resource_path, ResourceType::File);
+        FileLock lock(resource_path);
         ASSERT_TRUE(lock.valid()) << "Iteration " << i << " failed to acquire";
         // Lock released at end of scope
     }
@@ -350,7 +350,7 @@ TEST_F(FileLockSingleProcessTest, GetExpectedLockFullnameFor)
     paths_to_clean_.push_back(dir_path);
     fs::create_directories(dir_path);
 
-    auto file_lock_path = FileLock::get_expected_lock_fullname_for(file_path, ResourceType::File);
+    auto file_lock_path = FileLock::get_expected_lock_fullname_for(file_path);
     EXPECT_FALSE(file_lock_path.empty());
     EXPECT_TRUE(file_lock_path.generic_string().find(".lock") != std::string::npos)
         << "File lock should contain .lock";
@@ -358,7 +358,7 @@ TEST_F(FileLockSingleProcessTest, GetExpectedLockFullnameFor)
         << "File lock should NOT contain .dir.lock";
 
     auto dir_lock_path =
-        FileLock::get_expected_lock_fullname_for(dir_path, ResourceType::Directory);
+        FileLock::get_expected_lock_fullname_for(dir_path, /*is_directory=*/true);
     EXPECT_FALSE(dir_lock_path.empty());
     EXPECT_TRUE(dir_lock_path.generic_string().find(".dir.lock") != std::string::npos)
         << "Directory lock should contain .dir.lock";
@@ -370,7 +370,7 @@ TEST_F(FileLockSingleProcessTest, GetExpectedLockFullnameFor)
 TEST_F(FileLockSingleProcessTest, GetLockedResourceAndCanonicalLockPath)
 {
     auto resource_path = GetTempLockPath("path_getters");
-    FileLock lock(resource_path, ResourceType::File);
+    FileLock lock(resource_path);
     ASSERT_TRUE(lock.valid());
 
     auto locked_path = lock.get_locked_resource_path();
@@ -390,7 +390,7 @@ TEST_F(FileLockSingleProcessTest, GetPathsReturnEmptyWhenInvalid)
 {
     const char invalid_p[] = "invalid\0path.txt";
     fs::path invalid_path(std::string_view(invalid_p, sizeof(invalid_p) - 1));
-    FileLock lock(invalid_path, ResourceType::File, LockMode::NonBlocking);
+    FileLock lock(invalid_path, /*is_directory=*/false, /*blocking=*/false);
     ASSERT_FALSE(lock.valid());
     EXPECT_FALSE(lock.get_locked_resource_path().has_value());
     EXPECT_FALSE(lock.get_canonical_lock_file_path().has_value());
@@ -411,11 +411,11 @@ TEST_F(FileLockSingleProcessTest, InvalidResourcePath)
     fs::path invalid_path(std::string_view(invalid_p, sizeof(invalid_p) - 1));
 
     // Constructor should not throw but lock should be invalid
-    FileLock lock(invalid_path, ResourceType::File, LockMode::NonBlocking);
+    FileLock lock(invalid_path, /*is_directory=*/false, /*blocking=*/false);
     ASSERT_FALSE(lock.valid());
     EXPECT_TRUE(lock.error_code()) << "Expected a non-empty error code";
 
     // try_lock should return nullopt
-    auto lock_opt = FileLock::try_lock(invalid_path, ResourceType::File, LockMode::NonBlocking);
+    auto lock_opt = FileLock::try_lock(invalid_path, /*is_directory=*/false, /*blocking=*/false);
     ASSERT_FALSE(lock_opt.has_value());
 }

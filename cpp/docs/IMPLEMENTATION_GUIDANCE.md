@@ -1449,11 +1449,11 @@ Best-effort operations or irrelevant return values:
 
 | File | Call | Rationale |
 |------|------|-----------|
-| `src/utils/data_block.cpp` | `release_write_handle()` in dtor | Release logs on failure; dtor does best-effort, no need to log again |
-| `src/utils/data_block.cpp` | `release_consume_handle()` in dtor | Same as above |
-| `src/utils/logger.cpp` | `future.get()` (multiple sites) | Sync-only or error path; return intentionally unused |
-| `src/utils/data_block_mutex.cpp` | `pthread_mutexattr_setprotocol()` | Best-effort PI; ENOTSUP tolerated if platform lacks it |
-| `src/utils/debug_info.cpp` | `SymInitialize()` | Best-effort Windows symbol init; failures tolerated |
+| `src/utils/shm/data_block.cpp` | `release_write_handle()` in dtor | Release logs on failure; dtor does best-effort, no need to log again |
+| `src/utils/shm/data_block.cpp` | `release_consume_handle()` in dtor | Same as above |
+| `src/utils/logging/logger.cpp` | `future.get()` (multiple sites) | Sync-only or error path; return intentionally unused |
+| `src/utils/shm/data_block_mutex.cpp` | `pthread_mutexattr_setprotocol()` | Best-effort PI; ENOTSUP tolerated if platform lacks it |
+| `src/utils/core/debug_info.cpp` | `SymInitialize()` | Best-effort Windows symbol init; failures tolerated |
 | `src/include/utils/json_config.hpp` | `wlock.json().dump()` | Validate JSON via side effect; return unused |
 
 ### Summary

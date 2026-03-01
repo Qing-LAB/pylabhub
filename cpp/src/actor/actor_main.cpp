@@ -5,7 +5,7 @@
  * ## Usage
  *
  *     pylabhub-actor <actor_dir>                       # Run from directory (Phase 2)
- *     pylabhub-actor --config <path.json>              # Run (legacy flat-config)
+ *     pylabhub-actor --config <path.json>              # Run from explicit config file
  *     pylabhub-actor --config <path.json> --validate   # Validate + print layout; exit 0/1
  *     pylabhub-actor --config <path.json> --list-roles # Show role activation summary; exit 0
  *     pylabhub-actor --config <path.json> --keygen     # Generate actor keypair; exit 0
@@ -66,14 +66,13 @@
  */
 
 #include "actor_config.hpp"
-#include "actor_host.hpp"
+#include "actor_script_host.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/zmq_context.hpp"
 
 #include <nlohmann/json.hpp>
-#include <pybind11/embed.h>
 #include <zmq.h>
 
 #include <atomic>
@@ -85,23 +84,22 @@
 #include <string>
 #include <string_view>
 
-namespace py = pybind11;
 using namespace pylabhub::utils;
 
 // ---------------------------------------------------------------------------
 // Global shutdown flag (set by SIGINT/SIGTERM)
 // ---------------------------------------------------------------------------
 
-static std::atomic<bool>           g_shutdown{false};
-static pylabhub::actor::ActorHost *g_host_ptr{nullptr};
+static std::atomic<bool>                 g_shutdown{false};
+static pylabhub::actor::ActorScriptHost *g_actor_script_ptr{nullptr};
 
 static void signal_handler(int /*sig*/) noexcept
 {
     if (g_shutdown.load(std::memory_order_relaxed))
         std::_Exit(1); // double signal — fast exit
     g_shutdown.store(true, std::memory_order_relaxed);
-    if (g_host_ptr != nullptr)
-        g_host_ptr->signal_shutdown();
+    if (g_actor_script_ptr != nullptr)
+        g_actor_script_ptr->signal_shutdown();
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +133,7 @@ void print_usage(const char *prog)
         << "  --init [dir]               Create actor directory with actor.json template; exit 0\n"
         << "  --register-with <hub_dir>  Append this actor to <hub_dir>/hub.json known_actors; exit 0\n"
         << "  <actor_dir>                Actor directory containing actor.json\n"
-        << "  --config <path>            Path to actor JSON config (legacy flat-config mode)\n"
+        << "  --config <path>            Path to actor JSON config file\n"
         << "  --validate                 Validate script and print layout; exit 0 on success\n"
         << "  --list-roles               Show configured roles and activation status; exit 0\n"
         << "  --keygen                   Generate actor NaCl keypair at auth.keyfile path; exit 0\n"
@@ -590,32 +588,64 @@ int main(int argc, char *argv[])
         pylabhub::hub::GetZMQContextModule()
     ));
 
-    // ── Python interpreter ────────────────────────────────────────────────────
-    py::scoped_interpreter python_guard{};
-
     // ── Load actor keypair (if keyfile configured) ────────────────────────────
+    // No Python interpreter needed for this step.
     // Populates config.auth.client_pubkey / client_seckey for CurveZMQ client auth.
     // No-op when auth.keyfile is empty; logs warning and continues on failure.
     if (!config.auth.keyfile.empty())
         config.auth.load_keypair();
 
-    // ── Create actor host ─────────────────────────────────────────────────────
-    // Each role worker owns its own Messenger and connects to role.broker in start().
-    pylabhub::actor::ActorHost host(config);
-    g_host_ptr = &host;
+    // ── Actor script host ─────────────────────────────────────────────────────
+    // ActorScriptHost owns the Python interpreter lifetime via PythonScriptHost.
+    // PythonScriptHost::do_initialize() creates py::scoped_interpreter on the
+    // dedicated interpreter thread (not the main thread), with PyConfig set to:
+    //   parse_argv = 0              — do not consume process argv
+    //   install_signal_handlers = 0 — keep C++ SIGINT/SIGTERM handlers intact
+    //
+    // The interpreter thread:
+    //   1. Loads role Python packages (GIL held)
+    //   2. Starts role workers (releases GIL via main_thread_release_.emplace())
+    //   3. Calls signal_ready_() — unblocks startup_() below
+    //   4. Waits until stop_ is set (by shutdown_()) or api.stop() fires
+    //   5. Stops role workers, releases all py::objects, returns (Py_Finalize)
+    pylabhub::actor::ActorScriptHost actor_script;
+    actor_script.set_config(std::move(config));
+    actor_script.set_validate_only(args.validate_only);
+    actor_script.set_list_roles(args.list_roles);
+    actor_script.set_shutdown_flag(&g_shutdown);
 
-    // Load script: imports Python module, looks up on_iteration/on_init/on_stop
-    const bool verbose = args.validate_only || args.list_roles;
-    if (!host.load_script(verbose))
+    // Wire signal handler BEFORE startup so a signal during load is handled.
+    g_actor_script_ptr = &actor_script;
+
+    // Start interpreter thread; blocks until scripts are loaded (and roles started
+    // in run mode), or throws on interpreter initialisation failure.
+    try
+    {
+        actor_script.startup_();
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Interpreter startup failed: " << e.what() << "\n";
+        g_actor_script_ptr = nullptr;
+        return 1;
+    }
+
+    // ── Check script load result ───────────────────────────────────────────────
+    if (!actor_script.script_load_ok())
     {
         std::cerr << "Script load failed.\n";
+        // shutdown_() joins the (already-finished) interpreter thread.
+        actor_script.shutdown_();
+        g_actor_script_ptr = nullptr;
         return 1;
     }
 
     // ── list-roles mode: show activation summary and exit ─────────────────────
     if (args.list_roles)
     {
-        // Summary already printed by load_script(verbose=true).
+        // Summary already printed by load_script(verbose=true) on interpreter thread.
+        actor_script.shutdown_();
+        g_actor_script_ptr = nullptr;
         return 0;
     }
 
@@ -623,19 +653,32 @@ int main(int argc, char *argv[])
     if (args.validate_only)
     {
         std::cout << "\nValidation passed.\n";
+        actor_script.shutdown_();
+        g_actor_script_ptr = nullptr;
         return 0;
     }
 
     // ── Run mode ──────────────────────────────────────────────────────────────
-    if (!host.start())
+    if (!actor_script.has_active_roles())
     {
         std::cerr << "Failed to start actor — no roles activated.\n";
+        actor_script.shutdown_();
+        g_actor_script_ptr = nullptr;
         return 1;
     }
 
-    host.wait_for_shutdown();
-    host.stop();
+    // The interpreter thread is running the wait loop (GIL not held there).
+    // Worker loop_threads hold the GIL only during their on_iteration calls.
+    // Main thread polls g_shutdown until a signal fires or api.stop() propagates it.
+    while (!g_shutdown.load(std::memory_order_relaxed))
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
 
-    g_host_ptr = nullptr;
+    // ── Tear down ─────────────────────────────────────────────────────────────
+    // shutdown_() sets stop_, wakes the interpreter thread's wait loop, and joins.
+    // The interpreter thread stops all roles and calls Py_Finalize.
+    actor_script.shutdown_();
+    g_actor_script_ptr = nullptr;
     return 0;
+    // LifecycleGuard destructor: ZMQContext → JsonConfig → Crypto → FileLock → Logger
 }

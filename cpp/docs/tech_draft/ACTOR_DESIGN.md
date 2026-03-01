@@ -110,7 +110,8 @@ appears must be an object `{"module": "...", "path": "..."}` — a bare string i
 > **Note**: `broker` / `broker_pubkey` are omitted above because they are
 > automatically populated from `<hub_dir>/hub.json` and `<hub_dir>/hub.pubkey`
 > by `ActorConfig::from_directory()` when `hub_dir` is present.
-> Use the explicit `broker` / `broker_pubkey` fields only in legacy flat-config mode.
+> Use the explicit `broker` / `broker_pubkey` fields only when `hub_dir` is not set
+> (e.g. integration tests or direct JSON invocation via `--config`).
 
 ### 2.1 Field reference
 
@@ -140,7 +141,7 @@ Generation utility: `pylabhub::uid::generate_actor_uid(name)` in `src/include/ut
 (public header, included via `plh_datahub.hpp`).
 
 **HubConfig UID**: The hub identity follows a parallel format: `HUB-{NAME}-{8HEX}`.
-Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.user.json["hub"]["uid"]`.
+Auto-generated from `hub_name` at HubConfig startup; can be overridden in `hub.json["hub"]["uid"]`.
 
 #### Per-role fields
 
@@ -1203,7 +1204,7 @@ remains open.  Items marked ✅ Fixed are verified by the 426/426 test suite.
 | `--validate` / `--list-roles` mode | ✅ Ready | Prints ctypes layout + handler activation; exit 0 |
 | Example scripts | ✅ Ready | producer_counter.py/.json + consumer_logger.py/.json |
 | `HubShell` + `AdminShell` | ✅ Ready | Admin REPL; `channels()` JSON; startup script |
-| `HubConfig` layered JSON | ✅ Ready | hub.default.json + hub.user.json; env var overrides |
+| `HubConfig` single-file JSON | ✅ Ready | hub.json (compiled-in defaults + file); env var overrides |
 | Demo launch scripts | ✅ Fixed 2026-02-21 | `demo.sh` (bash) + `demo.ps1` (PowerShell); not chmod+x by design |
 | `consumer_logger.py` console output | ✅ Fixed 2026-02-21 | `print()` in on_init/on_iteration/on_stop |
 | SHM cleanup on crash | ✅ Already working | `shm_unlink()` before create in data_block.cpp |

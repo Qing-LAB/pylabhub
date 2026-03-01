@@ -50,9 +50,6 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
     nlohmann/                  ← JSON library headers
     sodium.h / sodium/         ← libsodium headers
     cppzmq/                    ← ZMQ C++ bindings
-  config/
-    hub.default.json           ← compiled-in hub defaults (always overwritten on stage)
-    hub.user.json              ← user overrides (non-destructive: only created if absent)
   share/
     scripts/
       python/
@@ -114,21 +111,27 @@ Started by: `pylabhub-hubshell <hub_dir>`
 
 ### hub.json schema (key fields)
 
+All fields are nested under the `"hub"` key (except `admin`, `broker`, `paths`, `python`
+which have their own top-level objects — see `README_Deployment.md §4.3` for the complete
+field reference).
+
 ```json
 {
-  "hub_name": "lab.physics.daq1",
-  "hub_uid": "b3f2a1c7-1234-4xxx-yxxx-xxxxxxxxxxxx",
-  "broker_endpoint": "tcp://0.0.0.0:5570",
-  "admin_endpoint":  "ipc:///path/to/run/admin.sock",
-  "connection_policy": "open",
-  "channel_policies": {
-    "lab.daq.raw.*": { "connection_policy": "verified" }
+  "hub": {
+    "name":            "lab.physics.daq1",
+    "uid":             "HUB-LABDAQ1-3A7F2B1C",
+    "broker_endpoint": "tcp://0.0.0.0:5570",
+    "admin_endpoint":  "tcp://127.0.0.1:5600",
+    "connection_policy": "open",
+    "channel_policies": [
+      { "channel": "lab.daq.raw.*", "connection_policy": "verified" }
+    ],
+    "known_actors": [
+      { "name": "lab.daq.sensor1", "uid": "ACTOR-SENSOR1-A1B2C3D4", "role": "producer" }
+    ]
   },
-  "known_actors": [
-    { "name": "lab.daq.sensor1", "uid": "e7a9...", "role": "producer" }
-  ],
   "paths": {
-    "scripts_python": "<install-root>/share/scripts/python",
+    "scripts_python": "../share/scripts/python",
     "startup_script": "startup.py"
   },
   "broker": {
@@ -254,21 +257,9 @@ Stored in `actor.json["actor_uid"]`. Auto-generated at `--init`; reused across r
 
 ## 4. How Instance Directories Are Created
 
-### Hub directory — current state (flat-config model, no init)
+### Hub directory — current state (directory model, complete as of 2026-02-26)
 
-There is no `--init` flow yet. The hub process (`pylabhub-hubshell`) looks for its
-configuration in a `config/` directory relative to the binary:
-
-```bash
-# Current invocation — no hub_dir argument
-pylabhub-hubshell          # reads config/ next to the binary
-```
-
-The config directory is created by CMake staging (`stage_hub_config` target). The user
-edits `config/hub.user.json` to override defaults. The vault files (`hub.vault`,
-`hub.pubkey`) do not exist yet.
-
-### Hub directory — target state (Phase 1 remainder, not yet implemented)
+The `--init` flow and directory-based startup are fully implemented in `hubshell.cpp`:
 
 ```bash
 # First-time setup
@@ -289,13 +280,14 @@ pylabhub-hubshell <hub_dir>
   # → writes hub.pubkey (HubVault::publish_public_key())
   # → starts broker with stable keypair from vault
 
-# Development mode (no vault, ephemeral keypair)
+# Development mode (no vault, ephemeral keypair, hub_dir optional)
 pylabhub-hubshell <hub_dir> --dev
+pylabhub-hubshell --dev          # built-in defaults only
 ```
 
-The crypto primitives (`HubVault::create()`, `HubVault::open()`, `generate_uuid4()`)
-are already implemented. What remains is wiring them in `hubshell.cpp` and adding
-`--init` CLI argument handling. See `docs/todo/SECURITY_TODO.md §Phase 1`.
+The password is read from `PYLABHUB_MASTER_PASSWORD` env var when set; otherwise
+`getpass()` prompts interactively (POSIX). The `--dev` mode skips the vault and uses
+an ephemeral CurveZMQ keypair regenerated on each restart (suitable for development).
 
 ### Actor directory — current state (actor_dir model, complete)
 
@@ -319,11 +311,7 @@ pylabhub-actor --init <actor_dir>
   # → creates logs/, run/ subdirectories
   # → creates roles/data_out/script/__init__.py with template callbacks
 
-# Legacy: config file at any path (backward compat)
-pylabhub-actor --config <path_to_actor.json>
 ```
-
-### Actor directory — target state (Phase 3 and beyond, not yet implemented)
 
 ```bash
 # Register with hub (for 'verified' connection policy)
@@ -344,34 +332,22 @@ actor reads `hub.pubkey` and `hub.json["broker_endpoint"]` from there.
 
 ## 5. Current State vs. Target State
 
-### Current state (Phase 1 partially complete)
+### Current state (all phases complete)
 
-HubConfig uses the **legacy flat-config model**: it reads two JSON files from a
-`config/` subdirectory relative to the binary:
+The hub directory model is fully implemented:
 
-```
-<binary>/../config/hub.default.json   ← canonical defaults, always staged
-<binary>/../config/hub.user.json      ← user overrides, non-destructive
-```
+- `HubConfig` reads a single `<hub_dir>/hub.json`; no flat-config files in the install tree
+- `pylabhub-hubshell <hub_dir>` is required (error without `<hub_dir>` unless `--dev`)
+- `pylabhub-hubshell --dev` uses built-in compiled-in defaults and an ephemeral keypair
+- `pylabhub-hubshell --init <hub_dir>` creates the hub instance directory
 
-This model works for development but does not support multiple hub instances,
-hub vault encryption, or stable CurveZMQ keypairs (regenerated on each restart).
-
-**Phase 1 items complete:** `hub_identity.hpp/cpp` (UUID4 generation + validation)
-and `hub_vault.hpp/cpp` (`HubVault::create()` / `HubVault::open()` / `publish_public_key()`).
-
-**Phase 1 items remaining:** `pylabhub-hubshell --init` CLI flow and `pylabhub-hubshell <hub_dir>`
-directory-based startup. These wire the vault into `hubshell.cpp`.
-See `docs/todo/SECURITY_TODO.md §Phase 1`.
-
-### Target state (Phase 5)
-
-`HubConfig::load_(hub_dir)` reads `<hub_dir>/hub.json` (with compiled-in defaults
-as fallback). `hubshell.cpp` opens the vault and passes the stable keypair to
-`BrokerService::Config`. The `config/hub.*.json` files in the install tree are
-removed or kept only as a first-run bootstrap template.
-
-See `docs/todo/SECURITY_TODO.md §Phase 5` for the transition steps.
+**Complete (2026-02-27):** `uuid_utils.hpp/cpp` (UUID4 via libsodium CSRNG),
+`uid_utils.hpp` (pylabhub-format UIDs: `HUB-{NAME}-{8HEX}`, `ACTOR-{NAME}-{8HEX}`),
+`hub_vault.hpp/cpp` (`HubVault::create()` / `HubVault::open()` / `publish_public_key()`),
+`pylabhub-hubshell --init <hub_dir>` CLI, `pylabhub-hubshell <hub_dir>` directory startup,
+`channel_access_policy.hpp` (ConnectionPolicy: Open/Tracked/Required/Verified enforcement),
+actor identity fields wired into REG_REQ/CONSUMER_REG_REQ broker protocol,
+single-file HubConfig (compiled-in defaults + hub.json; layered flat-config removed).
 
 ---
 
@@ -384,27 +360,26 @@ See `docs/todo/SECURITY_TODO.md §Phase 5` for the transition steps.
 | Staging root | `PYLABHUB_STAGING_DIR` = `${CMAKE_BINARY_DIR}/stage-${BUILD_TYPE}` |
 | Binary directory | `${PYLABHUB_STAGING_DIR}/bin` |
 | Library directory | `${PYLABHUB_STAGING_DIR}/lib` |
-| Config directory | `${PYLABHUB_STAGING_DIR}/config` |
 | Share directory | `${PYLABHUB_STAGING_DIR}/share/scripts/python` |
 | Data directory | `${PYLABHUB_STAGING_DIR}/data` |
-| Hub config files | `stage_hub_config` target (top-level `CMakeLists.txt`) |
 | Python runtime | `prepare_python_env` target (`src/hub_python/CMakeLists.txt`) |
-| Startup script path | `hub.default.json.in["python"]["startup_script"]` template variable |
-| Script paths | `hub.default.json.in["paths"]` template variables |
 
-All paths in `hub.default.json.in` use relative references (`../share/scripts/python`,
-`../data`) so the install tree is relocatable.
+Hub config files (`hub.json`) are not staged by CMake — they are created by
+`pylabhub-hubshell --init <hub_dir>` at a user-chosen instance directory.
 
-### What needs attention (gap between current and target)
+### Completed implementation items
 
-| Item | Current | Required change |
-|---|---|---|
-| Hub config path discovery | `<binary>/../config/` (hardwired relative) | `hub_dir` argument (Phase 5) |
-| Hub vault creation | Not yet called from hubshell | `--init` flow (Phase 2) |
-| CurveZMQ keypair stability | Regenerated on every restart | Read from vault (Phase 5) |
-| Admin token source | `hub.user.json["admin"]["token"]` (plaintext) | Read from vault (Phase 5) |
-| Actor config path | `actor.json` at any path | ✅ `<actor_dir>/actor.json` — `from_directory()` + `--init` complete (2026-02-25) |
-| Hub pubkey distribution | Not yet written to disk | ✅ `HubVault::publish_public_key()` — complete (2026-02-25) |
+| Item | Status |
+|---|---|
+| Hub config path — `<hub_dir>` argument | ✅ complete (2026-02-26) |
+| Hub vault creation (`--init`) | ✅ complete (2026-02-26) |
+| CurveZMQ stable keypair from vault | ✅ complete (2026-02-26) |
+| Admin token from vault | ✅ complete (2026-02-26) |
+| HubConfig single-file load (`hub.json`) | ✅ complete (2026-02-27) |
+| Actor config path (`<actor_dir>/actor.json`) | ✅ complete (2026-02-25) |
+| Hub pubkey distribution (`hub.pubkey`) | ✅ complete (2026-02-26) |
+| Actor registration (`--register-with`) | ✅ complete (2026-02-26) |
+| Connection policy enforcement | ✅ complete (2026-02-26) |
 
 ### Hub and actor directories are NOT in the install tree
 
@@ -435,8 +410,8 @@ is otherwise not managed by CMake.
 | Development (staged) | `cpp/build/stage-debug/` (install tree); `./hubs/`, `./actors/` (instances) |
 
 No default instance paths are hardwired in the binary. The `<hub_dir>` and
-`<actor_dir>` are always passed as CLI arguments or default to the current
-directory (git-convention style: `pylabhub-hubshell` with no args → `./`).
+`<actor_dir>` are always passed as CLI arguments. Running `pylabhub-hubshell`
+without a `<hub_dir>` is an error unless `--dev` is passed.
 
 ---
 
@@ -445,7 +420,7 @@ directory (git-convention style: `pylabhub-hubshell` with no args → `./`).
 | Document | Topic |
 |---|---|
 | `docs/README/README_CMake_Design.md` | Build system architecture, staging functions reference |
+| `docs/README/README_Deployment.md` | User-facing deployment guide (hub setup, actor setup, scripts) |
 | `docs/todo/SECURITY_TODO.md` | Hub vault, directory model, connection policy design and phases |
 | `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` | Protocol flows, slot state machine |
 | `docs/HEP/HEP-CORE-0001-hybrid-lifecycle-model.md` | Lifecycle model, module startup order |
-| `config/hub.default.json.in` | Template for staged hub defaults (current flat-config model) |

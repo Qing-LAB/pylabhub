@@ -20,7 +20,7 @@ This is the **authoritative, implementation-ready specification** for the Data E
 
 **Design Maturity:** 70% complete
 - ✅ 8 critical design tasks completed
-- ⚠️ 1 remaining task (P9: Schema Validation - detailed in Section 11)
+- ⚠️ 1 remaining task (P9: Schema Validation - detailed in Section 12)
 - 🚀 Ready for prototype implementation
 
 **Confidence Level:** High (90%+)
@@ -31,12 +31,17 @@ This is the **authoritative, implementation-ready specification** for the Data E
 
 ### Implementation status (sync with TODO_MASTER)
 
-Implementation status and priorities are tracked in **`docs/TODO_MASTER.md`** and subtopic TODOs under `docs/todo/`. Summary *(last updated 2026-02-22, 426/426 tests passing)*:
+> **Current implementation status, test counts, and open tasks are tracked in
+> [`docs/TODO_MASTER.md`](../TODO_MASTER.md) and subtopic TODOs under `docs/todo/`.
+> This document describes the design; consult TODO_MASTER.md for the definitive
+> completion state.**
 
-- **Implemented:** Ring buffer (Single/Double/Ring policies), SlotRWCoordinator (C API + C++ wrappers), ConsumerSyncPolicy (Latest_only, Single_reader, Sync_reader), DataBlockLayout/checksum/flexible zone, WriteAttach mode (broker-owned segment), recovery/diagnostics (heartbeat, integrity validator, slot recovery, DataBlockDiagnosticHandle, `plh_channel_identity_t`/`plh_consumer_identity_t` C API). **DRAINING state** active and tested. **Layer 1.75** (standalone `SlotRWAccess`) removed; typed access via `with_transaction<FlexZoneT, DataBlockT>()`. **C API** (`slot_rw_coordinator.h`, recovery API) does not provide internal locking — callers ensure multi-thread safety. **Messenger**: ZeroMQ DEALER/ROUTER broker client; `register_producer` (fire-and-forget); `discover_producer` (sync via `std::future`); `register_consumer` / `deregister_consumer` (fully implemented with CONSUMER_REG/DEREG handshake); per-channel callbacks (`on_channel_closing`, `on_consumer_died`, `on_channel_error`). **BrokerService** (in `pylabhub-utils`): CurveZMQ; REG/DISC/DEREG/CONSUMER_REG/CONSUMER_DEREG/HEARTBEAT; broker health + notification layer (Cat 1 CHANNEL_ERROR_NOTIFY, Cat 2 CONSUMER_DIED_NOTIFY). **Pluggable Slot-Processor API** (HEP-CORE-0006): `push`/`synced_write`/`pull`, `set_write_handler`/`set_read_handler`, `WriteProcessorContext`/`ReadProcessorContext`. **SHM identity/provenance** (Security Phase 4): `hub_uid`/`hub_name`/`producer_uid`/`producer_name` in header; `ConsumerHeartbeat` expanded to 128 bytes with `consumer_uid`/`consumer_name`. **HubShell** (all 6 phases): `HubConfig`, Python env, `PythonInterpreter`, `AdminShell`, full lifecycle stack. **pylabhub-actor**: multi-role Python actor host with ctypes zero-copy schema, `SharedSpinLockPy`, `--validate`, `--keygen`. **Per-role Messenger** (2026-02-22): each `ProducerRoleWorker` / `ConsumerRoleWorker` owns a `hub::Messenger` value member and calls `messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)` in `start()`; actor does not use `GetLifecycleModule()` or `get_instance()`. Multiple-broker actor deployments now supported. `broker_pubkey` (Z85 40-char) added to `RoleConfig` for server-side CurveZMQ auth.
-- **Not yet implemented / deferred:** Broker schema registry (§1.4), schema versioning (§1.5), broker-coordinated recovery (requires broker protocol extension), slot-checksum in-place repair (requires WriteAttach path in `datablock_validate_integrity`), structure re-mapping API (placeholders exist but throw — see `docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`). Security Phases 1–3 (hub vault, actor directory model, connection policy). For any section describing un-implemented functionality, sync with `docs/TODO_MASTER.md` and subtopic TODOs.
-
-Design rationale and critical review (cross-platform, API consistency, flexible zone, integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**, **DATAHUB_CPP_ABSTRACTION_DESIGN**, and **DATAHUB_POLICY_AND_SCHEMA_ANALYSIS**; key content has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are archived in **`docs/archive/transient-2026-02-13/`** (see that folder’s README for the merge map).
+Design rationale and critical review (cross-platform, API consistency, flexible zone,
+integrity) were in **DATAHUB_DATABLOCK_CRITICAL_REVIEW**, **DATAHUB_DESIGN_DISCUSSION**,
+**DATAHUB_CPP_ABSTRACTION_DESIGN**, and **DATAHUB_POLICY_AND_SCHEMA_ANALYSIS**; key
+content has been merged into **`docs/IMPLEMENTATION_GUIDANCE.md`**. Originals are
+archived in **`docs/archive/transient-2026-02-13/`** (see that folder's README for the
+merge map).
 
 ---
 
@@ -46,20 +51,18 @@ Design rationale and critical review (cross-platform, API consistency, flexible 
 2. [System Architecture](#2-system-architecture)
 3. [Memory Layout and Data Structures](#3-memory-layout-and-data-structures)
 4. [Synchronization Model](#4-synchronization-model)
-5. [API Specification (All Layers)](#5-api-specification-all-layers)
-   - [5.5 Access API and Data Block Lifecycle](#55-access-api-and-data-block-lifecycle)
-   - [5.6 Helper Modules: Schema, Policy, Layout, and Config](#56-helper-modules-schema-policy-layout-and-config)
-6. [Control Plane Protocol](#6-control-plane-protocol)
-7. [Common Usage Patterns](#7-common-usage-patterns)
-8. [Error Handling and Recovery](#8-error-handling-and-recovery)
-9. [Performance Characteristics](#9-performance-characteristics)
-10. [Security and Integrity](#10-security-and-integrity)
-11. [Schema Validation (Remaining Task)](#11-schema-validation-remaining-task)
-12. [Implementation Guidelines](#12-implementation-guidelines)
-13. [Testing Strategy](#13-testing-strategy)
-14. [Deployment and Operations](#14-deployment-and-operations)
-15. [Appendices](#15-appendices)
-
+5. [C Interface — Layer 0 (ABI-Stable)](#5-c-interface--layer-0-abi-stable)
+6. [RAII Abstraction Layer](#6-raii-abstraction-layer)
+7. [Control Plane Protocol](#7-control-plane-protocol)
+8. [Common Usage Patterns](#8-common-usage-patterns)
+9. [Error Handling and Recovery](#9-error-handling-and-recovery)
+10. [Performance Characteristics](#10-performance-characteristics)
+11. [Security and Integrity](#11-security-and-integrity)
+12. [Schema Validation](#12-schema-validation)
+13. [Implementation Guidelines](#13-implementation-guidelines)
+14. [Testing Strategy](#14-testing-strategy)
+15. [Deployment and Operations](#15-deployment-and-operations)
+16. [Appendices](#16-appendices)
 ---
 
 ## 1. Executive Summary
@@ -139,7 +142,7 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 - P9: Schema Validation (hash computation, broker registry, compatibility rules)
   - **Effort:** 1-2 days design + 1-2 days implementation
   - **Why Critical:** Prevents ABI mismatches and silent data corruption
-  - **Detailed Specification:** Section 11
+  - **Detailed Specification:** Section 12
 
 **Timeline to Production:** ~5 weeks
 - Week 1: Complete P9 design, freeze API
@@ -656,6 +659,12 @@ stateDiagram-v2
     end note
 ```
 
+> **⚠️ State machine authoritative source:** The Mermaid diagram above is an architectural
+> overview only. The **canonical, verified state machine** (including the correct
+> `DRAINING → COMMITTED` drain-timeout path) lives in **HEP-CORE-0007 §1**.
+> The diagram above was previously incorrect (showed `COMMITTED→FREE` and `DRAINING→FREE`
+> transitions — both wrong); see HEP-CORE-0007 §1 for the corrected transitions.
+>
 > **Authoritative protocol detail:** For the exact step-by-step producer and consumer flows,
 > DRAINING formal proof, RAII guarantees, and user responsibilities, see
 > **HEP-CORE-0007** (DataHub Protocol and Policy Reference).
@@ -1086,37 +1095,23 @@ meta->last_timestamp_ns = now();
 
 ---
 
-## 5. API Specification (All Layers)
+## 5. C Interface — Layer 0 (ABI-Stable)
 
 ### 5.1 API Layer Overview
 
-```mermaid
-%%{init: {'theme': 'dark'}}%%
-graph TB
-    L3[Layer 3: Script Bindings<br/>Python/Lua<br/>Productivity Mode]
-    L2[Layer 2: Transaction API<br/>with_write_transaction<br/>RAII Safety]
-    L15[Layer 1.5: C++ Wrappers<br/>SlotWriteGuard / SlotConsumeHandle<br/>RAII + Exceptions]
-    L1[Layer 1: Primitive API<br/>Producer/Consumer<br/>with_typed_write/read&lt;T&gt;]
-    L0[Layer 0: C Interface<br/>slot_rw_acquire_write<br/>ABI-Stable Cross-Language]
+The DataHub exposes four abstraction layers from the C ABI up to the script interface.
+Each higher layer wraps and restricts the layer below it; users should program at the
+highest layer that meets their needs.
 
-    L3 --> L2
-    L2 --> L15
-    L15 --> L1
-    L1 --> L0
+| Layer | Name | Header / Entry Point | Audience |
+|-------|------|----------------------|----------|
+| **L0** | C Interface (ABI-stable) | `slot_rw_coordinator.h` | C, FFI, language bridges |
+| **L1** | DataBlockProducer/Consumer | `data_block.hpp` | C++ application code (advanced) |
+| **L2a** | RAII/TransactionContext | `transaction_context.hpp` | C++ application code (recommended) |
+| **L2b** | Slot-Processor (HEP-CORE-0006) | `hub_producer.hpp` | Framework / actor integration |
+| **L3** | Actor Script Interface | actor Python API | Python scripts (HEP-CORE-0010) |
 
-    L3 -.GC Managed.-> GC[Garbage Collection]
-    L2 -.RAII.-> SCOPE[Scope-Based Cleanup]
-    L15 -.Exception Safe.-> EX[Exception Handling]
-    L1 -.Thread-Safe.-> MUTEX[Internal Mutex]
-    L0 -.ABI, no lock.-> DYN[User-Managed Locking]
-
-    style L3 fill:#2a4a2a
-    style L2 fill:#3a3a2a
-    style L15 fill:#5a2a2a
-    style L1 fill:#6a2a2a
-    style L0 fill:#7a2a2a
-```
-
+This section documents **L0** (C Interface). See **§6** for the RAII layer (L1/L2a/L2b).
 ### 5.2 Layer 0: C Interface (ABI-Stable)
 
 **Purpose:** Cross-language compatibility, dynamic library ABI stability
@@ -1225,280 +1220,11 @@ void consumer_read(SlotRWState* rw_state, void* slot_buffer, size_t buffer_size)
 }
 ```
 
-### 5.3 Layer 1.75: Template Wrappers — Removed (Use Producer/Consumer)
-
-**Status:** The standalone **Layer 1.75** header `slot_rw_access.hpp` and class **SlotRWAccess** have been **removed**. Type-safe, zero-overhead typed access is provided by **DataBlockProducer** and **DataBlockConsumer** in `data_block.hpp` via `with_typed_write<T>` and `with_typed_read<T>`.
-
-**Current API (Layer 1):**
-
-```mermaid
-classDiagram
-    DataBlockProducer --> SlotWriteHandle : acquires
-    DataBlockConsumer --> SlotConsumeHandle : acquires
-    DataBlockProducer : with_typed_write~T~(timeout, func)
-    DataBlockConsumer : with_typed_read~T~(slot_id, func)
-```
-
-**Usage (typed write/read on Producer/Consumer):**
-```cpp
-#include <pylabhub/data_block.hpp>
-
-struct SensorData { uint64_t timestamp_ns; float temperature; float pressure; float humidity; };
-
-// Producer: type-safe write (replaces SlotRWAccess::with_typed_write)
-producer->with_typed_write<SensorData>(100, [&](SensorData& data) {
-    data.timestamp_ns = get_timestamp();
-    data.temperature = sensor.read_temperature();
-    data.pressure = sensor.read_pressure();
-    data.humidity = sensor.read_humidity();
-});
-
-// Consumer: type-safe read (replaces SlotRWAccess::with_typed_read)
-consumer->with_typed_read<SensorData>(slot_id, [&](const SensorData& data) {
-    process_temperature(data.temperature);
-    process_pressure(data.pressure);
-    process_humidity(data.humidity);
-}, /*validate_generation=*/true);
-```
-
-**Benefits (unchanged):** Type-safe, zero-overhead, RAII, exception-safe. Producer/Consumer also provide internal mutex (thread-safe); see implementation status and §5.5.
-
-### 5.4 Layer 2: Transaction API (Recommended for Applications)
-
-**Purpose:** High-level, exception-safe API for standard application code
-
-**Header:** `pylabhub/transaction_api.hpp`
-
-```cpp
-#ifndef PYLABHUB_TRANSACTION_API_HPP
-#define PYLABHUB_TRANSACTION_API_HPP
-
-#include <pylabhub/data_block_producer.hpp>
-#include <pylabhub/data_block_consumer.hpp>
-
-namespace pylabhub {
-
-// === Producer Transaction ===
-template <typename Func>
-auto with_write_transaction(
-    DataBlockProducer& producer,
-    int timeout_ms,
-    Func&& func
-) -> std::invoke_result_t<Func, SlotWriteHandle&>
-{
-    // Acquire slot
-    auto slot = producer.acquire_write_slot(timeout_ms);
-    if (!slot) {
-        throw std::runtime_error("Failed to acquire write slot");
-    }
-
-    // RAII guard ensures release
-    struct SlotGuard {
-        DataBlockProducer& prod;
-        SlotWriteHandle& handle;
-        ~SlotGuard() {
-            prod.release_write_slot(handle);
-        }
-    } guard{producer, slot};
-
-    // Invoke user lambda
-    return std::invoke(std::forward<Func>(func), slot);
-}
-
-// === Consumer Transaction ===
-template <typename Func>
-auto with_read_transaction(
-    DataBlockConsumer& consumer,
-    uint64_t slot_id,
-    int timeout_ms,
-    Func&& func
-) -> std::invoke_result_t<Func, const SlotConsumeHandle&>
-{
-    // Acquire slot
-    auto slot = consumer.acquire_consume_slot(slot_id, timeout_ms);
-    if (!slot) {
-        throw std::runtime_error("Failed to acquire consume slot");
-    }
-
-    // RAII guard ensures release
-    struct SlotGuard {
-        DataBlockConsumer& cons;
-        SlotConsumeHandle& handle;
-        ~SlotGuard() {
-            cons.release_consume_slot(handle);
-        }
-    } guard{consumer, slot};
-
-    // Invoke user lambda
-    return std::invoke(std::forward<Func>(func), slot);
-}
-
-// === Iterator Convenience ===
-template <typename Func>
-auto with_next_slot(
-    DataBlockSlotIterator& iterator,
-    int timeout_ms,
-    Func&& func
-) -> std::invoke_result_t<Func, const SlotConsumeHandle&>
-{
-    auto result = iterator.try_next(timeout_ms);
-
-    if (result.status != NextResult::Status::Success) {
-        throw std::runtime_error("Iterator failed");
-    }
-
-    // Handle auto-released by iterator
-    return std::invoke(std::forward<Func>(func), result.handle);
-}
-
-} // namespace pylabhub
-
-#endif // PYLABHUB_TRANSACTION_API_HPP
-```
-
-**Usage Example:**
-```cpp
-#include <pylabhub/transaction_api.hpp>
-
-// Producer: Lambda-based transaction
-void producer_main(DataBlockProducer& producer) {
-    while (running) {
-        SensorReading reading = acquire_from_sensor();
-
-        with_write_transaction(producer, 100, [&](SlotWriteHandle& slot) {
-            auto buffer = slot.buffer_span();
-            std::memcpy(buffer.data(), &reading, sizeof(reading));
-            slot.commit(sizeof(reading));
-            // Slot auto-released on lambda exit (even if exception thrown)
-        });
-    }
-}
-
-// Consumer: Iterator-based transaction
-void consumer_main(DataBlockConsumer& consumer) {
-    auto iterator = consumer.slot_iterator();
-
-    while (running) {
-        try {
-            with_next_slot(iterator, 1000, [&](const SlotConsumeHandle& slot) {
-                auto buffer = slot.buffer_span();
-                SensorReading reading;
-                std::memcpy(&reading, buffer.data(), sizeof(reading));
-
-                process_sensor_data(reading);  // May throw exception
-                // Slot auto-released even if process_sensor_data() throws
-            });
-        } catch (const std::exception& e) {
-            LOG_ERROR("Processing failed: {}", e.what());
-        }
-    }
-}
-```
-
-**Performance:**
-- **Overhead:** ~10 ns (inline lambda invocation)
-- **Percentage:** ~9% vs Layer 1 Primitive API
-- **Verdict:** Negligible for typical use cases
-
-**When to Use:**
-- ✅ Standard application code (recommended)
-- ✅ Exception handling enabled
-- ✅ Safety priority over raw performance
-- ✅ Clean, readable code
-
-**When to Use Layer 1 Instead:**
-- ⚠️ Ultra-low latency critical (every ns counts)
-- ⚠️ Cross-iteration state (hold handle across loop iterations)
-- ⚠️ Custom coordination patterns
-- ⚠️ Embedded systems (-fno-exceptions)
-
-#### 5.2.1 Error reporting: C vs C++
-
-- **C-level API:** Errors are reported via **return codes** (or out-parameters). No exceptions. This respects C conventions and allows use from C, other languages, and environments where exceptions are not available. Examples: `slot_rw_acquire_write` returns `SlotAcquireResult`; recovery APIs return `int` (e.g. 0 = success, negative = error code).
-- **C++ wrapper:** The C++ layer may **throw** where that is the appropriate and idiomatic way to signal failure (e.g. config validation at creation, schema mismatch on attach, or acquisition failure in a transaction). Use exceptions for exceptional or contract-violation cases; do not overuse (e.g. avoid throwing on the hot path when a return code or optional suffices). A C++ wrapper over a C API may translate C error codes into exceptions when it improves correctness and usability (e.g. `create_datablock_producer` throwing `std::invalid_argument` on bad config).
-- **Summary:** C API → error codes; C++ → throw where appropriate, otherwise return/optional. Keep each layer consistent with its language and audience.
-
-### 5.5 Access API and Data Block Lifecycle
-
-This section describes the **access API** and how it relates to the shared-memory layout: creation and attach, slot operations, iterator, and diagnostics. Implementations must provide a **single point** where config is validated and the memory block is created; all other paths attach to existing blocks.
-
-#### 5.5.1 Creation (single point of access)
-
-- **Creator path:** The only way to create a new shared-memory block is via the **creator constructor** that takes `(name, config)`. No other code path may allocate or initialize the block.
-- **Config before memory:** Config is validated **before** any shared memory is created. If any required field is unset or invalid, creation fails and no memory is allocated. On the **C++** path this is reported by throwing (e.g. `std::invalid_argument`); a **C-level** creation API, if provided, would return an error code instead (see §5.2.1).
-- **Required config at create:** The following must be set explicitly; otherwise creation fails:
-  - **policy** — must not be Unset (use Single, DoubleBuffer, or RingBuffer).
-  - **consumer_sync_policy** — must not be Unset (use Latest_only, Single_reader, or Sync_reader).
-  - **physical_page_size** — allocation granularity (e.g. 4K, 4M); must be set.
-  - **ring_buffer_capacity** — number of slots (≥ 1); 0 is invalid.
-- **Layout derivation:** After validation, layout is derived from config (e.g. `DataBlockLayout::from_config(config)`): slot stride, slot count, flexible zone size, header layout checksum. Then the segment is allocated and the header is written. See §5.6.4.
-
-#### 5.5.2 Attach (consumer path)
-
-- **Attach path:** Consumers open an existing block by name (and optionally via broker discovery). They do **not** create memory; they map the existing segment and validate it.
-- **Layout validation:** On attach, the implementation validates the header (magic, version) and may verify a **layout checksum** computed from layout-defining header fields. This ensures the consumer’s view of slot stride, capacity, and flexible zone matches the producer.
-- **Optional expected_config:** When the consumer supplies an `expected_config`, the implementation checks that the attached header’s policy, capacity, slot size, etc. match. This avoids silent misuse when configs diverge.
-- **Schema validation:** If schema is used, the consumer validates that the header’s `schema_hash` (and optionally `schema_version`) matches the consumer’s expected schema before any data access. See §5.6.1.
-
-#### 5.5.3 Producer access API
-
-| Operation | Purpose | Relation to layout |
-|-----------|---------|--------------------|
-| **acquire_write_slot(timeout_ms)** | Reserve the next slot for writing; blocks until slot is free (and readers drained if needed). | Uses header `write_index`, `SlotRWState` array, and slot buffer base + `slot_index × slot_stride_bytes`. |
-| **buffer_span()** (on write handle) | Mutable view of the slot buffer. | Points into TABLE 2 at the acquired slot. |
-| **commit(bytes_written)** | Make the slot visible to consumers; advances commit index. | Updates `SlotRWState` (state → COMMITTED, generation), then `commit_index` in header (release ordering). |
-| **release_write_slot(handle)** | Release the write handle; under Enforced checksum policy, updates slot checksum before release. | Decrements writer refs; may write checksum into control zone; slot can be reused on wrap. |
-| **flexible_zone_span(index)** / **flexible_zone&lt;T&gt;(index)** | Access TABLE 1 (metadata). | Offsets derived from layout; valid only when zone is defined and agreed. |
-| **update_checksum_slot** / **update_checksum_flexible_zone** | Store BLAKE2b of slot or flexible zone in header. | Used when ChecksumPolicy is Manual; stored in header/control zone. |
-| **check_consumer_health** | Liveness check for active consumers. | Reads `consumer_heartbeats[]` from header; calls `is_process_alive(pid)` if heartbeat is stale. DataBlock is fully decoupled from Messenger — broker registration is caller-initiated via `Messenger::get_instance().register_producer()` after construction. |
-
-Lifetime: All write handles must be released or destroyed before destroying the producer; otherwise use-after-free.
-
-#### 5.5.4 Consumer access API
-
-| Operation | Purpose | Relation to layout |
-|-----------|--------|--------------------|
-| **get_commit_index()** (or equivalent) | Read the latest committed slot id (acquire ordering). | Header `commit_index`. |
-| **acquire_consume_slot(timeout_ms)** / **acquire_consume_slot(slot_id, timeout_ms)** | Reserve a slot for reading (next available or by id). | Uses `SlotRWState` and slot buffer base + `slot_index × slot_stride_bytes`. |
-| **buffer_span()** (on read handle) | Read-only view of the slot buffer. | TABLE 2 at the acquired slot. |
-| **validate_read()** | Check that the slot was not overwritten during read (wrap-around). | Compares captured `write_generation` with current value. |
-| **release_consume_slot(handle)** | Release the read handle; under Enforced checksum, verifies slot checksum. | Decrements reader count; may verify BLAKE2b. |
-| **flexible_zone_span(index)** / **flexible_zone&lt;T&gt;(index)** | Read TABLE 1. | Same layout-derived offsets as producer. |
-| **verify_checksum_slot** / **verify_checksum_flexible_zone** | Verify stored BLAKE2b. | When Manual, caller invokes; when Enforced, invoked on release. |
-| **register_heartbeat** / **update_heartbeat** / **unregister_heartbeat** | Liveness in header. | Header `consumer_heartbeats[]`. |
-
-Consumer is **thread-safe** (internal recursive mutex). All consume handles must be released before destroying the consumer.
-
-#### 5.5.5 Slot iterator (consumer)
-
-| Operation | Purpose | Relation to layout |
-|-----------|--------|--------------------|
-| **slot_iterator()** | Obtain an iterator over ring slots (consumer view). | Uses commit_index, read_index (or per-consumer position for Sync_reader), and capacity. |
-| **try_next(timeout_ms)** | Advance to next available slot; returns handle and ok flag. | Blocks until a slot is available or timeout; returns SlotConsumeHandle. |
-| **next(timeout_ms)** | Same as try_next but throws on timeout. | Convenience wrapper. |
-| **seek_latest()** | Set cursor to latest committed slot (no consumption). | Sets internal position to commit_index. |
-| **seek_to(slot_id)** | Set cursor so that next() returns slots after the given id. | Used for ordered or replay. |
-
-The iterator hides ring indices and commit_index/read_index; use it for the recommended consumer pattern (e.g. with_next_slot(iterator, timeout, lambda)).
-
-#### 5.5.6 Diagnostics and recovery
-
-| API / tool | Purpose | Relation to layout |
-|------------|--------|--------------------|
-| **open_datablock_for_diagnostic(name)** | Open block read-only for inspection/recovery. | Maps header + SlotRWState array + TABLE 1/2 via same layout. |
-| **diagnose** (e.g. CLI) | Report slot states, stuck writer/readers, heartbeat timeouts. | Reads header metrics and SlotRWState; interprets policy and consumer_sync_policy. |
-| **force_reset_slot** (e.g. CLI) | Clear zombie write lock or stuck state for a slot. | Only after PID liveness check; updates SlotRWState and optionally header. |
-| **auto_recover** (e.g. CLI) | Detect and fix zombie locks and dead consumer heartbeats. | Same as above; dry-run mode recommended first. |
-
-Diagnostics must never reset slots or clear heartbeats for processes that are still alive (PID liveness check required). See Section 8 and `docs/emergency_procedures.md`.
-
----
-
-### 5.6 Helper Modules: Schema, Policy, Layout, and Config
+### 5.3 Helper Modules: Schema, Policy, Layout, and Config
 
 Correct use of the following **helper modules** is required for consistent layout, safe attach, and schema compatibility. They are specified here at a level that implementers can follow; C++-specific details live in the implementation (e.g. `schema_blds.hpp`, `data_block.hpp`, `IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`).
 
-#### 5.6.1 Schema (schema hash, version, BLDS)
+#### 5.3.1 Schema (schema hash, version, BLDS)
 
 **Role:** The schema helper provides a **canonical description** of data layout (e.g. payload struct or header) and a **BLAKE2b-256 hash** stored in `SharedMemoryHeader.schema_hash[32]` and optionally a **schema version** in `schema_version`. This allows consumers to verify that they are reading data laid out the same way as the producer.
 
@@ -1511,11 +1237,11 @@ Correct use of the following **helper modules** is required for consistent layou
 **Correct use:**
 1. **Producer (create):** If using schema, compute the schema for the payload (or header) using the schema helper (e.g. `generate_schema_info<T>(name, version)`), call `compute_hash()`, and write the 32-byte hash (and optionally packed version) into the header. Do not leave schema_hash zero if the consumer is expected to validate.
 2. **Consumer (attach):** Before reading any slot or flexible zone, compute the expected schema (same struct/descriptor as producer), compute its hash, and compare with `header.schema_hash`. If they differ, do not attach (or throw/fail and report schema mismatch). Use a single validation point (e.g. `validate_schema_hash(schema, header.schema_hash)`).
-3. **BLDS and macros:** For C++ structs, use the provided macros (e.g. `PYLABHUB_SCHEMA_BEGIN`, `PYLABHUB_SCHEMA_MEMBER`, `PYLABHUB_SCHEMA_END`) to generate BLDS. For header/protocol validation, use the form that includes offset and size so the hash is layout-sensitive. See Section 11 and `schema_blds.hpp`.
+3. **BLDS and macros:** For C++ structs, use the provided macros (e.g. `PYLABHUB_SCHEMA_BEGIN`, `PYLABHUB_SCHEMA_MEMBER`, `PYLABHUB_SCHEMA_END`) to generate BLDS. For header/protocol validation, use the form that includes offset and size so the hash is layout-sensitive. See Section 12 and `schema_blds.hpp`.
 
-**References:** Section 11 (Schema Validation), `docs/IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (compact view and mapping frequency).
+**References:** Section 12 (Schema Validation), `docs/IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (compact view and mapping frequency).
 
-#### 5.6.2 Policy (DataBlockPolicy and ConsumerSyncPolicy)
+#### 5.3.2 Policy (DataBlockPolicy and ConsumerSyncPolicy)
 
 **Role:** Policy enums determine **buffer strategy** and **reader advancement / writer backpressure**. They are stored in the header and must be set **explicitly at creation**; there is no valid “default” that avoids a conscious choice.
 
@@ -1538,7 +1264,7 @@ Correct use of the following **helper modules** is required for consistent layou
 
 **References:** Section 3.3.1, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
 
-#### 5.6.3 Config (DataBlockConfig and validation)
+#### 5.3.3 Config (DataBlockConfig and validation)
 
 **Role:** Config is the **input** to the single creation path. It carries all layout-defining and behavioral parameters. Validation must happen in one place before any memory is created.
 
@@ -1557,7 +1283,7 @@ Correct use of the following **helper modules** is required for consistent layou
 
 **References:** `IMPLEMENTATION_GUIDANCE.md` (§ Config validation and memory block setup), `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md`.
 
-#### 5.6.4 Layout (DataBlockLayout and layout checksum)
+#### 5.3.4 Layout (DataBlockLayout and layout checksum)
 
 **Role:** Layout is **derived** from config (at create) or from the header (at attach). It provides slot stride, slot count, offsets to SlotRWState array, TABLE 1, TABLE 2, and the size of the full segment. There must be a **single derivation path** (e.g. `from_config` and `from_header`) so that all code uses the same layout.
 
@@ -1573,655 +1299,351 @@ Correct use of the following **helper modules** is required for consistent layou
 
 **References:** `IMPLEMENTATION_GUIDANCE.md`, `DATAHUB_POLICY_AND_SCHEMA_ANALYSIS.md` (§4–5).
 
-#### 5.6.5 Checksum and flexible zone helpers
+#### 5.3.5 Checksum and flexible zone helpers
 
-**ChecksumPolicy:** Checksum storage is always present (checksum_type). Either **Manual** (caller calls update/verify explicitly) or **Enforced** (system updates on write release and verifies on read release). Slot and flexible zone checksums are stored in the header/control zone. Correct use: for Manual, call update before release_write_slot and verify before or on release_consume_slot; for Enforced, the implementation does this automatically. See Section 10.2.
+**ChecksumPolicy:** Checksum storage is always present (checksum_type). Either **Manual** (caller calls update/verify explicitly) or **Enforced** (system updates on write release and verifies on read release). Slot and flexible zone checksums are stored in the header/control zone. Correct use: for Manual, call update before release_write_slot and verify before or on release_consume_slot; for Enforced, the implementation does this automatically. See Section 11.2.
 
 **Flexible zones:** Defined by config (flexible_zone_configs) and agreed at attach when expected_config is provided. Access only after the zone is defined and validated; otherwise flexible_zone_span returns empty. Use flexible_zone&lt;T&gt;(index) only when the zone size is at least sizeof(T). See Section 2.2 (TABLE 1) and FlexibleZoneInfo in the implementation.
 
 ---
 
-This is Part 1 of the unified specification. The document continues with:
-- Section 6: Control Plane Protocol (broker messages, discovery flow)
-- Section 7: Common Usage Patterns (6 real-world scenarios with code)
-- Section 8: Error Handling and Recovery (CLI tools, PID checks, procedures)
-- Section 9: Performance Characteristics (latency, throughput, benchmarks)
-- Section 10: Security and Integrity (checksums, secrets, schema validation)
-- Section 11: Schema Validation (remaining task - P9 specification)
-- Section 12: Implementation Guidelines (coding patterns, best practices)
-- Section 13: Testing Strategy (unit, integration, stress tests)
-- Section 14: Deployment and Operations (monitoring, CLI tools)
-- Section 15: Appendices (glossary, FAQ, diagrams)
+This section documents Layer 0 (C Interface). The document continues with:
+- **Section 6**: RAII Abstraction Layer — TransactionContext, SlotIterator, hub::Producer/Consumer
+- **Section 7**: Control Plane Protocol — stub, see HEP-CORE-0007
+- **Section 8**: Common Usage Patterns
+- **Section 9**: Error Handling and Recovery
+- **Section 10**: Performance Characteristics
+- **Section 11**: Security and Integrity
+- **Section 12**: Schema Validation
+- **Section 13**: Implementation Guidelines
+- **Section 14**: Testing Strategy
+- **Section 15**: Deployment and Operations
+- **Section 16**: Appendices
 
 ---
 
-## 6. Control Plane Protocol
-
-### 6.1 Protocol Overview
-
-The **Broker Service** is a lightweight discovery-only registry. It is **NOT** involved in data transfer after initial discovery.
-
-**Key Characteristics:**
-- **Minimal Scope:** 3 messages only (REG, DISC, DEREG)
-- **Out of Critical Path:** Data flows peer-to-peer via shared memory
-- **Crash Tolerant:** Broker crash does NOT affect running data transfers
-- **Optional:** Direct shared memory attachment possible (bypass broker)
-- **Thread-Safe:** Async command queue; ZMQ socket owned exclusively by worker thread (no socket mutex)
-
-**Broker Responsibilities:**
-- ✅ Producer registration (store channel → shm_name mapping)
-- ✅ Consumer discovery (return shm_name for channel)
-- ✅ Schema registry (store and validate schema hashes)
-- ❌ Data routing (NO message forwarding)
-- ❌ Heartbeat coordination (handled in shared memory)
-- ❌ Error recovery (handled by CLI tools)
-
-```mermaid
-%%{init: {'theme': 'dark'}}%%
-graph TD
-    subgraph "Producer Process"
-        PA["Application Code"]
-        PM["Messenger\n(async queue)"]
-        PW["Worker Thread\n(ZMQ DEALER socket)"]
-        PDB["DataBlockProducer\n(shared memory)"]
-        PA -->|"register_producer()"| PM
-        PM -->|"RegisterProducerCmd"| PW
-        PA -->|"acquire / commit"| PDB
-    end
-
-    subgraph "Consumer Process"
-        CA["Application Code"]
-        CM["Messenger\n(async queue)"]
-        CW["Worker Thread\n(ZMQ DEALER socket)"]
-        CDB["DataBlockConsumer\n(shared memory)"]
-        CA -->|"discover_producer()"| CM
-        CM -->|"DiscoverProducerCmd + future"| CW
-        CA -->|"acquire / read"| CDB
-    end
-
-    subgraph "Broker (separate process)"
-        B["Broker Service\nDiscovery Registry\nchannel → shm_name"]
-    end
-
-    SHM[("Shared Memory\nSegment")]
-
-    PW -->|"REG_REQ"| B
-    B -->|"REG_ACK"| PW
-    CW -->|"DISC_REQ"| B
-    B -->|"DISC_ACK {shm_name}"| CW
-    CA -->|"attach(shm_name)"| CDB
-    PDB <-->|"ring buffer IPC"| SHM
-    CDB <-->|"ring buffer IPC"| SHM
-```
-
-### 6.2 Message Format Specification
-
-All messages use **JSON over ZeroMQ REQ-REP**.
-
-**Wire Format:**
-```
-[IDENTITY (optional)] [EMPTY_FRAME] [JSON_PAYLOAD]
-```
-
-**Common Fields:**
-```json
-{
-  "msg_type": "REG_REQ|DISC_REQ|DEREG_REQ|REG_ACK|DISC_ACK|DEREG_ACK|ERROR",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123456789,
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-#### 6.2.1 Producer Registration (REG_REQ / REG_ACK)
-
-**Producer → Broker (REG_REQ):**
-```json
-{
-  "msg_type": "REG_REQ",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123456789,
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-
-  "channel_name": "sensor/temperature/lab1",
-  "shm_name": "datablock_sensor_12345",
-  "producer_pid": 12345,
-  "schema_hash": "a1b2c3d4e5f6...",
-  "schema_version": 2,
-  "metadata": {
-    "unit_block_size": 4096,
-    "ring_buffer_capacity": 8,
-    "policy": "RingBuffer",
-    "checksum_type": "BLAKE2b",
-    "flexible_zone_count": 2,
-    "producer_hostname": "lab-workstation-01"
-  }
-}
-```
-
-**Broker → Producer (REG_ACK):**
-```json
-{
-  "msg_type": "REG_ACK",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123456790,
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-
-  "status": "success",
-  "channel_id": "sensor/temperature/lab1",
-  "message": "Producer registered successfully"
-}
-```
-
-**Error Response:**
-```json
-{
-  "msg_type": "ERROR",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123456790,
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-
-  "status": "error",
-  "error_code": "SCHEMA_MISMATCH",
-  "message": "Schema hash mismatch: expected a1b2c3..., got d4e5f6..."
-}
-```
-
-#### 6.2.2 Consumer Discovery (DISC_REQ / DISC_ACK)
-
-**Consumer → Broker (DISC_REQ):**
-```json
-{
-  "msg_type": "DISC_REQ",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123567890,
-  "correlation_id": "660e9400-f39c-52e5-b827-557766551111",
-
-  "channel_name": "sensor/temperature/lab1",
-  "consumer_pid": 23456,
-  "secret_hash": "b2c3d4e5f6a1..."
-}
-```
-
-**Broker → Consumer (DISC_ACK):**
-```json
-{
-  "msg_type": "DISC_ACK",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123567891,
-  "correlation_id": "660e9400-f39c-52e5-b827-557766551111",
-
-  "status": "success",
-  "shm_name": "datablock_sensor_12345",
-  "schema_hash": "a1b2c3d4e5f6...",
-  "schema_version": 2,
-  "metadata": {
-    "unit_block_size": 4096,
-    "ring_buffer_capacity": 8,
-    "policy": "RingBuffer",
-    "producer_pid": 12345,
-    "producer_hostname": "lab-workstation-01"
-  }
-}
-```
-
-**Error Response:**
-```json
-{
-  "msg_type": "ERROR",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123567891,
-  "correlation_id": "660e9400-f39c-52e5-b827-557766551111",
-
-  "status": "error",
-  "error_code": "CHANNEL_NOT_FOUND",
-  "message": "Channel 'sensor/temperature/lab1' not registered"
-}
-```
-
-#### 6.2.3 Producer Deregistration (DEREG_REQ / DEREG_ACK)
-
-**Producer → Broker (DEREG_REQ):**
-```json
-{
-  "msg_type": "DEREG_REQ",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123678901,
-  "correlation_id": "770ea500-g40d-63f6-c938-668877662222",
-
-  "channel_name": "sensor/temperature/lab1",
-  "producer_pid": 12345
-}
-```
-
-**Broker → Producer (DEREG_ACK):**
-```json
-{
-  "msg_type": "DEREG_ACK",
-  "version": "1.0.0",
-  "timestamp_ns": 1738980123678902,
-  "correlation_id": "770ea500-g40d-63f6-c938-668877662222",
-
-  "status": "success",
-  "message": "Producer deregistered successfully"
-}
-```
-
-### 6.3 Discovery Flow Sequence
-
-```mermaid
-%%{init: {'theme': 'dark'}}%%
-sequenceDiagram
-    autonumber
-    participant P as Producer
-    participant B as Broker
-    participant C as Consumer
-    participant SHM as Shared Memory
-
-    Note over P,C: Phase 1: Producer Setup
-    P->>P: Create shared memory segment
-    P->>P: Initialize SharedMemoryHeader
-    P->>P: Compute schema_hash (BLAKE2b)
-
-    P->>B: REG_REQ {channel, shm_name, schema_hash}
-    B->>B: Validate schema (if existing)
-    B->>B: Store mapping: channel → shm_name
-    B-->>P: REG_ACK {channel_id}
-
-    Note over P: Producer ready (listening on shm_name)
-
-    Note over P,C: Phase 2: Consumer Discovery
-    C->>B: DISC_REQ {channel, secret_hash}
-    B->>B: Lookup channel → shm_name
-    B->>B: Validate secret (optional)
-    B-->>C: DISC_ACK {shm_name, schema_hash}
-
-    C->>SHM: Attach to shared memory
-    C->>C: Validate schema_hash matches
-    C->>SHM: Register in consumer_heartbeats[]
-
-    Note over C: Consumer ready
-
-    Note over P,C: Phase 3: Data Transfer (Broker Out of Path)
-    loop Every Write
-        P->>SHM: acquire_write_slot()
-        P->>SHM: Write data to slot buffer
-        P->>SHM: commit() + release_write_slot()
-    end
-
-    loop Every Read
-        C->>SHM: get_commit_index() (acquire ordering)
-        C->>SHM: acquire_consume_slot()
-        C->>SHM: Read data (zero-copy span)
-        C->>SHM: release_consume_slot()
-    end
-
-    Note over P,C: Phase 4: Heartbeat (In Shared Memory)
-    loop Every 2 Seconds
-        C->>SHM: Update consumer_heartbeats[i].last_heartbeat_ns
-        P->>SHM: Check consumer_heartbeats[] for timeouts
-    end
-
-    Note over P,C: Phase 5: Shutdown
-    C->>SHM: Clear consumer_heartbeats[i]
-    C->>SHM: Detach shared memory
-
-    P->>SHM: Wait for all consumers to detach
-    P->>B: DEREG_REQ {channel}
-    B->>B: Remove channel mapping
-    B-->>P: DEREG_ACK
-    P->>SHM: Destroy shared memory segment
-```
-
-### 6.4 Peer-to-Peer Heartbeat Protocol
-
-**Heartbeat is NOT sent through Broker.** Instead, consumers write directly to shared memory slots.
-
-**Heartbeat Data Structure (in SharedMemoryHeader):**
-```cpp
-struct ConsumerHeartbeat {
-    std::atomic<uint64_t> consumer_id;        // PID or UUID
-    std::atomic<uint64_t> last_heartbeat_ns;  // Monotonic timestamp
-    uint8_t padding[48];                       // Cache line (64 bytes total)
-} consumer_heartbeats[8];  // Max 8 concurrent consumers
-```
-
-**Consumer Heartbeat Send (Every 2 Seconds):**
-```cpp
-void DataBlockConsumer::send_heartbeat() {
-    // Find my heartbeat slot (assigned during registration)
-    auto& hb = header->consumer_heartbeats[my_slot_index];
-
-    // Update timestamp (atomic write, no lock needed)
-    uint64_t now_ns = std::chrono::steady_clock::now()
-        .time_since_epoch().count();
-    hb.last_heartbeat_ns.store(now_ns, std::memory_order_release);
-
-    // Update metrics
-    header->heartbeat_sent_count.fetch_add(1, std::memory_order_relaxed);
-}
-```
-
-**Producer Heartbeat Check (Every 5 Seconds):**
-```cpp
-void DataBlockProducer::check_consumer_health() {
-    uint64_t now_ns = std::chrono::steady_clock::now()
-        .time_since_epoch().count();
-
-    for (size_t i = 0; i < 8; ++i) {
-        auto& hb = header->consumer_heartbeats[i];
-
-        uint64_t consumer_id = hb.consumer_id.load(std::memory_order_acquire);
-        if (consumer_id == 0) continue;  // Slot not in use
-
-        uint64_t last_hb = hb.last_heartbeat_ns.load(std::memory_order_acquire);
-        uint64_t age_ns = now_ns - last_hb;
-
-        if (age_ns > 5'000'000'000ULL) {  // 5 seconds
-            LOG_WARN("Consumer {} heartbeat timeout ({}s)",
-                     consumer_id, age_ns / 1'000'000'000);
-
-            // Optional: Check if PID is alive
-            if (!is_process_alive(consumer_id)) {
-                LOG_ERROR("Consumer {} is DEAD, cleaning up", consumer_id);
-                hb.consumer_id.store(0, std::memory_order_release);
-                header->active_consumer_count.fetch_sub(1, std::memory_order_release);
-            }
-        }
-    }
-}
-```
-
-**Benefits:**
-- ✅ Zero network overhead (in-memory atomic writes)
-- ✅ Broker crash does not affect heartbeat
-- ✅ Producer detects dead consumers immediately
-- ✅ Automatic cleanup via PID liveness checks
-
-**Producer (writer) heartbeat and liveness:** The **producer heartbeat** is stored in the block’s `reserved_header` at a fixed offset (e.g. `PRODUCER_HEARTBEAT_OFFSET`). It is updated on every `release_write_slot` (after `commit_write`) and can be refreshed when idle via `producer->update_heartbeat()`. **Writer liveness** uses a **heartbeat-first** policy: `is_writer_alive(header, pid)` returns true if the stored heartbeat for that PID is fresh; otherwise it falls back to `is_process_alive(pid)`. This is used when acquiring a write slot (zombie reclaim) and in recovery/diagnostics. The following flow summarizes the decision:
-
-```mermaid
-flowchart LR
-    A[Check writer PID] --> B{Heartbeat fresh?}
-    B -->|yes| C[Alive]
-    B -->|no| D[is_process_alive]
-    D --> C
-    D --> E[Dead, reclaim]
-```
-
-### 6.5 Messenger: Async Command Queue Design
-
-**Design Decision (from P2):** The ZMQ socket is owned exclusively by a single dedicated worker
-thread. All callers enqueue typed commands; the worker thread processes them serially. This
-eliminates the internal mutex on the socket entirely — no lock contention, no thundering-herd
-serialization — while preserving thread-safe access from any caller thread.
-
-**Why not a mutex?**
-ZeroMQ sockets are explicitly not thread-safe. The prior approach of protecting all socket
-operations with a `std::mutex` caused every caller to block during network I/O, and the
-documentation-level guarantee that "all methods are thread-safe" hid an O(n) serialization cliff
-under concurrent load. The async queue design makes the threading contract explicit at the type
-level: callers never touch the socket; only the worker thread does.
-
-**Command Variant:**
-```cpp
-// src/utils/messenger.cpp (internal — not in public API)
-struct ConnectCmd    { std::string endpoint; std::string server_key; std::promise<bool> result; };
-struct DisconnectCmd { };
-struct RegisterProducerCmd { std::string channel; ProducerInfo info; };
-struct RegisterConsumerCmd { std::string channel; ConsumerInfo info; };
-struct DiscoverProducerCmd {
-    std::string channel;
-    int timeout_ms;
-    std::promise<std::optional<ConsumerInfo>> result;
-};
-struct StopCmd { };
-
-using MessengerCommand = std::variant<
-    ConnectCmd, DisconnectCmd,
-    RegisterProducerCmd, RegisterConsumerCmd,
-    DiscoverProducerCmd,
-    StopCmd>;
-```
-
-**MessengerImpl (pImpl):**
-```cpp
-class MessengerImpl {
-public:
-    zmq::socket_t m_socket;          // Owned exclusively by m_worker
-    std::atomic<bool> m_is_connected{false};
-
-    std::deque<MessengerCommand> m_queue;
-    std::mutex m_queue_mutex;
-    std::condition_variable m_queue_cv;
-    std::thread m_worker;
-    std::atomic<bool> m_running{false};
-
-    MessengerImpl();    // Constructs socket from get_zmq_context()
-    ~MessengerImpl();   // Enqueues StopCmd, joins worker thread
-
-    void enqueue(MessengerCommand cmd);   // Called from any thread
-    void worker_loop();                   // Runs on m_worker only
-};
-```
-
-**Worker Thread Loop (single consumer):**
-```cpp
-void MessengerImpl::worker_loop() {
-    while (true) {
-        std::deque<MessengerCommand> local_queue;
-        {
-            std::unique_lock lock(m_queue_mutex);
-            m_queue_cv.wait(lock, [&] { return !m_queue.empty(); });
-            std::swap(local_queue, m_queue);  // Batch: drain all pending
-        }
-        for (auto& cmd : local_queue) {
-            std::visit([this](auto& c) { handle_command(c); }, cmd);
-            if (std::holds_alternative<StopCmd>(cmd)) { return; }
-        }
-    }
-}
-```
-
-**Fire-and-Forget Commands (register_producer, register_consumer):**
-Callers enqueue and return immediately. The worker sends to the broker asynchronously;
-errors are logged by the worker thread. Return type is `void` — callers have no result to wait on.
-
-```cpp
-void Messenger::register_producer(const std::string& channel, const ProducerInfo& info) {
-    pImpl->enqueue(RegisterProducerCmd{channel, info});
-}
-```
-
-**Synchronous Commands (connect, discover_producer):**
-Callers enqueue a command with an embedded `std::promise<T>`, then block on the corresponding
-`std::future<T>`. The worker fulfills the promise after completing the ZMQ exchange.
-
-```cpp
-[[nodiscard]] bool Messenger::connect(const std::string& endpoint,
-                                      const std::string& server_key) {
-    std::promise<bool> p;
-    auto fut = p.get_future();
-    pImpl->enqueue(ConnectCmd{endpoint, server_key, std::move(p)});
-    return fut.get();  // Blocks caller until worker fulfills promise
-}
-
-[[nodiscard]] std::optional<ConsumerInfo>
-Messenger::discover_producer(const std::string& channel, int timeout_ms) {
-    std::promise<std::optional<ConsumerInfo>> p;
-    auto fut = p.get_future();
-    pImpl->enqueue(DiscoverProducerCmd{channel, timeout_ms, std::move(p)});
-    return fut.get();  // Blocks caller until worker receives broker reply
-}
-```
-
-**ZMQ Context Lifecycle (ZMQContext module):**
-
-The ZeroMQ context (`zmq::context_t`) is managed as a separate static lifecycle module named
-`"ZMQContext"`. `GetLifecycleModule()` (DataExchangeHub) declares a dependency on it, guaranteeing
-the following strict startup/shutdown ordering:
-
-```
-Startup order:
-  Logger  →  ZMQContext  →  DataExchangeHub (Messenger)
-
-Shutdown order:
-  Messenger (StopCmd → join worker → close socket)
-      →  ZMQContext (delete context)
-          →  Logger
-```
-
-The shutdown ordering is critical: the worker thread joins (and closes its socket) before the ZMQ
-context is destroyed. Any violation would cause `zmq_term()` to block indefinitely or crash.
-
-The `zmq_context_shutdown()` function is idempotent — a `nullptr` guard prevents double-delete
-if both `GetZMQContextModule()` and `GetLifecycleModule()` are registered independently.
-
-**Lifecycle-Managed Singleton (HubShell) vs. Per-Role Owned Instance (Actor):**
-
-There are two valid usage patterns for `Messenger`, depending on the process type:
-
-| Process | Pattern | Who owns Messenger |
-|---|---|---|
-| `pylabhub-hubshell` | Lifecycle singleton | `GetLifecycleModule()` allocates `g_messenger_instance`; `Messenger::get_instance()` returns ref |
-| `pylabhub-actor` role worker | Per-role owned value | Each `ProducerRoleWorker` / `ConsumerRoleWorker` owns `hub::Messenger messenger_` (a value member); `start()` calls `messenger_.connect(role_cfg.broker, role_cfg.broker_pubkey)` |
-
-In the actor model: `actor_main.cpp` does **not** call `GetLifecycleModule()`; it does **not** call
-`Messenger::get_instance()`. The ZMQ context (`GetZMQContextModule()`) remains process-wide.
-Each role independently connects its Messenger to its own `role.broker` endpoint. Failed connect
-logs a warning and continues (degraded: SHM still works without broker).
-
-`Messenger::get_instance()` is NOT a function-local static. The instance is allocated in
-`do_hub_startup` and stored in `g_messenger_instance` (a raw pointer in anonymous namespace).
-`do_hub_shutdown` destroys it before tearing down the ZMQ context.
-
-```cpp
-namespace {
-std::atomic<bool> g_hub_initialized{false};
-Messenger* g_messenger_instance = nullptr;
-} // namespace
-
-void do_hub_startup(const char*) {
-    sodium_init();
-    zmq_context_startup();
-    g_messenger_instance = new Messenger();
-    g_hub_initialized.store(true, std::memory_order_release);
-}
-
-void do_hub_shutdown(const char*) {
-    g_hub_initialized.store(false, std::memory_order_release);
-    delete g_messenger_instance;   // ~MessengerImpl: StopCmd → join → socket closed
-    g_messenger_instance = nullptr;
-    zmq_context_shutdown();        // Context destroyed after socket is gone
-}
-
-Messenger& Messenger::get_instance() {
-    assert(g_hub_initialized.load(std::memory_order_acquire) &&
-           "Messenger::get_instance() called before registration and initialization through Lifecycle");
-    assert(g_messenger_instance != nullptr);
-    return *g_messenger_instance;
-}
-```
-
-**Thread Safety Summary:**
-
-| Caller thread action         | Thread-safe? | Mechanism                                |
-|------------------------------|:------------:|------------------------------------------|
-| `register_producer()`        | ✅ Yes       | Enqueue + `m_queue_mutex` + `notify_one` |
-| `register_consumer()`        | ✅ Yes       | Enqueue + `m_queue_mutex` + `notify_one` |
-| `connect()`                  | ✅ Yes       | Enqueue + `std::future::get()` (blocks)  |
-| `discover_producer()`        | ✅ Yes       | Enqueue + `std::future::get()` (blocks)  |
-| ZMQ socket operations        | ✅ Yes       | Worker thread only — no socket mutex     |
-| `get_instance()` (post-init) | ✅ Yes       | Atomic load; pointer immutable after init|
-| `get_instance()` (pre-init)  | ✅ Asserts   | `assert(g_hub_initialized)`             |
-
-**Async Command Queue — Sequence Diagram:**
-```mermaid
-sequenceDiagram
-    participant C as Caller Thread
-    participant Q as Command Queue<br/>(mutex + condvar)
-    participant W as Worker Thread<br/>(owns ZMQ socket)
-    participant B as Broker
-
-    Note over C,W: Fire-and-forget (register_producer)
-    C->>Q: enqueue(RegisterProducerCmd)
-    C-->>C: return immediately (void)
-    Q->>W: notify_one()
-    W->>B: ZMQ send (DEALER frame)
-    B-->>W: (no reply expected)
-
-    Note over C,W: Synchronous (connect / discover_producer)
-    C->>Q: enqueue(ConnectCmd + promise<bool>)
-    C->>C: future.get() [blocks]
-    Q->>W: notify_one()
-    W->>B: ZMQ send + poll
-    B-->>W: reply frame
-    W-->>C: promise.set_value(true)
-    C-->>C: future.get() returns
-
-    Note over C,W: Shutdown
-    C->>Q: enqueue(StopCmd)
-    W->>W: break loop
-    W->>W: close socket
-```
-
-**Lifecycle Dependency Graph:**
-```mermaid
-graph TD
-    Logger["Logger\n(static module)"]
-    ZMQ["ZMQContext\n(static module)\nzmq::context_t"]
-    Hub["DataExchangeHub\n(static module)\nMessenger instance"]
-    Sodium["libsodium\nsodium_init()"]
-
-    Logger -->|"depended on by"| ZMQ
-    ZMQ -->|"depended on by"| Hub
-    Sodium -->|"initialized in"| Hub
-
-    subgraph "Startup Order →"
-        Logger
-        ZMQ
-        Hub
-    end
-
-    subgraph "Shutdown Order ←"
-        Hub
-        ZMQ
-        Logger
-    end
-```
-
-**ZMQ Socket Ownership — Thread Responsibility:**
-```mermaid
-graph LR
-    subgraph "Caller Threads (any)"
-        CT1["Thread A\nregister_producer()"]
-        CT2["Thread B\ndiscover_producer()"]
-        CT3["Thread C\nconnect()"]
-    end
-
-    subgraph "Messenger Internal"
-        Q["Command Queue\nstd::deque\n+ mutex\n+ condvar"]
-        W["Worker Thread\nworker_loop()"]
-        S["zmq::socket_t\n(DEALER)"]
-    end
-
-    B["Broker\n(remote process)"]
-
-    CT1 -->|"enqueue cmd"| Q
-    CT2 -->|"enqueue cmd + future"| Q
-    CT3 -->|"enqueue cmd + future"| Q
-    Q -->|"notify_one"| W
-    W -->|"only thread to access"| S
-    S <-->|"ZMQ frames"| B
-```
+## 6. RAII Abstraction Layer
+
+The RAII abstraction layer is the primary C++ interface for application code. It provides
+exception-safe, scope-bound ownership over shared memory slots and flexible zones,
+replacing manual acquire/commit/release with a `with_transaction<FlexZoneT, DataBlockT>()`
+entry point.
+
+**Key headers:**
+- `#include "utils/transaction_context.hpp"` — `TransactionContext`, `SlotIterator`
+- `#include "utils/data_block.hpp"` — `DataBlockProducer`, `DataBlockConsumer`, handles
+- `#include "plh_datahub.hpp"` — Layer 3 umbrella (all of the above)
 
 ---
 
-## 7. Common Usage Patterns
+### 6.1 Design Guarantees
+
+Four invariants are enforced unconditionally:
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| **Slot released on scope exit** | `SlotWriteHandle`/`SlotConsumeHandle` RAII destructors |
+| **Auto-publish on normal exit** | `SlotIterator` destructor commits when `uncaught_exceptions() == 0` |
+| **Rollback on exception** | `SlotIterator` releases without commit during stack unwinding |
+| **Schema validated once** | Factory functions check schema hash at create/attach; no re-check per slot |
+
+**Type requirements for template parameters:**
+- `FlexZoneT` — trivially copyable POD, or `void` for no flexible zone. No `std::atomic<T>` members; use `std::atomic_ref<T>` at call sites for lock-free field access.
+- `DataBlockT` — trivially copyable POD.
+
+---
+
+### 6.2 Entry Point: `with_transaction<FlexZoneT, DataBlockT>()`
+
+`DataBlockProducer` and `DataBlockConsumer` both expose `with_transaction`, which creates
+a `TransactionContext` and passes it to a user lambda:
+
+```cpp
+// Producer (write path)
+producer.with_transaction<MetaData, SensorData>(timeout_ms, [&](auto& ctx) {
+    // ctx.flexzone().get() → MetaData& (mutable)
+    ctx.flexzone().get().status = Status::Active;
+
+    for (auto& result : ctx.slots(100ms)) {
+        if (!result.is_ok()) {
+            // result.error() == SlotAcquireError::Timeout — iteration continues
+            if (check_shutdown()) break;
+            continue;
+        }
+        result.content().get() = read_sensor();  // write into SensorData slot
+        break; // auto-publish fires when SlotIterator is destroyed
+    }
+    // On normal exit: flexzone checksum updated automatically.
+    // On exception: slot released without commit (rollback).
+});
+
+// Consumer (read path)
+consumer.with_transaction<MetaData, SensorData>(timeout_ms, [&](auto& ctx) {
+    // ctx.flexzone().get() → const MetaData& (read-only)
+    for (auto& result : ctx.slots(100ms)) {
+        if (!result.is_ok()) continue;
+        process(result.content().get());  // read-only const SensorData&
+    }
+});
+```
+
+When `FlexZoneT = void`, `ctx.flexzone()` provides only raw byte access. When typed,
+`ctx.flexzone().get()` returns a reference to `FlexZoneT` directly in shared memory.
+
+---
+
+### 6.3 TransactionContext
+
+`TransactionContext<FlexZoneT, DataBlockT, IsWrite>` is the context object passed to
+the `with_transaction` lambda. Convenience aliases: `WriteTransactionContext<F,D>` and
+`ReadTransactionContext<F,D>`.
+
+| Method | Producer (`IsWrite=true`) | Consumer (`IsWrite=false`) |
+|--------|--------------------------|---------------------------|
+| `ctx.flexzone()` | `WriteZoneRef<F>` (mutable) | `ReadZoneRef<F>` (const) |
+| `ctx.slots(timeout)` | `SlotIterator<D, true>` | `SlotIterator<D, false>` |
+| `ctx.publish()` | Explicit commit + release of current slot | N/A |
+| `ctx.suppress_flexzone_checksum()` | Skip auto-checksum update on lambda exit | N/A |
+| `ctx.publish_flexzone()` | Immediate BLAKE2b write of flexzone to header | N/A |
+| `ctx.update_heartbeat()` | Update producer liveness timestamp | Update consumer liveness timestamp |
+| `ctx.metrics()` | `const ContextMetrics&` (HEP-CORE-0008) | `const ContextMetrics&` |
+
+`TransactionContext` is **not thread-safe** — each thread creates its own context. The
+underlying `DataBlockProducer`/`DataBlockConsumer` are thread-safe (internal recursive mutex).
+
+**Flexzone checksum lifecycle (producer):** On `with_transaction` normal exit, the flexzone
+checksum is updated automatically unless `ctx.suppress_flexzone_checksum()` was called.
+On exception exit, the checksum is not updated (flexzone state may be inconsistent).
+
+---
+
+### 6.4 SlotIterator
+
+`SlotIterator<DataBlockT, IsWrite>` is a C++20 non-terminating range iterator returned by
+`ctx.slots(timeout)`. Each iteration yields `Result<SlotRef<DataBlockT>, SlotAcquireError>`.
+
+**Key behaviors:**
+
+- **Never ends on Timeout** — yields `Error(Timeout)` and continues. User breaks explicitly.
+- **Ends on fatal error** — producer/consumer destroyed or unrecoverable failure.
+- **Auto-heartbeat** — `operator++()` calls `update_heartbeat()` before each acquire attempt, covering the slot-acquisition spin. Long user loop bodies must call `ctx.update_heartbeat()` explicitly.
+- **FixedRate pacing** — `operator++()` sleeps to maintain the configured `period_ms` before each acquire (HEP-CORE-0008 LoopPolicy integration).
+- **Auto-publish on normal exit** — when the iterator is destroyed without active exception (`uncaught_exceptions() == 0`): commits the current write slot automatically. Producer code can simply `break` after writing.
+- **Rollback on exception** — when destroyed during stack unwinding: releases write slot without commit. Consumer slot released without updating `last_consumed_slot_id`.
+
+```cpp
+for (auto& result : ctx.slots(100ms)) {
+    if (!result.is_ok()) {
+        if (check_shutdown()) break;  // SlotIterator dtor: rollback any held slot
+        continue;
+    }
+    auto& slot = result.content();      // SlotRef (non-owning, valid this iteration)
+    slot.get().value = compute();       // write into DataBlockT in shared memory
+    break;                              // auto-publish fires on SlotIterator destruction
+}
+```
+
+**Slot advancement:** `operator++()` releases the previous slot before acquiring the next.
+Slots cannot be held across multiple iterations; the new iteration replaces the current slot.
+
+---
+
+### 6.5 SlotRef and ZoneRef
+
+`WriteSlotRef<D>` and `ReadSlotRef<D>` are thin non-owning wrappers over `SlotWriteHandle*`
+and `SlotConsumeHandle*` respectively. Ownership stays with `SlotIterator`.
+
+```cpp
+auto& slot = result.content();   // SlotRef — valid only for current iteration
+slot.get();                      // → D& (write) or const D& (read)
+```
+
+`WriteZoneRef<F>` and `ReadZoneRef<F>` similarly wrap flexible zone access. Obtained via
+`ctx.flexzone()`. `zone.get()` returns a reference directly into the shared memory region.
+
+---
+
+### 6.6 RAII Handles (underlying layer)
+
+`SlotWriteHandle` and `SlotConsumeHandle` are the raw RAII handles returned by
+`DataBlockProducer::acquire_write_slot()` and `DataBlockConsumer::acquire_consume_slot()`.
+They are used directly only in advanced patterns; for standard code prefer `with_transaction`.
+
+| Handle | Acquired by | Released by | Commit |
+|--------|-------------|-------------|--------|
+| `SlotWriteHandle` | `producer.acquire_write_slot(timeout_ms)` | `producer.release_write_slot(h)` or destructor | `h.commit(bytes_written)` |
+| `SlotConsumeHandle` | `consumer.acquire_consume_slot(timeout_ms)` | `consumer.release_consume_slot(h)` or destructor | automatic on release |
+
+Both handles are **move-only** and **non-copyable**. Their destructors release the slot
+(without commit for writes) even if the caller exits via exception, preventing stuck slots.
+
+---
+
+### 6.7 DataBlockProducer and DataBlockConsumer
+
+These are the primary C++ wrapper types over the shared memory block. They own the memory
+mapping and (for producers) the block creation.
+
+**DataBlockProducer:**
+```cpp
+// Creator path — validates config, allocates SHM, writes header + schema hash
+DataBlockProducer producer(config);
+
+// WriteAttach path — broker-owned SHM, producer attaches
+DataBlockProducer producer(shm_name, config);
+
+// Schema-validated factory — checks schema hash at creation
+auto p = create_datablock_producer<MetaData, SensorData>(config, "channel_name");
+
+// Core API
+producer.with_transaction<F,D>(timeout_ms, lambda);        // recommended
+producer.acquire_write_slot(timeout_ms);                   // → unique_ptr<SlotWriteHandle>
+producer.with_typed_write<D>(timeout_ms, lambda);          // typed, no FlexZone
+producer.set_loop_policy(policy, period_ms);               // HEP-CORE-0008 FixedRate/MaxRate
+producer.metrics();                                        // → const ContextMetrics&
+producer.update_checksum_flexible_zone();                  // manual BLAKE2b update
+producer.check_consumer_health();                          // PID-based liveness check
+```
+
+**DataBlockConsumer:**
+```cpp
+// Open existing SHM by name; validates header, layout checksum, optional schema
+DataBlockConsumer consumer(shm_name, expected_config);
+
+// Schema-validated factory — checks schema hash at attach
+auto c = find_datablock_consumer<MetaData, SensorData>(channel_name, hub);
+
+// Core API
+consumer.with_transaction<F,D>(timeout_ms, lambda);        // recommended
+consumer.acquire_consume_slot(timeout_ms);                 // → unique_ptr<SlotConsumeHandle>
+consumer.with_typed_read<D>(slot_id, lambda, validate);    // typed, no FlexZone
+consumer.slot_iterator();                                  // → DataBlockSlotIterator (low-level)
+consumer.metrics();                                        // → const ContextMetrics&
+consumer.set_last_consumed(slot_id);                       // seek to slot
+```
+
+Both are **thread-safe** (internal recursive mutex). All handles must be released before
+destroying the producer or consumer.
+
+---
+
+### 6.8 Active Services: hub::Producer and hub::Consumer
+
+For the typical case where the DataBlock is paired with a ZMQ control plane (broker
+registration, health notifications, heartbeat), the **active service wrappers**
+`hub::Producer` and `hub::Consumer` combine `DataBlockProducer`/`DataBlockConsumer`
+with `Messenger` in a unified lifecycle.
+
+**hub::Producer** manages:
+- DataBlock creation + broker registration (REG_REQ/REG_ACK)
+- `peer_thread`: ROUTER ctrl socket, HELLO/BYE protocol with consumers
+- Embedded-mode API: `Producer::start_embedded()` + `Producer::handle_peer_events_nowait()` for actor integration (HEP-CORE-0010)
+
+**hub::Consumer** manages:
+- Broker discovery (DISC_REQ/DISC_ACK), DataBlock attach, consumer registration (CONSUMER_REG_REQ)
+- `data_thread`: slot notification via ZMQ
+- `ctrl_thread`: DEALER ctrl socket, HELLO/BYE protocol
+- `shm_thread`: slot acquisition and delivery
+- Embedded-mode API: `Consumer::start_embedded()` for actor integration (HEP-CORE-0010)
+
+Configuration: `ProducerOptions` / `ConsumerOptions` carry identity fields (`actor_name`,
+`actor_uid`, `consumer_uid`, `consumer_name`) forwarded to the broker at registration.
+
+**Headers:** `utils/hub_producer.hpp`, `utils/hub_consumer.hpp`
+
+---
+
+### 6.9 Slot-Processor API (HEP-CORE-0006)
+
+The **Pluggable Slot-Processor API** provides an alternative to `with_transaction` for
+actor-style loops and user-customized real-time data handlers. There are two modes:
+
+| Mode | Entry Point | Who drives the slot loop |
+|------|-------------|--------------------------|
+| **Queue** | `push()` / `synced_write()` / `pull()` | Caller (synchronous) |
+| **Real-time** | `set_write_handler()` / `set_read_handler()` | Framework (`write_thread`) |
+
+```cpp
+// Real-time write handler — framework calls fn on every slot
+producer.set_write_handler([](WriteProcessorContext<MetaData, SensorData>& ctx) {
+    ctx.slot().get() = produce_sensor_reading();
+    ctx.flexzone().get().last_write_ns = timestamp_ns();
+});
+
+// Real-time read handler — framework calls fn on every committed slot
+consumer.set_read_handler([](ReadProcessorContext<MetaData, SensorData>& ctx) {
+    process(ctx.slot().get());
+});
+```
+
+`WriteProcessorContext<F,D>` and `ReadProcessorContext<F,D>` bundle: typed slot access +
+flexible zone access + Messenger handle + shutdown signal.
+
+> **Full specification: [HEP-CORE-0006](HEP-CORE-0006-SlotProcessor-API.md)**
+>
+> The actor layer (`ProducerRoleWorker`, `ConsumerRoleWorker`) in HEP-CORE-0010 is built
+> on top of this API; the Python `on_iteration(slot, flexzone, messages, api)` interface
+> is the actor-level equivalent.
+
+---
+
+### 6.10 RAII Layer Summary
+
+| Pattern | Use Case | Exception Safety |
+|---------|----------|-----------------|
+| `with_transaction<F,D>` + `ctx.slots()` | Standard application loop | Automatic rollback on exception |
+| `acquire_write_slot()` + manual commit | Advanced — cross-iteration control | Manual release required |
+| `with_typed_write<D>` / `with_typed_read<D>` | No FlexZone, simple typed write | Lambda scope |
+| `push()` / `pull()` / handlers (HEP-CORE-0006) | Actor/processor pattern, real-time | Per-call semantics |
+| `hub::Producer` / `hub::Consumer` | Full IPC stack (broker + SHM) | Service lifecycle (stop/join) |
+
+---
+
+
+## 7. Control Plane Protocol
+
+> **Authoritative reference: [HEP-CORE-0007](HEP-CORE-0007-DataHub-Protocol-and-Policy.md)**
+
+The Broker Service is a lightweight discovery-only registry. It is **not** involved in
+data transfer after initial discovery. Data flows peer-to-peer via shared memory; the
+broker is used only for channel registration and consumer discovery.
+
+**Key characteristics:**
+- **Discovery only**: Register (REG_REQ), discover (DISC_REQ), deregister (DEREG_REQ)
+- **Out of critical path**: Broker crash does not affect running data transfers
+- **CurveZMQ**: DEALER/ROUTER with server keypair; client keys optional per policy
+
+**Message taxonomy:**
+
+| Message | Direction | Purpose |
+|---------|-----------|---------|
+| REG_REQ / REG_ACK | Producer → Broker | Register channel; store SHM name |
+| DISC_REQ / DISC_ACK | Consumer → Broker | Discover SHM name; receive consumer_count |
+| CONSUMER_REG_REQ / CONSUMER_REG_ACK | Consumer → Broker | Register consumer identity |
+| CONSUMER_DEREG_REQ | Consumer → Broker | Deregister consumer |
+| HEARTBEAT / HEARTBEAT_ACK | Producer → Broker | Channel liveness; broker triggers CHANNEL_CLOSING_NOTIFY on timeout |
+| CHANNEL_ERROR_NOTIFY (Cat 1) | Broker → Consumer | Non-fatal channel error |
+| CONSUMER_DIED_NOTIFY (Cat 2) | Broker → Producer | Consumer process died |
+
+**Connection Policy** (enforced by BrokerService at REG / CONSUMER_REG time):
+- **Open**: No identity required (default)
+- **Tracked**: Identity logged but not enforced
+- **Required**: Actor name + UID must be present in the payload
+- **Verified**: Actor must be in the `known_actors` list
+
+Per-channel glob overrides are configured via `channel_policies[]`.
+
+> For complete message framing, handshake sequences, full BrokerService state machine,
+> health notification taxonomy, connection policy enforcement, and the CONSUMER_DIED /
+> CHANNEL_ERROR error taxonomy, see **[HEP-CORE-0007](HEP-CORE-0007-DataHub-Protocol-and-Policy.md)**.
+> For policy cross-reference, see **[HEP-CORE-0009](HEP-CORE-0009-Policy-Reference.md)**.
+
+
+## 8. Common Usage Patterns
 
 This section provides complete, production-ready code examples for typical DataHub scenarios.
 
-### 7.1 Pattern 1: Sensor Streaming (Single Policy)
+### 8.1 Pattern 1: Sensor Streaming (Single Policy)
 
 **Use Case:** Temperature sensor producing latest value at 10 Hz. Consumers always want the most recent reading.
 
@@ -2393,7 +1815,7 @@ End-to-End:         ~1 μs          1M samples/sec
 Memory Overhead:    4 KB           (single slot)
 ```
 
-### 7.2 Pattern 2: Video Frames (DoubleBuffer Policy)
+### 8.2 Pattern 2: Video Frames (DoubleBuffer Policy)
 
 **Use Case:** Camera producing 1920x1080 RGB frames at 30 FPS. Consumers need stable frames (no tearing).
 
@@ -2573,7 +1995,7 @@ Double Buffer Guarantee:
 - ~1 frame latency (acceptable for 30 FPS)
 ```
 
-### 7.3 Pattern 3: Data Queue (RingBuffer Policy)
+### 8.3 Pattern 3: Data Queue (RingBuffer Policy)
 
 **Use Case:** Data logger collecting high-frequency sensor samples. Must not drop any data (lossless queue).
 
@@ -2729,7 +2151,7 @@ Lossless Guarantee:
 - Backpressure mechanism prevents overflow
 ```
 
-### 7.4 Pattern 4: Multi-Camera Sync (Flexible Zone Coordination)
+### 8.4 Pattern 4: Multi-Camera Sync (Flexible Zone Coordination)
 
 **Use Case:** Synchronize 4 cameras using shared frame counter in flexible zone.
 
@@ -2852,9 +2274,9 @@ Jitter:             <100 μs (frame ID alignment)
 
 ---
 
-## 8. Error Handling and Recovery
+## 9. Error Handling and Recovery
 
-### 8.1 CLI Tool Specification
+### 9.1 CLI Tool Specification
 
 The `datablock-admin` tool provides diagnostic and recovery capabilities for stuck or corrupted DataBlocks.
 
@@ -2867,7 +2289,7 @@ cmake --build build --target datablock-admin
 ./build/stage-debug/bin/datablock-admin --help
 ```
 
-#### 8.1.1 Command: `diagnose`
+#### 9.1.1 Command: `diagnose`
 
 **Purpose:** Inspect slot states and detect stuck conditions.
 
@@ -2936,7 +2358,7 @@ Run: datablock-admin force-reset-slot --shm-name foo --slot 1
 
 
 
-#### 8.1.3 Command: `auto-recover`
+#### 9.1.3 Command: `auto-recover`
 
 **Purpose:** Automatically detect and fix safe issues.
 
@@ -2974,15 +2396,15 @@ Applying fixes...
 Recovery complete: 3 actions applied
 ```
 
-### 8.2 Emergency Procedures
+### 9.2 Emergency Procedures
 
 Complete emergency procedures for 3 common scenarios were documented in the main edit (refer to lines 2550+ in the completed document).
 
 ---
 
-## 9. Performance Characteristics
+## 10. Performance Characteristics
 
-### 9.1 Operation Latencies
+### 10.1 Operation Latencies
 
 **Table: Single-Threaded Latencies (x86-64, 2.4 GHz Xeon)**
 
@@ -2996,7 +2418,7 @@ Complete emergency procedures for 3 common scenarios were documented in the main
 | Transaction API overhead | +10 ns | +15 ns | +25 ns |
 | Checksum (4KB, BLAKE2b) | 1.2 μs | 1.5 μs | 1.8 μs |
 
-### 9.2 Throughput Benchmarks
+### 10.2 Throughput Benchmarks
 
 | Payload Size | Writes/sec | Throughput |
 |--------------|------------|------------|
@@ -3006,9 +2428,9 @@ Complete emergency procedures for 3 common scenarios were documented in the main
 
 ---
 
-## 10. Security and Integrity
+## 11. Security and Integrity
 
-### 10.1 Shared Secret (64-byte Capability Token)
+### 11.1 Shared Secret (64-byte Capability Token)
 
 Producer generates random 64-byte secret, stores in header. Consumer must provide matching secret to attach. Broker validates secret hash on discovery.
 
@@ -3022,7 +2444,7 @@ Producer generates random 64-byte secret, stores in header. Consumer must provid
 - Rotate secrets periodically
 - Set OS permissions (`chmod 600 /dev/shm/datablock_*`)
 
-### 10.2 BLAKE2b Checksum
+### 11.2 BLAKE2b Checksum
 
 **Two Policies:**
 1. **Manual:** User calls `update_checksum()` / `verify_checksum()` explicitly
@@ -3032,11 +2454,11 @@ Producer generates random 64-byte secret, stores in header. Consumer must provid
 
 ---
 
-## 11. Schema Validation (P9 - Remaining Design Task)
+## 12. Schema Validation (P9 - Remaining Design Task)
 
 ⚠️ **TO BE IMPLEMENTED**
 
-### 11.1 BLDS Format
+### 12.1 BLDS Format
 
 Basic Layout Description String for C++ struct schemas:
 ```
@@ -3048,11 +2470,11 @@ Example:
 BLDS/1.0:SensorData;f32:x:0:4;f32:y:4:4;f32:z:8:4;i32:timestamp:12:4
 ```
 
-### 11.2 Schema Hash
+### 12.2 Schema Hash
 
 BLAKE2b-256 hash computed over BLDS string, stored in `SharedMemoryHeader.schema_hash[32]`.
 
-### 11.3 Validation Flow
+### 12.3 Validation Flow
 
 1. Producer computes schema hash, stores in header, registers with broker
 2. Consumer discovers channel, retrieves schema hash from broker
@@ -3064,9 +2486,9 @@ BLAKE2b-256 hash computed over BLDS string, stored in `SharedMemoryHeader.schema
 
 ---
 
-## 12. Implementation Guidelines
+## 13. Implementation Guidelines
 
-### 12.1 Best Practices
+### 13.1 Best Practices
 
 1. ✅ Always use RAII (Transaction API)
 2. ✅ Prefer `std::span` over raw pointers
@@ -3074,7 +2496,7 @@ BLAKE2b-256 hash computed over BLDS string, stored in `SharedMemoryHeader.schema
 4. ✅ Use atomic members in flexible zones
 5. ✅ Use `acquire`/`release` memory ordering (not `relaxed`)
 
-### 12.2 Memory Ordering Cheat Sheet
+### 13.2 Memory Ordering Cheat Sheet
 
 ```cpp
 // Producer commit (release)
@@ -3087,7 +2509,7 @@ uint64_t idx = commit_index.load(std::memory_order_acquire);
 counter.fetch_add(1, std::memory_order_relaxed);
 ```
 
-### 12.3 Testing Requirements
+### 13.3 Testing Requirements
 
 - Unit tests (80%+ coverage)
 - Integration tests (producer-consumer scenarios)
@@ -3096,9 +2518,9 @@ counter.fetch_add(1, std::memory_order_relaxed);
 
 ---
 
-## 13. Testing Strategy
+## 14. Testing Strategy
 
-### 13.1 Test Organization
+### 14.1 Test Organization
 
 ```
 tests/test_pylabhub_utils/
@@ -3110,7 +2532,7 @@ tests/test_pylabhub_utils/
 └── test_transaction_api.cpp
 ```
 
-### 13.2 Key Test Scenarios
+### 14.2 Key Test Scenarios
 
 1. TOCTTOU race detection
 2. Wrap-around detection (generation counter)
@@ -3120,9 +2542,9 @@ tests/test_pylabhub_utils/
 
 ---
 
-## 14. Deployment and Operations
+## 15. Deployment and Operations
 
-### 14.1 CLI Tools
+### 15.1 CLI Tools
 
 **`datablock-inspect`:** Read-only monitoring
 - Display header, metrics, slot states
@@ -3135,7 +2557,7 @@ tests/test_pylabhub_utils/
 - `auto-recover` - Automated recovery
 - `validate` - Check integrity
 
-### 14.2 Python Bindings
+### 15.2 Python Bindings
 
 ```python
 from pylabhub_monitor import DataBlockInspector
@@ -3150,7 +2572,7 @@ print(f"Healthy: {metrics.is_healthy()}")
 actions = auto_recover("datablock_name", dry_run=False)
 ```
 
-### 14.3 Prometheus Metrics
+### 15.3 Prometheus Metrics
 
 Exporter script exports metrics every 5 seconds:
 - `datablock_writes_total`
@@ -3159,7 +2581,7 @@ Exporter script exports metrics every 5 seconds:
 
 ---
 
-## 15. Appendices
+## 16. Appendices
 
 ### Appendix A: Glossary
 
@@ -3233,7 +2655,7 @@ with_next_slot(iter, 1000, [&](const SlotConsumeHandle& slot) {
 
 **Design Maturity:** 90% complete
 - ✅ 8 critical tasks completed
-- ⚠️ 1 remaining (P9: Schema Validation - Section 11)
+- ⚠️ 1 remaining (P9: Schema Validation - Section 12)
 - 🚀 Ready for prototype implementation
 
 **Confidence Level:** High (90%+)

@@ -1,33 +1,38 @@
 #pragma once
 /**
  * @file python_interpreter.hpp
- * @brief PythonInterpreter — embedded Python singleton lifecycle module.
+ * @brief PythonInterpreter — embedded Python singleton lifecycle placeholder.
  *
- * Manages a single CPython interpreter instance for the hubshell.
- * The interpreter is initialised once at lifecycle startup and holds a
- * persistent `__main__` namespace that survives between exec() calls
- * (variables defined in one exec call are visible in the next).
+ * In the new design **`HubScript::hub_thread_` owns the CPython interpreter**.
+ * This module is kept as a static lifecycle registration point so that
+ * `AdminShell` can declare it as a dependency (preserving startup ordering),
+ * and to provide the shared `exec()` / `reset_namespace()` services that the
+ * admin shell uses.
+ *
+ * ## Interpreter ownership
+ *
+ * | Who           | What                                                        |
+ * |---------------|-------------------------------------------------------------|
+ * | `HubScript`   | Creates `py::scoped_interpreter` on `hub_thread_` → owns   |
+ *                 | `Py_Initialize` + `Py_Finalize`.                            |
+ * | `PythonInterpreter` | Owns the persistent `__main__` namespace (set up by   |
+ *                 | `init_namespace_()`, torn down by `release_namespace_()`).  |
  *
  * ## Lifecycle
  *
- * Register via `LifecycleGuard`:
- * @code
- *   LifecycleGuard lifecycle(MakeModDefList(
- *       Logger::GetLifecycleModule(),
- *       pylabhub::crypto::GetLifecycleModule(),
- *       HubConfig::GetLifecycleModule(),
- *       PythonInterpreter::GetLifecycleModule(),
- *       ...));
- * @endcode
- *
- * Startup order: `Logger → CryptoUtils → HubConfig → PythonInterpreter → ...`
+ * `startup_()` and `shutdown_()` are **no-ops** — they exist only so the
+ * `LifecycleManager` can order `AdminShell` after `PythonInterpreter`.
+ * Actual Python initialization is performed by `HubScript::hub_thread_fn_()`,
+ * which calls `init_namespace_()` after `Py_Initialize` and
+ * `release_namespace_()` before `Py_Finalize`.
  *
  * ## Thread safety
  *
- * - `exec()` serialises concurrent callers via a mutex; the GIL is acquired
- *   internally for each call.
- * - `get_instance()` is safe from any thread after lifecycle startup.
- * - `reset_namespace()` is safe from any thread after lifecycle startup.
+ * - `exec()` serialises concurrent callers via a mutex; acquires the GIL
+ *   internally. Returns an error if the interpreter is not yet ready
+ *   (`is_ready()` == false).
+ * - `get_instance()` is safe from any thread.
+ * - `reset_namespace()` is safe from any thread after `init_namespace_()`.
  */
 
 #include "plh_service.hpp"
@@ -53,7 +58,8 @@ struct PyExecResult
 
 /**
  * @class PythonInterpreter
- * @brief Singleton lifecycle module that owns the embedded CPython interpreter.
+ * @brief Singleton lifecycle module that manages the persistent Python namespace
+ *        and exposes `exec()` to the admin shell.
  */
 class PythonInterpreter
 {
@@ -62,10 +68,10 @@ class PythonInterpreter
     // Lifecycle
     // -----------------------------------------------------------------------
 
-    /** Returns the ModuleDef for use with LifecycleGuard. */
+    /** Returns the ModuleDef for use with LifecycleGuard. startup/shutdown are no-ops. */
     static utils::ModuleDef GetLifecycleModule();
 
-    /** Returns the global singleton instance. Call only after lifecycle startup. */
+    /** Returns the global singleton instance. Safe from any thread. */
     static PythonInterpreter& get_instance();
 
     // -----------------------------------------------------------------------
@@ -95,6 +101,9 @@ class PythonInterpreter
      * stdout and stderr are redirected to a StringIO buffer for the duration of
      * the call and returned in `PyExecResult::output`.
      *
+     * Returns an error result immediately if the interpreter is not yet ready
+     * (HubScript::hub_thread_ has not yet called init_namespace_()).
+     *
      * @param code  Python source code to execute (may be multi-line).
      * @return      Execution result with captured output and error info.
      */
@@ -104,9 +113,17 @@ class PythonInterpreter
      * @brief Clears all user-defined names from the persistent namespace.
      *
      * Built-in names and imported modules that were set up at startup are
-     * preserved. Thread-safe.
+     * preserved. Thread-safe.  No-op if interpreter is not ready.
      */
     void reset_namespace();
+
+    /**
+     * @brief Returns true if the Python interpreter is ready and exec() may be called.
+     *
+     * Becomes true after HubScript::hub_thread_fn_() calls init_namespace_(),
+     * and false again after it calls release_namespace_().
+     */
+    [[nodiscard]] bool is_ready() const noexcept;
 
     // -----------------------------------------------------------------------
     // Non-copyable, non-movable singleton
@@ -120,10 +137,34 @@ class PythonInterpreter
     // Internal lifecycle hooks (public so anonymous-namespace startup/shutdown
     // functions defined in the .cpp can call them; not part of the public API)
     // -----------------------------------------------------------------------
-    /// @internal Called by lifecycle startup function.
+    /// @internal Called by lifecycle startup function (no-op in new design).
     void startup_();
-    /// @internal Called by lifecycle shutdown function.
+    /// @internal Called by lifecycle shutdown function (no-op in new design).
     void shutdown_();
+
+    // -----------------------------------------------------------------------
+    // Internal interpreter management (called by HubScript::hub_thread_fn_())
+    // -----------------------------------------------------------------------
+
+    /**
+     * @brief Sets up the persistent `__main__` namespace and marks the interpreter ready.
+     *
+     * **Must be called with the GIL held** from `HubScript::hub_thread_fn_()`,
+     * immediately after `py::scoped_interpreter` is constructed (Py_Initialize done).
+     *
+     * After this call, `is_ready()` returns true and `exec()` is usable.
+     */
+    void init_namespace_();
+
+    /**
+     * @brief Clears the persistent namespace and marks the interpreter not ready.
+     *
+     * **Must be called with the GIL held** from `HubScript::hub_thread_fn_()`,
+     * immediately before `py::scoped_interpreter` is destroyed (Py_Finalize).
+     *
+     * After this call, `is_ready()` returns false and `exec()` returns an error.
+     */
+    void release_namespace_();
 
   private:
     PythonInterpreter();
