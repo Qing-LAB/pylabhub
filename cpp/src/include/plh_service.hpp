@@ -4,9 +4,9 @@
  * @brief Layer 2: Service modules built on plh_base.
  *
  * Provides lifecycle management, file locking, logging, cryptographic utilities,
- * and backoff strategies for concurrency primitives.
+ * backoff strategies, UID generation, ZMQ context, and interactive signal handling.
  * Include this when you need application lifecycle, FileLock, Logger, CryptoUtils,
- * or backoff strategies for spin loops.
+ * UID/UUID utilities, InteractiveSignalHandler, or backoff strategies for spin loops.
  */
 #include "plh_base.hpp"
 
@@ -17,3 +17,7 @@
 #include "utils/logger.hpp"
 #include "utils/script_host.hpp"
 #include "utils/timeout_constants.hpp"
+#include "utils/uid_utils.hpp"
+#include "utils/uuid_utils.hpp"
+#include "utils/interactive_signal_handler.hpp"
+#include "utils/zmq_context.hpp"

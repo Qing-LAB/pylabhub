@@ -1,4 +1,8 @@
 #pragma once
+/**
+ * @file scope_guard.hpp
+ * @brief RAII-style guard that executes a callable on scope exit.
+ */
 
 #include <concepts>
 #include <functional>

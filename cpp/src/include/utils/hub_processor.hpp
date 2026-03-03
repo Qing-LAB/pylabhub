@@ -28,7 +28,7 @@
  * Templates appear only in ProcessorContext<> and set_process_handler<>().
  * Queue construction and all Processor methods are non-template.
  *
- * See docs/HEP/HEP-CORE-0012-Processor-Role.md for design rationale.
+ * See docs/HEP/HEP-CORE-0015-Processor-Binary.md for design rationale.
  */
 #include "pylabhub_utils_export.h"
 #include "utils/hub_queue.hpp"

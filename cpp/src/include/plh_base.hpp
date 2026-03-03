@@ -4,8 +4,8 @@
  * @brief Layer 1: Basic modules built on plh_platform.
  *
  * Provides format_tools, debug_info, and foundational guards: in-process spinlock (SpinGuard),
- * recursion_guard, scope_guard. Also includes module_def for lifecycle module registration.
- * Include this when you need formatting, debug utilities, or basic RAII guards.
+ * recursion_guard, scope_guard. Also includes module_def for lifecycle module registration
+ * and Result<T,E> for error-returning APIs.
  *
  * Spin state (in-process): InProcessSpinState, SpinGuard, make_in_process_spin_state
  * (utils/in_process_spin_state.hpp). Guard performs locking; state owns the 32-byte state.
@@ -31,3 +31,4 @@
 #include "utils/recursion_guard.hpp"
 #include "utils/scope_guard.hpp"
 #include "utils/module_def.hpp"
+#include "utils/result.hpp"

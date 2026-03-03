@@ -5,7 +5,7 @@
 | **HEP**          | `HEP-CORE-0001`                                |
 | **Title**        | A Hybrid (Static & Dynamic) Module Lifecycle   |
 | **Author**       | Quan Qing, AI assistant                        |
-| **Status**       | Implementation Ready                           |
+| **Status**       | Implemented                                    |
 | **Category**     | Core                                           |
 | **Created**      | 2026-01-05                                     |
 | **Updated**      | 2026-02-12                                     |
@@ -22,6 +22,20 @@ All described APIs are implemented in `src/include/utils/lifecycle.hpp`, `src/in
 
 They share the private header `src/utils/service/lifecycle_impl.hpp` (not installed).
 Static and dynamic modules, `LifecycleGuard` (single/multiple/vector constructors), `MakeModDefList`, and all convenience functions are in use. For current plan and priorities elsewhere, see `docs/TODO_MASTER.md` and `docs/todo/`.
+
+### Source file reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/lifecycle.hpp` | L2 (public) | `LifecycleManager`, `LifecycleGuard`, `MakeModDefList`, convenience wrappers |
+| `src/include/utils/module_def.hpp` | L2 (public) | `ModuleDef` builder, `LifecycleCallback` typedef, constants |
+| `src/utils/service/lifecycle_impl.hpp` | internal | `LifecycleManagerImpl`, `InternalGraphNode`, `DynamicModuleStatus` enum |
+| `src/utils/service/lifecycle.cpp` | impl | `ModuleDef` API, `register_module`, `initialize`/`finalize`, log sink |
+| `src/utils/service/lifecycle_topology.cpp` | impl | `buildStaticGraph()`, Kahn's `topologicalSort()`, cycle detection |
+| `src/utils/service/lifecycle_dynamic.cpp` | impl | `loadModule`/`unloadModule`, ref counting, `dynShutdownThreadMain()` |
+| `tests/test_layer1_base/test_module_def.cpp` | test | `ModuleDef` builder validation (name, deps, move semantics) |
+| `tests/test_layer2_service/test_lifecycle.cpp` | test | Static module init/finalize (multi-process workers) |
+| `tests/test_layer2_service/test_lifecycle_dynamic.cpp` | test | Dynamic load/unload, ref counting, async shutdown |
 
 ---
 
@@ -139,6 +153,44 @@ flowchart LR
 ```
 
 Only the **first** `LifecycleGuard` to be constructed becomes the owner (registers modules and calls `InitializeApp`). Its destructor calls `FinalizeApp`. Any later guard is a no-op for registration and finalization.
+
+### Concrete module dependency graph (pylabhub)
+
+The project registers these static modules via `GetLifecycleModule()`. The topological sort
+determines startup order; shutdown runs in reverse.
+
+```mermaid
+flowchart BT
+    Logger["Logger"]
+    FileLock["FileLock"]
+    Crypto["Crypto"]
+    SchemaStore["SchemaStore"]
+
+    FileLock -.->|depends on| Logger
+    SchemaStore -.->|depends on| Logger
+
+    subgraph Binaries["Binary entry points"]
+        direction LR
+        HubShell["hubshell.cpp"]
+        ProdMain["producer_main.cpp"]
+        ConsMain["consumer_main.cpp"]
+        ProcMain["processor_main.cpp"]
+    end
+
+    HubShell -->|LifecycleGuard| Logger
+    HubShell -->|LifecycleGuard| FileLock
+    HubShell -->|LifecycleGuard| Crypto
+    ProdMain -->|LifecycleGuard| Logger
+    ProdMain -->|LifecycleGuard| Crypto
+    ConsMain -->|LifecycleGuard| Logger
+    ConsMain -->|LifecycleGuard| Crypto
+    ProcMain -->|LifecycleGuard| Logger
+    ProcMain -->|LifecycleGuard| Crypto
+```
+
+Each binary constructs a `LifecycleGuard` with its required `ModuleDef` set.
+The topological sort ensures Logger starts before FileLock and SchemaStore (which depend on it).
+Crypto has no dependencies and can start in any position.
 
 ---
 

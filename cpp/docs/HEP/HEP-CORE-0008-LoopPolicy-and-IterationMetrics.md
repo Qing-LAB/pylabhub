@@ -2,27 +2,27 @@
 
 **Status**: Pass 3 complete (2026-02-25) — SlotIterator FixedRate sleep, ProducerOptions/ConsumerOptions loop_policy fields, api.metrics() dict completeness (D4 keys added); **585/585 tests passing** (as of 2026-02-28)
 **Created**: 2026-02-22
-**Area**: DataHub RAII Layer / Actor Framework
-**Depends on**: HEP-CORE-0002 (DataHub), HEP-CORE-0005 (Script Interface), HEP-CORE-0006 (SlotProcessor API)
+**Area**: DataHub RAII Layer / Standalone Binaries
+**Depends on**: HEP-CORE-0002 (DataHub), HEP-CORE-0011 (ScriptHost), HEP-CORE-0006 (SlotProcessor API)
 
 ---
 
 ## 0. Implementation Status
 
-### Pass 1 — Actor-layer LoopTimingPolicy + RoleMetrics (2026-02-23)
+### Pass 1 — Binary-level LoopTimingPolicy + RoleMetrics (2026-02-23)
 
-The actor framework (`actor_host.cpp`) has its own deadline-based pacing loop that
+Each standalone binary's script host has its own deadline-based pacing loop that
 operates **above** the RAII layer. It uses explicit `sleep_until` in the
-`ProducerRoleWorker` while-loops and calls `acquire_write_slot()` / `release_write_slot()`
+producer/consumer while-loops and calls `acquire_write_slot()` / `release_write_slot()`
 directly on the primitive API — it does **not** go through `ctx.slots()` / `SlotIterator`.
 
 What was added:
-- `RoleConfig::LoopTimingPolicy`: `FixedPace` (`next = now() + interval`) / `Compensating` (`next += interval`)
-- `api.loop_overrun_count()` — overrun counter incremented in actor_host.cpp
-- `api.last_cycle_work_us()` — work time measured in actor_host.cpp
-- JSON: `"loop_timing": "fixed_pace" | "compensating"` per role
+- `LoopTimingPolicy`: `FixedPace` (`next = now() + interval`) / `Compensating` (`next += interval`)
+- `api.loop_overrun_count()` — overrun counter incremented in the script host
+- `api.last_cycle_work_us()` — work time measured in the script host
+- JSON: `"loop_timing": "fixed_pace" | "compensating"` per binary config
 
-These actor-layer metrics are supervised (C++ host writes, Python reads).
+These binary-level metrics are supervised (C++ host writes, Python reads).
 
 ### Pass 2 — ContextMetrics Pimpl + timing in acquire/release (2026-02-23)
 
@@ -43,23 +43,23 @@ Three remaining items now complete:
 
 2. **`ProducerOptions::loop_policy` + `period_ms`** and **`ConsumerOptions::loop_policy` + `period_ms`**
    added. `hub::Producer::create()` / `hub::Consumer::connect()` wire `set_loop_policy()`
-   from options at creation time. Actor-layer `set_loop_policy()` call (in `actor_host.cpp`)
-   overrides this if needed (actor role config takes precedence).
+   from options at creation time. Binary-level `set_loop_policy()` call (in the script host)
+   overrides this if needed (binary config takes precedence).
 
 3. **`api.metrics()` dict** now includes all Domain 4 keys: `loop_overrun_count` and
    `last_cycle_work_us` (from `RoleMetrics`) moved outside the `if (cm != nullptr)/else` block
-   so they always contain live actor-layer values regardless of SHM availability.
+   so they always contain live binary-level values regardless of SHM availability.
 
-**Interaction between actor-layer and RAII-layer pacing**: `LoopPolicy` (RAII/Pimpl)
-controls the sleep in `SlotIterator`. `LoopTimingPolicy` (actor-layer, fixed_pace/compensating)
-controls how the actor-host deadline advances after an overrun. The two are complementary
+**Interaction between binary-level and RAII-layer pacing**: `LoopPolicy` (RAII/Pimpl)
+controls the sleep in `SlotIterator`. `LoopTimingPolicy` (binary-level, fixed_pace/compensating)
+controls how the script host deadline advances after an overrun. The two are complementary
 and independent.
 
 ---
 
 ## 1. Motivation
 
-The primary DAQ model in the actor framework is a `with_transaction` session containing
+The primary DAQ model in the standalone binaries is a `with_transaction` session containing
 an indefinite slot-iteration loop:
 
 ```python
@@ -68,7 +68,7 @@ def on_write(slot, flexzone, api) -> bool:
     slot.count += 1
     return True
 
-# C++ side (conceptual — actor framework wires this automatically):
+# C++ side (conceptual — script host wires this automatically):
 with producer.with_transaction() as ctx:
     for slot in ctx.slots():
         call_on_write(slot)
@@ -87,7 +87,7 @@ with producer.with_transaction() as ctx:
 This HEP defines:
 - `LoopPolicy` — how the iterator paces between slot acquisitions
 - `ContextMetrics` — per-context and per-iteration timing state, organized by domain
-- Integration with the actor framework (`api.metrics()` from Python)
+- Integration with the standalone binaries (`api.metrics()` from Python)
 
 ### 1.1 Metric Domain Model
 
@@ -110,8 +110,8 @@ Five natural domains in the stack:
 |--------|-----------------|------------------|---------------|
 | 1. Channel throughput | `slots_written`, `commit_index` | SHM `SharedMemoryHeader` (cross-process) | All parties via SHM read |
 | 2. Acquire/release timing | `last_slot_wait_us`, `iteration_count`, `last_iteration_us`, `max_iteration_us` | `acquire_write_slot()` / `acquire_consume_slot()` in data_block.cpp | DataBlock Pimpl → RAII ctx → Python |
-| 3. Loop scheduling | `overrun_count`, `last_slot_work_us`, `period_ms`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or `actor_host.cpp` (actor path) | DataBlock Pimpl → RAII ctx → Python |
-| 4. Script supervision | `script_error_count`, `slot_valid` | Actor host (Python error paths) | Python only (actor-specific) |
+| 3. Loop scheduling | `overrun_count`, `last_slot_work_us`, `period_ms`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or script host (binary path) | DataBlock Pimpl → RAII ctx → Python |
+| 4. Script supervision | `script_error_count`, `slot_valid` | Script host (Python error paths) | Python only (binary-specific) |
 | 5. Channel topology | `consumer_count`, `last_heartbeat_us` | Broker / heartbeat protocol | Broker; Python via broker query |
 
 This HEP covers **Domains 2 and 3** only. Domain 1 is already in the SHM header.
@@ -121,14 +121,14 @@ Domains 4 and 5 are out of scope.
 `DataBlockConsumer::Impl` (the Pimpl structs). Storing metrics here, rather than inside
 `TransactionContext`, gives two important properties:
 - Metrics survive across `with_transaction()` calls (useful for long-running services).
-- The actor framework can read metrics from `producer_->metrics()` directly, without
+- The script host can read metrics from `producer_->metrics()` directly, without
   needing a `TransactionContext` in scope. `TransactionContext::metrics()` is a
   pass-through reference to the same Pimpl storage.
 
 **Unification via `set_loop_policy()`**: calling `set_loop_policy(FixedRate, period_ms)` on
 the DataBlockProducer/Consumer stores the timing target in the Pimpl. The primitive
 `acquire_write_slot()` implementation then detects overruns using that target. Since both
-the actor path (primitive calls in actor_host.cpp) and the RAII path (via SlotIterator)
+the binary path (primitive calls in the script host) and the RAII path (via SlotIterator)
 go through `acquire_write_slot()`, the measurement is shared — no duplication.
 
 ---
@@ -163,7 +163,7 @@ void set_loop_policy(LoopPolicy policy,
 `period` is ignored when `policy == MaxRate`.
 For `FixedRate`, `period = 0ms` is treated as `MaxRate` (no sleep).
 
-**JSON config** (`actor_config`):
+**JSON config** (per-binary config):
 
 ```json
 "loop_policy": "fixed_rate",
@@ -171,7 +171,7 @@ For `FixedRate`, `period = 0ms` is treated as `MaxRate` (no sleep).
 ```
 
 Both fields are optional; `loop_policy` defaults to `"max_rate"` and `period_ms` defaults to `0`.
-The existing `interval_ms` field controls the actor-layer deadline loop (separate concern);
+The existing `interval_ms` field controls the binary-level deadline loop (separate concern);
 `loop_policy`/`period_ms` control the DataBlock Pimpl overrun detection and (in a future pass)
 the RAII `SlotIterator` sleep.
 
@@ -298,8 +298,8 @@ operator++() called:
 construction. It does **not** update ContextMetrics directly — that happens inside
 `acquire_write_slot()`.
 
-For the **actor path**: the sleep is in `actor_host.cpp` (deadline-based loop with
-`LoopTimingPolicy`). The actor calls `acquire_write_slot()` directly. Overrun detection
+For the **binary path**: the sleep is in the script host (deadline-based loop with
+`LoopTimingPolicy`). The script host calls `acquire_write_slot()` directly. Overrun detection
 still fires inside `acquire_write_slot()` because `set_loop_policy()` has been called.
 This is the unification point: regardless of which caller runs the timing loop, the
 overrun measurement occurs at `acquire_write_slot()` — the same code path.
@@ -339,13 +339,13 @@ For the single-slot break pattern:
 
 ---
 
-## 6. Actor Framework Integration
+## 6. Binary Script API Integration
 
 ### 6.1 Python `api.metrics()` dict
 
-In `actor_module.cpp`, `api.metrics()` assembles a dict from two sources:
+In each binary's API module, `api.metrics()` assembles a dict from two sources:
 - **Domains 2 + 3**: from `producer_->metrics()` (DataBlock Pimpl)
-- **Domain 4** (actor-specific): from `RoleMetrics` in `ActorRoleAPI`
+- **Domain 4** (binary-specific): from script host metrics
 
 ```python
 api.metrics() -> dict:
@@ -362,9 +362,9 @@ api.metrics() -> dict:
     "last_slot_work_us":  int,   # time from acquire to release (us)
     "period_ms":          int,   # configured target period (0 = MaxRate)
 
-    # Domain 4 — Script supervision (from RoleMetrics, actor-specific)
+    # Domain 4 — Script supervision (from script host metrics, binary-specific)
     "script_error_count":  int,  # unhandled Python exceptions in any callback
-    "loop_overrun_count":  int,  # actor write-loop deadline overruns (interval_ms exceeded)
+    "loop_overrun_count":  int,  # write-loop deadline overruns (interval_ms exceeded)
     "last_cycle_work_us":  int,  # µs of active work in the last completed write cycle
 }
 ```
@@ -372,15 +372,15 @@ api.metrics() -> dict:
 `overrun_count` (D3) and `loop_overrun_count` (D4) measure different things:
 - D3: DataBlock Pimpl detects start-to-start acquisition interval exceeded `period_ms`
   (i.e., SHM was slow or write body was slow). Works for both producer and consumer.
-- D4: Actor host measures actor write-loop deadline was already past when checked
-  (i.e., Python `on_iteration` callback was slow relative to `interval_ms`).
-  Producer-only. Requires `interval_ms > 0` in RoleConfig.
+- D4: Script host measures write-loop deadline was already past when checked
+  (i.e., Python callback was slow relative to `interval_ms`).
+  Producer-only. Requires `interval_ms > 0` in config.
 
 **Individual getters**: `api.loop_overrun_count()` and `api.last_cycle_work_us()` on
-`ActorRoleAPI` remain as convenience aliases for the corresponding D4 dict keys.
+the script API remain as convenience aliases for the corresponding D4 dict keys.
 `api.metrics()` is the canonical single-call access for all metric domains.
 
-### 6.2 Config wiring in actor_host.cpp
+### 6.2 Config wiring in script host
 
 After `create_datablock_producer(opts)` / `hub::Consumer::connect(opts)`:
 
@@ -392,25 +392,23 @@ producer_->set_loop_policy(role_cfg_.loop_policy, role_cfg_.period_ms);
 producer_->clear_metrics();
 ```
 
-### 6.3 RoleConfig additions
+### 6.3 Config additions
 
-`actor_config.hpp` adds two fields alongside the existing `interval_ms`:
+Each binary's config adds two fields alongside the existing `interval_ms`:
 
 ```cpp
-struct RoleConfig {
-    // existing: actor-layer deadline loop
-    int interval_ms{0};
-    LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedPace};
+// In producer_config.hpp / consumer_config.hpp:
+int interval_ms{0};                           // binary-level deadline loop
+LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedPace};
 
-    // new: DataBlock-layer pacing (HEP-CORE-0008)
-    hub::LoopPolicy          loop_policy{hub::LoopPolicy::MaxRate};
-    std::chrono::milliseconds period_ms{0};
-};
+// DataBlock-layer pacing (HEP-CORE-0008)
+hub::LoopPolicy          loop_policy{hub::LoopPolicy::MaxRate};
+std::chrono::milliseconds period_ms{0};
 ```
 
-`interval_ms` drives the actor-level deadline loop in `actor_host.cpp`.
+`interval_ms` drives the binary-level deadline loop in the script host.
 `loop_policy`/`period_ms` drive the DataBlock Pimpl overrun detection in `acquire_write_slot()`.
-They are independent: a role can have `interval_ms=10` (actor sleep) and
+They are independent: a binary can have `interval_ms=10` (script host sleep) and
 `loop_policy=fixed_rate, period_ms=10` (DataBlock overrun tracking) simultaneously.
 
 ---
@@ -424,10 +422,10 @@ They are independent: a role can have `interval_ms=10` (actor sleep) and
 | `src/include/utils/data_block.hpp` | `LoopPolicy` enum; `ContextMetrics` struct; `set_loop_policy()`, `metrics()`, `clear_metrics()` declarations on DataBlockProducer/Consumer | D2+D3 |
 | `src/utils/data_block.cpp` | Pimpl gains `ContextMetrics`, `t_iter_start_`, `t_last_acquire_`, `loop_policy_`, `period_ms_`; timing in `acquire_write_slot()` / `release_write_slot()` / `acquire_consume_slot()` / `release_consume_slot()` | D2+D3 |
 | `src/include/utils/transaction_context.hpp` | `metrics()` pass-through (const ref to Pimpl); `now()` static; `update_context_elapsed()`, `increment_overrun()` manual helpers | D2+D3 |
-| `src/actor/actor_config.hpp` | `loop_policy` + `period_ms` in `RoleConfig` | config |
-| `src/actor/actor_config.cpp` | Parse `loop_policy` + `period_ms` JSON | config |
-| `src/actor/actor_host.cpp` | Wire `set_loop_policy()` + `clear_metrics()` after producer/consumer create | D3 |
-| `src/actor/actor_module.cpp` | `api.metrics()` → dict from DataBlock Pimpl + `ActorRoleAPI.script_error_count` | D2+D3+D4 |
+| `src/producer/producer_config.hpp` | `loop_policy` + `period_ms` in config | config |
+| `src/producer/producer_config.cpp` | Parse `loop_policy` + `period_ms` JSON | config |
+| `src/producer/producer_script_host.cpp` | Wire `set_loop_policy()` + `clear_metrics()` after producer create | D3 |
+| `src/producer/producer_api.cpp` | `api.metrics()` → dict from DataBlock Pimpl + script host counters | D2+D3+D4 |
 
 ### Pass 3 (2026-02-25)
 
@@ -438,8 +436,8 @@ They are independent: a role can have `interval_ms=10` (actor sleep) and
 | `src/utils/hub_producer.cpp` | Wire `set_loop_policy()` in `create_from_parts()` from opts | config |
 | `src/include/utils/hub_consumer.hpp` | `ConsumerOptions::loop_policy` + `period_ms` | config |
 | `src/utils/hub_consumer.cpp` | Wire `set_loop_policy()` in `connect_from_parts()` from opts | config |
-| `src/actor/actor_api.cpp` | Add `loop_overrun_count` + `last_cycle_work_us` to metrics dict; D4 block moved outside if/else so always live | D4 |
-| `src/actor/actor_module.cpp` | Updated `metrics()` docstring to document D4 keys | doc |
+| `src/producer/producer_api.cpp` | `loop_overrun_count` + `last_cycle_work_us` in metrics dict; D4 block always live | D4 |
+| (analogous for consumer/processor APIs) | Same D4 keys in respective API modules | doc |
 | `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` | New: 5 tests (ProducerMetricsAccumulate, ProducerMetricsClear, ProducerFixedRateOverrunDetect, SlotIteratorFixedRatePacing, ConsumerMetricsAccumulate) | — |
 | `tests/test_layer3_datahub/CMakeLists.txt` | Added new test file under RAII section | — |
 
@@ -461,8 +459,8 @@ ctest --test-dir build -R "DatahubLoopPolicy" --output-on-failure
 # → 5/5 tests pass (ProducerMetricsAccumulate, ProducerMetricsClear,
 #    ProducerFixedRateOverrunDetect, SlotIteratorFixedRatePacing, ConsumerMetricsAccumulate)
 
-# Layer 4 actor metrics tests (api.metrics() dict completeness):
-ctest --test-dir build -R "ActorRoleMetrics" --output-on-failure
+# Layer 4 binary metrics tests (api.metrics() dict completeness):
+ctest --test-dir build -R "ProducerConfig|ConsumerConfig|ProcessorConfig" --output-on-failure
 
 # Manual RAII path timing verification:
 # set_loop_policy(FixedRate, 30ms) on DataBlockProducer
@@ -475,10 +473,53 @@ ctest --test-dir build -R "ActorRoleMetrics" --output-on-failure
 
 ---
 
-## 9. Related Documents
+## 9. Source File Reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/data_block.hpp` | L3 (public) | `LoopPolicy` enum, `ContextMetrics` struct, `set_loop_policy()`, `metrics()` |
+| `src/include/utils/data_block_policy.hpp` | L3 (public) | `LoopPolicy` enum definition |
+| `src/include/utils/transaction_context.hpp` | L3 (public) | `TransactionContext::metrics()` pass-through to Pimpl |
+| `src/utils/shm/data_block.cpp` | impl | Timing in `acquire_write_slot()` / `release_write_slot()`, overrun detection |
+| `src/producer/producer_config.hpp` | L4 | `loop_policy`, `period_ms`, `loop_timing` config fields |
+| `src/consumer/consumer_config.hpp` | L4 | Same config fields for consumer |
+| `src/producer/producer_api.cpp` | L4 | `api.metrics()` dict assembly (D2+D3+D4) |
+| `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` | test | 5 tests: metrics accumulate/clear, overrun detect, SlotIterator pacing |
+
+### Metrics Data Flow
+
+```mermaid
+flowchart TB
+    subgraph D1["Domain 1: Channel Throughput"]
+        SHM["SharedMemoryHeader\n(slots_written, commit_index)"]
+    end
+
+    subgraph D2D3["Domains 2+3: Timing + Scheduling"]
+        Acquire["acquire_write_slot()\n• last_slot_wait_us\n• last_iteration_us\n• overrun_count"]
+        Release["release_write_slot()\n• last_slot_work_us"]
+        Pimpl["DataBlock Pimpl\n(ContextMetrics storage)"]
+    end
+
+    subgraph D4["Domain 4: Script Supervision"]
+        ScriptHost["Script Host\n• script_error_count\n• loop_overrun_count\n• last_cycle_work_us"]
+    end
+
+    subgraph API["Python API"]
+        MetricsDict["api.metrics() → dict\n(all domains merged)"]
+    end
+
+    Acquire --> Pimpl
+    Release --> Pimpl
+    Pimpl -->|"const ref"| MetricsDict
+    ScriptHost --> MetricsDict
+    SHM -.->|"read via SHM"| MetricsDict
+```
+
+---
+
+## 10. Related Documents
 
 - HEP-CORE-0002: DataHub FINAL — SHM layout and slot state machine
-- HEP-CORE-0005: Script Interface Framework — Python callback model
+- HEP-CORE-0011: ScriptHost Abstraction Framework — Python callback model
 - HEP-CORE-0006: SlotProcessor API — C++ RAII transaction layer
 - HEP-CORE-0009: Policy Reference — all policy enums in one place
-- `docs/todo/RAII_LAYER_TODO.md` — LoopPolicy listed as backlog item

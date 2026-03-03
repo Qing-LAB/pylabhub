@@ -3,7 +3,7 @@
 | **HEP**          | `HEP-CORE-0004`                                |
 | **Title**        | High-Performance Asynchronous Logger           |
 | **Author**       | Quan Qing, AI assistant                        |
-| **Status**       | Implementation Ready                           |
+| **Status**       | Implemented                                    |
 | **Category**     | Core                                           |
 | **Created**      | 2026-01-30                                     |
 | **Updated**      | 2026-02-12                                     |
@@ -14,6 +14,29 @@
 ## Implementation status
 
 All described APIs and sinks are implemented in `src/include/utils/logger.hpp`, `src/utils/logging/logger.cpp`, and `src/utils/logging/logger_sinks/`. Async queue, sync variants, sink abstraction (Console, File, RotatingFile, Syslog, EventLog), and lifecycle integration are in use. For current plan and priorities, see `docs/TODO_MASTER.md` and `docs/todo/`.
+
+### Source file reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/logger.hpp` | L2 (public) | `Logger` singleton, `Level` enum, macros (`LOGGER_*`, `LOGGER_*_SYNC`, `LOGGER_*_RT`) |
+| `src/include/utils/logger_sinks/sink.hpp` | L2 (public) | `Sink` abstract base, `LogMessage` struct |
+| `src/include/utils/logger_sinks/console_sink.hpp` | L2 (public) | `ConsoleSink` — stderr output |
+| `src/include/utils/logger_sinks/file_sink.hpp` | L2 (public) | `FileSink` — single-file append with optional flock |
+| `src/include/utils/logger_sinks/base_file_sink.hpp` | L2 (public) | `BaseFileSink` — cross-platform file I/O (POSIX fd / Windows HANDLE) |
+| `src/include/utils/logger_sinks/rotating_file_sink.hpp` | L2 (public) | `RotatingFileSink` — size-based rotation with numbered backups |
+| `src/include/utils/logger_sinks/syslog_sink.hpp` | L2 (public) | `SyslogSink` — POSIX syslog (conditional compile) |
+| `src/include/utils/logger_sinks/event_log_sink.hpp` | L2 (public) | `EventLogSink` — Windows Event Log (conditional compile) |
+| `src/utils/logging/logger.cpp` | impl | `Logger::Impl`, worker thread, command queue, `CallbackDispatcher` |
+| `src/utils/logging/logger_sinks/sink.cpp` | impl | `format_logmsg()`, `level_to_string_internal()` |
+| `src/utils/logging/logger_sinks/base_file_sink.cpp` | impl | Cross-platform open/write/close (POSIX `open(2)` / Windows `CreateFileW`) |
+| `src/utils/logging/logger_sinks/file_sink.cpp` | impl | `FileSink::write()` delegation to `BaseFileSink` |
+| `src/utils/logging/logger_sinks/rotating_file_sink.cpp` | impl | Rotation logic: close, rename backups, reopen |
+| `src/utils/logging/logger_sinks/syslog_sink.cpp` | impl | `openlog()`/`syslog()`/`closelog()` (POSIX) |
+| `src/utils/logging/logger_sinks/event_log_sink.cpp` | impl | `RegisterEventSourceW()`/`ReportEventW()` (Windows) |
+| `tests/test_layer2_service/test_logger.cpp` | test | 14 test cases (async, sync, rotation, drop, stress, flock) |
+| `tests/test_layer2_service/workers/logger_workers.h` | test | Worker declarations for multi-process tests |
+| `tests/test_layer2_service/workers/logger_workers.cpp` | test | Worker implementations |
 
 ---
 
@@ -186,6 +209,30 @@ classDiagram
 | **Runtime format** | `LOGGER_INFO_RT(fmt, ...)` | Dynamic format string; no compile-time check |
 
 All six levels have sync variants: `LOGGER_TRACE_SYNC`, `LOGGER_DEBUG_SYNC`, `LOGGER_INFO_SYNC`, `LOGGER_WARN_SYNC`, `LOGGER_ERROR_SYNC`, `LOGGER_SYSTEM_SYNC`.
+
+### Queue Bounds and Drop Strategy
+
+```mermaid
+flowchart TB
+    Enqueue["enqueue(command)"]
+    CheckSize{"queue.size()"}
+
+    CheckSize -->|"< soft limit\n(max_queue_size)"| Accept["Accept: enqueue normally"]
+    CheckSize -->|"≥ soft limit\n< hard limit (2×)"| DropLog["Drop: log messages only\nControl commands still accepted"]
+    CheckSize -->|"≥ hard limit (2×)"| DropAll["Drop: all commands\n(emergency backpressure)"]
+
+    Accept --> Worker["Worker thread dequeues"]
+    DropLog --> Counter["Increment drop counter"]
+    DropAll --> Counter
+    Counter --> Recovery{"Queue drains\nbelow soft limit?"}
+    Recovery -->|Yes| RecoveryMsg["Worker emits recovery message:\n'Dropped N messages'"]
+
+    Enqueue --> CheckSize
+```
+
+The tiered strategy ensures that control operations (sink switches, flush, shutdown) can still
+be processed during burst scenarios. The `get_total_dropped_since_sink_switch()` counter
+tracks accumulated drops for monitoring.
 
 ---
 

@@ -6,6 +6,47 @@
 
 ## Archive batches
 
+### 2026-03-03 (HEP-0005 Archived + Actor Terminology Scrub)
+
+Session 0 housekeeping for the comprehensive HEP document review plan. Two activities:
+
+1. **HEP-CORE-0005 archived** — Script Interface Abstraction Framework superseded by
+   HEP-CORE-0011 (ScriptHost Abstraction Framework with RoleHostCore + PythonRoleHostBase).
+2. **Actor terminology scrub** — ~185 "actor" references replaced across 11 HEP files with
+   current standalone binary terminology. The `pylabhub-actor` multi-role container was
+   eliminated 2026-03-01; this pass ensures all HEP documents reflect the current architecture.
+
+**Archived to `docs/archive/transient-2026-03-03/`:**
+
+| Archived | Reason |
+|---|---|
+| `HEP-CORE-0005-script-interface-framework.md` | Superseded by HEP-CORE-0011; abstract `IScriptEngine`/`IScriptContext` replaced by `RoleHostCore` + `PythonRoleHostBase` |
+
+**HEP files updated (actor scrub):**
+
+| Document | Key changes |
+|---|---|
+| HEP-CORE-0002 | Identity fields (`producer_uid`), API layers, connection policy, embedded-mode refs |
+| HEP-CORE-0006 | Implementation note rewritten for standalone binaries |
+| HEP-CORE-0008 | Area, config, metrics domain, file references — all actor → binary/script host |
+| HEP-CORE-0009 | Policy interaction diagram, default stack, config headers — actor → per-binary |
+| HEP-CORE-0011 | Abstract, motivation, threading references |
+| HEP-CORE-0013 | UID format (PROD-/CONS-/PROC-), provenance chain, vault section, code snippets |
+| HEP-CORE-0015 | Area, identity, API, GIL, vault note — actor comparisons removed |
+| HEP-CORE-0016 | Area, depends-on, motivation, config references |
+| HEP-CORE-0017 | Processor role worker → standalone binary |
+| HEP-CORE-0018 | ActorVault legacy note clarified |
+
+**DOC_STRUCTURE.md updated:** HEP index expanded to 0001–0020; statuses refreshed for
+0011, 0015, 0016, 0018, 0019, 0020.
+
+**Remaining actor references (intentional):**
+- HEP-0017 "Updated" field (historical note)
+- HEP-0018 §1 Motivation (explains *why* actor was eliminated)
+- HEP-0018 Supersedes table (historical cross-reference)
+
+---
+
 ### 2026-03-02 (Completed TODO files — RAII, Memory Layout, Security)
 
 Routine quarterly-style cleanup: three subtopic TODO files whose tracked work is fully complete

@@ -71,6 +71,35 @@ through the broker as the single aggregation point.
 
 ## 3. Architecture
 
+```mermaid
+graph LR
+    subgraph Participants
+        PROD["Producer<br/>counters + custom KV"]
+        PROC["Processor<br/>counters + custom KV"]
+        CONS["Consumer<br/>counters + custom KV"]
+    end
+
+    subgraph "BrokerService"
+        MS["MetricsStore"]
+        CR["ChannelRegistry"]
+    end
+
+    subgraph Query
+        ADMIN["AdminShell / CLI / Monitor"]
+    end
+
+    SHM["SharedMemoryHeader<br/>(DataBlockMetrics)"]
+
+    PROD -->|"HEARTBEAT_REQ<br/>+ metrics{}"| MS
+    PROC -->|"HEARTBEAT_REQ<br/>+ metrics{}"| MS
+    CONS -->|"METRICS_REPORT_REQ"| MS
+    SHM -.->|"SHM direct read<br/>(on query)"| MS
+    ADMIN -->|"METRICS_REQ"| MS
+    MS -->|"METRICS_ACK"| ADMIN
+```
+
+**ASCII reference** (original diagram):
+
 ```
 ┌─────────────┐   HEARTBEAT_REQ          ┌──────────────┐
 │  Producer    │  + { metrics: {...} }    │              │
@@ -340,7 +369,52 @@ to participants or alters behavior based on metric values.
 
 ---
 
-## 8. Implementation Phases
+## 8. Data Flow Summary
+
+```mermaid
+sequenceDiagram
+    participant Script as Python Script
+    participant API as ProducerAPI / ProcessorAPI
+    participant ZMQ as zmq_thread_
+    participant Broker as BrokerService
+    participant Store as MetricsStore
+    participant Admin as AdminShell
+
+    Script->>API: report_metric("key", value)
+    Note over API: custom_metrics_ map<br/>(spinlock-guarded)
+
+    loop Every heartbeat interval
+        ZMQ->>API: snapshot_and_clear_metrics()
+        API-->>ZMQ: {base counters + custom KV}
+        ZMQ->>Broker: HEARTBEAT_REQ + metrics{}
+        Broker->>Store: update(channel, uid, metrics)
+    end
+
+    Admin->>Broker: METRICS_REQ(channel)
+    Broker->>Store: lookup(channel)
+    opt SHM available
+        Broker->>Broker: slot_rw_get_metrics() from SHM
+    end
+    Broker-->>Admin: METRICS_ACK(channels{...})
+```
+
+---
+
+## 9. Implementation Phases
+
+```mermaid
+graph LR
+    P1["Phase 1<br/>C++ infra"] --> P2["Phase 2<br/>Heartbeat ext."]
+    P2 --> P3["Phase 3<br/>Consumer report"]
+    P3 --> P4["Phase 4<br/>Query API"]
+    P4 --> P5["Phase 5<br/>Python bindings"]
+
+    style P1 fill:#f9f,stroke:#333
+    style P2 fill:#f9f,stroke:#333
+    style P3 fill:#f9f,stroke:#333
+    style P4 fill:#f9f,stroke:#333
+    style P5 fill:#f9f,stroke:#333
+```
 
 ### Phase 1: C++ infrastructure
 
@@ -380,7 +454,7 @@ to participants or alters behavior based on metric values.
 
 ---
 
-## 9. Non-Goals
+## 10. Non-Goals
 
 - **Time-series storage**: The broker holds only the latest snapshot. Historical
   data is the responsibility of external tools.
@@ -394,7 +468,7 @@ to participants or alters behavior based on metric values.
 
 ---
 
-## 10. Relationship to Existing Metrics
+## 11. Relationship to Existing Metrics
 
 | Existing mechanism | Status after this HEP |
 |---|---|
@@ -402,3 +476,24 @@ to participants or alters behavior based on metric values.
 | Per-API counters (`in_received`, etc.) | **Extended** — now reported to broker via heartbeat/metrics report. |
 | `iteration_count_` (internal) | **Included** in base metrics — proves liveness quantitatively. |
 | SHM heartbeat pool (consumer PIDs in header) | **Unchanged** — data-plane liveness, orthogonal to metrics plane. |
+
+---
+
+## 12. Source File Reference
+
+Files that will be modified or created when implementing this HEP:
+
+| Component | Source File | Impact |
+|-----------|------------|--------|
+| **ProducerAPI** | `src/producer/producer_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
+| **ConsumerAPI** | `src/consumer/consumer_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
+| **ProcessorAPI** | `src/processor/processor_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
+| **BrokerService** | `src/utils/ipc/broker_service.cpp` | Add `MetricsStore`, `handle_metrics_*()` |
+| **Messenger protocol** | `src/utils/ipc/messenger_protocol.cpp` | Add `METRICS_REPORT_REQ`, `METRICS_REQ/ACK` |
+| **Messenger** | `src/include/utils/messenger.hpp` | Extend `enqueue_heartbeat()` with metrics param |
+| **DataBlockMetrics** | `src/include/plh_datahub.hpp` | Read-only (already implemented) |
+| **ProducerScriptHost** | `src/producer/producer_script_host.cpp` | zmq_thread_ snapshot integration |
+| **ConsumerScriptHost** | `src/consumer/consumer_script_host.cpp` | zmq_thread_ periodic METRICS_REPORT_REQ |
+| **ProcessorScriptHost** | `src/processor/processor_script_host.cpp` | zmq_thread_ snapshot integration |
+| **Python bindings** | `src/producer/producer_api.cpp`, etc. | `m.def("report_metric", ...)` |
+| **Tests** | `tests/test_layer3_datahub/`, `tests/test_layer4_*/` | New test suites for metrics |

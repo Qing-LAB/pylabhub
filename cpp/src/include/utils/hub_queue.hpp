@@ -10,7 +10,7 @@
  *   - ShmQueue  — wraps DataBlockConsumer (read) or DataBlockProducer (write)
  *   - ZmqQueue  — wraps a raw ZMQ PULL (read) or PUSH (write) socket
  *
- * See docs/HEP/HEP-CORE-0012-Processor-Role.md for design rationale.
+ * See docs/HEP/HEP-CORE-0015-Processor-Binary.md for design rationale.
  */
 #include "pylabhub_utils_export.h"
 

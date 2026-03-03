@@ -5,7 +5,7 @@
 | **HEP**          | `HEP-CORE-0002`                                 |
 | **Title**        | Data Exchange Hub — High-Performance IPC Framework |
 | **Author**       | Quan Qing, AI assistant                         |
-| **Status**       | Implementation Ready                            |
+| **Status**       | Implemented                                     |
 | **Category**     | Core                                            |
 | **Created**      | 2026-01-07                                      |
 | **Finalized**    | 2026-02-08                                      |
@@ -18,16 +18,16 @@
 
 This is the **authoritative, implementation-ready specification** for the Data Exchange Hub, consolidating all design decisions from the review process. This single document supersedes all previous drafts and working documents (now archived in `docs/archive/data-hub/`).
 
-**Design Maturity:** 70% complete
-- ✅ 8 critical design tasks completed
-- ⚠️ 1 remaining task (P9: Schema Validation - detailed in Section 12)
-- 🚀 Ready for prototype implementation
+**Design Maturity:** 100% complete
+- All 9 critical design tasks completed (P9 Schema Validation implemented via HEP-CORE-0016)
+- 750/750 tests passing as of 2026-03-03
+- Four standalone binaries operational (hubshell, producer, consumer, processor)
 
-**Confidence Level:** High (90%+)
-- Core architecture validated
-- Synchronization model proven
-- Memory ordering correct
-- ABI stability ensured
+**Confidence Level:** High (95%+)
+- Core architecture validated and in production use
+- Synchronization model proven (TOCTTOU, PID-based recovery)
+- Memory ordering correct (ThreadSanitizer verified)
+- ABI stability ensured (Pimpl throughout)
 
 ### Implementation status (sync with TODO_MASTER)
 
@@ -125,9 +125,9 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 
 ### 1.4 Production Readiness
 
-**Status:** Implementation-ready with 1 remaining design task
+**Status:** Fully implemented — all 9 design tasks complete.
 
-**Completed (8/9 tasks):**
+**Completed (9/9 tasks):**
 - P1: Ring Buffer Policy (backpressure, queue full/empty detection)
 - P2: Messenger Thread Safety (async command queue; ZMQ socket single-threaded in worker)
 - P3: Checksum Policy (Manual vs Enforced)
@@ -136,19 +136,8 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 - P6: Broker + Heartbeat (minimal protocol, peer-to-peer)
 - P7: Transaction API (lambda-based RAII)
 - P8: Error Recovery (diagnostics, PID checks)
+- P9: Schema Validation — implemented via Named Schema Registry (HEP-CORE-0016, all 5 phases)
 - P10: Observability (256-byte metrics, automatic tracking)
-
-**Remaining (1/9 task):**
-- P9: Schema Validation (hash computation, broker registry, compatibility rules)
-  - **Effort:** 1-2 days design + 1-2 days implementation
-  - **Why Critical:** Prevents ABI mismatches and silent data corruption
-  - **Detailed Specification:** Section 12
-
-**Timeline to Production:** ~5 weeks
-- Week 1: Complete P9 design, freeze API
-- Week 2-3: Core implementation (~1,950 lines)
-- Week 4: Testing and validation (~800 lines tests)
-- Week 5: Documentation and deployment
 
 ### 1.5 Design Confidence
 
@@ -654,7 +643,7 @@ struct alignas(4096) SharedMemoryHeader {
     // interaction. See HEP-CORE-0013 for the full provenance chain and verification.
     char hub_uid[40];       // Hub unique ID (HUB-<name>-<8hex>, null-terminated)
     char hub_name[64];      // Hub display name (null-terminated)
-    char producer_uid[40];  // Producer unique ID (ACTOR-<name>-<8hex>)
+    char producer_uid[40];  // Producer unique ID (PROD-<name>-<8hex>)
     char producer_name[64]; // Producer display name (null-terminated)
 
     // === SharedSpinLock States — 8 x 32 bytes = 256 bytes ===
@@ -693,8 +682,8 @@ fields that the producer writes into the header's Channel Identity block at crea
 |---|---|---|
 | `hub_uid` | `HubConfig::hub_uid()` | Identify managing hub (empty outside hub context) |
 | `hub_name` | `HubConfig::hub_name()` | Human-readable hub name |
-| `producer_uid` | `ProducerOptions::actor_uid` | Identify creating actor/process |
-| `producer_name` | `ProducerOptions::actor_name` | Human-readable producer name |
+| `producer_uid` | `ProducerOptions::producer_uid` | Identify creating producer/process |
+| `producer_name` | `ProducerOptions::producer_name` | Human-readable producer name |
 | `flexzone_schema_name` | Role FlexZone schema | Used to derive `flexzone_schema_hash` |
 | `datablock_schema_name` | Role DataBlock schema | Used to derive `datablock_schema_hash` |
 
@@ -1230,13 +1219,35 @@ The DataHub exposes four abstraction layers from the C ABI up to the script inte
 Each higher layer wraps and restricts the layer below it; users should program at the
 highest layer that meets their needs.
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph BT
+    L0["L0: C Interface (ABI-stable)<br/>slot_rw_coordinator.h<br/>C, FFI, language bridges"]
+    L1["L1: DataBlockProducer / DataBlockConsumer<br/>data_block.hpp<br/>C++ advanced (manual acquire/release)"]
+    L2a["L2a: TransactionContext + SlotIterator<br/>transaction_context.hpp<br/>C++ recommended (RAII, exception-safe)"]
+    L2b["L2b: hub::Producer / Consumer / Queue<br/>hub_producer.hpp, hub_queue.hpp<br/>Framework / binary integration"]
+    L3["L3: Script Interface<br/>ProducerAPI / ConsumerAPI / ProcessorAPI<br/>Python scripts (HEP-0011, -0015, -0018)"]
+
+    L0 --> L1
+    L1 --> L2a
+    L1 --> L2b
+    L2a --> L3
+    L2b --> L3
+
+    style L0 fill:#3d2817
+    style L1 fill:#2a4a2a
+    style L2a fill:#2a4a2a
+    style L2b fill:#2a4a2a
+    style L3 fill:#1e3a5f
+```
+
 | Layer | Name | Header / Entry Point | Audience |
 |-------|------|----------------------|----------|
 | **L0** | C Interface (ABI-stable) | `slot_rw_coordinator.h` | C, FFI, language bridges |
 | **L1** | DataBlockProducer/Consumer | `data_block.hpp` | C++ application code (advanced) |
 | **L2a** | RAII/TransactionContext | `transaction_context.hpp` | C++ application code (recommended) |
-| **L2b** | Slot-Processor (HEP-CORE-0006) | `hub_producer.hpp` | Framework / actor integration |
-| **L3** | Actor Script Interface | actor Python API | Python scripts (HEP-CORE-0010) |
+| **L2b** | Slot-Processor (HEP-CORE-0006) | `hub_producer.hpp` | Framework / binary integration |
+| **L3** | Script Interface | Binary Python APIs | Python scripts (HEP-CORE-0011, -0015, -0018) |
 
 This section documents **L0** (C Interface). See **§6** for the RAII layer (L1/L2a/L2b).
 ### 5.2 Layer 0: C Interface (ABI-Stable)
@@ -1461,6 +1472,65 @@ entry point.
 - `#include "utils/data_block.hpp"` — `DataBlockProducer`, `DataBlockConsumer`, handles
 - `#include "plh_datahub.hpp"` — Layer 3 umbrella (all of the above)
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+classDiagram
+    class DataBlockProducer {
+        +with_transaction~F,D~(timeout, lambda)
+        +acquire_write_slot(timeout) SlotWriteHandle
+        +set_loop_policy(policy, period_ms)
+        +flexible_zone~T~(index) T&
+        +update_checksum_flexible_zone()
+        +metrics() ContextMetrics
+    }
+    class DataBlockConsumer {
+        +with_transaction~F,D~(timeout, lambda)
+        +acquire_consume_slot(timeout) SlotConsumeHandle
+        +slot_iterator() DataBlockSlotIterator
+        +flexible_zone~T~(index) const T&
+        +metrics() ContextMetrics
+    }
+    class TransactionContext~F,D,IsWrite~ {
+        +flexzone() ZoneRef
+        +slots(timeout) SlotIterator
+        +publish()
+        +update_heartbeat()
+        +metrics() ContextMetrics
+    }
+    class SlotIterator~D,IsWrite~ {
+        +begin() iterator
+        +end() sentinel
+        -auto_publish on normal exit
+        -rollback on exception
+    }
+    class SlotWriteHandle {
+        +buffer_span() span
+        +commit(bytes)
+        ~releases slot on destruction
+    }
+    class SlotConsumeHandle {
+        +buffer_span() span
+        ~releases slot on destruction
+    }
+    class HubProducer["hub::Producer"] {
+        +start_embedded()
+        +handle_peer_events_nowait()
+        +create_channel(config)
+    }
+    class HubConsumer["hub::Consumer"] {
+        +start_embedded()
+        +connect_channel(name)
+    }
+
+    DataBlockProducer --> TransactionContext : creates
+    DataBlockConsumer --> TransactionContext : creates
+    TransactionContext --> SlotIterator : ctx.slots()
+    SlotIterator --> SlotWriteHandle : yields (write)
+    SlotIterator --> SlotConsumeHandle : yields (read)
+    HubProducer --> DataBlockProducer : owns
+    HubConsumer --> DataBlockConsumer : owns
+```
+
 ---
 
 ### 6.1 Design Guarantees
@@ -1664,17 +1734,17 @@ with `Messenger` in a unified lifecycle.
 **hub::Producer** manages:
 - DataBlock creation + broker registration (REG_REQ/REG_ACK)
 - `peer_thread`: ROUTER ctrl socket, HELLO/BYE protocol with consumers
-- Embedded-mode API: `Producer::start_embedded()` + `Producer::handle_peer_events_nowait()` for actor integration (HEP-CORE-0010)
+- Embedded-mode API: `Producer::start_embedded()` + `Producer::handle_peer_events_nowait()` for script host integration (HEP-CORE-0015, -0018)
 
 **hub::Consumer** manages:
 - Broker discovery (DISC_REQ/DISC_ACK), DataBlock attach, consumer registration (CONSUMER_REG_REQ)
 - `data_thread`: slot notification via ZMQ
 - `ctrl_thread`: DEALER ctrl socket, HELLO/BYE protocol
 - `shm_thread`: slot acquisition and delivery
-- Embedded-mode API: `Consumer::start_embedded()` for actor integration (HEP-CORE-0010)
+- Embedded-mode API: `Consumer::start_embedded()` for script host integration (HEP-CORE-0015, -0018)
 
-Configuration: `ProducerOptions` / `ConsumerOptions` carry identity fields (`actor_name`,
-`actor_uid`, `consumer_uid`, `consumer_name`) forwarded to the broker at registration.
+Configuration: `ProducerOptions` / `ConsumerOptions` carry identity fields (`producer_name`,
+`producer_uid`, `consumer_uid`, `consumer_name`) forwarded to the broker at registration.
 
 **Headers:** `utils/hub_producer.hpp`, `utils/hub_consumer.hpp`
 
@@ -1683,7 +1753,7 @@ Configuration: `ProducerOptions` / `ConsumerOptions` carry identity fields (`act
 ### 6.9 Slot-Processor API (HEP-CORE-0006)
 
 The **Pluggable Slot-Processor API** provides an alternative to `with_transaction` for
-actor-style loops and user-customized real-time data handlers. There are two modes:
+framework-driven loops and user-customized real-time data handlers. There are two modes:
 
 | Mode | Entry Point | Who drives the slot loop |
 |------|-------------|--------------------------|
@@ -1708,9 +1778,10 @@ flexible zone access + Messenger handle + shutdown signal.
 
 > **Full specification: [HEP-CORE-0006](HEP-CORE-0006-SlotProcessor-API.md)**
 >
-> The actor layer (`ProducerRoleWorker`, `ConsumerRoleWorker`) in HEP-CORE-0010 is built
-> on top of this API; the Python `on_iteration(slot, flexzone, messages, api)` interface
-> is the actor-level equivalent.
+> The standalone binaries (`pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`)
+> build on top of this API via their respective ScriptHost classes. The Python callbacks
+> (`on_produce`, `on_consume`, `on_process`) are the script-level equivalents.
+> See HEP-CORE-0015, HEP-CORE-0018.
 
 ---
 
@@ -1721,7 +1792,7 @@ flexible zone access + Messenger handle + shutdown signal.
 | `with_transaction<F,D>` + `ctx.slots()` | Standard application loop | Automatic rollback on exception |
 | `acquire_write_slot()` + manual commit | Advanced — cross-iteration control | Manual release required |
 | `with_typed_write<D>` / `with_typed_read<D>` | No FlexZone, simple typed write | Lambda scope |
-| `push()` / `pull()` / handlers (HEP-CORE-0006) | Actor/processor pattern, real-time | Per-call semantics |
+| `push()` / `pull()` / handlers (HEP-CORE-0006) | Binary/processor pattern, real-time | Per-call semantics |
 | `hub::Producer` / `hub::Consumer` | Full IPC stack (broker + SHM) | Service lifecycle (stop/join) |
 
 ---
@@ -1755,8 +1826,8 @@ broker is used only for channel registration and consumer discovery.
 **Connection Policy** (enforced by BrokerService at REG / CONSUMER_REG time):
 - **Open**: No identity required (default)
 - **Tracked**: Identity logged but not enforced
-- **Required**: Actor name + UID must be present in the payload
-- **Verified**: Actor must be in the `known_actors` list
+- **Required**: Producer name + UID must be present in the payload
+- **Verified**: Producer must be in the `known_producers` list
 
 Per-channel glob overrides are configured via `channel_policies[]`.
 
@@ -2869,7 +2940,7 @@ with_next_slot(iter, 1000, [&](const SlotConsumeHandle& slot) {
 ## 17. Architectural Layers
 
 > **Added 2026-03-01** — captures design decisions from the Queue Abstraction and
-> Processor design discussions. Cross-reference: HEP-CORE-0012 §11, HEP-CORE-0017.
+> Processor design discussions. Cross-reference: HEP-CORE-0015, HEP-CORE-0017.
 
 ### 17.1 The Four Planes
 
@@ -2883,6 +2954,39 @@ control protocol, or embedding rate policy inside the transport).
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets | Broker + ChannelHandle protocol (HEP-CORE-0007) |
 | **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | `send()` / `broadcast()` / callbacks |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph LR
+    subgraph "Data Plane"
+        DP_SHM["ShmQueue<br/>(SHM slots)"]
+        DP_ZMQ["ZmqQueue<br/>(ZMQ PUSH/PULL)"]
+    end
+
+    subgraph "Control Plane"
+        CP_BR["BrokerService<br/>REG / DISC / HEARTBEAT"]
+        CP_PEER["Producer ↔ Consumer<br/>HELLO / BYE"]
+    end
+
+    subgraph "Message Plane"
+        MP["Messenger<br/>broadcast() / send()"]
+    end
+
+    subgraph "Timing Plane"
+        TP["LoopPolicy<br/>FixedRate / MaxRate / Compensating"]
+    end
+
+    DP_SHM ~~~ CP_BR
+    CP_BR ~~~ MP
+    MP ~~~ TP
+
+    style DP_SHM fill:#4a2a4a
+    style DP_ZMQ fill:#4a2a4a
+    style CP_BR fill:#5a3a3a
+    style CP_PEER fill:#5a3a3a
+    style MP fill:#2a4a2a
+    style TP fill:#1e3a5f
+```
 
 The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
 effect on the control or message planes. Changing `LoopPolicy` has no effect on
@@ -2951,30 +3055,83 @@ The bridge Processor has no Python callback — it is a pure C++ passthrough
 Producer and downstream Consumer remain unchanged; they continue to use SHM locally
 and expose all SHM-specific facilities to their callers.
 
-See HEP-CORE-0012 §11 for the full dual-broker registration protocol and transport
+See HEP-CORE-0015 §4.2 for the dual-broker configuration and transport
 selection rules that govern the bridge Processor.
+
+---
+
+## 18. Source File Reference
+
+### Layer 0-1: Platform + Base
+| File | Description |
+|------|-------------|
+| `src/include/plh_platform.hpp` | Platform detection, version API |
+| `src/include/plh_base.hpp` | Format tools, SpinGuard, recursion/scope guards, module defs |
+
+### Layer 2: Service
+| File | Description |
+|------|-------------|
+| `src/include/plh_service.hpp` | Lifecycle, Logger, FileLock umbrella |
+| `src/include/utils/lifecycle.hpp` | `LifecycleManager`, `LifecycleGuard` |
+| `src/include/utils/logger.hpp` | Async Logger singleton |
+| `src/include/utils/file_lock.hpp` | RAII file locking |
+
+### Layer 3: DataHub
+| File | Description |
+|------|-------------|
+| `src/include/plh_datahub.hpp` | DataHub umbrella header |
+| `src/include/plh_datahub_client.hpp` | Client-side umbrella (Producer, Consumer, Queue) |
+| `src/include/utils/data_block.hpp` | `DataBlockProducer`, `DataBlockConsumer`, SHM primitive API |
+| `src/include/utils/data_block_config.hpp` | `DataBlockConfig`, factory parameters |
+| `src/include/utils/data_block_policy.hpp` | All policy enums (DataBlockPolicy, ConsumerSyncPolicy, etc.) |
+| `src/include/utils/transaction_context.hpp` | RAII `TransactionContext`, `SlotIterator` |
+| `src/include/utils/hub_producer.hpp` | `hub::Producer`, `ProducerOptions` |
+| `src/include/utils/hub_consumer.hpp` | `hub::Consumer`, `ConsumerOptions` |
+| `src/include/utils/hub_queue.hpp` | `hub::Queue` abstract, `OverflowPolicy` |
+| `src/include/utils/hub_shm_queue.hpp` | `ShmQueue` — SHM Queue implementation |
+| `src/include/utils/hub_zmq_queue.hpp` | `ZmqQueue` — ZMQ Queue implementation |
+| `src/include/utils/hub_processor.hpp` | `hub::Processor` — type-erased handler loop |
+| `src/include/utils/messenger.hpp` | `Messenger` — ZMQ sockets, heartbeat, registration |
+| `src/include/utils/broker_service.hpp` | `BrokerService` — channel registry, policy enforcement |
+| `src/include/utils/schema_blds.hpp` | BLDS generation, `SchemaRegistry<T>` traits |
+| `src/include/utils/schema_library.hpp` | `SchemaLibrary` — named schema file lookup |
+| `src/include/utils/schema_registry.hpp` | `SchemaStore` — lifecycle singleton |
+
+### Implementation
+| File | Description |
+|------|-------------|
+| `src/utils/shm/data_block.cpp` | SHM create/attach, slot acquire/release, DRAINING |
+| `src/utils/shm/data_block_mutex.cpp` | `DataBlockMutex` (OS-backed, control zone) |
+| `src/utils/shm/shared_memory_spinlock.cpp` | `SharedSpinLock` (atomic PID-based, data slots) |
+| `src/utils/ipc/messenger.cpp` | Messenger protocol, ZMQ socket management |
+| `src/utils/ipc/messenger_protocol.cpp` | Frame parsing, REG/DISC/HEARTBEAT |
+| `src/utils/ipc/broker_service.cpp` | Broker main loop, channel registry, policy |
+| `src/utils/hub/hub_processor.cpp` | Processor handler loop, hot-swap |
+| `src/utils/hub/hub_shm_queue.cpp` | ShmQueue DataBlock wrapper |
+| `src/utils/hub/hub_zmq_queue.cpp` | ZmqQueue PULL/PUSH with bounded queue |
+
+### Layer 4: Standalone Binaries
+| File | Description |
+|------|-------------|
+| `src/hubshell.cpp` | `pylabhub-hubshell` entry point |
+| `src/producer/` | `pylabhub-producer` (config, API, script host, main) |
+| `src/consumer/` | `pylabhub-consumer` (config, API, script host, main) |
+| `src/processor/` | `pylabhub-processor` (config, API, script host, main) |
+| `src/scripting/role_host_core.hpp` | Engine-agnostic script host infrastructure |
+| `src/scripting/python_role_host_base.hpp` | Python common layer (~15 virtual hooks) |
 
 ---
 
 ## Document Status
 
-✅ **COMPLETE** - All sections finalized (1-15)
-
-**Design Maturity:** 90% complete
-- ✅ 8 critical tasks completed
-- ⚠️ 1 remaining (P9: Schema Validation - Section 12)
-- 🚀 Ready for prototype implementation
-
-**Confidence Level:** High (90%+)
-
-**Next Steps:**
-1. Review and approve P9 design
-2. Freeze API signatures
-3. Begin implementation (~5 weeks)
+**Fully implemented** — all sections (1-17) correspond to working code. 750/750 tests passing
+as of 2026-03-03. Schema validation (§12) implemented via HEP-CORE-0016 (Named Schema Registry).
 
 **Revision History:**
+- 2026-03-03: Actor terminology scrub; source file reference added; stale cross-refs fixed
+- 2026-03-01: §7.1 ZMQ wire format; §17 Architectural Layers (Queue + Processor)
+- 2026-02-27: Header refactor; source splits (lifecycle, messenger, actor_host)
 - 2026-02-08: Complete unified specification (Sections 1-15)
-- 2026-02-07: Sections 1-5 complete
 - 2026-01-07: Initial HEP created
 
 ---

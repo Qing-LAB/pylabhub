@@ -1,7 +1,7 @@
 #pragma once
 
 /*******************************************************************************
- * @file RecursionGuard.hpp
+ * @file recursion_guard.hpp
  * @brief A thread-local, RAII-based guard to detect and prevent re-entrant calls.
  *
  * Uses a fixed-capacity, stack-allocated (thread-local) buffer. No heap allocation.

@@ -4,7 +4,7 @@
 |---------------|--------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0018`                                                          |
 | **Title**     | Producer and Consumer Binaries — Standalone `pylabhub-producer` and `pylabhub-consumer` |
-| **Status**    | Design — 2026-03-01                                                      |
+| **Status**    | Implemented — Phase 1 + Layer 4 tests (2026-03-02)                       |
 | **Created**   | 2026-03-01                                                               |
 | **Area**      | Data Components (`src/producer/`, `src/consumer/`)                       |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry) |
@@ -14,9 +14,10 @@
 
 ## 0. Implementation Status
 
-**Design — not yet implemented.**
+**Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
+are complete. Layer 4 tests: 14 producer + 12 consumer. 750/750 tests passing.
 
-For current priorities, see `docs/TODO_MASTER.md` and `docs/todo/API_TODO.md`.
+For remaining work, see `docs/TODO_MASTER.md` and `docs/todo/API_TODO.md`.
 
 ---
 
@@ -487,7 +488,7 @@ pylabhub-consumer --version         # Print version string
 | `hub::Producer` (`hub_producer.hpp/cpp`) | Embedded inside `ProducerScriptHost` — owns SHM segment |
 | `hub::Consumer` (`hub_consumer.hpp/cpp`) | Embedded inside `ConsumerScriptHost` — attaches SHM |
 | `Messenger` (`messenger.hpp/cpp`) | One per binary for ZMQ control plane |
-| `ActorVault` | Reused: `using ProducerVault = ActorVault; using ConsumerVault = ActorVault;` |
+| `ActorVault` | Reused: `using ProducerVault = ActorVault; using ConsumerVault = ActorVault;` (ActorVault is a generic vault — name is legacy) |
 | `uid_utils` | Add `generate_producer_uid()`, `generate_consumer_uid()` |
 | `scripting::PythonScriptHost` | Base class for both `ProducerScriptHost` and `ConsumerScriptHost` |
 | `LifecycleGuard` | Manages Logger + Crypto modules |
@@ -626,14 +627,76 @@ See HEP-CORE-0016 for the full Named Schema Registry specification.
 
 ---
 
+## 13. Binary Architecture
+
+Both binaries follow the same three-thread architecture:
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph TB
+    subgraph "pylabhub-producer"
+        PM["main thread<br/>parse config → LifecycleGuard<br/>→ wait for g_shutdown"]
+        PI["interpreter thread<br/>Py_Initialize → on_init(api)<br/>GIL released"]
+        PZ["zmq_thread_<br/>REG_REQ → heartbeat loop<br/>→ enqueue messages"]
+        PL["loop_thread_<br/>acquire slot → GIL → on_produce<br/>→ commit/abort → GIL release"]
+        PM --> PI
+        PI --> PZ
+        PI --> PL
+    end
+
+    subgraph "pylabhub-consumer"
+        CM["main thread<br/>parse config → LifecycleGuard<br/>→ wait for g_shutdown"]
+        CI["interpreter thread<br/>Py_Initialize → on_init(api)<br/>GIL released"]
+        CZ["zmq_thread_<br/>DISC_REQ → attach SHM<br/>→ heartbeat + messages"]
+        CL["loop_thread_<br/>acquire slot → GIL → on_consume<br/>→ release slot → GIL release"]
+        CM --> CI
+        CI --> CZ
+        CI --> CL
+    end
+
+    style PM fill:#1e3a5f
+    style PI fill:#2a4a2a
+    style PZ fill:#5a3a3a
+    style PL fill:#4a2a4a
+    style CM fill:#1e3a5f
+    style CI fill:#2a4a2a
+    style CZ fill:#5a3a3a
+    style CL fill:#4a2a4a
+```
+
+---
+
+## 14. Source File Reference
+
+### Producer
+| File | Description |
+|------|-------------|
+| `src/producer/producer_config.hpp` | `ProducerConfig` struct, `from_json_file()`, `from_directory()` |
+| `src/producer/producer_config.cpp` | JSON parsing, hub_dir resolver |
+| `src/producer/producer_api.hpp` | `ProducerAPI` — C++ side of Python `api` object |
+| `src/producer/producer_api.cpp` | Implementation + `PYBIND11_EMBEDDED_MODULE(pylabhub_producer)` |
+| `src/producer/producer_script_host.hpp` | `ProducerScriptHost : PythonRoleHostBase` |
+| `src/producer/producer_script_host.cpp` | Timer-driven production loop |
+| `src/producer/producer_main.cpp` | CLI entry point |
+| `src/producer/CMakeLists.txt` | Builds `pylabhub-producer` binary |
+| `tests/test_layer4_producer/` | Config (8) + CLI (6) tests |
+
+### Consumer
+| File | Description |
+|------|-------------|
+| `src/consumer/consumer_config.hpp` | `ConsumerConfig` struct, `from_json_file()`, `from_directory()` |
+| `src/consumer/consumer_config.cpp` | JSON parsing, hub_dir resolver |
+| `src/consumer/consumer_api.hpp` | `ConsumerAPI` — C++ side of Python `api` object |
+| `src/consumer/consumer_api.cpp` | Implementation + `PYBIND11_EMBEDDED_MODULE(pylabhub_consumer)` |
+| `src/consumer/consumer_script_host.hpp` | `ConsumerScriptHost : PythonRoleHostBase` |
+| `src/consumer/consumer_script_host.cpp` | Demand-driven consumption loop |
+| `src/consumer/consumer_main.cpp` | CLI entry point |
+| `src/consumer/CMakeLists.txt` | Builds `pylabhub-consumer` binary |
+| `tests/test_layer4_consumer/` | Config (6) + CLI (6) tests |
+
+---
+
 ## Document Status
 
-**Design — 2026-03-01**
-
-Not yet implemented. Implementation follows in order:
-
-1. `src/producer/` — ProducerConfig, ProducerAPI, ProducerScriptHost, producer_main
-2. `src/consumer/` — ConsumerConfig, ConsumerAPI, ConsumerScriptHost, consumer_main
-3. Demo update: `share/demo/producer/`, `share/demo/consumer/` — new flat structure
-4. Example update: `share/scripts/python/examples/producer_counter/`, `consumer_logger/`
-5. Tests: Layer 4 producer + consumer integration tests
+**Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
+complete. Layer 4 tests: 14 producer + 12 consumer. 750/750 tests passing as of 2026-03-03.
