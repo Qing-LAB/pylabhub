@@ -86,20 +86,168 @@ RecoveryResult datablock_validate_integrity(...);
 
 ---
 
+## Recent Completions
+
+### hub::Queue + hub::Processor Layer 3 API (2026-03-01) ✅
+
+**Files**:
+- `src/include/utils/hub_queue.hpp` — abstract `Queue` base class, `OverflowPolicy`
+- `src/include/utils/hub_shm_queue.hpp` + `src/utils/hub/hub_shm_queue.cpp` — `ShmQueue` wrapping `DataBlockConsumer`/`DataBlockProducer` directly
+- `src/include/utils/hub_zmq_queue.hpp` + `src/utils/hub/hub_zmq_queue.cpp` — `ZmqQueue` (PULL/PUSH); `recv_thread_` for read mode; fire-and-forget send
+- `src/include/utils/hub_processor.hpp` + `src/utils/hub/hub_processor.cpp` — `Processor` with demand-driven `process_thread_`; typed `ProcessorContext<InF,InD,OutF,OutD>`; hot-swap `ProcessorHandlerFn` via `PortableAtomicSharedPtr`; `in_received`/`out_written`/`out_drops` counters
+- `src/include/plh_datahub_client.hpp` — updated with 4 new includes (`hub_queue`, `hub_shm_queue`, `hub_zmq_queue`, `hub_processor`)
+- `tests/test_layer3_datahub/test_datahub_hub_queue.cpp` + workers — 9 `DatahubShmQueueTest` tests
+- `tests/test_layer3_datahub/test_datahub_hub_processor.cpp` + workers — 9 `DatahubHubProcessorTest` tests
+
+**Test count**: 595 → 613 (+18)
+
+**Key design decisions**:
+- No protocol in Queue (no ZMQ peer channels, no HELLO/BYE)
+- `ShmQueue` wraps DataBlock primitives directly — no `hub::Consumer`/`hub::Producer` involved
+- Templates only in `set_process_handler<InF,InD,OutF,OutD>()` — Queue API is all `void*`
+- `ConsumerSyncPolicy::Latest_only` requires write-one-read-one interleaving for sequential ordering
+
+---
+
+## Current Focus — Producer and Consumer Binaries
+
+**Architectural decision (2026-03-01):** `pylabhub-actor` eliminated. Standalone
+`pylabhub-producer` and `pylabhub-consumer` replace it. Design: HEP-CORE-0018.
+
+### Step 1: Remove actor from build ✅ 2026-03-02
+
+- [x] Remove `pylabhub-actor` from `src/CMakeLists.txt` → replaced with `producer` + `consumer` subdirs
+- [x] Remove `test_layer4_actor` from `tests/CMakeLists.txt` (actor tests removed from build)
+- [x] `src/actor/` deleted from disk (2026-03-02)
+- [x] `tests/test_layer4_actor/` deleted from disk (2026-03-02)
+- [x] `share/demo/` replaced: new flat `producer.json` + `consumer.json` with `script/python/__init__.py`
+- [x] `share/scripts/python/examples/` — all actor configs/scripts replaced with flat producer/consumer format
+
+### Step 2: Implement `pylabhub-producer` (`src/producer/`) ✅ 2026-03-01
+
+- [x] `uid_utils` — add `generate_producer_uid()` + `has_producer_prefix()`
+- [x] `ProducerConfig` — `from_json_file()` + `from_directory()` (mirrors `ProcessorConfig`)
+- [x] `ProducerAPI` + `PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m)`
+- [x] `ProducerScriptHost : PythonScriptHost` — `zmq_thread_` + `loop_thread_`; GIL pattern
+- [x] `producer_main.cpp` — CLI: `--init` / `<dir>` / `--validate` / `--keygen`
+- [x] `CMakeLists.txt` — builds `pylabhub-producer`; links `pylabhub::utils` + `pylabhub::scripting`
+
+### Step 3: Implement `pylabhub-consumer` (`src/consumer/`) ✅ 2026-03-01
+
+- [x] `uid_utils` — add `generate_consumer_uid()` + `has_consumer_prefix()`
+- [x] `ConsumerConfig` — mirrors `ProducerConfig` (read side, no slot_count, no update_checksum)
+- [x] `ConsumerAPI` + `PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m)` (read-only — no broadcast/spinlock)
+- [x] `ConsumerScriptHost : PythonScriptHost` — demand-driven loop, `zmq_thread_`, GIL pattern
+- [x] `consumer_main.cpp` — CLI mirrors producer CLI
+- [x] `CMakeLists.txt` — builds `pylabhub-consumer`
+- [x] Build + 524/524 tests pass (630 − 106 actor tests = 524)
+
+### Step 4: Demos and examples ✅ 2026-03-02
+
+- [x] `share/demo/producer/` — new flat `producer.json` + `script/python/__init__.py` (PROD-COUNTER)
+- [x] `share/demo/consumer/` — new flat `consumer.json` + `script/python/__init__.py` (CONS-LOGGER)
+- [x] Updated `share/demo/run_demo.sh` — uses `pylabhub-producer` + `pylabhub-consumer` (was `pylabhub-actor`)
+- [x] Replaced `share/scripts/python/examples/` — all actor configs/scripts → flat producer/consumer format
+- [x] Deleted `src/actor/` + `tests/test_layer4_actor/` (actor residue fully removed from disk)
+- [x] Fixed script path bugs: `script_path{"./script"}` → `{"."}` in ProducerConfig + ConsumerConfig
+- [x] Fixed `processor_main.cpp --init`: creates `script/python/` (was flat `script/`), adds `vault/`
+- [x] Renamed `stop_on_python_error` → `stop_on_script_error` throughout all three binaries + JSON files
+- [x] MEMORY.md corrected: `"path": "."` is the correct default (not `"./script"`)
+
+### Step 5: Tests ✅ 2026-03-02
+
+- [x] Layer 4 producer tests: `tests/test_layer4_producer/` — 8 config + 6 CLI tests
+- [x] Layer 4 consumer tests: `tests/test_layer4_consumer/` — 6 config + 6 CLI tests
+- [ ] Integration test: producer + consumer round-trip via live broker (deferred)
+
 ## Backlog
 
-### Pure C++ Actor / Hub Template (CppRoleHost)
+### C++ Pipeline Demo — ✅ Processor Template Done (2026-03-03)
+
+**Status**: Core processor pipeline template complete; additional templates deferred.
+
+**Completed:**
+- [x] `examples/cpp_processor_template.cpp` — Self-contained processor pipeline:
+  Producer (SHM) → Processor (SHM-to-SHM) → Consumer (SHM) with typed handler.
+  Shows: `PYLABHUB_SCHEMA_BEGIN/MEMBER/END`, `LifecycleGuard`, `BrokerService`,
+  `hub::Producer::create<F,D>()`, `hub::Consumer::connect<F,D>()`, `ShmQueue::from_*_ref()`,
+  `Processor::create()` + `set_process_handler<>()`, `synced_write` + `pull` with
+  `WriteProcessorContext`/`ReadProcessorContext`, clean ordered shutdown.
+- [x] `examples/CMakeLists.txt` — builds 7 executables (6 pre-existing + processor pipeline)
+- [x] `cmake/ToplevelOptions.cmake` — `PYLABHUB_BUILD_EXAMPLES` option (default OFF)
+- [x] Top-level `CMakeLists.txt` — conditional `add_subdirectory(examples)`
+
+**Note**: Some pre-existing examples (`datahub_producer_example.cpp`, `datahub_consumer_example.cpp`)
+have build errors from old API patterns and need modernization.
+
+**Remaining (deferred):**
+- [ ] Fix pre-existing example build errors (old API patterns)
+- [ ] `examples/README.md` — document opt-in build, example inventory
+
+---
+
+### README Documentation Update — Application-oriented User Guide
+
+**Goal**: Clean up and expand project README files to create application-oriented, user-friendly
+documentation that helps new developers understand the infrastructure and build on top of it.
+
+**Motivation**: The current README files are accurate but fragmented. A developer new to the project
+cannot easily answer: "How do I use this? What binary do I run? How do I configure it? Can I use C++
+directly or do I have to use Python?" This task unifies that story.
+
+**What to document:**
+1. **API Layers** — Clear explanation of L0 (C ABI), L1 (C++ primitives), L2 (RAII DataBlock),
+   L3a (hub::Queue/Processor), L3b (hub::Producer/Consumer + BrokerService), with the umbrella
+   include header for each level.
+2. **Four standalone binaries** — What each binary does, how to configure it (`producer.json` etc.),
+   what Python callbacks it supports, how they interoperate.
+3. **Configuration model** — Config file fields, UID format, script directory layout,
+   `--init` / `--keygen` / `--validate` CLI.
+4. **Two development paths** — Python scripting (`on_produce/on_consume/on_process`) vs.
+   C++ RAII API (`with_transaction`, `hub::Processor`) — when to use which.
+5. **Getting started** — Minimal producer + consumer example walkthrough (from JSON config to
+   running data flow), both Python-script path and C++ path.
+
+**Files to update/create:**
+- `docs/README/README_overview.md` (new or update) — top-level overview; links to detailed READMEs
+- Update existing `docs/README/README_utils.md` — align with current L3a/L3b umbrella split
+- Update `docs/README/README_testing.md` — note examples are now opt-in via `PYLABHUB_BUILD_EXAMPLES`
+- Possibly update root `README.md` if it exists
+
+**Cross-reference**: HEP-CORE-0011 (ScriptHost), HEP-CORE-0017 (Pipeline Architecture),
+HEP-CORE-0018 (Producer/Consumer Binaries), HEP-CORE-0015 (Processor Binary)
+
+**Priority**: Backlog — after Layer 4 tests, Schema Registry, and Processor binary tests.
+
+---
+
+### request_structure_remap / commit_structure_remap stub documentation
+
+These two public methods in `data_block.hpp` throw `std::runtime_error("not implemented")` at runtime.
+They need doc comments: `///< NOT IMPLEMENTED — deferred, see tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md`.
+Blocked on broker-controlled remapping design; low priority.
+
+### ManagedProcessor for LifecycleGuard integration (Phase 2)
+
+`hub::Processor` currently has no `ModuleDef` / `GetLifecycleModule()`. A future
+`ManagedProcessor` wrapper could own `LifecycleGuard` startup/shutdown to integrate
+with the lifecycle topology without manual `start()`/`stop()` calls.
+
+### ZmqQueue integration tests
+
+`ZmqQueue` is implemented but untested (requires endpoint coordination between two
+processes). Add integration tests once the test harness supports dynamic port allocation
+for PUSH/PULL endpoints.
+
+### Pure C++ Producer/Consumer (no Python)
 
 **Goal**: Provide a header-only CRTP/virtual template so users can implement high-performance
-producer/consumer roles in C++ without Python, while reusing the same `actor.json` / `hub.json`
-config, `hub::Producer` / `hub::Consumer` services, and RAII slot lifecycle.
+producer/consumer roles in C++ without Python, while reusing the same `producer.json` /
+`consumer.json` config, `hub::Producer` / `hub::Consumer` services, and RAII slot lifecycle.
 
 **Motivation**: Python scripting adds GIL overhead (~150 ns/iter uncontested + CPython call dispatch
 ~3–5 µs/iter). At >10 kHz loop rates or when squeezing max throughput, a pure C++ path eliminates
 this overhead entirely while keeping the same deployment model (same hub, same channels, same config).
-
-**Key requirement from user (2026-02-28)**: must operate on the same hub/actor directory config
-(`actor.json` + `actor_dir`) — no separate config format.
 
 **Design sketch:**
 ```cpp

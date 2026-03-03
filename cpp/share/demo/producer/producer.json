@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Demo producer — publishes a counter slot on 'lab.demo.counter' at 10 Hz.",
+    "Run with: pylabhub-producer <path-to-this-dir>",
+    "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
+  ],
+  "hub_dir": "",
+  "producer": {
+    "uid":       "PROD-COUNTER-00000001",
+    "name":      "DemoProducer",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":     "lab.demo.counter",
+  "broker":      "tcp://127.0.0.1:5570",
+  "interval_ms": 100,
+
+  "shm": {
+    "enabled":    true,
+    "secret":     1111111111,
+    "slot_count": 8
+  },
+
+  "slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "flexzone_schema": {
+    "fields": [
+      {"name": "producer_pid", "type": "uint64"},
+      {"name": "start_ts",     "type": "float64"},
+      {"name": "label",        "type": "string", "length": 32}
+    ]
+  },
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

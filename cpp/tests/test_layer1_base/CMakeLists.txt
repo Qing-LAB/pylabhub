@@ -172,9 +172,102 @@ gtest_discover_tests(test_layer1_result
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: Backoff Strategy (header-only, pure API)
+# ============================================================================
+
+add_executable(test_layer1_backoff_strategy
+    test_backoff_strategy.cpp
+)
+
+target_link_libraries(test_layer1_backoff_strategy
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_backoff_strategy)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_backoff_strategy
+    SUITE_NAME "Layer1_BackoffStrategy"
+)
+layer1_require_staged_utils(test_layer1_backoff_strategy)
+
+gtest_discover_tests(test_layer1_backoff_strategy
+    PROPERTIES
+        LABELS "layer1;base;backoff"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: ModuleDef builder API (Pimpl, links pylabhub::utils)
+# ============================================================================
+
+add_executable(test_layer1_module_def
+    test_module_def.cpp
+)
+
+target_link_libraries(test_layer1_module_def
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_module_def)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_module_def
+    SUITE_NAME "Layer1_ModuleDef"
+)
+layer1_require_staged_utils(test_layer1_module_def)
+
+gtest_discover_tests(test_layer1_module_def
+    PROPERTIES
+        LABELS "layer1;base;module"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: Debug Info (stack trace, panic, debug messaging)
+# ============================================================================
+
+add_executable(test_layer1_debug_info
+    test_debug_info.cpp
+)
+
+target_link_libraries(test_layer1_debug_info
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_debug_info)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_debug_info
+    SUITE_NAME "Layer1_DebugInfo"
+)
+layer1_require_staged_utils(test_layer1_debug_info)
+
+gtest_discover_tests(test_layer1_debug_info
+    PROPERTIES
+        LABELS "layer1;base;debug"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
 message(STATUS "  - test_layer1_scope_guard")
 message(STATUS "  - test_layer1_format_tools")
 message(STATUS "  - test_layer1_result")
+message(STATUS "  - test_layer1_backoff_strategy")
+message(STATUS "  - test_layer1_module_def")
+message(STATUS "  - test_layer1_debug_info")

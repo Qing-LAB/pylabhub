@@ -66,6 +66,8 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
     {
 
         // Check if lock holder is dead
+        // XPLAT: PID reuse race between is_process_alive() check and CAS. Mitigated
+        // by CAS atomicity — only one process wins. Generation counter prevents ABA.
         if (expected_pid != 0 && !pylabhub::platform::is_process_alive(expected_pid))
         {
             // Use CAS (not store) to reclaim zombie lock so only one process wins when

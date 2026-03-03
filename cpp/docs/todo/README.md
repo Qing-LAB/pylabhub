@@ -41,19 +41,23 @@ Design decisions, cross-references, etc.
 ## Available TODO Documents
 
 ### Core Implementation
-- **`MEMORY_LAYOUT_TODO.md`** ✅ — Memory layout redesign, alignment, validation
-- **`RAII_LAYER_TODO.md`** ✅ — C++ RAII patterns, transaction API, typed access
-- **`API_TODO.md`** ✅ — Public API refinements, documentation gaps
+- **`API_TODO.md`** 🟡 — Public API, producer/consumer/processor binary work (Steps 4–5), header layering, backlog
 
 ### Integration and Testing
-- **`TESTING_TODO.md`** ✅ — Test phases (A-D), coverage, multi-process scenarios
-- **`PLATFORM_TODO.md`** 📝 — Cross-platform consistency, platform-specific issues (to be created)
+- **`TESTING_TODO.md`** 🟡 — Layer 4 producer/consumer tests (pending), HP-C1/HP-C2/BN-H1, platform coverage
+- **`PLATFORM_TODO.md`** 🟢 — Clang-tidy pass, Windows MSVC CI gaps (backlog only)
 
 ### Supporting Systems
-- **`MESSAGEHUB_TODO.md`** ✅ — MessageHub integration, broker protocol
-- **`RECOVERY_TODO.md`** 📝 — Recovery scenarios, diagnostics improvements (to be created)
+- **`MESSAGEHUB_TODO.md`** 🟢 — Broker feature backlog, schema registry deferred
 
-**Legend**: ✅ Created | 📝 Planned
+### Archived TODO Documents
+The following TODO files have been archived to `docs/archive/transient-2026-03-02/` because
+all active work is complete:
+- `SECURITY_TODO.md` — All 6 security phases complete (2026-02-28)
+- `RAII_LAYER_TODO.md` — RAII layer complete; surviving minor backlog absorbed into TESTING_TODO + API_TODO
+- `MEMORY_LAYOUT_TODO.md` — Memory layout complete; surviving items absorbed into TESTING_TODO + API_TODO
+
+**Legend**: 🟡 Has active open items | 🟢 Backlog only (no urgent work)
 
 ## How to Use
 

@@ -183,6 +183,9 @@ struct CreateChannelCmd
     // Phase 2: actor identity included in REG_REQ payload.
     std::string actor_name; ///< Human-readable actor name; empty = omit from payload
     std::string actor_uid;  ///< Actor UUID4; empty = omit from payload
+    // Phase 3: named schema (HEP-CORE-0016).
+    std::string schema_id;   ///< Named schema ID (e.g. "lab.sensors.temperature.raw@1"); empty = unnamed
+    std::string schema_blds; ///< BLDS string; empty when DataT has no PYLABHUB_SCHEMA macros
     std::promise<bool> result; ///< true = broker accepted (REG_ACK received)
 };
 /// Internal: sent by connect_channel() to discover and register as consumer.
@@ -195,8 +198,19 @@ struct ConnectChannelCmd
     // Phase 2: consumer identity included in CONSUMER_REG_REQ payload.
     std::string consumer_uid;  ///< Consumer actor UUID4; empty = omit from payload
     std::string consumer_name; ///< Consumer actor name; empty = omit from payload
+    // Phase 3: named schema (HEP-CORE-0016).
+    std::string expected_schema_id; ///< If non-empty, consumer requests named schema validation
     std::promise<std::optional<ConsumerInfo>> result;
 };
+/// Phase 3 (HEP-CORE-0016): query broker for schema info of a registered channel.
+/// Worker sends SCHEMA_REQ and waits for SCHEMA_ACK containing schema_id, blds, hash.
+struct QuerySchemaCmd
+{
+    std::string channel;
+    int         timeout_ms;
+    std::promise<std::optional<ChannelSchemaInfo>> result;
+};
+
 struct StopCmd
 {
 };
@@ -219,7 +233,8 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       DeregisterConsumerCmd, UnregisterChannelCmd,
                                       ChecksumErrorReportCmd, CreateChannelCmd,
                                       ConnectChannelCmd, StopCmd,
-                                      SuppressHeartbeatCmd, HeartbeatNowCmd>;
+                                      SuppressHeartbeatCmd, HeartbeatNowCmd,
+                                      QuerySchemaCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -324,6 +339,8 @@ class MessengerImpl
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(CreateChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
     bool handle_command(ConnectChannelCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(QuerySchemaCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,

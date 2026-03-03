@@ -1,0 +1,12 @@
+{
+  "_comment": [
+    "Minimal hub configuration for the pylabhub demo.",
+    "Used by pylabhub-hubshell when running in normal (non-dev) mode.",
+    "For the demo run_demo.sh uses --dev mode (no password required)."
+  ],
+  "hub": {
+    "hub_name":        "demo_hub",
+    "broker_endpoint": "tcp://0.0.0.0:5570",
+    "log_level":       "info"
+  }
+}

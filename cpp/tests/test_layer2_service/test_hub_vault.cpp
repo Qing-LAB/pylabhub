@@ -278,6 +278,34 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
 // publish_public_key tests
 // ============================================================================
 
+TEST_F(HubVaultTest, Create_OverExistingVault_Overwrites)
+{
+    HubVault v1 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    const std::string pk1 = v1.broker_curve_public_key();
+
+    // Create again on same path — should overwrite with new keys.
+    HubVault v2 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    const std::string pk2 = v2.broker_curve_public_key();
+
+    EXPECT_NE(pk1, pk2)
+        << "Second create should generate fresh keys (different from first)";
+}
+
+TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
+{
+    HubVault v1 = HubVault::create(hub_dir_, hub_uid_, kPassword);
+    const std::string pk = v1.broker_curve_public_key();
+    const std::string sk = v1.broker_curve_secret_key();
+
+    HubVault v2(std::move(v1));
+    EXPECT_EQ(v2.broker_curve_public_key(), pk);
+    EXPECT_EQ(v2.broker_curve_secret_key(), sk);
+}
+
+// ============================================================================
+// publish_public_key tests
+// ============================================================================
+
 TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
 {
     HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);

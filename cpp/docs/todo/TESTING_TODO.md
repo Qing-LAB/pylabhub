@@ -50,8 +50,8 @@
 - [x] Basic producer/consumer IPC
 - [x] ConsumerSyncPolicy variants (Latest_only, Single_reader, Sync_reader)
 - [x] High-load single reader integrity test
-- [ ] MessageHub broker integration
-- [ ] Consumer registration to broker
+- [x] MessageHub broker integration ✅ complete (2026-02-18)
+- [x] Consumer registration to broker ✅ complete (2026-02-18)
 - [ ] Cross-process recovery scenarios (broker-coordinated; facility-layer tests ✅ done separately)
 
 ### Phase D: High-Load and Edge Cases
@@ -87,82 +87,57 @@
 
 ## Coverage Gaps
 
-### Layer 4: pylabhub-actor Tests (new — 2026-02-21; updated 2026-02-23)
-**Status**: 🔵 Partial — config + metrics unit tests done; integration tests pending
+### Layer 4: pylabhub-producer Tests ✅ Complete (2026-03-02)
+**Status**: ✅ 14 tests passing — `tests/test_layer4_producer/`
 
-Unit tests live in `tests/test_layer4_actor/` (86 tests as of 2026-02-28, all passing).
+#### Config unit tests (no lifecycle, no Python) — 8 tests
+- [x] **ProducerConfig FromJsonFile_Basic** — all fields parsed; uid, name, channel, interval_ms, shm, script, validation
+- [x] **ProducerConfig FromJsonFile_UidAutoGen** — PROD- prefix auto-generated when uid absent
+- [x] **ProducerConfig FromJsonFile_SchemaFields** — slot_schema + flexzone_schema field names, types, count
+- [x] **ProducerConfig FromJsonFile_MissingChannel** — throws std::runtime_error
+- [x] **ProducerConfig FromJsonFile_MalformedJson** — throws std::runtime_error
+- [x] **ProducerConfig FromJsonFile_FileNotFound** — throws std::runtime_error
+- [x] **ProducerConfig FromDirectory_Basic** — resolves script_path to absolute path
+- [x] **ProducerConfig StopOnScriptError_DefaultFalse** — default false; update_checksum default true
 
-#### ✅ Done (unit layer — no Python init, no live actor)
-- [x] **ActorConfig parsing** — `loop_timing` (fixed_pace / compensating / default / invalid),
-  `broker_pubkey` (present / absent), `broker` endpoint, `interval_ms` / `timeout_ms`,
-  all four `validation` policy fields + defaults + invalid values, uid auto-gen,
-  non-ACTOR- uid warning (no throw), multi-role, empty roles map, all error cases
-  (missing script, missing channel, invalid kind, bad file, malformed JSON).
-- [x] **ActorRoleAPI metrics** — initial zeroes; `increment_script_errors` / `loop_overrun_count`
-  / `set_last_cycle_work_us`; `reset_all_role_run_metrics` clears all three; does not affect
-  identity fields; accumulation after reset; reset on fresh API is no-op; `slot_valid` flag;
-  identity getters round-trip; two instances are independent.
+#### CLI integration tests (binary invoked via WorkerProcess) — 6 tests
+- [x] **`--init` creates structure** — `producer.json`, `script/python/__init__.py`, `vault/`, `logs/`, `run/`
+- [x] **`--init` default values** — uid has PROD- prefix, script.path=".", stop_on_script_error=false
+- [x] **`--keygen` writes keypair** — creates vault file; stdout "Producer vault written to" + public_key
+- [x] **`--validate` exits 0** — loads Python script, prints "Validation passed.", exits 0
+- [x] **Config malformed JSON** — "Config error" in stderr, non-zero exit
+- [x] **Config file not found** — stderr non-empty, non-zero exit
 
-#### ✅ Done (CLI tier — no Python/broker)
-`test_layer4_actor_cli` binary (12 tests, 2026-02-28):
-- [x] **--keygen writes keypair** — JSON file created with `actor_uid/public_key/secret_key` (40-char Z85)
-- [x] **--keygen missing keyfile field** — exits non-zero, "keyfile" in stderr
-- [x] **--keygen creates parent dir** — nested key path; parent created automatically
-- [x] **--keygen overwrites existing** — second keygen produces different keys (CSPRNG draw)
-- [x] **--register-with appends entry** — actor uid+name appear in hub.json known_actors
-- [x] **--register-with duplicate idempotent** — already-registered uid → exit 0, no duplicate
-- [x] **--register-with missing actor.json** — error mentioning "actor.json", non-zero exit
-- [x] **--register-with missing hub.json** — error mentioning "hub.json", non-zero exit
-- [x] **Config malformed JSON** — "Config error" in stderr, non-zero exit (before lifecycle)
-- [x] **Config missing roles key** — "Config error" in stderr, non-zero exit
-- [x] **Config invalid role kind** — "Config error" in stderr, non-zero exit
-- [x] **Config file not found** — "Config error" in stderr, non-zero exit
+Note: `--keygen` parent-dir-creation and overwrite-entropy tests deferred to backlog.
 
-#### Pending integration tests for the `pylabhub-actor` executable:
+### Layer 4: pylabhub-consumer Tests ✅ Complete (2026-03-02)
+**Status**: ✅ 12 tests passing — `tests/test_layer4_consumer/`
 
-- [ ] **Actor + Hub round-trip** — spawn broker + producer actor + consumer actor; verify consumer on_read receives correct typed slot data (log-file / ZMQ report-back validation)
-- [ ] **UID auto-generation** — run actor with no uid in config; verify ACTOR-{NAME}-{8HEX} format in stderr
-- [ ] **UID non-conforming warning** — run actor with old-style uid; verify warning log
-- [ ] **Schema declaration hash mismatch** — producer and consumer with different field types in slot_schema; verify consumer connect() fails with "schema mismatch" in log before any data is read (Layer 2 check — `compute_schema_hash()` in actor_host.cpp)
-- [ ] **Schema declaration hash match** — same schema on both sides; verify successful connection
-- [ ] **Validation policy: slot_checksum enforce** — consumer verifies checksum; corrupt a slot; verify on_read NOT called (skip) or called with api.slot_valid()=false (pass)
-- [ ] **Validation policy: on_python_error stop** — on_read raises exception; verify actor exits cleanly
-- [ ] **SharedSpinLockPy** — producer and consumer both use api.spinlock(0); verify mutual exclusion via counter increment test (no lost increments)
-- [ ] **Multi-role actor** — one actor JSON with 1 producer + 1 consumer role; verify both threads start; producer writes; consumer reads
-- [ ] **interval_ms=0 producer** — verify write loop runs without delay; measure throughput
-- [ ] **timeout_ms consumer** — verify on_read(slot=None, timed_out=True) fires after timeout with no producer
-- [ ] **--validate mode** — run with --validate; verify ctypes layout printed to stdout; exit(0)
-- [ ] **Legacy flat format** — run with old-format JSON; verify deprecation warning; actor runs correctly
+#### Config unit tests — 6 tests
+- [x] **ConsumerConfig FromJsonFile_Basic** — all fields parsed; uid, name, channel, timeout_ms, shm, script, validation
+- [x] **ConsumerConfig FromJsonFile_UidAutoGen** — CONS- prefix auto-generated
+- [x] **ConsumerConfig FromJsonFile_SchemaFields** — slot_schema + flexzone_schema field names, types
+- [x] **ConsumerConfig FromJsonFile_MissingChannel** — throws std::runtime_error
+- [x] **ConsumerConfig FromJsonFile_MalformedJson** — throws std::runtime_error
+- [x] **ConsumerConfig FromDirectory_Basic** — resolves script_path to absolute path
 
-**New scenarios from 2026-02-22 code-review fixes:**
+#### CLI integration tests — 6 tests
+- [x] **`--init` creates structure** — `consumer.json`, `script/python/__init__.py`, `vault/`, `logs/`, `run/`
+- [x] **`--init` default values** — uid has CONS- prefix, script.path=".", stop_on_script_error=false
+- [x] **`--keygen` writes keypair** — creates vault file; stdout "Consumer vault written to" + public_key
+- [x] **`--validate` exits 0** — loads Python script, prints "Validation passed.", exits 0
+- [x] **Config malformed JSON** — "Config error" in stderr, non-zero exit
+- [x] **Config file not found** — stderr non-empty, non-zero exit
 
-- [ ] **PylabhubEnv getters** — in on_write/on_read callback: assert `api.actor_name()`,
-  `api.channel()`, `api.kind()`, `api.broker()`, `api.log_level()`, `api.script_dir()` all
-  return correct non-empty strings matching the config JSON
-- [ ] **Schema type validation error** — producer JSON with `"type": "badtype"` in slot_schema;
-  verify actor exits at startup with message containing "unknown type" before any data is written
-- [ ] **Schema count=0 error** — producer JSON with `"count": 0` in slot_schema; verify actor
-  exits at startup with message containing "count = 0"
-- [ ] **AdminShell oversized request** — send >1 MB ZMQ payload to AdminShell REP socket;
-  verify response contains `{"error":"request too large"}`; verify subsequent requests work
-- [ ] **on_stop registered roles** — register on_stop/on_stop_c in actor script;
-  verify `_registered_roles("on_stop")` returns non-empty list (B1 regression guard)
-- [ ] **LoopTimingPolicy fixed_pace** — producer with `"loop_timing":"fixed_pace","interval_ms":10`;
-  measure actual call rate → ~100 Hz ±10%; `api.loop_overrun_count()` == 0 under normal load
-- [ ] **LoopTimingPolicy compensating** — same with `"loop_timing":"compensating"`; inject one
-  slow `on_write` cycle; verify overrun increments by 1; average rate recovers
-- [ ] **Metrics overrun via script** — producer with `"interval_ms":1` and `on_write` that
-  sleeps 5ms; verify `api.loop_overrun_count() > 0` after several iterations
-- [ ] **last_cycle_work_us non-zero** — producer with timed `on_write`; read
-  `api.last_cycle_work_us()` from next `on_write`; verify > 0
+### Layer 4: pylabhub-actor Tests — ARCHIVED (actor eliminated 2026-03-01)
 
-#### LoopPolicy / ContextMetrics tests (HEP-CORE-0008 Pass 2 — ✅ complete 2026-02-27)
+`pylabhub-actor` and its test suite (`tests/test_layer4_actor/`) were removed from the build
+and deleted from disk on 2026-03-02 (HEP-CORE-0018 decision). The completed unit tests
+(config parsing, role metrics, CLI keygen/register-with, 98 tests) are preserved in git history.
+Replaced by standalone `pylabhub-producer` + `pylabhub-consumer` + `pylabhub-processor` binaries.
 
-All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_datahub_loop_policy.cpp`
-(tests 6–16, secrets 80006–80016). The Python actor-level test remains:
-
-- [ ] **api.metrics() dict keys** — spawn actor with `interval_ms > 0`; verify all keys present
-  and `period_ms == interval_ms`; `iteration_count > 0` after 3+ iterations (Layer 4 actor integration)
+LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
+`tests/test_layer3_datahub/test_datahub_loop_policy.cpp` (tests 6–16, secrets 80006–80016).
 
 ### ScriptHost / PythonScriptHost threading model (tests done — 2026-02-28)
 **Status**: ✅ Complete — 10 tests in `tests/test_layer2_service/test_script_host.cpp`
@@ -172,7 +147,7 @@ All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_data
 - [x] **ScriptHost returns false without signal** — set exception on promise; base_startup_ throws
 - [x] **ScriptHost direct mode (Lua path)** — do_initialize on calling thread; signal_ready by base
 
-### PythonInterpreter / Admin Shell / Actor consumer ctypes (coverage gaps — 2026-03-01)
+### PythonInterpreter / Admin Shell / Consumer ctypes (coverage gaps — 2026-03-01)
 **Status**: 🔵 No automated tests — identified by code review `CODE_REVIEW_2026-03-01_hub-python-actor-headers.md`
 
 - [ ] **HP-C1 — `pylabhub.reset()` deadlock regression** — spawn admin shell; from a running script
@@ -181,9 +156,9 @@ All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_data
 - [ ] **HP-C2 — stdout/stderr leak on exec() exception** — trigger a non-Python exception inside
   `py::exec()` path (e.g., `buf.getvalue()` encoding error); verify subsequent admin shell commands
   still produce output (not silently discarded). (Fix: `make_scope_guard` restores stdout/stderr.)
-- [ ] **AF-H2 — Consumer ctypes.from_buffer_copy round-trip** — run a consumer actor with
-  `"exposure": "ctypes"` slot schema; verify on_read receives a valid ctypes struct (not TypeError).
-  (Fix: `from_buffer()` → `from_buffer_copy()` for read-only memoryviews.)
+- [ ] **BN-H1 — Consumer binary ctypes.from_buffer_copy round-trip** — run a `pylabhub-consumer`
+  with a typed slot schema; verify `on_consume(in_slot, ...)` receives a valid ctypes struct
+  (not TypeError). (Fix: `from_buffer()` → `from_buffer_copy()` for read-only memoryviews.)
 
 ### HubConfig script-block fields (tests done — 2026-02-28)
 **Status**: ✅ Complete — 9 tests in `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`
@@ -199,8 +174,8 @@ All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_data
 - [x] **`script_type()` default absent** — no `"script"` block; verify empty string
 
 ### High Priority
-- [ ] Consumer registration to broker (protocol not yet defined)
-- [ ] Broker schema registry tests
+- [x] Consumer registration to broker — ✅ done (test_datahub_broker_consumer.cpp)
+- [x] Broker schema registry tests — ✅ done (test_datahub_broker_schema.cpp, 7 tests, HEP-CORE-0016 Phase 3)
 - [ ] MessageHub error paths with broker
 - [ ] Recovery: cross-process zombie detection (broker-coordinated) — requires broker protocol
 - [ ] Recovery: slot-checksum in-place repair (current repair path reinitialises header; needs WriteAttach mode instead of create)
@@ -214,10 +189,175 @@ All single-process C++ metrics tests are in `tests/test_layer3_datahub/test_data
 - [ ] stuck_duration_ms in diagnostics (requires timestamp on acquire)
 - [ ] Schema versioning and compatibility rules
 - [ ] Migration path testing
+- [ ] **FlexZone atomic-ref usage example** — test demonstrating `std::atomic_ref<T>` pattern
+  for out-of-transaction lock-free FlexZone access (from RAII_LAYER_TODO backlog)
+- [ ] **Layout checksum stability** — attach with mismatched layout (should fail); structured
+  buffer alignment test (8-byte, 16-byte types); large flex zone (multi-page); zero flex zone
+  (slots only) — (from MEMORY_LAYOUT_TODO backlog; low priority, layout is stable)
+- [ ] **RAII move semantics audit** — confirm all RAII handles support efficient move (no copy)
+- [ ] **Zero-cost abstraction verification** — profile `with_transaction` vs primitive API
+  with optimizations; confirm no overhead on hot path
 
 ---
 
 ## Recent Completions
+
+### 2026-03-03 (hub::Processor Enhancements + Dual-Broker + ScriptHost Dedup + C++ Templates)
+- ✅ **hub::Processor enhanced API tests** (11 tests) — `test_datahub_hub_processor.cpp`:
+  `TimeoutHandler_ProducesOutput`, `TimeoutHandler_NullOutputOnDrop`, `IterationCount_AdvancesOnTimeout`,
+  `CriticalError_StopsLoop`, `CriticalError_FromTimeoutHandler`, `PreHook_CalledBeforeHandler`,
+  `PreHook_CalledBeforeTimeout`, `ZeroFill_OutputZeroed`, `ZmqQueue_Roundtrip`,
+  `ZmqQueue_NullFlexzone`, `ZmqQueue_TimeoutHandler`.
+- ✅ **Dual-broker config tests** (5 tests) — `test_processor_config.cpp`:
+  `DualBroker_BothPresent`, `DualBroker_FallbackToSingle`, `DualBroker_InHubDir`,
+  `DualBroker_OutHubDir`, `DualBroker_MixedConfig`.
+- ✅ **ScriptHost dedup** — `RoleHostCore` (engine-agnostic infrastructure) + `PythonRoleHostBase`
+  (Python common layer with ~15 virtual hooks); three role subclasses reduced from ~790 to ~150 lines each.
+- ✅ **C++ processor pipeline template** — `examples/cpp_processor_template.cpp`; demonstrates
+  LifecycleGuard → BrokerService → Producer → Consumer → ShmQueue → Processor → typed handler.
+  Build with `PYLABHUB_BUILD_EXAMPLES=ON`.
+- ✅ **ZMQ wire format documentation** — HEP-CORE-0002 §7.1 added.
+  **Total: 750/750 passing (734 + 16 new tests).**
+
+### 2026-03-02 (Test Gap Closure + Script Host Deduplication)
+- ✅ **Script host deduplication** — Extracted 14 shared functions + 3 types from
+  processor/producer/consumer `*_script_host.cpp` into `script_host_schema.hpp` (types)
+  and `script_host_helpers.hpp` (inline functions) in `pylabhub::scripting` namespace.
+  Per-component `*_schema.hpp` files reduced to thin `using` aliases.
+- ✅ **B1: Messenger hex codec tests** (8 tests) — new `test_datahub_messenger_protocol.cpp`;
+  `hex_encode_schema_hash`/`hex_decode_schema_hash` roundtrip, empty, invalid chars,
+  too short/long, case-insensitive, known vectors (all-zero, all-0xFF).
+- ✅ **B2: Messenger not-connected guard tests** (4 tests) — added to `test_datahub_messagehub.cpp`;
+  `query_channel_schema`, `create_channel`, `connect_channel` return nullopt when not connected;
+  `heartbeat_noop_not_running` (suppress/enqueue no-op).
+- ✅ **B3: InteractiveSignalHandler lifecycle tests** (7 tests) — new
+  `test_interactive_signal_handler.cpp`; constructor stores config, `set_status_callback` before
+  install, install/uninstall toggles `is_installed()`, install idempotent, uninstall idempotent,
+  RAII destructor on installed handler, force_daemon config cycle. All use `force_daemon=true`.
+- ✅ **B4: Messenger callback registration tests** (3 tests) — added to `test_datahub_messagehub.cpp`;
+  `on_channel_closing` global register, per-channel register/deregister (nullptr), `on_consumer_died` register.
+  **Total: 734/734 passing (712 + 22 new tests).**
+
+### 2026-03-02 (L0–L3 Test Gap Closure — Phase 2, Audit-Driven)
+- ✅ **L1 BackoffStrategy tests** (10 tests) — new `test_backoff_strategy.cpp`; ThreePhaseBackoff
+  (3 phase transitions), ConstantBackoff (default/custom/iteration-independent), NoBackoff (instant),
+  AggressiveBackoff (phase1/capped), free function. Wide timing tolerances for cross-platform.
+- ✅ **L1 ModuleDef tests** (16 tests) — new `test_module_def.cpp`; Constants, Constructor
+  (valid/empty/max/too-long), Move (ctor/assign), AddDependency (valid/empty/too-long), SetStartup
+  (no-arg/with-arg/too-long), SetShutdown (no-arg/too-long), SetAsPersistent. Builder API only.
+- ✅ **L1 DebugInfo tests** (7 tests) — new `test_debug_info.cpp`; PrintStackTrace (with/without
+  external tools), PLH_PANIC (aborts/includes source location via EXPECT_DEATH), debug_msg_rt
+  (no crash/format error swallowed), SRCLOC_TO_STR format.
+- ✅ **L0 PlatformShm edge cases** (5 tests) — extended `test_platform_shm.cpp`; ShmClose_NullHandle,
+  ShmClose_AlreadyClosed, ShmAttach_NullName, ShmUnlink_NullName, ShmUnlink_Nonexistent.
+- ✅ **L2 ZmqContext concurrency** (1 test) — MultiThread_GetContext_Safe (4 threads, same pointer).
+- ✅ **L2 HubVault/ActorVault** (4 tests) — Create_OverExisting + MoveConstructor for both vault types.
+- ✅ **L2 SharedSpinLock** (3 tests) — IsLockedAfterUnlock, BlockingLock_WaitsForRelease, ExcessUnlock_Throws.
+- ✅ **L2 ScriptHost** (1 test) — FinalizeNotCalledAfterFailedInit.
+- ✅ **L3 Processor** (3 tests) — ProcessorClose, ProcessorHandlerHotSwap (handler swap after
+  input_timeout cycle), ProcessorHandlerRemoval (nullptr→re-install).
+- ✅ **L3 ZmqQueue overflow** (2 tests) — PullFrom_BufferFull_DropsOldest (depth-4 buffer),
+  PullFrom_BufferFull_NoDeadlock (rapid push, no hang).
+- ✅ **L3 SchemaRegistry search dirs** (2 tests) — SetSearchDirs_LoadsFromCustomPath,
+  SetSearchDirs_OverridesDefault. Use temp directories with real schema files.
+  **Total: 705/705 passing (651 + 54 new tests).**
+
+### 2026-03-02 (L0–L3 Test Gap Closure — cross-platform aware)
+- ✅ **L1 format_tools tests** (8 tests) — `make_buffer` basic/empty, `make_buffer_rt` basic/empty,
+  `filename_only` unix/windows/no-separator/empty. Added to `test_formattable.cpp`.
+- ✅ **L2 uid_utils tests** (18 tests) — new `test_uid_utils.cpp`; generators (5 roles), generators
+  with name (3), validators (5), `sanitize_name_part` (5: normal/special chars/empty/too long/dashes).
+- ✅ **L2 ActorVault tests** (12 tests) — new `test_actor_vault.cpp`; mirrors HubVault pattern;
+  creation (4: writes file, restricted perms, valid Z85, empty password), opening (4: correct password,
+  wrong password throws, corrupted throws, missing throws), encryption (2: secrets not plaintext,
+  different UID different ciphertext), identity (2: UID roundtrip, different UIDs different keys).
+  Permission test guarded with `#ifndef PYLABHUB_PLATFORM_WIN64`.
+- ✅ **L2 ZmqContext tests** (3 tests) — new `test_zmq_context.cpp`; lifecycle fixture with
+  `GetZMQContextModule()`; `GetContext_ReturnsValid`, `GetContext_SameInstance`, `CreateSocket_Works`.
+- ✅ **L3 ZmqQueue tests** (11 tests) — new `test_datahub_hub_zmq_queue.cpp`; factory (2), lifecycle (3),
+  read/write roundtrip (3: single item, multiple items, read timeout returns null), write semantics (2:
+  abort not sent, item_size correct), metadata (1: name returns endpoint). All use `tcp://127.0.0.1:<port>`.
+- ✅ **L3 SchemaLibrary file-loading tests** (3 tests) — added `DatahubSchemaFileLoadTest` to
+  `test_datahub_schema_library.cpp`; `LoadFromDir_SingleFile`, `LoadFromDir_NestedPath`,
+  `LoadFromDir_InvalidJson_Skipped`. Uses temp directories with real `.json` schema files.
+- ✅ **L3 BrokerService admin API tests** (8 tests) — new `test_datahub_broker_admin.cpp`; in-process
+  `LocalBrokerHandle` pattern; `ListChannels_Empty/OneChannel/FieldPresence` (3),
+  `Snapshot_Empty/OneChannel/AfterConsumer` (3), `CloseChannel_Existing/NonExistent` (2).
+- ✅ **XPLAT comments** — 4 cross-platform documentation comments added: `data_block_mutex.cpp` (CLOCK_REALTIME),
+  `actor_vault.hpp` (getpass), `backoff_strategy.hpp` (sleep resolution), `shared_memory_spinlock.cpp` (PID reuse).
+  **Total: 651/651 passing (588 + 63 new tests).**
+
+### 2026-03-02 (HEP-CORE-0016 Phase 4: SchemaStore lifecycle)
+- ✅ **SchemaStore lifecycle singleton tests: `SchemaRegistryTest`** (8 tests) —
+  `test_datahub_schema_registry.cpp` in `tests/test_layer3_datahub/`; lifecycle fixture
+  (Logger + SchemaStore); covers `GetInstance_SameAddress`, `LifecycleInitialized_True`,
+  `RegisterAndGet`, `IdentifyByHash`, `GetUnknown_Nullopt`, `IdentifyUnknown_Nullopt`,
+  `Reload_ClearsAndReloads`, `ListSchemas`. **Total: 588/588 passing.**
+
+### 2026-03-02 (Layer 4 processor tests)
+- ✅ **Layer 4 config unit tests: `ProcessorConfigTest`** (10 tests) — `test_processor_config.cpp`
+  in `tests/test_layer4_processor/`; `PureApiTest` fixture; `processor_config.cpp` compiled directly
+  into test binary; covers `from_json_file` (basic fields, uid autogen, in/out schemas, missing
+  in_channel, missing out_channel, malformed JSON, file not found), `from_directory` (with script_path
+  resolution), `overflow_policy` default (block) and invalid (throws).
+- ✅ **Layer 4 CLI integration tests: `ProcessorCliTest`** (6 tests) — `test_processor_cli.cpp`;
+  `IsolatedProcessTest` fixture; spawns `pylabhub-processor` binary via `WorkerProcess` (path
+  derived as `g_self_exe_path/../bin/pylabhub-processor`); covers `--init` (directory structure +
+  default values including both in/out channels and overflow_policy), `--keygen` (vault file created,
+  stdout mentions `Processor vault written to` + `public_key`), `--validate` (exits 0, prints
+  "Validation passed"), malformed JSON (non-zero exit + "Config error" in stderr), and missing
+  config file (non-zero exit). **Total: 580/580 passing.**
+
+### 2026-03-02 (HEP-CORE-0016 Phase 3 — Broker Schema Protocol Tests)
+- ✅ **7 `BrokerSchemaTest` tests** — `test_datahub_broker_schema.cpp` in `tests/test_layer3_datahub/`:
+  - `SchemaId_StoredOnReg` — producer registers with schema_id; query_channel_schema echoes it back
+  - `SchemaBlds_StoredOnReg` — BLDS string stored at REG_REQ time and returned via SCHEMA_REQ
+  - `SchemaHash_ReturnedOnQuery` — raw 32-byte hash → hex-encoded round-trip via broker
+  - `SchemaReq_UnknownChannel_ReturnsNullopt` — query for unregistered channel returns nullopt
+  - `ConsumerSchemaId_IdMatch_Succeeds` — consumer expected_schema_id matches producer's → connect succeeds
+  - `ConsumerSchemaId_Mismatch_Fails` — consumer expected_schema_id differs → connect_channel returns nullopt
+  - `ConsumerSchemaId_EmptyProducer_Fails` — anonymous producer + consumer expects schema_id → fails
+  - Uses in-process `LocalBrokerHandle` pattern (ephemeral port, empty SchemaLibrary)
+  - Bug fix: `messenger_protocol.cpp` CONSUMER_REG error now returns nullopt (was fire-and-forget)
+  **Total: 564/564 passing.**
+
+### 2026-03-02 (HEP-CORE-0016 Phase 2 — Schema Integration Tests)
+- ✅ **`validate_named_schema<DataT, FlexT>(schema_id, lib)`** — template free function added to
+  `schema_library.hpp`; performs: (1) forward lookup via `lib.get(schema_id)`, (2) `sizeof(DataT)`
+  vs `slot_info.struct_size` size check, (3) BLDS hash check when `PYLABHUB_SCHEMA_BEGIN/MEMBER/END`
+  macros used (detected by `has_schema_registry_v<DataT>`), (4) flexzone size + hash check when
+  `FlexT != void`. Throws `SchemaValidationException` on any mismatch or unknown ID; no-op when
+  `schema_id` is empty. Companion `validate_named_schema_from_env<>()` builds library from
+  `default_search_dirs()` + `load_all()` then delegates.
+- ✅ **`has_schema_registry<T>` trait** added to `schema_blds.hpp` — detects `SchemaRegistry<T>`
+  specialization via `std::void_t`; exported as `has_schema_registry_v<T>`.
+- ✅ **`ProducerOptions::schema_id`** and **`ConsumerOptions::expected_schema_id`** — new `std::string`
+  fields (default `""`); when non-empty, `Producer::create<F,D>()` / `Consumer::connect<F,D>()`
+  call `validate_named_schema_from_env<DataBlockT, FlexZoneT>(schema_id)` at entry.
+- ✅ **7 `DatahubSchemaPhase2Test` tests** — `MatchingStruct_NoThrow`, `EmptySchemaId_NoCheck`,
+  `UnknownId_Throws`, `SlotSizeMismatch_Throws`, `SlotHashMismatch_Throws`,
+  `FlexzoneSizeMismatch_Throws`, `MatchingFlexzone_NoThrow`. Use in-memory `SchemaLibrary`
+  (no file I/O, no env vars). **Total: 557/557 passing.**
+
+### 2026-03-02 (Layer 4 producer + consumer tests)
+- ✅ **Layer 4 config unit tests: `ProducerConfigTest`** (8 tests) — `test_producer_config.cpp`
+  in `tests/test_layer4_producer/`; `PureApiTest` fixture; `producer_config.cpp` compiled directly
+  into test binary; covers `from_json_file` (basic fields, uid autogen, schema fields, missing channel,
+  malformed JSON, file not found), `from_directory` (with omitted `hub_dir`), and
+  `stop_on_script_error` default false.
+- ✅ **Layer 4 CLI integration tests: `ProducerCliTest`** (6 tests) — `test_producer_cli.cpp`;
+  `IsolatedProcessTest` fixture; spawns `pylabhub-producer` binary via `WorkerProcess` (path
+  derived as `g_self_exe_path/../bin/pylabhub-producer`); covers `--init` (directory structure +
+  default values), `--keygen` (vault file created, stdout mentions `public_key`), `--validate`
+  (exits 0, prints "Validation passed"), malformed JSON (non-zero exit + "Config error" in
+  stderr), and missing config file (non-zero exit). Key fix: `script_path` must be the *parent*
+  of `script/<type>/`, not `script/` itself — binary appends `script/<type>/__init__.py`.
+- ✅ **Layer 4 config unit tests: `ConsumerConfigTest`** (6 tests) — `test_consumer_config.cpp`
+  in `tests/test_layer4_consumer/`; symmetric to producer; `CONS-` prefix; no `shm_slot_count`,
+  no `update_checksum`; covers `from_json_file` (5 variants) and `from_directory`.
+- ✅ **Layer 4 CLI integration tests: `ConsumerCliTest`** (6 tests) — `test_consumer_cli.cpp`;
+  spawns `pylabhub-consumer` binary; same 6 scenarios as producer CLI tests; "Consumer vault
+  written to" in stdout for keygen. **Total: 550/550 passing.**
 
 ### 2026-02-28 (Actor CLI integration tests)
 - ✅ **Layer 4 CLI tests: `pylabhub-actor` CLI integration** (12 tests) — `test_layer4_actor_cli`

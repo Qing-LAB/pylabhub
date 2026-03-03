@@ -1765,6 +1765,96 @@ Per-channel glob overrides are configured via `channel_policies[]`.
 > CHANNEL_ERROR error taxonomy, see **[HEP-CORE-0007](HEP-CORE-0007-DataHub-Protocol-and-Policy.md)**.
 > For policy cross-reference, see **[HEP-CORE-0009](HEP-CORE-0009-Policy-Reference.md)**.
 
+### 7.1 ZMQ Wire Framing
+
+All ZMQ messages in pyLabHub use a multi-frame format. The first frame is a single-byte
+**type discriminator** that determines how subsequent frames are interpreted.
+
+#### Frame types
+
+| Type byte | Char | Meaning | Used by |
+|-----------|------|---------|---------|
+| `0x43` | `'C'` | Control / protocol | Messenger ↔ Broker, Producer ↔ Consumer peer |
+
+Currently only the control type is defined. Data payloads are carried over SHM (primary
+data path) or via ZmqQueue (raw fixed-size messages with no type prefix — see below).
+
+#### Control message framing (Messenger ↔ BrokerService)
+
+```
+Frame 0: type byte        = 'C'               (1 byte)
+Frame 1: message type     = "REG_REQ"         (variable-length string)
+Frame 2: JSON payload     = {"channel_name": "lab.raw", ...}
+```
+
+On the broker side (ROUTER socket), ZMQ prepends the routing identity frame:
+
+```
+Frame 0: [identity]       (ZMQ ROUTER envelope)
+Frame 1: type byte        = 'C'
+Frame 2: message type     = "REG_REQ"
+Frame 3: JSON payload
+```
+
+#### Broker protocol message types
+
+| Message type | Direction | Payload keys |
+|-------------|-----------|-------------|
+| `REG_REQ` | Producer → Broker | `channel_name`, `shm_name`, `producer_pid`, `schema_hash`, `has_shared_memory`, `channel_pattern`, `zmq_ctrl_endpoint`, `zmq_data_endpoint`, `zmq_pubkey`, `schema_id` (opt), `schema_blds` (opt) |
+| `REG_ACK` | Broker → Producer | `status`, `error` (opt) |
+| `DISC_REQ` | Consumer → Broker | `channel_name` |
+| `DISC_ACK` | Broker → Consumer | `status`, `shm_name`, `consumer_count`, `schema_hash`, `channel_pattern`, `zmq_ctrl_endpoint`, `zmq_data_endpoint`, `zmq_pubkey` |
+| `CONSUMER_REG_REQ` | Consumer → Broker | `channel_name`, `consumer_uid`, `consumer_name`, `expected_schema_hash` (opt), `expected_schema_id` (opt) |
+| `CONSUMER_REG_ACK` | Broker → Consumer | `status`, `error` (opt) |
+| `CONSUMER_DEREG_REQ` | Consumer → Broker | `channel_name`, `consumer_uid` |
+| `HEARTBEAT_REQ` | Producer → Broker | `channel_name` |
+| `HEARTBEAT_ACK` | Broker → Producer | `status`, `channel_name` |
+| `SCHEMA_REQ` | Any → Broker | `schema_id` or `schema_hash` |
+| `SCHEMA_ACK` | Broker → Any | `status`, `schema_id`, `schema_blds` |
+| `CHANNEL_CLOSING_NOTIFY` | Broker → Consumer | `channel_name` |
+| `CHANNEL_ERROR_NOTIFY` | Broker → Consumer | `channel_name`, `error` |
+| `CONSUMER_DIED_NOTIFY` | Broker → Producer | `channel_name`, `consumer_uid` |
+| `CHECKSUM_ERROR_REPORT` | Consumer → Broker | `channel_name`, `consumer_uid`, `error` |
+
+#### Producer ↔ Consumer peer messaging
+
+Direct ZMQ messages between producers and consumers (via the producer's ROUTER peer
+socket) also use control framing:
+
+```
+Frame 0: [consumer identity]   (ZMQ ROUTER envelope)
+Frame 1: type byte = 'C'
+Frame 2: message type = "BROADCAST" | "SEND_TO"
+Frame 3: raw payload bytes
+```
+
+Consumer → Producer messages arrive on the same socket; the producer dispatches them
+via `on_consumer_message(identity, data)`.
+
+#### ZmqQueue data framing (raw transport)
+
+`hub::ZmqQueue` uses PUSH/PULL sockets for raw fixed-size data transport. Messages are
+single-frame, containing exactly `item_size` bytes with **no type prefix**:
+
+```
+Frame 0: [raw data]    (item_size bytes)
+```
+
+This is the data-plane transport for `hub::Processor` when operating in ZMQ-only mode
+(no SHM). There is no flexzone support in ZmqQueue — flexzone data is only available
+when using SHM-backed `hub::ShmQueue`.
+
+#### Design notes
+
+- **SHM is the primary data path**: Slot data (high-bandwidth, low-latency) flows through
+  shared memory. ZMQ carries only control messages (registration, heartbeats, notifications)
+  and optional peer messaging (broadcast/send_to).
+- **ZmqQueue enables cross-machine transport**: When SHM is not available (e.g., processor
+  bridging two separate machines), ZmqQueue provides a raw PUSH/PULL data plane using the
+  same `hub::Queue` abstraction that `hub::Processor` consumes.
+- **All control messages use JSON**: Human-readable, debuggable, extensible. Performance
+  is not critical for control plane messages (O(1)/sec, not per-slot).
+
 
 ## 8. Common Usage Patterns
 
@@ -2773,6 +2863,96 @@ with_next_slot(iter, 1000, [&](const SlotConsumeHandle& slot) {
 ### Appendix E: Migration Guide
 
 **This is version 1.0 (first release).** No migrations yet. Future versions will document breaking changes here.
+
+---
+
+## 17. Architectural Layers
+
+> **Added 2026-03-01** — captures design decisions from the Queue Abstraction and
+> Processor design discussions. Cross-reference: HEP-CORE-0012 §11, HEP-CORE-0017.
+
+### 17.1 The Four Planes
+
+Every channel in the DataHub system carries traffic on four independent planes.
+Understanding the separation prevents misdesign (e.g. conflating data flow with
+control protocol, or embedding rate policy inside the transport).
+
+| Plane | What flows | Mechanism | Governed by |
+|-------|-----------|-----------|-------------|
+| **Data plane** | Slot payloads (SHM or ZMQ frames) | `DataBlockProducer`/`Consumer` or `hub::Queue` | Slot acquire / commit / release |
+| **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets | Broker + ChannelHandle protocol (HEP-CORE-0007) |
+| **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | `send()` / `broadcast()` / callbacks |
+| **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+
+The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
+effect on the control or message planes. Changing `LoopPolicy` has no effect on
+the data or control planes.
+
+### 17.2 Producer and Consumer Are Intentionally SHM-Specific
+
+`hub::Producer` and `hub::Consumer` expose the full richness of the SHM data plane
+to their callers:
+
+- **Spinlocks** (`api.spinlock(i)`) — shared-memory spinlocks on flexzone pages
+- **Metrics** (`acquire_timing`, `loop_overrun_count`, `last_slot_wait_us`) — derived from SHM acquire timing; meaningless for ZMQ transport
+- **LoopPolicy** (`set_loop_policy()`) — SHM acquire pacing; governs the timing plane
+- **WriteProcessorContext / ReadProcessorContext** — typed TransactionContext with full SHM slot API
+
+This is a **feature, not a limitation**. Callers choose `hub::Producer` /
+`hub::Consumer` precisely because they want these SHM-specific capabilities.
+The `hub::Queue` abstraction (§17.3) must **not** be inserted between
+`hub::Producer`/`Consumer` and their underlying `DataBlockProducer`/`Consumer` —
+doing so would require escape-hatch downcasts, conditional behaviour on ZMQ paths,
+and would dilute the API contract these classes provide.
+
+**Rule**: `hub::Producer` and `hub::Consumer` are permanently bound to SHM transport.
+Cross-machine data flow is handled by `hub::Processor` acting as a bridge (§17.4),
+not by making Producer/Consumer transport-agnostic.
+
+### 17.3 hub::Queue — Data Plane Abstraction for Processor
+
+`hub::Queue` (introduced alongside `hub::Processor`, 2026-03-01) provides a
+transport-agnostic data plane interface used exclusively by the Processor layer:
+
+```
+hub::Queue (abstract)
+  ├─ ShmQueue  — wraps DataBlockConsumer (read) or DataBlockProducer (write) directly
+  └─ ZmqQueue  — wraps raw ZMQ PULL (read) or PUSH (write) socket
+```
+
+**Queue does not carry**:
+
+- Control plane — no HELLO/BYE, no REG/DISC, no broker protocol
+- Message plane — no Messenger, no `send()` / `broadcast()`
+- Timing plane — no LoopPolicy (ShmQueue exposes a `set_loop_policy()` passthrough
+  for callers that need it; ZmqQueue ignores it)
+
+**Runtime cost of the Queue abstraction over raw DataBlock:**
+Virtual dispatch per acquire/release is ~2 ns. A typical SHM acquire is 100–500 ns.
+The Queue overhead is less than 1% of the critical path and is fully buried in the
+slot acquisition time shown in §10.1.
+
+### 17.4 Processor as Cross-Machine Bridge
+
+Because `hub::Producer` and `hub::Consumer` are SHM-local, cross-machine data
+flow is not achieved by modifying their transport — it is achieved by composing
+a `hub::Processor` with one `ShmQueue` and one `ZmqQueue`:
+
+```
+Machine A:
+  hub::Producer ──► ShmQueue(write) ──► Processor(bridge) ──► ZmqQueue(write) ──[net]──►
+
+Machine B:
+  ──[net]──► ZmqQueue(read) ──► Processor(bridge) ──► ShmQueue(write) ──► hub::Consumer
+```
+
+The bridge Processor has no Python callback — it is a pure C++ passthrough
+(handler simply copies `in_data` → `out_data` and returns `true`). The upstream
+Producer and downstream Consumer remain unchanged; they continue to use SHM locally
+and expose all SHM-specific facilities to their callers.
+
+See HEP-CORE-0012 §11 for the full dual-broker registration protocol and transport
+selection rules that govern the bridge Processor.
 
 ---
 

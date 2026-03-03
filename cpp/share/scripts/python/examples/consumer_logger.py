@@ -1,124 +1,97 @@
 """
-consumer_logger.py — Example pylabhub-actor consumer script (multi-role API).
+consumer_logger.py — Example pylabhub-consumer script.
 
-Subscribes to the counter channel via role "counter_in" and logs each slot.
+Subscribes to the counter channel and logs each slot.
 The slot layout is declared in consumer_logger.json — no struct.unpack() needed.
 
 Slot fields  (ctypes.LittleEndianStructure, natural alignment):
   count  int64    — monotonic counter from producer
   ts     float64  — producer Unix timestamp
 
-FlexZone fields (read-only zero-copy view of producer's SHM region):
+FlexZone fields (read-only copy of producer's SHM region):
   producer_pid  uint64    — producer PID
   start_time    float64   — producer start time
   label         c_char*32 — channel label
 
 Usage
 -----
-    pylabhub-actor --config consumer_logger.json
-    (Requires producer_counter running on the same broker.)
+    # Run (place this file + consumer_logger.json in a consumer directory)
+    pylabhub-consumer <cons_dir>
+
+    # Or point directly at the config
+    pylabhub-consumer --config consumer_logger.json
 
 Notes
 -----
-- The role name "counter_in" in @actor.on_read() must match the key in the
-  "roles" map in consumer_logger.json.
-- `slot` is a ctypes.from_buffer view into read-only SHM memory.
-  Writing to slot fields raises TypeError.  Do not store `slot` beyond the call.
-- `flexzone` is a read-only zero-copy view of the producer's flexzone region.
-  It updates automatically as the producer writes to it.
-- `timed_out=True` fires when no slot arrived within timeout_ms (5 s here).
+- `in_slot` is a ctypes copy of the SHM slot — valid only during on_consume().
+  Writing to slot fields raises AttributeError. Do not store `in_slot`.
+- `flexzone` is a read-only ctypes copy of the producer's flexzone.
+- `in_slot=None` means the slot-acquire timed out (timeout_ms elapsed).
 """
 
 import time
 
-import pylabhub_actor as actor
+import pylabhub_consumer as cons
 
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
-last_count = 0
-slots_read = 0
-start_time = 0.0
+last_count: int   = 0
+slots_read: int   = 0
+start_time: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Role: counter_in (consumer)
+# Callbacks
 # ---------------------------------------------------------------------------
 
-@actor.on_init("counter_in")
-def counter_in_init(flexzone, api: actor.ActorRoleAPI):
-    """
-    Called once before the read loop starts.
-
-    flexzone is a read-only ctypes.LittleEndianStructure backed directly by
-    the producer's SHM flexible-zone region (zero-copy).
-    """
+def on_init(api: cons.ConsumerAPI) -> None:
+    """Called once before the read loop starts."""
     global start_time
     start_time = time.time()
-    pid   = flexzone.producer_pid
-    label = flexzone.label.decode(errors='replace') if flexzone.label else ''
-    fz_ok = api.verify_flexzone_checksum()
-    msg   = (f"counter_in: connected  uid={api.uid()}  "
-             f"producer_pid={pid}  label='{label}'  flexzone_valid={fz_ok}")
-    api.log('info', msg)
-    print(f"[pylabhub-demo] {msg}", flush=True)
+    api.log('info', f"CounterLogger: started  uid={api.uid()}")
 
 
-@actor.on_read("counter_in")
-def counter_in_read(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool = False):
+def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
     """
-    Called for each SHM slot or on timeout.
+    Called for each SHM slot (or on timeout when in_slot is None).
 
-    When timed_out=True: slot is None; no data is available.
-    When timed_out=False: slot is a read-only ctypes struct — valid this call only.
-    api.slot_valid() is False when checksum failed and on_checksum_fail='pass'.
+    in_slot:  read-only ctypes struct copy (None on timeout)
+    flexzone: read-only flexzone copy (may be None if not configured)
+    messages: list of bytes from ZMQ data channel
+    api:      ConsumerAPI — log, stop, in_slots_received(), etc.
     """
     global last_count, slots_read
 
-    if timed_out:
-        # No data in 5 s — send a heartbeat to the producer.
-        api.send_ctrl(b"heartbeat")
-        api.log('debug', "counter_in: timeout heartbeat sent")
-        print("[pylabhub-demo] counter_in: timeout — no slot in 5 s", flush=True)
+    if in_slot is None:
+        api.log('debug', "CounterLogger: timeout — no slot in 5 s")
         return
 
-    if not api.slot_valid():
-        api.log('warn', "counter_in: slot checksum failed — data may be corrupt")
-
-    count = slot.count
-    ts    = slot.ts
     slots_read += 1
+    count = in_slot.count
+    ts    = in_slot.ts
 
     skipped = count - last_count - 1
     last_count = count
 
     if skipped > 0:
-        api.log('warn', f"counter_in: skipped {skipped} slot(s) at count={count}")
+        api.log('warn', f"CounterLogger: skipped {skipped} slot(s) at count={count}")
 
     elapsed = time.time() - start_time
     rate    = slots_read / elapsed if elapsed > 0 else 0.0
 
-    # Print every slot — visible on console for demo; also log every 1000 via hub logger.
-    print(f"[pylabhub-demo] count={count}  ts={ts:.3f}  "
+    print(f"[CounterLogger] count={count}  ts={ts:.3f}  "
           f"rate={rate:.0f}/s  skipped={skipped}", flush=True)
 
     if count % 1000 == 0:
         api.log('info',
-                f"counter_in: slot {count}  ts={ts:.3f}  "
+                f"CounterLogger: slot {count}  ts={ts:.3f}  "
                 f"rate={rate:.0f} slots/s")
 
 
-@actor.on_data("counter_in")
-def counter_in_data(data: bytes, api: actor.ActorRoleAPI):
-    """Called for each ZMQ broadcast frame (non-slot messages from producer)."""
-    api.log('debug', f"counter_in: zmq frame {len(data)} bytes")
-
-
-@actor.on_stop_c("counter_in")
-def counter_in_stop(flexzone, api: actor.ActorRoleAPI):
+def on_stop(api: cons.ConsumerAPI) -> None:
     """Called once after the read loop exits."""
     elapsed = time.time() - start_time
-    msg = (f"counter_in: stopped  read={slots_read} slots  "
-           f"elapsed={elapsed:.1f}s")
-    api.log('info', msg)
-    print(f"[pylabhub-demo] {msg}", flush=True)
+    api.log('info',
+            f"CounterLogger: stopped  read={slots_read} slots"
+            f"  elapsed={elapsed:.1f}s")

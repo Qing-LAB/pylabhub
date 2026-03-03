@@ -84,6 +84,8 @@ struct ThreePhaseBackoff
         {
             // Phase 2: Light sleep - reduce CPU usage but stay responsive
             // Typical latency: 1-100us depending on OS timer resolution
+            // XPLAT: sleep_for(1us) resolution varies: Linux ~1-10us, macOS ~1us,
+            // Windows ~15.6ms. Backoff phases chosen for Linux; Windows gets coarser.
             std::this_thread::sleep_for(std::chrono::microseconds(1));
         }
         else

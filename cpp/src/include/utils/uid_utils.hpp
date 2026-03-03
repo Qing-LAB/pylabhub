@@ -130,6 +130,48 @@ inline std::string generate_actor_uid(const std::string &actor_name = "")
     return "ACTOR-" + name_part + "-" + suffix;
 }
 
+/**
+ * @brief Generate a processor UID: @c "PROC-{NAME}-{8HEX}".
+ *
+ * @param proc_name Human-readable processor name (e.g. "Scaler").
+ * @return          A UID string of the form @c "PROC-SCALER-3A7F2B1C".
+ */
+inline std::string generate_processor_uid(const std::string &proc_name = "")
+{
+    const auto name_part = detail::sanitize_name_part(proc_name, 8U);
+    char suffix[9];
+    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
+    return "PROC-" + name_part + "-" + suffix;
+}
+
+/**
+ * @brief Generate a producer UID: @c "PROD-{NAME}-{8HEX}".
+ *
+ * @param prod_name Human-readable producer name (e.g. "TempSensor").
+ * @return          A UID string of the form @c "PROD-TEMPSENS-3A7F2B1C".
+ */
+inline std::string generate_producer_uid(const std::string &prod_name = "")
+{
+    const auto name_part = detail::sanitize_name_part(prod_name, 8U);
+    char suffix[9];
+    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
+    return "PROD-" + name_part + "-" + suffix;
+}
+
+/**
+ * @brief Generate a consumer UID: @c "CONS-{NAME}-{8HEX}".
+ *
+ * @param cons_name Human-readable consumer name (e.g. "Logger").
+ * @return          A UID string of the form @c "CONS-LOGGER-3A7F2B1C".
+ */
+inline std::string generate_consumer_uid(const std::string &cons_name = "")
+{
+    const auto name_part = detail::sanitize_name_part(cons_name, 8U);
+    char suffix[9];
+    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
+    return "CONS-" + name_part + "-" + suffix;
+}
+
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
@@ -144,6 +186,24 @@ inline bool has_hub_prefix(std::string_view uid) noexcept
 inline bool has_actor_prefix(std::string_view uid) noexcept
 {
     return uid.size() >= 10U && uid.substr(0, 6) == "ACTOR-";
+}
+
+/// True if @p uid starts with @c "PROC-" and has at least one more character.
+inline bool has_processor_prefix(std::string_view uid) noexcept
+{
+    return uid.size() >= 9U && uid.substr(0, 5) == "PROC-";
+}
+
+/// True if @p uid starts with @c "PROD-" and has at least one more character.
+inline bool has_producer_prefix(std::string_view uid) noexcept
+{
+    return uid.size() >= 9U && uid.substr(0, 5) == "PROD-";
+}
+
+/// True if @p uid starts with @c "CONS-" and has at least one more character.
+inline bool has_consumer_prefix(std::string_view uid) noexcept
+{
+    return uid.size() >= 9U && uid.substr(0, 5) == "CONS-";
 }
 
 } // namespace pylabhub::uid

@@ -520,7 +520,9 @@ Messenger::create_channel(const std::string &channel_name,
                            uint32_t           schema_version,
                            int                timeout_ms,
                            const std::string &actor_name,
-                           const std::string &actor_uid)
+                           const std::string &actor_uid,
+                           const std::string &schema_id,
+                           const std::string &schema_blds)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -585,6 +587,8 @@ Messenger::create_channel(const std::string &channel_name,
     cmd.timeout_ms        = timeout_ms;
     cmd.actor_name        = actor_name;
     cmd.actor_uid         = actor_uid;
+    cmd.schema_id         = schema_id;
+    cmd.schema_blds       = schema_blds;
     cmd.result            = std::move(reg_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -606,7 +610,8 @@ Messenger::connect_channel(const std::string &channel_name,
                             int                timeout_ms,
                             const std::string &schema_hash,
                             const std::string &consumer_uid,
-                            const std::string &consumer_name)
+                            const std::string &consumer_name,
+                            const std::string &expected_schema_id)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -623,6 +628,7 @@ Messenger::connect_channel(const std::string &channel_name,
     cmd.expected_schema_hash = schema_hash;
     cmd.consumer_uid         = consumer_uid;
     cmd.consumer_name        = consumer_name;
+    cmd.expected_schema_id   = expected_schema_id;
     cmd.result               = std::move(cc_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -765,6 +771,20 @@ void Messenger::enqueue_heartbeat(const std::string &channel) noexcept
     if (!pImpl->m_running.load(std::memory_order_acquire))
         return; // worker not started; silently ignore
     pImpl->enqueue(HeartbeatNowCmd{channel});
+}
+
+std::optional<ChannelSchemaInfo>
+Messenger::query_channel_schema(const std::string &channel_name, int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: query_channel_schema('{}') — not connected.", channel_name);
+        return std::nullopt;
+    }
+    std::promise<std::optional<ChannelSchemaInfo>> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(QuerySchemaCmd{channel_name, timeout_ms, std::move(promise)});
+    return future.get();
 }
 
 Messenger &Messenger::get_instance()

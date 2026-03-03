@@ -21,6 +21,7 @@ set(UTILS_SOURCES
   core/debug_info.cpp
   core/platform.cpp
   core/uuid_utils.cpp
+  core/interactive_signal_handler.cpp
 
   # --- service: lifecycle, I/O, crypto, secrets ---
   service/lifecycle.cpp
@@ -66,9 +67,16 @@ set(UTILS_SOURCES
   ipc/channel_registry.cpp
   ipc/broker_service.cpp
 
-  # --- hub: high-level Producer/Consumer API ---
+  # --- hub: high-level Producer/Consumer API + transport-agnostic Queue + Processor ---
   hub/hub_producer.cpp
   hub/hub_consumer.cpp
+  hub/hub_shm_queue.cpp
+  hub/hub_zmq_queue.cpp
+  hub/hub_processor.cpp
+
+  # --- schema: Named Schema Registry (HEP-CORE-0016) ---
+  schema/schema_library.cpp
+  schema/schema_registry.cpp
 
   # --- scripting: abstract ScriptHost base + LuaJIT concrete implementation ---
   scripting/script_host.cpp

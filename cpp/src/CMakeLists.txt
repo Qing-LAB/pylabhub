@@ -2,17 +2,19 @@
 # src/CMakeLists.txt
 #
 # Purpose:
-#   Configures the primary executable (`pylabhub-hubshell`) and orchestrates
-#   the inclusion of core subdirectories like `src/utils`. It establishes
-#   build properties, links dependencies, and defines installation and staging
-#   rules for the main application components.
+#   Configures all pyLabHub executables and orchestrates the inclusion of
+#   core subdirectories. It establishes build properties, links dependencies,
+#   and defines installation and staging rules for all application components.
 #
 # Responsibilities:
-#   - Defines the `pylabhub-hubshell` executable.
-#   - Includes the `utils` subdirectory.
+#   - Defines the `pylabhub-hubshell` executable (hub control plane).
+#   - Defines the `pylabhub-producer` executable (data producer).
+#   - Defines the `pylabhub-consumer` executable (data consumer).
+#   - Defines the `pylabhub-processor` executable (data transform processor).
+#   - Includes the `utils`, `scripting` subdirectories.
 #   - Applies common build settings (C++ standard, Clang-Tidy, sanitizers).
-#   - Defines installation rules for the executable.
-#   - Configures staging for the executable.
+#   - Defines installation rules for all executables.
+#   - Configures staging for all executables.
 #
 # Expected Parent Behavior (from top-level CMakeLists.txt):
 #   - Should be included via `add_subdirectory(src)`.
@@ -20,6 +22,11 @@
 #     are defined.
 #   - Assumes `pylabhub_enable_clang_tidy_for_target` and
 #     `pylabhub_apply_sanitizer_to_target` functions are available.
+#
+# Standalone binaries (data plane):
+#   - `pylabhub-producer`  — timer-driven data producer  (src/producer/)
+#   - `pylabhub-consumer`  — demand-driven data consumer (src/consumer/)
+#   - `pylabhub-processor` — transform processor         (src/processor/)
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.29)
 
@@ -31,8 +38,14 @@ add_subdirectory(utils)
 # out of pure-C++ consumers of pylabhub-utils).
 add_subdirectory(scripting)
 
-# Scripted producer/consumer actor host (embeds CPython + pybind11).
-add_subdirectory(actor)
+# Standalone data-producer host (embeds CPython + pybind11).
+add_subdirectory(producer)
+
+# Standalone data-consumer host (embeds CPython + pybind11).
+add_subdirectory(consumer)
+
+# Standalone data-processor host (embeds CPython + pybind11).
+add_subdirectory(processor)
 
 # Define the main application executable.
 # hub_python/ sources embed the CPython interpreter + pybind11 bindings.

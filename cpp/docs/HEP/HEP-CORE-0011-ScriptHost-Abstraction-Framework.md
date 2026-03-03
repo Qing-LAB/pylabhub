@@ -7,8 +7,9 @@
 | **Author**         | pylabhub development team                               |
 | **Status**         | Active                                                  |
 | **Created**        | 2026-02-28                                              |
+| **Updated**        | 2026-03-03 (RoleHostCore + PythonRoleHostBase dedup)    |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
-| **Related**        | `HEP-CORE-0010` (Actor Thread Model)                    |
+| **Related**        | `HEP-CORE-0018` (Producer and Consumer Binaries)        |
 
 ---
 
@@ -73,21 +74,82 @@ them a documented, supported pattern.
 
 ```
 pylabhub-utils (shared lib — existing)
-  include/utils/script_host.hpp        ← ScriptHost abstract base (PUBLIC header)
-  src/utils/scripting/script_host.cpp  ← base implementation (thread_local, startup/shutdown)
+  include/utils/script_host.hpp              ← ScriptHost abstract base (PUBLIC header)
+  include/utils/script_host_helpers.hpp      ← Shared inline helpers (resolve_schema, etc.)
+  include/utils/script_host_schema.hpp       ← SchemaSpec, FieldDef, SlotExposure types
+  src/utils/scripting/script_host.cpp        ← base implementation (thread_local, startup/shutdown)
   src/utils/scripting/lua_script_host.hpp/.cpp  ← LuaScriptHost concrete class
 
-pylabhub-scripting (new thin STATIC lib)
+pylabhub-scripting (thin STATIC lib)
   src/scripting/python_script_host.hpp/.cpp     ← PythonScriptHost concrete class
-  (linked by pylabhub-hubshell and pylabhub-actor; NOT by pure-C++ consumers)
+  src/scripting/role_host_core.hpp/.cpp          ← RoleHostCore (engine-agnostic infrastructure)
+  src/scripting/python_role_host_base.hpp/.cpp   ← PythonRoleHostBase (common Python layer)
+  src/scripting/lua_role_host_base.hpp           ← LuaRoleHostBase (stub for future Lua)
+  (linked by all four standalone binaries; NOT by pure-C++ consumers)
 
-pylabhub-hubshell (existing executable)
-  src/hub_python/hub_script.hpp/.cpp            ← HubScript : PythonScriptHost (refactored)
+pylabhub-hubshell (executable)
+  src/hub_python/hub_script.hpp/.cpp            ← HubScript : PythonScriptHost (no RoleHostBase)
 
-pylabhub-actor (existing executable)
-  actor_main.cpp                                ← uses PythonScriptHost dynamic module
-  src/actor/actor_host.cpp                      ← unchanged (role coordinator)
+pylabhub-producer (executable)
+  src/producer/producer_script_host.hpp/.cpp    ← ProducerScriptHost : PythonRoleHostBase
+
+pylabhub-consumer (executable)
+  src/consumer/consumer_script_host.hpp/.cpp    ← ConsumerScriptHost : PythonRoleHostBase
+
+pylabhub-processor (executable)
+  src/processor/processor_script_host.hpp/.cpp  ← ProcessorScriptHost : PythonRoleHostBase
 ```
+
+### Class Hierarchy
+
+```
+RoleHostCore                              (engine-agnostic infrastructure, composed)
+  — message queue, shutdown flags, state, schema storage
+  — reusable by any scripting engine
+
+ScriptHost (abstract)                     (lifecycle contract — in pylabhub-utils)
+├── LuaScriptHost                         (Lua runtime — in pylabhub-utils)
+├── PythonScriptHost                      (Python runtime — in pylabhub-scripting)
+│   ├── HubScript                         (hub-specific; no RoleHostBase — different callback set)
+│   └── PythonRoleHostBase                (common do_python_work() skeleton + virtual hooks)
+│       ├── ProducerScriptHost            (thin: ~120 lines, timer-driven production loop)
+│       ├── ConsumerScriptHost            (thin: ~120 lines, demand-driven consumption loop)
+│       └── ProcessorScriptHost           (thin: ~150 lines, delegates to hub::Processor)
+└── (future) LuaRoleHostBase              (Lua runtime + same virtual hooks — stub exists)
+        └── (future role subclasses)
+```
+
+**Design: Composition + Inheritance.**
+
+- `RoleHostCore` is **composed** (has-a) by `PythonRoleHostBase` and future `LuaRoleHostBase`.
+  No virtual methods — pure infrastructure. No diamond inheritance problems.
+- `PythonRoleHostBase` **inherits** `PythonScriptHost` for interpreter lifecycle, and
+  provides the shared `do_python_work()` skeleton with ~15 virtual hooks for role dispatch.
+- Each role subclass overrides only the hooks specific to its role (~100-150 lines).
+
+### Virtual Hook Contract (PythonRoleHostBase)
+
+| Hook | Purpose | Example override |
+|------|---------|-----------------|
+| `role_tag()` | Short log prefix | `"prod"`, `"cons"`, `"proc"` |
+| `role_name()` | Full role name | `"producer"`, `"consumer"`, `"processor"` |
+| `role_uid()` | UID from config | `config_.producer_uid` |
+| `script_base_dir()` | Script path from config | `config_.script_path` |
+| `script_type_str()` | Script type from config | `config_.script_type` |
+| `required_callback_name()` | Entry-point callback | `"on_produce"`, `"on_consume"`, `"on_process"` |
+| `wire_api_identity()` | Set uid/name/channel on API | Sets api_.set_uid(), etc. |
+| `extract_callbacks(mod)` | Pull callbacks from Python module | `py_on_produce_ = getattr(mod, ...)` |
+| `has_required_callback()` | Validate entry-point exists | `is_callable(py_on_produce_)` |
+| `build_role_types()` | Build slot/fz types | Dual schemas (processor) or single |
+| `print_validate_layout()` | --validate output | Print slot+fz layout |
+| `start_role()` | Connect, start threads | Create Producer/Consumer/Processor |
+| `stop_role()` | Join threads, disconnect | Stop and close connections |
+| `cleanup_on_start_failure()` | Rollback on error | Close partial connections |
+| `clear_role_pyobjects()` | Release role-specific py objects | Reset py_on_produce_ etc. |
+| `on_script_error()` | Increment error counter | `api_.increment_script_errors()` |
+| `has_connection_for_stop()` | Guard for on_stop | `out_producer_.has_value()` |
+| `update_fz_checksum_after_init()` | Post-init checksum (default: no-op) | Producer updates SHM checksum |
+| `build_messages_list_(msgs)` | Build Python message list (virtual) | Consumer omits sender |
 
 ---
 
@@ -318,51 +380,97 @@ The `script.type` field is **required** when `script.path` is set. It selects wh
   run/
 ```
 
-### Actor (`actor.json`)
+### Producer (`producer.json`)
 
-**Before (current):**
 ```json
 {
-  "roles": {
-    "raw_out": {
-      "script": { "module": "raw_out", "path": "./roles" }
-    }
+  "script": {
+    "type": "python",
+    "path": "./script"
   }
 }
 ```
 
-**After:**
+**Producer directory layout:**
+```
+<producer_dir>/
+  producer.json
+  vault/
+  script/
+    python/
+      __init__.py      ← on_init(api) / on_produce(out_slot, fz, msgs, api) -> bool / on_stop(api)
+    lua/               ← present only when type = "lua"
+      main.lua
+  logs/
+  run/
+    producer.pid
+```
+
+### Consumer (`consumer.json`)
+
 ```json
 {
-  "roles": {
-    "raw_out": {
-      "script": {
-        "type":   "python",
-        "module": "raw_out",
-        "path":   "./roles"
-      }
-    }
+  "script": {
+    "type": "python",
+    "path": "./script"
   }
 }
 ```
 
-**Actor directory layout:**
+**Consumer directory layout:**
 ```
-<actor_dir>/
-  actor.json
-  roles/
-    raw_out/
-      script/
-        python/
-          __init__.py      ← on_iteration(slot, flexzone, messages, api) / on_init / on_stop
-        lua/               ← present only when type = "lua"
-          main.lua
+<consumer_dir>/
+  consumer.json
+  vault/
+  script/
+    python/
+      __init__.py      ← on_init(api) / on_consume(in_slot, fz, msgs, api) / on_stop(api)
+    lua/               ← present only when type = "lua"
+      main.lua
+  logs/
+  run/
+    consumer.pid
 ```
 
-`script.type` is **required** when `script.path` is set. Omitting it leaves `hub_script_dir`
-empty — the hub runs without a user script and logs an INFO message. The subdir and its
-`__init__.py` must exist; missing either throws a `std::runtime_error` that is caught and
-logged as an error while the hub continues running.
+### Processor (`processor.json`)
+
+```json
+{
+  "script": {
+    "type": "python",
+    "path": "./script"
+  }
+}
+```
+
+**Processor directory layout:**
+```
+<processor_dir>/
+  processor.json
+  vault/
+  script/
+    python/
+      __init__.py      ← on_init(api) / on_process(in_slot, out_slot, fz, msgs, api) -> bool / on_stop(api)
+    lua/               ← present only when type = "lua"
+      main.lua
+  logs/
+  run/
+    processor.pid
+```
+
+### Script path resolution rule (all four components)
+
+`script.type` is **required** in every config. C++ resolution:
+
+```
+<script.path> + "/" + <script.type> + "/" + "__init__.py"   (Python)
+<script.path> + "/" + <script.type> + "/main.lua"           (Lua)
+```
+
+With `"path": "./script"` and `"type": "python"` → `./script/python/__init__.py`.
+
+The subdir and its entry file must exist; missing either throws a `std::runtime_error`
+that is caught and logged as an error. No fallback, no silent skip.
 
 ---
 
@@ -452,9 +560,11 @@ rich to reliably sandbox without significant complexity). Script authors are tru
 
 | Scenario | Python | Lua |
 |---|---|---|
-| Interpreter ownership | `hub_thread_` / actor Python thread | Calling thread |
-| `on_start` / `on_tick` / `on_stop` | GIL held on interpreter thread | Caller's thread (validated) |
-| AdminShell `exec()` | `py::gil_scoped_acquire` (concurrent, GIL serializes) | Not applicable |
+| Interpreter ownership | Dedicated `interpreter_thread_` per binary | Calling thread |
+| Callbacks (`on_init`, `on_produce`/`on_consume`/`on_process`/`on_tick`, `on_stop`) | GIL held on interpreter thread | Caller's thread (validated) |
+| AdminShell `exec()` (hub only) | `py::gil_scoped_acquire` (concurrent, GIL serializes) | Not applicable |
+| ZMQ callbacks (`zmq_thread_`) | Routes to `RoleHostCore::enqueue_message()` (mutex, no GIL) | Same — no GIL |
+| Loop thread drain-and-dispatch | `RoleHostCore::drain_messages()` then GIL acquire for callback | Direct Lua stack call |
 | Concurrent calls from wrong thread | Prevented by GIL | Detected via `g_script_thread_state`, hard error logged |
 | `is_ready()` check | Lock-free `std::atomic<bool>` | Lock-free `std::atomic<bool>` |
 
@@ -463,16 +573,17 @@ rich to reliably sandbox without significant complexity). Script authors are tru
 ## Expansion Path: Future Multi-Thread Model
 
 The `thread_local ScriptHostThreadState` is the foundational hook for future expansion.
-When per-role Python threads are needed (e.g., each actor role gets its own sub-interpreter):
+Each standalone binary currently has exactly one `ScriptHost` instance. If per-channel
+sub-interpreters are needed in a future multi-channel binary:
 
-1. Each worker thread sets `g_script_thread_state` with its own `ScriptHost*` and role index.
+1. Each worker thread sets `g_script_thread_state` with its own `ScriptHost*` and channel index.
 2. `PythonScriptHost` checks thread state for dispatch validation.
 3. Sub-interpreter support (CPython 3.12+ `Py_NewInterpreterFromConfig`) could be enabled
-   per-role without changing the abstract interface.
+   per-channel without changing the abstract interface.
 
-For Lua, the path is simpler: one `lua_State*` per role thread, each `LuaScriptHost`
-instance fully independent (no GIL). The `thread_local` state allows future diagnostics
-and cross-thread coordination without changing call sites.
+For Lua, the path is simpler: one `lua_State*` per `LuaScriptHost` instance — fully
+independent (no GIL). The `thread_local` state allows future diagnostics and cross-thread
+coordination without changing call sites.
 
 **What is explicitly deferred to a future HEP:**
 - Multi-thread script execution
@@ -482,18 +593,23 @@ and cross-thread coordination without changing call sites.
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-1. `luajit_install.cmake` — change JIT staging to `opt/luajit/jit/`
-2. `include/utils/script_host.hpp` + `src/utils/scripting/script_host.cpp` — abstract base
-3. `src/utils/scripting/lua_script_host.{hpp,cpp}` — LuaScriptHost; update utils CMakeLists
-4. `src/scripting/python_script_host.{hpp,cpp}` — PythonScriptHost static lib (new target)
-5. `hub_config.hpp/.cpp` — rename `python.script` → `script.path/type`; add `script.type` getter
-6. `actor_config.hpp` — add `script_type` field to `RoleConfig`; default `"python"`
-7. `hub_script.hpp/.cpp` — refactor `HubScript : PythonScriptHost`
-8. `actor_main.cpp` — replace stack `py::scoped_interpreter` with `PythonScriptHost` dynamic module
-9. `do_init()` in hubshell + actor `--init` — create `script/python/` template; update hub.json schema
-10. All doc comments, README_Deployment.md §4, actor_config.hpp JSON format comment
+| # | Component | Status | Date |
+|---|-----------|--------|------|
+| 1 | `include/utils/script_host.hpp` — ScriptHost abstract base | Done | 2026-02-28 |
+| 2 | `src/scripting/python_script_host.hpp/.cpp` — PythonScriptHost | Done | 2026-02-28 |
+| 3 | `hub_script.hpp/.cpp` — HubScript : PythonScriptHost | Done | 2026-02-28 |
+| 4 | Producer/Consumer/Processor ScriptHost subclasses | Done | 2026-03-01 |
+| 5 | `script_host_helpers.hpp` — 14 shared inline helpers | Done | 2026-03-02 |
+| 6 | `script_host_schema.hpp` — SchemaSpec, FieldDef types | Done | 2026-03-02 |
+| 7 | `role_host_core.hpp/.cpp` — engine-agnostic infrastructure | Done | 2026-03-03 |
+| 8 | `python_role_host_base.hpp/.cpp` — common Python layer | Done | 2026-03-03 |
+| 9 | `lua_role_host_base.hpp` — Lua stub | Done | 2026-03-03 |
+| 10 | Slim down 3 role subclasses to ~120-150 lines each | Done | 2026-03-03 |
+| 11 | `luajit_install.cmake` — LuaJIT staging to `opt/luajit/jit/` | Pending | — |
+| 12 | `lua_script_host.hpp/.cpp` — LuaScriptHost concrete class | Pending | — |
+| 13 | Full Lua role subclasses (via LuaRoleHostBase) | Pending | — |
 
 ---
 
