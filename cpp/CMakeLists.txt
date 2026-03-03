@@ -251,6 +251,12 @@ else()
   message(STATUS "")
 endif()
 
+if(PYLABHUB_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+  message(STATUS "--- Examples Sub-Project Configuration Complete ---")
+  message(STATUS "")
+endif()
+
 # Configure add-ons, if the directory exists.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/add-ons")
   add_subdirectory(add-ons)

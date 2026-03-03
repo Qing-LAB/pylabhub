@@ -1,22 +1,20 @@
 # Messenger / Broker TODO
 
-**Purpose:** Track Messenger, BrokerService, HubShell, and pylabhub-actor open items.
+**Purpose:** Track Messenger, BrokerService, HubShell, and binary (producer/consumer/processor) messaging open items.
 
 **Master TODO:** `docs/TODO_MASTER.md`
 **Implementation:** `src/utils/ipc/messenger.cpp`, `src/utils/ipc/broker_service.cpp`
 **HEP:** `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md` §6 (control-plane protocol)
-**Actor Design:** `docs/tech_draft/ACTOR_DESIGN.md`
 
 ---
 
 ## Current Status
 
-✅ **550/550 tests passing (2026-02-27).** HubShell all 6 phases, pylabhub-actor
-multi-role system with per-role Python packages, broker health layer (Cat 1/Cat 2),
-consumer registration, UID enforcement, SharedSpinLockPy, HEP-CORE-0010 Phases 1–3
-(unified on_iteration, ZMQ thread consolidation, application-level heartbeat),
-actor identity + hub_dir wiring, --init flows, embedded-mode unit tests,
-Hub Script Package + tick thread, GIL/signal handler unified interface — all complete.
+✅ **705/705 tests passing (2026-03-02).** HubShell all 6 phases, standalone binaries
+(`pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`) with Python script hosts,
+broker health layer (Cat 1/Cat 2), consumer registration, UID enforcement, SharedSpinLockPy,
+GIL/signal handler unified interface, Hub Script Package + tick thread — all complete.
+**`pylabhub-actor` eliminated (2026-03-01)** — replaced by standalone producer/consumer/processor.
 
 ---
 
@@ -83,109 +81,68 @@ Hub Script Package + tick thread, GIL/signal handler unified interface — all c
 
 ---
 
+## Recent Completions — Interactive Signal Handler (2026-03-02)
+
+- ✅ **Processor timeout + heartbeat fix** (2026-03-02): Processor timeout path now acquires
+  a real output slot (instead of passing `None`) and calls `on_process(None, out_slot, ...)`,
+  letting idle processors produce output. Both processor and consumer now always advance
+  `iteration_count_` on timeout, fixing the heartbeat stall bug where idle loops were
+  falsely declared dead by the broker.
+  - Files: `src/processor/processor_script_host.cpp`, `src/consumer/consumer_script_host.cpp`
+
+- ✅ **InteractiveSignalHandler** (2026-03-02): Jupyter Lab-style Ctrl-C handler with status
+  display, confirmation prompt, timeout/resume. Cross-platform (POSIX self-pipe + Windows events).
+  Reusable API — each binary registers a status callback with role-specific fields.
+  - HEP: `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md`
+  - Header: `src/include/utils/interactive_signal_handler.hpp`
+  - Implementation: `src/utils/core/interactive_signal_handler.cpp`
+  - Integrated into all four binaries: `hubshell.cpp`, `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp`
+  - Removed hand-rolled signal handlers from all four binaries
+
+---
+
 ## Current Focus
 
-### Code Review Open Items — Status (2026-02-22)
+### Active: Metrics Plane (HEP-CORE-0019)
 
-These findings came from `docs/archive/transient-2026-02-21/code_review_utils_2025-02-21.md`:
+**Design doc**: `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` (2026-03-02)
 
-- ✅ **FIXED 2026-02-22 (extended 2026-02-22)** — **role.broker field now fully wired** (B3):
-  Each `ProducerRoleWorker` and `ConsumerRoleWorker` owns its own `hub::Messenger messenger_`
-  (value, not reference). `start()` calls `messenger_.connect(role_cfg_.broker,
-  role_cfg_.broker_pubkey)` before `Producer::create` / `Consumer::connect`. Failed connect
-  logs a warning and continues (degraded mode: SHM channel still works). `broker_pubkey`
-  (Z85, 40 chars) added to `RoleConfig` and parsed from JSON `"broker_pubkey"` field.
-  `ActorHost` no longer holds a Messenger; `actor_main.cpp` no longer calls
-  `GetLifecycleModule()` or `get_instance()`. ZMQ context stays process-wide.
-  Files: `src/actor/actor_config.hpp`, `src/actor/actor_config.cpp`,
-         `src/actor/actor_host.hpp`, `src/actor/actor_host.cpp`, `src/actor/actor_main.cpp`.
+Adds a fifth communication plane: passive SHM metrics + voluntary ZMQ reporting → broker aggregation.
 
-- ✅ **FIXED 2026-02-22** — **AdminShell: no request body size limit** (A1): Size check
-  before `std::string raw` construction and `json::parse()`. Limit: 1 MB. REP sends
-  `{"error":"request too large"}` and continues.
-  File: `src/hub_python/admin_shell.cpp`
+- [ ] Phase 1: C++ infrastructure — `report_metric()` API on all three APIs + `MetricsStore` in broker
+- [ ] Phase 2: Heartbeat extension — piggyback base counters + custom KV on `HEARTBEAT_REQ`
+- [ ] Phase 3: Consumer metrics — `METRICS_REPORT_REQ` (fire-and-forget)
+- [ ] Phase 4: Query API — `METRICS_REQ`/`METRICS_ACK` + AdminShell binding
+- [ ] Phase 5: Python bindings — `api.report_metric()` in pybind11 modules
 
-- ✅ **FIXED 2026-02-22** — **`PyExecResult::result_repr` kept with doc comment** (C2):
-  Field retained; doc comment clarifies "Not yet implemented; reserved for future AdminShell
-  exec path." User directive: do not remove.
-  File: `src/hub_python/python_interpreter.hpp`
+### Active: Layer 4 Producer + Consumer Tests (2026-03-02)
 
-- ✅ **FIXED 2026-02-22** — **`g_py_initialized` evolved to `InterpreterReadiness`** (C1):
-  Replaced `static std::atomic<bool>` with `static std::atomic<InterpreterReadiness>` enum
-  (5 states: Uninitialized/Initializing/Ready/Degraded/Failed). `is_interpreter_ready()`
-  internal accessor added for future exec() guards.
-  File: `src/hub_python/python_interpreter.cpp`
+Producer and consumer binaries need Layer 4 test coverage (config parsing + CLI). Tracked in
+`docs/todo/TESTING_TODO.md` § "Layer 4: pylabhub-producer Tests" + "Layer 4: pylabhub-consumer Tests".
 
-- ✅ **FIXED 2026-02-22** — **`_registered_roles()` missing `on_stop` / `on_stop_c`** (B1):
-  Added `on_stop` → `tbl.on_stop_p` and `on_stop_c` → `tbl.on_stop_c` branches.
-  File: `src/actor/actor_module.cpp`
+### Active: Integration Test (2026-03-02)
 
-- ✅ **FIXED 2026-02-22** — **Actor schema validation is shallow** (B2): Added type-string
-  validation against 13-element `kValidTypes` array and `count >= 1` check. Clear error
-  messages at parse time (actor exits at startup).
-  File: `src/actor/actor_schema.cpp`
+End-to-end integration test: `pylabhub-producer` + `pylabhub-hubshell` + `pylabhub-consumer`
+round-trip via live broker. Tracked in `docs/todo/API_TODO.md` § Step 5.
 
-- ✅ **FIXED 2026-02-22** — **CurveZMQ client keypair wired** (Phase 2): `Messenger::connect()`
-  extended with optional `client_pubkey`/`client_seckey`. Plain TCP when `server_key` empty;
-  CURVE with actor's own keypair (from `auth.keyfile`) or ephemeral when keyfile absent.
-  `ActorAuthConfig::load_keypair()` reads keyfile JSON post-lifecycle. `ActorAuthConfig auth_`
-  added to both worker types; wired through constructors and `ActorHost::start()`.
-  Files: `src/include/utils/messenger.hpp`, `src/utils/messenger.cpp`,
-         `src/actor/actor_config.hpp`, `src/actor/actor_config.cpp`,
-         `src/actor/actor_host.hpp`, `src/actor/actor_host.cpp`, `src/actor/actor_main.cpp`.
+---
 
-- ✅ **FIXED 2026-02-22** — **Script error counter** (`api.script_error_count()`): Added
-  `uint64_t script_error_count_` to `ActorRoleAPI`. `increment_script_errors()` called in
-  every `py::error_already_set` catch block for user script callbacks (on_init, on_write,
-  on_read, on_read_timeout, on_data, on_message, on_stop — both producer and consumer).
-  `script_error_count()` exposed in pybind11 bindings. Resets to zero on role restart.
-  Files: `src/actor/actor_api.hpp`, `src/actor/actor_host.cpp`, `src/actor/actor_module.cpp`.
+## Historical Completions — Actor Code Review (2026-02-22, actor eliminated 2026-03-01)
 
-### Completions (2026-02-23)
+The `pylabhub-actor` multi-role container was eliminated on 2026-03-01 (HEP-CORE-0018).
+The actor code review items below (all ✅ fixed) are preserved as historical reference.
+The actor files (`src/actor/`, `tests/test_layer4_actor/`) have been deleted from disk.
 
-- ✅ **FIXED 2026-02-23** — **LoopTimingPolicy for producer/consumer deadline scheduling**:
-  Replaced sleep-at-top loop pattern with deadline-based scheduling in both
-  `run_loop_shm()` and `run_loop_zmq()`. `LoopTimingPolicy` enum added to `RoleConfig`
-  with two options: `fixed_pace` (default — `next = now() + interval`; no catch-up,
-  rate ≤ target) and `compensating` (`next += interval`; fires immediately after overrun,
-  average rate converges to target). Applies to both producer `interval_ms` and consumer
-  `timeout_ms`. Consumer `last_slot_time` policy is symmetric. Parsed from JSON
-  `"loop_timing"` field in role config.
-  Files: `src/actor/actor_config.hpp`, `src/actor/actor_config.cpp`,
-         `src/actor/actor_host.cpp`.
-
-- ✅ **FIXED 2026-02-23** — **RoleMetrics supervised diagnostics API**:
-  Grouped all diagnostic counters into a private `RoleMetrics` struct in `ActorRoleAPI`.
-  C++ host writes through controlled methods; Python script gets individual read-only
-  getters. Three counters: `script_error_count()` (exceptions in all callbacks),
-  `loop_overrun_count()` (write cycles where interval_ms deadline was already past),
-  `last_cycle_work_us()` (µs of active work — acquire + on_write + commit — in the last
-  write cycle). All are per-role-run: reset via `reset_all_role_run_metrics()` at role
-  start. Python cannot reset — by design (script is under supervision).
-  Overrun counter wired in both producer loops' overrun `else`-branch. Work time capture
-  added before acquire in both loops. `reset_all_role_run_metrics()` called in both
-  `ProducerRoleWorker::start()` and `ConsumerRoleWorker::start()`.
-  Files: `src/actor/actor_api.hpp`, `src/actor/actor_host.cpp`, `src/actor/actor_module.cpp`.
-
-### Additional Completions (2026-02-22)
-
-- ✅ **FIXED 2026-02-22** — **Broker payload size limit** (A2): Added 1 MB size check
-  before `frames[3].to_string()` and JSON parse in broker run loop. ROUTER silently drops.
-  File: `src/utils/broker_service.cpp`
-
-- ✅ **FIXED 2026-02-22** — **ChannelPattern deduplication** (D1): Shared
-  `channel_pattern_to_str()` / `channel_pattern_from_str()` moved to `channel_pattern.hpp`.
-  Removed duplicate `pattern_to_wire/from_wire` in `messenger.cpp` and
-  `pattern_to_str/from_str` in `broker_service.cpp`.
-  Files: `src/include/utils/channel_pattern.hpp`, `src/utils/messenger.cpp`,
-  `src/utils/broker_service.cpp`
-
-- ✅ **FIXED 2026-02-22** — **PylabhubEnv getters** (F1/F2/F3): Added `actor_name()`,
-  `channel()`, `broker()`, `kind()`, `log_level()`, `script_dir()` to `ActorRoleAPI`.
-  Wired from constructor (channel/broker/kind) and `ActorHost::start()` (actor_name,
-  log_level, script_dir). All getters registered in pybind11 bindings.
-  Files: `src/actor/actor_api.hpp`, `src/actor/actor_host.hpp`, `src/actor/actor_host.cpp`,
-  `src/actor/actor_module.cpp`
+**Code review items resolved (2026-02-22):**
+- ✅ Per-role `Messenger` wiring (B3) — each role worker owns `hub::Messenger messenger_`
+- ✅ AdminShell 1 MB request size limit (A1) — `src/hub_python/admin_shell.cpp`
+- ✅ `InterpreterReadiness` enum (C1) — 5-state atomic enum in `python_interpreter.cpp`
+- ✅ `_registered_roles()` on_stop/on_stop_c (B1) — `src/actor/actor_module.cpp`
+- ✅ Actor schema validation (B2) — type-string + count≥1 check
+- ✅ CurveZMQ client keypair wiring — `Messenger::connect()` + actor `ActorAuthConfig`
+- ✅ Script error counter `api.script_error_count()` — per-role uint64_t
+- ✅ LoopTimingPolicy fixed_pace/compensating deadline scheduling
+- ✅ RoleMetrics supervised diagnostics: script_error_count, loop_overrun_count, last_cycle_work_us
 
 ### Recent Completions — Embedded-Mode Tests + ZMQ_BLOCKY Fix (2026-02-25)
 
@@ -285,20 +242,11 @@ These findings came from `docs/archive/transient-2026-02-21/code_review_utils_20
   - 501/501 tests pass
   - Files: `src/include/utils/messenger.hpp`, `src/utils/messenger.cpp`, `src/actor/actor_host.cpp`
 
-### Deferred / Backlog — Actor Thread Model
-
-- [ ] **Embedded-mode integration tests** — layer 3 tests using `run_gtest_worker()` with lifecycle modules.
-  Tests: `start_embedded()` true/idempotent, `peer_ctrl_socket_handle()` non-null,
-  `ctrl_zmq_socket_handle()` non-null, `data_zmq_socket_handle()` null for Bidir.
-  Deferred from Phase 2: requires live broker in test infrastructure.
-- [ ] **`wake_send`/`wake_recv` inproc PAIR** — low-latency loop→zmq_thread_ notification (Phase 4 if needed).
-  Currently `zmq_thread_` wakes every `messenger_poll_ms` (5ms); wake socket reduces outbound latency for
-  `api.broadcast()` calls inside `on_iteration`.
-
 ### Deferred / Blocked
 
 - [ ] **Schema registry** — Broker stores and serves schema_hash for producer channels.
   Currently schema_hash is validated at REG_REQ time but not persisted for consumer query.
+  Tracked as HEP-CORE-0016 Phases 2–5 (see `docs/todo/API_TODO.md` § Named Schema Registry).
 
 ### By design — explicitly out of scope
 
@@ -320,6 +268,25 @@ These findings came from `docs/archive/transient-2026-02-21/code_review_utils_20
 
 ---
 
+### Recent Completions — Processor Timeout + Consumer Heartbeat Fix (2026-03-02)
+
+- ✅ **Processor timeout path provides output slot** (2026-03-02): On input timeout,
+  `run_loop_shm_()` now acquires a real output slot (via `acquire_write_slot()`) and passes it
+  to `on_process(None, out_slot, fz, msgs, api)` — letting the processor produce output even
+  without input. Commit/discard + checksum logic mirrors the normal path. Previously passed
+  `None` for both input and output.
+  - File: `src/processor/processor_script_host.cpp`
+
+- ✅ **Processor/consumer `iteration_count_` always advances on timeout** (2026-03-02):
+  Moved `iteration_count_.fetch_add(1)` outside the `if (timeout_ms > 0 || !msgs.empty())`
+  guard in both processor and consumer `run_loop_shm_()`. Previously, when the input queue was
+  idle and `timeout_ms <= 0` with no messages, `iteration_count_` never advanced, causing the
+  zmq_thread_ to stop sending heartbeats — the broker falsely declared healthy-but-idle
+  processors/consumers as dead.
+  - Files: `src/processor/processor_script_host.cpp`, `src/consumer/consumer_script_host.cpp`
+
+---
+
 ## Backlog
 
 ### Broker Features (not yet started)
@@ -329,10 +296,7 @@ These findings came from `docs/archive/transient-2026-02-21/code_review_utils_20
 - [ ] **Embedded broker mode** — Run broker in-process for testing (avoids bind/port)
 - [ ] **Connection pooling** — Reuse ZMQ DEALER sockets across channels
 
-### Actor / HubShell Enhancements
-
-- [x] **Actor worker common helpers** ✅ FIXED 2026-02-23 — `step_write_deadline_()` and
-  `check_read_timeout_()` extracted. See RAII_LAYER_TODO.md.
+### HubShell Enhancements
 
 - [ ] **Python SDK (user-facing)** — Non-template `hub::Producer` / `hub::Consumer` Python
   bindings (pip-installable `pylabhub` package). Requires non-template write/read path and

@@ -2,6 +2,8 @@
 
 #include "channel_registry.hpp"
 
+#include "utils/schema_library.hpp"
+
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
 #include "utils/crypto_utils.hpp"
@@ -41,6 +43,28 @@ constexpr char kFrameTypeControl = 'C';
 // included via channel_registry.hpp → utils/channel_pattern.hpp).
 using pylabhub::hub::channel_pattern_to_str;
 using pylabhub::hub::channel_pattern_from_str;
+
+/// Convert a 64-char hex-encoded schema hash string → std::array<uint8_t, 32>.
+/// Returns a zero-filled array on format error (wrong length or invalid hex).
+std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
+{
+    std::array<uint8_t, 32> result{};
+    if (hex.size() != 64) return result;
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < 32; ++i)
+    {
+        int hi = hex_val(hex[i * 2]);
+        int lo = hex_val(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return {};
+        result[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return result;
+}
 
 /// Returns true if channel_name matches the glob pattern ('*' wildcard only).
 /// Dots are treated as literal characters, not anchors.
@@ -119,6 +143,17 @@ public:
                                            const zmq::message_t& identity);
     nlohmann::json handle_consumer_dereg_req(const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
+    nlohmann::json handle_schema_req(const nlohmann::json& req);
+
+    // ── Schema library (HEP-CORE-0016 Phase 3) ──────────────────────────────
+    /// Lazily-initialized named schema library. Loaded on first call from cfg.schema_search_dirs
+    /// (or SchemaLibrary::default_search_dirs() if empty). nullptr_t pattern: nullopt = not yet
+    /// loaded; value = library (may be empty if no schema files found).
+    mutable std::optional<pylabhub::schema::SchemaLibrary> schema_lib_;
+
+    /// Returns a reference to the lazily-loaded SchemaLibrary.
+    /// Thread-unsafe: caller must hold m_query_mu.
+    pylabhub::schema::SchemaLibrary& get_schema_library() noexcept;
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
     void check_dead_consumers(zmq::socket_t& socket);
@@ -324,6 +359,14 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // Fire-and-forget: no reply expected.
         handle_checksum_error_report(socket, payload);
     }
+    else if (msg_type == "SCHEMA_REQ")
+    {
+        // HEP-CORE-0016 Phase 3: consumer queries broker for channel schema info.
+        nlohmann::json resp = handle_schema_req(payload);
+        const std::string ack =
+            (resp.value("status", "") == "success") ? "SCHEMA_ACK" : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
     else
     {
         LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
@@ -382,6 +425,61 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.producer_zmq_identity.assign(static_cast<const char*>(identity.data()),
                                         identity.size());
     // status starts as PendingReady (default); last_heartbeat = now() (default).
+
+    // ── Schema annotation (HEP-CORE-0016 Phase 3) ──────────────────────────
+    const std::string req_schema_id   = req.value("schema_id", "");
+    const std::string req_schema_blds = req.value("schema_blds", "");
+    entry.schema_blds = req_schema_blds;
+
+    if (!req_schema_id.empty())
+    {
+        // Case A: producer asserts a named schema_id — validate hash against library.
+        const auto schema_entry = get_schema_library().get(req_schema_id);
+        if (schema_entry)
+        {
+            const auto producer_hash = hex_to_hash_array(attempted_schema);
+            if (producer_hash != schema_entry->slot_info.hash)
+            {
+                LOGGER_WARN("Broker: schema_id '{}' hash mismatch for channel '{}': "
+                            "producer hash does not match schema library",
+                            req_schema_id, channel_name);
+                return make_error(corr_id, "SCHEMA_ID_MISMATCH",
+                                  "Producer schema_id '" + req_schema_id +
+                                      "' does not match the BLDS hash in the schema library "
+                                      "for channel '" + channel_name + "'");
+            }
+            entry.schema_id = req_schema_id;
+            LOGGER_INFO("Broker: channel '{}' confirmed named schema '{}'",
+                        channel_name, req_schema_id);
+        }
+        else
+        {
+            // schema_id not in library — accept but log a warning; store the ID as-is
+            // (library might not be populated; Case B annotation still applies later).
+            entry.schema_id = req_schema_id;
+            LOGGER_WARN("Broker: schema_id '{}' not found in schema library for channel '{}'"
+                        " — stored as-is (library may be empty or schema files missing)",
+                        req_schema_id, channel_name);
+        }
+    }
+    else if (!attempted_schema.empty() && attempted_schema.size() == 64)
+    {
+        // Case B: anonymous schema — attempt reverse hash lookup to auto-annotate.
+        const auto producer_hash = hex_to_hash_array(attempted_schema);
+        const auto found_id = get_schema_library().identify(producer_hash);
+        if (found_id)
+        {
+            entry.schema_id = *found_id;
+            // Populate BLDS from library if not provided by producer.
+            if (entry.schema_blds.empty())
+            {
+                const auto sch_entry = get_schema_library().get(*found_id);
+                if (sch_entry) entry.schema_blds = sch_entry->slot_info.blds;
+            }
+            LOGGER_INFO("Broker: channel '{}' auto-annotated with schema_id '{}' via hash lookup",
+                        channel_name, *found_id);
+        }
+    }
 
     if (!registry.register_channel(channel_name, std::move(entry)))
     {
@@ -506,11 +604,52 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    if (!registry.find_channel(channel_name).has_value())
+    const auto channel_entry = registry.find_channel(channel_name);
+    if (!channel_entry.has_value())
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
+    }
+
+    // ── Named schema validation (HEP-CORE-0016 Phase 3) ─────────────────────
+    const std::string expected_schema_id = req.value("expected_schema_id", "");
+    if (!expected_schema_id.empty())
+    {
+        const bool id_match = (channel_entry && channel_entry->schema_id == expected_schema_id);
+        if (!id_match)
+        {
+            // ID mismatch: try hash comparison against the library.
+            bool hash_match = false;
+            if (channel_entry)
+            {
+                const auto named = get_schema_library().get(expected_schema_id);
+                if (named)
+                {
+                    const auto ch_hash = hex_to_hash_array(channel_entry->schema_hash);
+                    hash_match = (ch_hash == named->slot_info.hash);
+                }
+                else
+                {
+                    LOGGER_WARN("Broker: expected_schema_id '{}' not found in schema library "
+                                "for CONSUMER_REG_REQ on channel '{}'",
+                                expected_schema_id, channel_name);
+                    return make_error(corr_id, "SCHEMA_ID_UNKNOWN",
+                                      "Expected schema_id '" + expected_schema_id +
+                                          "' not found in schema library");
+                }
+            }
+            if (!hash_match)
+            {
+                LOGGER_WARN("Broker: CONSUMER_REG_REQ schema_id mismatch on '{}': "
+                            "expected='{}' channel_schema_id='{}'",
+                            channel_name, expected_schema_id,
+                            channel_entry ? channel_entry->schema_id : "(none)");
+                return make_error(corr_id, "SCHEMA_ID_MISMATCH",
+                                  "Consumer expected schema_id '" + expected_schema_id +
+                                      "' does not match channel '" + channel_name + "'");
+            }
+        }
     }
 
     // ── Connection policy check (Phase 3) ───────────────────────────────────
@@ -589,6 +728,53 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
     }
+}
+
+// ============================================================================
+// Schema library + SCHEMA_REQ handler (HEP-CORE-0016 Phase 3)
+// ============================================================================
+
+pylabhub::schema::SchemaLibrary& BrokerServiceImpl::get_schema_library() noexcept
+{
+    if (!schema_lib_.has_value())
+    {
+        const auto dirs = cfg.schema_search_dirs.empty()
+            ? pylabhub::schema::SchemaLibrary::default_search_dirs()
+            : cfg.schema_search_dirs;
+        schema_lib_.emplace(dirs);
+        const size_t loaded = schema_lib_->load_all();
+        LOGGER_INFO("Broker: SchemaLibrary loaded {} schema(s) from {} dir(s)",
+                    loaded, dirs.size());
+    }
+    return *schema_lib_;
+}
+
+nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
+{
+    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
+    if (channel_name.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST", "Missing 'channel_name'");
+    }
+    const auto entry = registry.find_channel(channel_name);
+    if (!entry.has_value())
+    {
+        LOGGER_WARN("Broker: SCHEMA_REQ channel '{}' not found", channel_name);
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' is not registered");
+    }
+    nlohmann::json resp;
+    resp["status"]       = "success";
+    resp["channel_name"] = channel_name;
+    resp["schema_id"]    = entry->schema_id;
+    resp["blds"]         = entry->schema_blds;
+    resp["schema_hash"]  = entry->schema_hash;
+    if (!corr_id.empty())
+    {
+        resp["correlation_id"] = corr_id;
+    }
+    return resp;
 }
 
 // ============================================================================

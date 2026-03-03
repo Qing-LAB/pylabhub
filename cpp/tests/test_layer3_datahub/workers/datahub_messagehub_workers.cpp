@@ -295,6 +295,108 @@ int with_broker_happy_path()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ── B2: Not-connected guard tests ────────────────────────────────────────────
+
+int query_channel_schema_not_connected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            auto result = messenger.query_channel_schema("test_channel", 100);
+            EXPECT_FALSE(result.has_value())
+                << "query_channel_schema must return nullopt when not connected";
+        },
+        "messagehub.query_channel_schema_not_connected",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int create_channel_not_connected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            auto result = messenger.create_channel("test_channel");
+            EXPECT_FALSE(result.has_value())
+                << "create_channel must return nullopt when not connected";
+        },
+        "messagehub.create_channel_not_connected",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int connect_channel_not_connected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            auto result = messenger.connect_channel("test_channel", 100);
+            EXPECT_FALSE(result.has_value())
+                << "connect_channel must return nullopt when not connected";
+        },
+        "messagehub.connect_channel_not_connected",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int heartbeat_noop_not_running()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            // suppress and enqueue when worker is not running should be no-ops.
+            EXPECT_NO_THROW(messenger.suppress_periodic_heartbeat("test_channel"));
+            EXPECT_NO_THROW(messenger.enqueue_heartbeat("test_channel"));
+        },
+        "messagehub.heartbeat_noop_not_running",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ── B4: Callback registration tests ─────────────────────────────────────────
+
+int on_channel_closing_global_register()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            EXPECT_NO_THROW(
+                messenger.on_channel_closing([](const std::string &) {}));
+        },
+        "messagehub.on_channel_closing_global_register",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int on_channel_closing_register_deregister()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            EXPECT_NO_THROW(
+                messenger.on_channel_closing("test_ch", []() {}));
+            EXPECT_NO_THROW(
+                messenger.on_channel_closing("test_ch", nullptr));
+        },
+        "messagehub.on_channel_closing_register_deregister",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int on_consumer_died_register()
+{
+    return run_gtest_worker(
+        []()
+        {
+            Messenger &messenger = Messenger::get_instance();
+            EXPECT_NO_THROW(
+                messenger.on_consumer_died("test_ch",
+                    [](uint64_t, std::string) {}));
+        },
+        "messagehub.on_consumer_died_register",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::messagehub
 
 namespace
@@ -328,6 +430,20 @@ struct MessageHubWorkerRegistrar
                     return disconnect_when_not_connected_idempotent();
                 if (scenario == "with_broker_happy_path")
                     return with_broker_happy_path();
+                if (scenario == "query_channel_schema_not_connected")
+                    return query_channel_schema_not_connected();
+                if (scenario == "create_channel_not_connected")
+                    return create_channel_not_connected();
+                if (scenario == "connect_channel_not_connected")
+                    return connect_channel_not_connected();
+                if (scenario == "heartbeat_noop_not_running")
+                    return heartbeat_noop_not_running();
+                if (scenario == "on_channel_closing_global_register")
+                    return on_channel_closing_global_register();
+                if (scenario == "on_channel_closing_register_deregister")
+                    return on_channel_closing_register_deregister();
+                if (scenario == "on_consumer_died_register")
+                    return on_consumer_died_register();
                 fmt::print(stderr, "ERROR: Unknown messagehub scenario '{}'\n", scenario);
                 return 1;
             });

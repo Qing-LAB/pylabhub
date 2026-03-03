@@ -36,6 +36,7 @@
 #include "utils/data_block.hpp"
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
+#include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
 
 #include <nlohmann/json.hpp>
 
@@ -214,6 +215,13 @@ struct ProducerOptions
     // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
     LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
     std::chrono::milliseconds period_ms{};                      ///< FixedRate target period
+
+    // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
+    /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
+    /// When non-empty, `create<FlexZoneT, DataBlockT>()` validates sizeof and BLDS hash
+    /// against the schema loaded from PYLABHUB_SCHEMA_PATH (or default search dirs).
+    /// Throws SchemaValidationException on mismatch. No-op when empty.
+    std::string schema_id{};
 };
 
 // ============================================================================
@@ -459,6 +467,10 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
                   "DataBlockT must be trivially copyable for shared memory");
 
+    // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
+    // Throws SchemaValidationException on size or BLDS hash mismatch; no-op if empty.
+    schema::validate_named_schema_from_env<DataBlockT, FlexZoneT>(opts.schema_id);
+
     // Validate SHM sizes at compile time against the config
     if (opts.has_shm)
     {
@@ -476,10 +488,19 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
         }
     }
 
+    // ── Compute BLDS for schema annotation (HEP-CORE-0016 Phase 3) ───────────
+    std::string schema_blds_str;
+    if constexpr (schema::has_schema_registry_v<DataBlockT>)
+    {
+        schema_blds_str =
+            schema::generate_schema_info<DataBlockT>("", schema::SchemaVersion{}).blds;
+    }
+
     // Create ZMQ channel
     auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
                                         opts.schema_hash, opts.schema_version, opts.timeout_ms,
-                                        opts.actor_name, opts.actor_uid);
+                                        opts.actor_name, opts.actor_uid,
+                                        opts.schema_id, schema_blds_str);
     if (!ch.has_value())
     {
         return std::nullopt;

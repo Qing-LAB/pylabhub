@@ -44,6 +44,14 @@ class MessengerImpl;
 // ChannelPattern is defined in channel_pattern.hpp and imported here.
 // pylabhub::broker::ChannelPattern is a type alias for pylabhub::hub::ChannelPattern.
 
+/// Schema information returned by Messenger::query_channel_schema() (HEP-CORE-0016 Phase 3).
+struct ChannelSchemaInfo
+{
+    std::string schema_id; ///< Named schema ID; empty = anonymous channel
+    std::string blds;      ///< BLDS string; empty if producer did not provide PYLABHUB_SCHEMA macros
+    std::string hash_hex;  ///< Hex-encoded 64-char BLAKE2b-256 hash; empty if no schema
+};
+
 struct ProducerInfo
 {
     // ── existing ──────────────────────────────────────────────────────────────
@@ -170,7 +178,9 @@ class PYLABHUB_UTILS_EXPORT Messenger
                    uint32_t           schema_version    = 0,
                    int                timeout_ms        = 5000,
                    const std::string &actor_name        = {},
-                   const std::string &actor_uid         = {});
+                   const std::string &actor_uid         = {},
+                   const std::string &schema_id         = {},
+                   const std::string &schema_blds       = {});
 
     /**
      * @brief Consumer side: discover channel (retrying until Ready), connect P2C
@@ -188,10 +198,24 @@ class PYLABHUB_UTILS_EXPORT Messenger
      */
     [[nodiscard]] std::optional<ChannelHandle>
     connect_channel(const std::string &channel_name,
-                    int                timeout_ms    = 5000,
-                    const std::string &schema_hash   = {},
-                    const std::string &consumer_uid  = {},
-                    const std::string &consumer_name = {});
+                    int                timeout_ms         = 5000,
+                    const std::string &schema_hash        = {},
+                    const std::string &consumer_uid       = {},
+                    const std::string &consumer_name      = {},
+                    const std::string &expected_schema_id = {});
+
+    /**
+     * @brief Query the broker for schema information about a registered channel.
+     *
+     * Sends SCHEMA_REQ to the broker and waits for SCHEMA_ACK.
+     * Returns the schema_id (named or ""), BLDS string, and hex hash for the channel.
+     *
+     * @param channel_name  Channel to query.
+     * @param timeout_ms    Max time to wait for broker response.
+     * @return ChannelSchemaInfo on success; nullopt if channel not found or not connected.
+     */
+    [[nodiscard]] std::optional<ChannelSchemaInfo>
+    query_channel_schema(const std::string &channel_name, int timeout_ms = 5000);
 
     /**
      * @brief Register a global callback invoked when the broker pushes CHANNEL_CLOSING_NOTIFY.

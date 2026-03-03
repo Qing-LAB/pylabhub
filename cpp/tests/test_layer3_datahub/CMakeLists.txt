@@ -121,6 +121,32 @@ add_executable(test_layer3_datahub
 
     # ── HubConfig script-block fields (lifecycle unit tests) ──────────────────
     test_datahub_hub_config_script.cpp
+
+    # ── Hub ShmQueue unit tests ────────────────────────────────────────────────
+    test_datahub_hub_queue.cpp
+    workers/datahub_hub_queue_workers.cpp
+
+    # ── Hub Processor unit tests ───────────────────────────────────────────────
+    test_datahub_hub_processor.cpp
+    workers/datahub_hub_processor_workers.cpp
+
+    # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
+    test_datahub_hub_zmq_queue.cpp
+
+    # ── Schema Library unit tests (HEP-CORE-0016 Phase 1) ─────────────────────
+    test_datahub_schema_library.cpp
+
+    # ── Broker named schema protocol tests (HEP-CORE-0016 Phase 3) ────────────
+    test_datahub_broker_schema.cpp
+
+    # ── Schema Registry lifecycle tests (HEP-CORE-0016 Phase 4) ─────────────
+    test_datahub_schema_registry.cpp
+
+    # ── BrokerService admin API tests ─────────────────────────────────────────
+    test_datahub_broker_admin.cpp
+
+    # ── Messenger hex codec tests (messenger_internal.hpp) ────────────────────
+    test_datahub_messenger_protocol.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE

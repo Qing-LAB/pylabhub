@@ -26,6 +26,9 @@
  * Password sources (checked in order by caller):
  *   1. PYLABHUB_ACTOR_PASSWORD environment variable (service / CI)
  *   2. Interactive terminal prompt via getpass()
+ *      XPLAT: getpass() is POSIX-only. Windows interactive mode needs
+ *      ReadConsoleW() or equivalent. CI uses PYLABHUB_ACTOR_PASSWORD env var
+ *      (cross-platform).
  *
  * No password is stored in any file or config field.
  */

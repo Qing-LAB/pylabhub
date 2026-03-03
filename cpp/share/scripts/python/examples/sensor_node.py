@@ -1,180 +1,106 @@
 """
-sensor_node.py — Multi-role actor example: simultaneous producer + consumer.
+sensor_node.py — Example pylabhub-producer script for a temperature sensor.
 
-Demonstrates how a single actor can host two independent roles:
-  - "raw_out"  (producer): publishes temperature measurements at 10 Hz
-  - "cfg_in"   (consumer): receives setpoint commands from a controller
+Publishes temperature measurements at 10 Hz on 'lab.sensor.temperature'.
+The slot layout is declared in sensor_node.json — no struct.pack() needed.
 
-Each role runs in its own C++ thread.  Python callbacks are invoked with
-the GIL held; module-level state is shared safely because only one role's
-callback runs at a time.
+Slot fields:
+  ts       float64      — Unix timestamp (seconds)
+  value    float32      — temperature reading (°C, simulated)
+  flags    uint8        — status flags (0 = nominal)
+  samples  float32[8]   — last 8 raw ADC samples
 
-Slot and FlexZone layouts are declared in sensor_node.json — no
-struct.pack/unpack needed.  ctypes.LittleEndianStructure fields are
-accessed by name (e.g. slot.value, slot.ts).
-
-Object lifetime rules
----------------------
-  slot     — Valid ONLY during on_write()/on_read().  Do not store it.
-             Producer slot: writable ctypes view into SHM.
-             Consumer slot: read-only ctypes view (field writes → TypeError).
-  flexzone — Valid for the role's entire lifetime.  Safe to store.
-  api      — Always valid.  Stateless proxy to C++ services.
+FlexZone fields (written once, readable by all connected consumers):
+  device_id    uint16    — hardware device identifier
+  sample_rate  uint32    — ADC sample rate in Hz
+  label        c_char*32 — channel label string
 
 Usage
 -----
-    pylabhub-actor --config sensor_node.json
-    pylabhub-actor --config sensor_node.json --validate
-    pylabhub-actor --config sensor_node.json --list-roles
+    # Place this file at <prod_dir>/script/python/__init__.py, then:
+    pylabhub-producer <prod_dir>
+
+    # Or point directly at the config:
+    pylabhub-producer --config sensor_node.json
+
+Notes
+-----
+- This example replaces the old multi-role actor sensor_node.  In the new
+  architecture, the producer and consumer roles are separate processes:
+    - sensor_node.json / sensor_node.py  → standalone pylabhub-producer
+    - consumer_logger.json / consumer_logger.py → standalone pylabhub-consumer
+- `out_slot` is valid ONLY during on_produce(). Do not store it.
+- `flexzone` is persistent and safe to store between calls.
 """
 
 import math
 import os
 import time
 
-import pylabhub_actor as actor
+import pylabhub_producer as prod
 
 # ---------------------------------------------------------------------------
-# Shared module-level state
-# (C++ GIL serialises Python callbacks — no extra locking needed for these)
+# Module-level state
 # ---------------------------------------------------------------------------
-current_setpoint: float = 20.0   # updated by cfg_in role
-measurement_count: int  = 0
-setpoint_updates:  int  = 0
+_count:      int   = 0
+_start_time: float = 0.0
+_device_id:  int   = 0x0042   # simulated hardware ID
 
 
-# ===========================================================================
-# Role: raw_out (producer)
-# ===========================================================================
+def on_init(api: prod.ProducerAPI) -> None:
+    """Called once after SHM is ready, before the write loop starts."""
+    global _start_time
+    _start_time = time.time()
 
-@actor.on_init("raw_out")
-def raw_out_init(flexzone, api: actor.ActorRoleAPI):
-    """
-    Called once after the producer SHM region is ready.
+    fz = api.flexzone()
+    if fz is not None:
+        fz.device_id   = _device_id
+        fz.sample_rate = 100         # 100 Hz simulated ADC
+        fz.label       = b"lab.sensor.temperature"
+        api.update_flexzone_checksum()
 
-    Write device metadata into the flexzone (shared memory), then stamp its
-    BLAKE2b checksum so consumers can verify integrity when they connect.
-    """
-    flexzone.device_id   = 42
-    flexzone.sample_rate = 10       # 10 Hz
-    flexzone.label       = b"temperature_sensor"
-    api.update_flexzone_checksum()
     api.log('info',
-            f"raw_out: started  uid={api.uid()}  device_id=42  "
-            f"pid={os.getpid()}")
+            f"TemperatureSensor: started  uid={api.uid()}"
+            f"  device_id=0x{_device_id:04X}  pid={os.getpid()}")
 
 
-@actor.on_write("raw_out")
-def raw_out_write(slot, flexzone, api: actor.ActorRoleAPI) -> bool:
+def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
     """
-    Called every interval_ms (100 ms = 10 Hz).
+    Called every 100 ms to produce one temperature measurement.
 
-    slot is a writable ctypes.LittleEndianStructure backed by the SHM slot.
-    Fill fields and return True to commit (makes the slot visible to consumers).
-    Return False to discard (slot is not published; no ZMQ broadcast).
+    Simulates a temperature reading as:  20 + sin(t * 0.5) * 5  °C
+    Populates samples[] with 8 Gaussian-noise ADC readings around the value.
     """
-    global measurement_count, current_setpoint
-    measurement_count += 1
+    global _count
+    if out_slot is None:
+        return False  # SHM backpressure
 
-    # Simulate a temperature reading with a sine wave around the setpoint.
-    t            = time.time()
-    slot.ts      = t
-    slot.value   = current_setpoint + 0.5 * math.sin(2 * math.pi * t / 10.0)
-    slot.flags   = 0x01             # bit 0: data valid
-    # Fill the 8-sample array with recent readings (demo: same value repeated)
+    _count += 1
+    t    = time.time()
+    temp = 20.0 + math.sin(t * 0.5) * 5.0   # °C, slow sinusoidal variation
+
+    out_slot.ts    = t
+    out_slot.value = temp
+    out_slot.flags = 0  # nominal
+
+    # Simulate 8 ADC samples around the temperature value
+    import random
     for i in range(8):
-        slot.samples[i] = slot.value
+        out_slot.samples[i] = temp + random.gauss(0.0, 0.05)
 
-    if measurement_count % 100 == 0:        # log every 10 s
+    for sender, data in messages:
+        api.log('debug', f"TemperatureSensor: ctrl from {sender}: {data!r}")
+
+    if _count % 100 == 0:  # log every 10 s
         api.log('info',
-                f"raw_out: count={measurement_count}  "
-                f"value={slot.value:.3f}  setpoint={current_setpoint:.2f}  "
-                f"consumers={len(api.consumers())}")
+                f"TemperatureSensor: count={_count}"
+                f"  temp={temp:.2f} C"
+                f"  consumers={len(api.consumers())}")
     return True
 
 
-@actor.on_message("raw_out")
-def raw_out_message(sender: str, data: bytes, api: actor.ActorRoleAPI):
-    """
-    Called when a consumer sends a ZMQ ctrl frame to this producer.
-    Useful for ctrl/command-response patterns without a separate control channel.
-    """
-    cmd = data.decode(errors='replace')
-    api.log('debug', f"raw_out: ctrl from {sender}: '{cmd}'")
-    if cmd == "ping":
-        api.send(sender, b"pong")
-    else:
-        api.send(sender, b"ack")
-
-
-@actor.on_stop("raw_out")
-def raw_out_stop(flexzone, api: actor.ActorRoleAPI):
-    """Called once after the write loop exits (on shutdown or api.stop())."""
+def on_stop(api: prod.ProducerAPI) -> None:
+    """Called once after the write loop exits."""
+    elapsed = time.time() - _start_time
     api.log('info',
-            f"raw_out: stopped  total_measurements={measurement_count}")
-
-
-# ===========================================================================
-# Role: cfg_in (consumer)
-# ===========================================================================
-
-@actor.on_init("cfg_in")
-def cfg_in_init(flexzone, api: actor.ActorRoleAPI):
-    """
-    Called once before the consumer read loop starts.
-
-    The cfg_in role has no flexzone_schema in the config, so flexzone is None.
-    If a flexzone_schema were declared, this would be a read-only zero-copy
-    view of the producer's SHM flexzone.
-    """
-    api.log('info', f"cfg_in: connected  uid={api.uid()}")
-    # Announce ourselves to the setpoint controller.
-    api.send_ctrl(b"hello:sensor_node_001")
-
-
-@actor.on_read("cfg_in")
-def cfg_in_read(slot, flexzone, api: actor.ActorRoleAPI, *, timed_out: bool = False):
-    """
-    Called for each setpoint slot, or on timeout (timed_out=True).
-
-    When timed_out=True: slot is None; no new setpoint arrived in timeout_ms.
-    slot fields are read-only — writing raises TypeError.
-    """
-    global current_setpoint, setpoint_updates
-
-    if timed_out:
-        # No setpoint update in 5 s — send a heartbeat to keep connection alive.
-        api.send_ctrl(b"heartbeat")
-        api.log('debug', "cfg_in: timeout — heartbeat sent")
-        return
-
-    if not api.slot_valid():
-        api.log('warn', "cfg_in: setpoint slot checksum failed — ignoring")
-        return
-
-    new_setpoint   = slot.setpoint
-    mode           = slot.mode
-    sequence_id    = slot.sequence_id
-    setpoint_updates += 1
-
-    # Update the shared setpoint (read by raw_out_write above).
-    current_setpoint = new_setpoint
-
-    api.log('info',
-            f"cfg_in: setpoint={new_setpoint:.2f}  mode={mode}  "
-            f"seq={sequence_id}  total_updates={setpoint_updates}")
-
-
-@actor.on_data("cfg_in")
-def cfg_in_data(data: bytes, api: actor.ActorRoleAPI):
-    """
-    Called for each ZMQ broadcast frame (non-slot messages from the controller).
-    """
-    api.log('debug', f"cfg_in: zmq broadcast {len(data)} bytes")
-
-
-@actor.on_stop_c("cfg_in")
-def cfg_in_stop(flexzone, api: actor.ActorRoleAPI):
-    """Called once after the consumer read loop exits."""
-    api.log('info',
-            f"cfg_in: stopped  setpoint_updates={setpoint_updates}")
+            f"TemperatureSensor: stopped  count={_count}  elapsed={elapsed:.1f}s")

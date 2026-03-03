@@ -168,6 +168,51 @@ TEST(PlatformShmTest, ShmCreate_UnlinkFirst_AllowsRecreate)
 }
 
 // ============================================================================
+// Null / edge-case robustness
+// ============================================================================
+
+TEST(PlatformShmTest, ShmClose_NullHandle_NoOp)
+{
+    // Passing nullptr should not crash
+    shm_close(nullptr);
+}
+
+TEST(PlatformShmTest, ShmClose_AlreadyClosed_Idempotent)
+{
+    std::string name = unique_shm_name();
+    ShmHandle h = shm_create(name.c_str(), 4096, SHM_CREATE_UNLINK_FIRST);
+    ASSERT_NE(h.base, nullptr);
+    shm_close(&h);
+    EXPECT_EQ(h.base, nullptr);
+    // Close again — should be no-op (base is already nullptr)
+    shm_close(&h);
+    EXPECT_EQ(h.base, nullptr);
+    shm_unlink(name.c_str());
+}
+
+TEST(PlatformShmTest, ShmAttach_NullName_ReturnsInvalid)
+{
+    ShmHandle h = shm_attach(nullptr);
+    EXPECT_EQ(h.base, nullptr);
+}
+
+TEST(PlatformShmTest, ShmUnlink_NullName_NoOp)
+{
+    // Should not crash
+    shm_unlink(nullptr);
+}
+
+TEST(PlatformShmTest, ShmUnlink_Nonexistent_NoOp)
+{
+#if defined(PYLABHUB_IS_POSIX)
+    shm_unlink("/__plh_nonexistent_xyz__");
+#else
+    shm_unlink("__plh_nonexistent_xyz__");
+#endif
+    // Should not crash regardless of platform
+}
+
+// ============================================================================
 // Multi-process shared memory (POSIX: parent creates, child attaches)
 // ============================================================================
 

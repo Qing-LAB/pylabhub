@@ -38,6 +38,7 @@
 #include "utils/data_block.hpp"
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
+#include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
 
 #include <nlohmann/json.hpp>
 
@@ -191,6 +192,13 @@ struct ConsumerOptions
     // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
     LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
     std::chrono::milliseconds period_ms{};                      ///< FixedRate target period
+
+    // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
+    /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
+    /// When non-empty, `connect<FlexZoneT, DataBlockT>()` validates sizeof and BLDS hash
+    /// against the schema loaded from PYLABHUB_SCHEMA_PATH (or default search dirs).
+    /// Throws SchemaValidationException on mismatch. No-op when empty.
+    std::string expected_schema_id{};
 };
 
 // ============================================================================
@@ -416,10 +424,15 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
                   "DataBlockT must be trivially copyable for shared memory");
 
+    // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
+    // Throws SchemaValidationException on size or BLDS hash mismatch; no-op if empty.
+    schema::validate_named_schema_from_env<DataBlockT, FlexZoneT>(opts.expected_schema_id);
+
     // Connect the ZMQ channel (sends HELLO, gets ConsumerInfo from broker).
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
                                          opts.expected_schema_hash,
-                                         opts.consumer_uid, opts.consumer_name);
+                                         opts.consumer_uid, opts.consumer_name,
+                                         opts.expected_schema_id);
     if (!ch.has_value())
     {
         return std::nullopt;

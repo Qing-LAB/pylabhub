@@ -399,6 +399,125 @@ gtest_discover_tests(test_layer2_script_host
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: ActorVault (pure API — no lifecycle, no worker dispatcher)
+# Note: Argon2id KDF takes ~0.5s per call; timeout set to 120s.
+# ============================================================================
+
+add_executable(test_layer2_actor_vault
+    test_actor_vault.cpp
+)
+
+target_link_libraries(test_layer2_actor_vault
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_actor_vault)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_actor_vault
+    SUITE_NAME "Layer2_ActorVault"
+)
+layer2_require_staged_utils(test_layer2_actor_vault)
+
+gtest_discover_tests(test_layer2_actor_vault
+    PROPERTIES
+        LABELS "layer2;service;vault;security"
+        TIMEOUT 120
+)
+
+# ============================================================================
+# Test: ZmqContext lifecycle (uses LifecycleGuard)
+# ============================================================================
+
+add_executable(test_layer2_zmq_context
+    test_zmq_context.cpp
+)
+
+target_link_libraries(test_layer2_zmq_context
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_layer2_zmq_context PRIVATE LOGGER_COMPILE_LEVEL=0)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_context)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_zmq_context
+    SUITE_NAME "Layer2_ZmqContext"
+)
+layer2_require_staged_utils(test_layer2_zmq_context)
+
+gtest_discover_tests(test_layer2_zmq_context
+    PROPERTIES
+        LABELS "layer2;service;zmq"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: UID Utils (pure API — no lifecycle, no worker dispatcher)
+# ============================================================================
+
+add_executable(test_layer2_uid_utils
+    test_uid_utils.cpp
+)
+
+target_link_libraries(test_layer2_uid_utils
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_uid_utils)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_uid_utils
+    SUITE_NAME "Layer2_UidUtils"
+)
+layer2_require_staged_utils(test_layer2_uid_utils)
+
+gtest_discover_tests(test_layer2_uid_utils
+    PROPERTIES
+        LABELS "layer2;service;uid"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: InteractiveSignalHandler lifecycle (pure API — no signal injection)
+# ============================================================================
+
+add_executable(test_layer2_interactive_signal_handler
+    test_interactive_signal_handler.cpp
+)
+
+target_link_libraries(test_layer2_interactive_signal_handler
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_interactive_signal_handler)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_interactive_signal_handler
+    SUITE_NAME "Layer2_InteractiveSignalHandler"
+)
+layer2_require_staged_utils(test_layer2_interactive_signal_handler)
+
+gtest_discover_tests(test_layer2_interactive_signal_handler
+    PROPERTIES
+        LABELS "layer2;service;signal"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")

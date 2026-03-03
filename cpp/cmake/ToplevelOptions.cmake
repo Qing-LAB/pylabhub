@@ -78,6 +78,10 @@ Vaults are incompatible between INTERACTIVE and SENSITIVE builds — re-keygen a
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
+# Option to build the C++ example templates.
+# Demonstrates direct use of pylabhub-utils without Python scripting.
+option(PYLABHUB_BUILD_EXAMPLES "Build C++ example templates (hub, producer, consumer, processor)" OFF)
+
 # Option to control load for racing-condition / stress tests (InProcessSpinState/SpinGuard, SlotRWCoordinator, high_load, FileLock, Logger, JsonConfig, etc.).
 # Low: fewer threads, shorter duration (e.g. 10 s). High: more threads, longer duration (e.g. 30 s).
 set(STRESS_TEST_LEVEL_VALID "Low" "Medium" "High")

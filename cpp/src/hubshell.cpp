@@ -51,6 +51,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/channel_access_policy.hpp"
+#include "utils/interactive_signal_handler.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/uuid_utils.hpp"
 #include "utils/hub_vault.hpp"
@@ -63,21 +64,15 @@
 
 #include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
-
-#if defined(PYLABHUB_IS_POSIX)
-#include <unistd.h>
-#endif
 
 namespace py = pybind11;
 namespace fs = std::filesystem;
@@ -85,46 +80,10 @@ namespace fs = std::filesystem;
 using namespace pylabhub::utils;
 
 // ---------------------------------------------------------------------------
-// Global shutdown flag
+// Global shutdown flag — set by InteractiveSignalHandler or pylabhub.shutdown()
 // ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_shutdown_requested{false};
-
-// Set on first SIGINT so the second one initiates shutdown (Jupyter-style).
-// Using a separate flag avoids any ambiguity between "warned" and "shutdown".
-static std::atomic<bool> g_shutdown_warned{false};
-
-// Async-signal-safe message write helper.
-static void write_stderr_signal(const char* msg, std::size_t len) noexcept
-{
-#if defined(PYLABHUB_IS_POSIX)
-    ::write(STDERR_FILENO, msg, len);
-#else
-    // Not strictly async-signal-safe, but acceptable on non-POSIX targets.
-    (void)std::fwrite(msg, 1, len, stderr);
-#endif
-}
-
-static void signal_handler(int /*sig*/) noexcept
-{
-    if (g_shutdown_requested.load(std::memory_order_relaxed))
-    {
-        // Third Ctrl+C (second during active teardown): fast exit.
-        std::_Exit(1);
-    }
-
-    // First Ctrl+C: warn and continue running.
-    // Second Ctrl+C: initiate graceful shutdown.
-    if (!g_shutdown_warned.exchange(true, std::memory_order_acq_rel))
-    {
-        static const char kMsg[] =
-            "\r\nHub is still running. Press Ctrl+C again to stop.\r\n";
-        write_stderr_signal(kMsg, sizeof(kMsg) - 1);
-        return; // do NOT set g_shutdown_requested yet
-    }
-
-    g_shutdown_requested.store(true, std::memory_order_release);
-}
 
 // ---------------------------------------------------------------------------
 // Password helpers
@@ -515,8 +474,9 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // -----------------------------------------------------------------------
     // Signal handling — must be set up before lifecycle starts.
     // -----------------------------------------------------------------------
-    std::signal(SIGINT,  signal_handler);
-    std::signal(SIGTERM, signal_handler);
+    pylabhub::InteractiveSignalHandler signal_handler(
+        {.binary_name = "pylabhub-hubshell"}, &g_shutdown_requested);
+    signal_handler.install();
 
     // Wire Python's pylabhub.shutdown() into our shutdown flag.
     pylabhub::PythonInterpreter::set_shutdown_callback([]()
@@ -670,32 +630,41 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // -----------------------------------------------------------------------
     LOGGER_INFO("HubShell: running. Send SIGINT or call pylabhub.shutdown() to stop.");
 
-    // Track when the first Ctrl+C warning was shown so we can expire it.
-    std::optional<std::chrono::steady_clock::time_point> warn_time;
-    static constexpr int kWarnTimeoutS = 5;
+    // Register status callback for interactive Ctrl-C handler.
+    const auto start_time = std::chrono::steady_clock::now();
+    signal_handler.set_status_callback([&]() -> std::string
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - start_time;
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+
+        const auto snapshot = broker.query_channel_snapshot();
+        int ready = 0, pending = 0, closing = 0;
+        for (const auto &ch : snapshot.channels)
+        {
+            if (ch.status == "Ready")         ++ready;
+            else if (ch.status == "PendingReady") ++pending;
+            else if (ch.status == "Closing")  ++closing;
+        }
+
+        return fmt::format(
+            "  pyLabHub {} (pylabhub-hubshell)\n"
+            "  Hub dir:   {}\n"
+            "  Hub UID:   {}\n"
+            "  Hub name:  {}\n"
+            "  Broker:    {}\n"
+            "  Channels:  {} ready, {} pending, {} closing\n"
+            "  Uptime:    {}h {}m {}s",
+            pylabhub::platform::get_version_string(),
+            hub_dir.empty() ? "(dev mode)" : hub_dir.string(),
+            hub_cfg.hub_uid(), hub_cfg.hub_name(),
+            hub_cfg.broker_endpoint(),
+            ready, pending, closing,
+            secs / 3600, (secs % 3600) / 60, secs % 60);
+    });
 
     while (!g_shutdown_requested.load(std::memory_order_acquire))
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
-
-        // Jupyter-style Ctrl+C: if the second press does not arrive within
-        // kWarnTimeoutS seconds, silently reset the warning so the next Ctrl+C
-        // is treated as a fresh first press again.
-        if (g_shutdown_warned.load(std::memory_order_acquire))
-        {
-            if (!warn_time)
-                warn_time = std::chrono::steady_clock::now();
-            else if (std::chrono::steady_clock::now() - *warn_time
-                     > std::chrono::seconds(kWarnTimeoutS))
-            {
-                g_shutdown_warned.store(false, std::memory_order_release);
-                warn_time.reset();
-            }
-        }
-        else
-        {
-            warn_time.reset();
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -704,6 +673,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // Logger is in file mode — write the notice to stderr so the user sees
     // feedback even when the rich dashboard is active.
     // -----------------------------------------------------------------------
+    signal_handler.uninstall();
     std::fprintf(stderr, "\nHubShell: shutting down (press Ctrl+C again to force exit)...\n");
     LOGGER_INFO("HubShell: shutdown requested, beginning graceful teardown.");
 

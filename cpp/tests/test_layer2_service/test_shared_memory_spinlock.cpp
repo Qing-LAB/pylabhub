@@ -164,6 +164,50 @@ TEST_F(SharedSpinLockTest, SharedSpinLockGuardOwning_ReleasesOnDestruction)
 }
 
 // ============================================================================
+// Lock state checks
+// ============================================================================
+
+TEST_F(SharedSpinLockTest, IsLockedByCurrentProcess_AfterUnlock)
+{
+    SharedSpinLock lock(&state_, name_);
+    lock.lock();
+    EXPECT_TRUE(lock.is_locked_by_current_process());
+    lock.unlock();
+    EXPECT_FALSE(lock.is_locked_by_current_process());
+}
+
+TEST_F(SharedSpinLockTest, BlockingLock_WaitsForRelease)
+{
+    SharedSpinLock lock1(&state_, name_);
+    lock1.lock();
+
+    std::atomic<bool> acquired{false};
+    std::thread t([this, &acquired]() {
+        SharedSpinLock lock2(&state_, name_ + "_blocker");
+        lock2.lock(); // blocks until lock1 releases
+        acquired.store(true);
+        lock2.unlock();
+    });
+
+    // Give thread time to attempt acquire
+    std::this_thread::sleep_for(50ms);
+    EXPECT_FALSE(acquired.load()) << "Thread should be blocked waiting";
+
+    lock1.unlock();
+    t.join();
+    EXPECT_TRUE(acquired.load()) << "Thread should have acquired after release";
+}
+
+TEST_F(SharedSpinLockTest, ExcessUnlock_Throws)
+{
+    SharedSpinLock lock(&state_, name_);
+    lock.lock();
+    lock.unlock();
+    // Already unlocked — second unlock should throw.
+    EXPECT_THROW(lock.unlock(), std::runtime_error);
+}
+
+// ============================================================================
 // State in shared memory (two threads, state in shm - same as cross-process pattern)
 // ============================================================================
 
