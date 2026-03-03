@@ -104,10 +104,15 @@ struct PythonInterpreter::Impl
         auto main_mod = py::module_::import("__main__");
         ns = main_mod.attr("__dict__").cast<py::dict>();
 
-        // Pre-import the pylabhub module so it's immediately available.
+        // Pre-import the pylabhub module and bind it in the namespace so
+        // admin shell exec() callers can use `pylabhub.xxx()` without a
+        // manual `import pylabhub` statement.
         try
         {
-            py::module_::import("pylabhub");
+            auto plh_mod = py::module_::import("pylabhub");
+            // ns is py::object (not py::dict) — see declaration comment above.
+            // Use raw CPython API to avoid constructing py::dict from ns.
+            PyDict_SetItemString(ns.ptr(), "pylabhub", plh_mod.ptr());
             LOGGER_INFO("PythonInterpreter: 'pylabhub' module imported into namespace");
         }
         catch (const py::error_already_set& e)
