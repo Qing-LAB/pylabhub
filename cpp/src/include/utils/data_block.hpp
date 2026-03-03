@@ -16,8 +16,8 @@
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_config.hpp"   // Layer 1: DataBlockConfig, DataBlockPageSize, timeouts, policy enums
 #include "utils/data_block_metrics.hpp"  // Layer 1: ContextMetrics
-#include "shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
-#include "schema_blds.hpp"         // For SchemaInfo and generate_schema_info
+#include "utils/shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
+#include "utils/schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
 #include <chrono>
 #include <functional>

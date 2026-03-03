@@ -33,3 +33,8 @@
 #include "utils/schema_def.hpp"
 #include "utils/schema_library.hpp"
 #include "utils/schema_registry.hpp"
+#include "utils/heartbeat_manager.hpp"
+#include "utils/recovery_api.hpp"
+#include "utils/slot_diagnostics.hpp"
+#include "utils/slot_recovery.hpp"
+#include "utils/integrity_validator.hpp"

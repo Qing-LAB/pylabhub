@@ -675,3 +675,22 @@ actively reading the slot being overwritten — the writer pauses until `reader_
 
 This is verified by tests `DatahubSlotDrainingTest.SingleReaderRingFullBlocksNotDraining`
 and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
+
+---
+
+## 12. Source File Reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/plh_datahub.hpp` | L3 (public) | Umbrella header; re-exports DataBlock, policies, transaction context |
+| `src/include/utils/data_block.hpp` | L3 (public) | `DataBlockProducer`, `DataBlockConsumer`, `SlotRWState`, primitive API |
+| `src/include/utils/data_block_config.hpp` | L3 (public) | `DataBlockConfig` struct, factory parameters |
+| `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` enums |
+| `src/include/utils/transaction_context.hpp` | L3 (public) | `WriteTransactionContext`, `ReadTransactionContext`, `SlotIterator` |
+| `src/utils/shm/data_block.cpp` | impl | SHM create/attach, slot acquire/release, checksum, DRAINING spin |
+| `src/utils/shm/data_block_mutex.cpp` | impl | `DataBlockMutex` — OS-backed mutex for control zone |
+| `src/utils/shm/shared_memory_spinlock.cpp` | impl | `SharedSpinLock` — atomic PID-based spinlock for data slots |
+| `src/utils/ipc/messenger.cpp` | impl | `Messenger` — ZMQ sockets, heartbeat, registration |
+| `src/utils/ipc/messenger_protocol.cpp` | impl | Protocol frame parsing, REG_REQ/ACK, CONSUMER_REG |
+| `src/utils/ipc/broker_service.cpp` | impl | `BrokerService` — channel registry, policy enforcement |
+| `tests/test_layer3_datahub/` | test | Slot state machine, DRAINING, heartbeat, checksum, broker protocol |

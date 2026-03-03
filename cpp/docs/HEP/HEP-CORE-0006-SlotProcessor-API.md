@@ -8,18 +8,91 @@
 | **Status**       | ✅ Implemented — 2026-02-21                                |
 | **Category**     | Core                                                       |
 | **Created**      | 2026-02-19                                                 |
-| **Implemented**  | 2026-02-21 via `pylabhub-actor` executable                 |
+| **Implemented**  | 2026-02-21; used by `hub::Processor` and all standalone binaries |
 | **C++-Standard** | C++20                                                      |
 | **Version**      | 1.0                                                        |
 | **Depends-on**   | HEP-CORE-0002 (DataHub), Messenger/Broker layer            |
 
-> **Implementation note (2026-02-21)**: The Slot-Processor API defined here is fully
-> implemented by the `pylabhub-actor` executable (`src/actor/`). The C++ types
-> `ProducerRoleWorker` and `ConsumerRoleWorker` embody the `WriteProcessorContext` and
-> `ReadProcessorContext` concepts; the Python layer (`ActorRoleAPI`, `SharedSpinLockPy`)
-> provides the scripting surface. The `set_write_handler` / `set_read_handler` Real-time
-> mode is the mechanism used internally by the actor's per-role worker threads.
-> See `docs/tech_draft/ACTOR_DESIGN.md` for the complete design.
+> **Implementation note (updated 2026-03-03)**: The Slot-Processor API is implemented by
+> `hub::Processor` (`src/utils/hub/hub_processor.cpp`) which provides a type-erased,
+> hot-swappable handler loop. The standalone binaries (`pylabhub-producer`,
+> `pylabhub-consumer`, `pylabhub-processor`) use `hub::Producer`/`hub::Consumer` with
+> script-driven callbacks that embody the `WriteProcessorContext` and
+> `ReadProcessorContext` concepts. The Python layer (`ProducerAPI`, `ConsumerAPI`,
+> `ProcessorAPI`) provides the scripting surface via pybind11 embedded modules.
+> See HEP-CORE-0015 (Processor Binary) and HEP-CORE-0018 (Producer/Consumer Binaries).
+
+### Source file reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/hub_producer.hpp` | L3 (public) | `hub::Producer`, `ProducerOptions`, `WriteProcessorContext` |
+| `src/include/utils/hub_consumer.hpp` | L3 (public) | `hub::Consumer`, `ConsumerOptions`, `ReadProcessorContext` |
+| `src/include/utils/hub_processor.hpp` | L3 (public) | `hub::Processor`, `ProcessorContext`, type-erased `ProcessorHandlerFn` |
+| `src/include/utils/hub_queue.hpp` | L3 (public) | `hub::Queue` abstract base, `OverflowPolicy` enum |
+| `src/include/utils/hub_shm_queue.hpp` | L3 (public) | `ShmQueue` — SHM-backed Queue implementation |
+| `src/include/utils/hub_zmq_queue.hpp` | L3 (public) | `ZmqQueue` — ZMQ-backed Queue implementation |
+| `src/utils/hub/hub_processor.cpp` | impl | `Processor::process_thread_`, handler hot-swap, demand-driven loop |
+| `src/utils/hub/hub_shm_queue.cpp` | impl | `ShmQueue::from_consumer()` / `from_producer()` |
+| `src/utils/hub/hub_zmq_queue.cpp` | impl | `ZmqQueue` PULL/PUSH with bounded internal queue |
+| `tests/test_layer3_datahub/test_datahub_hub_processor.cpp` | test | Processor: handler, hot-swap, timeout, critical error, zero-fill |
+| `tests/test_layer3_datahub/test_datahub_hub_queue.cpp` | test | ShmQueue read/write, overflow policy |
+| `tests/test_layer3_datahub/test_datahub_hub_zmq_queue.cpp` | test | ZmqQueue PULL/PUSH, overflow, close |
+
+### Processor Pipeline Architecture
+
+```mermaid
+flowchart LR
+    subgraph Input["Input Queue"]
+        InQ["ShmQueue / ZmqQueue"]
+    end
+
+    subgraph Processor["hub::Processor"]
+        direction TB
+        PT["process_thread_"]
+        Handler["ProcessorHandlerFn\n(type-erased)"]
+        HotSwap["PortableAtomicSharedPtr\n(hot-swap)"]
+    end
+
+    subgraph Output["Output Queue"]
+        OutQ["ShmQueue / ZmqQueue"]
+    end
+
+    InQ -->|"read()"| PT
+    PT -->|"load handler"| HotSwap
+    HotSwap --> Handler
+    Handler -->|"process context"| PT
+    PT -->|"write()"| OutQ
+```
+
+### Handler Type Hierarchy
+
+```mermaid
+classDiagram
+    class Queue {
+        <<abstract>>
+        +read(buf, timeout) Result
+        +write(buf, timeout) bool
+        +close()
+    }
+    class ShmQueue {
+        +from_consumer(dbc, item_sz, fz_sz)
+        +from_producer(dbp, item_sz, fz_sz)
+    }
+    class ZmqQueue {
+        +ZmqQueue(endpoint, mode, opts)
+    }
+    class Processor {
+        +create(in_q, out_q, opts) unique_ptr
+        +set_process_handler~InF,InD,OutF,OutD~(fn)
+        +start()
+        +stop()
+    }
+
+    Queue <|-- ShmQueue
+    Queue <|-- ZmqQueue
+    Processor --> Queue : reads from / writes to
+```
 
 ---
 
@@ -35,7 +108,7 @@ low-level primitives:
   the user to drive the loop themselves, manage thread lifetime, and wire up Messenger
   separately.
 
-Neither provides a self-contained, typed, actor-style processing loop. Users who want
+Neither provides a self-contained, typed, framework-driven processing loop. Users who want
 continuous SHM processing must replicate thread management, shutdown logic, exception
 isolation, and messaging wiring in every application.
 

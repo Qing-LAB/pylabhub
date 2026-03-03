@@ -4,20 +4,85 @@
 |---------------|-------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0016`                                                         |
 | **Title**     | Named Schema Registry — Channel Schema Identity and Discovery            |
-| **Status**    | Design — not yet implemented                                            |
+| **Status**    | Implemented — all 5 phases complete (2026-03-02)                        |
 | **Created**   | 2026-03-01                                                              |
-| **Area**      | Schema System (`pylabhub-utils`, broker, actor, processor)              |
-| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0012 (Processor) |
+| **Area**      | Schema System (`pylabhub-utils`, broker, standalone binaries)           |
+| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0015 (Processor Binary) |
+
+### Source file reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/schema_def.hpp` | L3 (public) | `SchemaDef`, `SchemaFieldDef`, `FieldType` — pure data types |
+| `src/include/utils/schema_blds.hpp` | L3 (public) | BLDS generation, `SchemaRegistry<T>` traits, `has_schema_registry_v<T>` |
+| `src/include/utils/schema_library.hpp` | L3 (public) | `SchemaLibrary` — file search, forward/reverse lookup, cache |
+| `src/include/utils/schema_registry.hpp` | L3 (public) | `SchemaStore` — lifecycle singleton, thread-safe, broker query |
+| `src/utils/schema/schema_def.cpp` | impl | `SchemaDef` JSON parsing, BLDS computation, hash generation |
+| `src/utils/schema/schema_library.cpp` | impl | File search, ID↔path mapping, in-memory cache |
+| `src/utils/schema/schema_registry.cpp` | impl | `SchemaStore` lifecycle module, `reload()`, `query_from_broker()` |
+| `src/include/utils/script_host_schema.hpp` | L4 (scripting) | `resolve_named_schema()`, `schema_entry_to_spec()` |
+| `tests/test_layer3_datahub/test_datahub_schema_library.cpp` | test | Library load, round-trip, hash stability |
+| `tests/test_layer3_datahub/test_datahub_schema_registry.cpp` | test | `SchemaStore` lifecycle, thread safety, search dirs |
+| `tests/test_layer3_datahub/test_datahub_broker_schema.cpp` | test | Broker schema protocol (REG_REQ Case A/B, SCHEMA_REQ/ACK) |
+
+### Schema Lookup Flow
+
+```mermaid
+flowchart TB
+    Config["Config JSON\n'in_schema': 'lab.sensors.temperature.raw@1'"]
+    Inline["Config JSON\n'in_slot_schema': { fields: [...] }"]
+
+    Config -->|"named"| Resolve["resolve_schema()"]
+    Inline -->|"inline"| Resolve
+
+    Resolve -->|"named ID"| Library["SchemaLibrary\n(file search)"]
+    Resolve -->|"inline JSON"| Direct["Parse fields directly"]
+
+    Library -->|"ID → file path"| Load["Load JSON\nCompute BLDS + hash"]
+    Load --> SchemaDef["SchemaDef\n{id, fields, slot_blds, slot_hash}"]
+    Direct --> SchemaDef
+
+    SchemaDef -->|"schema_entry_to_spec()"| FieldSpec["FieldDef[] → ctypes struct"]
+    SchemaDef -->|"hash"| BrokerReg["REG_REQ to broker\n(schema_id + hash)"]
+```
+
+### BLAKE2b Identity Model
+
+```mermaid
+flowchart LR
+    Fields["Field list\n(name, type, count)"] -->|"generate BLDS"| BLDS["BLDS string\n'ts:f64 value:f32'"]
+    BLDS -->|"BLAKE2b-256"| Hash["32-byte hash\n(primary identity)"]
+    SchemaID["Schema ID\n'lab.sensors.temperature.raw@1'"] -.->|"human alias for"| Hash
+    Hash -->|"wire protocol"| Broker["BrokerService\nchannel registry"]
+    SchemaID -.->|"optional annotation"| Broker
+```
+
+### SchemaStore Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Uninitialized
+    Uninitialized --> Initialized: GetLifecycleModule() startup
+    Initialized --> Initialized: reload() / get() / identify()
+    Initialized --> Shutdown: finalize()
+    Shutdown --> [*]
+
+    note right of Initialized
+        Thread-safe: mutex-guarded
+        Depends on: Logger only
+        query_from_broker(): explicit fallback
+    end note
+```
 
 ---
 
 ## 1. Motivation
 
 Channel schemas (slot layout + flexzone layout) are currently defined inline inside
-every actor and processor config file that touches the channel:
+every producer and processor config file that touches the channel:
 
 ```json
-// actor_A.json
+// producer_A.json
 "slot_schema": { "fields": [{"name": "ts", "type": "float64"}, {"name": "value", "type": "float32"}] }
 
 // processor.json — same channel, same layout, repeated
@@ -29,7 +94,7 @@ This creates several problems:
 | Problem | Impact |
 |---------|--------|
 | No single source of truth | Schema changes require touching every config that references the channel |
-| No discoverability | "What does channel X carry?" requires parsing every actor/processor config |
+| No discoverability | "What does channel X carry?" requires parsing every producer/processor config |
 | No schema identity | Schema hash is the only identifier; humans have no name to reason about |
 | No version tracking | Breaking changes are invisible until hash mismatches appear at runtime |
 | C++ unnamed only | C++ template structs have no linkage to any human-readable schema definition |
@@ -372,7 +437,7 @@ The broker may still annotate the channel if the hash matches a named schema.
 
 ## 10. Script / Python Integration
 
-### 10.1 Named schema in processor.json / actor.json
+### 10.1 Named schema in processor.json / producer.json
 
 ```json
 {
@@ -435,7 +500,7 @@ private:
 
 ### 11.2 SchemaRegistry (lifecycle module)
 
-Singleton lifecycle module for long-running services (hub, actor). Wraps
+Singleton lifecycle module for long-running services (hub, standalone binaries). Wraps
 `SchemaLibrary` and adds:
 
 - File watching (inotify / `ReadDirectoryChangesW`) — invalidates cache on change,
@@ -506,7 +571,7 @@ overrides and lifecycle-managed reloading. A simple `nlohmann::json` parse suffi
 
 ### Phase 5 — Script Integration
 
-- `processor.json` / `actor.json`: `in_schema` / `out_schema` fields
+- `processor.json` / `producer.json` / `consumer.json`: `in_schema` / `out_schema` / `slot_schema` fields
 - Script host: resolve schema → generate ctypes → inject into Python namespace
 - Fallback: `SCHEMA_REQ` to broker when no local file (cross-machine processor)
 

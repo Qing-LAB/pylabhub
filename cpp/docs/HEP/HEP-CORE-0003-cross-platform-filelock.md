@@ -3,7 +3,7 @@
 | **HEP**          | `HEP-CORE-0003`                                |
 | **Title**        | Cross-Platform RAII File Locking (FileLock)    |
 | **Author**       | Quan Qing, AI assistant                        |
-| **Status**       | Implementation Ready                           |
+| **Status**       | Implemented                                    |
 | **Category**     | Core                                           |
 | **Created**      | 2026-01-30                                     |
 | **Updated**      | 2026-02-12                                     |
@@ -14,6 +14,17 @@
 ## Implementation status
 
 All described APIs are implemented in `src/include/utils/file_lock.hpp` and `src/utils/service/file_lock.cpp`. Two-layer locking (intra-process registry + OS `flock`/`LockFileEx`), RAII, `try_lock` returning `std::optional<FileLock>`, and timeout constructors are in use. For current plan and priorities, see `docs/TODO_MASTER.md` and `docs/todo/`.
+
+### Source file reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/file_lock.hpp` | L2 (public) | `FileLock` class, `try_lock` factory, lifecycle module |
+| `src/utils/service/file_lock.cpp` | impl | `FileLockImpl` (Pimpl), `ProcLockState` registry, OS lock loops, custom deleter |
+| `tests/test_layer2_service/test_filelock.cpp` | test | Multi-process lock contention (worker spawning) |
+| `tests/test_layer2_service/test_filelock_singleprocess.cpp` | test | Same-process thread safety, API correctness |
+| `tests/test_layer2_service/workers/filelock_workers.h` | test | Worker entry-point declarations |
+| `tests/test_layer2_service/workers/filelock_workers.cpp` | test | Worker implementations (blocking, timeout, move) |
 
 ---
 
@@ -123,6 +134,39 @@ classDiagram
 
     FileLock ..> LifecycleManager : GetLifecycleModule
 ```
+
+### Two-Layer Locking Detail
+
+```mermaid
+flowchart TB
+    subgraph Process["Single Process (threads share registry)"]
+        direction TB
+        T1["Thread A"]
+        T2["Thread B"]
+        subgraph Registry["g_proc_locks (mutex + CV)"]
+            PLS["ProcLockState\n• owners: atomic<int>\n• waiters: atomic<int>\n• cv: condition_variable"]
+        end
+    end
+
+    subgraph OS["OS Layer (inter-process)"]
+        direction TB
+        POSIX["POSIX: flock(fd, LOCK_EX)\n20ms polling for timeout"]
+        WIN["Windows: LockFileEx()\nFILE_SHARE_READ|WRITE|DELETE"]
+    end
+
+    LockFile[".lock file on disk"]
+
+    T1 -->|"1. acquire_process_local_lock()"| Registry
+    T2 -->|"1. acquire_process_local_lock()"| Registry
+    Registry -->|"2. run_os_lock_loop()"| POSIX
+    Registry -->|"2. run_os_lock_loop()"| WIN
+    POSIX --> LockFile
+    WIN --> LockFile
+```
+
+Layer 1 (intra-process) serializes threads within the same process using `std::mutex` +
+`std::condition_variable`. Layer 2 (inter-process) uses the OS advisory lock on the `.lock`
+file. Both layers must succeed for `valid()` to return `true`.
 
 ### Lock File Naming
 

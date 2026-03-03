@@ -28,3 +28,6 @@
 #include "utils/hub_producer.hpp"
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_config.hpp"
+#include "utils/channel_access_policy.hpp"
+#include "utils/channel_pattern.hpp"
+#include "utils/data_block_mutex.hpp"

@@ -5,7 +5,7 @@
 | **HEP**            | `HEP-CORE-0011`                                         |
 | **Title**          | ScriptHost Abstraction Framework                        |
 | **Author**         | pylabhub development team                               |
-| **Status**         | Active                                                  |
+| **Status**         | Implemented (2026-03-03)                                |
 | **Created**        | 2026-02-28                                              |
 | **Updated**        | 2026-03-03 (RoleHostCore + PythonRoleHostBase dedup)    |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
@@ -19,7 +19,7 @@ This HEP defines the `ScriptHost` abstraction layer — a C++ base class that un
 management and thread ownership for embedded scripting runtimes (Python, LuaJIT, and future
 engines) across all pylabhub executables. It replaces the ad-hoc per-executable embedding
 patterns that evolved independently in `pylabhub-hubshell` (HubScript + PythonInterpreter) and
-`pylabhub-actor` (stack-scoped `py::scoped_interpreter` in `actor_main.cpp`).
+the standalone binaries (stack-scoped `py::scoped_interpreter` in each binary's `main.cpp`).
 
 The design principle is: **the abstract interface owns lifecycle and thread model; invocation
 stays native in the concrete class.** No generic `ScriptValue` or `call_function(name, args)`
@@ -32,7 +32,7 @@ failure identified in the superseded HEP-CORE-0005 design.
 
 ### Problem: duplicated embedding boilerplate
 
-Both the hub executable and the actor executable independently embed a Python interpreter,
+Both the hub executable and the standalone binaries independently embed a Python interpreter,
 duplicating:
 - `PyConfig` setup (PYTHONHOME derivation from exe path, signal handlers, parse_argv)
 - Interpreter thread ownership (who creates `py::scoped_interpreter`, on which thread)
@@ -43,13 +43,13 @@ duplicating:
 ### Problem: no path to LuaJIT script hosting
 
 LuaJIT is already linked into `pylabhub-utils` for DataBlock slot scripting. There is no
-structured mechanism for a hub or actor to host a LuaJIT script with the same
+structured mechanism for a hub or binary to host a LuaJIT script with the same
 `on_start`/`on_tick`/`on_stop` callback contract that Python scripts use.
 
 ### Problem: third-party executable authors have no pattern
 
 Developers building custom executables on top of `pylabhub-utils` must reverse-engineer
-the embedding approach from the hub and actor source. A public abstract interface gives
+the embedding approach from the hub and binary source. A public abstract interface gives
 them a documented, supported pattern.
 
 ---
@@ -119,6 +119,74 @@ ScriptHost (abstract)                     (lifecycle contract — in pylabhub-ut
         └── (future role subclasses)
 ```
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+classDiagram
+    class ScriptHost {
+        <<abstract>>
+        +owns_dedicated_thread()* bool
+        +is_ready() bool
+        #do_initialize(path)* bool
+        #do_finalize()* void
+        #base_startup_(path)
+        #base_shutdown_()
+    }
+    class RoleHostCore {
+        +enqueue_message(msg)
+        +drain_messages() vector
+        +request_shutdown()
+        +is_shutdown_requested() bool
+        -incoming_queue_
+        -shutdown_flag_
+    }
+    class PythonScriptHost {
+        +owns_dedicated_thread() true
+        #do_initialize(path) bool
+        #do_finalize() void
+        -interp_guard_
+    }
+    class PythonRoleHostBase {
+        +do_python_work()
+        +role_tag()* string
+        +role_name()* string
+        +required_callback_name()* string
+        +build_role_types()*
+        +start_role()*
+        +stop_role()*
+        +extract_callbacks(mod)*
+        +wire_api_identity()*
+    }
+    class HubScript {
+        on_start / on_tick / on_stop
+    }
+    class ProducerScriptHost {
+        timer-driven loop
+        ~120 lines
+    }
+    class ConsumerScriptHost {
+        demand-driven loop
+        ~120 lines
+    }
+    class ProcessorScriptHost {
+        delegates to hub::Processor
+        ~150 lines
+    }
+    class LuaRoleHostBase {
+        <<stub>>
+        future Lua support
+    }
+
+    ScriptHost <|-- PythonScriptHost
+    ScriptHost <|-- LuaScriptHost
+    PythonScriptHost <|-- HubScript
+    PythonScriptHost <|-- PythonRoleHostBase
+    PythonRoleHostBase <|-- ProducerScriptHost
+    PythonRoleHostBase <|-- ConsumerScriptHost
+    PythonRoleHostBase <|-- ProcessorScriptHost
+    PythonRoleHostBase *-- RoleHostCore : composes
+    LuaRoleHostBase *-- RoleHostCore : composes
+```
+
 **Design: Composition + Inheritance.**
 
 - `RoleHostCore` is **composed** (has-a) by `PythonRoleHostBase` and future `LuaRoleHostBase`.
@@ -180,7 +248,7 @@ public:
 
     /// Returns true if this host spawns its own dedicated interpreter thread.
     ///
-    /// - Python (GIL): true — hub_thread_ / actor_python_thread_ own the interpreter.
+    /// - Python (GIL): true — hub_thread_ / binary_python_thread_ own the interpreter.
     /// - Lua (no GIL):  false — initialize() and all calls run on the caller's thread.
     ///
     /// The base class branches on this flag in base_startup_() and base_shutdown_().
@@ -242,7 +310,7 @@ private:
 ### `thread_local ScriptHostThreadState` usage
 
 ```
-Thread A (hub_thread_ / actor_python_thread_):
+Thread A (hub_thread_ / binary_python_thread_):
   ScriptHost::thread_fn_() entry:
     g_script_thread_state.owner                = this;
     g_script_thread_state.is_interpreter_thread = true;
@@ -301,7 +369,7 @@ do_finalize():
 
 ```
 Threading model: owns_dedicated_thread() = true
-  → spawns dedicated thread_ (hub_thread_ / actor_python_thread_)
+  → spawns dedicated thread_ (hub_thread_ / binary_python_thread_)
   → thread_ owns py::scoped_interpreter (Py_Initialize → Py_Finalize)
   → main thread blocks on init_future_.get() in base_startup_()
 
@@ -631,6 +699,73 @@ What is **retained** from HEP-CORE-0005:
 - The concurrency model insight: one interpreter per process, GIL analysis (§ Design Principles 6c)
 - LuaJIT sandboxing strategy (disable `io.*`, `os.*`, etc.)
 - The goal of engine agnosticism via a clean C++ interface
+
+---
+
+## GIL Management and Thread Model
+
+The following diagram shows the thread model and GIL ownership for the standalone
+binaries (producer, consumer, processor). HubScript uses a similar pattern but with
+tick-driven callbacks instead of slot-driven loops.
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant M as main thread
+    participant I as interpreter thread
+    participant Z as zmq_thread_
+    participant L as loop_thread_
+
+    M->>I: spawn (PythonScriptHost.base_startup_)
+    activate I
+    I->>I: Py_Initialize (owns GIL)
+    I->>I: load script package
+    I->>I: on_init(api) [GIL held]
+    I-->>M: init_promise_.set_value()
+    I->>I: main_thread_release_.emplace() [GIL released]
+    deactivate I
+
+    par zmq_thread_
+        Z->>Z: REG_REQ / DISC_REQ (no GIL)
+        loop heartbeat + messages
+            Z->>Z: poll ZMQ sockets
+            Z->>L: enqueue_message (mutex, no GIL)
+        end
+    and loop_thread_
+        loop slot loop
+            L->>L: drain_messages() [no GIL]
+            L->>L: acquire GIL
+            L->>L: on_produce / on_consume / on_process
+            L->>L: release GIL
+        end
+    end
+
+    M->>I: signal_shutdown()
+    activate I
+    I->>I: main_thread_release_.reset() [GIL re-acquired]
+    I->>I: on_stop(api) [GIL held]
+    I->>I: Py_Finalize
+    deactivate I
+```
+
+---
+
+## Source File Reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/script_host.hpp` | L2 (public) | `ScriptHost` abstract base class |
+| `src/include/utils/script_host_helpers.hpp` | L2 (public) | 14 shared inline helpers (`resolve_schema`, etc.) |
+| `src/include/utils/script_host_schema.hpp` | L2 (public) | `SchemaSpec`, `FieldDef`, `SlotExposure` types |
+| `src/scripting/role_host_core.hpp` | scripting | `RoleHostCore` — engine-agnostic infrastructure |
+| `src/scripting/role_host_core.cpp` | scripting | Message queue, shutdown flags, state |
+| `src/scripting/python_role_host_base.hpp` | scripting | `PythonRoleHostBase` — common Python layer (~15 virtual hooks) |
+| `src/scripting/python_role_host_base.cpp` | scripting | `do_python_work()` skeleton |
+| `src/scripting/lua_role_host_base.hpp` | scripting | `LuaRoleHostBase` — stub for future Lua support |
+| `src/producer/producer_script_host.hpp` | L4 | `ProducerScriptHost` — timer-driven production |
+| `src/consumer/consumer_script_host.hpp` | L4 | `ConsumerScriptHost` — demand-driven consumption |
+| `src/processor/processor_script_host.hpp` | L4 | `ProcessorScriptHost` — delegates to hub::Processor |
+| `tests/test_layer2_service/test_script_host.cpp` | test | ScriptHost lifecycle tests |
 
 ---
 

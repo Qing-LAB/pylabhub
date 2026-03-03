@@ -2,7 +2,7 @@
 
 **Status**: Active — maintained document; updated when new policies are added
 **Created**: 2026-02-22
-**Area**: Cross-cutting — DataHub, BrokerService, Actor Framework
+**Area**: Cross-cutting — DataHub, BrokerService, Standalone Binaries
 
 ---
 
@@ -76,19 +76,19 @@ Stored in `SharedMemoryHeader`.
 | `Enforced` | System calls update automatically on `release_write_slot` | System calls verify automatically on `release_consume_slot`; error returned on mismatch |
 
 **Configuration**: `DataBlockConfig::checksum_policy`.
-**Default** in actor framework: `ChecksumPolicy::Manual` (actor wrapper calls update
-from C++ after `on_write` completes).
+**Default** in standalone binaries: `ChecksumPolicy::Manual` (C++ script host calls update
+after the Python callback completes).
 
 **Algorithm**: Always BLAKE2b-256 (`ChecksumType::BLAKE2b`). Algorithm selection is
 stored in `SharedMemoryHeader`; currently only one algorithm is supported.
 
 ---
 
-### 2.4 Actor Script Validation (actor framework layer)
+### 2.4 Script Validation (binary config layer)
 
-**`ValidationPolicy`** — `src/actor/actor_config.hpp`
-**Applied by**: `ProducerRoleWorker` and `ConsumerRoleWorker` in `actor_host.cpp`.
-This is the **actor-level** view of checksum policies, with additional script-level
+**`ValidationPolicy`** — defined in each binary's config header (e.g. `producer_config.hpp`, `consumer_config.hpp`, `processor_config.hpp`)
+**Applied by**: Each binary's `ScriptHost` implementation.
+This is the **binary-level** view of checksum policies, with additional script-level
 error handling flags:
 
 ```cpp
@@ -98,7 +98,7 @@ struct ValidationPolicy {
     Checksum  slot_checksum{Checksum::Update};
     Checksum  flexzone_checksum{Checksum::Update};
     bool      skip_on_validation_error{true};   // true=discard+warn; false=call handler
-    bool      stop_on_python_error{false};       // false=log+continue; true=log+stop
+    bool      stop_on_script_error{false};       // false=log+continue; true=log+stop
 };
 ```
 
@@ -119,14 +119,14 @@ struct ValidationPolicy {
 
 JSON: `"on_checksum_fail": "skip"` → `true` \| `"pass"` → `false`.
 
-**`stop_on_python_error`** (both sides — unhandled Python exception in any callback):
+**`stop_on_script_error`** (both sides — unhandled Python exception in any callback):
 
 | Value | Action |
 |-------|--------|
 | `false` (default) | Log full traceback; discard current slot; keep running |
-| `true` | Log traceback; stop the actor cleanly |
+| `true` | Log traceback; stop the binary cleanly |
 
-JSON: `"on_python_error": "continue"` → `false` \| `"stop"` → `true`.
+JSON: `"on_script_error": "continue"` → `false` \| `"stop"` → `true`.
 
 **JSON config** (per role):
 ```json
@@ -134,15 +134,15 @@ JSON: `"on_python_error": "continue"` → `false` \| `"stop"` → `true`.
     "slot_checksum":     "update",
     "flexzone_checksum": "update",
     "on_checksum_fail":  "skip",
-    "on_python_error":   "continue"
+    "on_script_error":   "continue"
 }
 ```
 
 **Relationship to DataBlock `ChecksumPolicy`**:
-- Actor framework always creates `DataBlockProducer` with `ChecksumPolicy::Manual`.
-- `ValidationPolicy::Checksum::Update/Enforce` controls WHEN the actor wrapper
+- Standalone binaries always create `DataBlockProducer` with `ChecksumPolicy::Manual`.
+- `ValidationPolicy::Checksum::Update/Enforce` controls WHEN the script host
   calls `update_checksum_slot()` / `verify_checksum_slot()`.
-- The two layers are complementary: DataBlock owns the SHM mechanism; actor config
+- The two layers are complementary: DataBlock owns the SHM mechanism; binary config
   controls the scheduling of that mechanism.
 
 ---
@@ -170,10 +170,10 @@ policy. This is a Cat 2 (non-fatal, recoverable) error path.
 
 ### 2.6 Loop Pacing
 
-#### 2.6.1 Actor-layer: LoopTimingPolicy (IMPLEMENTED, 2026-02-23)
+#### 2.6.1 Binary-level: LoopTimingPolicy (IMPLEMENTED, 2026-02-23)
 
-**`RoleConfig::LoopTimingPolicy`** — `src/actor/actor_config.hpp`
-**Applied by**: `ProducerRoleWorker` / `ConsumerRoleWorker` in `actor_host.cpp`.
+**`LoopTimingPolicy`** — defined in each binary's config (e.g. `producer_config.hpp`)
+**Applied by**: Each binary's script host loop.
 
 | Value | Deadline formula | Overrun behaviour |
 |-------|-----------------|-------------------|
@@ -218,8 +218,8 @@ called on every incoming REG_REQ (producer) and CONSUMER_REG_REQ (consumer).
 |-------|--------------------|--------------------------|--------------|
 | `Open` | No | No | Dev/local hubs (default) |
 | `Tracked` | Optional (if provided, stored in registry) | No | Observability and auditing |
-| `Required` | Yes (actor_name + actor_uid) | No | Deployment environments |
-| `Verified` | Yes (actor_name + actor_uid) | Yes (allowlist) | Production |
+| `Required` | Yes (producer_name + producer_uid) | No | Deployment environments |
+| `Verified` | Yes (producer_name + producer_uid) | Yes (allowlist) | Production |
 
 **Configuration**: `BrokerService::Config::connection_policy` wired from
 `HubConfig::connection_policy()` in `hubshell.cpp`.
@@ -252,24 +252,24 @@ JSON wire values: `"PubSub"` | `"Pipeline"` | `"Bidir"`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Actor JSON config                                                          │
+│  Binary JSON config (producer.json / consumer.json / processor.json)        │
 │    "validation": { slot_checksum, flexzone_checksum,                        │
 │                    on_checksum_fail (→ skip_on_validation_error bool),      │
-│                    on_python_error  (→ stop_on_python_error bool) }         │
+│                    on_script_error  (→ stop_on_script_error bool) }         │
 │                                              ← ValidationPolicy             │
-│    "loop_policy", "period_ms"                ← LoopPolicy (Pass 2)          │
+│    "loop_policy", "period_ms"                ← LoopPolicy                   │
 │                                                                             │
-│  actor_host.cpp (ProducerRoleWorker / ConsumerRoleWorker)                  │
+│  ScriptHost (ProducerScriptHost / ConsumerScriptHost / ProcessorScriptHost)│
 │    Reads ValidationPolicy → controls WHEN update/verify are called          │
-│    Reads LoopPolicy → passes to SlotIterator                                │
+│    Reads LoopPolicy → passes to SlotIterator / hub::Processor              │
 │                                                                             │
 │  hub::Producer / hub::Consumer (ProducerOptions / ConsumerOptions)          │
-│    shm_config.checksum_policy = Manual   ← always Manual in actor framework │
+│    shm_config.checksum_policy = Manual   ← always Manual in binaries        │
 │    shm_config.policy = RingBuffer        ← from JSON "shm.slot_count"       │
 │    shm_config.consumer_sync_policy = Latest_only                            │
 │                                                                             │
 │  DataBlockProducer (SHM write path)                                        │
-│    ChecksumPolicy::Manual → actor wrapper drives update_checksum_*()        │
+│    ChecksumPolicy::Manual → script host drives update_checksum_*()          │
 │    DataBlockPolicy::RingBuffer → ring buffer slot management                │
 │    ConsumerSyncPolicy::Latest_only → consumer always gets newest slot       │
 │                                                                             │
@@ -280,19 +280,19 @@ JSON wire values: `"PubSub"` | `"Pipeline"` | `"Bidir"`.
 
 ---
 
-## 4. Default Policy Stack (Actor Framework)
+## 4. Default Policy Stack (Standalone Binaries)
 
-When a user creates an actor with default JSON config:
+When a user creates a producer/consumer/processor with default JSON config:
 
 | Layer | Policy | Value |
 |-------|--------|-------|
 | SHM buffer | `DataBlockPolicy` | `RingBuffer` |
 | SHM consumer sync | `ConsumerSyncPolicy` | `Latest_only` |
 | SHM checksum mechanism | `ChecksumPolicy` | `Manual` |
-| Actor slot checksum | `ValidationPolicy::Checksum` | `Update` (producer updates; consumer does not verify) |
-| Actor flexzone checksum | `ValidationPolicy::Checksum` | `Update` |
-| Actor on checksum fail | `skip_on_validation_error` | `true` (discard + log Cat 2 warning) |
-| Actor on Python error | `stop_on_python_error` | `false` (log traceback, keep running) |
+| Script slot checksum | `ValidationPolicy::Checksum` | `Update` (producer updates; consumer does not verify) |
+| Script flexzone checksum | `ValidationPolicy::Checksum` | `Update` |
+| Script on checksum fail | `skip_on_validation_error` | `true` (discard + log Cat 2 warning) |
+| Script on error | `stop_on_script_error` | `false` (log traceback, keep running) |
 | Broker checksum repair | `ChecksumRepairPolicy` | `None` |
 | Loop pacing | `LoopPolicy` | `MaxRate` |
 
@@ -302,7 +302,7 @@ are logged and the slot is discarded.
 
 For **safety-critical** applications, set:
 - `slot_checksum: "enforce"` + `on_checksum_fail: "skip"` (Cat 2: verified reads)
-- `on_python_error: "stop"` (treat script errors as fatal)
+- `on_script_error: "stop"` (treat script errors as fatal)
 - `checksum_repair_policy: "notify_only"` (alert all parties on mismatch)
 
 ---
@@ -312,14 +312,70 @@ For **safety-critical** applications, set:
 | Policy | Header | JSON key | Applied in |
 |--------|--------|----------|------------|
 | `DataBlockPolicy` | `data_block_policy.hpp` | `shm.slot_count` (implicit RingBuffer) | `DataBlockProducer` ctor |
-| `ConsumerSyncPolicy` | `data_block_policy.hpp` | N/A (fixed in actor) | `DataBlockProducer` ctor |
-| `ChecksumPolicy` | `data_block_policy.hpp` | N/A (fixed Manual in actor) | `DataBlockProducer` / `Consumer` per-slot |
+| `ConsumerSyncPolicy` | `data_block_policy.hpp` | N/A (fixed in binaries) | `DataBlockProducer` ctor |
+| `ChecksumPolicy` | `data_block_policy.hpp` | N/A (fixed Manual in binaries) | `DataBlockProducer` / `Consumer` per-slot |
 | `ChecksumType` | `data_block_policy.hpp` | N/A (fixed BLAKE2b) | SHM header |
-| `ValidationPolicy::Checksum` | `actor_config.hpp` | `validation.slot_checksum` | `ProducerRoleWorker` / `ConsumerRoleWorker` |
-| `skip_on_validation_error` (bool) | `actor_config.hpp` | `validation.on_checksum_fail` | `ConsumerRoleWorker` |
-| `stop_on_python_error` (bool) | `actor_config.hpp` | `validation.on_python_error` | Both role workers |
+| `ValidationPolicy::Checksum` | `producer_config.hpp` / `consumer_config.hpp` | `validation.slot_checksum` | `ProducerScriptHost` / `ConsumerScriptHost` |
+| `skip_on_validation_error` (bool) | `consumer_config.hpp` | `validation.on_checksum_fail` | `ConsumerScriptHost` |
+| `stop_on_script_error` (bool) | per-binary config | `validation.on_script_error` | All script hosts |
 | `ChecksumRepairPolicy` | `broker_service.hpp` | `BrokerService::Config` | `BrokerService::run()` |
-| `RoleConfig::LoopTimingPolicy` | `actor_config.hpp` | `loop_timing` | `ProducerRoleWorker` / `ConsumerRoleWorker` |
+| `LoopTimingPolicy` | per-binary config | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` |
 | `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | `loop_policy` + `period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
 | `ConnectionPolicy` | `channel_access_policy.hpp` | hub.json `"connection_policy"` | `BrokerServiceImpl::check_connection_policy()` |
 | `ChannelPattern` | `channel_pattern.hpp` | `ProducerOptions::channel_pattern` | `Messenger` (socket type) + `BrokerService` (CHANNEL_READY_NOTIFY) |
+
+---
+
+## 6. Policy Dependency Graph
+
+```mermaid
+flowchart TB
+    subgraph Config["JSON Config Layer"]
+        VPol["validation:\n  slot_checksum\n  on_checksum_fail\n  on_script_error"]
+        LPol["loop_policy\nperiod_ms"]
+        CPol["connection_policy\n(hub.json)"]
+    end
+
+    subgraph Binary["Binary Layer (ScriptHost)"]
+        ValPol["ValidationPolicy"]
+        LTPol["LoopTimingPolicy\n(fixed_pace / compensating)"]
+    end
+
+    subgraph RAII["RAII / DataBlock Layer"]
+        CkPol["ChecksumPolicy\n(Manual in binaries)"]
+        DBPol["DataBlockPolicy\n(RingBuffer)"]
+        CSPol["ConsumerSyncPolicy\n(Latest_only)"]
+        LoopP["LoopPolicy\n(MaxRate / FixedRate)"]
+    end
+
+    subgraph Broker["Broker Layer"]
+        CRPol["ChecksumRepairPolicy"]
+        ConnP["ConnectionPolicy"]
+        ChanP["ChannelPattern"]
+    end
+
+    VPol --> ValPol
+    LPol --> LoopP
+    LPol --> LTPol
+    CPol --> ConnP
+    ValPol -->|"schedules"| CkPol
+    LoopP -->|"drives sleep in"| CSPol
+    CkPol -->|"error report"| CRPol
+    ConnP -->|"enforced on"| ChanP
+```
+
+---
+
+## 7. Source File Reference
+
+| File | Layer | Description |
+|------|-------|-------------|
+| `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` |
+| `src/include/utils/channel_access_policy.hpp` | L3 (public) | `ConnectionPolicy` enum |
+| `src/include/utils/channel_pattern.hpp` | L3 (public) | `ChannelPattern` enum |
+| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`, `ConnectionPolicy` |
+| `src/producer/producer_config.hpp` | L4 | `ValidationPolicy` struct, `LoopTimingPolicy` |
+| `src/consumer/consumer_config.hpp` | L4 | Same policy config fields for consumer |
+| `src/processor/processor_config.hpp` | L4 | `overflow_policy`, validation policy for processor |
+| `src/utils/ipc/broker_service.cpp` | impl | `check_connection_policy()`, `effective_policy()` |
+| `src/utils/shm/data_block.cpp` | impl | Policy enforcement in slot acquire/release |
