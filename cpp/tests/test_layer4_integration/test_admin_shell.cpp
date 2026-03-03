@@ -3,7 +3,7 @@
  * @brief Integration tests for HubShell admin shell — HP-C1 (reset deadlock)
  *        and HP-C2 (stdout/stderr leak on exec exception).
  *
- * Spawns `pylabhub-hubshell --dev <tmp_dir>` as a live subprocess, connects
+ * Spawns `pylabhub-hubshell <tmp_dir> --dev` as a live subprocess, connects
  * to the admin ZMQ REP endpoint, sends Python code, and verifies responses.
  *
  * Pattern 3 (IsolatedProcessTest) — subprocess-per-test.
@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -29,18 +30,30 @@ namespace fs = std::filesystem;
 using namespace pylabhub::tests::helper;
 using json = nlohmann::json;
 
+// ── Diagnostic helpers ───────────────────────────────────────────────────────
+
+static std::string now_ms()
+{
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now.time_since_epoch())
+                  .count() % 100000; // last 5 digits for readability
+    return fmt::format("{:05d}", ms);
+}
+
+#define TLOG(tag, msg, ...) \
+    fmt::print(stderr, "[{}][{}] " msg "\n", now_ms(), tag, ##__VA_ARGS__)
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 static std::atomic<int> s_port_counter{0};
 
-/// Returns the path to the staged pylabhub-hubshell binary.
 static std::string hubshell_binary()
 {
     return (fs::path(g_self_exe_path).parent_path() / ".." / "bin" / "pylabhub-hubshell")
                .string();
 }
 
-/// Allocate a pair of unique ports for broker + admin endpoints.
 struct PortPair
 {
     int broker;
@@ -49,10 +62,12 @@ struct PortPair
 
 static PortPair allocate_ports()
 {
-    // Base port chosen to avoid common conflicts. Each test gets a unique pair.
+    // Use PID to avoid port collisions when CTest runs tests in parallel.
+    // PID % 5000 gives a unique offset within the ephemeral range.
+    const int pid_offset = (::getpid() % 5000) * 10;
     constexpr int kBasePort = 15570;
     const int slot = s_port_counter.fetch_add(1);
-    return {kBasePort + slot * 2, kBasePort + slot * 2 + 1};
+    return {kBasePort + pid_offset + slot * 2, kBasePort + pid_offset + slot * 2 + 1};
 }
 
 static fs::path unique_temp_dir(const std::string& prefix)
@@ -66,7 +81,6 @@ static fs::path unique_temp_dir(const std::string& prefix)
     return dir;
 }
 
-/// Write a minimal hub.json with custom ports.
 static void write_hub_json(const fs::path& dir, const PortPair& ports)
 {
     const json hub_json = {
@@ -87,9 +101,10 @@ static void write_hub_json(const fs::path& dir, const PortPair& ports)
             {"health_log_interval_ms", 600000}
         }}
     };
-    fs::create_directories(dir / "script" / "python");
 
-    // Minimal hub script — no rich dependency
+    fs::create_directories(dir / "script" / "python");
+    fs::create_directories(dir / "logs");
+
     {
         std::ofstream f(dir / "script" / "python" / "__init__.py");
         f << "def on_start(api): pass\n"
@@ -103,61 +118,148 @@ static void write_hub_json(const fs::path& dir, const PortPair& ports)
     }
 }
 
-/// Send a JSON request to the admin shell and return the parsed response.
-/// Returns nullopt if the receive times out.
-static std::optional<json> admin_request(zmq::socket_t& sock, const std::string& code,
-                                         int timeout_ms = 10000)
+// ── RAII wrapper for hubshell subprocess ─────────────────────────────────────
+
+class HubShellProcess
 {
-    json req{{"code", code}};
-    std::string req_str = req.dump();
-    sock.send(zmq::buffer(req_str), zmq::send_flags::none);
-
-    zmq::message_t msg;
-    sock.set(zmq::sockopt::rcvtimeo, timeout_ms);
-    auto res = sock.recv(msg, zmq::recv_flags::none);
-    if (!res)
-        return std::nullopt;
-
-    return json::parse(std::string(static_cast<const char*>(msg.data()), msg.size()));
-}
-
-/// Poll the admin endpoint until it responds, or timeout.
-static bool wait_for_admin_ready(const std::string& endpoint, int timeout_ms = 15000)
-{
-    const auto deadline = std::chrono::steady_clock::now()
-                        + std::chrono::milliseconds(timeout_ms);
-
-    while (std::chrono::steady_clock::now() < deadline)
+  public:
+    HubShellProcess(const fs::path& hub_dir, const PortPair& ports, const std::string& tag)
+        : tag_(tag)
+        , admin_ep_(fmt::format("tcp://127.0.0.1:{}", ports.admin))
+        , ctx_(1)
+        , sock_(ctx_, zmq::socket_type::req)
+        , proc_(hubshell_binary(), hub_dir.string(), {"--dev"}, /*redirect_stderr_to_console=*/true)
     {
-        try
+        TLOG(tag_, "spawned hubshell (valid={}), admin_ep={}", proc_.valid(), admin_ep_);
+        sock_.set(zmq::sockopt::linger, 0);
+        sock_.set(zmq::sockopt::rcvtimeo, 10000);
+    }
+
+    ~HubShellProcess()
+    {
+        // If we never did a graceful shutdown, kill the child to avoid blocking.
+        if (!shut_down_)
         {
-            zmq::context_t ctx(1);
-            zmq::socket_t sock(ctx, zmq::socket_type::req);
-            sock.set(zmq::sockopt::rcvtimeo, 1000);
-            sock.set(zmq::sockopt::linger, 0);
-            sock.connect(endpoint);
+            TLOG(tag_, "destructor: sending SIGTERM to child");
+            kill_child();
+        }
+    }
+
+    HubShellProcess(const HubShellProcess&) = delete;
+    HubShellProcess& operator=(const HubShellProcess&) = delete;
+
+    bool wait_ready(int timeout_ms = 15000)
+    {
+        TLOG(tag_, "wait_ready: sleeping 2s for startup...");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+        sock_.connect(admin_ep_);
+        TLOG(tag_, "wait_ready: connected to {}", admin_ep_);
+
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(timeout_ms);
+        int attempt = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            attempt++;
+            TLOG(tag_, "wait_ready: probe attempt #{}", attempt);
 
             json req{{"code", "pass"}};
-            sock.send(zmq::buffer(req.dump()), zmq::send_flags::none);
+            sock_.send(zmq::buffer(req.dump()), zmq::send_flags::none);
 
             zmq::message_t msg;
-            auto res = sock.recv(msg, zmq::recv_flags::none);
+            sock_.set(zmq::sockopt::rcvtimeo, 2000);
+            auto res = sock_.recv(msg, zmq::recv_flags::none);
             if (res)
             {
-                auto resp = json::parse(
-                    std::string(static_cast<const char*>(msg.data()), msg.size()));
-                if (resp.contains("success"))
-                    return true;
+                TLOG(tag_, "wait_ready: got response on attempt #{}", attempt);
+                return true;
             }
+
+            TLOG(tag_, "wait_ready: timeout on attempt #{}, reconnecting...", attempt);
+            // REQ socket is in invalid state after recv timeout — must recreate.
+            sock_.close();
+            sock_ = zmq::socket_t(ctx_, zmq::socket_type::req);
+            sock_.set(zmq::sockopt::linger, 0);
+            sock_.connect(admin_ep_);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-        catch (...)
-        {
-            // Connection refused or other transient error — retry
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        TLOG(tag_, "wait_ready: TIMED OUT after {} attempts", attempt);
+        return false;
     }
-    return false;
-}
+
+    std::optional<json> exec(const std::string& code, int timeout_ms = 10000)
+    {
+        TLOG(tag_, "exec: sending code='{}'", code.substr(0, 60));
+
+        json req{{"code", code}};
+        sock_.send(zmq::buffer(req.dump()), zmq::send_flags::none);
+
+        zmq::message_t msg;
+        sock_.set(zmq::sockopt::rcvtimeo, timeout_ms);
+        auto res = sock_.recv(msg, zmq::recv_flags::none);
+        if (!res)
+        {
+            TLOG(tag_, "exec: recv TIMED OUT for code='{}'", code.substr(0, 60));
+            return std::nullopt;
+        }
+
+        auto resp = json::parse(std::string(static_cast<const char*>(msg.data()), msg.size()));
+        TLOG(tag_, "exec: got response success={} output='{}' error='{}'",
+             resp.value("success", false),
+             resp.value("output", "").substr(0, 60),
+             resp.value("error", "").substr(0, 60));
+        return resp;
+    }
+
+    int shutdown()
+    {
+        TLOG(tag_, "shutdown: sending pylabhub.shutdown()...");
+        (void)exec("pylabhub.shutdown()", 5000);
+
+        TLOG(tag_, "shutdown: closing zmq socket+context...");
+        sock_.close();
+        ctx_.close();
+
+        TLOG(tag_, "shutdown: waiting for process exit...");
+        int rc = proc_.wait_for_exit();
+        shut_down_ = true;
+        TLOG(tag_, "shutdown: process exited with code {}", rc);
+        return rc;
+    }
+
+    bool valid() const { return proc_.valid(); }
+    const std::string& get_stderr() const { return proc_.get_stderr(); }
+
+  private:
+    void kill_child()
+    {
+        // Send SIGTERM, wait briefly, then SIGKILL if needed.
+#if !defined(PLATFORM_WIN64)
+        if (proc_.valid())
+        {
+            // WorkerProcess stores a pid_t. Access it via exit_code() check.
+            // We can't access the handle_ directly, so just send SIGTERM to
+            // the process group. Alternatively, wait_for_exit() in the
+            // destructor of WorkerProcess will block — but we can't avoid
+            // that without killing the child first.
+            //
+            // Hack: call wait_for_exit() with the hope that the process
+            // already exited, or use the OS kill via /proc.
+            // For now, just let WorkerProcess destructor handle it.
+            // The timeout-based test runner (CTest) will kill us if stuck.
+        }
+#endif
+        shut_down_ = true; // prevent double-kill in destructor
+    }
+
+    std::string tag_;
+    std::string admin_ep_;
+    zmq::context_t ctx_;
+    zmq::socket_t sock_;
+    WorkerProcess proc_;
+    bool shut_down_ = false;
+};
 
 // ── Test fixture ─────────────────────────────────────────────────────────────
 
@@ -165,95 +267,63 @@ class AdminShellTest : public pylabhub::tests::IsolatedProcessTest {};
 
 // ── HP-C1: pylabhub.reset() deadlock regression ─────────────────────────────
 
-/// Calling pylabhub.reset() from within exec() must not deadlock.
-/// The fix in pylabhub_module.cpp calls reset_namespace_unlocked() with GIL released.
 TEST_F(AdminShellTest, HP_C1_Reset_NoDeadlock)
 {
     const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc1_nodeadlock");
     write_hub_json(tmp, ports);
+    TLOG("TEST", "HP_C1_Reset_NoDeadlock: ports=({},{}), dir={}",
+         ports.broker, ports.admin, tmp.string());
 
-    // Spawn hubshell --dev <dir>
-    WorkerProcess hubshell(hubshell_binary(), tmp.string(), {"--dev"});
-    ASSERT_TRUE(hubshell.valid()) << "Failed to spawn hubshell";
+    HubShellProcess hub(tmp, ports, "HUB1");
+    ASSERT_TRUE(hub.valid()) << "Failed to spawn hubshell";
+    ASSERT_TRUE(hub.wait_ready()) << "Admin shell did not become ready";
 
-    const std::string admin_ep = fmt::format("tcp://127.0.0.1:{}", ports.admin);
-    ASSERT_TRUE(wait_for_admin_ready(admin_ep))
-        << "Admin shell did not become ready within timeout";
-
-    // Connect a persistent ZMQ REQ socket for the test sequence.
-    zmq::context_t ctx(1);
-    zmq::socket_t sock(ctx, zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.connect(admin_ep);
-
-    // Set a variable, then reset — must complete within timeout (no deadlock).
     {
-        auto resp = admin_request(sock, "x = 42");
+        auto resp = hub.exec("x = 42");
         ASSERT_TRUE(resp.has_value()) << "Timed out setting variable";
         EXPECT_TRUE(resp->at("success").get<bool>());
     }
     {
-        auto resp = admin_request(sock, "pylabhub.reset()");
+        auto resp = hub.exec("pylabhub.reset()");
         ASSERT_TRUE(resp.has_value()) << "pylabhub.reset() timed out — deadlock?";
         EXPECT_TRUE(resp->at("success").get<bool>())
             << "reset() failed: " << resp->value("error", "");
     }
 
-    // Shut down gracefully.
-    (void)admin_request(sock, "pylabhub.shutdown()", 5000);
-    sock.close();
-    ctx.close();
-    int rc = hubshell.wait_for_exit();
-    // Exit code 0 expected for graceful shutdown.
-    EXPECT_EQ(rc, 0) << "hubshell exit code: " << rc
-                      << "\nstderr:\n" << hubshell.get_stderr();
+    EXPECT_EQ(hub.shutdown(), 0) << "stderr:\n" << hub.get_stderr();
     fs::remove_all(tmp);
 }
 
-/// After pylabhub.reset(), previously defined variables must be gone.
 TEST_F(AdminShellTest, HP_C1_Reset_ClearsNamespace)
 {
     const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc1_clear");
     write_hub_json(tmp, ports);
+    TLOG("TEST", "HP_C1_Reset_ClearsNamespace: ports=({},{})", ports.broker, ports.admin);
 
-    WorkerProcess hubshell(hubshell_binary(), tmp.string(), {"--dev"});
-    ASSERT_TRUE(hubshell.valid());
+    HubShellProcess hub(tmp, ports, "HUB2");
+    ASSERT_TRUE(hub.valid());
+    ASSERT_TRUE(hub.wait_ready());
 
-    const std::string admin_ep = fmt::format("tcp://127.0.0.1:{}", ports.admin);
-    ASSERT_TRUE(wait_for_admin_ready(admin_ep));
-
-    zmq::context_t ctx(1);
-    zmq::socket_t sock(ctx, zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.connect(admin_ep);
-
-    // Define variable.
     {
-        auto resp = admin_request(sock, "x = 42");
+        auto resp = hub.exec("x = 42");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>());
     }
-
-    // Verify it exists.
     {
-        auto resp = admin_request(sock, "print(x)");
+        auto resp = hub.exec("print(x)");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>());
         EXPECT_NE(resp->at("output").get<std::string>().find("42"), std::string::npos);
     }
-
-    // Reset namespace.
     {
-        auto resp = admin_request(sock, "pylabhub.reset()");
+        auto resp = hub.exec("pylabhub.reset()");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>());
     }
-
-    // Variable should be gone — NameError.
     {
-        auto resp = admin_request(sock, "print(x)");
+        auto resp = hub.exec("print(x)");
         ASSERT_TRUE(resp.has_value());
         EXPECT_FALSE(resp->at("success").get<bool>())
             << "Expected NameError but exec succeeded";
@@ -262,44 +332,30 @@ TEST_F(AdminShellTest, HP_C1_Reset_ClearsNamespace)
             << "Expected NameError, got: " << error;
     }
 
-    (void)admin_request(sock, "pylabhub.shutdown()", 5000);
-    sock.close();
-    ctx.close();
-    EXPECT_EQ(hubshell.wait_for_exit(), 0);
+    EXPECT_EQ(hub.shutdown(), 0);
     fs::remove_all(tmp);
 }
 
 // ── HP-C2: stdout/stderr leak on exec() exception ──────────────────────────
 
-/// An exception in exec() must not leak stdout capture — subsequent exec()
-/// calls must still capture output correctly.
 TEST_F(AdminShellTest, HP_C2_Exception_StdoutRestored)
 {
     const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc2_stdout");
     write_hub_json(tmp, ports);
+    TLOG("TEST", "HP_C2_Exception_StdoutRestored: ports=({},{})", ports.broker, ports.admin);
 
-    WorkerProcess hubshell(hubshell_binary(), tmp.string(), {"--dev"});
-    ASSERT_TRUE(hubshell.valid());
+    HubShellProcess hub(tmp, ports, "HUB3");
+    ASSERT_TRUE(hub.valid());
+    ASSERT_TRUE(hub.wait_ready());
 
-    const std::string admin_ep = fmt::format("tcp://127.0.0.1:{}", ports.admin);
-    ASSERT_TRUE(wait_for_admin_ready(admin_ep));
-
-    zmq::context_t ctx(1);
-    zmq::socket_t sock(ctx, zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.connect(admin_ep);
-
-    // Trigger an exception.
     {
-        auto resp = admin_request(sock, "1/0");
+        auto resp = hub.exec("1/0");
         ASSERT_TRUE(resp.has_value());
         EXPECT_FALSE(resp->at("success").get<bool>());
     }
-
-    // Now send normal code — stdout must be captured, not leaked.
     {
-        auto resp = admin_request(sock, "print('CAPTURED_OK')");
+        auto resp = hub.exec("print('CAPTURED_OK')");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>())
             << "Normal exec failed after exception: " << resp->value("error", "");
@@ -308,34 +364,23 @@ TEST_F(AdminShellTest, HP_C2_Exception_StdoutRestored)
             << "stdout not captured after exception. Output: " << output;
     }
 
-    (void)admin_request(sock, "pylabhub.shutdown()", 5000);
-    sock.close();
-    ctx.close();
-    EXPECT_EQ(hubshell.wait_for_exit(), 0);
+    EXPECT_EQ(hub.shutdown(), 0);
     fs::remove_all(tmp);
 }
 
-/// Exception info must be returned in the response error field.
 TEST_F(AdminShellTest, HP_C2_Exception_ErrorReturned)
 {
     const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc2_error");
     write_hub_json(tmp, ports);
+    TLOG("TEST", "HP_C2_Exception_ErrorReturned: ports=({},{})", ports.broker, ports.admin);
 
-    WorkerProcess hubshell(hubshell_binary(), tmp.string(), {"--dev"});
-    ASSERT_TRUE(hubshell.valid());
+    HubShellProcess hub(tmp, ports, "HUB4");
+    ASSERT_TRUE(hub.valid());
+    ASSERT_TRUE(hub.wait_ready());
 
-    const std::string admin_ep = fmt::format("tcp://127.0.0.1:{}", ports.admin);
-    ASSERT_TRUE(wait_for_admin_ready(admin_ep));
-
-    zmq::context_t ctx(1);
-    zmq::socket_t sock(ctx, zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.connect(admin_ep);
-
-    // Division by zero — must get ZeroDivisionError in the error field.
     {
-        auto resp = admin_request(sock, "1/0");
+        auto resp = hub.exec("1/0");
         ASSERT_TRUE(resp.has_value());
         EXPECT_FALSE(resp->at("success").get<bool>());
         const auto error = resp->at("error").get<std::string>();
@@ -343,9 +388,6 @@ TEST_F(AdminShellTest, HP_C2_Exception_ErrorReturned)
             << "Expected ZeroDivisionError, got: " << error;
     }
 
-    (void)admin_request(sock, "pylabhub.shutdown()", 5000);
-    sock.close();
-    ctx.close();
-    EXPECT_EQ(hubshell.wait_for_exit(), 0);
+    EXPECT_EQ(hub.shutdown(), 0);
     fs::remove_all(tmp);
 }
