@@ -364,6 +364,8 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
                                  m_name + "'. Error: " + std::to_string(res));
     }
     struct timespec abstime;
+    // XPLAT: Uses CLOCK_REALTIME — timeout unreliable if system time jumps backward.
+    // POSIX-only; Windows uses WaitForSingleObject with relative timeout (immune).
     if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
     {
         throw std::runtime_error("POSIX DataBlockMutex: clock_gettime failed for '" + m_name + "'.");

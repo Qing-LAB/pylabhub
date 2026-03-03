@@ -94,3 +94,58 @@ TEST_F(FormatToolsTest, FormattedTime)
     EXPECT_TRUE(is_all_digits(17, 2)); // Second
     EXPECT_TRUE(is_all_digits(20, 6)); // Microseconds
 }
+
+// ============================================================================
+// make_buffer / make_buffer_rt
+// ============================================================================
+
+TEST_F(FormatToolsTest, MakeBuffer_BasicFormat)
+{
+    auto buf = make_buffer("{} + {}", 1, 2);
+    std::string result(buf.data(), buf.size());
+    EXPECT_EQ(result, "1 + 2");
+}
+
+TEST_F(FormatToolsTest, MakeBuffer_EmptyFormat)
+{
+    auto buf = make_buffer("");
+    EXPECT_EQ(buf.size(), 0u);
+}
+
+TEST_F(FormatToolsTest, MakeBufferRt_BasicFormat)
+{
+    auto buf = make_buffer_rt("{} items", 42);
+    std::string result(buf.data(), buf.size());
+    EXPECT_EQ(result, "42 items");
+}
+
+TEST_F(FormatToolsTest, MakeBufferRt_EmptyFormat)
+{
+    auto buf = make_buffer_rt("");
+    EXPECT_EQ(buf.size(), 0u);
+}
+
+// ============================================================================
+// filename_only
+// ============================================================================
+
+TEST_F(FormatToolsTest, FilenameOnly_UnixPath)
+{
+    EXPECT_EQ(filename_only("/foo/bar/baz.cpp"), "baz.cpp");
+}
+
+TEST_F(FormatToolsTest, FilenameOnly_WindowsPath)
+{
+    // filename_only handles both / and \ separators on all platforms
+    EXPECT_EQ(filename_only("C:\\foo\\bar.cpp"), "bar.cpp");
+}
+
+TEST_F(FormatToolsTest, FilenameOnly_NoSeparator)
+{
+    EXPECT_EQ(filename_only("file.cpp"), "file.cpp");
+}
+
+TEST_F(FormatToolsTest, FilenameOnly_EmptyString)
+{
+    EXPECT_EQ(filename_only(""), "");
+}

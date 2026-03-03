@@ -39,7 +39,11 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer1_base)
   add_subdirectory(test_layer2_service)
   add_subdirectory(test_layer3_datahub)
-  add_subdirectory(test_layer4_actor)
+  # test_layer4_actor REMOVED: pylabhub-actor replaced by standalone
+  # pylabhub-producer + pylabhub-consumer + pylabhub-processor binaries.
+  add_subdirectory(test_layer4_producer)
+  add_subdirectory(test_layer4_consumer)
+  add_subdirectory(test_layer4_processor)
   # test_raii_layer REMOVED: test_result.cpp moved to test_layer1_base (T5.1)
 
   # Collect all test executables registered by the subdirectories

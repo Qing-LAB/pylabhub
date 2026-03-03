@@ -1,7 +1,7 @@
 """
-producer_counter.py — Example pylabhub-actor producer script (multi-role API).
+producer_counter.py — Example pylabhub-producer script.
 
-Publishes a monotonic counter + timestamp via the role "counter_out".
+Publishes a monotonic counter + timestamp via 'lab.examples.counter'.
 The slot layout is declared in producer_counter.json — no struct.pack() needed.
 
 Slot fields  (ctypes.LittleEndianStructure, natural alignment):
@@ -15,88 +15,78 @@ FlexZone fields (persistent writable region, written once in on_init):
 
 Usage
 -----
-    # Run (default mode)
-    pylabhub-actor --config producer_counter.json
+    # Run (place this file + producer_counter.json in a producer directory)
+    pylabhub-producer <prod_dir>
 
-    # Print slot/flexzone layout and exit
-    pylabhub-actor --config producer_counter.json --validate
+    # Or point directly at the config
+    pylabhub-producer --config producer_counter.json
 
-    # Show configured roles
-    pylabhub-actor --config producer_counter.json --list-roles
+    # Validate config and exit
+    pylabhub-producer --config producer_counter.json --validate
 
 Notes
 -----
-- The role name "counter_out" in @actor.on_write() must match the key in the
-  "roles" map in producer_counter.json.
 - Module-level variables are the natural way to hold state across callbacks.
-  There is no ctx.state dict or any C++-managed state dict.
-- Do NOT store the `slot` object beyond the on_write() call — it is a
+- Do NOT store the `out_slot` object beyond the on_produce() call — it is a
   ctypes.from_buffer view into SHM memory, valid only during that call.
-  `flexzone` is persistent and safe to store.
+- `flexzone` is persistent and safe to store between calls.
 """
 
 import os
 import time
 
-import pylabhub_actor as actor
+import pylabhub_producer as prod
 
 # ---------------------------------------------------------------------------
-# Module-level state (natural Python module variables)
+# Module-level state
 # ---------------------------------------------------------------------------
 count = 0
+_fz   = None   # persistent reference to flexzone
 
 
 # ---------------------------------------------------------------------------
-# Role: counter_out (producer)
+# Callbacks
 # ---------------------------------------------------------------------------
 
-@actor.on_init("counter_out")
-def counter_out_init(flexzone, api: actor.ActorRoleAPI):
+def on_init(api: prod.ProducerAPI) -> None:
+    """Called once after SHM is ready, before the write loop starts."""
+    global _fz
+    _fz = api.flexzone()
+    if _fz is not None:
+        _fz.producer_pid = os.getpid()
+        _fz.start_time   = time.time()
+        _fz.label        = b"lab.examples.counter"
+        api.update_flexzone_checksum()
+    api.log('info', f"CounterProducer: started  uid={api.uid()}  pid={os.getpid()}")
+
+
+def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
     """
-    Called once after SHM is ready, before the write loop starts.
+    Called each write-loop iteration (interval_ms=0 → as fast as SHM allows).
 
-    flexzone is a ctypes.LittleEndianStructure view backed directly by the
-    SHM flexible-zone region.  Writes here go straight to shared memory.
-
-    api.update_flexzone_checksum() recomputes the BLAKE2b checksum so that
-    consumers can verify integrity on connect.
-    """
-    flexzone.producer_pid = os.getpid()
-    flexzone.start_time   = time.time()
-    flexzone.label        = b"lab.examples.counter"
-    api.update_flexzone_checksum()
-    api.log('info', f"counter_out: started  uid={api.uid()}  pid={os.getpid()}")
-
-
-@actor.on_write("counter_out")
-def counter_out_write(slot, flexzone, api: actor.ActorRoleAPI) -> bool:
-    """
-    Called each write-loop iteration (interval_ms=0 -> as fast as SHM allows).
-
-    slot: ctypes.LittleEndianStructure — writable view into the current SHM slot.
+    out_slot: ctypes.LittleEndianStructure — writable view into the current SHM slot.
     Returns True (or None) to commit; False to discard (no ZMQ broadcast).
-    Do NOT store `slot` beyond this call.
+    Do NOT store `out_slot` beyond this call.
     """
     global count
+    if out_slot is None:
+        return False  # SHM slot unavailable — backpressure
+
     count += 1
-    slot.count = count
-    slot.ts    = time.time()
+    out_slot.count = count
+    out_slot.ts    = time.time()
+
+    for sender, data in messages:
+        api.log('debug', f"CounterProducer: ctrl from {sender}: {len(data)} bytes")
+        api.send(sender, b"ack")
 
     if count % 1000 == 0:
         api.log('info',
-                f"counter_out: slot {count}  "
-                f"consumers={len(api.consumers())}")
+                f"CounterProducer: slot {count}"
+                f"  consumers={len(api.consumers())}")
     return True
 
 
-@actor.on_message("counter_out")
-def counter_out_message(sender: str, data: bytes, api: actor.ActorRoleAPI):
-    """Called when a connected consumer sends a ZMQ ctrl frame."""
-    api.log('debug', f"counter_out: ctrl from {sender}: {len(data)} bytes")
-    api.send(sender, b"ack")
-
-
-@actor.on_stop("counter_out")
-def counter_out_stop(flexzone, api: actor.ActorRoleAPI):
+def on_stop(api: prod.ProducerAPI) -> None:
     """Called once after the write loop exits."""
-    api.log('info', f"counter_out: stopped after {count} slots")
+    api.log('info', f"CounterProducer: stopped after {count} slots")

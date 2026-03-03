@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# demo.sh — run the pylabhub counter demo (broker + producer + consumer)
+# demo.sh — run the pylabhub counter demo (hub + producer + consumer)
 #
-# Run explicitly with bash (this script is intentionally not marked executable):
+# Run explicitly with bash:
 #   bash share/scripts/demo.sh [--build-type Debug|Release]
 #
 # For Windows use the companion PowerShell script:
@@ -9,7 +9,13 @@
 #
 # Prerequisites:
 #   cmake --build build
-#   (python-build-standalone env must already be prepared by cmake)
+#
+# Starts three processes in order:
+#   1. pylabhub-hubshell --dev   (broker; ephemeral keypair, no password)
+#   2. pylabhub-actor producer_counter/  (produces lab.examples.counter at max rate)
+#   3. pylabhub-actor consumer_logger/   (reads + logs; foreground)
+#
+# Ctrl-C stops all processes cleanly via the cleanup trap.
 
 set -euo pipefail
 
@@ -24,7 +30,8 @@ while [[ $# -gt 0 ]]; do
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
         --help|-h)
             echo "Usage: $0 [--build-type Debug|Release]"
-            echo "Starts pylabhub-broker, producer_counter, and consumer_logger."
+            echo ""
+            echo "Starts pylabhub-hubshell, producer_counter, and consumer_logger."
             echo "Press Ctrl-C to stop all processes."
             exit 0
             ;;
@@ -34,62 +41,60 @@ done
 
 BIN_DIR="${REPO_ROOT}/build/stage-${BUILD_TYPE}/bin"
 
-# ── Verify binaries ────────────────────────────────────────────────────────────
-for BIN in pylabhub-broker pylabhub-actor; do
+# ── Verify binaries ───────────────────────────────────────────────────────────
+for BIN in pylabhub-hubshell pylabhub-actor; do
     if [[ ! -x "${BIN_DIR}/${BIN}" ]]; then
         echo "ERROR: ${BIN_DIR}/${BIN} not found or not executable." >&2
-        echo "Run: cmake --build build --target ${BIN}" >&2
+        echo "  Run: cmake --build build" >&2
         exit 1
     fi
 done
 
-for CFG in producer_counter.json consumer_logger.json; do
-    if [[ ! -f "${EXAMPLES_DIR}/${CFG}" ]]; then
-        echo "ERROR: ${EXAMPLES_DIR}/${CFG} not found." >&2
+# ── Verify example directories ────────────────────────────────────────────────
+for DIR in producer_counter consumer_logger; do
+    if [[ ! -f "${EXAMPLES_DIR}/${DIR}/actor.json" ]]; then
+        echo "ERROR: ${EXAMPLES_DIR}/${DIR}/actor.json not found." >&2
         exit 1
     fi
 done
 
-# ── PIDs to clean up ─────────────────────────────────────────────────────────
-BROKER_PID=""
+# ── PIDs for cleanup ──────────────────────────────────────────────────────────
+HUB_PID=""
 PRODUCER_PID=""
 
 cleanup() {
     echo ""
     echo "[demo] shutting down..."
-    if [[ -n "${PRODUCER_PID}" ]] && kill -0 "${PRODUCER_PID}" 2>/dev/null; then
-        kill -SIGTERM "${PRODUCER_PID}" 2>/dev/null || true
-        wait "${PRODUCER_PID}" 2>/dev/null || true
-        echo "[demo] producer stopped (pid=${PRODUCER_PID})"
-    fi
-    if [[ -n "${BROKER_PID}" ]] && kill -0 "${BROKER_PID}" 2>/dev/null; then
-        kill -SIGTERM "${BROKER_PID}" 2>/dev/null || true
-        wait "${BROKER_PID}" 2>/dev/null || true
-        echo "[demo] broker stopped (pid=${BROKER_PID})"
-    fi
+    for PID_VAR in PRODUCER_PID HUB_PID; do
+        eval "PID=\$$PID_VAR"
+        if [[ -n "${PID}" ]] && kill -0 "${PID}" 2>/dev/null; then
+            kill -SIGTERM "${PID}" 2>/dev/null || true
+            wait "${PID}" 2>/dev/null || true
+            echo "[demo] ${PID_VAR%%_PID} stopped (pid=${PID})"
+        fi
+    done
     echo "[demo] done."
 }
 trap cleanup EXIT INT TERM
 
-# ── Start broker ─────────────────────────────────────────────────────────────
-echo "[demo] starting pylabhub-broker..."
-"${BIN_DIR}/pylabhub-broker" &
-BROKER_PID=$!
-sleep 0.4   # wait for broker to bind on tcp://127.0.0.1:5570
+# ── 1. Start hub (dev mode — no hub directory or password required) ────────────
+echo "[demo] Starting hub (--dev mode, broker at tcp://127.0.0.1:5570)..."
+"${BIN_DIR}/pylabhub-hubshell" --dev &
+HUB_PID=$!
+sleep 0.4   # wait for broker to bind
 
-if ! kill -0 "${BROKER_PID}" 2>/dev/null; then
-    echo "ERROR: broker exited immediately — check logs." >&2
-    BROKER_PID=""
+if ! kill -0 "${HUB_PID}" 2>/dev/null; then
+    echo "ERROR: hubshell exited immediately — port 5570 may be in use." >&2
+    HUB_PID=""
     exit 1
 fi
-echo "[demo] broker running (pid=${BROKER_PID})"
+echo "[demo] hub running (pid=${HUB_PID})"
 
-# ── Start producer ────────────────────────────────────────────────────────────
-echo "[demo] starting producer_counter..."
-"${BIN_DIR}/pylabhub-actor" \
-    --config "${EXAMPLES_DIR}/producer_counter.json" &
+# ── 2. Start producer ─────────────────────────────────────────────────────────
+echo "[demo] Starting producer_counter (lab.examples.counter)..."
+"${BIN_DIR}/pylabhub-actor" "${EXAMPLES_DIR}/producer_counter" &
 PRODUCER_PID=$!
-sleep 0.6   # wait for producer SHM creation + broker registration
+sleep 0.6   # wait for SHM creation + broker registration
 
 if ! kill -0 "${PRODUCER_PID}" 2>/dev/null; then
     echo "ERROR: producer exited immediately — check logs." >&2
@@ -98,9 +103,8 @@ if ! kill -0 "${PRODUCER_PID}" 2>/dev/null; then
 fi
 echo "[demo] producer running (pid=${PRODUCER_PID})"
 
-# ── Start consumer (foreground) ───────────────────────────────────────────────
-echo "[demo] starting consumer_logger... (Ctrl-C to stop)"
+# ── 3. Start consumer (foreground) ────────────────────────────────────────────
+echo "[demo] Starting consumer_logger... (Ctrl-C to stop)"
 echo ""
-"${BIN_DIR}/pylabhub-actor" \
-    --config "${EXAMPLES_DIR}/consumer_logger.json"
-# consumer exits → cleanup trap fires
+"${BIN_DIR}/pylabhub-actor" "${EXAMPLES_DIR}/consumer_logger"
+# Consumer exits first → cleanup trap fires

@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "Demo processor — reads 'lab.demo.counter', doubles the value, writes 'lab.demo.processed'.",
+    "Run with: pylabhub-processor <path-to-this-dir>",
+    "Script at: ./script/python/__init__.py  (on_init / on_process / on_stop)"
+  ],
+  "processor": {
+    "uid":       "PROC-DOUBLER-00000003",
+    "name":      "DemoDoubler",
+    "log_level": "info"
+  },
+  "in_channel":  "lab.demo.counter",
+  "out_channel": "lab.demo.processed",
+  "broker":      "tcp://127.0.0.1:5570",
+  "timeout_ms":  5000,
+  "overflow_policy": "drop",
+
+  "shm": {
+    "in":  {"enabled": true, "secret": 1111111111},
+    "out": {"enabled": true, "secret": 2222222222, "slot_count": 8}
+  },
+
+  "in_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "value",   "type": "float32"},
+      {"name": "doubled", "type": "float32"}
+    ]
+  },
+  "flexzone_schema": null,
+
+  "script": {"type": "python", "path": "."},
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

@@ -65,3 +65,49 @@ TEST_F(DatahubMessengerTest, WithBrokerHappyPath)
     auto proc = SpawnWorker("messagehub.with_broker_happy_path", {});
     ExpectWorkerOk(proc, {});
 }
+
+// ── B2: Not-connected guard tests ────────────────────────────────────────────
+
+TEST_F(DatahubMessengerTest, QueryChannelSchemaNotConnectedReturnsNullopt)
+{
+    auto proc = SpawnWorker("messagehub.query_channel_schema_not_connected", {});
+    ExpectWorkerOk(proc, {}, {"Messenger"});
+}
+
+TEST_F(DatahubMessengerTest, CreateChannelNotConnectedReturnsNullopt)
+{
+    auto proc = SpawnWorker("messagehub.create_channel_not_connected", {});
+    ExpectWorkerOk(proc, {}, {"Messenger"});
+}
+
+TEST_F(DatahubMessengerTest, ConnectChannelNotConnectedReturnsNullopt)
+{
+    auto proc = SpawnWorker("messagehub.connect_channel_not_connected", {});
+    ExpectWorkerOk(proc, {}, {"Messenger"});
+}
+
+TEST_F(DatahubMessengerTest, HeartbeatNoopWhenNotRunning)
+{
+    auto proc = SpawnWorker("messagehub.heartbeat_noop_not_running", {});
+    ExpectWorkerOk(proc, {});
+}
+
+// ── B4: Callback registration tests ─────────────────────────────────────────
+
+TEST_F(DatahubMessengerTest, OnChannelClosingGlobalRegister)
+{
+    auto proc = SpawnWorker("messagehub.on_channel_closing_global_register", {});
+    ExpectWorkerOk(proc, {});
+}
+
+TEST_F(DatahubMessengerTest, OnChannelClosingRegisterDeregister)
+{
+    auto proc = SpawnWorker("messagehub.on_channel_closing_register_deregister", {});
+    ExpectWorkerOk(proc, {});
+}
+
+TEST_F(DatahubMessengerTest, OnConsumerDiedRegister)
+{
+    auto proc = SpawnWorker("messagehub.on_consumer_died_register", {});
+    ExpectWorkerOk(proc, {});
+}

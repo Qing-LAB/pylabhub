@@ -79,6 +79,14 @@ struct ChannelEntry
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
 
+    // ── Schema identity (HEP-CORE-0016 Phase 3) ───────────────────────────────
+    /// Named schema ID set by producer in REG_REQ or annotated by broker via reverse hash
+    /// lookup. Empty string = anonymous channel (no named schema confirmed).
+    std::string    schema_id;
+    /// BLDS string provided by producer in REG_REQ; empty when producer lacks PYLABHUB_SCHEMA
+    /// macros.  Returned verbatim in SCHEMA_ACK responses.
+    std::string    schema_blds;
+
     // ── broker → producer notification ────────────────────────────────────────
     /// ZMQ ROUTER identity bytes captured when producer sent REG_REQ.
     /// Used to push unsolicited notifications (CHANNEL_CLOSING_NOTIFY, CHANNEL_ERROR_NOTIFY).

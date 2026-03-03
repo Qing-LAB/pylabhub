@@ -6,6 +6,59 @@
 
 ## Archive batches
 
+### 2026-03-02 (Completed TODO files — RAII, Memory Layout, Security)
+
+Routine quarterly-style cleanup: three subtopic TODO files whose tracked work is fully complete
+have been archived. Surviving open backlog items absorbed into remaining active TODOs.
+
+**Archived to `docs/archive/transient-2026-03-02/`:**
+
+| Archived | Reason | Surviving items relocated |
+|---|---|---|
+| `SECURITY_TODO.md` | All 6 security phases complete (2026-02-28) | None — all done |
+| `RAII_LAYER_TODO.md` | RAII layer fully implemented; 3 minor backlog items survive | FlexZone example + move audit + zero-cost check → `TESTING_TODO.md` low priority |
+| `MEMORY_LAYOUT_TODO.md` | Memory layout complete; layout checksum tests + stub doc | Layout tests → `TESTING_TODO.md`; stub doc → `API_TODO.md` backlog |
+
+**Active TODO files after cleanup:** `API_TODO.md`, `TESTING_TODO.md`, `MESSAGEHUB_TODO.md`, `PLATFORM_TODO.md`
+
+---
+
+### 2026-03-01b (Actor Elimination — Design Revision)
+
+Architectural decision: eliminate `pylabhub-actor` (multi-role container) in favour of
+standalone `pylabhub-producer` and `pylabhub-consumer` binaries, each owning their own
+directory, identity, vault, and PID lock — consistent with the existing `pylabhub-processor`
+standalone model. This removes multi-broker identity ambiguity and multi-machine deployment
+confusion inherent in the actor container design.
+
+**Archived to `docs/archive/design-revision-2026-03-01/`:**
+
+| Archived | Reason |
+|---|---|
+| `HEP-CORE-0010-Actor-Thread-Model-and-Unified-Script-Interface.md` | Actor eliminated. Thread model lives in HEP-CORE-0018 §7 |
+| `HEP-CORE-0012-Processor-Role.md` | ProcessorRole-inside-actor eliminated. Standalone: HEP-CORE-0015 |
+| `HEP-CORE-0014-Actor-Framework-Design.md` | Actor framework eliminated. Superseded by HEP-CORE-0018 |
+| `REVISION_SUMMARY.md` | AI-generated transient session summary; no canonical content |
+
+**New canonical documents:**
+
+| Document | Content |
+|---|---|
+| `HEP-CORE-0018-Producer-Consumer-Binaries.md` | Full spec for `pylabhub-producer` and `pylabhub-consumer` |
+
+**Updated canonical documents:**
+
+| Document | Change |
+|---|---|
+| `HEP-CORE-0011` | Library structure, config examples, directory layouts updated for all four components; actor section removed |
+| `HEP-CORE-0015` | Status updated to Phase 1 implemented; script path fixed (`script/python/__init__.py`); actor comparison removed; §1 motivation updated |
+| `HEP-CORE-0017` | §6.1 binary table replaced (actor → producer + consumer); §6.2 config hierarchy updated for all four; §6.3 rewritten; cross-ref index updated |
+| `DOC_STRUCTURE.md` | HEP index updated with archived/new/updated status |
+
+See **`docs/archive/design-revision-2026-03-01/README.md`** for design decision record.
+
+---
+
 ### 2026-03-01 (Code Review Round 2 — Complete)
 
 Code Review Round 2 resolved. 7 confirmed bugs fixed; 11 items classified as false positives.

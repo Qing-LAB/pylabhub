@@ -490,8 +490,11 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
         payload["zmq_data_endpoint"] = cmd.zmq_data_endpoint;
         payload["zmq_pubkey"]        = cmd.zmq_pubkey;
         // Actor identity fields are optional (omitted when not configured).
-        if (!cmd.actor_name.empty()) payload["actor_name"] = cmd.actor_name;
-        if (!cmd.actor_uid.empty())  payload["actor_uid"]  = cmd.actor_uid;
+        if (!cmd.actor_name.empty()) payload["actor_name"]  = cmd.actor_name;
+        if (!cmd.actor_uid.empty())  payload["actor_uid"]   = cmd.actor_uid;
+        // Named schema fields (HEP-CORE-0016 Phase 3) are optional.
+        if (!cmd.schema_id.empty())  payload["schema_id"]   = cmd.schema_id;
+        if (!cmd.schema_blds.empty()) payload["schema_blds"] = cmd.schema_blds;
 
         const std::string msg_type    = "REG_REQ";
         const std::string payload_str = payload.dump();
@@ -612,8 +615,10 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
         reg_payload["consumer_pid"]      = pylabhub::platform::get_pid();
         reg_payload["consumer_hostname"] = "";
         // Actor identity fields are optional (omitted when not configured).
-        if (!cmd.consumer_uid.empty())  reg_payload["consumer_uid"]  = cmd.consumer_uid;
-        if (!cmd.consumer_name.empty()) reg_payload["consumer_name"] = cmd.consumer_name;
+        if (!cmd.consumer_uid.empty())  reg_payload["consumer_uid"]          = cmd.consumer_uid;
+        if (!cmd.consumer_name.empty()) reg_payload["consumer_name"]         = cmd.consumer_name;
+        // Named schema field (HEP-CORE-0016 Phase 3) is optional.
+        if (!cmd.expected_schema_id.empty()) reg_payload["expected_schema_id"] = cmd.expected_schema_id;
         const std::string msg_type   = "CONSUMER_REG_REQ";
         const std::string reg_str    = reg_payload.dump();
         std::vector<zmq::const_buffer> reg_msgs = {zmq::buffer(&kFrameTypeControl, 1),
@@ -642,6 +647,10 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
                                         "CONSUMER_REG failed: {}",
                                         cmd.channel,
                                         ack.value("message", std::string("?")));
+                            // Broker explicitly rejected this consumer (e.g., schema_id
+                            // mismatch). Return nullopt — the connection must not proceed.
+                            cmd.result.set_value(std::nullopt);
+                            return false;
                         }
                     }
                     catch (...)
@@ -657,6 +666,82 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
     {
         LOGGER_ERROR("Messenger: ZMQ error in connect_channel('{}'): {}", cmd.channel,
                      e.what());
+        cmd.result.set_value(std::nullopt);
+    }
+    return false;
+}
+
+// ── SCHEMA_REQ handler (HEP-CORE-0016 Phase 3) ───────────────────────────────
+
+bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: query_channel_schema('{}') — not connected.", cmd.channel);
+        cmd.result.set_value(std::nullopt);
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["channel_name"] = cmd.channel;
+
+        const std::string msg_type    = "SCHEMA_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: query_channel_schema('{}') send failed.", cmd.channel);
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+        zmq::poll(items, std::chrono::milliseconds(cmd.timeout_ms));
+        if ((items[0].revents & ZMQ_POLLIN) == 0)
+        {
+            LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        std::vector<zmq::message_t> recv_msgs;
+        static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+        if (recv_msgs.size() < 3)
+        {
+            LOGGER_ERROR("Messenger: query_channel_schema('{}') invalid response.", cmd.channel);
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
+        if (response.value("status", "") != "success")
+        {
+            LOGGER_WARN("Messenger: query_channel_schema('{}') failed: {}", cmd.channel,
+                        response.value("message", std::string("unknown")));
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        ChannelSchemaInfo info;
+        info.schema_id = response.value("schema_id", "");
+        info.blds      = response.value("blds", "");
+        info.hash_hex  = response.value("schema_hash", "");
+        cmd.result.set_value(std::move(info));
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in query_channel_schema('{}'): {}",
+                     cmd.channel, e.what());
+        cmd.result.set_value(std::nullopt);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in query_channel_schema('{}'): {}",
+                     cmd.channel, e.what());
         cmd.result.set_value(std::nullopt);
     }
     return false;

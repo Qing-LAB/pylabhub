@@ -319,6 +319,32 @@ SchemaInfo generate_schema_info(const std::string &name, const SchemaVersion &ve
 template <typename T> struct SchemaRegistry;
 
 // ============================================================================
+// SchemaRegistry Detection Trait
+// ============================================================================
+
+/**
+ * @brief Trait: true when T has been registered with PYLABHUB_SCHEMA_BEGIN/MEMBER/END.
+ *
+ * Used in `validate_named_schema<DataT, FlexT>()` (schema_library.hpp) to
+ * conditionally enable hash-level schema verification alongside size checks.
+ * Without the macro registration, only `sizeof(T)` is compared against the
+ * schema's `struct_size`; the BLDS hash is not checked.
+ *
+ * @tparam T  Any C++ type.
+ */
+template <typename T, typename = void>
+struct has_schema_registry : std::false_type
+{
+};
+template <typename T>
+struct has_schema_registry<T, std::void_t<decltype(SchemaRegistry<T>::generate_blds())>>
+    : std::true_type
+{
+};
+template <typename T>
+inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
+
+// ============================================================================
 // Schema Registration Macros
 // ============================================================================
 

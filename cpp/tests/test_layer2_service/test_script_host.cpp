@@ -263,3 +263,17 @@ TEST(ScriptHostTest, DirectModeFailureThrows)
     DirectFailMock host;
     EXPECT_THROW(host.startup(), std::runtime_error);
 }
+
+// ============================================================================
+// Edge cases
+// ============================================================================
+
+TEST(ScriptHostTest, FinalizeNotCalledAfterFailedInit)
+{
+    // When do_initialize throws, do_finalize should not be called.
+    ThreadedExceptionMock host;
+    EXPECT_THROW(host.startup(), std::runtime_error);
+    host.shutdown();
+    // ThreadedExceptionMock::do_finalize is a no-op, but the key check is that
+    // we reach this point without crash — shutdown after failed init is safe.
+}

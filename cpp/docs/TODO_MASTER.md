@@ -8,77 +8,78 @@
 
 ## Overview
 
-The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared memory for high-performance data transfer. Current focus is on implementing the memory layout redesign and RAII layer improvements.
+The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared memory for high-performance data transfer. Current focus is on Layer 4 test coverage for the standalone producer/consumer/processor binaries and Named Schema Registry integration.
 
 **Key Documents:**
 - **Design Spec**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`
 - **Implementation Guidance**: `docs/IMPLEMENTATION_GUIDANCE.md`
-- **Memory Layout Design**: `docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` (active — structure remap deferred)
-- **RAII Layer Design**: `docs/archive/transient-2026-02-21/DATAHUB_CPP_RAII_LAYER_DESIGN_DRAFT.md` (archived — implementation complete)
-- **LoopPolicy + Metrics**: `docs/HEP/HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md` (Pass 3 — complete 2026-02-25)
+- **Pipeline Architecture**: `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
+- **Producer + Consumer Binaries**: `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md`
+- **Named Schema Registry**: `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` (Phase 1 done)
 - **Policy Reference**: `docs/HEP/HEP-CORE-0009-Policy-Reference.md` (active cross-reference)
 
 ---
 
 ## Current Sprint Focus
 
-### Priority 1: HubShell — Python + Admin Shell Integration
-📍 **Status**: ✅ Complete (2026-02-20)
-📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
+### Priority 1: Layer 4 Producer + Consumer Tests
+📍 **Status**: ✅ Complete (2026-03-02) — 26 new tests; **550/550 passing**
+📋 **Details**: `docs/todo/TESTING_TODO.md` § "Layer 4: pylabhub-producer/consumer Tests"
 
-All 6 phases complete — 426/426 tests passing:
-- ✅ **Phase 1**: `HubConfig` lifecycle module + layered JSON config
-- ✅ **Phase 2**: CMake Python env (python-build-standalone 3.14, `prepare_python_env`)
-- ✅ **Phase 3**: Removed `src/broker/` standalone; BrokerService stays in pylabhub-utils
-- ✅ **Phase 4**: `PythonInterpreter` lifecycle module + pybind11 bindings
-- ✅ **Phase 5**: `AdminShell` C++ ZMQ REP lifecycle module + `hubshell_client.py`
-- ✅ **Phase 6**: `hubshell.cpp` rewrite (9 lifecycle modules, BrokerService bg thread, double-SIGINT)
+Completed:
+- [x] `tests/test_layer4_producer/` — config unit tests (8) + CLI integration tests (6)
+- [x] `tests/test_layer4_consumer/` — config unit tests (6) + CLI integration tests (6)
+- [ ] Integration test: producer + consumer + hubshell round-trip via live broker (deferred)
 
-### Priority 2: Test Coverage Gaps
-📍 **Status**: Mostly complete
-📋 **Details**: `docs/todo/TESTING_TODO.md`
+### Priority 2: Schema Registry (HEP-CORE-0016) Phases 2–5
+📍 **Status**: ✅ Phase 5 complete (2026-03-02); all 5 phases done
+📋 **Details**: `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md`
+
+Completed:
+- [x] Phase 1: SchemaLibrary + JSON format (2026-03-01)
+- [x] Phase 2: C++ Integration — `has_schema_registry_v<T>`, `validate_named_schema<>()`,
+              `ProducerOptions::schema_id`, `ConsumerOptions::expected_schema_id`; 7 tests (2026-03-02)
+- [x] Phase 3: Broker protocol — `REG_REQ` schema_id/blds fields, Case A/B annotation,
+              `SCHEMA_REQ/ACK`, consumer expected_schema_id validation; 7 tests (2026-03-02)
+- [x] Phase 4: `SchemaStore` lifecycle singleton — thread-safe wrapper around SchemaLibrary,
+              manual `reload()`, explicit `query_from_broker()`; 8 tests (2026-03-02)
+
+- [x] Phase 5: Script integration — named schema strings in config resolve via
+              `SchemaLibrary`; `resolve_schema()` dispatches string/object/null;
+              `schema_entry_to_spec()` converts `SchemaFieldDef` → `FieldDef`;
+              7 tests (2026-03-02)
+
+### Priority 3: Processor Binary Tests + Phase 2 (HEP-CORE-0015)
+📍 **Status**: ✅ Phase 2 complete (2026-03-03) — dual-broker + hub::Processor delegation; **750/750 passing**
+📋 **Details**: `docs/HEP/HEP-CORE-0015-Processor-Binary.md`
+
+Completed:
+- [x] `tests/test_layer4_processor/` — config unit tests (10+5) + CLI integration tests (6)
+- [x] Phase 2: dual-broker config (6 fields + 4 resolvers); ProcessorScriptHost delegates to hub::Processor
+- [x] hub::Processor enhancements: timeout handler, pre-hook, zero-fill, critical error, iteration counter
+- [x] ScriptHost dedup: RoleHostCore + PythonRoleHostBase extracted (~1600 lines deduped)
+
+### Priority 4 (backlog): Platform + Admin Shell Test Gaps
+📍 **Status**: 🟢 Backlog only
+📋 **Details**: `docs/todo/PLATFORM_TODO.md`, `docs/todo/TESTING_TODO.md`
 
 Key tasks:
-- Recovery scenario tests — facility layer ✅ done; broker-coordinated flow deferred (needs broker protocol)
-- ✅ Messenger broker integration tests — Phase C complete (390/390 tests passing)
-- ✅ Consumer registration protocol + E2E test — 397/397 tests passing
-- ✅ hub::Producer + hub::Consumer active API — 15/15 tests; 417/417 total passing
-- ✅ Broker health and notification — DatahubBrokerHealthTest 5/5 tests; 422/422 total passing
-- ✅ RAII stress tests — DatahubStressRaiiTest 2/2 tests (full-capacity + back-pressure); 424/424 total passing
-- ✅ Pluggable Slot-Processor API (HEP-0006) — push/synced_write/pull/set_write_handler/set_read_handler; WriteProcessorContext/ReadProcessorContext; 424/424 total passing
+- HP-C1: `pylabhub.reset()` deadlock regression test
+- HP-C2: stdout/stderr leak on exec() exception test
+- BN-H1: Consumer binary ctypes round-trip test
+- Clang-tidy full pass; Windows MSVC CI gaps
 
-### Priority 3: Messenger Broker Protocol
-📍 **Status**: ✅ Complete — health/notification layer implemented; 424/424 tests passing
-📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md`
+### Backlog: C++ Templates + README Update
+📍 **Status**: 🟡 Templates done (2026-03-03); README deferred
+📋 **Details**: `docs/todo/API_TODO.md` § "C++ Pipeline Demo" and § "README Documentation Update"
 
-Key tasks:
-- [x] `pylabhub-broker` executable — `src/broker/` (ChannelRegistry + BrokerService + broker_main)
-- [x] CurveZMQ server keypair; REG_REQ / DISC_REQ / DEREG_REQ handlers
-- [x] Phase C broker integration tests — DatahubBrokerTest (6 tests)
-- [x] Consumer registration protocol — CONSUMER_REG_REQ/ACK, CONSUMER_DEREG_REQ/ACK, consumer_count in DISC_ACK
-- [x] DatahubBrokerConsumerTest (6 tests: 391–396) + DatahubE2ETest (1 test: 397)
-- [x] hub::Producer + hub::Consumer active services (15 tests: 403–417)
-- [x] Broker health/notification layer — Cat 1/Cat 2 error taxonomy; CONSUMER_DIED_NOTIFY; CHANNEL_ERROR_NOTIFY; per-channel Messenger callbacks; auto-wire in Producer/Consumer; DatahubBrokerHealthTest (5 tests: 418–422)
-- [x] Cleanup: removed src/admin/ and src/python/ (outdated stubs); updated examples/ (raii_layer_example fixed; hub_active_service_example and hub_health_example added); broker_main updated with CryptoUtils + on_ready pubkey display
+Completed:
+- [x] `examples/cpp_processor_template.cpp` — processor pipeline template (Producer → ShmQueue → Processor → Consumer)
+- [x] `examples/CMakeLists.txt` + `PYLABHUB_BUILD_EXAMPLES` opt-in CMake flag
+- [x] ZMQ wire format documentation (HEP-CORE-0002 §7.1)
 
-### Priority 4 (complete): Pluggable Slot-Processor API
-📍 **Status**: ✅ Complete — 424/424 tests passing (2026-02-19)
-📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md` § "Pluggable Slot-Processor and Messenger Access"
-📐 **HEP**: `docs/HEP/HEP-CORE-0006-SlotProcessor-API.md`
-
-Two modes: Queue (`push`/`synced_write`/`pull`) and Real-time (`set_write_handler`/`set_read_handler`).
-Fully-typed `WriteProcessorContext<F,D>` / `ReadProcessorContext<F,D>` bundles slot + FlexZone +
-messaging + shutdown signal. Renamed APIs (`post_write`→`push`, `write_shm`→`synced_write`,
-`read_shm`→`pull`). Upgraded `on_shm_data` to typed `set_read_handler`.
-stop() notifies CVs in producer write_thread and consumer shm_thread for immediate wakeup.
-
-### Priority 3: Platform / Windows Verification
-📍 **Status**: Mostly done
-📋 **Details**: `docs/todo/PLATFORM_TODO.md`
-
-Key tasks (backlog only):
-- `/Zc:preprocessor` PUBLIC propagation — Windows CI build verification
-- MSVC warnings-as-errors gate (`/W4 /WX` in CI)
+Pending:
+- [ ] Application-oriented README update: API layers, four binaries, config model, C++ vs Python paths, getting started guide
 
 ---
 
@@ -86,19 +87,26 @@ Key tasks (backlog only):
 
 | Area | Status | Detail Document | Notes |
 |------|--------|----------------|-------|
-| Security / Identity / Provenance | ✅ Complete | `docs/todo/SECURITY_TODO.md` | All 6 phases complete (2026-02-28): connection policy enforcement, SHM identity, HubConfig single-file load, stable vault keypair, actor --register-with, legacy flat-config removed. **Phase 6**: ActorVault (encrypted actor keypair store), shared `vault_crypto` internal layer, `PYLABHUB_VAULT_HIGH_SECURITY` CMake option, `auth.password` dead code removed. |
-| Actor (pylabhub-actor) | 🟡 In Progress | `docs/tech_draft/ACTOR_DESIGN.md` | Multi-role actor (2026-02-21): ActorHost, ProducerRoleWorker, ConsumerRoleWorker, ctypes zero-copy schema, examples; UID format; SharedSpinLockPy. Code-review fixes (2026-02-22): schema validation, PylabhubEnv getters, CurveZMQ client keypair, per-role Messenger. Actor-layer LoopTimingPolicy + RoleMetrics (2026-02-23). HEP-CORE-0010 Phase 1 (2026-02-24): unified on_iteration module interface, GIL-race fix via incoming_queue_, loop_trigger/messenger_poll_ms config, api.set_critical_error(), run_loop_messenger(), dispatch table deleted; 66/66 Layer 4 tests. HEP-CORE-0010 Phase 2 (2026-02-24): ZMQ thread consolidation — embedded-mode API on Producer/Consumer; zmq_thread_ per role worker; iteration_count_ for heartbeat; SHM acquire timeout fix; consumer timeout notification; 501/501 tests. HEP-CORE-0010 Phase 3 (2026-02-24): application-level heartbeat — zmq_thread_ sends HEARTBEAT_REQ only when iteration_count_ advances; Messenger::suppress_periodic_heartbeat + enqueue_heartbeat API added; no broker protocol changes. Per-role Python packages (2026-02-25): each role's script is a Python package at roles/<role_name>/script/__init__.py; spec_from_file_location isolation; per-role script config in RoleConfig; do_init() generates package template; ACTOR_DESIGN.md §3 fully rewritten with script interface docs. Embedded-mode Layer 4 tests (2026-02-25): 10 new tests (4 Producer + 6 Consumer); ZMQ_BLOCKY=0 fix in zmq_context_startup() eliminates zmq_ctx_term() hang in test teardown; 517/517 tests. HEP-CORE-0008 Pass 3 (2026-02-25): api.metrics() dict completeness — D4 keys loop_overrun_count + last_cycle_work_us added; 522/522 tests. **GIL/signal unified interface (2026-02-28)**: PyConfig.install_signal_handlers=0 in actor_main.cpp; std::optional<py::gil_scoped_release> main_thread_release_ in ActorHost; start() empties it (releases GIL), stop() resets + uses py::gil_scoped_release around joins; callers clean. **ActorScriptHost refactor (2026-02-28)**: actor_main.cpp now uses ActorScriptHost:PythonScriptHost — dedicated interpreter thread owns full Python lifecycle (Py_Initialize→Py_Finalize); do_python_work() drives load_script/start/wait/stop with correct GIL ownership at every path; signal_shutdown propagates to host_; g_shutdown_ wired for internal api.stop() shutdown; actor_script_host.hpp/cpp added; CMakeLists links pylabhub::scripting; 554/554 tests. Pending: ScriptHost threading unit tests; HubConfig script-block fields unit tests; Layer 3 embedded-mode integration tests |
+| Security / Identity / Provenance | ✅ Complete | `docs/archive/transient-2026-03-02/SECURITY_TODO.md` | All 6 phases complete (2026-02-28). TODO archived. |
+| Actor (pylabhub-actor) | ❌ Eliminated | — | **Eliminated (2026-03-01).** `src/actor/` + `tests/test_layer4_actor/` deleted. HEP-0010/0012/0014 archived. Replaced by three standalone binaries. |
+| Producer Binary (`pylabhub-producer`) | 🟡 Phase 1+tests | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 8 config + 6 CLI tests. **Pending Phase 2:** integration test (live broker round-trip). |
+| Consumer Binary (`pylabhub-consumer`) | 🟡 Phase 1+tests | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 6 config + 6 CLI tests. **Pending Phase 2:** integration test (live broker round-trip). |
 | HubShell / HubConfig | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | All 6 phases done (2026-02-20): HubConfig, Python env, broker consolidation, PythonInterpreter, AdminShell, hubshell.cpp rewrite |
-| RAII Layer | ✅ Complete | `docs/todo/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved; 5 backlog enhancements |
+| RAII Layer | ✅ Complete | `docs/archive/transient-2026-03-02/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved. TODO archived; minor backlog absorbed into TESTING_TODO. |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor Phase A complete (2026-02-26)**; **P2 src/ split done (2026-02-27)**: `data_block.cpp` 3969L→2894L via `data_block_internal.hpp` + 3 new split files; **HEP-CORE-0002 restructured (2026-02-27)**: §6 RAII Abstraction Layer added, §7 Control Plane Protocol stub (→HEP-CORE-0007), stale §5.3/§5.4/§5.5 removed, §6-§15→§7-§16; **P4 messenger.cpp split done (2026-02-27)**: `messenger_internal.hpp` + `messenger_protocol.cpp`; `messenger.cpp` 1707L→811L |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟢 Ongoing | `docs/todo/TESTING_TODO.md` | **587/587 passing** (+2 sub-4K slot tests: `SubCacheLineLogicalSizeThrows` + `SubPageLogicalSizeRoundTrip`); Remaining gaps: Layer 4 actor+Python integration (live broker + actor); Layer 3 embedded-mode integration tests |
-| Memory Layout | ✅ Complete | `docs/todo/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed |
+| Testing | 🟡 Ongoing | `docs/todo/TESTING_TODO.md` | **750/750 passing** (2026-03-03). +16 tests: hub::Processor enhancements (11), dual-broker config (5). Active gaps: integration test (producer+consumer+hubshell), HP-C1/HP-C2/BN-H1. |
+| Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
+| Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
+| Processor Binary | ✅ Phase 2 done | `docs/HEP/HEP-CORE-0015-Processor-Binary.md` | **Phase 1+2 done (2026-03-03):** 15 config + 6 CLI tests. Dual-broker config; ProcessorScriptHost delegates to hub::Processor; ScriptHost dedup. |
+| Pipeline Architecture | ✅ Design | `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md` | Design complete (2026-03-01). Implements four planes, four standalone binaries, topology patterns. |
+| Metrics Plane | 🟡 Design | `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` | Design drafted (2026-03-02). Fifth plane: passive SHM + voluntary ZMQ → broker aggregation. 5 phases. |
+| Interactive Signal Handler | ✅ Complete | `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md` | **Implemented (2026-03-02).** All 4 binaries integrated. Old signal handlers removed. 705/705 pass. |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
 | Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Cat 1/Cat 2 health layer; Slot-Processor API (HEP-0006); 424/424 total |
 
-**Active code reviews:** None. (2026-02-27 reviews archived to `docs/archive/transient-2026-02-27/`; 2026-03-01 Round 2 reviews archived to `docs/archive/transient-2026-03-01/`; both logged in `docs/DOC_ARCHIVE_LOG.md`.)
+**Active code reviews:** None. (2026-02-27 reviews archived to `docs/archive/transient-2026-02-27/`; 2026-03-01 Round 2 reviews archived to `docs/archive/transient-2026-03-01/`; SECURITY/RAII/MEMORY_LAYOUT TODOs archived to `docs/archive/transient-2026-03-02/`; all logged in `docs/DOC_ARCHIVE_LOG.md`.)
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred
@@ -107,24 +115,22 @@ Key tasks (backlog only):
 
 ## Subtopic TODO Documents
 
-All detailed task tracking, completions, and phase-specific work is maintained in subtopic TODO documents:
+All detailed task tracking, completions, and phase-specific work is maintained in subtopic TODO documents.
+See `docs/todo/README.md` for full list and archiving history.
 
-### Core Implementation
-- **`docs/todo/MEMORY_LAYOUT_TODO.md`** — Memory layout redesign, alignment, validation
-- **`docs/todo/RAII_LAYER_TODO.md`** — C++ RAII patterns, transaction API, typed access
-- **`docs/todo/API_TODO.md`** — Public API refinements, documentation gaps
+### Active (have open items)
+- **`docs/todo/API_TODO.md`** — Producer/consumer/processor binary work (Steps 4–5), header layering, API backlog
+- **`docs/todo/TESTING_TODO.md`** — Layer 4 producer/consumer tests (pending), HP-C1/HP-C2/BN-H1, platform
+- **`docs/todo/PLATFORM_TODO.md`** — Clang-tidy pass, Windows MSVC CI gaps (backlog)
+- **`docs/todo/MESSAGEHUB_TODO.md`** — Broker feature backlog, schema registry (deferred)
 
-### Integration and Testing  
-- **`docs/todo/TESTING_TODO.md`** — Test phases (A-D), coverage, multi-process scenarios
-- **`docs/todo/PLATFORM_TODO.md`** — Cross-platform consistency, platform-specific issues (to be created)
-
-### Supporting Systems
-- **`docs/todo/MESSAGEHUB_TODO.md`** — Messenger integration, broker protocol
-- **`docs/todo/SECURITY_TODO.md`** — Hub vault, directory model, identity, connection policy, provenance chain
-- **`docs/todo/RECOVERY_TODO.md`** — Recovery scenarios, diagnostics improvements (to be created)
+### Archived (complete — no active items)
+- `SECURITY_TODO.md` → `docs/archive/transient-2026-03-02/` (all 6 phases done 2026-02-28)
+- `RAII_LAYER_TODO.md` → `docs/archive/transient-2026-03-02/` (RAII layer complete)
+- `MEMORY_LAYOUT_TODO.md` → `docs/archive/transient-2026-03-02/` (memory layout complete)
 
 ### Active Design Drafts
-- **`docs/tech_draft/ACTOR_DESIGN.md`** — pylabhub-actor multi-role design (config, Python API, ctypes schema, C++ architecture, runtime costs, gap analysis)
+- *(no active design drafts — ACTOR_DESIGN.md superseded by HEP-CORE-0018; actor eliminated)*
 
 ---
 
