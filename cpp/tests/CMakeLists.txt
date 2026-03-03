@@ -44,6 +44,7 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer4_producer)
   add_subdirectory(test_layer4_consumer)
   add_subdirectory(test_layer4_processor)
+  add_subdirectory(test_layer4_integration)
   # test_raii_layer REMOVED: test_result.cpp moved to test_layer1_base (T5.1)
 
   # Collect all test executables registered by the subdirectories

@@ -4,7 +4,7 @@
 |----------------|--------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0020`                                                                |
 | **Title**      | Interactive Signal Handler — Jupyter-style Ctrl-C with Status, Confirmation, and Resume |
-| **Status**     | Design — 2026-03-02                                                             |
+| **Status**     | Implemented (2026-03-02)                                                        |
 | **Created**    | 2026-03-02                                                                      |
 | **Area**       | Framework Infrastructure (`pylabhub-basic` or `pylabhub-utils`, all binaries)   |
 | **Depends on** | HEP-CORE-0001 (Lifecycle), HEP-CORE-0017 (Pipeline Architecture)               |
@@ -437,6 +437,41 @@ signal_handler.set_status_callback([&]() {
 
 ## 7. State Machine
 
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+stateDiagram-v2
+    [*] --> IDLE: watcher thread started
+
+    IDLE --> INTERRUPTED: Ctrl-C (signal_count → 1)
+
+    INTERRUPTED --> PROMPTING: TTY detected
+    INTERRUPTED --> SHUTDOWN: no TTY (daemon mode)
+
+    PROMPTING --> IDLE: timeout (5s) → resume
+    PROMPTING --> SHUTDOWN: user types y/Y → confirm
+    PROMPTING --> IDLE: user types n/other → resume
+    PROMPTING --> SHUTDOWN: 2nd Ctrl-C during prompt
+
+    SHUTDOWN --> FORCE_EXIT: 3rd Ctrl-C → _Exit(1)
+
+    note right of IDLE
+        Watcher thread sleeps
+        on pipe/event
+    end note
+
+    note right of PROMPTING
+        Print status callback
+        Read stdin with timeout
+    end note
+
+    note right of SHUTDOWN
+        Set *shutdown_flag_ = true
+        Main loop detects and tears down
+    end note
+```
+
+ASCII reference (same state machine):
+
 ```
                 ┌──────────┐
                 │  IDLE    │ ◄── watcher thread sleeping
@@ -559,7 +594,21 @@ Files:
 
 ---
 
-## 12. Relationship to Existing Code
+## 12. Source File Reference
+
+| File | Description |
+|------|-------------|
+| `src/include/utils/interactive_signal_handler.hpp` | Public header: `InteractiveSignalHandler`, `SignalHandlerConfig`, `SignalStatusCallback` |
+| `src/utils/core/interactive_signal_handler.cpp` | Pimpl implementation: watcher thread, self-pipe (POSIX), prompt logic |
+| `src/hubshell.cpp` | Integration: hub status callback |
+| `src/producer/producer_main.cpp` | Integration: producer status callback |
+| `src/consumer/consumer_main.cpp` | Integration: consumer status callback |
+| `src/processor/processor_main.cpp` | Integration: processor status callback |
+| `tests/test_layer2_service/test_interactive_signal_handler.cpp` | Signal counter, TTY detection, lifecycle tests (7 tests) |
+
+---
+
+## 13. Relationship to Existing Code
 
 | Existing code | After this HEP |
 |---|---|

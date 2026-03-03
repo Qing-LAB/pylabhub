@@ -4,7 +4,7 @@
 |---------------|---------------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0017`                                                                 |
 | **Title**     | Pipeline Architecture — Components, Planes, Topologies, and Boundaries         |
-| **Status**    | Design — 2026-03-01                                                             |
+| **Status**    | Implemented — 2026-03-03                                                        |
 | **Created**   | 2026-03-01                                                                      |
 | **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added)                 |
 | **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`) |
@@ -24,8 +24,8 @@ management, it becomes useful to have a single document that captures:
 5. The **deployment model** that governs binary identity and config
 
 This document does not re-specify any protocol or implementation detail — those
-live in the per-component HEPs (0002, 0007, 0012, 0016). This document provides
-the cross-cutting architectural view.
+live in the per-component HEPs (0002, 0007, 0015, 0016, 0018). This document
+provides the cross-cutting architectural view.
 
 ---
 
@@ -40,6 +40,34 @@ These planes are strictly orthogonal: changes to one have no effect on the other
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets + Broker | HEP-CORE-0007 |
 | **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | HEP-CORE-0007 §6 |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+
+```mermaid
+graph LR
+    subgraph "Data Plane"
+        DP_SHM["SHM Ring Buffer"]
+        DP_ZMQ["ZMQ PUSH/PULL"]
+    end
+
+    subgraph "Control Plane"
+        CP_BROKER["BrokerService<br/>(ROUTER–DEALER)"]
+        CP_REG["REG / DISC / BYE"]
+        CP_HB["HEARTBEAT"]
+    end
+
+    subgraph "Message Plane"
+        MP_MSG["Messenger<br/>(bidirectional)"]
+        MP_TYPED["Typed Messages"]
+    end
+
+    subgraph "Timing Plane"
+        TP_LP["LoopPolicy"]
+        TP_METRICS["IterationMetrics"]
+    end
+
+    DP_SHM -.->|"orthogonal"| CP_BROKER
+    CP_BROKER -.->|"orthogonal"| MP_MSG
+    MP_MSG -.->|"orthogonal"| TP_LP
+```
 
 **Why this separation matters:**
 
@@ -121,12 +149,39 @@ See HEP-CORE-0002 §17.3 for detailed rationale.
 The Processor's transform loop is purely data-plane: acquire input slot →
 optionally acquire output slot → call handler → commit or discard → release input.
 It has no knowledge of schema, broker protocol, or Python GIL. Those concerns are
-handled by `ProcessorRoleWorker` (actor embedding) or `processor_main` (standalone
-binary), which construct the appropriate Queues and own the control plane.
+handled by `processor_main` (standalone binary) and `ProcessorScriptHost`,
+which construct the appropriate Queues and own the control plane.
 
 ---
 
 ## 4. Topology Patterns
+
+### 4.0 Topology Overview
+
+```mermaid
+graph TD
+    subgraph "§4.1 Local Linear"
+        A1["Producer"] -->|SHM| A2["Consumer"]
+    end
+
+    subgraph "§4.2 Local Transform"
+        B1["Producer"] -->|SHM| B2["ShmQ"] --> B3["Processor"] --> B4["ShmQ"] -->|SHM| B5["Consumer"]
+    end
+
+    subgraph "§4.3 Cross-Machine Bridge"
+        C1["Producer"] -->|SHM| C2["Proc A"] -->|ZMQ net| C3["Proc B"] -->|SHM| C4["Consumer"]
+    end
+
+    subgraph "§4.4 Chained Transform"
+        D1["Producer"] -->|SHM| D2["P1"] -->|SHM| D3["P2"] -->|SHM| D4["P3"] -->|SHM| D5["Consumer"]
+    end
+
+    subgraph "§4.5 Fan-Out"
+        E1["Producer"] -->|SHM| E2["Consumer"]
+        E1 -->|SHM| E3["Processor A"]
+        E1 -->|SHM| E4["Processor B"]
+    end
+```
 
 ### 4.1 Local Linear Pipeline
 
@@ -155,7 +210,7 @@ All components on the same host; Processor transforms in-line:
 - Processor is a pure transform unit: no broker registration of its own when
   used as a standalone `hub::Processor` (no control plane); the caller is responsible
   for building the ShmQueues after obtaining DataBlock handles.
-- When embedded as a `ProcessorRoleWorker` inside an actor, the worker holds
+- When run as `pylabhub-processor`, the `ProcessorScriptHost` holds
   the control-plane connections and constructs the Queues after broker handshake.
 
 ### 4.3 Cross-Machine Bridge
@@ -256,7 +311,49 @@ rules.
 
 ## 6. Deployment Model
 
-### 6.1 Binary Types
+### 6.1 Binary Interconnection
+
+```mermaid
+graph LR
+    subgraph "pylabhub-hubshell"
+        BROKER["BrokerService<br/>(ROUTER)"]
+        ADMIN["AdminShell<br/>(ZMQ REP)"]
+        HSCRIPT["HubScript"]
+    end
+
+    subgraph "pylabhub-producer"
+        P_SH["ProducerScriptHost"]
+        P_API["ProducerAPI"]
+        P_PROD["hub::Producer"]
+        P_MSG["Messenger"]
+    end
+
+    subgraph "pylabhub-processor"
+        PR_SH["ProcessorScriptHost"]
+        PR_API["ProcessorAPI"]
+        PR_PROC["hub::Processor"]
+        PR_MSG_IN["Messenger (in)"]
+        PR_MSG_OUT["Messenger (out)"]
+    end
+
+    subgraph "pylabhub-consumer"
+        C_SH["ConsumerScriptHost"]
+        C_API["ConsumerAPI"]
+        C_CONS["hub::Consumer"]
+        C_MSG["Messenger"]
+    end
+
+    P_MSG -->|ctrl| BROKER
+    C_MSG -->|ctrl| BROKER
+    PR_MSG_IN -->|ctrl| BROKER
+    PR_MSG_OUT -->|ctrl| BROKER
+
+    P_PROD ===|SHM| C_CONS
+    P_PROD ===|SHM| PR_PROC
+    PR_PROC ===|SHM| C_CONS
+```
+
+### 6.2 Binary Types
 
 The framework ships four user-facing binaries:
 
@@ -272,7 +369,7 @@ Each binary:
 - Has exactly one UID — immutable after generation
 - Hosts exactly one data-plane role (one channel in and/or one channel out)
 
-### 6.2 Configuration Hierarchy
+### 6.3 Configuration Hierarchy
 
 ```
 <hub_dir>/
@@ -319,7 +416,7 @@ Each binary:
 `script.type` is required; C++ resolves `<script.path>/<script.type>/__init__.py`.
 Standard config: `"script": {"type": "python", "path": "./script"}`.
 
-### 6.3 Deployment Topology Examples
+### 6.4 Deployment Topology Examples
 
 **Single-machine pipeline:**
 ```
@@ -403,16 +500,43 @@ component additions:
 
 ---
 
+## 9. Source File Reference
+
+This is an architecture overview document. The source files that implement each component:
+
+| Component | Key Source Files |
+|-----------|-----------------|
+| **hub::Producer** | `src/include/utils/hub_producer.hpp`, `src/utils/hub/` |
+| **hub::Consumer** | `src/include/utils/hub_consumer.hpp`, `src/utils/hub/` |
+| **hub::Queue** | `src/include/utils/hub_queue.hpp` (abstract base) |
+| **hub::ShmQueue** | `src/include/utils/hub_shm_queue.hpp`, `src/utils/hub/hub_shm_queue.cpp` |
+| **hub::ZmqQueue** | `src/include/utils/hub_zmq_queue.hpp`, `src/utils/hub/hub_zmq_queue.cpp` |
+| **hub::Processor** | `src/include/utils/hub_processor.hpp`, `src/utils/hub/hub_processor.cpp` |
+| **BrokerService** | `src/include/utils/broker_service.hpp`, `src/utils/ipc/broker_service.cpp` |
+| **Messenger** | `src/include/utils/messenger.hpp`, `src/utils/ipc/messenger.cpp` |
+| **pylabhub-hubshell** | `src/hubshell.cpp` |
+| **pylabhub-producer** | `src/producer/producer_main.cpp`, `src/producer/producer_script_host.cpp` |
+| **pylabhub-consumer** | `src/consumer/consumer_main.cpp`, `src/consumer/consumer_script_host.cpp` |
+| **pylabhub-processor** | `src/processor/processor_main.cpp`, `src/processor/processor_script_host.cpp` |
+| **SchemaLibrary** | `src/include/utils/schema_library.hpp`, `src/utils/schema/schema_library.cpp` |
+| **SchemaStore** | `src/include/utils/schema_registry.hpp`, `src/utils/schema/schema_registry.cpp` |
+| **LoopPolicy** | `src/include/plh_datahub.hpp` (DataBlock timing) |
+
+---
+
 ## Document Status
 
-**Design** — 2026-03-01
+**Implemented** — 2026-03-03
 
 This document captures architectural decisions made during the Queue Abstraction and
-Processor design phase (2026-03-01). It is intended as a stable reference that
-cross-links the component-level HEPs; it does not describe implementation details
-or contain code.
+Processor design phase (2026-03-01). All components described here are implemented:
+four standalone binaries, hub::Queue abstraction, hub::Processor transform layer,
+Named Schema Registry, and the four-plane architecture. 750/750 tests passing.
 
-**Topics pending resolution** (tracked in component HEPs):
-- HEP-CORE-0018: `pylabhub-producer` and `pylabhub-consumer` implementation (C++ + tests)
-- HEP-CORE-0015: Phase 2 — dual-broker, transport selection, cross-machine bridge
-- HEP-CORE-0016: Named Schema Registry — Phases 1–5 implementation
+**Resolved topics:**
+- HEP-CORE-0018: `pylabhub-producer` and `pylabhub-consumer` — Phase 1 + Layer 4 tests
+- HEP-CORE-0015: Phase 1+2 — dual-broker config, hub::Processor delegation
+- HEP-CORE-0016: Named Schema Registry — all 5 phases complete
+
+**Pending extension:**
+- HEP-CORE-0019: Metrics Plane — fifth plane (design, not yet implemented)

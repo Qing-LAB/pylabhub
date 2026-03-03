@@ -69,6 +69,17 @@ Key tasks:
 - BN-H1: Consumer binary ctypes round-trip test
 - Clang-tidy full pass; Windows MSVC CI gaps
 
+### Priority 5: HEP Document Review + Code Review + Source Polish
+📍 **Status**: ✅ Complete (2026-03-03) — all 17 HEPs updated; code review passed; umbrella headers polished
+📋 **Details**: Plan file `calm-herding-koala.md`
+
+Completed:
+- [x] Session 0: Housekeeping — archived HEP-0005, scrubbed 185 actor references across 12 HEPs
+- [x] Batch 1-6: All 17 HEP documents updated with mermaid diagrams, source file references, status fields
+- [x] Phase 2: 5-pass code review (L0-1, L2, L3, L4, cross-cutting) — 6 issues found and fixed
+- [x] Phase 3: Source polish — doxygen fixes, umbrella header reorganization, orphan header inclusion
+- [x] Example build fix — `0xBAD5ECRET` literal error in producer/consumer examples
+
 ### Backlog: C++ Templates + README Update
 📍 **Status**: 🟡 Templates done (2026-03-03); README deferred
 📋 **Details**: `docs/todo/API_TODO.md` § "C++ Pipeline Demo" and § "README Documentation Update"

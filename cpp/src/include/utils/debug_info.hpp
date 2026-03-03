@@ -1,3 +1,4 @@
+#pragma once
 /**
  * @file debug_info.hpp
  * @brief Provides cross-platform debugging utilities, including stack trace printing,
@@ -7,12 +8,6 @@
  * namespace designed for robust error reporting and debugging. It leverages `fmt`
  * for compile-time format string checks and `std::source_location` for automatic
  * source code location reporting.
- */
-
-#pragma once
-/**
- * @file debug_info.hpp
- * @brief Stack trace, panic handling, and debug messaging utilities.
  */
 #include "pylabhub_utils_export.h"
 #include "utils/format_tools.hpp"

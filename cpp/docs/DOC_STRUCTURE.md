@@ -41,7 +41,7 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 
 | Location | Purpose |
 |----------|---------|
-| **`docs/HEP/`** | Authoritative design specs. Current index (HEP-CORE-0001 through -0014 + REVISION_SUMMARY): |
+| **`docs/HEP/`** | Authoritative design specs. Current index (HEP-CORE-0001 through -0020): |
 
 | HEP | Title | Status |
 |-----|-------|--------|
@@ -55,14 +55,16 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 | HEP-CORE-0008 | LoopPolicy and Iteration Metrics | Implemented |
 | HEP-CORE-0009 | Policy Reference (ConnectionPolicy, Identity) | Implemented |
 | HEP-CORE-0010 | Actor Thread Model and Unified Script Interface | **Archived** — actor eliminated; see HEP-CORE-0018 |
-| HEP-CORE-0011 | ScriptHost Abstraction Framework | Implemented |
+| HEP-CORE-0011 | ScriptHost Abstraction Framework | Implemented (RoleHostCore + PythonRoleHostBase) |
 | HEP-CORE-0012 | Processor Role (actor-embedded) | **Archived** — actor eliminated; see HEP-CORE-0015 |
 | HEP-CORE-0013 | Channel Identity and Provenance | Implemented |
 | HEP-CORE-0014 | Actor Framework Design | **Archived** — actor eliminated; see HEP-CORE-0018 |
-| HEP-CORE-0015 | Processor Binary (`pylabhub-processor`) | Phase 1 implemented (2026-03-01) |
-| HEP-CORE-0016 | Named Schema Registry | Design complete — implementation pending |
+| HEP-CORE-0015 | Processor Binary (`pylabhub-processor`) | Implemented — Phase 1+2 (dual-broker, hub::Processor delegation) |
+| HEP-CORE-0016 | Named Schema Registry | Implemented — all 5 phases complete |
 | HEP-CORE-0017 | Pipeline Architecture | Design — 2026-03-01 |
-| HEP-CORE-0018 | Producer and Consumer Binaries | Design — 2026-03-01 (implementation pending) |
+| HEP-CORE-0018 | Producer and Consumer Binaries | Implemented — Phase 1 + Layer 4 tests |
+| HEP-CORE-0019 | Metrics Plane | Design — 2026-03-02 |
+| HEP-CORE-0020 | Interactive Signal Handler | Implemented — all 4 binaries integrated |
 
 - Keep style and diagrams clear and logical.
 - Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/TODO_MASTER.md`."*

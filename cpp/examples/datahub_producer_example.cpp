@@ -68,7 +68,7 @@ int main()
     DataBlockConfig config{};
     config.policy                = DataBlockPolicy::RingBuffer;
     config.consumer_sync_policy  = ConsumerSyncPolicy::Single_reader;
-    config.shared_secret         = 0xBAD5ECRET;
+    config.shared_secret         = 0xBAD5EC;
     config.ring_buffer_capacity  = 4;
     config.physical_page_size    = DataBlockPageSize::Size4K;
     config.flex_zone_size        = 4096; // must be a multiple of 4096 (page size)

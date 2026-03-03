@@ -177,16 +177,17 @@ RecoveryResult datablock_validate_integrity(...);
 - [x] `cmake/ToplevelOptions.cmake` — `PYLABHUB_BUILD_EXAMPLES` option (default OFF)
 - [x] Top-level `CMakeLists.txt` — conditional `add_subdirectory(examples)`
 
-**Note**: Some pre-existing examples (`datahub_producer_example.cpp`, `datahub_consumer_example.cpp`)
-have build errors from old API patterns and need modernization.
-
 **Remaining (deferred):**
-- [ ] Fix pre-existing example build errors (old API patterns)
+- [x] Fix pre-existing example build errors — `0xBAD5ECRET` → `0xBAD5EC` (2026-03-03)
 - [ ] `examples/README.md` — document opt-in build, example inventory
 
 ---
 
-### README Documentation Update — Application-oriented User Guide
+### ~~README Documentation Update — Application-oriented User Guide~~ ✅ DONE (2026-03-03)
+
+Root `README.md` created with overview, quick start, architecture, four binaries, config model,
+two dev paths, pipeline topologies, getting started walkthrough, further reading.
+`share/demo/README.md` updated: stale actor references replaced with producer/consumer/processor.
 
 **Goal**: Clean up and expand project README files to create application-oriented, user-friendly
 documentation that helps new developers understand the infrastructure and build on top of it.

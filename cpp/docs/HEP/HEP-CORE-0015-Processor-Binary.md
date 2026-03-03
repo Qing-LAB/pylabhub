@@ -4,9 +4,9 @@
 |---------------|----------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0015`                                                            |
 | **Title**     | Processor Binary — Standalone `pylabhub-processor` Executable              |
-| **Status**    | Phase 1 implemented (2026-03-01)                                           |
+| **Status**    | Implemented — Phase 1+2 (2026-03-03)                                       |
 | **Created**   | 2026-03-01                                                                 |
-| **Area**      | Actor Framework / Processor (`src/processor/`)                             |
+| **Area**      | Standalone Binaries / Processor (`src/processor/`)                         |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0016 (Named Schema Registry) |
 
 ---
@@ -22,7 +22,7 @@ The C++ engine is `hub::Processor` (Layer 3, implemented 2026-03-01).
 `hub::Processor::process_thread_`.
 
 Like `pylabhub-producer` and `pylabhub-consumer` (HEP-CORE-0018), the processor
-binary is self-contained — no parent actor container, no shared runtime.
+binary is self-contained — no parent container, no shared runtime.
 
 ---
 
@@ -34,7 +34,7 @@ PROC-{NAME}-{8HEX}
 
 - `{NAME}` — `processor.name` from `processor.json`, upper-cased, non-alphanum stripped
 - `{8HEX}` — first 8 hex chars of BLAKE2b-256 of `(name + creation_timestamp_ms)`
-- Same generation function as `uid_utils::generate_actor_uid()` — add `generate_processor_uid()`
+- Generation function: `uid_utils::generate_processor_uid()`
 
 Example: `PROC-TEMPNORM-A3F7C219`
 
@@ -211,7 +211,7 @@ def on_stop(api) -> None:
 
 ### 5.1 ProcessorAPI
 
-`ProcessorAPI` is the standalone analogue of `ProcessorRoleAPI`. It exposes:
+`ProcessorAPI` is the Python-facing API object passed to all script callbacks. It exposes:
 
 ```python
 # Identity
@@ -220,14 +220,14 @@ api.uid()                # → str: "PROC-TEMPNORM-A3F7C219"
 api.in_channel()         # → str: input channel name
 api.out_channel()        # → str: output channel name
 
-# Logging (same as ActorRoleAPI)
+# Logging
 api.log(msg, level="info")
 
-# Messaging (Messenger — same semantics as actor roles)
+# Messaging (Messenger)
 api.send(target, data)
 api.broadcast(data)
 
-# Metrics (same dict keys as ActorRoleAPI.metrics())
+# Metrics
 api.metrics()            # → dict: in_slots_received, out_slots_written, out_drop_count, …
 
 # Counters (direct access)
@@ -235,7 +235,7 @@ api.in_slots_received()  # → int
 api.out_slots_written()  # → int
 api.out_drop_count()     # → int
 
-# Shared-memory spinlock on output flexzone (same as api.spinlock() in actor)
+# Shared-memory spinlock on output flexzone
 api.spinlock(idx)        # → context manager; only valid if out_flexzone configured
 
 # Shutdown
@@ -270,12 +270,12 @@ pylabhub-processor --version             # Print version string
 | File | Description |
 |------|-------------|
 | `src/processor/processor_config.hpp` | `ProcessorConfig` struct + `from_json_file()` / `from_directory()` |
-| `src/processor/processor_config.cpp` | JSON parsing (mirrors `actor_config.cpp`) |
+| `src/processor/processor_config.cpp` | JSON parsing |
 | `src/processor/processor_api.hpp` | `ProcessorAPI` class (C++ side of Python `api` object) |
 | `src/processor/processor_api.cpp` | Implementation + pybind11 bindings |
 | `src/processor/processor_script_host.hpp` | `ProcessorScriptHost : PythonScriptHost` |
-| `src/processor/processor_script_host.cpp` | Drives load/start/wait/stop (mirrors `ActorScriptHost`) |
-| `src/processor/processor_main.cpp` | CLI entry point (mirrors `actor_main.cpp`) |
+| `src/processor/processor_script_host.cpp` | Drives load/start/wait/stop |
+| `src/processor/processor_main.cpp` | CLI entry point |
 | `src/processor/CMakeLists.txt` | Builds `pylabhub-processor` binary |
 
 ### 7.2 Reused Components (no changes needed)
@@ -284,7 +284,7 @@ pylabhub-processor --version             # Print version string
 |-----------|-------|
 | `hub::Processor` (`hub_processor.hpp/cpp`) | C++ engine — owned by `ProcessorScriptHost` |
 | `ShmQueue` / `ZmqQueue` | Built by `ProcessorScriptHost` after broker handshake |
-| `ActorVault` | Reused as `ProcessorVault` typedef or thin alias |
+| `ActorVault` | Reused as `ProcessorVault` typedef (shared vault implementation) |
 | `uid_utils` | Add `generate_processor_uid()` alongside existing functions |
 | `scripting::PythonScriptHost` | Base class for `ProcessorScriptHost` |
 | `pylabhub::hub::Messenger` | One Messenger per Processor (same as one per role worker) |
@@ -306,7 +306,7 @@ struct ProcessorConfig {
     std::string  in_channel;
     std::string  out_channel;
 
-    actor::RoleConfig::OverflowPolicy overflow_policy{actor::RoleConfig::OverflowPolicy::Block};
+    hub::OverflowPolicy overflow_policy{hub::OverflowPolicy::Block};
     int          timeout_ms{-1};
 
     nlohmann::json in_slot_schema_json;
@@ -352,18 +352,17 @@ ProcessorScriptHost::do_python_work():
   14. Deregister from broker
 ```
 
-GIL management follows the same pattern as `ActorScriptHost`:
+GIL management follows the standard `PythonRoleHostBase` pattern:
 - `main_thread_release_.emplace()` after step 9 (releases GIL before signal_ready_)
 - `main_thread_release_.reset()` before step 13 (re-acquires GIL for on_stop)
 
 ### 7.5 processor_main.cpp
 
-Mirrors `actor_main.cpp`:
 ```
 parse args → --init / --keygen / --validate / --dev / <proc_dir>
 LifecycleGuard{Logger, Crypto}
 load ProcessorConfig::from_directory(proc_dir)
-resolve vault + keypair (same pattern as actor_main)
+resolve vault + keypair
 ProcessorScriptHost host(config)
 host.start()
 wait for SIGINT/SIGTERM or host.is_done()
@@ -374,8 +373,9 @@ host.stop()
 
 ## 8. Open Questions
 
-1. **Vault naming**: `using ProcessorVault = ActorVault;` is the current approach.
-   A shared `PylabhubVault` base with a `domain` parameter may be cleaner (Phase 2).
+1. **Vault naming**: `using ProcessorVault = ActorVault;` is the current approach (ActorVault
+   is a misnomer — it is a generic encrypted vault). Renaming to `PylabhubVault` is
+   deferred to a future cleanup pass.
 
 2. **Dual-broker Messenger**: Phase 2 (dual-broker) requires two Messenger instances.
    `ProcessorScriptHost` should own both; `processor_main` passes both to the host.
@@ -390,6 +390,68 @@ host.stop()
 
 6. **Script path resolution helper**: Extract the `<path>/<type>/__init__.py` resolution
    into a shared utility function reused by all four `ScriptHost` subclasses.
+
+---
+
+## 9. Dual-Broker Architecture
+
+When `in_broker` and `out_broker` differ, the processor bridges two separate hubs:
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph LR
+    subgraph "Hub A (sensor-hub)"
+        PA["hub::Producer<br/>lab.raw.temperature"]
+        BA["BrokerService A<br/>tcp://sensor-hub:5570"]
+    end
+
+    subgraph "pylabhub-processor"
+        IN_MSG["in_messenger_<br/>(DISC + consumer)"]
+        SQ_IN["ShmQueue(read)<br/>from DataBlockConsumer"]
+        PROC["hub::Processor<br/>process_thread_"]
+        SQ_OUT["ShmQueue(write)<br/>from DataBlockProducer"]
+        OUT_MSG["out_messenger_<br/>(REG + producer)"]
+    end
+
+    subgraph "Hub B (analysis-hub)"
+        BB["BrokerService B<br/>tcp://analysis-hub:5570"]
+        CA["hub::Consumer<br/>lab.norm.temperature"]
+    end
+
+    PA --> BA
+    BA -->|DISC_ACK| IN_MSG
+    IN_MSG --> SQ_IN
+    SQ_IN -->|read| PROC
+    PROC -->|write| SQ_OUT
+    SQ_OUT --> OUT_MSG
+    OUT_MSG -->|REG_REQ| BB
+    BB --> CA
+
+    style PROC fill:#4a2a4a
+    style SQ_IN fill:#2a4a2a
+    style SQ_OUT fill:#2a4a2a
+```
+
+**Resolution order** (per direction): `in_broker` → `in_hub_dir` → `broker` → `hub_dir`
+
+---
+
+## 10. Source File Reference
+
+| File | Description |
+|------|-------------|
+| `src/processor/processor_config.hpp` | `ProcessorConfig` struct, `from_json_file()`, `from_directory()` |
+| `src/processor/processor_config.cpp` | JSON parsing, dual-broker resolvers |
+| `src/processor/processor_api.hpp` | `ProcessorAPI` — C++ side of Python `api` object |
+| `src/processor/processor_api.cpp` | Implementation + `PYBIND11_EMBEDDED_MODULE(pylabhub_processor)` |
+| `src/processor/processor_script_host.hpp` | `ProcessorScriptHost : PythonRoleHostBase` |
+| `src/processor/processor_script_host.cpp` | Drives hub::Processor delegation, ShmQueue wiring |
+| `src/processor/processor_main.cpp` | CLI entry point (--init/--keygen/--validate/--dev) |
+| `src/processor/CMakeLists.txt` | Builds `pylabhub-processor` binary |
+| `src/include/utils/hub_processor.hpp` | `hub::Processor` — type-erased handler loop (Layer 3) |
+| `src/utils/hub/hub_processor.cpp` | Process thread, hot-swap, timeout handler |
+| `tests/test_layer4_processor/` | Config + CLI tests (16 tests) |
+| `tests/test_layer3_datahub/test_datahub_hub_processor.cpp` | Layer 3 Processor tests (27 tests) |
 
 ---
 

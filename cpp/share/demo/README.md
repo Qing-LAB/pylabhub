@@ -7,7 +7,7 @@ through shared memory and ZMQ.
 
 ```
 DemoProducer  ──▶  lab.demo.counter  ──▶  DemoDoubler  ──▶  lab.demo.processed  ──▶  DemoConsumer
-(actor)              (SHM + ZMQ)         (processor)          (SHM + ZMQ)            (actor)
+(producer)          (SHM + ZMQ)         (processor)          (SHM + ZMQ)            (consumer)
 ```
 
 The processor reads each incoming slot, doubles `value`, and publishes the
@@ -30,53 +30,74 @@ share/demo/
 ├── hub/
 │   └── hub.json                          # Hub config (reference; --dev mode skips it)
 ├── producer/
-│   ├── actor.json                        # Producer config: channel, schema, shm
-│   └── roles/
-│       └── counter_out/
-│           └── script/
-│               └── __init__.py           # ← edit this to change producer logic
+│   ├── producer.json                     # Producer config: channel, schema, shm
+│   └── script/
+│       └── python/
+│           └── __init__.py               # ← edit this to change producer logic
 ├── processor/
 │   ├── processor.json                    # Processor config: in/out channels, schemas
 │   └── script/
-│       └── __init__.py                   # ← edit this to change transform logic
+│       └── python/
+│           └── __init__.py               # ← edit this to change transform logic
 └── consumer/
-    ├── actor.json                        # Consumer config: channel, schema, shm
-    └── roles/
-        └── counter_in/
-            └── script/
-                └── __init__.py           # ← edit this to change consumer logic
+    ├── consumer.json                     # Consumer config: channel, schema, shm
+    └── script/
+        └── python/
+            └── __init__.py               # ← edit this to change consumer logic
 ```
 
 ## Swapping scripts
 
 Scripts are isolated Python packages.  To replace the transform logic:
 
-1. Edit `processor/script/__init__.py` — change `on_process()`.
+1. Edit `processor/script/python/__init__.py` — change `on_process()`.
 2. Re-run `bash share/demo/run_demo.sh`.  No recompile needed.
 
-The same applies to the producer and consumer roles.
+The same applies to the producer and consumer scripts.
 
 ## Script interface summary
 
-### Producer / consumer role (`pylabhub_actor`)
+### Producer (`pylabhub_producer`)
 
 ```python
-import pylabhub_actor as actor
+import pylabhub_producer as prod
 
-def on_init(api: actor.ActorRoleAPI) -> None:
+def on_init(api: prod.ProducerAPI) -> None:
     """Called once before the loop."""
 
-def on_iteration(slot, flexzone, messages, api: actor.ActorRoleAPI) -> bool:
+def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
     """
     Called every iteration.
-      slot     — writable (producer) or read-only (consumer) ctypes struct, or None on timeout
+      out_slot — writable ctypes struct, or None on timeout
       flexzone — persistent flexzone struct, or None
       messages — list of (sender: str, data: bytes)
-      api      — ActorRoleAPI proxy
-    Return True/None to commit (producer); consumer return value is ignored.
+      api      — ProducerAPI proxy
+    Return True/None to commit; False to discard.
     """
 
-def on_stop(api: actor.ActorRoleAPI) -> None:
+def on_stop(api: prod.ProducerAPI) -> None:
+    """Called once on shutdown."""
+```
+
+### Consumer (`pylabhub_consumer`)
+
+```python
+import pylabhub_consumer as cons
+
+def on_init(api: cons.ConsumerAPI) -> None:
+    """Called once before the loop."""
+
+def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
+    """
+    Called for each received slot, or on timeout.
+      in_slot  — read-only ctypes struct, or None on timeout
+      flexzone — read-only flexzone struct, or None
+      messages — list of (sender: str, data: bytes)
+      api      — ConsumerAPI proxy
+    No return value.
+    """
+
+def on_stop(api: cons.ConsumerAPI) -> None:
     """Called once on shutdown."""
 ```
 
@@ -127,5 +148,6 @@ a `hub_dir` key pointing to a shared hub directory:
 ```
 
 `pylabhub-hubshell my_hub/` writes `hub.json` (broker endpoint) and
-`hub.pubkey` (CurveZMQ public key) to that directory.  All actors and
-processors automatically pick up the endpoint and use encrypted transport.
+`hub.pubkey` (CurveZMQ public key) to that directory.  All producers,
+consumers, and processors automatically pick up the endpoint and use
+encrypted transport.

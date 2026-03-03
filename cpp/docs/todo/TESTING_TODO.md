@@ -202,6 +202,19 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 
 ## Recent Completions
 
+### 2026-03-03 (HEP Document Review + Code Review + Source Polish)
+- ✅ **All 17 HEP documents updated** — mermaid diagrams, source file references, status fields
+- ✅ **5-pass code review** (L0-1, L2, L3, L4, cross-cutting) — all passes EXCELLENT/PASS
+  - Fixed: `debug_info.hpp` duplicate @file header, `scope_guard.hpp` missing @file,
+    `recursion_guard.hpp` wrong filename in @file, `hub_queue.hpp`/`hub_processor.hpp` stale
+    HEP-0012 cross-references → HEP-0015, `data_block.hpp` include path inconsistency
+- ✅ **Umbrella header reorganization** — 15 orphan headers added to appropriate umbrella:
+  `result.hpp` → L1; `uid_utils/uuid_utils/interactive_signal_handler/zmq_context` → L2;
+  `heartbeat_manager/recovery_api/slot_diagnostics/slot_recovery/integrity_validator` → L3a;
+  `channel_access_policy/channel_pattern/data_block_mutex` → L3b
+- ✅ **Example build fix** — `0xBAD5ECRET` invalid literal → `0xBAD5EC` in both datahub examples
+  **Total: 750/750 passing (no changes to test code).**
+
 ### 2026-03-03 (hub::Processor Enhancements + Dual-Broker + ScriptHost Dedup + C++ Templates)
 - ✅ **hub::Processor enhanced API tests** (11 tests) — `test_datahub_hub_processor.cpp`:
   `TimeoutHandler_ProducesOutput`, `TimeoutHandler_NullOutputOnDrop`, `IterationCount_AdvancesOnTimeout`,
