@@ -133,6 +133,32 @@ public:
     struct BroadcastRequest { std::string channel, message, data; };
     std::deque<BroadcastRequest> broadcast_request_queue_;
 
+    // ── Metrics store (HEP-CORE-0019) ──────────────────────────────────────
+    struct ParticipantMetrics
+    {
+        std::string                                uid;
+        uint64_t                                   pid{0};
+        std::chrono::steady_clock::time_point      last_report;
+        nlohmann::json                             data; ///< {base: {...}, custom: {...}}
+    };
+    struct ChannelMetrics
+    {
+        ParticipantMetrics                                          producer;
+        std::unordered_map<std::string, ParticipantMetrics>         consumers;
+    };
+    /// channel_name → aggregated metrics.  Protected by m_query_mu.
+    std::unordered_map<std::string, ChannelMetrics> metrics_store_;
+
+    void update_producer_metrics(const std::string &channel,
+                                 const nlohmann::json &metrics, uint64_t pid);
+    void update_consumer_metrics(const std::string &channel,
+                                 const std::string &uid,
+                                 const nlohmann::json &metrics);
+    nlohmann::json query_metrics(const std::string &channel) const;
+
+    void handle_metrics_report_req(const nlohmann::json &req);
+    nlohmann::json handle_metrics_req(const nlohmann::json &req);
+
     void run();
 
     void process_message(zmq::socket_t&       socket,
@@ -436,6 +462,17 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
                      resp.value("channels", nlohmann::json::array()).size());
         send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
+    }
+    else if (msg_type == "METRICS_REPORT_REQ")
+    {
+        // HEP-CORE-0019: consumer metrics report (fire-and-forget).
+        handle_metrics_report_req(payload);
+    }
+    else if (msg_type == "METRICS_REQ")
+    {
+        // HEP-CORE-0019: query aggregated metrics.
+        nlohmann::json resp = handle_metrics_req(payload);
+        send_reply(socket, identity, "METRICS_ACK", resp);
     }
     else
     {
@@ -793,6 +830,12 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     if (registry.update_heartbeat(channel_name))
     {
         LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
+        // HEP-CORE-0019: extract piggybacked metrics (if present).
+        if (req.contains("metrics") && req["metrics"].is_object())
+        {
+            const uint64_t pid = req.value("producer_pid", uint64_t{0});
+            update_producer_metrics(channel_name, req["metrics"], pid);
+        }
     }
     else
     {
@@ -1439,6 +1482,12 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
     return snap;
 }
 
+std::string BrokerService::query_metrics_json_str(const std::string& channel) const
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
+    return pImpl->query_metrics(channel).dump();
+}
+
 void BrokerService::request_close_channel(const std::string& name)
 {
     LOGGER_TRACE("Broker: request_close_channel('{}')", name);
@@ -1452,6 +1501,107 @@ void BrokerService::request_broadcast_channel(const std::string& channel,
 {
     std::lock_guard<std::mutex> lk(pImpl->m_broadcast_req_mu);
     pImpl->broadcast_request_queue_.push_back({channel, message, data});
+}
+
+// ============================================================================
+// MetricsStore (HEP-CORE-0019)
+// ============================================================================
+
+void BrokerServiceImpl::update_producer_metrics(const std::string &channel,
+                                                 const nlohmann::json &metrics,
+                                                 uint64_t pid)
+{
+    // Caller holds m_query_mu (called from process_message under lock).
+    auto &cm = metrics_store_[channel];
+    cm.producer.pid         = pid;
+    cm.producer.last_report = std::chrono::steady_clock::now();
+    cm.producer.data        = metrics;
+    LOGGER_DEBUG("Broker: stored producer metrics for channel '{}'", channel);
+}
+
+void BrokerServiceImpl::update_consumer_metrics(const std::string &channel,
+                                                 const std::string &uid,
+                                                 const nlohmann::json &metrics)
+{
+    auto &cm = metrics_store_[channel];
+    auto &cons = cm.consumers[uid];
+    cons.uid         = uid;
+    cons.last_report = std::chrono::steady_clock::now();
+    cons.data        = metrics;
+    LOGGER_DEBUG("Broker: stored consumer metrics for channel '{}' uid='{}'", channel, uid);
+}
+
+void BrokerServiceImpl::handle_metrics_report_req(const nlohmann::json &req)
+{
+    const std::string channel = req.value("channel_name", "");
+    const std::string uid     = req.value("uid", "");
+    if (channel.empty() || uid.empty())
+    {
+        LOGGER_WARN("Broker: METRICS_REPORT_REQ missing channel_name or uid");
+        return;
+    }
+    if (req.contains("metrics") && req["metrics"].is_object())
+    {
+        update_consumer_metrics(channel, uid, req["metrics"]);
+    }
+}
+
+nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
+{
+    const std::string channel = req.value("channel_name", "");
+    return query_metrics(channel);
+}
+
+nlohmann::json BrokerServiceImpl::query_metrics(const std::string &channel) const
+{
+    nlohmann::json result;
+    result["status"] = "success";
+
+    auto build_channel_metrics = [](const ChannelMetrics &cm) -> nlohmann::json
+    {
+        nlohmann::json ch;
+        if (!cm.producer.data.is_null())
+        {
+            ch["producer"] = cm.producer.data;
+            ch["producer"]["pid"] = cm.producer.pid;
+        }
+        nlohmann::json consumers = nlohmann::json::object();
+        for (const auto &[uid, pm] : cm.consumers)
+        {
+            if (!pm.data.is_null())
+                consumers[uid] = pm.data;
+        }
+        if (!consumers.empty())
+            ch["consumers"] = std::move(consumers);
+        return ch;
+    };
+
+    if (!channel.empty())
+    {
+        // Single channel query.
+        auto it = metrics_store_.find(channel);
+        if (it != metrics_store_.end())
+        {
+            result["channel"]      = channel;
+            result["metrics"]      = build_channel_metrics(it->second);
+        }
+        else
+        {
+            result["channel"] = channel;
+            result["metrics"] = nlohmann::json::object();
+        }
+    }
+    else
+    {
+        // All channels.
+        nlohmann::json channels = nlohmann::json::object();
+        for (const auto &[name, cm] : metrics_store_)
+        {
+            channels[name] = build_channel_metrics(cm);
+        }
+        result["channels"] = std::move(channels);
+    }
+    return result;
 }
 
 } // namespace pylabhub::broker

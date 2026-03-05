@@ -49,4 +49,12 @@ void set_close_channel_callback(std::function<void(const std::string&)> cb);
 void set_broadcast_channel_callback(
     std::function<void(const std::string&, const std::string&, const std::string&)> cb);
 
+/**
+ * @brief Register the callback invoked by `pylabhub.metrics()` (HEP-CORE-0019).
+ *
+ * The callback receives an optional channel name (empty = all channels)
+ * and returns a JSON string with the metrics response.
+ */
+void set_metrics_callback(std::function<std::string(const std::string&)> cb);
+
 } // namespace pylabhub::hub_python

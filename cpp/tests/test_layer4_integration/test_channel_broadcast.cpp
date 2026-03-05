@@ -186,7 +186,8 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir,
 
 static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
                                   const std::string& channel,
-                                  const std::string& script)
+                                  const std::string& script,
+                                  int timeout_ms = 2000)
 {
     const json cfg = {
         {"hub_dir", hub_dir.string()},
@@ -197,7 +198,7 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
             {"auth",      {{"keyfile", ""}}}
         }},
         {"channel",    channel},
-        {"timeout_ms", 2000},
+        {"timeout_ms", timeout_ms},
         {"shm", {
             {"enabled", true},
             {"secret",  kShmSecret}
@@ -450,14 +451,19 @@ def on_stop(api):
     hub.shutdown();
 
     // Read the result file written by the producer script.
+    ASSERT_TRUE(fs::exists(result_file))
+        << "Producer did not write result file — list_channels() may not have been called";
+
     std::string result;
-    if (fs::exists(result_file))
     {
         std::ifstream ifs(result_file);
         result.assign(std::istreambuf_iterator<char>(ifs),
                       std::istreambuf_iterator<char>());
     }
     TLOG("TEST", "ListChannels: result.txt:\n{}", result);
+
+    ASSERT_FALSE(result.empty())
+        << "Result file exists but is empty — script wrote nothing";
 
     // Verify: should contain "CH:test.lc.raw:Ready:0" (0 consumers).
     EXPECT_NE(result.find("CH:test.lc.raw:"), std::string::npos)
@@ -564,10 +570,32 @@ def on_stop(api):
     hub.shutdown();
 
     // Verify receipt through result files (written by scripts on broadcast).
-    EXPECT_TRUE(fs::exists(cons_result))
-        << "Consumer did not receive broadcast (no result file)";
-    EXPECT_TRUE(fs::exists(prod_result))
-        << "Producer did not receive broadcast (no result file)";
+    ASSERT_TRUE(fs::exists(prod_result))
+        << "Producer did not write result file — broadcast not received";
+    ASSERT_TRUE(fs::exists(cons_result))
+        << "Consumer did not write result file — broadcast not received";
+
+    // Validate file content — must contain the expected markers.
+    {
+        std::string prod_out, cons_out;
+        {
+            std::ifstream ifs(prod_result);
+            prod_out.assign(std::istreambuf_iterator<char>(ifs),
+                            std::istreambuf_iterator<char>());
+        }
+        {
+            std::ifstream ifs(cons_result);
+            cons_out.assign(std::istreambuf_iterator<char>(ifs),
+                            std::istreambuf_iterator<char>());
+        }
+        TLOG("TEST", "BroadcastDelivery: prod_result:\n{}", prod_out);
+        TLOG("TEST", "BroadcastDelivery: cons_result:\n{}", cons_out);
+
+        EXPECT_NE(prod_out.find("PROD_BCAST_OK"), std::string::npos)
+            << "Producer result file missing PROD_BCAST_OK. Content:\n" << prod_out;
+        EXPECT_NE(cons_out.find("CONS_BCAST_OK"), std::string::npos)
+            << "Consumer result file missing CONS_BCAST_OK. Content:\n" << cons_out;
+    }
 
     fs::remove_all(hub_dir);
     fs::remove_all(prod_dir);
@@ -646,7 +674,8 @@ def on_stop(api):
 )py", cons_result.string());
 
     write_producer_config(prod_dir, hub_dir, "test.notify", prod_script);
-    write_consumer_config(cons_dir, hub_dir, "test.notify", cons_script);
+    write_consumer_config(cons_dir, hub_dir, "test.notify", cons_script,
+                          /*timeout_ms=*/200);
 
     TLOG("TEST", "NotifyChannel: ports=({},{})", ports.broker, ports.admin);
 
@@ -678,15 +707,19 @@ def on_stop(api):
     (void)producer.wait_for_exit();
     hub.shutdown();
 
+    // Both result files MUST exist — scripts write them as proof of execution.
+    ASSERT_TRUE(fs::exists(prod_result))
+        << "Producer did not write result file — notify may not have been received";
+    ASSERT_TRUE(fs::exists(cons_result))
+        << "Consumer did not write result file — script did not complete 8 iterations";
+
     // Read result files.
     std::string prod_out, cons_out;
-    if (fs::exists(prod_result))
     {
         std::ifstream ifs(prod_result);
         prod_out.assign(std::istreambuf_iterator<char>(ifs),
                         std::istreambuf_iterator<char>());
     }
-    if (fs::exists(cons_result))
     {
         std::ifstream ifs(cons_result);
         cons_out.assign(std::istreambuf_iterator<char>(ifs),
@@ -694,6 +727,12 @@ def on_stop(api):
     }
     TLOG("TEST", "NotifyChannel: prod_result:\n{}", prod_out);
     TLOG("TEST", "NotifyChannel: cons_result:\n{}", cons_out);
+
+    // Guard: files must not be empty (script logic always writes content).
+    ASSERT_FALSE(prod_out.empty())
+        << "Producer result file exists but is empty";
+    ASSERT_FALSE(cons_out.empty())
+        << "Consumer result file exists but is empty";
 
     // Producer SHOULD have received the notify event.
     EXPECT_NE(prod_out.find("PROD_NOTIFY:test_ping:"), std::string::npos)
@@ -796,15 +835,20 @@ def on_stop(api):
 
     hub.shutdown();
 
-    // Read result file.
+    // Result file MUST exist — on_stop always writes it.
+    ASSERT_TRUE(fs::exists(prod_result))
+        << "Producer did not write result file — on_stop may not have been called";
+
     std::string prod_out;
-    if (fs::exists(prod_result))
     {
         std::ifstream ifs(prod_result);
         prod_out.assign(std::istreambuf_iterator<char>(ifs),
                         std::istreambuf_iterator<char>());
     }
     TLOG("TEST", "AdminBroadcast_CloseChannel: prod_result:\n{}", prod_out);
+
+    ASSERT_FALSE(prod_out.empty())
+        << "Producer result file exists but is empty";
 
     // Producer received the admin broadcast.
     EXPECT_NE(prod_out.find("PROD_ADMIN:admin_ping"), std::string::npos)

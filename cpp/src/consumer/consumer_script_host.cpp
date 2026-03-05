@@ -514,6 +514,12 @@ void ConsumerScriptHost::run_zmq_thread_()
     loop.periodic_tasks.emplace_back(
         [&] { in_messenger_.enqueue_heartbeat(config_.channel); },
         config_.heartbeat_interval_ms);
+    // HEP-CORE-0019: periodic metrics report (consumers don't piggyback on heartbeat).
+    loop.periodic_tasks.emplace_back(
+        [&] { in_messenger_.enqueue_metrics_report(
+                  config_.channel, config_.consumer_uid,
+                  api_.snapshot_metrics_json()); },
+        config_.heartbeat_interval_ms);
     loop.run();
 }
 

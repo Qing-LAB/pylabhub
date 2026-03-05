@@ -59,7 +59,17 @@ Completed:
 - [x] hub::Processor enhancements: timeout handler, pre-hook, zero-fill, critical error, iteration counter
 - [x] ScriptHost dedup: RoleHostCore + PythonRoleHostBase extracted (~1600 lines deduped)
 
-### Priority 4 (backlog): Platform + Admin Shell Test Gaps
+### Priority 4: Metrics Plane (HEP-CORE-0019)
+📍 **Status**: ✅ Complete (2026-03-05) — 19 new tests; **828/828 passing**
+📋 **Details**: `docs/todo/MESSAGEHUB_TODO.md` § "Metrics Plane (HEP-CORE-0019)"
+
+Completed:
+- [x] Phases 1–5: `report_metric()` / `snapshot_metrics_json()` API; heartbeat extension;
+  `METRICS_REPORT_REQ`; `METRICS_REQ`/`METRICS_ACK`; Python bindings; `pylabhub.metrics()` AdminShell
+- [x] 10 MetricsPlaneTest (protocol) + 9 MetricsApiTest (API unit, pybind11-linked)
+- [x] pybind11 Default Parameter Rule codified in `IMPLEMENTATION_GUIDANCE.md`
+
+### Priority 5 (backlog): Platform + Admin Shell Test Gaps
 📍 **Status**: 🟢 Backlog only
 📋 **Details**: `docs/todo/PLATFORM_TODO.md`, `docs/todo/TESTING_TODO.md`
 

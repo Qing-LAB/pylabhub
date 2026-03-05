@@ -428,7 +428,7 @@ bool MessengerImpl::handle_command(HeartbeatNowCmd &cmd,
                            { return e.channel == cmd.channel; });
     if (it == m_heartbeat_channels.end())
         return false; // Channel not registered; silently ignore.
-    send_immediate_heartbeat(*socket, it->channel, it->producer_pid);
+    send_immediate_heartbeat(*socket, it->channel, it->producer_pid, cmd.metrics);
     return false;
 }
 
@@ -812,7 +812,24 @@ void Messenger::enqueue_heartbeat(const std::string &channel) noexcept
 {
     if (!pImpl->m_running.load(std::memory_order_acquire))
         return; // worker not started; silently ignore
-    pImpl->enqueue(HeartbeatNowCmd{channel});
+    pImpl->enqueue(HeartbeatNowCmd{channel, {}});
+}
+
+void Messenger::enqueue_heartbeat(const std::string &channel,
+                                   nlohmann::json     metrics) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return;
+    pImpl->enqueue(HeartbeatNowCmd{channel, std::move(metrics)});
+}
+
+void Messenger::enqueue_metrics_report(const std::string &channel,
+                                        const std::string &uid,
+                                        nlohmann::json     metrics) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return;
+    pImpl->enqueue(MetricsReportCmd{channel, uid, std::move(metrics)});
 }
 
 void Messenger::enqueue_channel_notify(const std::string &target_channel,

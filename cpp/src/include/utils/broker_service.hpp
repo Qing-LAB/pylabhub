@@ -201,6 +201,16 @@ public:
                                    const std::string& message,
                                    const std::string& data = {});
 
+    /**
+     * @brief Query aggregated metrics from the MetricsStore (HEP-CORE-0019).
+     *
+     * Thread-safe: locks the internal query mutex briefly.
+     *
+     * @param channel  Channel name (empty = all channels).
+     * @return JSON string with the METRICS_ACK-format response.
+     */
+    [[nodiscard]] std::string query_metrics_json_str(const std::string& channel = {}) const;
+
 private:
 #if defined(_MSC_VER)
 #pragma warning(suppress : 4251)
