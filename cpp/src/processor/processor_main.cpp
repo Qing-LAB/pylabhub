@@ -78,6 +78,10 @@
 #include <string_view>
 #include <thread>
 
+#if defined(PYLABHUB_IS_POSIX)
+#include <unistd.h> // isatty, STDIN_FILENO
+#endif
+
 using namespace pylabhub::utils;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +95,7 @@ struct ProcArgs
 {
     std::string config_path;  ///< Explicit JSON file path (--config mode)
     std::string proc_dir;     ///< Processor directory (positional or --init target)
+    std::string init_name;    ///< --name for --init (skips stdin prompt)
     bool        validate_only{false};
     bool        keygen_only{false};
     bool        init_only{false};
@@ -105,6 +110,7 @@ void print_usage(const char *prog)
         << "  " << prog << " --config <path.json> [--validate | --keygen | --run]\n\n"
         << "Options:\n"
         << "  --init [dir]    Create processor directory with processor.json template; exit 0\n"
+        << "  --name <name>   Processor name for --init (skips interactive prompt)\n"
         << "  <proc_dir>      Processor directory containing processor.json\n"
         << "  --config <path> Path to processor JSON config file\n"
         << "  --validate      Validate config + script, print schema layout; exit 0 on success\n"
@@ -133,6 +139,10 @@ ProcArgs parse_args(int argc, char *argv[])
             args.init_only = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 args.proc_dir = argv[++i];
+        }
+        else if (arg == "--name" && i + 1 < argc)
+        {
+            args.init_name = argv[++i];
         }
         else if (arg == "--validate")
         {
@@ -208,7 +218,7 @@ static std::string get_processor_password(const char *prompt)
 // do_init — create processor directory with processor.json template
 // ---------------------------------------------------------------------------
 
-static int do_init(const std::string &proc_dir_str)
+static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
 
@@ -236,10 +246,29 @@ static int do_init(const std::string &proc_dir_str)
         return 1;
     }
 
-    // ── Prompt for processor name ──────────────────────────────────────────────
+    // ── Resolve processor name ────────────────────────────────────────────────
     std::string proc_name;
-    std::cout << "Processor name (human-readable, e.g. 'Doubler'): ";
-    std::getline(std::cin, proc_name);
+    if (!cli_name.empty())
+    {
+        proc_name = cli_name;
+    }
+#if defined(PYLABHUB_IS_POSIX)
+    else if (::isatty(STDIN_FILENO))
+    {
+        std::cout << "Processor name (human-readable, e.g. 'Doubler'): ";
+        std::getline(std::cin, proc_name);
+    }
+    else
+    {
+        proc_name = "Processor";
+    }
+#else
+    else
+    {
+        std::cout << "Processor name (human-readable, e.g. 'Doubler'): ";
+        std::getline(std::cin, proc_name);
+    }
+#endif
 
     const std::string proc_uid = pylabhub::uid::generate_processor_uid(proc_name);
 
@@ -391,7 +420,7 @@ int main(int argc, char *argv[])
     // ── Init mode: create processor directory and exit ────────────────────────
     if (args.init_only)
     {
-        return do_init(args.proc_dir);
+        return do_init(args.proc_dir, args.init_name);
     }
 
     // ── Load config ───────────────────────────────────────────────────────────

@@ -60,7 +60,8 @@ TEST_F(ConsumerCliTest, Init_CreatesDirectoryStructure)
 {
     const auto tmp = unique_temp_dir("init");
 
-    WorkerProcess proc(consumer_binary(), "--init", {tmp.string()});
+    WorkerProcess proc(consumer_binary(), "--init",
+                       {tmp.string(), "--name", "TestConsumer"});
     EXPECT_EQ(proc.wait_for_exit(), 0)
         << "stderr:\n" << proc.get_stderr();
 
@@ -79,7 +80,8 @@ TEST_F(ConsumerCliTest, Init_DefaultValues)
 {
     const auto tmp = unique_temp_dir("initdef");
 
-    WorkerProcess proc(consumer_binary(), "--init", {tmp.string()});
+    WorkerProcess proc(consumer_binary(), "--init",
+                       {tmp.string(), "--name", "DefaultTest"});
     EXPECT_EQ(proc.wait_for_exit(), 0)
         << "stderr:\n" << proc.get_stderr();
 
