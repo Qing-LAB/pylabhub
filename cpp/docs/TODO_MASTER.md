@@ -29,7 +29,7 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 Completed:
 - [x] `tests/test_layer4_producer/` — config unit tests (8) + CLI integration tests (6)
 - [x] `tests/test_layer4_consumer/` — config unit tests (6) + CLI integration tests (6)
-- [ ] Integration test: producer + consumer + hubshell round-trip via live broker (deferred)
+- [x] Integration test: full pipeline round-trip via live broker — `test_pipeline_roundtrip.cpp` (hubshell + producer + processor + consumer)
 
 ### Priority 2: Schema Registry (HEP-CORE-0016) Phases 2–5
 📍 **Status**: ✅ Phase 5 complete (2026-03-02); all 5 phases done
