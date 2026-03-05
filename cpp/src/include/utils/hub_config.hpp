@@ -130,6 +130,9 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /** How often the broker checks consumer liveness (0 = disabled). */
     std::chrono::seconds consumer_liveness_check() const noexcept;
 
+    /** Grace period for graceful channel shutdown (CHANNEL_CLOSING_NOTIFY → FORCE_SHUTDOWN). */
+    std::chrono::seconds channel_shutdown_grace() const noexcept;
+
     // -----------------------------------------------------------------------
     // File-system paths (all absolute after startup)
     // -----------------------------------------------------------------------

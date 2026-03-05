@@ -52,6 +52,9 @@ namespace py = pybind11;
 namespace pylabhub::scripting
 {
 
+/// Recursively convert nlohmann::json to py::object (dict, list, str, int, float, bool, None).
+py::object json_to_py(const nlohmann::json &val);
+
 class PythonRoleHostBase : public PythonScriptHost
 {
   public:

@@ -20,6 +20,8 @@
 
 #include "utils/script_host_schema.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -36,8 +38,10 @@ namespace pylabhub::scripting
 
 struct IncomingMessage
 {
-    std::string            sender; ///< ZMQ identity of sender (empty for consumer data msgs)
-    std::vector<std::byte> data;   ///< Raw payload bytes
+    std::string            sender;  ///< ZMQ identity of sender (empty for consumer data msgs)
+    std::vector<std::byte> data;    ///< Raw payload bytes
+    std::string            event;   ///< Non-empty → event message (not data)
+    nlohmann::json         details; ///< Event payload (for events only)
 };
 
 // ============================================================================

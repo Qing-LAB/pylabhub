@@ -6,6 +6,7 @@
 
 #include "utils/logger.hpp"
 
+#include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -40,6 +41,43 @@ void ConsumerAPI::set_critical_error()
     stop();
 }
 
+void ConsumerAPI::notify_channel(const std::string &target_channel,
+                                 const std::string &event,
+                                 const std::string &data)
+{
+    if (!messenger_)
+        return;
+    messenger_->enqueue_channel_notify(target_channel, uid_, event, data);
+}
+
+void ConsumerAPI::broadcast_channel(const std::string &target_channel,
+                                    const std::string &message,
+                                    const std::string &data)
+{
+    if (!messenger_)
+        return;
+    messenger_->enqueue_channel_broadcast(target_channel, uid_, message, data);
+}
+
+py::list ConsumerAPI::list_channels()
+{
+    py::list result;
+    if (!messenger_)
+        return result;
+    auto channels = messenger_->list_channels();
+    for (auto &ch : channels)
+    {
+        py::dict d;
+        d["name"]           = ch.value("name", "");
+        d["status"]         = ch.value("status", "");
+        d["schema_id"]      = ch.value("schema_id", "");
+        d["producer_uid"]   = ch.value("producer_uid", "");
+        d["consumer_count"] = ch.value("consumer_count", 0);
+        result.append(std::move(d));
+    }
+    return result;
+}
+
 } // namespace pylabhub::consumer
 
 // ============================================================================
@@ -61,6 +99,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("stop",         &ConsumerAPI::stop)
         .def("set_critical_error",    &ConsumerAPI::set_critical_error)
         .def("critical_error",        &ConsumerAPI::critical_error)
+        .def("notify_channel",  &ConsumerAPI::notify_channel,
+             py::arg("target_channel"), py::arg("event"), py::arg("data"))
+        .def("broadcast_channel", &ConsumerAPI::broadcast_channel,
+             py::arg("target_channel"), py::arg("message"), py::arg("data"))
+        .def("list_channels",  &ConsumerAPI::list_channels)
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received);
 }

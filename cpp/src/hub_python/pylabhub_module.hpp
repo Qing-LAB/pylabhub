@@ -32,4 +32,21 @@ namespace pylabhub::hub_python
  */
 void set_channels_callback(std::function<std::vector<pybind11::dict>()> cb);
 
+/**
+ * @brief Register the callback invoked by `pylabhub.close_channel()`.
+ *
+ * The callback receives a channel name and requests BrokerService to close it,
+ * which sends CHANNEL_CLOSING_NOTIFY to all participants.
+ */
+void set_close_channel_callback(std::function<void(const std::string&)> cb);
+
+/**
+ * @brief Register the callback invoked by `pylabhub.broadcast_channel()`.
+ *
+ * The callback receives (channel_name, message, data) and requests
+ * BrokerService to fan out a CHANNEL_BROADCAST_NOTIFY to all participants.
+ */
+void set_broadcast_channel_callback(
+    std::function<void(const std::string&, const std::string&, const std::string&)> cb);
+
 } // namespace pylabhub::hub_python

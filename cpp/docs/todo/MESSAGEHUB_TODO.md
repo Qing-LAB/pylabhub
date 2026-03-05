@@ -10,11 +10,69 @@
 
 ## Current Status
 
-✅ **705/705 tests passing (2026-03-02).** HubShell all 6 phases, standalone binaries
-(`pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`) with Python script hosts,
-broker health layer (Cat 1/Cat 2), consumer registration, UID enforcement, SharedSpinLockPy,
-GIL/signal handler unified interface, Hub Script Package + tick thread — all complete.
-**`pylabhub-actor` eliminated (2026-03-01)** — replaced by standalone producer/consumer/processor.
+✅ **809 tests (2026-03-04).** Two-tier graceful shutdown protocol implemented.
+All event handlers wired, CHANNEL_NOTIFY_REQ broker relay, `notify_channel()` on all 3 APIs.
+
+✅ **Two-tier graceful shutdown (2026-03-04):** CHANNEL_CLOSING_NOTIFY → queued FIFO event
+(script handles, calls `api.stop()`). FORCE_SHUTDOWN → side-channel flag after broker grace
+period expires. 6 dedicated L3 tests in `test_datahub_broker_shutdown.cpp`.
+- Files: `broker_service.cpp`, `messenger.cpp`, `hub_producer.cpp`, `hub_consumer.cpp`,
+  all 3 script hosts, `hub_config.cpp`, `hubshell.cpp`
+- HEP-CORE-0007 §12.7 Sequence B updated with two-tier protocol diagrams
+
+✅ **HubConfig singleton re-init fix (2026-03-04):** Added `reset_to_defaults()` in
+`HubConfig::Impl::load()` so lifecycle re-initialization starts with clean state.
+Fixes `TickIntervalFromJson` test ordering flake.
+
+✅ **ZmqPollLoop refactor (2026-03-04):** Extracted shared ZMQ poll+dispatch+heartbeat
+logic into `scripting::ZmqPollLoop` + `scripting::HeartbeatTracker` (header-only,
+`src/scripting/zmq_poll_loop.hpp`). Each role's `run_zmq_thread_()` reduced from ~60
+to ~10 lines. 18 unit tests added. See HEP-CORE-0011 §13.
+
+✅ **Protocol gap closure (2026-03-04):** 12 new BrokerProtocolTest cases covering:
+- CHECKSUM_ERROR_REPORT forwarding (NotifyOnly policy) — producer, consumer, unknown channel
+- CHANNEL_CLOSING_NOTIFY delivery to ALL members (producer + 2 consumers) + channel removal
+- Duplicate REG_REQ — same hash succeeds, different hash → SCHEMA_MISMATCH + ERROR_NOTIFY
+- HEARTBEAT_REQ — PendingReady→Ready transition, explicit heartbeat keeps channel alive
+- HELLO/BYE peer handshake — consumer_joined/left callbacks, multi-consumer independence
+
+---
+
+## Recent Completions — Event Handlers + Channel Notify Relay (2026-03-03)
+
+- ✅ **Phase 1: IncomingMessage enhancement** (2026-03-03): Extended `IncomingMessage` with
+  `event` (string) and `details` (nlohmann::json) fields. Updated `build_messages_list_()` in
+  both base class and consumer override to emit event dicts for event messages.
+  - Files: `src/scripting/role_host_core.hpp`, `src/scripting/python_role_host_base.cpp`,
+           `src/consumer/consumer_script_host.cpp`
+
+- ✅ **Phase 2: Wire all unwired event handlers** (2026-03-03): Connected all unhandled C++
+  callbacks to the Python `msgs` queue as tagged dicts:
+  - Producer: `on_consumer_joined`, `on_consumer_left`, `on_consumer_died`, `on_channel_error`
+  - Consumer: `on_producer_message`, `on_channel_error`
+  - Processor: all of the above (producer-side + consumer-side, with `source` tag)
+  - Files: `src/producer/producer_script_host.cpp`, `src/consumer/consumer_script_host.cpp`,
+           `src/processor/processor_script_host.cpp`
+
+- ✅ **Phase 3: CHANNEL_NOTIFY_REQ broker relay** (2026-03-03): New fire-and-forget message
+  type relayed by broker to target channel's producer as `CHANNEL_EVENT_NOTIFY`.
+  - `ChannelNotifyCmd` struct + `Messenger::enqueue_channel_notify()` public API
+  - Broker `handle_channel_notify_req()` — looks up target channel, forwards to producer
+  - `notify_channel()` method on all 3 role APIs (`ProducerAPI`, `ConsumerAPI`, `ProcessorAPI`)
+  - Python bindings: `api.notify_channel(target_channel, event, data="")`
+  - Files: `src/utils/ipc/messenger_internal.hpp`, `src/include/utils/messenger.hpp`,
+           `src/utils/ipc/messenger.cpp`, `src/utils/ipc/messenger_protocol.cpp`,
+           `src/utils/ipc/broker_service.cpp`,
+           `src/producer/producer_api.hpp/cpp`, `src/consumer/consumer_api.hpp/cpp`,
+           `src/processor/processor_api.hpp/cpp`,
+           `src/producer/producer_script_host.cpp`, `src/consumer/consumer_script_host.cpp`,
+           `src/processor/processor_script_host.cpp`
+
+- ✅ **Phase 5: HEP-CORE-0007 §12 documentation** (2026-03-03): Comprehensive ZMQ Control Plane
+  Protocol documentation covering all message types, categories, payload specs, protocol
+  sequences, script host event delivery model, and design notes on non-interference.
+  - Files: `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md`,
+           `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md` (§7.1 table updated)
 
 ---
 
@@ -313,6 +371,8 @@ The actor files (`src/actor/`, `tests/test_layer4_actor/`) have been deleted fro
 | Cat 1 | Schema mismatch on REG_REQ | CHANNEL_ERROR_NOTIFY | `on_channel_error` |
 | Cat 1 | Heartbeat timeout (channel gone) | CHANNEL_CLOSING_NOTIFY | `on_channel_closing` |
 | Cat 2 | Consumer PID dead (liveness check) | CONSUMER_DIED_NOTIFY | `on_consumer_died` |
+| Cat 2 | Checksum error report | CHANNEL_EVENT_NOTIFY | `on_channel_error` |
+| App | CHANNEL_NOTIFY_REQ (any role) | CHANNEL_EVENT_NOTIFY relay | `on_channel_error` |
 
 See `docs/IMPLEMENTATION_GUIDANCE.md` § "Error Taxonomy — Broker, Producer, and Consumer".
 

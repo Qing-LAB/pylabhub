@@ -109,8 +109,9 @@ protected:
     void SetUp() override
     {
         BrokerService::Config cfg;
-        cfg.endpoint           = "tcp://127.0.0.1:0";
-        cfg.schema_search_dirs = {};
+        cfg.endpoint                = "tcp://127.0.0.1:0";
+        cfg.schema_search_dirs      = {};
+        cfg.channel_shutdown_grace  = std::chrono::seconds(0); // immediate deregister in L3 tests
         broker_.emplace(start_local_broker(std::move(cfg)));
     }
 

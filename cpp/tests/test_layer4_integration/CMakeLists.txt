@@ -1,15 +1,19 @@
 # tests/test_layer4_integration/CMakeLists.txt
 #
-# Layer 4 integration tests — admin shell + pipeline round-trip.
+# Layer 4 integration tests — admin shell, channel broadcast API, and pipeline
+# round-trip.
 #
 # These tests spawn live binaries (pylabhub-hubshell, pylabhub-producer,
-# pylabhub-consumer) and verify end-to-end behaviour including ZMQ admin
-# protocol, Python exec(), and shared-memory data flow.
+# pylabhub-consumer, pylabhub-processor) and verify end-to-end behaviour
+# including ZMQ admin protocol, broadcast/notify control plane, Python exec(),
+# and shared-memory data flow.
 
 message(STATUS "** Configuring Layer 4 (Integration) tests...")
 
 add_executable(test_layer4_integration
     test_admin_shell.cpp
+    test_channel_broadcast.cpp
+    test_pipeline_roundtrip.cpp
 )
 
 target_include_directories(test_layer4_integration PRIVATE
@@ -40,6 +44,9 @@ endif()
 if(TARGET pylabhub-consumer)
     add_dependencies(test_layer4_integration pylabhub-consumer)
 endif()
+if(TARGET pylabhub-processor)
+    add_dependencies(test_layer4_integration pylabhub-processor)
+endif()
 
 # Ensure pylabhub-utils.so is staged before tests run (RPATH $ORIGIN/../lib)
 if(TARGET stage_pylabhub_utils)
@@ -56,4 +63,4 @@ gtest_discover_tests(test_layer4_integration
 )
 
 message(STATUS "** Layer 4 (Integration) tests configured.")
-message(STATUS "  - test_layer4_integration: admin shell + pipeline round-trip")
+message(STATUS "  - test_layer4_integration: admin shell + channel broadcast + pipeline round-trip")

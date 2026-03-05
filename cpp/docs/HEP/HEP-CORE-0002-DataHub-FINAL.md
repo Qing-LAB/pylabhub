@@ -1813,15 +1813,21 @@ broker is used only for channel registration and consumer discovery.
 
 **Message taxonomy:**
 
-| Message | Direction | Purpose |
-|---------|-----------|---------|
-| REG_REQ / REG_ACK | Producer → Broker | Register channel; store SHM name |
-| DISC_REQ / DISC_ACK | Consumer → Broker | Discover SHM name; receive consumer_count |
-| CONSUMER_REG_REQ / CONSUMER_REG_ACK | Consumer → Broker | Register consumer identity |
-| CONSUMER_DEREG_REQ | Consumer → Broker | Deregister consumer |
-| HEARTBEAT / HEARTBEAT_ACK | Producer → Broker | Channel liveness; broker triggers CHANNEL_CLOSING_NOTIFY on timeout |
-| CHANNEL_ERROR_NOTIFY (Cat 1) | Broker → Consumer | Non-fatal channel error |
-| CONSUMER_DIED_NOTIFY (Cat 2) | Broker → Producer | Consumer process died |
+| Message | Direction | Pattern | Purpose |
+|---------|-----------|---------|---------|
+| REG_REQ / REG_ACK | Producer → Broker | Req/Resp | Register channel with SHM + ZMQ endpoints |
+| DISC_REQ / DISC_ACK | Consumer → Broker | Req/Resp | Discover channel; get connection info |
+| CONSUMER_REG_REQ / _ACK | Consumer → Broker | Req/Resp | Register consumer identity on channel |
+| CONSUMER_DEREG_REQ / _ACK | Consumer → Broker | Req/Resp | Deregister consumer from channel |
+| DEREG_REQ / DEREG_ACK | Producer → Broker | Req/Resp | Unregister channel; triggers CLOSING_NOTIFY |
+| SCHEMA_REQ / SCHEMA_ACK | Any → Broker | Req/Resp | Query channel schema info (HEP-0016) |
+| HEARTBEAT_REQ | Producer → Broker | Fire&Forget | Channel liveness; PendingReady → Ready |
+| CHECKSUM_ERROR_REPORT | Any → Broker | Fire&Forget | Report slot integrity error (Cat 2) |
+| CHANNEL_NOTIFY_REQ | Any → Broker | Fire&Forget | Relay application signal to target channel producer |
+| CHANNEL_CLOSING_NOTIFY | Broker → All | Push | Channel shutting down (triggers graceful exit) |
+| CONSUMER_DIED_NOTIFY | Broker → Producer | Push | Consumer PID no longer alive (Cat 2) |
+| CHANNEL_ERROR_NOTIFY | Broker → Affected | Push | Protocol-level error (Cat 1: schema mismatch, etc.) |
+| CHANNEL_EVENT_NOTIFY | Broker → Participants | Push | Informational event (Cat 2: checksum, relay) |
 
 **Connection Policy** (enforced by BrokerService at REG / CONSUMER_REG time):
 - **Open**: No identity required (default)
@@ -1878,14 +1884,17 @@ Frame 3: JSON payload
 | `CONSUMER_REG_REQ` | Consumer → Broker | `channel_name`, `consumer_uid`, `consumer_name`, `expected_schema_hash` (opt), `expected_schema_id` (opt) |
 | `CONSUMER_REG_ACK` | Broker → Consumer | `status`, `error` (opt) |
 | `CONSUMER_DEREG_REQ` | Consumer → Broker | `channel_name`, `consumer_uid` |
-| `HEARTBEAT_REQ` | Producer → Broker | `channel_name` |
-| `HEARTBEAT_ACK` | Broker → Producer | `status`, `channel_name` |
-| `SCHEMA_REQ` | Any → Broker | `schema_id` or `schema_hash` |
-| `SCHEMA_ACK` | Broker → Any | `status`, `schema_id`, `schema_blds` |
-| `CHANNEL_CLOSING_NOTIFY` | Broker → Consumer | `channel_name` |
-| `CHANNEL_ERROR_NOTIFY` | Broker → Consumer | `channel_name`, `error` |
-| `CONSUMER_DIED_NOTIFY` | Broker → Producer | `channel_name`, `consumer_uid` |
-| `CHECKSUM_ERROR_REPORT` | Consumer → Broker | `channel_name`, `consumer_uid`, `error` |
+| `DEREG_REQ` | Producer → Broker | `channel_name`, `producer_pid` |
+| `DEREG_ACK` | Broker → Producer | `status` |
+| `HEARTBEAT_REQ` | Producer → Broker | `channel_name`, `producer_pid` |
+| `SCHEMA_REQ` | Any → Broker | `channel_name` |
+| `SCHEMA_ACK` | Broker → Any | `status`, `schema_id`, `blds`, `schema_hash` |
+| `CHECKSUM_ERROR_REPORT` | Any → Broker | `channel_name`, `slot_index`, `error`, `reporter_pid` |
+| `CHANNEL_NOTIFY_REQ` | Any → Broker | `target_channel`, `sender_uid`, `event`, `payload` (opt) |
+| `CHANNEL_CLOSING_NOTIFY` | Broker → All | `channel_name` |
+| `CONSUMER_DIED_NOTIFY` | Broker → Producer | `channel_name`, `consumer_pid`, `reason` |
+| `CHANNEL_ERROR_NOTIFY` | Broker → Affected | `channel_name`, `event`, + context |
+| `CHANNEL_EVENT_NOTIFY` | Broker → Participants | `channel_name`, `event`, `sender_uid` (if relay) |
 
 #### Producer ↔ Consumer peer messaging
 
