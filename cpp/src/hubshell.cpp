@@ -537,14 +537,27 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     broker_cfg.use_curve                        = true;
     broker_cfg.channel_timeout                  = hub_cfg.channel_timeout();
     broker_cfg.consumer_liveness_check_interval = hub_cfg.consumer_liveness_check();
+    broker_cfg.channel_shutdown_grace           = hub_cfg.channel_shutdown_grace();
     broker_cfg.server_secret_key                = vault_broker_secret; // empty → ephemeral
     broker_cfg.server_public_key                = vault_broker_public;
     broker_cfg.connection_policy                = hub_cfg.connection_policy();
     broker_cfg.known_actors                     = hub_cfg.known_actors();
     broker_cfg.channel_policies                 = hub_cfg.channel_policies();
-    broker_cfg.on_ready = [](const std::string& endpoint, const std::string& pubkey)
+    broker_cfg.on_ready = [dev_mode, &hub_dir](const std::string& endpoint, const std::string& pubkey)
     {
         LOGGER_INFO("HubShell: broker ready at {} (pubkey={})", endpoint, pubkey);
+        // In dev mode with a hub_dir, write the ephemeral pubkey so that
+        // producer/processor/consumer can discover it via hub_dir.
+        if (dev_mode && !hub_dir.empty() && !pubkey.empty())
+        {
+            const auto pubkey_path = hub_dir / "hub.pubkey";
+            std::ofstream f(pubkey_path);
+            if (f.is_open())
+            {
+                f << pubkey << '\n';
+                LOGGER_INFO("HubShell: wrote ephemeral pubkey to {}", pubkey_path.string());
+            }
+        }
     };
     if (hub_cfg.connection_policy() != pylabhub::broker::ConnectionPolicy::Open)
     {
@@ -590,6 +603,26 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
                 LOGGER_WARN("HubShell: channels() callback error: {}", e.what());
             }
             return result;
+        });
+
+    // -----------------------------------------------------------------------
+    // Wire pylabhub.close_channel() → BrokerService::request_close_channel().
+    // -----------------------------------------------------------------------
+    pylabhub::hub_python::set_close_channel_callback(
+        [&broker](const std::string& name)
+        {
+            py::gil_scoped_release release;
+            broker.request_close_channel(name);
+        });
+
+    // -----------------------------------------------------------------------
+    // Wire pylabhub.broadcast_channel() → BrokerService::request_broadcast_channel().
+    // -----------------------------------------------------------------------
+    pylabhub::hub_python::set_broadcast_channel_callback(
+        [&broker](const std::string& channel, const std::string& message,
+                  const std::string& data)
+        {
+            broker.request_broadcast_channel(channel, message, data);
         });
 
     // -----------------------------------------------------------------------

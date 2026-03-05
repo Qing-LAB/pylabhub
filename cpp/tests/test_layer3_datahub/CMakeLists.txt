@@ -145,12 +145,22 @@ add_executable(test_layer3_datahub
     # ── BrokerService admin API tests ─────────────────────────────────────────
     test_datahub_broker_admin.cpp
 
+    # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
+    test_datahub_broker_protocol.cpp
+
     # ── Messenger hex codec tests (messenger_internal.hpp) ────────────────────
     test_datahub_messenger_protocol.cpp
+
+    # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
+    test_datahub_zmq_poll_loop.cpp
+
+    # ── Two-tier graceful shutdown protocol tests ──────────────────────────
+    test_datahub_broker_shutdown.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
     workers
+    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/utils
     ${CMAKE_SOURCE_DIR}/src/utils/ipc
 )

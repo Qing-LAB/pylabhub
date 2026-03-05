@@ -15,6 +15,7 @@
 
 #include <pybind11/embed.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 
@@ -55,6 +56,11 @@ bool PythonScriptHost::do_initialize(const fs::path& script_path)
     // install_signal_handlers = 0 — caller manages signals (e.g., SIGINT)
     // home                       — PYTHONHOME for the bundled standalone Python
     // -------------------------------------------------------------------------
+    // Force unbuffered Python I/O. Must be set before PyConfig_InitPythonConfig
+    // reads the environment. This is the C-level mechanism; no Python-side
+    // monkey-patching needed.
+    setenv("PYTHONUNBUFFERED", "1", 1);
+
     PyConfig config;
     PyConfig_InitPythonConfig(&config);
     config.parse_argv             = 0;

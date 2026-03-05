@@ -1,6 +1,7 @@
 // src/utils/hub_consumer.cpp
 #include "utils/hub_consumer.hpp"
 #include "channel_handle_internals.hpp"
+#include "utils/logger.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -59,6 +60,7 @@ struct ConsumerImpl
     Consumer::DataCallback         on_zmq_data_cb;
     Consumer::CtrlCallback         on_producer_message_cb;
     std::function<void()>          on_channel_closing_cb;
+    std::function<void()>          on_force_shutdown_cb;
     Consumer::ChannelErrorCallback on_channel_error_cb;
 
     // Active mode
@@ -93,12 +95,16 @@ struct ConsumerImpl
     /// Drain and send all queued outbound ctrl frames (from send_ctrl() calls).
     void drain_ctrl_send_queue_();
 
-    /// Non-blocking: receive and dispatch one data frame from data socket.
-    /// Returns true if a message was received; false on EAGAIN/error.
+    /// @brief Non-blocking: receive and dispatch one data frame from data socket.
+    /// Returns true if a message was consumed; false when no message available.
+    /// @note Callers MUST use a bounded loop to prevent infinite spin.
+    /// See HEP-CORE-0007 §12.3 "Shutdown Pitfalls".
     bool recv_and_dispatch_data_();
 
-    /// Non-blocking: receive and dispatch one ctrl (or Bidir data) frame from ctrl socket.
-    /// Returns true if a message was received; false on EAGAIN/error.
+    /// @brief Non-blocking: receive and dispatch one ctrl frame from ctrl socket.
+    /// Returns true if a message was consumed; false when no message available.
+    /// @note Callers MUST use a bounded loop to prevent infinite spin.
+    /// See HEP-CORE-0007 §12.3 "Shutdown Pitfalls".
     bool recv_and_dispatch_ctrl_();
 };
 
@@ -142,7 +148,8 @@ bool ConsumerImpl::recv_and_dispatch_data_()
     {
         auto res = zmq::recv_multipart(*data_sock, std::back_inserter(frames),
                                        zmq::recv_flags::dontwait);
-        (void)res;
+        if (!res.has_value() || *res == 0)
+            return false;
     }
     catch (const zmq::error_t &)
     {
@@ -188,7 +195,8 @@ bool ConsumerImpl::recv_and_dispatch_ctrl_()
     {
         auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
                                        zmq::recv_flags::dontwait);
-        (void)res;
+        if (!res.has_value() || *res == 0)
+            return false;
     }
     catch (const zmq::error_t &)
     {
@@ -471,6 +479,11 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
             raw->on_channel_closing_cb();
     });
 
+    messenger.on_force_shutdown(ch, [raw]() {
+        if (!raw->closed && raw->on_force_shutdown_cb)
+            raw->on_force_shutdown_cb();
+    });
+
     messenger.on_channel_error(ch, [raw](std::string event, nlohmann::json details) {
         if (!raw->closed && raw->on_channel_error_cb)
             raw->on_channel_error_cb(event, details);
@@ -504,6 +517,14 @@ void Consumer::on_channel_closing(std::function<void()> cb)
     if (pImpl)
     {
         pImpl->on_channel_closing_cb = std::move(cb);
+    }
+}
+
+void Consumer::on_force_shutdown(std::function<void()> cb)
+{
+    if (pImpl)
+    {
+        pImpl->on_force_shutdown_cb = std::move(cb);
     }
 }
 
@@ -625,7 +646,11 @@ void Consumer::handle_data_events_nowait() noexcept
     {
         return;
     }
-    while (pImpl->recv_and_dispatch_data_()) {}
+    static constexpr int kMaxRecvBatch = 100;
+    int n = 0;
+    while (pImpl->recv_and_dispatch_data_() && ++n < kMaxRecvBatch) {}
+    if (n >= kMaxRecvBatch)
+        LOGGER_WARN("Consumer: handle_data_events_nowait hit recv batch cap ({})", n);
 }
 
 void Consumer::handle_ctrl_events_nowait() noexcept
@@ -635,7 +660,11 @@ void Consumer::handle_ctrl_events_nowait() noexcept
         return;
     }
     pImpl->drain_ctrl_send_queue_();
-    while (pImpl->recv_and_dispatch_ctrl_()) {}
+    static constexpr int kMaxRecvBatch = 100;
+    int n = 0;
+    while (pImpl->recv_and_dispatch_ctrl_() && ++n < kMaxRecvBatch) {}
+    if (n >= kMaxRecvBatch)
+        LOGGER_WARN("Consumer: handle_ctrl_events_nowait hit recv batch cap ({})", n);
 }
 
 // ============================================================================
@@ -784,6 +813,7 @@ void Consumer::close()
     {
         const std::string &ch = pImpl->handle.channel_name();
         pImpl->messenger->on_channel_closing(ch, nullptr);
+        pImpl->messenger->on_force_shutdown(ch, nullptr);
         pImpl->messenger->on_channel_error(ch, nullptr);
         // Deregister from broker (fire-and-forget via Messenger worker thread).
         pImpl->messenger->deregister_consumer(ch);

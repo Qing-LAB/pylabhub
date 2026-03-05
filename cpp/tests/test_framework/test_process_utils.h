@@ -100,6 +100,13 @@ class WorkerProcess
      */
     void wait_for_ready();
 
+    /**
+     * @brief Sends a signal to the child process (POSIX only).
+     * On Windows this is a no-op.
+     * @param sig The signal number (e.g. SIGTERM).
+     */
+    void send_signal(int sig);
+
   private:
     void init_with_ready_signal(const std::string &exe_path, const std::string &mode,
                                 const std::vector<std::string> &args,

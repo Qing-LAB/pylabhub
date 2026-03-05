@@ -750,6 +750,60 @@ sequenceDiagram
 
 ---
 
+## ZMQ Poll Loop Utility
+
+All three role script hosts (producer, consumer, processor) share near-identical
+`run_zmq_thread_()` implementations: poll setup, EINTR handling, shutdown checks,
+event dispatch, and heartbeat tracking. This redundancy caused a real bug (infinite
+spin in `recv_and_dispatch_ctrl_()` — HEP-0007 §12.3) that had to be fixed in 3
+places independently.
+
+The shared utility in `src/scripting/zmq_poll_loop.hpp` (header-only, internal)
+provides two components:
+
+### `HeartbeatTracker`
+
+A periodic-action driver that fires only when the iteration counter has advanced
+**and** a configurable time interval has elapsed. Constructor initialises
+`last_sent` to `now - interval` so the first fire is immediate on progress.
+The action is a `std::function<void()>` — not hardcoded to Messenger — so future
+periodic tasks (metrics push per HEP-0019, etc.) reuse the same pattern.
+
+### `ZmqPollLoop`
+
+A configurable poll loop object. Callers populate:
+
+| Field | Purpose |
+|-------|---------|
+| `sockets` | `vector<ZmqPollEntry>`: `{void* socket, std::function<void()> dispatch}` |
+| `get_iteration` | `std::function<uint64_t()>` returning the role's iteration counter |
+| `periodic_tasks` | `vector<HeartbeatTracker>` (heartbeat, future metrics, etc.) |
+| `poll_interval_ms` | zmq_poll timeout per cycle (default 5ms) |
+
+`run()` blocks until `core.running_threads` or `core.shutdown_requested` signal exit.
+Nullptr sockets are auto-filtered. Logs startup/shutdown at INFO with role identity
+and socket count, and zmq_poll errors at WARN.
+
+Each role's `run_zmq_thread_()` is now ~10 lines of setup:
+
+```cpp
+void ProducerScriptHost::run_zmq_thread_()
+{
+    scripting::ZmqPollLoop loop{core_, "prod:" + config_.producer_uid};
+    loop.sockets = {{out_producer_->peer_ctrl_socket_handle(),
+                     [&]{ out_producer_->handle_peer_events_nowait(); }}};
+    loop.get_iteration = [&]{ return iteration_count_.load(std::memory_order_relaxed); };
+    loop.periodic_tasks.emplace_back(
+        [&]{ out_messenger_.enqueue_heartbeat(config_.channel); },
+        config_.heartbeat_interval_ms);
+    loop.run();
+}
+```
+
+See also HEP-CORE-0007 §12.3 for the shutdown pitfalls that motivated centralising this logic.
+
+---
+
 ## Source File Reference
 
 | File | Layer | Description |
@@ -759,6 +813,7 @@ sequenceDiagram
 | `src/include/utils/script_host_schema.hpp` | L2 (public) | `SchemaSpec`, `FieldDef`, `SlotExposure` types |
 | `src/scripting/role_host_core.hpp` | scripting | `RoleHostCore` — engine-agnostic infrastructure |
 | `src/scripting/role_host_core.cpp` | scripting | Message queue, shutdown flags, state |
+| `src/scripting/zmq_poll_loop.hpp` | scripting | `ZmqPollLoop` + `HeartbeatTracker` — shared ZMQ event loop |
 | `src/scripting/python_role_host_base.hpp` | scripting | `PythonRoleHostBase` — common Python layer (~15 virtual hooks) |
 | `src/scripting/python_role_host_base.cpp` | scripting | `do_python_work()` skeleton |
 | `src/scripting/lua_role_host_base.hpp` | scripting | `LuaRoleHostBase` — stub for future Lua support |
@@ -766,6 +821,7 @@ sequenceDiagram
 | `src/consumer/consumer_script_host.hpp` | L4 | `ConsumerScriptHost` — demand-driven consumption |
 | `src/processor/processor_script_host.hpp` | L4 | `ProcessorScriptHost` — delegates to hub::Processor |
 | `tests/test_layer2_service/test_script_host.cpp` | test | ScriptHost lifecycle tests |
+| `tests/test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | test | ZmqPollLoop + HeartbeatTracker unit tests |
 
 ---
 

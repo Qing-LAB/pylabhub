@@ -25,6 +25,26 @@ ctest --test-dir build -R "^FileLockTest.MultiProcessExclusiveAccess$" # Single 
 
 Build outputs go to `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `include/` subdirectories mirroring installation layout.
 
+### Testing Practice (Mandatory)
+
+- **Never re-run tests or builds just to grep a different pattern.** Capture output to a
+  temp file once, then query from that file:
+  ```bash
+  # CORRECT — run once, query many times:
+  ctest --test-dir build -j2 --output-on-failure 2>&1 | tee /tmp/test_output.txt
+  grep FAILED /tmp/test_output.txt
+  grep -c Passed /tmp/test_output.txt
+  tail -20 /tmp/test_output.txt
+
+  # WRONG — running ctest multiple times to grep different things:
+  ctest ... 2>&1 | grep FAILED
+  ctest ... 2>&1 | grep Passed    # ← wastes minutes re-running the entire suite
+  ```
+- Same rule applies to any long-running command (build, lint, benchmark): run once →
+  save output → query the saved file.
+- Always use a timeout wrapper for integration/layer-4 tests to avoid hanging forever:
+  `timeout 120 ctest ...`
+
 ## Architecture
 
 **pyLabHub C++** is a cross-platform IPC framework for scientific data acquisition. C++20, CMake 3.29+.

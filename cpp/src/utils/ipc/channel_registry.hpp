@@ -91,6 +91,11 @@ struct ChannelEntry
     /// ZMQ ROUTER identity bytes captured when producer sent REG_REQ.
     /// Used to push unsolicited notifications (CHANNEL_CLOSING_NOTIFY, CHANNEL_ERROR_NOTIFY).
     std::string    producer_zmq_identity;
+
+    // ── graceful shutdown (two-tier) ──────────────────────────────────────────
+    /// When status == Closing, this is the deadline after which the broker
+    /// escalates to FORCE_SHUTDOWN for any members still registered.
+    std::chrono::steady_clock::time_point closing_deadline{};
 };
 
 /**

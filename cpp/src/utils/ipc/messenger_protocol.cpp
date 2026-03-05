@@ -699,25 +699,46 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
             return false;
         }
 
-        std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
-        zmq::poll(items, std::chrono::milliseconds(cmd.timeout_ms));
-        if ((items[0].revents & ZMQ_POLLIN) == 0)
+        // Poll+recv loop: skip non-matching messages (e.g. heartbeat ACKs).
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+        nlohmann::json response;
+        bool got_response = false;
+
+        while (!got_response)
         {
-            LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
-            cmd.result.set_value(std::nullopt);
-            return false;
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
+                cmd.result.set_value(std::nullopt);
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
+                cmd.result.set_value(std::nullopt);
+                return false;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue; // malformed — retry
+
+            const std::string resp_type(static_cast<const char*>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            if (resp_type != "SCHEMA_ACK")
+                continue; // not our response — discard and retry
+
+            response = nlohmann::json::parse(recv_msgs.back().to_string());
+            got_response = true;
         }
 
-        std::vector<zmq::message_t> recv_msgs;
-        static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
-        if (recv_msgs.size() < 3)
-        {
-            LOGGER_ERROR("Messenger: query_channel_schema('{}') invalid response.", cmd.channel);
-            cmd.result.set_value(std::nullopt);
-            return false;
-        }
-
-        nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         if (response.value("status", "") != "success")
         {
             LOGGER_WARN("Messenger: query_channel_schema('{}') failed: {}", cmd.channel,
@@ -743,6 +764,185 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in query_channel_schema('{}'): {}",
                      cmd.channel, e.what());
         cmd.result.set_value(std::nullopt);
+    }
+    return false;
+}
+
+// ── CHANNEL_NOTIFY_REQ (fire-and-forget) ─────────────────────────────────────
+
+bool MessengerImpl::handle_command(ChannelNotifyCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: channel_notify('{}') skipped — not connected.",
+                    cmd.target_channel);
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["target_channel"] = cmd.target_channel;
+        payload["sender_uid"]     = cmd.sender_uid;
+        payload["event"]          = cmd.event;
+        if (!cmd.data.empty())
+            payload["data"] = cmd.data;
+
+        const std::string msg_type = "CHANNEL_NOTIFY_REQ";
+        const std::string body_str = payload.dump();
+        std::vector<zmq::const_buffer> frames = {zmq::buffer(&kFrameTypeControl, 1),
+                                                   zmq::buffer(msg_type),
+                                                   zmq::buffer(body_str)};
+        static_cast<void>(zmq::send_multipart(*socket, frames));
+        LOGGER_DEBUG("Messenger: CHANNEL_NOTIFY_REQ sent to '{}' event='{}'",
+                     cmd.target_channel, cmd.event);
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_WARN("Messenger: CHANNEL_NOTIFY_REQ failed for '{}': {}",
+                    cmd.target_channel, e.what());
+    }
+    return false;
+}
+
+// ── CHANNEL_BROADCAST_REQ (fire-and-forget) ──────────────────────────────────
+
+bool MessengerImpl::handle_command(ChannelBroadcastCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: channel_broadcast('{}') skipped — not connected.",
+                    cmd.target_channel);
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["target_channel"] = cmd.target_channel;
+        payload["sender_uid"]     = cmd.sender_uid;
+        payload["message"]        = cmd.message;
+        if (!cmd.data.empty())
+            payload["data"] = cmd.data;
+
+        const std::string msg_type = "CHANNEL_BROADCAST_REQ";
+        const std::string body_str = payload.dump();
+        std::vector<zmq::const_buffer> frames = {zmq::buffer(&kFrameTypeControl, 1),
+                                                   zmq::buffer(msg_type),
+                                                   zmq::buffer(body_str)};
+        static_cast<void>(zmq::send_multipart(*socket, frames));
+        LOGGER_DEBUG("Messenger: CHANNEL_BROADCAST_REQ sent to '{}' msg='{}'",
+                     cmd.target_channel, cmd.message);
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_WARN("Messenger: CHANNEL_BROADCAST_REQ failed for '{}': {}",
+                    cmd.target_channel, e.what());
+    }
+    return false;
+}
+
+// ── CHANNEL_LIST_REQ (synchronous) ───────────────────────────────────────────
+
+bool MessengerImpl::handle_command(ChannelListCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: list_channels() — not connected.");
+        cmd.result.set_value({});
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload = nlohmann::json::object();
+        // No fields needed — broker returns all channels.
+
+        const std::string msg_type    = "CHANNEL_LIST_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        LOGGER_TRACE("Messenger: list_channels sending CHANNEL_LIST_REQ timeout={}ms",
+                     cmd.timeout_ms);
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: list_channels() send failed.");
+            cmd.result.set_value({});
+            return false;
+        }
+
+        // Poll+recv loop: skip non-matching messages (e.g. heartbeat ACKs)
+        // that arrive before the CHANNEL_LIST_ACK.
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+        nlohmann::json response;
+        bool got_response = false;
+
+        while (!got_response)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: list_channels() timed out.");
+                cmd.result.set_value({});
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: list_channels() poll timeout.");
+                cmd.result.set_value({});
+                return false;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue; // malformed — retry
+
+            const std::string resp_type(static_cast<const char*>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            LOGGER_TRACE("Messenger: list_channels recv frame[1]='{}' ({} frames)",
+                         resp_type, recv_msgs.size());
+            if (resp_type != "CHANNEL_LIST_ACK")
+            {
+                // Not our response — discard and retry (e.g. heartbeat ACK, event notify).
+                continue;
+            }
+
+            response = nlohmann::json::parse(recv_msgs.back().to_string());
+            got_response = true;
+        }
+
+        if (response.value("status", "") != "success")
+        {
+            LOGGER_WARN("Messenger: list_channels() failed: {}",
+                        response.value("message", std::string("unknown")));
+            cmd.result.set_value({});
+            return false;
+        }
+
+        std::vector<nlohmann::json> result;
+        if (response.contains("channels") && response["channels"].is_array())
+        {
+            for (auto &ch : response["channels"])
+                result.push_back(std::move(ch));
+        }
+        cmd.result.set_value(std::move(result));
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in list_channels(): {}", e.what());
+        cmd.result.set_value({});
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in list_channels(): {}", e.what());
+        cmd.result.set_value({});
     }
     return false;
 }

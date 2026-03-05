@@ -29,6 +29,7 @@
 
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/messenger.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include <pybind11/pybind11.h>
@@ -56,6 +57,7 @@ class ProcessorAPI
 
     void set_producer(hub::Producer *p) noexcept { producer_ = p; }
     void set_consumer(hub::Consumer *c) noexcept { consumer_ = c; }
+    void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
     void set_uid(std::string uid)   { uid_   = std::move(uid); }
     void set_name(std::string name) { name_  = std::move(name); }
     void set_in_channel(std::string c)  { in_channel_  = std::move(c); }
@@ -128,6 +130,17 @@ class ProcessorAPI
      */
     bool update_flexzone_checksum();
 
+    /// Send an event notification to a target channel's producer via the broker.
+    void notify_channel(const std::string &target_channel, const std::string &event,
+                        const std::string &data = {});
+
+    /// Broadcast a control message to ALL members of a channel via the broker.
+    void broadcast_channel(const std::string &target_channel, const std::string &message,
+                           const std::string &data = {});
+
+    /// Query the broker for the list of registered channels.
+    py::list list_channels();
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
@@ -152,6 +165,7 @@ class ProcessorAPI
   private:
     hub::Producer    *producer_{nullptr};
     hub::Consumer    *consumer_{nullptr};
+    hub::Messenger   *messenger_{nullptr};
     std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
     py::object       *flexzone_obj_{nullptr};

@@ -83,6 +83,11 @@ public:
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
 
+        /// Grace period for graceful channel shutdown (two-tier protocol).
+        /// After CHANNEL_CLOSING_NOTIFY is sent, the broker waits this long for
+        /// clients to deregister before escalating to FORCE_SHUTDOWN.
+        std::chrono::seconds channel_shutdown_grace{5};
+
         /// Optional: stable broker CurveZMQ keypair from HubVault.
         /// When both fields are non-empty, the broker uses these keys instead of
         /// generating an ephemeral keypair on every startup. Supply via
@@ -179,6 +184,22 @@ public:
      * @param name  Channel name to close.  Silently ignored if not registered.
      */
     void request_close_channel(const std::string& name);
+
+    /**
+     * @brief Broadcast a message to all members of a channel.
+     *
+     * Thread-safe.  The request is queued and drained during the next poll
+     * iteration of the broker run() loop.  The broker will send
+     * CHANNEL_BROADCAST_NOTIFY to both producer and all consumers of the
+     * named channel, exactly as an incoming CHANNEL_BROADCAST_REQ would.
+     *
+     * @param channel  Target channel name.
+     * @param message  Broadcast message tag (e.g., "start", "stop").
+     * @param data     Optional payload string (JSON or plain text).
+     */
+    void request_broadcast_channel(const std::string& channel,
+                                   const std::string& message,
+                                   const std::string& data = {});
 
 private:
 #if defined(_MSC_VER)

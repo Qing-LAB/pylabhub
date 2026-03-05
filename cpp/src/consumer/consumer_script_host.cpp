@@ -16,9 +16,8 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
-#include <zmq.h>
+#include "zmq_poll_loop.hpp"
 
-#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -149,12 +148,65 @@ bool ConsumerScriptHost::start_role()
     }
     in_consumer_ = std::move(maybe_consumer);
 
+    // Graceful shutdown: queue channel_closing as a regular event message.
+    // The script sees it in FIFO order and is expected to call api.stop().
+    in_consumer_->on_channel_closing([this]() {
+        LOGGER_INFO("[cons] CHANNEL_CLOSING_NOTIFY received, queuing event");
+        IncomingMessage msg;
+        msg.event = "channel_closing";
+        core_.enqueue_message(std::move(msg));
+    });
+
+    // Forced shutdown: broker grace period expired — bypass queue, immediate stop.
+    in_consumer_->on_force_shutdown([this]() {
+        LOGGER_WARN("[cons] FORCE_SHUTDOWN received, forcing immediate shutdown");
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
     // Route ZMQ data messages to incoming queue.
     in_consumer_->on_zmq_data(
         [this](std::span<const std::byte> data)
         {
+            LOGGER_DEBUG("[cons] zmq_data: data_message size={}", data.size());
             IncomingMessage msg;
             msg.data.assign(data.begin(), data.end());
+            core_.enqueue_message(std::move(msg));
+        });
+
+    // Wire producer control messages → IncomingMessage queue as event dicts.
+    // NOTE: The data payload may contain arbitrary binary bytes. We hex-encode it
+    // to avoid UnicodeDecodeError when json_to_py() converts to py::str.
+    in_consumer_->on_producer_message(
+        [this](std::string_view type, std::span<const std::byte> data)
+        {
+            LOGGER_INFO("[cons] ctrl_msg: producer_message type='{}' size={}",
+                        type, data.size());
+            static constexpr char kHex[] = "0123456789abcdef";
+            IncomingMessage msg;
+            msg.event = "producer_message";
+            msg.details["type"] = std::string(type);
+            std::string hex;
+            hex.reserve(data.size() * 2);
+            for (auto b : data)
+            {
+                auto c = static_cast<unsigned char>(b);
+                hex.push_back(kHex[c >> 4]);
+                hex.push_back(kHex[c & 0x0f]);
+            }
+            msg.details["data"] = std::move(hex);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    // Wire broker channel error/event notifications.
+    in_consumer_->on_channel_error(
+        [this](const std::string &event, const nlohmann::json &details)
+        {
+            LOGGER_INFO("[cons] broker_notify: channel_event event='{}' details={}",
+                        event, details.dump());
+            IncomingMessage msg;
+            msg.event = "channel_event";
+            msg.details = details;
+            msg.details["detail"] = event;
             core_.enqueue_message(std::move(msg));
         });
 
@@ -167,8 +219,13 @@ bool ConsumerScriptHost::start_role()
     // Wire API and input flexzone (read-only view).
     try
     {
+        // Ensure the embedded pybind11 module is imported so the ConsumerAPI type
+        // is registered before py::cast.
+        py::module_::import("pylabhub_consumer");
+
         api_obj_ = py::cast(&api_, py::return_value_policy::reference);
         api_.set_consumer(&*in_consumer_);
+        api_.set_messenger(&in_messenger_);
 
         if (core_.has_fz)
         {
@@ -275,14 +332,29 @@ void ConsumerScriptHost::clear_role_pyobjects()
 }
 
 // ============================================================================
-// build_messages_list_ — consumer: bare bytes (no sender)
+// build_messages_list_ — consumer: bare bytes (no sender) + event dicts
 // ============================================================================
 
 py::list ConsumerScriptHost::build_messages_list_(std::vector<IncomingMessage> &msgs)
 {
     py::list lst;
     for (auto &m : msgs)
-        lst.append(py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size()));
+    {
+        if (!m.event.empty())
+        {
+            // Event message → Python dict (same format as base class).
+            py::dict d;
+            d["event"] = m.event;
+            for (auto &[key, val] : m.details.items())
+                d[py::str(key)] = scripting::json_to_py(val);
+            lst.append(std::move(d));
+        }
+        else
+        {
+            lst.append(
+                py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size()));
+        }
+    }
     return lst;
 }
 
@@ -351,7 +423,8 @@ void ConsumerScriptHost::run_loop_shm_()
     static constexpr int kShmBlockMs = 5000;
     const int acquire_in_ms = config_.timeout_ms > 0 ? config_.timeout_ms : kShmBlockMs;
 
-    while (core_.running_threads.load() && !api_.critical_error())
+    while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
+           !api_.critical_error())
     {
         // 1. Block until a slot is available (or timeout).
         auto in_handle = in_shm->acquire_consume_slot(acquire_in_ms);
@@ -365,9 +438,19 @@ void ConsumerScriptHost::run_loop_shm_()
             if (config_.timeout_ms > 0 || !msgs.empty())
             {
                 py::gil_scoped_acquire g;
-                py::object none_in = py::none();
-                py::list   mlst    = build_messages_list_(msgs);
-                call_on_consume_(none_in, fz_inst_, mlst);
+                try
+                {
+                    py::object none_in = py::none();
+                    py::list   mlst    = build_messages_list_(msgs);
+                    call_on_consume_(none_in, fz_inst_, mlst);
+                }
+                catch (py::error_already_set &e)
+                {
+                    api_.increment_script_errors();
+                    LOGGER_ERROR("[cons] Python error in consume loop (timeout): {}", e.what());
+                    if (config_.stop_on_script_error)
+                        core_.running_threads.store(false);
+                }
             }
             // Always advance — proves the loop is cycling, not stuck.
             iteration_count_.fetch_add(1, std::memory_order_relaxed);
@@ -387,15 +470,31 @@ void ConsumerScriptHost::run_loop_shm_()
 
         {
             py::gil_scoped_acquire g;
-            py::object in_sv = make_in_slot_view_(in_span.data(), in_sz);
-            py::list   mlst  = build_messages_list_(msgs);
-            call_on_consume_(in_sv, fz_inst_, mlst);
+            try
+            {
+                py::object in_sv = make_in_slot_view_(in_span.data(), in_sz);
+                py::list   mlst  = build_messages_list_(msgs);
+                call_on_consume_(in_sv, fz_inst_, mlst);
+            }
+            catch (py::error_already_set &e)
+            {
+                api_.increment_script_errors();
+                LOGGER_ERROR("[cons] Python error in consume loop: {}", e.what());
+                if (config_.stop_on_script_error)
+                    core_.running_threads.store(false);
+            }
         }
 
         (void)in_shm->release_consume_slot(*in_handle);
 
         iteration_count_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    LOGGER_INFO("[cons] run_loop_shm_ exiting: running_threads={} shutdown_requested={} "
+                "critical_error={} g_shutdown={}",
+                core_.running_threads.load(), core_.shutdown_requested.load(),
+                api_.critical_error(),
+                core_.g_shutdown ? core_.g_shutdown->load() : false);
 }
 
 // ============================================================================
@@ -404,63 +503,18 @@ void ConsumerScriptHost::run_loop_shm_()
 
 void ConsumerScriptHost::run_zmq_thread_()
 {
-    void *ctrl_sock = in_consumer_->ctrl_zmq_socket_handle();
-    void *data_sock = in_consumer_->data_zmq_socket_handle();
-
-    if (ctrl_sock == nullptr && data_sock == nullptr)
-        return;
-
-    zmq_pollitem_t items[2]; // NOLINT
-    int nfds     = 0;
-    int ctrl_idx = -1, data_idx = -1;
-
-    if (ctrl_sock != nullptr)
-    { ctrl_idx = nfds; items[nfds++] = {ctrl_sock, 0, ZMQ_POLLIN, 0}; }
-    if (data_sock != nullptr)
-    { data_idx = nfds; items[nfds++] = {data_sock, 0, ZMQ_POLLIN, 0}; }
-
-    const auto hb_interval = [&]() -> std::chrono::milliseconds
-    {
-        if (config_.heartbeat_interval_ms > 0)
-            return std::chrono::milliseconds{config_.heartbeat_interval_ms};
-        return std::chrono::milliseconds{2000};
-    }();
-    auto last_heartbeat = std::chrono::steady_clock::now() - hb_interval;
-    uint64_t last_iter{0};
-
-    static constexpr int kPollMs = 5;
-
-    while (core_.running_threads.load(std::memory_order_relaxed))
-    {
-        const int rc = zmq_poll(items, nfds, kPollMs);
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            LOGGER_WARN("[cons/zmq_thread] zmq_poll error: {}", zmq_strerror(errno));
-            break;
-        }
-        if (rc > 0)
-        {
-            if (ctrl_idx >= 0 && (items[ctrl_idx].revents & ZMQ_POLLIN))
-                in_consumer_->handle_ctrl_events_nowait();
-            if (data_idx >= 0 && (items[data_idx].revents & ZMQ_POLLIN))
-                in_consumer_->handle_data_events_nowait();
-        }
-
-        // Send heartbeat when the loop is making progress.
-        const uint64_t cur = iteration_count_.load(std::memory_order_relaxed);
-        if (cur != last_iter)
-        {
-            last_iter = cur;
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_heartbeat >= hb_interval)
-            {
-                in_messenger_.enqueue_heartbeat(config_.channel);
-                last_heartbeat = now;
-            }
-        }
-    }
+    scripting::ZmqPollLoop loop{core_, "cons:" + config_.consumer_uid};
+    loop.sockets = {
+        {in_consumer_->ctrl_zmq_socket_handle(),
+         [&] { in_consumer_->handle_ctrl_events_nowait(); }},
+        {in_consumer_->data_zmq_socket_handle(),
+         [&] { in_consumer_->handle_data_events_nowait(); }},
+    };
+    loop.get_iteration = [&] { return iteration_count_.load(std::memory_order_relaxed); };
+    loop.periodic_tasks.emplace_back(
+        [&] { in_messenger_.enqueue_heartbeat(config_.channel); },
+        config_.heartbeat_interval_ms);
+    loop.run();
 }
 
 } // namespace pylabhub::consumer

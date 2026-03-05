@@ -460,7 +460,8 @@ int main(int argc, char *argv[])
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule()
+        pylabhub::hub::GetZMQContextModule(),
+        pylabhub::hub::GetLifecycleModule()           // DataExchangeHub — required for SHM DataBlock
     ));
 
     // ── Load processor keypair (if keyfile configured) ────────────────────────
@@ -547,8 +548,20 @@ int main(int argc, char *argv[])
 
     // Main thread polls g_shutdown until a signal fires or api.stop() propagates it.
     while (!g_shutdown.load(std::memory_order_relaxed))
+    {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
+
+        // Check if ScriptHost internal shutdown was requested (e.g. via
+        // CHANNEL_CLOSING_NOTIFY or api.stop()) but g_shutdown was not set.
+        if (!proc_script.is_running())
+        {
+            LOGGER_INFO("[proc-main] ScriptHost no longer running, exiting main loop");
+            break;
+        }
+    }
+
+    LOGGER_INFO("[proc-main] Main loop exited: g_shutdown={}", g_shutdown.load());
 
     // ── Tear down ─────────────────────────────────────────────────────────────
     signal_handler.uninstall();
