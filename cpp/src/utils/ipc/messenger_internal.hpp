@@ -236,6 +236,14 @@ struct ChannelListCmd
     std::promise<std::vector<nlohmann::json>> result;
 };
 
+/// HEP-CORE-0019: consumer metrics report (fire-and-forget).
+struct MetricsReportCmd
+{
+    std::string    channel;
+    std::string    uid;
+    nlohmann::json metrics;
+};
+
 struct StopCmd
 {
 };
@@ -250,7 +258,8 @@ struct SuppressHeartbeatCmd
 /// Used by the actor's zmq_thread_ to deliver application-level heartbeats.
 struct HeartbeatNowCmd
 {
-    std::string channel;
+    std::string    channel;
+    nlohmann::json metrics; ///< HEP-0019: optional metrics payload (empty = no metrics).
 };
 
 using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProducerCmd,
@@ -260,7 +269,8 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       ConnectChannelCmd, StopCmd,
                                       SuppressHeartbeatCmd, HeartbeatNowCmd,
                                       QuerySchemaCmd, ChannelNotifyCmd,
-                                      ChannelBroadcastCmd, ChannelListCmd>;
+                                      ChannelBroadcastCmd, ChannelListCmd,
+                                      MetricsReportCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -375,6 +385,8 @@ class MessengerImpl
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(ChannelListCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(MetricsReportCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,
                                                  const std::string &channel,
@@ -382,7 +394,8 @@ class MessengerImpl
 
     static void send_immediate_heartbeat(zmq::socket_t &socket,
                                          const std::string &channel,
-                                         uint64_t producer_pid);
+                                         uint64_t producer_pid,
+                                         const nlohmann::json &metrics = {});
 };
 
 } // namespace pylabhub::hub

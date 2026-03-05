@@ -64,6 +64,14 @@ void set_broadcast_channel_callback(
 {
     g_broadcast_channel_cb = std::move(cb);
 }
+/// Registered by hubshell when BrokerService is ready.
+/// Returns metrics JSON string for a channel (or all channels).
+static std::function<std::string(const std::string&)> g_metrics_cb;
+
+void set_metrics_callback(std::function<std::string(const std::string&)> cb)
+{
+    g_metrics_cb = std::move(cb);
+}
 } // namespace pylabhub::hub_python
 
 // ---------------------------------------------------------------------------
@@ -249,6 +257,37 @@ Example::
 
     pylabhub.broadcast_channel('test.pipe.raw', 'start')
     pylabhub.broadcast_channel('test.pipe.raw', 'stop', '{"reason": "test complete"}')
+)doc");
+
+    // ------------------------------------------------------------------
+    // Metrics query (HEP-CORE-0019)
+    // ------------------------------------------------------------------
+    m.def("metrics", [](const std::string& channel) -> py::object
+    {
+        if (!pylabhub::hub_python::g_metrics_cb)
+            throw py::value_error("Broker not wired — metrics() unavailable");
+        std::string json_str;
+        {
+            py::gil_scoped_release release;
+            json_str = pylabhub::hub_python::g_metrics_cb(channel);
+        }
+        // Parse JSON string → Python dict.
+        py::module_ json_mod = py::module_::import("json");
+        return json_mod.attr("loads")(json_str);
+    },
+    py::arg("channel") = "",
+    R"doc(
+Query aggregated metrics from all producers and consumers.
+
+With no arguments (or empty string), returns metrics for all channels.
+With a channel name, returns metrics for just that channel.
+
+Returns a dict with 'status' key and either 'channels' (all) or 'metrics' (single).
+
+Example::
+
+    metrics = pylabhub.metrics()          # all channels
+    ch = pylabhub.metrics('my-channel')   # single channel
 )doc");
 
     // ------------------------------------------------------------------

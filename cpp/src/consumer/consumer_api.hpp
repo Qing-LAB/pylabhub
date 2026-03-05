@@ -27,14 +27,17 @@
  */
 
 #include "utils/hub_consumer.hpp"
+#include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
 
+#include <nlohmann/json_fwd.hpp>
 #include <pybind11/pybind11.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace py = pybind11;
 
@@ -82,11 +85,11 @@ class ConsumerAPI
 
     /// Send an event notification to a target channel's producer via the broker.
     void notify_channel(const std::string &target_channel, const std::string &event,
-                        const std::string &data = {});
+                        const std::string &data);
 
     /// Broadcast a control message to ALL members of a channel via the broker.
     void broadcast_channel(const std::string &target_channel, const std::string &message,
-                           const std::string &data = {});
+                           const std::string &data);
 
     /// Query the broker for the list of registered channels.
     py::list list_channels();
@@ -96,6 +99,16 @@ class ConsumerAPI
     [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
     [[nodiscard]] uint64_t in_slots_received()  const noexcept
         { return in_slots_received_.load(std::memory_order_relaxed); }
+
+    // ── Python-accessible — custom metrics (HEP-CORE-0019) ─────────────────
+
+    void report_metric(const std::string &key, double value);
+    void report_metrics(const std::unordered_map<std::string, double> &kv);
+    void clear_custom_metrics();
+
+    // ── Internal — metrics snapshot (called from zmq thread) ────────────────
+
+    [[nodiscard]] nlohmann::json snapshot_metrics_json() const;
 
   private:
     hub::Consumer    *consumer_{nullptr};
@@ -113,6 +126,9 @@ class ConsumerAPI
 
     uint64_t              script_errors_{0};
     std::atomic<uint64_t> in_slots_received_{0};
+
+    mutable hub::InProcessSpinState                  metrics_spin_;
+    std::unordered_map<std::string, double>          custom_metrics_;
 };
 
 } // namespace pylabhub::consumer

@@ -570,7 +570,8 @@ void ProducerScriptHost::run_zmq_thread_()
     };
     loop.get_iteration = [&] { return iteration_count_.load(std::memory_order_relaxed); };
     loop.periodic_tasks.emplace_back(
-        [&] { out_messenger_.enqueue_heartbeat(config_.channel); },
+        [&] { out_messenger_.enqueue_heartbeat(config_.channel,
+                                                api_.snapshot_metrics_json()); },
         config_.heartbeat_interval_ms);
     loop.run();
 }

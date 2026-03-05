@@ -202,6 +202,43 @@ if (condition) {
 
 **Style**: Follow LLVM/Allman brace style (opening brace on same line for control structures, per `.clang-format`).
 
+### pybind11 Default Parameter Rule
+
+**Rule**: C++ API methods exposed to Python via pybind11 bindings must **never** declare default
+parameter values in the C++ header. Default values must only be provided at the pybind11 binding
+level using `py::arg("param") = default_value`.
+
+**Rationale**: When a C++ declaration has `= {}` but the pybind11 binding omits the `= value` on
+`py::arg()`, the parameter silently becomes required in Python. This mismatch is **not** caught at
+compile time — it produces a runtime `TypeError` that may go undetected until an edge-case code
+path is exercised. By keeping C++ strict (no defaults) and providing defaults only in the binding,
+both layers are explicit and any mismatch is immediately visible to the developer writing the
+binding.
+
+**Example**:
+
+```cpp
+// HEADER — no default:
+void notify_channel(const std::string &target, const std::string &event,
+                    const std::string &data);   // ← no = {}
+
+// BINDING — default provided here:
+.def("notify_channel", &API::notify_channel,
+     py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
+```
+
+```cpp
+// BAD — default in C++ header:
+void notify_channel(const std::string &target, const std::string &event,
+                    const std::string &data = {});   // ← easy to forget in binding
+```
+
+**Applies to**: All `PYBIND11_EMBEDDED_MODULE` definitions in:
+- `src/producer/producer_api.cpp`
+- `src/consumer/consumer_api.cpp`
+- `src/processor/processor_api.cpp`
+- `src/hub_python/pylabhub_module.cpp`
+
 ---
 
 ## Architecture Principles
