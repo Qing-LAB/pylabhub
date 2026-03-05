@@ -49,7 +49,7 @@ Always link against alias targets (`pylabhub::utils`, not `pylabhub-utils`).
 
 | Layer | Header | What it provides |
 |-------|--------|------------------|
-| L0 | `slot_rw_coordinator.h` | C ABI — raw slot read/write for FFI |
+| L0 | `plh_platform.hpp` | Platform detection macros, version API |
 | L1 | `plh_base.hpp` | C++ primitives — SpinGuard, format_tools, scope_guard, recursion_guard |
 | L2 | `plh_service.hpp` | RAII utilities — Lifecycle, Logger, FileLock, DataBlockProducer/Consumer |
 | L3a | `plh_datahub_client.hpp` | Client API — hub::Producer, hub::Consumer, Messenger |
@@ -82,12 +82,12 @@ startup and calls user-defined callbacks in a tight loop.
 ### CLI (shared across producer, consumer, processor)
 
 ```
-pylabhub-producer --init <dir>      # Scaffold config + vault + script template
-pylabhub-producer <dir>             # Run
-pylabhub-producer --validate <dir>  # Validate config and script; exit 0 on success
-pylabhub-producer --keygen <dir>    # Generate CurveZMQ keypair in vault/
-pylabhub-producer --dev [dir]       # Ephemeral keypair (no vault needed)
-pylabhub-producer --version         # Print version
+pylabhub-producer --init [<dir>] [--name <name>]   # Scaffold config + vault + script
+pylabhub-producer <dir>                            # Run from directory
+pylabhub-producer --config <path.json>             # Run from explicit config file
+pylabhub-producer --config <path.json> --validate  # Validate config + script; exit 0/1
+pylabhub-producer --config <path.json> --keygen    # Generate CurveZMQ keypair; exit 0
+pylabhub-producer --version                        # Print version
 ```
 
 ### Python callbacks
@@ -174,8 +174,8 @@ For embedding in custom applications, use the L2/L3 headers directly:
 #include <plh_datahub.hpp>
 
 // Producer side
-auto producer = create_datablock_producer<FlexT, SlotT>(config);
-with_transaction(producer, timeout, [](WriteTransactionContext<FlexT, SlotT>& ctx) {
+auto producer = create_datablock_producer<FlexT, SlotT>(name, policy, config);
+producer->with_transaction<FlexT, SlotT>(timeout, [](auto& ctx) {
     for (auto&& result : ctx.slots(slot_timeout)) {
         if (!result.is_ok()) break;
         auto& slot = result.content().get();
@@ -253,19 +253,19 @@ pylabhub-hubshell --dev
 ### 2. Set up and run a producer
 
 ```bash
-pylabhub-producer --init my_producer
+pylabhub-producer --init my_producer --name TempSensor
 # Edit my_producer/producer.json: set channel, broker, schema
 # Edit my_producer/script/python/__init__.py: implement on_produce()
-pylabhub-producer --dev my_producer
+pylabhub-producer my_producer
 ```
 
 ### 3. Set up and run a consumer
 
 ```bash
-pylabhub-consumer --init my_consumer
+pylabhub-consumer --init my_consumer --name TempMonitor
 # Edit my_consumer/consumer.json: match channel + schema from producer
 # Edit my_consumer/script/python/__init__.py: implement on_consume()
-pylabhub-consumer --dev my_consumer
+pylabhub-consumer my_consumer
 ```
 
 For a working example with all configs pre-filled, see `share/demo/`.

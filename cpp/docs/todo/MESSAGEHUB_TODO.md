@@ -188,10 +188,10 @@ Adds a fifth communication plane: passive SHM metrics + voluntary ZMQ reporting 
 Producer and consumer binaries need Layer 4 test coverage (config parsing + CLI). Tracked in
 `docs/todo/TESTING_TODO.md` § "Layer 4: pylabhub-producer Tests" + "Layer 4: pylabhub-consumer Tests".
 
-### Active: Integration Test (2026-03-02)
+### ✅ Complete: Integration Test (2026-03-04)
 
-End-to-end integration test: `pylabhub-producer` + `pylabhub-hubshell` + `pylabhub-consumer`
-round-trip via live broker. Tracked in `docs/todo/API_TODO.md` § Step 5.
+Full pipeline round-trip test: `pylabhub-hubshell` + `pylabhub-producer` + `pylabhub-processor`
++ `pylabhub-consumer` via live broker. See `tests/test_layer4_integration/test_pipeline_roundtrip.cpp`.
 
 ---
 
