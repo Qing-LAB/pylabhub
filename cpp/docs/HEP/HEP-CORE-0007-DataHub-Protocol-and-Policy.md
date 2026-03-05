@@ -729,8 +729,8 @@ Messages are grouped into four categories based on their flow pattern:
 
 | Category | Pattern | Examples |
 |----------|---------|---------|
-| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK |
-| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ |
+| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK |
+| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ, METRICS_REPORT_REQ |
 | **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_ERROR_NOTIFY, CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY |
 | **Peer-to-Peer** | Producer ↔ Consumer (direct ZMQ) | HELLO, BYE, application ctrl messages |
 
@@ -864,24 +864,65 @@ Payload (SCHEMA_ACK):
   schema_hash           string   64-char hex hash
 ```
 
+#### METRICS_REQ / METRICS_ACK — Query Metrics (HEP-CORE-0019)
+
+```
+Direction:  Any → Broker → Any
+Trigger:    pylabhub.metrics(channel) (AdminShell) or direct Messenger call
+Pattern:    Synchronous request/response
+
+Payload (METRICS_REQ):
+  channel_name          string   (opt) Channel to query; empty/omitted = all channels
+
+Payload (METRICS_ACK):
+  status                string   "success"
+  channels              object   Map of channel_name → metrics:
+    <channel_name>:
+      producer:
+        uid              string   Producer UID
+        pid              uint64   Producer PID
+        last_report      string   ISO 8601 timestamp
+        base             object   {out_written, drops, script_errors, iteration_count, …}
+        custom           object   User-defined {key: number} pairs
+      consumers:         array    Array of consumer metrics objects:
+        uid              string
+        pid              uint64
+        last_report      string
+        base             object   {in_received, script_errors, iteration_count, …}
+        custom           object
+
+Returns empty channels if no metrics have been reported yet.
+```
+
 ### 12.4 Fire-and-Forget Messages
 
 These require no response from the broker.
 
-#### HEARTBEAT_REQ — Producer Liveness
+#### HEARTBEAT_REQ — Producer Liveness + Metrics
 
 ```
-Direction:  Producer → Broker
-Trigger:    Periodic timer (2s default) OR actor zmq_thread_ on iteration progress
-Effect:     Updates channel last_heartbeat timestamp; transitions PendingReady → Ready
+Direction:  Producer/Processor → Broker
+Trigger:    Periodic HeartbeatTracker in zmq_thread_ (fires when iteration_count
+            advances AND heartbeat interval elapsed, default 2s)
+Effect:     Updates channel last_heartbeat timestamp; transitions PendingReady → Ready;
+            if metrics field present, updates MetricsStore (HEP-CORE-0019)
 
 Payload:
   channel_name          string
   producer_pid          uint64
+  metrics               object   (opt, HEP-CORE-0019) Metrics snapshot:
+    out_written          uint64   Slots committed
+    drops                uint64   Overflow drops
+    script_errors        uint64   Script exception count
+    iteration_count      uint64   Loop iterations
+    in_received          uint64   (processor only) Input slots received
+    custom               object   (opt) User-defined {key: number} pairs
 
-Note: When an actor zmq_thread_ owns the heartbeat (via suppress_periodic_heartbeat),
-heartbeats are sent only when iteration_count advances, proving the Python loop is
-progressing — not just that the ZMQ connection is alive.
+Backward compatibility: Brokers that predate HEP-CORE-0019 ignore the metrics field
+(unknown JSON keys are silently dropped). No version negotiation needed.
+
+Note: Heartbeats are sent only when iteration_count advances, proving the script
+loop is progressing — not just that the ZMQ connection is alive.
 ```
 
 #### CHECKSUM_ERROR_REPORT — Slot Integrity Error
@@ -940,6 +981,28 @@ Use cases:
 Difference from CHANNEL_NOTIFY_REQ:
   - CHANNEL_NOTIFY_REQ → producer only (unicast)
   - CHANNEL_BROADCAST_REQ → all members (fan-out: consumers + producer)
+```
+
+#### METRICS_REPORT_REQ — Consumer Metrics Report (HEP-CORE-0019)
+
+```
+Direction:  Consumer → Broker
+Trigger:    Periodic HeartbeatTracker in consumer zmq_thread_
+Effect:     Broker updates MetricsStore with consumer's latest metrics snapshot
+
+Payload:
+  channel_name          string
+  consumer_pid          uint64
+  consumer_uid          string   Consumer UID (e.g. "CONS-LOGGER-A1B2C3D4")
+  metrics               object   Metrics snapshot:
+    in_received          uint64   Slots consumed
+    script_errors        uint64   Script exception count
+    iteration_count      uint64   Loop iterations
+    custom               object   (opt) User-defined {key: number} pairs
+
+Why consumers use a dedicated message: Consumers don't send HEARTBEAT_REQ
+(the broker tracks their liveness via PID checks). So consumers use this
+separate fire-and-forget message to report metrics at the same interval.
 ```
 
 #### CHANNEL_LIST_REQ — Query Registered Channels
