@@ -72,13 +72,15 @@ Completed:
 - [x] HEP-0017 §2: "Four Planes" → "Five Planes" (Metrics plane added)
 
 ### Priority 5 (backlog): Platform + Admin Shell Test Gaps
-📍 **Status**: 🟢 Backlog only
+📍 **Status**: ✅ HP-C1/HP-C2/BN-H1 complete; platform backlog only
 📋 **Details**: `docs/todo/PLATFORM_TODO.md`, `docs/todo/TESTING_TODO.md`
 
-Key tasks:
-- HP-C1: `pylabhub.reset()` deadlock regression test
-- HP-C2: stdout/stderr leak on exec() exception test
-- BN-H1: Consumer binary ctypes round-trip test
+Completed:
+- [x] HP-C1: `pylabhub.reset()` deadlock regression — `test_admin_shell.cpp` (2 tests)
+- [x] HP-C2: stdout/stderr leak on exec() exception — `test_admin_shell.cpp` (2 tests)
+- [x] BN-H1: Consumer ctypes round-trip — `test_pipeline_roundtrip.cpp` (field-level verification)
+
+Remaining backlog:
 - Clang-tidy full pass; Windows MSVC CI gaps
 
 ### Priority 5: HEP Document Review + Code Review + Source Polish
@@ -101,8 +103,9 @@ Completed:
 - [x] `examples/CMakeLists.txt` + `PYLABHUB_BUILD_EXAMPLES` opt-in CMake flag
 - [x] ZMQ wire format documentation (HEP-CORE-0002 §7.1)
 
-Pending:
-- [ ] Application-oriented README update: API layers, four binaries, config model, C++ vs Python paths, getting started guide
+Completed:
+- [x] Application-oriented README update: API layers, four binaries, CLI flags, config model, C++ vs Python paths,
+  getting started guide, five communication planes — root `README.md` + `share/demo/README.md` (2026-03-05)
 
 ---
 
@@ -112,13 +115,13 @@ Pending:
 |------|--------|----------------|-------|
 | Security / Identity / Provenance | ✅ Complete | `docs/archive/transient-2026-03-02/SECURITY_TODO.md` | All 6 phases complete (2026-02-28). TODO archived. |
 | Actor (pylabhub-actor) | ❌ Eliminated | — | **Eliminated (2026-03-01).** `src/actor/` + `tests/test_layer4_actor/` deleted. HEP-0010/0012/0014 archived. Replaced by three standalone binaries. |
-| Producer Binary (`pylabhub-producer`) | 🟡 Phase 1+tests | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 8 config + 6 CLI tests. **Pending Phase 2:** integration test (live broker round-trip). |
-| Consumer Binary (`pylabhub-consumer`) | 🟡 Phase 1+tests | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 6 config + 6 CLI tests. **Pending Phase 2:** integration test (live broker round-trip). |
+| Producer Binary (`pylabhub-producer`) | ✅ Complete | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 8 config + 6 CLI tests. **Integration test done:** `test_pipeline_roundtrip.cpp`. |
+| Consumer Binary (`pylabhub-consumer`) | ✅ Complete | `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` | **Phase 1 done (2026-03-01); Layer 4 tests done (2026-03-02):** 6 config + 6 CLI tests. **Integration test done:** `test_pipeline_roundtrip.cpp`. |
 | HubShell / HubConfig | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | All 6 phases done (2026-02-20): HubConfig, Python env, broker consolidation, PythonInterpreter, AdminShell, hubshell.cpp rewrite |
 | RAII Layer | ✅ Complete | `docs/archive/transient-2026-03-02/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved. TODO archived; minor backlog absorbed into TESTING_TODO. |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor Phase A complete (2026-02-26)**; **P2 src/ split done (2026-02-27)**: `data_block.cpp` 3969L→2894L via `data_block_internal.hpp` + 3 new split files; **HEP-CORE-0002 restructured (2026-02-27)**: §6 RAII Abstraction Layer added, §7 Control Plane Protocol stub (→HEP-CORE-0007), stale §5.3/§5.4/§5.5 removed, §6-§15→§7-§16; **P4 messenger.cpp split done (2026-02-27)**: `messenger_internal.hpp` + `messenger_protocol.cpp`; `messenger.cpp` 1707L→811L |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟡 Ongoing | `docs/todo/TESTING_TODO.md` | **828/828 passing** (2026-03-05). Metrics Plane (19 tests), L4 test validation hardening, `--name` CLI fix. Active gaps: integration test (producer+consumer+hubshell), HP-C1/HP-C2/BN-H1. |
+| Testing | ✅ Complete | `docs/todo/TESTING_TODO.md` | **828/828 passing** (2026-03-05). All gaps closed: HP-C1/HP-C2 in `test_admin_shell.cpp`, BN-H1 in `test_pipeline_roundtrip.cpp`. Remaining: Phase D extended stress (backlog). |
 | Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
