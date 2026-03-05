@@ -952,13 +952,16 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
 /// Send one HEARTBEAT_REQ immediately (fire-and-forget, no poll for reply).
 void MessengerImpl::send_immediate_heartbeat(zmq::socket_t &socket,
                                               const std::string &channel,
-                                              uint64_t producer_pid)
+                                              uint64_t producer_pid,
+                                              const nlohmann::json &metrics)
 {
     try
     {
         nlohmann::json hb;
         hb["channel_name"] = channel;
         hb["producer_pid"] = producer_pid;
+        if (!metrics.is_null() && !metrics.empty())
+            hb["metrics"] = metrics;
         const std::string hb_type = "HEARTBEAT_REQ";
         const std::string hb_str  = hb.dump();
         std::vector<zmq::const_buffer> hb_msgs = {zmq::buffer(&kFrameTypeControl, 1),
@@ -972,6 +975,34 @@ void MessengerImpl::send_immediate_heartbeat(zmq::socket_t &socket,
         LOGGER_WARN("Messenger: immediate heartbeat failed for '{}': {}", channel,
                     e.what());
     }
+}
+
+/// Send METRICS_REPORT_REQ (fire-and-forget, HEP-CORE-0019).
+bool MessengerImpl::handle_command(MetricsReportCmd &cmd,
+                                    std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+        return false;
+    try
+    {
+        nlohmann::json payload;
+        payload["channel_name"] = cmd.channel;
+        payload["uid"]          = cmd.uid;
+        payload["metrics"]      = std::move(cmd.metrics);
+        const std::string type_str = "METRICS_REPORT_REQ";
+        const std::string body     = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                                zmq::buffer(type_str),
+                                                zmq::buffer(body)};
+        static_cast<void>(zmq::send_multipart(*socket, msgs));
+        LOGGER_DEBUG("Messenger: METRICS_REPORT_REQ sent for '{}'", cmd.channel);
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_WARN("Messenger: METRICS_REPORT_REQ failed for '{}': {}", cmd.channel,
+                    e.what());
+    }
+    return false;
 }
 
 } // namespace pylabhub::hub

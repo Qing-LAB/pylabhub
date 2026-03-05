@@ -607,8 +607,11 @@ TEST_F(PipelineRoundtripTest, ProducerProcessorConsumer_E2E)
     // Verify results
     // =========================================================================
 
-    // Consumer should have exited cleanly (it called api.stop() itself).
-    EXPECT_EQ(cons_rc, 0) << "Consumer stderr:\n" << consumer.get_stderr();
+    // All processes should exit cleanly.
+    EXPECT_EQ(cons_rc, 0) << "Consumer did not exit cleanly. stderr:\n" << consumer.get_stderr();
+    EXPECT_EQ(prod_rc, 0) << "Producer did not exit cleanly. stderr:\n" << producer.get_stderr();
+    EXPECT_EQ(proc_rc, 0) << "Processor did not exit cleanly. stderr:\n" << processor.get_stderr();
+    EXPECT_EQ(hub_rc, 0)  << "Hub did not exit cleanly. stderr:\n" << hub.get_stderr();
 
     // Read SLOT lines from result file (written by consumer's on_stop callback).
     ASSERT_TRUE(fs::exists(cons_result))

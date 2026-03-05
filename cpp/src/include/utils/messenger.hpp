@@ -288,6 +288,25 @@ class PYLABHUB_UTILS_EXPORT Messenger
     void enqueue_heartbeat(const std::string &channel) noexcept;
 
     /**
+     * @brief Enqueue an immediate HEARTBEAT_REQ with metrics payload (HEP-CORE-0019).
+     *
+     * The metrics JSON is piggybacked on the HEARTBEAT_REQ and stored by the broker's
+     * MetricsStore. Backward-compatible: older brokers ignore the extra field.
+     */
+    void enqueue_heartbeat(const std::string &channel,
+                           nlohmann::json     metrics) noexcept;
+
+    /**
+     * @brief Enqueue a METRICS_REPORT_REQ to the broker (fire-and-forget, HEP-CORE-0019).
+     *
+     * Used by consumers (who don't send heartbeats with metrics) to report
+     * their metrics to the broker. The broker's MetricsStore stores the data.
+     */
+    void enqueue_metrics_report(const std::string &channel,
+                                const std::string &uid,
+                                nlohmann::json     metrics) noexcept;
+
+    /**
      * @brief Send a CHANNEL_NOTIFY_REQ to the broker (fire-and-forget).
      *
      * The broker relays the notification to the target channel's producer as

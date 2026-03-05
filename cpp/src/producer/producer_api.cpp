@@ -148,6 +148,64 @@ py::list ProducerAPI::list_channels()
 }
 
 // ============================================================================
+// ProducerAPI — custom metrics (HEP-CORE-0019)
+// ============================================================================
+
+void ProducerAPI::report_metric(const std::string &key, double value)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_[key] = value;
+}
+
+void ProducerAPI::report_metrics(const std::unordered_map<std::string, double> &kv)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    for (const auto &[k, v] : kv)
+        custom_metrics_[k] = v;
+}
+
+void ProducerAPI::clear_custom_metrics()
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_.clear();
+}
+
+nlohmann::json ProducerAPI::snapshot_metrics_json() const
+{
+    nlohmann::json base;
+    base["out_written"]    = out_slots_written_.load(std::memory_order_relaxed);
+    base["drops"]          = out_drops_.load(std::memory_order_relaxed);
+    base["script_errors"]  = script_errors_;
+
+    // ContextMetrics from SHM handle (if available).
+    if (producer_ != nullptr)
+    {
+        if (const auto *shm = producer_->shm(); shm != nullptr)
+        {
+            const auto &m = shm->metrics();
+            base["iteration_count"]   = m.iteration_count;
+            base["overrun_count"]     = m.overrun_count;
+            base["last_iteration_us"] = m.last_iteration_us;
+            base["max_iteration_us"]  = m.max_iteration_us;
+            base["last_slot_work_us"] = m.last_slot_work_us;
+            base["last_slot_wait_us"] = m.last_slot_wait_us;
+            base["period_ms"]         = m.period_ms;
+        }
+    }
+
+    nlohmann::json custom;
+    {
+        hub::InProcessSpinStateGuard guard(metrics_spin_);
+        custom = nlohmann::json(custom_metrics_);
+    }
+
+    nlohmann::json result;
+    result["base"]   = std::move(base);
+    result["custom"] = std::move(custom);
+    return result;
+}
+
+// ============================================================================
 // ProducerAPI — spinlocks
 // ============================================================================
 
@@ -200,15 +258,23 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("consumers",    &ProducerAPI::consumers)
         .def("update_flexzone_checksum", &ProducerAPI::update_flexzone_checksum)
         .def("notify_channel",  &ProducerAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data"))
+             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
         .def("broadcast_channel", &ProducerAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data"))
+             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ProducerAPI::list_channels)
         .def("script_error_count", &ProducerAPI::script_error_count)
         .def("out_slots_written",  &ProducerAPI::out_slots_written)
         .def("out_drop_count",     &ProducerAPI::out_drop_count)
         .def("spinlock",     &ProducerAPI::spinlock, py::arg("index"))
-        .def("spinlock_count",&ProducerAPI::spinlock_count);
+        .def("spinlock_count",&ProducerAPI::spinlock_count)
+        .def("report_metric", &ProducerAPI::report_metric,
+             py::arg("key"), py::arg("value"),
+             "Report a custom metric (key-value pair) for broker aggregation.")
+        .def("report_metrics", &ProducerAPI::report_metrics,
+             py::arg("kv"),
+             "Report multiple custom metrics at once.")
+        .def("clear_custom_metrics", &ProducerAPI::clear_custom_metrics,
+             "Clear all custom metrics.");
 
     py::class_<ProducerSpinLockPy>(m, "ProducerSpinLock")
         .def("lock",   &ProducerSpinLockPy::lock)

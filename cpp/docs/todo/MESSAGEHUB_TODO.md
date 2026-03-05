@@ -10,8 +10,9 @@
 
 ## Current Status
 
-✅ **809 tests (2026-03-04).** Two-tier graceful shutdown protocol implemented.
+✅ **828 tests (2026-03-05).** HEP-CORE-0019 Metrics Plane fully implemented.
 All event handlers wired, CHANNEL_NOTIFY_REQ broker relay, `notify_channel()` on all 3 APIs.
+L4 integration test validation hardened: ASSERT on file existence/non-empty before content checks.
 
 ✅ **Two-tier graceful shutdown (2026-03-04):** CHANNEL_CLOSING_NOTIFY → queued FIFO event
 (script handles, calls `api.stop()`). FORCE_SHUTDOWN → side-channel flag after broker grace
@@ -161,17 +162,26 @@ to ~10 lines. 18 unit tests added. See HEP-CORE-0011 §13.
 
 ## Current Focus
 
-### Active: Metrics Plane (HEP-CORE-0019)
+### ✅ Complete: Metrics Plane (HEP-CORE-0019) — 2026-03-05
 
-**Design doc**: `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` (2026-03-02)
+**Design doc**: `docs/HEP/HEP-CORE-0019-Metrics-Plane.md`
 
 Adds a fifth communication plane: passive SHM metrics + voluntary ZMQ reporting → broker aggregation.
+19 new tests (10 protocol-level MetricsPlaneTest + 9 API-level MetricsApiTest). 828/828 pass.
 
-- [ ] Phase 1: C++ infrastructure — `report_metric()` API on all three APIs + `MetricsStore` in broker
-- [ ] Phase 2: Heartbeat extension — piggyback base counters + custom KV on `HEARTBEAT_REQ`
-- [ ] Phase 3: Consumer metrics — `METRICS_REPORT_REQ` (fire-and-forget)
-- [ ] Phase 4: Query API — `METRICS_REQ`/`METRICS_ACK` + AdminShell binding
-- [ ] Phase 5: Python bindings — `api.report_metric()` in pybind11 modules
+- [x] Phase 1: C++ infrastructure — `report_metric()`, `report_metrics()`, `clear_custom_metrics()`,
+  `snapshot_metrics_json()` on ProducerAPI, ConsumerAPI, ProcessorAPI; InProcessSpinState guard
+- [x] Phase 2: Heartbeat extension — optional `metrics` JSON piggybacked on `HEARTBEAT_REQ`;
+  `MetricsStore` in BrokerServiceImpl; producer+processor zmq thread passes snapshot
+- [x] Phase 3: Consumer metrics — `METRICS_REPORT_REQ` (fire-and-forget) + `enqueue_metrics_report()`
+  on Messenger; consumer zmq thread sends periodic reports
+- [x] Phase 4: Query API — `METRICS_REQ`/`METRICS_ACK` broker dispatch; `query_metrics_json_str()`
+  public API; `pylabhub.metrics()` AdminShell binding wired in hubshell.cpp
+- [x] Phase 5: Python bindings — `api.report_metric()`, `api.report_metrics()`,
+  `api.clear_custom_metrics()` in all three pybind11 embedded modules
+- [x] Fix: `notify_channel()`/`broadcast_channel()` pybind11 `data` arg missing default → added
+  `py::arg("data") = ""` and removed C++ header default per new pybind11 Default Parameter Rule
+  (see `docs/IMPLEMENTATION_GUIDANCE.md` § "pybind11 Default Parameter Rule")
 
 ### Active: Layer 4 Producer + Consumer Tests (2026-03-02)
 
@@ -302,9 +312,8 @@ The actor files (`src/actor/`, `tests/test_layer4_actor/`) have been deleted fro
 
 ### Deferred / Blocked
 
-- [ ] **Schema registry** — Broker stores and serves schema_hash for producer channels.
-  Currently schema_hash is validated at REG_REQ time but not persisted for consumer query.
-  Tracked as HEP-CORE-0016 Phases 2–5 (see `docs/todo/API_TODO.md` § Named Schema Registry).
+- [x] **Schema registry** — ✅ Complete (2026-03-02). All 5 phases of HEP-CORE-0016 done.
+  SchemaLibrary + SchemaStore + broker protocol + script integration.
 
 ### By design — explicitly out of scope
 

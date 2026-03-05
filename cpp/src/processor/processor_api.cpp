@@ -148,6 +148,75 @@ py::list ProcessorAPI::list_channels()
 }
 
 // ============================================================================
+// ProcessorAPI — custom metrics (HEP-CORE-0019)
+// ============================================================================
+
+void ProcessorAPI::report_metric(const std::string &key, double value)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_[key] = value;
+}
+
+void ProcessorAPI::report_metrics(const std::unordered_map<std::string, double> &kv)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    for (const auto &[k, v] : kv)
+        custom_metrics_[k] = v;
+}
+
+void ProcessorAPI::clear_custom_metrics()
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_.clear();
+}
+
+nlohmann::json ProcessorAPI::snapshot_metrics_json() const
+{
+    nlohmann::json base;
+    base["in_received"]    = in_slots_received_.load(std::memory_order_relaxed);
+    base["out_written"]    = out_slots_written_.load(std::memory_order_relaxed);
+    base["drops"]          = out_drops_.load(std::memory_order_relaxed);
+    base["script_errors"]  = script_errors_;
+
+    // Input side ContextMetrics (consumer SHM handle).
+    if (consumer_ != nullptr)
+    {
+        if (const auto *shm = consumer_->shm(); shm != nullptr)
+        {
+            const auto &m = shm->metrics();
+            base["in_iteration_count"]   = m.iteration_count;
+            base["in_last_iteration_us"] = m.last_iteration_us;
+            base["in_last_slot_work_us"] = m.last_slot_work_us;
+            base["in_overrun_count"]     = m.overrun_count;
+        }
+    }
+
+    // Output side ContextMetrics (producer SHM handle).
+    if (producer_ != nullptr)
+    {
+        if (const auto *shm = producer_->shm(); shm != nullptr)
+        {
+            const auto &m = shm->metrics();
+            base["out_iteration_count"]   = m.iteration_count;
+            base["out_last_iteration_us"] = m.last_iteration_us;
+            base["out_last_slot_work_us"] = m.last_slot_work_us;
+            base["out_overrun_count"]     = m.overrun_count;
+        }
+    }
+
+    nlohmann::json custom;
+    {
+        hub::InProcessSpinStateGuard guard(metrics_spin_);
+        custom = nlohmann::json(custom_metrics_);
+    }
+
+    nlohmann::json result;
+    result["base"]   = std::move(base);
+    result["custom"] = std::move(custom);
+    return result;
+}
+
+// ============================================================================
 // ProcessorAPI — spinlocks
 // ============================================================================
 
@@ -202,16 +271,24 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("consumers",     &ProcessorAPI::consumers)
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
         .def("notify_channel",  &ProcessorAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data"))
+             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
         .def("broadcast_channel", &ProcessorAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data"))
+             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ProcessorAPI::list_channels)
         .def("script_error_count", &ProcessorAPI::script_error_count)
         .def("in_slots_received",  &ProcessorAPI::in_slots_received)
         .def("out_slots_written",  &ProcessorAPI::out_slots_written)
         .def("out_drop_count",     &ProcessorAPI::out_drop_count)
         .def("spinlock",      &ProcessorAPI::spinlock, py::arg("index"))
-        .def("spinlock_count",&ProcessorAPI::spinlock_count);
+        .def("spinlock_count",&ProcessorAPI::spinlock_count)
+        .def("report_metric", &ProcessorAPI::report_metric,
+             py::arg("key"), py::arg("value"),
+             "Report a custom metric (key-value pair) for broker aggregation.")
+        .def("report_metrics", &ProcessorAPI::report_metrics,
+             py::arg("kv"),
+             "Report multiple custom metrics at once.")
+        .def("clear_custom_metrics", &ProcessorAPI::clear_custom_metrics,
+             "Clear all custom metrics.");
 
     // ProcessorSpinLock
     py::class_<ProcessorSpinLockPy>(m, "ProcessorSpinLock")

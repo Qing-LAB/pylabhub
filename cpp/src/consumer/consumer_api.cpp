@@ -78,6 +78,61 @@ py::list ConsumerAPI::list_channels()
     return result;
 }
 
+// ============================================================================
+// ConsumerAPI — custom metrics (HEP-CORE-0019)
+// ============================================================================
+
+void ConsumerAPI::report_metric(const std::string &key, double value)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_[key] = value;
+}
+
+void ConsumerAPI::report_metrics(const std::unordered_map<std::string, double> &kv)
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    for (const auto &[k, v] : kv)
+        custom_metrics_[k] = v;
+}
+
+void ConsumerAPI::clear_custom_metrics()
+{
+    hub::InProcessSpinStateGuard guard(metrics_spin_);
+    custom_metrics_.clear();
+}
+
+nlohmann::json ConsumerAPI::snapshot_metrics_json() const
+{
+    nlohmann::json base;
+    base["in_received"]    = in_slots_received_.load(std::memory_order_relaxed);
+    base["script_errors"]  = script_errors_;
+
+    // ContextMetrics from SHM handle (if available).
+    if (consumer_ != nullptr)
+    {
+        if (const auto *shm = consumer_->shm(); shm != nullptr)
+        {
+            const auto &m = shm->metrics();
+            base["iteration_count"]   = m.iteration_count;
+            base["last_iteration_us"] = m.last_iteration_us;
+            base["max_iteration_us"]  = m.max_iteration_us;
+            base["last_slot_work_us"] = m.last_slot_work_us;
+            base["last_slot_wait_us"] = m.last_slot_wait_us;
+        }
+    }
+
+    nlohmann::json custom;
+    {
+        hub::InProcessSpinStateGuard guard(metrics_spin_);
+        custom = nlohmann::json(custom_metrics_);
+    }
+
+    nlohmann::json result;
+    result["base"]   = std::move(base);
+    result["custom"] = std::move(custom);
+    return result;
+}
+
 } // namespace pylabhub::consumer
 
 // ============================================================================
@@ -100,10 +155,18 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("set_critical_error",    &ConsumerAPI::set_critical_error)
         .def("critical_error",        &ConsumerAPI::critical_error)
         .def("notify_channel",  &ConsumerAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data"))
+             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
         .def("broadcast_channel", &ConsumerAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data"))
+             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ConsumerAPI::list_channels)
         .def("script_error_count", &ConsumerAPI::script_error_count)
-        .def("in_slots_received",  &ConsumerAPI::in_slots_received);
+        .def("in_slots_received",  &ConsumerAPI::in_slots_received)
+        .def("report_metric", &ConsumerAPI::report_metric,
+             py::arg("key"), py::arg("value"),
+             "Report a custom metric (key-value pair) for broker aggregation.")
+        .def("report_metrics", &ConsumerAPI::report_metrics,
+             py::arg("kv"),
+             "Report multiple custom metrics at once.")
+        .def("clear_custom_metrics", &ConsumerAPI::clear_custom_metrics,
+             "Clear all custom metrics.");
 }

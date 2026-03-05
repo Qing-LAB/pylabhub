@@ -626,6 +626,15 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         });
 
     // -----------------------------------------------------------------------
+    // Wire pylabhub.metrics() → BrokerService::query_metrics_json_str().
+    // -----------------------------------------------------------------------
+    pylabhub::hub_python::set_metrics_callback(
+        [&broker](const std::string& channel) -> std::string
+        {
+            return broker.query_metrics_json_str(channel);
+        });
+
+    // -----------------------------------------------------------------------
     // HubScript — loads as a dynamic lifecycle module.
     //
     // hub_thread_ (spawned inside startup_()) owns the full CPython interpreter

@@ -760,7 +760,8 @@ void ProcessorScriptHost::run_zmq_thread_()
         return processor_.has_value() ? processor_->iteration_count() : 0;
     };
     loop.periodic_tasks.emplace_back(
-        [&] { out_messenger_.enqueue_heartbeat(config_.out_channel); },
+        [&] { out_messenger_.enqueue_heartbeat(config_.out_channel,
+                                                api_.snapshot_metrics_json()); },
         config_.heartbeat_interval_ms);
     loop.run();
 }

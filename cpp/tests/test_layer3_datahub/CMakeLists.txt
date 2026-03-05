@@ -156,6 +156,9 @@ add_executable(test_layer3_datahub
 
     # ── Two-tier graceful shutdown protocol tests ──────────────────────────
     test_datahub_broker_shutdown.cpp
+
+    # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
+    test_datahub_metrics.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
