@@ -74,6 +74,10 @@
 #include <string_view>
 #include <thread>
 
+#if defined(PYLABHUB_IS_POSIX)
+#include <unistd.h> // isatty, STDIN_FILENO
+#endif
+
 namespace py = pybind11;
 namespace fs = std::filesystem;
 
@@ -122,7 +126,7 @@ static std::string get_password(const char* prompt)
 // --init flow
 // ---------------------------------------------------------------------------
 
-static int do_init(const fs::path& hub_dir)
+static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
 {
     // Create directory structure.
     std::error_code ec;
@@ -146,15 +150,41 @@ static int do_init(const fs::path& hub_dir)
         return 1;
     }
 
-    // Prompt hub_name.
-    std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
-    std::fflush(stdout);
+    // Resolve hub name: --name flag > interactive prompt > directory name fallback.
     std::string hub_name;
-    if (!std::getline(std::cin, hub_name) || hub_name.empty())
+    if (!cli_name.empty())
     {
-        std::fprintf(stderr, "hubshell --init: hub name is required.\n");
-        return 1;
+        hub_name = cli_name;
     }
+#if defined(PYLABHUB_IS_POSIX)
+    else if (::isatty(STDIN_FILENO))
+    {
+        std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
+        std::fflush(stdout);
+        if (!std::getline(std::cin, hub_name) || hub_name.empty())
+        {
+            std::fprintf(stderr, "hubshell --init: hub name is required.\n");
+            return 1;
+        }
+    }
+    else
+    {
+        hub_name = hub_dir.filename().string();
+        if (hub_name.empty())
+            hub_name = "hub";
+    }
+#else
+    else
+    {
+        std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
+        std::fflush(stdout);
+        if (!std::getline(std::cin, hub_name) || hub_name.empty())
+        {
+            std::fprintf(stderr, "hubshell --init: hub name is required.\n");
+            return 1;
+        }
+    }
+#endif
 
     // Prompt master password (with confirmation when interactive).
     std::string password;
@@ -763,6 +793,7 @@ int main(int argc, char* argv[])
     bool        init_mode   = false;
     bool        dev_mode    = false;
     std::string hub_dir_arg;
+    std::string init_name;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -771,6 +802,8 @@ int main(int argc, char* argv[])
             init_mode = true;
         else if (arg == "--dev")
             dev_mode = true;
+        else if (arg == "--name" && i + 1 < argc)
+            init_name = argv[++i];
         else if (arg.starts_with("--"))
         {
             std::fprintf(stderr, "hubshell: unknown option: %s\n", argv[i]);
@@ -803,7 +836,7 @@ int main(int argc, char* argv[])
     if (init_mode)
     {
         const fs::path init_dir = hub_dir.empty() ? fs::current_path() : hub_dir;
-        return do_init(init_dir);
+        return do_init(init_dir, init_name);
     }
 
     return do_run(hub_dir, dev_mode);

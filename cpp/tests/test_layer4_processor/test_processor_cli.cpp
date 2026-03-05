@@ -61,7 +61,8 @@ TEST_F(ProcessorCliTest, Init_CreatesDirectoryStructure)
 {
     const auto tmp = unique_temp_dir("init");
 
-    WorkerProcess proc(processor_binary(), "--init", {tmp.string()});
+    WorkerProcess proc(processor_binary(), "--init",
+                       {tmp.string(), "--name", "TestProcessor"});
     EXPECT_EQ(proc.wait_for_exit(), 0)
         << "stderr:\n" << proc.get_stderr();
 
@@ -80,7 +81,8 @@ TEST_F(ProcessorCliTest, Init_DefaultValues)
 {
     const auto tmp = unique_temp_dir("initdef");
 
-    WorkerProcess proc(processor_binary(), "--init", {tmp.string()});
+    WorkerProcess proc(processor_binary(), "--init",
+                       {tmp.string(), "--name", "DefaultTest"});
     EXPECT_EQ(proc.wait_for_exit(), 0)
         << "stderr:\n" << proc.get_stderr();
 

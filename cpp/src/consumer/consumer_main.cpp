@@ -61,6 +61,10 @@
 #include <string_view>
 #include <thread>
 
+#if defined(PYLABHUB_IS_POSIX)
+#include <unistd.h> // isatty, STDIN_FILENO
+#endif
+
 using namespace pylabhub::utils;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +78,7 @@ struct ConsArgs
 {
     std::string config_path;
     std::string cons_dir;
+    std::string init_name;  ///< --name for --init (skips stdin prompt)
     bool        validate_only{false};
     bool        keygen_only{false};
     bool        init_only{false};
@@ -88,6 +93,7 @@ void print_usage(const char *prog)
         << "  " << prog << " --config <path.json> [--validate | --keygen | --run]\n\n"
         << "Options:\n"
         << "  --init [dir]    Create consumer directory with consumer.json template; exit 0\n"
+        << "  --name <name>   Consumer name for --init (skips interactive prompt)\n"
         << "  <cons_dir>      Consumer directory containing consumer.json\n"
         << "  --config <path> Path to consumer JSON config file\n"
         << "  --validate      Validate config + script, print schema layout; exit 0 on success\n"
@@ -116,6 +122,10 @@ ConsArgs parse_args(int argc, char *argv[])
             args.init_only = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 args.cons_dir = argv[++i];
+        }
+        else if (arg == "--name" && i + 1 < argc)
+        {
+            args.init_name = argv[++i];
         }
         else if (arg == "--validate")
         {
@@ -191,7 +201,7 @@ static std::string get_consumer_password(const char *prompt)
 // do_init — create consumer directory with consumer.json template
 // ---------------------------------------------------------------------------
 
-static int do_init(const std::string &cons_dir_str)
+static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
 
@@ -220,8 +230,27 @@ static int do_init(const std::string &cons_dir_str)
     }
 
     std::string cons_name;
-    std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
-    std::getline(std::cin, cons_name);
+    if (!cli_name.empty())
+    {
+        cons_name = cli_name;
+    }
+#if defined(PYLABHUB_IS_POSIX)
+    else if (::isatty(STDIN_FILENO))
+    {
+        std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
+        std::getline(std::cin, cons_name);
+    }
+    else
+    {
+        cons_name = "Consumer";
+    }
+#else
+    else
+    {
+        std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
+        std::getline(std::cin, cons_name);
+    }
+#endif
 
     const std::string cons_uid = pylabhub::uid::generate_consumer_uid(cons_name);
 
@@ -340,7 +369,7 @@ int main(int argc, char *argv[])
     const ConsArgs args = parse_args(argc, argv);
 
     if (args.init_only)
-        return do_init(args.cons_dir);
+        return do_init(args.cons_dir, args.init_name);
 
     pylabhub::consumer::ConsumerConfig config;
     try
