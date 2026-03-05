@@ -17,7 +17,7 @@
 As the DataHub system grows to include Producers, Consumers, Processors, and schema
 management, it becomes useful to have a single document that captures:
 
-1. The **four planes** of communication and their strict separation
+1. The **five planes** of communication and their strict separation
 2. The **component roles** and the boundary decisions behind each
 3. The **topology patterns** that compose these components into pipelines
 4. How **schema** integrates with pipeline construction
@@ -29,9 +29,9 @@ provides the cross-cutting architectural view.
 
 ---
 
-## 2. The Four Planes
+## 2. The Five Planes
 
-Every channel in the DataHub system carries traffic on four independent planes.
+Every channel in the DataHub system carries traffic on five independent planes.
 These planes are strictly orthogonal: changes to one have no effect on the others.
 
 | Plane | What flows | Mechanism | Where defined |
@@ -40,6 +40,7 @@ These planes are strictly orthogonal: changes to one have no effect on the other
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets + Broker | HEP-CORE-0007 |
 | **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | HEP-CORE-0007 §6 |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT (producer/processor), `METRICS_REPORT_REQ` (consumer), `METRICS_REQ/ACK` (query) | HEP-CORE-0019 |
 
 ```mermaid
 graph LR
@@ -64,9 +65,15 @@ graph LR
         TP_METRICS["IterationMetrics"]
     end
 
+    subgraph "Metrics Plane"
+        MET_STORE["MetricsStore<br/>(broker aggregation)"]
+        MET_API["api.report_metric()"]
+    end
+
     DP_SHM -.->|"orthogonal"| CP_BROKER
     CP_BROKER -.->|"orthogonal"| MP_MSG
     MP_MSG -.->|"orthogonal"| TP_LP
+    TP_LP -.->|"orthogonal"| MET_STORE
 ```
 
 **Why this separation matters:**
@@ -486,7 +493,7 @@ component additions:
 | Topic | Authoritative document |
 |-------|----------------------|
 | SHM memory layout, ring buffer, slot state machine | HEP-CORE-0002 |
-| Four planes (data/control/message/timing) rationale | HEP-CORE-0002 §17 |
+| Five planes (data/control/message/timing/metrics) rationale | HEP-CORE-0002 §17, HEP-CORE-0019 |
 | Producer/Consumer SHM-specific design principle | HEP-CORE-0002 §17.2 |
 | hub::Queue data plane abstraction detail | HEP-CORE-0002 §17.3 |
 | HELLO/BYE/REG/DISC/HEARTBEAT protocol | HEP-CORE-0007 |
@@ -539,4 +546,4 @@ Named Schema Registry, and the four-plane architecture. 750/750 tests passing.
 - HEP-CORE-0016: Named Schema Registry — all 5 phases complete
 
 **Pending extension:**
-- HEP-CORE-0019: Metrics Plane — fifth plane (design, not yet implemented)
+- HEP-CORE-0019: Metrics Plane — fifth plane (implemented 2026-03-05; 19 tests)
