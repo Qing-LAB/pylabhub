@@ -158,7 +158,7 @@ RecoveryResult datablock_validate_integrity(...);
 
 - [x] Layer 4 producer tests: `tests/test_layer4_producer/` — 8 config + 6 CLI tests
 - [x] Layer 4 consumer tests: `tests/test_layer4_consumer/` — 6 config + 6 CLI tests
-- [ ] Integration test: producer + consumer round-trip via live broker (deferred)
+- [x] Integration test: full pipeline round-trip (hubshell + producer + processor + consumer) — `test_pipeline_roundtrip.cpp`
 
 ## Backlog
 

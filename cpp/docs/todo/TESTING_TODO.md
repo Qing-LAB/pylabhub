@@ -147,18 +147,16 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 - [x] **ScriptHost returns false without signal** — set exception on promise; base_startup_ throws
 - [x] **ScriptHost direct mode (Lua path)** — do_initialize on calling thread; signal_ready by base
 
-### PythonInterpreter / Admin Shell / Consumer ctypes (coverage gaps — 2026-03-01)
-**Status**: 🔵 No automated tests — identified by code review `CODE_REVIEW_2026-03-01_hub-python-actor-headers.md`
+### PythonInterpreter / Admin Shell / Consumer ctypes ✅ Complete (2026-03-05)
+**Status**: ✅ All three items covered by existing L4 integration tests.
 
-- [ ] **HP-C1 — `pylabhub.reset()` deadlock regression** — spawn admin shell; from a running script
-  call `pylabhub.reset()`; verify hub does NOT freeze and subsequent commands execute normally.
-  (Fix: `reset_namespace_unlocked()` called by binding; `exec_mu` no longer re-entered.)
-- [ ] **HP-C2 — stdout/stderr leak on exec() exception** — trigger a non-Python exception inside
-  `py::exec()` path (e.g., `buf.getvalue()` encoding error); verify subsequent admin shell commands
-  still produce output (not silently discarded). (Fix: `make_scope_guard` restores stdout/stderr.)
-- [ ] **BN-H1 — Consumer binary ctypes.from_buffer_copy round-trip** — run a `pylabhub-consumer`
-  with a typed slot schema; verify `on_consume(in_slot, ...)` receives a valid ctypes struct
-  (not TypeError). (Fix: `from_buffer()` → `from_buffer_copy()` for read-only memoryviews.)
+- [x] **HP-C1 — `pylabhub.reset()` deadlock regression** — `test_admin_shell.cpp:271–338`:
+  `HP_C1_Reset_NoDeadlock` (no hang) + `HP_C1_Reset_ClearsNamespace` (vars cleared, builtins preserved).
+- [x] **HP-C2 — stdout/stderr leak on exec() exception** — `test_admin_shell.cpp:342–394`:
+  `HP_C2_Exception_StdoutRestored` (output works after exception) + `HP_C2_Exception_ErrorReturned`.
+- [x] **BN-H1 — Consumer binary ctypes.from_buffer_copy round-trip** — `test_pipeline_roundtrip.cpp`:
+  consumer reads `in_slot.counter` and `in_slot.doubled` (ctypes fields from `from_buffer_copy()`)
+  and verifies transformation correctness (`doubled == counter * 10.0 * 2.0`).
 
 ### HubConfig script-block fields (tests done — 2026-02-28)
 **Status**: ✅ Complete — 9 tests in `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`
