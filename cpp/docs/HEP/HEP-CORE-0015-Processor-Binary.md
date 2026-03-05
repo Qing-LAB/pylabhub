@@ -102,7 +102,7 @@ Created by `pylabhub-processor --init <proc_dir>`:
 
   "script": {
     "type": "python",
-    "path": "./script"
+    "path": "."
   }
 }
 ```
@@ -129,7 +129,7 @@ Created by `pylabhub-processor --init <proc_dir>`:
 | `in_flexzone_schema` | no | absent | Read-only flexzone layout for input channel |
 | `out_flexzone_schema` | no | absent | Writable flexzone layout for output channel |
 | `script.type` | no | `"python"` | Script type; currently only `"python"` |
-| `script.path` | yes | — | Base script directory; C++ resolves `<path>/<type>/__init__.py`; `"./script"` is standard |
+| `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py`; `"."` is the standard default |
 
 † At least one of `hub_dir` or `broker` must be present.
 ‡ Exactly one of the inline `_schema` block or the `_schema_id` string is required per side (Phase 2 after HEP-CORE-0016 Phase 3).
@@ -180,7 +180,7 @@ block is not required in this case but may be provided for local validation.
 
 The script at `<proc_dir>/script/python/__init__.py` implements:
 
-(C++ resolves `script.path + "/" + script.type + "/__init__.py"`. With `"path": "./script"` and `"type": "python"` → `./script/python/__init__.py`.)
+(C++ resolves `script.path + "/script/" + script.type + "/__init__.py"`. With `"path": "."` and `"type": "python"` → `./script/python/__init__.py`. **Do not use `"./script"` — that double-nests.**)
 
 ```python
 def on_init(api) -> None:
@@ -226,14 +226,18 @@ api.log(msg, level="info")
 # Messaging (Messenger)
 api.send(target, data)
 api.broadcast(data)
-
-# Metrics
-api.metrics()            # → dict: in_slots_received, out_slots_written, out_drop_count, …
+api.notify_channel(target, event, data="")  # signal relay to target channel's producer
 
 # Counters (direct access)
 api.in_slots_received()  # → int
 api.out_slots_written()  # → int
 api.out_drop_count()     # → int
+api.script_error_count() # → int
+
+# Custom Metrics (HEP-CORE-0019)
+api.report_metric(key, value)     # report single custom metric (key: str, value: number)
+api.report_metrics(dict)          # batch report {key: number} pairs
+api.clear_custom_metrics()        # clear all custom metrics (base counters unaffected)
 
 # Shared-memory spinlock on output flexzone
 api.spinlock(idx)        # → context manager; only valid if out_flexzone configured
@@ -248,18 +252,22 @@ api.set_critical_error(msg)  # Mark as failed and trigger shutdown
 ## 6. CLI
 
 ```
-pylabhub-processor --init <proc_dir>      # Create processor.json + vault + script/__init__.py
-pylabhub-processor <proc_dir>             # Run (open vault, connect, start loop)
-pylabhub-processor --validate <proc_dir>  # Validate config + script; exit 0 on success
-pylabhub-processor --keygen <proc_dir>    # Generate vault keypair; print public key to stdout
-pylabhub-processor --dev [proc_dir]       # Ephemeral keypair; proc_dir optional (uses cwd)
-pylabhub-processor --version             # Print version string
+pylabhub-processor --init <proc_dir> [--name <name>]  # Create processor.json + vault + script/__init__.py
+pylabhub-processor <proc_dir>                          # Run (open vault, connect, start loop)
+pylabhub-processor --config <path> --validate          # Validate config + script; exit 0 on success
+pylabhub-processor --config <path> --keygen            # Generate vault keypair; print public key to stdout
+pylabhub-processor --dev [proc_dir]                    # Ephemeral keypair; proc_dir optional (uses cwd)
+pylabhub-processor --version                           # Print version string
 ```
 
 `--init` generates:
 - `processor.json` with template values
 - `vault/processor.vault` via `ProcessorVault::create()` (prompts for password)
-- `script/__init__.py` with template `on_init` / `on_process` / `on_stop`
+- `script/python/__init__.py` with template `on_init` / `on_process` / `on_stop`
+
+`--name` is optional for `--init`. If provided, sets the processor name in the generated config.
+If omitted and stdin is a terminal, prompts interactively. If omitted and stdin is not a terminal
+(e.g., spawned by tests or CI), uses the directory name as default.
 
 ---
 
@@ -459,9 +467,13 @@ graph LR
 
 **Phase 1 implemented (2026-03-01).** All files in `src/processor/` are complete.
 **Phase 2 dual-broker implemented (2026-03-03).** Resolver methods, per-direction hub_dir,
-ProcessorScriptHost wiring, 5 config tests. 750/750 tests pass.
+ProcessorScriptHost wiring, 5 config tests.
 **Hub::Processor delegation (2026-03-03).** ProcessorScriptHost delegates its data loop
 to hub::Processor instead of a manual `run_loop_shm_()`. Timeout handler, pre-hook, and
 zero-fill are all enabled via the enhanced hub::Processor API.
+**Metrics API (HEP-0019, 2026-03-05).** `report_metric()`, `report_metrics()`,
+`clear_custom_metrics()`, `snapshot_metrics_json()` added to ProcessorAPI.
+**`--name` CLI argument (2026-03-05).** Deterministic name for `--init` (no stdin blocking).
+828/828 tests passing as of 2026-03-05.
 Remaining Phase 2: Lua support, transport field (`"in_transport": "zmq"`).
 See `docs/todo/API_TODO.md` for the Phase 2 task list.

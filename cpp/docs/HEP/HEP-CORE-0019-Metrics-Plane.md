@@ -4,7 +4,7 @@
 |----------------|----------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0019`                                                                  |
 | **Title**      | Metrics Plane — Passive SHM Metrics, Voluntary ZMQ Reporting, Broker Aggregation |
-| **Status**     | Design — 2026-03-02                                                               |
+| **Status**     | Implemented — 2026-03-05 (19 tests; 828/828 passing)                              |
 | **Created**    | 2026-03-02                                                                        |
 | **Area**       | Framework Architecture (`pylabhub-utils`, all binaries, `BrokerService`)          |
 | **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline)     |
@@ -355,7 +355,7 @@ the `shm` field is omitted.
 
 ## 7. Integration with HEP-CORE-0017 (Pipeline Architecture)
 
-HEP-CORE-0017 §2 defines four planes: Data, Control, Message, and Timing.
+HEP-CORE-0017 §2 now defines five planes: Data, Control, Message, Timing, and Metrics.
 
 This HEP adds a **fifth plane: Metrics**:
 
@@ -409,48 +409,56 @@ graph LR
     P3 --> P4["Phase 4<br/>Query API"]
     P4 --> P5["Phase 5<br/>Python bindings"]
 
-    style P1 fill:#f9f,stroke:#333
-    style P2 fill:#f9f,stroke:#333
-    style P3 fill:#f9f,stroke:#333
-    style P4 fill:#f9f,stroke:#333
-    style P5 fill:#f9f,stroke:#333
+    style P1 fill:#2a4a2a,stroke:#333
+    style P2 fill:#2a4a2a,stroke:#333
+    style P3 fill:#2a4a2a,stroke:#333
+    style P4 fill:#2a4a2a,stroke:#333
+    style P5 fill:#2a4a2a,stroke:#333
 ```
 
-### Phase 1: C++ infrastructure
+### Phase 1: C++ infrastructure ✅
 
-1. Add `custom_metrics_` map + spinlock to `ProducerAPI`, `ConsumerAPI`,
+1. Added `custom_metrics_` map + `InProcessSpinState` to `ProducerAPI`, `ConsumerAPI`,
    `ProcessorAPI`
-2. Add `report_metric()`, `report_metrics()`, `clear_metrics()` methods
-3. Add `snapshot_and_clear_metrics()` for zmq thread consumption
-4. Add `MetricsStore` to `BrokerService` (simple struct, no lifecycle)
+2. Added `report_metric()`, `report_metrics()`, `clear_custom_metrics()` methods
+3. Added `snapshot_metrics_json()` for zmq thread consumption (snapshot-and-clear)
+4. Added `MetricsStore` to `BrokerService` (Pimpl-internal, guarded by `m_query_mu`)
 
-### Phase 2: Heartbeat extension (producer + processor)
+### Phase 2: Heartbeat extension (producer + processor) ✅
 
-1. Extend `Messenger::enqueue_heartbeat()` to accept an optional metrics JSON
-2. In `run_zmq_thread_()`: call `api.snapshot_and_clear_metrics()`, merge with
-   base counters, pass to `enqueue_heartbeat()`
-3. Broker: `handle_heartbeat_req()` extracts `metrics` field, updates
-   `MetricsStore`
+1. Extended `Messenger::enqueue_heartbeat(channel, json metrics)` overload
+2. In `run_zmq_thread_()`: `api_.snapshot_metrics_json()` → pass to `enqueue_heartbeat()`
+   via `HeartbeatTracker` periodic task (`ZmqPollLoop`)
+3. Broker: `handle_heartbeat_req()` extracts `metrics` field, updates `MetricsStore`
 
-### Phase 3: Consumer metrics reporting
+### Phase 3: Consumer metrics reporting ✅
 
-1. Add `METRICS_REPORT_REQ` message type to messenger protocol
-2. Consumer `run_zmq_thread_()`: periodically send `METRICS_REPORT_REQ` with
-   base counters + custom metrics
+1. Added `METRICS_REPORT_REQ` message type (`MetricsReportCmd` in messenger_internal.hpp)
+2. Consumer `run_zmq_thread_()`: periodic `HeartbeatTracker` sends `METRICS_REPORT_REQ`
+   with base counters + custom metrics
 3. Broker: `handle_metrics_report_req()` updates `MetricsStore`
 
-### Phase 4: Query API
+### Phase 4: Query API ✅
 
-1. Add `METRICS_REQ`/`METRICS_ACK` handler to `BrokerService`
-2. Optionally read SHM `DataBlockMetrics` on query
-3. Expose via AdminShell: `hub.metrics("channel_name")` → JSON
+1. Added `METRICS_REQ`/`METRICS_ACK` handler to `BrokerService`
+2. SHM `DataBlockMetrics` read deferred (not included in Phase 4 — query returns ZMQ-reported metrics only)
+3. Exposed via AdminShell: `pylabhub.metrics("channel_name")` → JSON
 
-### Phase 5: Python bindings
+### Phase 5: Python bindings ✅
 
-1. Bind `api.report_metric()`, `api.report_metrics()`, `api.clear_metrics()`
-   in all three `PYBIND11_EMBEDDED_MODULE` blocks
-2. Update example scripts to demonstrate metric reporting
-3. Documentation
+1. Bound `api.report_metric(key, value)`, `api.report_metrics(dict)`,
+   `api.clear_custom_metrics()` in all three `PYBIND11_EMBEDDED_MODULE` blocks
+2. Defaults applied at pybind11 level only (per pybind11 Default Parameter Rule —
+   `docs/IMPLEMENTATION_GUIDANCE.md` § "pybind11 Default Parameter Rule")
+
+### Test coverage
+
+- 10 `MetricsPlaneTest` (protocol round-trip: heartbeat with metrics, METRICS_REPORT_REQ,
+  METRICS_REQ/ACK, consumer metrics, all-channels query, unknown channel, update overwrites,
+  multi-consumer, empty custom, backward compat)
+- 9 `MetricsApiTest` (API unit: report_metric, report_metrics, snapshot_metrics_json,
+  snapshot clears, clear_custom_metrics, base counters, thread safety, pybind11-linked)
+- **Total: 19 new tests; 828/828 passing (2026-03-05)**
 
 ---
 
@@ -481,19 +489,20 @@ graph LR
 
 ## 12. Source File Reference
 
-Files that will be modified or created when implementing this HEP:
+Files modified during implementation:
 
 | Component | Source File | Impact |
 |-----------|------------|--------|
-| **ProducerAPI** | `src/producer/producer_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
-| **ConsumerAPI** | `src/consumer/consumer_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
-| **ProcessorAPI** | `src/processor/processor_api.hpp/cpp` | Add `report_metric()`, `custom_metrics_` map |
-| **BrokerService** | `src/utils/ipc/broker_service.cpp` | Add `MetricsStore`, `handle_metrics_*()` |
-| **Messenger protocol** | `src/utils/ipc/messenger_protocol.cpp` | Add `METRICS_REPORT_REQ`, `METRICS_REQ/ACK` |
-| **Messenger** | `src/include/utils/messenger.hpp` | Extend `enqueue_heartbeat()` with metrics param |
-| **DataBlockMetrics** | `src/include/plh_datahub.hpp` | Read-only (already implemented) |
-| **ProducerScriptHost** | `src/producer/producer_script_host.cpp` | zmq_thread_ snapshot integration |
-| **ConsumerScriptHost** | `src/consumer/consumer_script_host.cpp` | zmq_thread_ periodic METRICS_REPORT_REQ |
-| **ProcessorScriptHost** | `src/processor/processor_script_host.cpp` | zmq_thread_ snapshot integration |
-| **Python bindings** | `src/producer/producer_api.cpp`, etc. | `m.def("report_metric", ...)` |
-| **Tests** | `tests/test_layer3_datahub/`, `tests/test_layer4_*/` | New test suites for metrics |
+| **ProducerAPI** | `src/producer/producer_api.hpp/cpp` | `report_metric()`, `custom_metrics_` map, `snapshot_metrics_json()`, pybind11 bindings |
+| **ConsumerAPI** | `src/consumer/consumer_api.hpp/cpp` | Same as ProducerAPI |
+| **ProcessorAPI** | `src/processor/processor_api.hpp/cpp` | Same as ProducerAPI |
+| **BrokerService** | `src/utils/ipc/broker_service.cpp` | `MetricsStore` (Pimpl-internal), `handle_metrics_report_req()`, `handle_metrics_req()` |
+| **Messenger protocol** | `src/utils/ipc/messenger_protocol.cpp` | `METRICS_REPORT_REQ` handler, `METRICS_REQ/ACK` dispatch |
+| **Messenger internal** | `src/utils/ipc/messenger_internal.hpp` | `MetricsReportCmd` struct added to `MessengerCommand` variant |
+| **Messenger** | `src/include/utils/messenger.hpp` | `enqueue_heartbeat(channel, json)` overload, `enqueue_metrics_report()` |
+| **AdminShell module** | `src/hub_python/pylabhub_module.hpp/cpp` | `pylabhub.metrics(channel="")` binding |
+| **ProducerScriptHost** | `src/producer/producer_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |
+| **ConsumerScriptHost** | `src/consumer/consumer_script_host.cpp` | zmq_thread_ periodic `METRICS_REPORT_REQ` via `HeartbeatTracker` |
+| **ProcessorScriptHost** | `src/processor/processor_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |
+| **Tests (protocol)** | `tests/test_layer3_datahub/test_datahub_metrics_plane.cpp` | 10 `MetricsPlaneTest` tests |
+| **Tests (API)** | `tests/test_layer4_producer/test_metrics_api.cpp` | 9 `MetricsApiTest` tests (pybind11-linked) |

@@ -15,7 +15,8 @@
 ## 0. Implementation Status
 
 **Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
-are complete. Layer 4 tests: 14 producer + 12 consumer. 750/750 tests passing.
+are complete. Layer 4 tests: 14 producer + 12 consumer. Metrics API added (HEP-CORE-0019,
+2026-03-05). `--name` CLI argument added (2026-03-05). 828/828 tests passing.
 
 For remaining work, see `docs/TODO_MASTER.md` and `docs/todo/API_TODO.md`.
 
@@ -168,7 +169,7 @@ Created by `pylabhub-consumer --init <dir>`:
 
   "script": {
     "type": "python",
-    "path": "./script"
+    "path": "."
   }
 }
 ```
@@ -209,7 +210,7 @@ Created by `pylabhub-consumer --init <dir>`:
 
   "script": {
     "type": "python",
-    "path": "./script"
+    "path": "."
   }
 }
 ```
@@ -234,7 +235,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `shm.slot_count` | yes | — | Ring buffer depth (number of slots) |
 | `shm.secret` | no | `0` | Shared secret for SHM name derivation |
 | `script.type` | yes | `"python"` | Script type: `"python"` or `"lua"` |
-| `script.path` | yes | `"./script"` | Base script directory; C++ resolves `<path>/<type>/__init__.py` |
+| `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
 ### 5.4 Field Reference — Consumer
 
@@ -256,7 +257,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `shm.slot_count` | no | — | Local consumer buffer depth (optional hint; broker-advertised value used) |
 | `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
 | `script.type` | yes | `"python"` | Script type: `"python"` or `"lua"` |
-| `script.path` | yes | `"./script"` | Base script directory |
+| `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
 ‡ Exactly one of the inline `slot_schema` block or `schema_id` string is required
 (Phase 2 after HEP-CORE-0016 Phase 3).
@@ -323,7 +324,7 @@ def on_stop(api) -> None:
 
 ### 6.3 ProducerAPI / ConsumerAPI
 
-Both expose the same API surface (differentiated only by channel-direction semantics):
+Both expose a common API surface, plus role-specific methods:
 
 ```python
 # Identity
@@ -337,9 +338,17 @@ api.log(msg, level="info")   # level: "debug"/"info"/"warn"/"error"
 # Messaging (Messenger — same semantics as ProcessorAPI)
 api.send(target, data)       # send to specific UID
 api.broadcast(data)          # send to all connected peers
+api.notify_channel(target, event, data="")  # signal relay to target channel's producer
 
-# Metrics
-api.slots_processed()        # → int: slots produced (producer) or consumed (consumer)
+# Counters
+api.out_slots_written()      # → int (producer only)
+api.in_slots_received()      # → int (consumer only)
+api.script_error_count()     # → int
+
+# Custom Metrics (HEP-CORE-0019)
+api.report_metric(key, value)     # report single custom metric (key: str, value: number)
+api.report_metrics(dict)          # batch report {key: number} pairs
+api.clear_custom_metrics()        # clear all custom metrics (base counters unaffected)
 
 # Producer-only: spinlock on flexzone (same as ProcessorAPI.spinlock())
 api.spinlock(idx)            # → context manager; valid only if flexzone configured
@@ -427,29 +436,33 @@ on_stop(api) → GIL re-acquired → Py_Finalize
 ### Producer
 
 ```
-pylabhub-producer --init <dir>      # Create producer.json + vault + script/python/__init__.py
-pylabhub-producer <dir>             # Run (open vault, register, start loop)
-pylabhub-producer --validate <dir>  # Validate config + script; exit 0 on success
-pylabhub-producer --keygen <dir>    # Generate vault keypair; print public key to stdout
-pylabhub-producer --dev [dir]       # Ephemeral keypair; dir optional (uses cwd)
-pylabhub-producer --version         # Print version string
+pylabhub-producer --init <dir> [--name <name>]  # Create producer.json + vault + script/python/__init__.py
+pylabhub-producer <dir>                          # Run (open vault, register, start loop)
+pylabhub-producer --config <path> --validate     # Validate config + script; exit 0 on success
+pylabhub-producer --config <path> --keygen       # Generate vault keypair; print public key to stdout
+pylabhub-producer --dev [dir]                    # Ephemeral keypair; dir optional (uses cwd)
+pylabhub-producer --version                      # Print version string
 ```
 
 ### Consumer
 
 ```
-pylabhub-consumer --init <dir>      # Create consumer.json + vault + script/python/__init__.py
-pylabhub-consumer <dir>             # Run (open vault, discover channel, start loop)
-pylabhub-consumer --validate <dir>  # Validate config + script; exit 0 on success
-pylabhub-consumer --keygen <dir>    # Generate vault keypair; print public key to stdout
-pylabhub-consumer --dev [dir]       # Ephemeral keypair
-pylabhub-consumer --version         # Print version string
+pylabhub-consumer --init <dir> [--name <name>]  # Create consumer.json + vault + script/python/__init__.py
+pylabhub-consumer <dir>                          # Run (open vault, discover channel, start loop)
+pylabhub-consumer --config <path> --validate     # Validate config + script; exit 0 on success
+pylabhub-consumer --config <path> --keygen       # Generate vault keypair; print public key to stdout
+pylabhub-consumer --dev [dir]                    # Ephemeral keypair
+pylabhub-consumer --version                      # Print version string
 ```
 
 `--init` generates:
 - `producer.json` / `consumer.json` with template values and a generated UID
 - `vault/producer.vault` / `vault/consumer.vault` via vault `create()` (prompts for password)
 - `script/python/__init__.py` with template callbacks
+
+`--name` is optional for `--init`. If provided, sets the component name in the generated config.
+If omitted and stdin is a terminal, prompts interactively. If omitted and stdin is not a terminal
+(e.g., spawned by tests or CI), uses the directory name as default.
 
 ---
 
@@ -564,11 +577,14 @@ struct ConsumerConfig {
 C++ resolves the script path identically for all four components:
 
 ```
-config.script_path + "/" + config.script_type + "/" + "__init__.py"
+config.script_path + "/script/" + config.script_type + "/" + "__init__.py"
 ```
 
-For `"script": {"type": "python", "path": "./script"}`:
+For `"script": {"type": "python", "path": "."}`:
 → `./script/python/__init__.py`
+
+**Important:** The correct default is `"path": "."`, NOT `"path": "./script"`.
+Using `"./script"` would resolve to `./script/script/python/__init__.py` (double-nesting bug).
 
 This is implemented in `ProducerScriptHost::do_initialize()` and
 `ConsumerScriptHost::do_initialize()` using the same helper function as
@@ -623,7 +639,7 @@ See HEP-CORE-0016 for the full Named Schema Registry specification.
 | Channel identity and UID provenance | HEP-CORE-0013 |
 | Named schema ID format, library, registry | HEP-CORE-0016 |
 | Processor standalone binary | HEP-CORE-0015 |
-| Pipeline topologies and four planes | HEP-CORE-0017 |
+| Pipeline topologies and five planes | HEP-CORE-0017 |
 
 ---
 
@@ -699,4 +715,5 @@ graph TB
 ## Document Status
 
 **Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
-complete. Layer 4 tests: 14 producer + 12 consumer. 750/750 tests passing as of 2026-03-03.
+complete. Layer 4 tests: 14 producer + 12 consumer. Metrics API (HEP-0019) + `--name` CLI
+added (2026-03-05). 828/828 tests passing as of 2026-03-05.

@@ -2951,9 +2951,9 @@ with_next_slot(iter, 1000, [&](const SlotConsumeHandle& slot) {
 > **Added 2026-03-01** — captures design decisions from the Queue Abstraction and
 > Processor design discussions. Cross-reference: HEP-CORE-0015, HEP-CORE-0017.
 
-### 17.1 The Four Planes
+### 17.1 The Five Planes
 
-Every channel in the DataHub system carries traffic on four independent planes.
+Every channel in the DataHub system carries traffic on five independent planes.
 Understanding the separation prevents misdesign (e.g. conflating data flow with
 control protocol, or embedding rate policy inside the transport).
 
@@ -2963,6 +2963,7 @@ control protocol, or embedding rate policy inside the transport).
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets | Broker + ChannelHandle protocol (HEP-CORE-0007) |
 | **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | `send()` / `broadcast()` / callbacks |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT + `METRICS_REPORT_REQ` → Broker `MetricsStore` | HEP-CORE-0019 |
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
@@ -2985,9 +2986,14 @@ graph LR
         TP["LoopPolicy<br/>FixedRate / MaxRate / Compensating"]
     end
 
+    subgraph "Metrics Plane"
+        MET["MetricsStore<br/>report_metric() / METRICS_REQ"]
+    end
+
     DP_SHM ~~~ CP_BR
     CP_BR ~~~ MP
     MP ~~~ TP
+    TP ~~~ MET
 
     style DP_SHM fill:#4a2a4a
     style DP_ZMQ fill:#4a2a4a
@@ -2995,11 +3001,13 @@ graph LR
     style CP_PEER fill:#5a3a3a
     style MP fill:#2a4a2a
     style TP fill:#1e3a5f
+    style MET fill:#3a3a1e
 ```
 
 The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
 effect on the control or message planes. Changing `LoopPolicy` has no effect on
-the data or control planes.
+the data or control planes. The metrics plane reports counters passively without
+affecting any other plane.
 
 ### 17.2 Producer and Consumer Are Intentionally SHM-Specific
 

@@ -1,7 +1,7 @@
 # pyLabHub C++
 
 High-performance, zero-copy IPC framework for scientific data acquisition.
-C++20, CMake 3.29+, 750+ tests.
+C++20, CMake 3.29+, 828 tests.
 
 pyLabHub connects instruments, processors, and analysis tools through shared
 memory with microsecond-level latency. A lightweight broker handles discovery
@@ -270,7 +270,7 @@ pylabhub-consumer --dev my_consumer
 
 For a working example with all configs pre-filled, see `share/demo/`.
 
-## Four Communication Planes
+## Five Communication Planes
 
 | Plane | What flows | Mechanism |
 |-------|-----------|-----------|
@@ -278,6 +278,7 @@ For a working example with all configs pre-filled, see `share/demo/`.
 | **Control** | HELLO, BYE, REG, HEARTBEAT | ZMQ ROUTER–DEALER via Broker |
 | **Message** | Arbitrary typed messages | ZMQ via Messenger (bidirectional) |
 | **Timing** | Loop pacing | LoopPolicy on Producer/Consumer |
+| **Metrics** | Counter snapshots, custom KV | Piggyback on HEARTBEAT + METRICS_REPORT_REQ → Broker aggregation |
 
 ## Further Reading
 
