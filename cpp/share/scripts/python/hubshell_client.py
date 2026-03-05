@@ -22,11 +22,11 @@ Quick examples
     python3 hubshell_client.py
 
     # Query hub name
-    python3 hubshell_client.py --exec "print(pylabhub.hub_name())"
+    python3 hubshell_client.py --exec "print(pylabhub.config()['name'])"
 
     # List active channels
     python3 hubshell_client.py --exec "
-    for ch in pylabhub.channels():
+    for ch in pylabhub.channels('all'):
         print(ch['name'], '—', ch['consumer_count'], 'consumers, status:', ch['status'])
     "
 
@@ -114,15 +114,11 @@ HELP_TEXT = """\
 pyLabHub admin shell — connected to {endpoint}
 
 Built-in pylabhub module commands:
-  pylabhub.hub_name()       — hub identifier string
-  pylabhub.hub_description()— hub description
-  pylabhub.broker_endpoint()— ZMQ broker endpoint
-  pylabhub.admin_endpoint() — admin shell endpoint
-  pylabhub.config()         — full config as dict
-  pylabhub.paths()          — resolved path dict
-  pylabhub.channels()       — list of active channel dicts
-  pylabhub.reset()          — clear interpreter namespace
-  pylabhub.shutdown()       — graceful hub shutdown
+  pylabhub.config()          — flat dict with all hub settings + paths
+  pylabhub.channels()        — channel dict by status (ready/pending/closing/all)
+  pylabhub.channels('ready') — shortcut for ready channels only
+  pylabhub.reset()           — clear interpreter namespace
+  pylabhub.shutdown()        — graceful hub shutdown
 
 REPL shortcuts:
   :channels    — print channel table
@@ -132,7 +128,7 @@ REPL shortcuts:
 """
 
 CHANNELS_CODE = """\
-channels = pylabhub.channels()
+channels = pylabhub.channels('all')
 if not channels:
     print("(no active channels)")
 else:

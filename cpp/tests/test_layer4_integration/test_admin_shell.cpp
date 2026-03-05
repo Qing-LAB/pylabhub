@@ -92,7 +92,8 @@ static void write_hub_json(const fs::path& dir, const PortPair& ports)
         }},
         {"broker", {
             {"channel_timeout_s",         10},
-            {"consumer_liveness_check_s",  5}
+            {"consumer_liveness_check_s",  5},
+            {"channel_shutdown_grace_s",   1}
         }},
         {"script", {
             {"type",                   "python"},
@@ -386,6 +387,128 @@ TEST_F(AdminShellTest, HP_C2_Exception_ErrorReturned)
         const auto error = resp->at("error").get<std::string>();
         EXPECT_NE(error.find("ZeroDivisionError"), std::string::npos)
             << "Expected ZeroDivisionError, got: " << error;
+    }
+
+    EXPECT_EQ(hub.shutdown(), 0);
+    fs::remove_all(tmp);
+}
+
+// ── Script probe API tests ───────────────────────────────────────────────────
+//
+// Verify pylabhub.config() and pylabhub.channels() return correct data
+// through the admin shell interface.
+
+TEST_F(AdminShellTest, Probe_Config)
+{
+    const auto ports = allocate_ports();
+    const auto tmp = unique_temp_dir("probe_cfg");
+    write_hub_json(tmp, ports);
+    TLOG("TEST", "Probe_Config: ports=({},{})", ports.broker, ports.admin);
+
+    HubShellProcess hub(tmp, ports, "HUB5");
+    ASSERT_TRUE(hub.valid());
+    ASSERT_TRUE(hub.wait_ready());
+
+    // config() is a flat dict — verify identity keys
+    {
+        auto resp = hub.exec("c = pylabhub.config()\n"
+                             "print(c['name'], c['uid'])");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        EXPECT_NE(out.find("test-hub"), std::string::npos)
+            << "config()['name'] should contain 'test-hub', got: " << out;
+        EXPECT_NE(out.find("HUB-TEST-00000001"), std::string::npos)
+            << "config()['uid'] missing, got: " << out;
+    }
+
+    // Verify network address keys
+    {
+        auto resp = hub.exec("c = pylabhub.config()\n"
+                             "print(c['broker_address'], c['shell_address'])");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        EXPECT_NE(out.find(std::to_string(ports.broker)), std::string::npos)
+            << "config()['broker_address'] missing port, got: " << out;
+        EXPECT_NE(out.find(std::to_string(ports.admin)), std::string::npos)
+            << "config()['shell_address'] missing port, got: " << out;
+    }
+
+    // Verify path keys are non-empty strings
+    {
+        auto resp = hub.exec("c = pylabhub.config()\n"
+                             "print(bool(c['root_dir']), bool(c['data_dir']), "
+                             "bool(c['scripts_python']))");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+            out.pop_back();
+        EXPECT_EQ(out, "True True True")
+            << "Path keys should be non-empty, got: " << out;
+    }
+
+    // Verify broker operational keys
+    {
+        auto resp = hub.exec("c = pylabhub.config()\n"
+                             "print(c['channel_timeout_s'], c['consumer_liveness_check_s'])");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        EXPECT_NE(out.find("10"), std::string::npos)
+            << "channel_timeout_s should be 10, got: " << out;
+        EXPECT_NE(out.find("5"), std::string::npos)
+            << "consumer_liveness_check_s should be 5, got: " << out;
+    }
+
+    EXPECT_EQ(hub.shutdown(), 0);
+    fs::remove_all(tmp);
+}
+
+TEST_F(AdminShellTest, Probe_ChannelsEmpty)
+{
+    const auto ports = allocate_ports();
+    const auto tmp = unique_temp_dir("probe_ch_empty");
+    write_hub_json(tmp, ports);
+    TLOG("TEST", "Probe_ChannelsEmpty: ports=({},{})", ports.broker, ports.admin);
+
+    HubShellProcess hub(tmp, ports, "HUB9");
+    ASSERT_TRUE(hub.valid());
+    ASSERT_TRUE(hub.wait_ready());
+
+    // No producers running → channels() should return empty categories.
+    {
+        auto resp = hub.exec("chs = pylabhub.channels()\n"
+                             "print(len(chs['all']), len(chs['ready']), "
+                             "len(chs['pending']), len(chs['closing']))");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+            out.pop_back();
+        EXPECT_EQ(out, "0 0 0 0") << "Expected empty channels, got: " << out;
+    }
+
+    // Filter shortcut: channels('ready') should return empty list
+    {
+        auto resp = hub.exec("print(len(pylabhub.channels('ready')))");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_TRUE(resp->at("success").get<bool>());
+        auto out = resp->at("output").get<std::string>();
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+            out.pop_back();
+        EXPECT_EQ(out, "0");
+    }
+
+    // Invalid filter should raise ValueError
+    {
+        auto resp = hub.exec("pylabhub.channels('invalid')");
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_FALSE(resp->at("success").get<bool>());
+        auto err = resp->at("error").get<std::string>();
+        EXPECT_NE(err.find("Unknown filter"), std::string::npos)
+            << "Expected ValueError for invalid filter, got: " << err;
     }
 
     EXPECT_EQ(hub.shutdown(), 0);

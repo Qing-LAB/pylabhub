@@ -9,11 +9,10 @@
  * Usage from the admin shell or user scripts:
  * @code
  *   import pylabhub
- *   print(pylabhub.hub_name())        # "asu.lab.experiments.main"
- *   print(pylabhub.broker_endpoint()) # "tcp://0.0.0.0:5570"
- *   d = pylabhub.config()             # dict with full config
- *   p = pylabhub.paths()              # dict with resolved paths
- *   ch = pylabhub.channels()          # list of active channel dicts
+ *   cfg = pylabhub.config()           # flat dict with all hub settings + paths
+ *   print(cfg['name'])                # "asu.lab.experiments.main"
+ *   print(cfg['broker_address'])      # "tcp://0.0.0.0:5570"
+ *   chs = pylabhub.channels('ready')  # list of ready channel dicts
  *   pylabhub.reset()                  # clear interpreter namespace
  *   pylabhub.shutdown()               # request graceful hubshell exit
  * @endcode
@@ -41,9 +40,29 @@ namespace pylabhub::hub_python
 /// Returns a list of channel info dicts.
 static std::function<std::vector<py::dict>()> g_channels_cb;
 
+/// Registered by hubshell when BrokerService is ready.
+/// Requests channel close → CHANNEL_CLOSING_NOTIFY to all participants.
+static std::function<void(const std::string&)> g_close_channel_cb;
+
 void set_channels_callback(std::function<std::vector<py::dict>()> cb)
 {
     g_channels_cb = std::move(cb);
+}
+
+void set_close_channel_callback(std::function<void(const std::string&)> cb)
+{
+    g_close_channel_cb = std::move(cb);
+}
+
+/// Registered by hubshell when BrokerService is ready.
+/// Broadcasts a message to all members of a channel.
+static std::function<void(const std::string&, const std::string&, const std::string&)>
+    g_broadcast_channel_cb;
+
+void set_broadcast_channel_callback(
+    std::function<void(const std::string&, const std::string&, const std::string&)> cb)
+{
+    g_broadcast_channel_cb = std::move(cb);
 }
 } // namespace pylabhub::hub_python
 
@@ -62,9 +81,10 @@ operations from the embedded Python interpreter (admin shell or user scripts).
 Example::
 
     import pylabhub
-    print(pylabhub.hub_name())
-    print(pylabhub.config())
-    for ch in pylabhub.channels():
+    cfg = pylabhub.config()
+    print(cfg['hub']['name'])
+    print(cfg['network']['broker_address'])
+    for ch in pylabhub.channels('ready'):
         print(ch['name'], ch['consumer_count'])
     pylabhub.shutdown()
 )doc";
@@ -75,73 +95,27 @@ Example::
     m.attr("__version__") = py::str(pylabhub::platform::get_version_string());
 
     // ------------------------------------------------------------------
-    // Hub identity
-    // ------------------------------------------------------------------
-    m.def("hub_name", []() -> std::string
-    {
-        return pylabhub::HubConfig::get_instance().hub_name();
-    },
-    "Return the hub name in reverse-domain format (e.g. 'asu.lab.main').");
-
-    m.def("hub_uid", []() -> std::string
-    {
-        return pylabhub::HubConfig::get_instance().hub_uid();
-    },
-    "Return the stable hub UID (format: 'HUB-NAME-HEXSUFFIX').");
-
-    m.def("hub_description", []() -> std::string
-    {
-        return pylabhub::HubConfig::get_instance().hub_description();
-    },
-    "Return the human-readable hub description.");
-
-    // ------------------------------------------------------------------
-    // Network endpoints
-    // ------------------------------------------------------------------
-    m.def("broker_endpoint", []() -> std::string
-    {
-        return pylabhub::HubConfig::get_instance().broker_endpoint();
-    },
-    "Return the ZMQ broker endpoint (e.g. 'tcp://0.0.0.0:5570').");
-
-    m.def("admin_endpoint", []() -> std::string
-    {
-        return pylabhub::HubConfig::get_instance().admin_endpoint();
-    },
-    "Return the admin shell ZMQ endpoint (e.g. 'tcp://127.0.0.1:5600').");
-
-    // ------------------------------------------------------------------
-    // Config and paths (as dicts for easy Python use)
+    // Config — single consolidated dict with all non-secret hub settings
     // ------------------------------------------------------------------
     m.def("config", []() -> py::dict
     {
         const auto& c = pylabhub::HubConfig::get_instance();
-        py::dict hub;
-        hub["name"]             = c.hub_name();
-        hub["description"]      = c.hub_description();
-        hub["broker_endpoint"]  = c.broker_endpoint();
-        hub["admin_endpoint"]   = c.admin_endpoint();
-        hub["channel_timeout_s"]          = static_cast<int>(c.channel_timeout().count());
-        hub["consumer_liveness_check_s"]  = static_cast<int>(c.consumer_liveness_check().count());
-
-        py::dict result;
-        result["hub"] = hub;
-        return result;
-    },
-    R"doc(
-Return the active hub configuration as a nested dict.
-
-Example::
-
-    cfg = pylabhub.config()
-    print(cfg['hub']['name'])
-    print(cfg['hub']['broker_endpoint'])
-)doc");
-
-    m.def("paths", []() -> py::dict
-    {
-        const auto& c = pylabhub::HubConfig::get_instance();
         py::dict d;
+
+        // Identity
+        d["name"]        = c.hub_name();
+        d["uid"]         = c.hub_uid();
+        d["description"] = c.hub_description();
+
+        // Network addresses
+        d["broker_address"] = c.broker_endpoint();
+        d["shell_address"]  = c.admin_endpoint();
+
+        // Broker operational settings
+        d["channel_timeout_s"]         = static_cast<int>(c.channel_timeout().count());
+        d["consumer_liveness_check_s"] = static_cast<int>(c.consumer_liveness_check().count());
+
+        // Resolved filesystem paths
         d["root_dir"]            = c.root_dir().string();
         d["config_dir"]          = c.config_dir().string();
         d["scripts_python"]      = c.scripts_python_dir().string();
@@ -149,46 +123,132 @@ Example::
         d["data_dir"]            = c.data_dir().string();
         d["python_requirements"] = c.python_requirements().string();
         const auto& sd = c.hub_script_dir();
-        d["hub_script_dir"] = sd.empty() ? py::object(py::none()) : py::object(py::str(sd.string()));
+        d["hub_script_dir"] = sd.empty()
+            ? py::object(py::none()) : py::object(py::str(sd.string()));
         const auto& hd = c.hub_dir();
         d["log_file"] = hd.empty()
             ? py::object(py::none())
             : py::object(py::str((hd / "logs" / "hub.log").string()));
+
         return d;
     },
     R"doc(
-Return all resolved hub paths as a dict.
+Return the active hub configuration as a flat dict.
+
+Keys: name, uid, description, broker_address, shell_address,
+channel_timeout_s, consumer_liveness_check_s, root_dir, config_dir,
+scripts_python, scripts_lua, data_dir, python_requirements,
+hub_script_dir, log_file.
 
 Example::
 
-    p = pylabhub.paths()
-    print(p['data_dir'])      # '/opt/myhub/data'
-    print(p['scripts_python']) # '/opt/myhub/share/scripts/python'
+    cfg = pylabhub.config()
+    print(cfg['name'])
+    print(cfg['broker_address'])
+    print(cfg['data_dir'])
 )doc");
 
     // ------------------------------------------------------------------
     // Active channels (wired to BrokerService in Phase 6)
     // ------------------------------------------------------------------
-    m.def("channels", []() -> py::list
+    m.def("channels", [](const std::string& filter) -> py::object
     {
-        py::list result;
+        py::list all, ready, pending, closing;
         if (pylabhub::hub_python::g_channels_cb)
         {
             for (auto& d : pylabhub::hub_python::g_channels_cb())
-                result.append(d);
+            {
+                all.append(d);
+                auto status = py::cast<std::string>(d["status"]);
+                if (status == "Ready")             ready.append(d);
+                else if (status == "PendingReady") pending.append(d);
+                else if (status == "Closing")      closing.append(d);
+            }
         }
+        // With a filter argument, return just that category as a list.
+        if (filter == "ready")        return ready;
+        if (filter == "pending")      return pending;
+        if (filter == "closing")      return closing;
+        if (filter == "all")          return all;
+        if (!filter.empty())
+            throw py::value_error("Unknown filter '" + filter
+                                  + "'; use 'ready', 'pending', 'closing', or 'all'");
+        // No filter → return categorized dict.
+        py::dict result;
+        result["all"]     = all;
+        result["ready"]   = ready;
+        result["pending"] = pending;
+        result["closing"] = closing;
         return result;
     },
+    py::arg("filter") = "",
     R"doc(
-Return a list of active channel info dicts.
+Return channel info from the live broker, optionally filtered by status.
 
-Each dict has keys: 'name', 'schema_hash', 'consumer_count', 'producer_pid'.
-Returns an empty list until the broker is running and wired (Phase 6).
+With no arguments, returns a dict with keys 'all', 'ready', 'pending', 'closing'.
+Each value is a list of channel dicts with keys:
+'name', 'schema_hash', 'consumer_count', 'producer_pid', 'status'.
+
+With a filter argument, returns just that category as a list.
+
+Returns empty collections until the broker is running and wired (Phase 6).
 
 Example::
 
-    for ch in pylabhub.channels():
+    chs = pylabhub.channels()
+    for ch in chs['ready']:
         print(ch['name'], ':', ch['consumer_count'], 'consumers')
+
+    # Or use the filter shortcut:
+    for ch in pylabhub.channels('ready'):
+        print(ch['name'])
+)doc");
+
+    // ------------------------------------------------------------------
+    // Channel control
+    // ------------------------------------------------------------------
+    m.def("close_channel", [](const std::string& name)
+    {
+        if (!pylabhub::hub_python::g_close_channel_cb)
+            throw py::value_error("Broker not wired — close_channel unavailable");
+        pylabhub::hub_python::g_close_channel_cb(name);
+    },
+    py::arg("name"),
+    R"doc(
+Request graceful close of a channel.
+
+Sends CHANNEL_CLOSING_NOTIFY to all participants (producer, consumers,
+processors), causing them to shut down gracefully. The channel transitions
+to 'Closing' status and is removed after participants disconnect.
+
+Example::
+
+    pylabhub.close_channel('lab.sensors.raw')
+)doc");
+
+    m.def("broadcast_channel", [](const std::string& channel, const std::string& message,
+                                  const std::string& data)
+    {
+        if (!pylabhub::hub_python::g_broadcast_channel_cb)
+            throw py::value_error("Broker not wired — broadcast_channel unavailable");
+        py::gil_scoped_release release;
+        pylabhub::hub_python::g_broadcast_channel_cb(channel, message, data);
+    },
+    py::arg("channel"), py::arg("message"), py::arg("data") = "",
+    R"doc(
+Broadcast a message to all members of a channel.
+
+Sends CHANNEL_BROADCAST_NOTIFY to both the producer and all consumers of the
+named channel. Each participant receives the message in their ``msgs`` list as
+an event dict: ``{"event": "channel_event", "detail": "broadcast", "message": "start", ...}``.
+
+Use this for pipeline coordination — e.g., broadcast "start" after all roles
+have connected and are ready.
+
+Example::
+
+    pylabhub.broadcast_channel('test.pipe.raw', 'start')
+    pylabhub.broadcast_channel('test.pipe.raw', 'stop', '{"reason": "test complete"}')
 )doc");
 
     // ------------------------------------------------------------------

@@ -407,7 +407,8 @@ int main(int argc, char *argv[])
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule()
+        pylabhub::hub::GetZMQContextModule(),
+        pylabhub::hub::GetLifecycleModule()           // DataExchangeHub — required for SHM DataBlock
     ));
 
     if (!config.auth.keyfile.empty())
@@ -475,9 +476,20 @@ int main(int argc, char *argv[])
     });
 
     while (!g_shutdown.load(std::memory_order_relaxed))
+    {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
 
+        // Check if ScriptHost internal shutdown was requested (e.g. via
+        // CHANNEL_CLOSING_NOTIFY or api.stop()) but g_shutdown was not set.
+        if (!prod_script.is_running())
+        {
+            LOGGER_INFO("[prod-main] ScriptHost no longer running, exiting main loop");
+            break;
+        }
+    }
+
+    LOGGER_INFO("[prod-main] Main loop exited: g_shutdown={}", g_shutdown.load());
     signal_handler.uninstall();
     prod_script.shutdown_();
     return 0;

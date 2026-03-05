@@ -143,6 +143,7 @@ struct HubConfig::Impl
 
     std::chrono::seconds channel_timeout         {10};
     std::chrono::seconds consumer_liveness_check {5};
+    std::chrono::seconds channel_shutdown_grace  {5};
 
     fs::path root_dir;
     fs::path config_dir;
@@ -161,6 +162,36 @@ struct HubConfig::Impl
     std::vector<broker::ChannelPolicy>   channel_policies;
 
     utils::JsonConfig cfg; ///< Holds the merged JSON for raw access.
+
+    // ------------------------------------------------------------------
+    // Reset all fields to built-in defaults (for lifecycle re-init).
+    // ------------------------------------------------------------------
+    void reset_to_defaults()
+    {
+        hub_name           = "local.hub.default";
+        hub_description    = "pyLabHub instance";
+        hub_uid            = {};
+        broker_endpoint    = "tcp://0.0.0.0:5570";
+        admin_endpoint     = "tcp://127.0.0.1:5600";
+        admin_token        = {};
+        channel_timeout         = std::chrono::seconds{10};
+        consumer_liveness_check = std::chrono::seconds{5};
+        channel_shutdown_grace  = std::chrono::seconds{5};
+        root_dir.clear();
+        config_dir.clear();
+        scripts_python_dir.clear();
+        scripts_lua_dir.clear();
+        data_dir.clear();
+        hub_script_dir.clear();
+        script_type_.clear();
+        python_requirements.clear();
+        tick_interval_ms_       = 1000;
+        health_log_interval_ms_ = 60000;
+        connection_policy  = broker::ConnectionPolicy::Open;
+        known_actors.clear();
+        channel_policies.clear();
+        cfg = utils::JsonConfig{};
+    }
 
     // ------------------------------------------------------------------
     // Parse a JSON object and extract all known fields into member vars.
@@ -240,6 +271,8 @@ struct HubConfig::Impl
                 channel_timeout = std::chrono::seconds(b.at("channel_timeout_s").get<int>());
             if (b.contains("consumer_liveness_check_s"))
                 consumer_liveness_check = std::chrono::seconds(b.at("consumer_liveness_check_s").get<int>());
+            if (b.contains("channel_shutdown_grace_s"))
+                channel_shutdown_grace = std::chrono::seconds(b.at("channel_shutdown_grace_s").get<int>());
         }
         if (j.contains("paths") && !config_dir.empty())
         {
@@ -308,6 +341,10 @@ struct HubConfig::Impl
     // ------------------------------------------------------------------
     void load(const fs::path& override_path)
     {
+        // Reset all fields so lifecycle re-init starts fresh (critical for tests
+        // that create multiple LifecycleGuard instances in the same process).
+        reset_to_defaults();
+
         // Determine which config file to load (if any).
         fs::path target;
         if (!override_path.empty())
@@ -430,6 +467,7 @@ const std::string& HubConfig::admin_token()     const noexcept { return pImpl->a
 
 std::chrono::seconds HubConfig::channel_timeout()         const noexcept { return pImpl->channel_timeout; }
 std::chrono::seconds HubConfig::consumer_liveness_check() const noexcept { return pImpl->consumer_liveness_check; }
+std::chrono::seconds HubConfig::channel_shutdown_grace()  const noexcept { return pImpl->channel_shutdown_grace; }
 
 const fs::path& HubConfig::root_dir()           const noexcept { return pImpl->root_dir; }
 const fs::path& HubConfig::config_dir()         const noexcept { return pImpl->config_dir; }

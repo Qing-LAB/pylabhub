@@ -261,7 +261,12 @@ class PYLABHUB_UTILS_EXPORT Consumer
     void on_producer_message(CtrlCallback cb);
 
     /// Called from Messenger worker thread when broker sends CHANNEL_CLOSING_NOTIFY.
+    /// Graceful notification — the script should finish pending work then call api.stop().
     void on_channel_closing(std::function<void()> cb);
+
+    /// Called from Messenger worker thread when broker sends FORCE_SHUTDOWN.
+    /// Grace period expired — force immediate shutdown.
+    void on_force_shutdown(std::function<void()> cb);
 
     /// Called from Messenger worker thread on CHANNEL_ERROR_NOTIFY (Cat 1) or
     /// CHANNEL_EVENT_NOTIFY (Cat 2).

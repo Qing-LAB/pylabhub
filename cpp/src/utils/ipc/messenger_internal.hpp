@@ -211,6 +211,31 @@ struct QuerySchemaCmd
     std::promise<std::optional<ChannelSchemaInfo>> result;
 };
 
+/// Phase 4: fire-and-forget relay to target channel's producer via broker.
+struct ChannelNotifyCmd
+{
+    std::string target_channel;
+    std::string sender_uid;
+    std::string event;
+    std::string data; ///< User data string (passed through transparently).
+};
+
+/// Channel broadcast: fan-out a control message to ALL members of a channel.
+struct ChannelBroadcastCmd
+{
+    std::string target_channel;
+    std::string sender_uid;
+    std::string message;
+    std::string data; ///< User data string (passed through transparently).
+};
+
+/// Query broker for the list of registered channels.
+struct ChannelListCmd
+{
+    int timeout_ms{5000};
+    std::promise<std::vector<nlohmann::json>> result;
+};
+
 struct StopCmd
 {
 };
@@ -234,7 +259,8 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       ChecksumErrorReportCmd, CreateChannelCmd,
                                       ConnectChannelCmd, StopCmd,
                                       SuppressHeartbeatCmd, HeartbeatNowCmd,
-                                      QuerySchemaCmd>;
+                                      QuerySchemaCmd, ChannelNotifyCmd,
+                                      ChannelBroadcastCmd, ChannelListCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -276,6 +302,7 @@ class MessengerImpl
     // Per-channel event callbacks (guarded by m_cb_mutex).
     std::mutex m_cb_mutex;
     std::unordered_map<std::string, std::function<void()>>                            m_channel_closing_cbs;
+    std::unordered_map<std::string, std::function<void()>>                            m_force_shutdown_cbs;
     std::unordered_map<std::string, std::function<void(uint64_t, std::string)>>       m_consumer_died_cbs;
     std::unordered_map<std::string, std::function<void(std::string, nlohmann::json)>> m_channel_error_cbs;
     /// Backward-compat: fires for any channel when no per-channel closing cb registered.
@@ -341,6 +368,12 @@ class MessengerImpl
     bool handle_command(ConnectChannelCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(QuerySchemaCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(ChannelNotifyCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(ChannelBroadcastCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(ChannelListCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,

@@ -15,9 +15,8 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
-#include <zmq.h>
+#include "zmq_poll_loop.hpp"
 
-#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -199,10 +198,90 @@ bool ProducerScriptHost::start_role()
         out_messenger_.enqueue_heartbeat(config_.channel);
     }
 
+    // Graceful shutdown: queue channel_closing as a regular event message.
+    // The script sees it in FIFO order and is expected to call api.stop().
+    out_producer_->on_channel_closing([this]() {
+        LOGGER_INFO("[prod] CHANNEL_CLOSING_NOTIFY received, queuing event");
+        IncomingMessage msg;
+        msg.event = "channel_closing";
+        core_.enqueue_message(std::move(msg));
+    });
+
+    // Forced shutdown: broker grace period expired — bypass queue, immediate stop.
+    out_producer_->on_force_shutdown([this]() {
+        LOGGER_WARN("[prod] FORCE_SHUTDOWN received, forcing immediate shutdown");
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
+    // Helper: hex-encode a binary ZMQ identity so it's safe for JSON→py::str conversion.
+    // ZMQ identities can contain arbitrary bytes (non-UTF-8), which would cause
+    // UnicodeDecodeError when json_to_py() converts to py::str.
+    auto hex_identity = [](const std::string &raw) -> std::string
+    {
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string out;
+        out.reserve(raw.size() * 2);
+        for (unsigned char c : raw)
+        {
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0f]);
+        }
+        return out;
+    };
+
+    // Wire peer events → IncomingMessage queue as event dicts.
+    out_producer_->on_consumer_joined(
+        [this, hex_identity](const std::string &identity)
+        {
+            LOGGER_INFO("[prod] peer_event: consumer_joined identity={}",
+                        hex_identity(identity));
+            IncomingMessage msg;
+            msg.event = "consumer_joined";
+            msg.details["identity"] = hex_identity(identity);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    out_producer_->on_consumer_left(
+        [this, hex_identity](const std::string &identity)
+        {
+            LOGGER_INFO("[prod] peer_event: consumer_left identity={}",
+                        hex_identity(identity));
+            IncomingMessage msg;
+            msg.event = "consumer_left";
+            msg.details["identity"] = hex_identity(identity);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    // Wire broker notifications → IncomingMessage queue.
+    out_messenger_.on_consumer_died(config_.channel,
+        [this](uint64_t pid, std::string reason)
+        {
+            LOGGER_INFO("[prod] broker_notify: consumer_died pid={} reason={}",
+                        pid, reason);
+            IncomingMessage msg;
+            msg.event = "consumer_died";
+            msg.details["pid"] = pid;
+            msg.details["reason"] = std::move(reason);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    out_messenger_.on_channel_error(config_.channel,
+        [this](std::string event, nlohmann::json details)
+        {
+            LOGGER_INFO("[prod] broker_notify: channel_event event='{}' details={}",
+                        event, details.dump());
+            IncomingMessage msg;
+            msg.event = "channel_event";
+            msg.details = std::move(details);
+            msg.details["detail"] = std::move(event);
+            core_.enqueue_message(std::move(msg));
+        });
+
     // Route consumer ZMQ messages to incoming queue.
     out_producer_->on_consumer_message(
         [this](const std::string &identity, std::span<const std::byte> data)
         {
+            LOGGER_INFO("[prod] zmq_data: consumer_message size={}", data.size());
             IncomingMessage msg;
             msg.sender = identity;
             msg.data.assign(data.begin(), data.end());
@@ -218,8 +297,14 @@ bool ProducerScriptHost::start_role()
     // Wire API + flexzone.
     try
     {
+        // Ensure the embedded pybind11 module is imported so the ProducerAPI type
+        // is registered. The user script may or may not import it; we need the type
+        // to be known to pybind11 before py::cast.
+        py::module_::import("pylabhub_producer");
+
         api_obj_ = py::cast(&api_, py::return_value_policy::reference);
         api_.set_producer(&*out_producer_);
+        api_.set_messenger(&out_messenger_);
 
         if (core_.has_fz)
         {
@@ -266,7 +351,8 @@ bool ProducerScriptHost::start_role()
         return false;
     }
 
-    LOGGER_INFO("[prod] Producer started on channel '{}'", config_.channel);
+    LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", config_.channel,
+                out_producer_->has_shm());
 
     core_.running_threads.store(true);
 
@@ -401,13 +487,15 @@ void ProducerScriptHost::run_loop_shm_()
     static constexpr int kShmBlockMs = 5000;
     const int acquire_ms = config_.timeout_ms > 0 ? config_.timeout_ms : kShmBlockMs;
 
-    while (core_.running_threads.load() && !api_.critical_error())
+    while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
+           !api_.critical_error())
     {
         // Timer-driven: sleep interval_ms between iterations.
         if (config_.interval_ms > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds{config_.interval_ms});
 
-        if (!core_.running_threads.load() || api_.critical_error())
+        if (!core_.running_threads.load() || core_.shutdown_requested.load() ||
+            api_.critical_error())
             break;
 
         auto msgs = core_.drain_messages();
@@ -427,9 +515,19 @@ void ProducerScriptHost::run_loop_shm_()
         bool commit = false;
         {
             py::gil_scoped_acquire g;
-            py::object out_sv = make_out_slot_view_(out_span.data(), out_sz);
-            py::list   mlst   = build_messages_list_(msgs);
-            commit = call_on_produce_(out_sv, fz_inst_, mlst);
+            try
+            {
+                py::object out_sv = make_out_slot_view_(out_span.data(), out_sz);
+                py::list   mlst   = build_messages_list_(msgs);
+                commit = call_on_produce_(out_sv, fz_inst_, mlst);
+            }
+            catch (py::error_already_set &e)
+            {
+                api_.increment_script_errors();
+                LOGGER_ERROR("[prod] Python error in produce loop: {}", e.what());
+                if (config_.stop_on_script_error)
+                    core_.running_threads.store(false);
+            }
         }
 
         if (commit)
@@ -451,6 +549,12 @@ void ProducerScriptHost::run_loop_shm_()
 
         iteration_count_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    LOGGER_INFO("[prod] run_loop_shm_ exiting: running_threads={} shutdown_requested={} "
+                "critical_error={} g_shutdown={}",
+                core_.running_threads.load(), core_.shutdown_requested.load(),
+                api_.critical_error(),
+                core_.g_shutdown ? core_.g_shutdown->load() : false);
 }
 
 // ============================================================================
@@ -459,50 +563,16 @@ void ProducerScriptHost::run_loop_shm_()
 
 void ProducerScriptHost::run_zmq_thread_()
 {
-    void *peer_sock = out_producer_->peer_ctrl_socket_handle();
-
-    if (peer_sock == nullptr)
-        return;
-
-    zmq_pollitem_t items[1]; // NOLINT
-    items[0] = {peer_sock, 0, ZMQ_POLLIN, 0};
-
-    const auto hb_interval = [&]() -> std::chrono::milliseconds
-    {
-        if (config_.heartbeat_interval_ms > 0)
-            return std::chrono::milliseconds{config_.heartbeat_interval_ms};
-        return std::chrono::milliseconds{2000};
-    }();
-    auto last_heartbeat = std::chrono::steady_clock::now() - hb_interval;
-    uint64_t last_iter{0};
-
-    static constexpr int kPollMs = 5;
-
-    while (core_.running_threads.load(std::memory_order_relaxed))
-    {
-        const int rc = zmq_poll(items, 1, kPollMs);
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            LOGGER_WARN("[prod/zmq_thread] zmq_poll error: {}", zmq_strerror(errno));
-            break;
-        }
-        if (rc > 0 && (items[0].revents & ZMQ_POLLIN))
-            out_producer_->handle_peer_events_nowait();
-
-        const uint64_t cur = iteration_count_.load(std::memory_order_relaxed);
-        if (cur != last_iter)
-        {
-            last_iter = cur;
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_heartbeat >= hb_interval)
-            {
-                out_messenger_.enqueue_heartbeat(config_.channel);
-                last_heartbeat = now;
-            }
-        }
-    }
+    scripting::ZmqPollLoop loop{core_, "prod:" + config_.producer_uid};
+    loop.sockets = {
+        {out_producer_->peer_ctrl_socket_handle(),
+         [&] { out_producer_->handle_peer_events_nowait(); }},
+    };
+    loop.get_iteration = [&] { return iteration_count_.load(std::memory_order_relaxed); };
+    loop.periodic_tasks.emplace_back(
+        [&] { out_messenger_.enqueue_heartbeat(config_.channel); },
+        config_.heartbeat_interval_ms);
+    loop.run();
 }
 
 } // namespace pylabhub::producer

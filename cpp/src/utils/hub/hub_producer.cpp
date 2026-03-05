@@ -1,6 +1,7 @@
 // src/utils/hub_producer.cpp
 #include "utils/hub_producer.hpp"
 #include "channel_handle_internals.hpp"
+#include "utils/logger.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -70,6 +71,7 @@ struct ProducerImpl
     Producer::ConsumerCallback    on_consumer_left_cb;
     Producer::MessageCallback     on_consumer_message_cb;
     std::function<void()>         on_channel_closing_cb;
+    std::function<void()>         on_force_shutdown_cb;
     Producer::ConsumerDiedCallback on_consumer_died_cb;
     Producer::ChannelErrorCallback on_channel_error_cb;
 
@@ -108,9 +110,14 @@ struct ProducerImpl
     /// Safe to call from any thread that owns the ctrl socket.
     void drain_ctrl_send_queue_();
 
-    /// Non-blocking: receive and dispatch one ctrl message from the ROUTER ctrl socket.
-    /// Returns true if a message was received (even if malformed); false on EAGAIN/error.
-    /// Fires on_consumer_joined / on_consumer_left / on_consumer_message.
+    /// @brief Non-blocking: receive and dispatch one ctrl message from the ROUTER ctrl socket.
+    ///
+    /// Returns true if a message was consumed (caller should loop to drain all pending);
+    /// returns false when no message is available (EAGAIN) or on error.
+    ///
+    /// @note Callers MUST use a bounded loop (e.g., `while (recv_and_dispatch_ctrl_() &&
+    ///       ++n < kMax) {}`) to prevent infinite spin if recv_multipart returns true for
+    ///       malformed/empty frames. See §12.3 "Shutdown Pitfalls" in HEP-CORE-0007.
     bool recv_and_dispatch_ctrl_();
 };
 
@@ -159,7 +166,8 @@ bool ProducerImpl::recv_and_dispatch_ctrl_()
     {
         auto res = zmq::recv_multipart(*ctrl_sock, std::back_inserter(frames),
                                        zmq::recv_flags::dontwait);
-        (void)res;
+        if (!res.has_value() || *res == 0)
+            return false;
     }
     catch (const zmq::error_t &)
     {
@@ -470,6 +478,11 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
             raw->on_channel_closing_cb();
     });
 
+    messenger.on_force_shutdown(ch, [raw]() {
+        if (!raw->closed && raw->on_force_shutdown_cb)
+            raw->on_force_shutdown_cb();
+    });
+
     messenger.on_consumer_died(ch, [raw](uint64_t pid, std::string reason) {
         if (raw->closed) return;
         {
@@ -530,6 +543,14 @@ void Producer::on_channel_closing(std::function<void()> cb)
     if (pImpl)
     {
         pImpl->on_channel_closing_cb = std::move(cb);
+    }
+}
+
+void Producer::on_force_shutdown(std::function<void()> cb)
+{
+    if (pImpl)
+    {
+        pImpl->on_force_shutdown_cb = std::move(cb);
     }
 }
 
@@ -644,7 +665,13 @@ void Producer::handle_peer_events_nowait() noexcept
         return;
     }
     pImpl->drain_ctrl_send_queue_();
-    while (pImpl->recv_and_dispatch_ctrl_()) {}
+    // Drain all pending ctrl messages, with safety cap to prevent spin loops.
+    // See HEP-CORE-0007 §12.3 "Shutdown Pitfalls".
+    static constexpr int kMaxRecvBatch = 100;
+    int n = 0;
+    while (pImpl->recv_and_dispatch_ctrl_() && ++n < kMaxRecvBatch) {}
+    if (n >= kMaxRecvBatch)
+        LOGGER_WARN("Producer: handle_peer_events_nowait hit recv batch cap ({})", n);
 }
 
 // ============================================================================
@@ -832,6 +859,7 @@ void Producer::close()
     {
         const std::string &ch = pImpl->handle.channel_name();
         pImpl->messenger->on_channel_closing(ch, nullptr);
+        pImpl->messenger->on_force_shutdown(ch, nullptr);
         pImpl->messenger->on_consumer_died(ch, nullptr);
         pImpl->messenger->on_channel_error(ch, nullptr);
         pImpl->messenger->unregister_channel(ch);
@@ -843,6 +871,7 @@ void Producer::close()
     pImpl->on_consumer_left_cb    = nullptr;
     pImpl->on_consumer_message_cb = nullptr;
     pImpl->on_channel_closing_cb  = nullptr;
+    pImpl->on_force_shutdown_cb   = nullptr;
     pImpl->on_consumer_died_cb    = nullptr;
     pImpl->on_channel_error_cb    = nullptr;
 

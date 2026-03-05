@@ -141,6 +141,38 @@ void MessengerImpl::process_incoming(zmq::socket_t &socket)
                 LOGGER_WARN("Messenger: bad CHANNEL_CLOSING_NOTIFY JSON: {}", e.what());
             }
         }
+        else if (msg_type == "FORCE_SHUTDOWN")
+        {
+            try
+            {
+                nlohmann::json body = nlohmann::json::parse(msgs[2].to_string());
+                std::string channel = body.value("channel_name", "");
+                LOGGER_WARN("Messenger: FORCE_SHUTDOWN for '{}' — broker grace period expired",
+                            channel);
+                std::function<void()> cb;
+                {
+                    std::lock_guard<std::mutex> lock(m_cb_mutex);
+                    auto it = m_force_shutdown_cbs.find(channel);
+                    if (it != m_force_shutdown_cbs.end()) cb = it->second;
+                }
+                try
+                {
+                    if (cb) cb();
+                }
+                catch (const std::exception &ex)
+                {
+                    LOGGER_ERROR("Messenger: on_force_shutdown callback threw: {}", ex.what());
+                }
+                catch (...)
+                {
+                    LOGGER_ERROR("Messenger: on_force_shutdown callback threw unknown exception");
+                }
+            }
+            catch (const nlohmann::json::exception &e)
+            {
+                LOGGER_WARN("Messenger: bad FORCE_SHUTDOWN JSON: {}", e.what());
+            }
+        }
         else if (msg_type == "CONSUMER_DIED_NOTIFY")
         {
             try
@@ -177,7 +209,8 @@ void MessengerImpl::process_incoming(zmq::socket_t &socket)
                 LOGGER_WARN("Messenger: bad CONSUMER_DIED_NOTIFY JSON: {}", e.what());
             }
         }
-        else if (msg_type == "CHANNEL_ERROR_NOTIFY" || msg_type == "CHANNEL_EVENT_NOTIFY")
+        else if (msg_type == "CHANNEL_ERROR_NOTIFY" || msg_type == "CHANNEL_EVENT_NOTIFY" ||
+                 msg_type == "CHANNEL_BROADCAST_NOTIFY")
         {
             try
             {
@@ -711,6 +744,15 @@ void Messenger::on_channel_closing(const std::string &channel, std::function<voi
         pImpl->m_channel_closing_cbs.erase(channel);
 }
 
+void Messenger::on_force_shutdown(const std::string &channel, std::function<void()> cb)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
+    if (cb)
+        pImpl->m_force_shutdown_cbs[channel] = std::move(cb);
+    else
+        pImpl->m_force_shutdown_cbs.erase(channel);
+}
+
 void Messenger::on_consumer_died(
     const std::string &channel,
     std::function<void(uint64_t consumer_pid, std::string reason)> cb)
@@ -771,6 +813,39 @@ void Messenger::enqueue_heartbeat(const std::string &channel) noexcept
     if (!pImpl->m_running.load(std::memory_order_acquire))
         return; // worker not started; silently ignore
     pImpl->enqueue(HeartbeatNowCmd{channel});
+}
+
+void Messenger::enqueue_channel_notify(const std::string &target_channel,
+                                       const std::string &sender_uid,
+                                       const std::string &event,
+                                       const std::string &data) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return;
+    pImpl->enqueue(ChannelNotifyCmd{target_channel, sender_uid, event, data});
+}
+
+void Messenger::enqueue_channel_broadcast(const std::string &target_channel,
+                                          const std::string &sender_uid,
+                                          const std::string &message,
+                                          const std::string &data) noexcept
+{
+    if (!pImpl->m_running.load(std::memory_order_acquire))
+        return;
+    pImpl->enqueue(ChannelBroadcastCmd{target_channel, sender_uid, message, data});
+}
+
+std::vector<nlohmann::json> Messenger::list_channels(int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: list_channels() — not connected.");
+        return {};
+    }
+    std::promise<std::vector<nlohmann::json>> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(ChannelListCmd{timeout_ms, std::move(promise)});
+    return future.get();
 }
 
 std::optional<ChannelSchemaInfo>

@@ -286,7 +286,13 @@ class PYLABHUB_UTILS_EXPORT Producer
     void on_consumer_message(MessageCallback cb);
 
     /// Called from Messenger worker thread when broker sends CHANNEL_CLOSING_NOTIFY.
+    /// This is a graceful notification — the script should finish pending work then call
+    /// api.stop(). The broker will escalate to FORCE_SHUTDOWN after a grace period.
     void on_channel_closing(std::function<void()> cb);
+
+    /// Called from Messenger worker thread when broker sends FORCE_SHUTDOWN.
+    /// Grace period expired — the handler should force immediate shutdown.
+    void on_force_shutdown(std::function<void()> cb);
 
     /// Called from Messenger worker thread when broker sends CONSUMER_DIED_NOTIFY (Cat 2).
     using ConsumerDiedCallback =
@@ -324,9 +330,13 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     /**
      * @brief Non-blocking: drain ctrl send queue + process all pending POLLIN on ctrl socket.
+     *
      * Fires on_consumer_joined / on_consumer_left / on_consumer_message callbacks synchronously.
-     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     * MUST be called from the socket-owning thread (embedded-mode ZMQ thread only).
      * No-op if not valid.
+     *
+     * Internally limits recv dispatch to 100 messages per call to prevent infinite loops
+     * from unexpected ZMQ frame patterns (see HEP-CORE-0007 §12.3).
      */
     void handle_peer_events_nowait() noexcept;
 

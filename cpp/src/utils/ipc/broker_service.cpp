@@ -127,6 +127,12 @@ public:
     /// Script-requested channel closes; drained in run() post-poll phase under m_query_mu.
     std::deque<std::string> close_request_queue_;
 
+    /// Guards broadcast_request_queue_ for thread-safe request_broadcast_channel().
+    mutable std::mutex    m_broadcast_req_mu;
+    /// Admin-shell-requested broadcasts; drained in run() post-poll phase under m_query_mu.
+    struct BroadcastRequest { std::string channel, message, data; };
+    std::deque<BroadcastRequest> broadcast_request_queue_;
+
     void run();
 
     void process_message(zmq::socket_t&       socket,
@@ -157,14 +163,26 @@ public:
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
     void check_dead_consumers(zmq::socket_t& socket);
+    void check_closing_deadlines(zmq::socket_t& socket);
 
     void send_closing_notify(zmq::socket_t&                    socket,
                              const std::string&                channel_name,
                              const ChannelEntry&               entry,
                              const std::string&                reason);
+    void send_force_shutdown(zmq::socket_t&      socket,
+                             const std::string&   channel_name,
+                             const ChannelEntry&  entry);
 
     void handle_checksum_error_report(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
+
+    void handle_channel_notify_req(zmq::socket_t&        socket,
+                                   const nlohmann::json& req);
+
+    void handle_channel_broadcast_req(zmq::socket_t&        socket,
+                                      const nlohmann::json& req);
+
+    nlohmann::json handle_channel_list_req();
 
     /// Push an unsolicited message to a specific ZMQ ROUTER identity (raw bytes).
     static void send_to_identity(zmq::socket_t&     socket,
@@ -247,18 +265,44 @@ void BrokerServiceImpl::run()
             }
             for (const auto& ch : pending_closes)
             {
-                auto entry = registry.find_channel(ch);
-                if (entry.has_value())
+                auto* entry = registry.find_channel_mutable(ch);
+                if (entry != nullptr && entry->status != ChannelStatus::Closing)
                 {
                     LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
                     send_closing_notify(router, ch, *entry, "script_requested");
-                    registry.deregister_channel(ch, entry->producer_pid);
+                    // Transition to Closing with a grace deadline — don't deregister yet.
+                    // Clients have until the deadline to process queued messages and deregister.
+                    entry->status = ChannelStatus::Closing;
+                    entry->closing_deadline =
+                        std::chrono::steady_clock::now() + cfg.channel_shutdown_grace;
                 }
+            }
+
+            // Drain admin-shell-requested broadcasts.
+            std::vector<BroadcastRequest> pending_broadcasts;
+            {
+                std::lock_guard<std::mutex> bcast_lk(m_broadcast_req_mu);
+                pending_broadcasts.assign(
+                    std::make_move_iterator(broadcast_request_queue_.begin()),
+                    std::make_move_iterator(broadcast_request_queue_.end()));
+                broadcast_request_queue_.clear();
+            }
+            for (const auto& br : pending_broadcasts)
+            {
+                // Build a synthetic CHANNEL_BROADCAST_REQ payload and delegate.
+                nlohmann::json req;
+                req["target_channel"] = br.channel;
+                req["sender_uid"]     = "admin_shell";
+                req["message"]        = br.message;
+                if (!br.data.empty())
+                    req["data"] = br.data;
+                handle_channel_broadcast_req(router, req);
             }
 
             // Check heartbeat timeouts and consumer liveness every poll cycle (≈100ms resolution).
             check_heartbeat_timeouts(router);
             check_dead_consumers(router);
+            check_closing_deadlines(router);
 
             if ((items[0].revents & ZMQ_POLLIN) == 0)
             {
@@ -293,7 +337,10 @@ void BrokerServiceImpl::run()
                     continue;
                 }
                 const std::string msg_type = frames[2].to_string();
-                nlohmann::json payload = nlohmann::json::parse(frames[3].to_string());
+                const std::string payload_raw = frames[3].to_string();
+                LOGGER_TRACE("Broker: recv msg_type='{}' payload_len={}",
+                             msg_type, payload_raw.size());
+                nlohmann::json payload = nlohmann::json::parse(payload_raw);
                 process_message(router, frames[0], msg_type, payload);
             }
             catch (const nlohmann::json::exception& e)
@@ -316,6 +363,11 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                                         const std::string&    msg_type,
                                         const nlohmann::json& payload)
 {
+    LOGGER_TRACE("Broker: dispatch {} channel='{}'", msg_type,
+                 payload.is_object()
+                     ? payload.value("channel_name", payload.value("channel", std::string{}))
+                     : std::string{});
+
     if (msg_type == "REG_REQ")
     {
         nlohmann::json resp = handle_reg_req(payload, identity, socket);
@@ -366,6 +418,24 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         const std::string ack =
             (resp.value("status", "") == "success") ? "SCHEMA_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "CHANNEL_NOTIFY_REQ")
+    {
+        // Fire-and-forget: relay event to target channel's producer.
+        handle_channel_notify_req(socket, payload);
+    }
+    else if (msg_type == "CHANNEL_BROADCAST_REQ")
+    {
+        // Fire-and-forget: fan out broadcast to ALL members of a channel.
+        handle_channel_broadcast_req(socket, payload);
+    }
+    else if (msg_type == "CHANNEL_LIST_REQ")
+    {
+        // Synchronous: return list of registered channels.
+        nlohmann::json resp = handle_channel_list_req();
+        LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
+                     resp.value("channels", nlohmann::json::array()).size());
+        send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
     }
     else
     {
@@ -861,16 +931,18 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto timed_out = registry.find_timed_out_channels(cfg.channel_timeout);
     for (const auto& channel_name : timed_out)
     {
-        auto entry = registry.find_channel(channel_name);
-        if (!entry.has_value())
+        auto* entry = registry.find_channel_mutable(channel_name);
+        if (entry == nullptr || entry->status == ChannelStatus::Closing)
         {
             continue;
         }
-        // Cat 1: heartbeat timeout — log + notify all parties + shutdown.
+        // Cat 1: heartbeat timeout — log + notify, then enter Closing with grace period.
         LOGGER_WARN("Broker: Cat1 channel '{}' timed out (no heartbeat within {}s); closing",
                     channel_name, cfg.channel_timeout.count());
         send_closing_notify(socket, channel_name, *entry, "heartbeat_timeout");
-        registry.deregister_channel(channel_name, entry->producer_pid);
+        entry->status = ChannelStatus::Closing;
+        entry->closing_deadline =
+            std::chrono::steady_clock::now() + cfg.channel_shutdown_grace;
     }
 }
 
@@ -965,6 +1037,88 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&     socket,
     }
 }
 
+// ============================================================================
+// check_closing_deadlines — escalate Closing channels past grace period
+// ============================================================================
+
+void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
+{
+    auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> to_remove;
+
+    for (auto& [name, entry] : registry.all_channels())
+    {
+        if (entry.status != ChannelStatus::Closing)
+            continue;
+
+        // Grace period not yet expired.
+        // Note: if all consumers deregister AND the producer sends DEREG_REQ,
+        // deregister_channel() erases the entry from the registry — so no
+        // explicit early-cleanup check is needed here. We only act on deadline.
+        if (now < entry.closing_deadline)
+            continue;
+
+        // Deadline elapsed — escalate to FORCE_SHUTDOWN for remaining members.
+        LOGGER_WARN("Broker: channel '{}' — grace period expired with {} consumers "
+                    "still registered, sending FORCE_SHUTDOWN",
+                    name, entry.consumers.size());
+        send_force_shutdown(socket, name, entry);
+        to_remove.push_back(name);
+    }
+
+    for (const auto& name : to_remove)
+    {
+        auto entry = registry.find_channel(name);
+        if (entry.has_value())
+            registry.deregister_channel(name, entry->producer_pid);
+    }
+}
+
+// ============================================================================
+// send_force_shutdown — bypass client message queue, immediate shutdown
+// ============================================================================
+
+void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&     socket,
+                                             const std::string& channel_name,
+                                             const ChannelEntry& entry)
+{
+    nlohmann::json body;
+    body["channel_name"] = channel_name;
+    body["reason"]       = "grace_period_expired";
+
+    for (const auto& consumer : entry.consumers)
+    {
+        if (consumer.zmq_identity.empty())
+            continue;
+        try
+        {
+            send_to_identity(socket, consumer.zmq_identity, "FORCE_SHUTDOWN", body);
+            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' → consumer pid={}",
+                        channel_name, consumer.consumer_pid);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: failed to send FORCE_SHUTDOWN to consumer pid={}: {}",
+                        consumer.consumer_pid, e.what());
+        }
+    }
+
+    if (!entry.producer_zmq_identity.empty())
+    {
+        try
+        {
+            send_to_identity(socket, entry.producer_zmq_identity, "FORCE_SHUTDOWN", body);
+            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' → producer pid={}",
+                        channel_name, entry.producer_pid);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: failed to send FORCE_SHUTDOWN to producer: {}",
+                        e.what());
+        }
+    }
+}
+
 void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socket,
                                                       const nlohmann::json& req)
 {
@@ -1001,6 +1155,142 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 }
 
 // ============================================================================
+// CHANNEL_NOTIFY_REQ — relay event to target channel's producer
+// ============================================================================
+
+void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
+                                                   const nlohmann::json& req)
+{
+    const auto target_channel = req.value("target_channel", std::string{});
+    const auto sender_uid     = req.value("sender_uid",     std::string{});
+    const auto event          = req.value("event",          std::string{});
+
+    if (target_channel.empty() || event.empty())
+    {
+        LOGGER_WARN("Broker: CHANNEL_NOTIFY_REQ with empty target_channel or event");
+        return;
+    }
+
+    auto entry = registry.find_channel(target_channel);
+    if (!entry || entry->producer_zmq_identity.empty())
+    {
+        LOGGER_DEBUG("Broker: CHANNEL_NOTIFY_REQ for '{}' — channel not found or no producer",
+                     target_channel);
+        return;
+    }
+
+    // Forward as CHANNEL_EVENT_NOTIFY to the producer.
+    nlohmann::json fwd;
+    fwd["channel_name"] = target_channel;
+    fwd["event"]        = event;
+    fwd["sender_uid"]   = sender_uid;
+    if (req.contains("data") && req["data"].is_string())
+        fwd["data"] = req["data"];
+
+    send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
+    LOGGER_DEBUG("Broker: relayed CHANNEL_NOTIFY_REQ to producer of '{}' event='{}'",
+                 target_channel, event);
+}
+
+// ============================================================================
+// CHANNEL_BROADCAST_REQ — fan out message to ALL members of a channel
+// ============================================================================
+
+void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socket,
+                                                      const nlohmann::json& req)
+{
+    const auto target_channel = req.value("target_channel", std::string{});
+    const auto sender_uid     = req.value("sender_uid",     std::string{});
+    const auto message        = req.value("message",        std::string{});
+
+    if (target_channel.empty())
+    {
+        LOGGER_WARN("Broker: CHANNEL_BROADCAST_REQ with empty target_channel");
+        return;
+    }
+
+    auto entry = registry.find_channel(target_channel);
+    if (!entry)
+    {
+        LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ for '{}' — channel not found",
+                     target_channel);
+        return;
+    }
+
+    // Build the broadcast notification body.
+    nlohmann::json fwd;
+    fwd["channel_name"] = target_channel;
+    fwd["event"]        = "broadcast";
+    fwd["sender_uid"]   = sender_uid;
+    fwd["message"]      = message;
+    if (req.contains("data") && req["data"].is_string())
+        fwd["data"] = req["data"];
+
+    // Fan out to ALL consumers.
+    for (const auto& consumer : entry->consumers)
+    {
+        if (consumer.zmq_identity.empty())
+            continue;
+        try
+        {
+            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_BROADCAST_NOTIFY", fwd);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: broadcast to consumer pid={} for '{}' failed: {}",
+                        consumer.consumer_pid, target_channel, e.what());
+        }
+    }
+
+    // Also send to the producer.
+    if (!entry->producer_zmq_identity.empty())
+    {
+        try
+        {
+            send_to_identity(socket, entry->producer_zmq_identity,
+                             "CHANNEL_BROADCAST_NOTIFY", fwd);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: broadcast to producer for '{}' failed: {}",
+                        target_channel, e.what());
+        }
+    }
+
+    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' → {} consumers + producer",
+                 target_channel, message, entry->consumers.size());
+}
+
+// ============================================================================
+// CHANNEL_LIST_REQ — return list of registered channels
+// ============================================================================
+
+nlohmann::json BrokerServiceImpl::handle_channel_list_req()
+{
+    nlohmann::json resp;
+    resp["status"] = "success";
+
+    nlohmann::json channels = nlohmann::json::array();
+    for (const auto& [name, entry] : registry.all_channels())
+    {
+        nlohmann::json ch;
+        ch["name"]           = name;
+        ch["producer_uid"]   = entry.producer_actor_uid;
+        ch["schema_id"]      = entry.schema_id;
+        ch["consumer_count"] = entry.consumers.size();
+        switch (entry.status)
+        {
+            case ChannelStatus::PendingReady: ch["status"] = "PendingReady"; break;
+            case ChannelStatus::Ready:        ch["status"] = "Ready";        break;
+            case ChannelStatus::Closing:      ch["status"] = "Closing";      break;
+        }
+        channels.push_back(std::move(ch));
+    }
+    resp["channels"] = std::move(channels);
+    return resp;
+}
+
+// ============================================================================
 // send_to_identity — push unsolicited message to a connected DEALER by raw identity
 // ============================================================================
 
@@ -1025,6 +1315,7 @@ void BrokerServiceImpl::send_reply(zmq::socket_t&       socket,
                                    const std::string&    msg_type_ack,
                                    const nlohmann::json& body)
 {
+    LOGGER_TRACE("Broker: send {} status='{}'", msg_type_ack, body.value("status", ""));
     // Reply layout: [identity, 'C', ack_type_string, json_body]
     const std::string body_str = body.dump();
     socket.send(zmq::message_t(identity.data(), identity.size()), zmq::send_flags::sndmore);
@@ -1150,8 +1441,17 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
 
 void BrokerService::request_close_channel(const std::string& name)
 {
+    LOGGER_TRACE("Broker: request_close_channel('{}')", name);
     std::lock_guard<std::mutex> lk(pImpl->m_close_req_mu);
     pImpl->close_request_queue_.push_back(name);
+}
+
+void BrokerService::request_broadcast_channel(const std::string& channel,
+                                              const std::string& message,
+                                              const std::string& data)
+{
+    std::lock_guard<std::mutex> lk(pImpl->m_broadcast_req_mu);
+    pImpl->broadcast_request_queue_.push_back({channel, message, data});
 }
 
 } // namespace pylabhub::broker

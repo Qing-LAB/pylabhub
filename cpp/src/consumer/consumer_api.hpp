@@ -27,6 +27,7 @@
  */
 
 #include "utils/hub_consumer.hpp"
+#include "utils/messenger.hpp"
 
 #include <pybind11/pybind11.h>
 
@@ -52,6 +53,7 @@ class ConsumerAPI
     // ── C++ host setters (never called from Python) ───────────────────────────
 
     void set_consumer(hub::Consumer *c) noexcept { consumer_ = c; }
+    void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
     void set_uid(std::string uid)    { uid_        = std::move(uid); }
     void set_name(std::string name)  { name_       = std::move(name); }
     void set_channel(std::string c)  { channel_    = std::move(c); }
@@ -78,6 +80,17 @@ class ConsumerAPI
     void set_critical_error();
     [[nodiscard]] bool critical_error() const noexcept { return critical_error_.load(); }
 
+    /// Send an event notification to a target channel's producer via the broker.
+    void notify_channel(const std::string &target_channel, const std::string &event,
+                        const std::string &data = {});
+
+    /// Broadcast a control message to ALL members of a channel via the broker.
+    void broadcast_channel(const std::string &target_channel, const std::string &message,
+                           const std::string &data = {});
+
+    /// Query the broker for the list of registered channels.
+    py::list list_channels();
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
@@ -86,6 +99,7 @@ class ConsumerAPI
 
   private:
     hub::Consumer    *consumer_{nullptr};
+    hub::Messenger   *messenger_{nullptr};
     std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
 

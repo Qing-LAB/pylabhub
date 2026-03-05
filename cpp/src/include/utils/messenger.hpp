@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pylabhub::hub
 {
@@ -232,6 +233,14 @@ class PYLABHUB_UTILS_EXPORT Messenger
     void on_channel_closing(const std::string &channel, std::function<void()> cb);
 
     /**
+     * @brief Register a per-channel callback for FORCE_SHUTDOWN.
+     *        Broker sends this when the grace period expires after CHANNEL_CLOSING_NOTIFY.
+     *        The callback should bypass any message queues and force immediate shutdown.
+     *        Pass nullptr to deregister. Called from the Messenger worker thread.
+     */
+    void on_force_shutdown(const std::string &channel, std::function<void()> cb);
+
+    /**
      * @brief Register a per-channel callback for CONSUMER_DIED_NOTIFY (Cat 2).
      *        Pass nullptr to deregister. Called from the Messenger worker thread.
      */
@@ -277,6 +286,53 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * No-op if @p channel is not registered for heartbeat, or if not connected.
      */
     void enqueue_heartbeat(const std::string &channel) noexcept;
+
+    /**
+     * @brief Send a CHANNEL_NOTIFY_REQ to the broker (fire-and-forget).
+     *
+     * The broker relays the notification to the target channel's producer as
+     * a CHANNEL_EVENT_NOTIFY. The producer's on_channel_error callback receives
+     * the event, which then appears as an event dict in the Python msgs list.
+     *
+     * @param target_channel  Channel whose producer should receive the notification.
+     * @param sender_uid      UID of the sending role.
+     * @param event           Event name string (e.g. "consumer_ready", "pipeline_ready").
+     * @param data            Optional user data string (passed through transparently).
+     */
+    void enqueue_channel_notify(const std::string &target_channel,
+                                const std::string &sender_uid,
+                                const std::string &event,
+                                const std::string &data = {}) noexcept;
+
+    /**
+     * @brief Send a CHANNEL_BROADCAST_REQ to the broker (fire-and-forget).
+     *
+     * The broker fans out the message as CHANNEL_BROADCAST_NOTIFY to ALL members
+     * of the target channel (producer + all consumers). Each member receives the
+     * broadcast in its on_channel_error callback as a "broadcast" event, which
+     * flows into the Python msgs list as a dict with event="broadcast".
+     *
+     * @param target_channel  Channel whose members should receive the broadcast.
+     * @param sender_uid      UID of the sending role.
+     * @param message         Application-level message string (e.g. "start", "stop").
+     * @param data            Optional user data string (passed through transparently).
+     */
+    void enqueue_channel_broadcast(const std::string &target_channel,
+                                   const std::string &sender_uid,
+                                   const std::string &message,
+                                   const std::string &data = {}) noexcept;
+
+    /**
+     * @brief Query the broker for the list of registered channels (synchronous).
+     *
+     * Sends CHANNEL_LIST_REQ and waits for CHANNEL_LIST_ACK. Returns a vector
+     * of JSON objects, each containing: name, status, schema_id, producer_uid,
+     * consumer_count.
+     *
+     * @param timeout_ms  Max time to wait for broker response.
+     * @return Vector of JSON objects (empty on error or timeout).
+     */
+    [[nodiscard]] std::vector<nlohmann::json> list_channels(int timeout_ms = 5000);
 
     /**
      * @brief Report a Cat 2 slot checksum error to broker (fire-and-forget).

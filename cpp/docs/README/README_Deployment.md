@@ -468,11 +468,11 @@ sends the block.
 **CLI one-liners** (scripting and automation):
 ```bash
 # Print hub name
-python3 hubshell_client.py --exec "print(pylabhub.hub_name())"
+python3 hubshell_client.py --exec "print(pylabhub.config()['name'])"
 
 # List channels with consumer counts
 python3 hubshell_client.py --exec "
-for ch in pylabhub.channels():
+for ch in pylabhub.channels('all'):
     print(f\"{ch['name']:40s} consumers={ch['consumer_count']} status={ch['status']}\")
 "
 

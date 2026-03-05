@@ -15,9 +15,8 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
-#include <zmq.h>
+#include "zmq_poll_loop.hpp"
 
-#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -176,12 +175,65 @@ bool ProcessorScriptHost::start_role()
     }
     in_consumer_ = std::move(maybe_consumer);
 
+    // Graceful shutdown: queue channel_closing as a regular event message (input side).
+    in_consumer_->on_channel_closing([this]() {
+        LOGGER_INFO("[proc] CHANNEL_CLOSING_NOTIFY received (in_channel), queuing event");
+        IncomingMessage msg;
+        msg.event = "channel_closing";
+        msg.details["channel"] = config_.in_channel;
+        core_.enqueue_message(std::move(msg));
+    });
+
+    // Forced shutdown: broker grace period expired (input side).
+    in_consumer_->on_force_shutdown([this]() {
+        LOGGER_WARN("[proc] FORCE_SHUTDOWN received (in_channel), forcing immediate shutdown");
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
     // Route ZMQ data messages to the incoming queue.
     in_consumer_->on_zmq_data(
         [this](std::span<const std::byte> data)
         {
+            LOGGER_DEBUG("[proc] zmq_data: in_channel data_message size={}", data.size());
             IncomingMessage msg;
             msg.data.assign(data.begin(), data.end());
+            core_.enqueue_message(std::move(msg));
+        });
+
+    // Wire consumer-side events → IncomingMessage queue.
+    // NOTE: The data payload may contain arbitrary binary bytes. We hex-encode it
+    // to avoid UnicodeDecodeError when json_to_py() converts to py::str.
+    in_consumer_->on_producer_message(
+        [this](std::string_view type, std::span<const std::byte> data)
+        {
+            LOGGER_INFO("[proc] ctrl_msg: in_channel producer_message type='{}' size={}",
+                        type, data.size());
+            static constexpr char kHex[] = "0123456789abcdef";
+            IncomingMessage msg;
+            msg.event = "producer_message";
+            msg.details["type"] = std::string(type);
+            std::string hex;
+            hex.reserve(data.size() * 2);
+            for (auto b : data)
+            {
+                auto c = static_cast<unsigned char>(b);
+                hex.push_back(kHex[c >> 4]);
+                hex.push_back(kHex[c & 0x0f]);
+            }
+            msg.details["data"] = std::move(hex);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    in_consumer_->on_channel_error(
+        [this](const std::string &event, const nlohmann::json &details)
+        {
+            LOGGER_INFO("[proc] broker_notify: in_channel channel_event event='{}' details={}",
+                        event, details.dump());
+            IncomingMessage msg;
+            msg.event = "channel_event";
+            msg.details = details;
+            msg.details["detail"] = event;
+            msg.details["source"] = "in_channel";
             core_.enqueue_message(std::move(msg));
         });
 
@@ -247,6 +299,84 @@ bool ProcessorScriptHost::start_role()
     }
     out_producer_ = std::move(maybe_producer);
 
+    // Graceful shutdown: queue channel_closing event (output side).
+    out_producer_->on_channel_closing([this]() {
+        LOGGER_INFO("[proc] CHANNEL_CLOSING_NOTIFY received (out_channel), queuing event");
+        IncomingMessage msg;
+        msg.event = "channel_closing";
+        msg.details["channel"] = config_.out_channel;
+        core_.enqueue_message(std::move(msg));
+    });
+
+    // Forced shutdown: broker grace period expired (output side).
+    out_producer_->on_force_shutdown([this]() {
+        LOGGER_WARN("[proc] FORCE_SHUTDOWN received (out_channel), forcing immediate shutdown");
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
+    // Helper: hex-encode a binary ZMQ identity so it's safe for JSON→py::str conversion.
+    auto hex_identity = [](const std::string &raw) -> std::string
+    {
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string out;
+        out.reserve(raw.size() * 2);
+        for (unsigned char c : raw)
+        {
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0f]);
+        }
+        return out;
+    };
+
+    // Wire producer-side peer events → IncomingMessage queue.
+    out_producer_->on_consumer_joined(
+        [this, hex_identity](const std::string &identity)
+        {
+            LOGGER_INFO("[proc] peer_event: out_channel consumer_joined identity={}",
+                        hex_identity(identity));
+            IncomingMessage msg;
+            msg.event = "consumer_joined";
+            msg.details["identity"] = hex_identity(identity);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    out_producer_->on_consumer_left(
+        [this, hex_identity](const std::string &identity)
+        {
+            LOGGER_INFO("[proc] peer_event: out_channel consumer_left identity={}",
+                        hex_identity(identity));
+            IncomingMessage msg;
+            msg.event = "consumer_left";
+            msg.details["identity"] = hex_identity(identity);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    // Wire broker notifications for the output channel.
+    out_messenger_.on_consumer_died(config_.out_channel,
+        [this](uint64_t pid, std::string reason)
+        {
+            LOGGER_INFO("[proc] broker_notify: out_channel consumer_died pid={} reason={}",
+                        pid, reason);
+            IncomingMessage msg;
+            msg.event = "consumer_died";
+            msg.details["pid"] = pid;
+            msg.details["reason"] = std::move(reason);
+            core_.enqueue_message(std::move(msg));
+        });
+
+    out_messenger_.on_channel_error(config_.out_channel,
+        [this](std::string event, nlohmann::json details)
+        {
+            LOGGER_INFO("[proc] broker_notify: out_channel channel_event event='{}' details={}",
+                        event, details.dump());
+            IncomingMessage msg;
+            msg.event = "channel_event";
+            msg.details = std::move(details);
+            msg.details["detail"] = std::move(event);
+            msg.details["source"] = "out_channel";
+            core_.enqueue_message(std::move(msg));
+        });
+
     if (!config_.out_channel.empty())
     {
         out_messenger_.suppress_periodic_heartbeat(config_.out_channel);
@@ -272,9 +402,14 @@ bool ProcessorScriptHost::start_role()
     // ── Wire API and output flexzone ────────────────────────────────────────
     try
     {
+        // Ensure the embedded pybind11 module is imported so the ProcessorAPI type
+        // is registered before py::cast.
+        py::module_::import("pylabhub_processor");
+
         api_obj_ = py::cast(&api_, py::return_value_policy::reference);
         api_.set_producer(&*out_producer_);
         api_.set_consumer(&*in_consumer_);
+        api_.set_messenger(&out_messenger_);
 
         if (core_.has_fz)
         {
@@ -375,18 +510,31 @@ bool ProcessorScriptHost::start_role()
             const size_t out_sz = out_queue_->item_size();
 
             py::gil_scoped_acquire g;
-            py::object in_sv  = make_in_slot_view_(in_data, in_sz);
-            py::object out_sv = make_out_slot_view_(out_data, out_sz);
-            py::list   mlst   = build_messages_list_(msgs);
+            try
+            {
+                py::object in_sv  = make_in_slot_view_(in_data, in_sz);
+                py::object out_sv = make_out_slot_view_(out_data, out_sz);
+                py::list   mlst   = build_messages_list_(msgs);
 
-            bool commit = call_on_process_(in_sv, out_sv, fz_inst_, mlst);
-            if (commit)
-                api_.increment_out_written();
-            else
+                bool commit = call_on_process_(in_sv, out_sv, fz_inst_, mlst);
+                if (commit)
+                    api_.increment_out_written();
+                else
+                    api_.increment_drops();
+
+                api_.increment_in_received();
+                return commit;
+            }
+            catch (py::error_already_set &e)
+            {
+                api_.increment_script_errors();
+                LOGGER_ERROR("[proc] Python error in process handler: {}", e.what());
+                if (config_.stop_on_script_error)
+                    core_.running_threads.store(false);
                 api_.increment_drops();
-
-            api_.increment_in_received();
-            return commit;
+                api_.increment_in_received();
+                return false;
+            }
         });
 
     // ── Install timeout handler ─────────────────────────────────────────────
@@ -402,18 +550,30 @@ bool ProcessorScriptHost::start_role()
                 const size_t out_sz = out_data ? out_queue_->item_size() : 0;
 
                 py::gil_scoped_acquire g;
-                py::object none_in = py::none();
-                py::object out_sv  = out_data
-                    ? make_out_slot_view_(out_data, out_sz)
-                    : py::none();
-                py::list mlst = build_messages_list_(msgs);
+                try
+                {
+                    py::object none_in = py::none();
+                    py::object out_sv  = out_data
+                        ? make_out_slot_view_(out_data, out_sz)
+                        : py::none();
+                    py::list mlst = build_messages_list_(msgs);
 
-                bool commit = call_on_process_(none_in, out_sv, fz_inst_, mlst);
-                if (commit)
-                    api_.increment_out_written();
-                else if (out_data)
-                    api_.increment_drops();
-                return commit;
+                    bool commit = call_on_process_(none_in, out_sv, fz_inst_, mlst);
+                    if (commit)
+                        api_.increment_out_written();
+                    else if (out_data)
+                        api_.increment_drops();
+                    return commit;
+                }
+                catch (py::error_already_set &e)
+                {
+                    api_.increment_script_errors();
+                    LOGGER_ERROR("[proc] Python error in timeout handler: {}", e.what());
+                    if (config_.stop_on_script_error)
+                        core_.running_threads.store(false);
+                    if (out_data) api_.increment_drops();
+                    return false;
+                }
             });
     }
 
@@ -587,71 +747,22 @@ bool ProcessorScriptHost::call_on_process_(py::object &in_sv, py::object &out_sv
 
 void ProcessorScriptHost::run_zmq_thread_()
 {
-    void *peer_sock = out_producer_->peer_ctrl_socket_handle();
-    void *ctrl_sock = in_consumer_->ctrl_zmq_socket_handle();
-    void *data_sock = in_consumer_->data_zmq_socket_handle();
-
-    if (peer_sock == nullptr && ctrl_sock == nullptr)
-        return;
-
-    zmq_pollitem_t items[3]; // NOLINT
-    int nfds = 0;
-    int peer_idx = -1, ctrl_idx = -1, data_idx = -1;
-
-    if (peer_sock != nullptr)
-    { peer_idx = nfds; items[nfds++] = {peer_sock, 0, ZMQ_POLLIN, 0}; }
-    if (ctrl_sock != nullptr)
-    { ctrl_idx = nfds; items[nfds++] = {ctrl_sock, 0, ZMQ_POLLIN, 0}; }
-    if (data_sock != nullptr)
-    { data_idx = nfds; items[nfds++] = {data_sock, 0, ZMQ_POLLIN, 0}; }
-
-    uint64_t last_iter{0};
-
-    const auto hb_interval = [&]() -> std::chrono::milliseconds
-    {
-        if (config_.heartbeat_interval_ms > 0)
-            return std::chrono::milliseconds{config_.heartbeat_interval_ms};
-        return std::chrono::milliseconds{2000};
-    }();
-    auto last_heartbeat = std::chrono::steady_clock::now() - hb_interval;
-
-    static constexpr int kPollMs = 5;
-
-    while (core_.running_threads.load(std::memory_order_relaxed))
-    {
-        const int rc = zmq_poll(items, nfds, kPollMs);
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            LOGGER_WARN("[proc/zmq_thread] zmq_poll error: {}", zmq_strerror(errno));
-            break;
-        }
-        if (rc > 0)
-        {
-            if (peer_idx >= 0 && (items[peer_idx].revents & ZMQ_POLLIN))
-                out_producer_->handle_peer_events_nowait();
-            if (ctrl_idx >= 0 && (items[ctrl_idx].revents & ZMQ_POLLIN))
-                in_consumer_->handle_ctrl_events_nowait();
-            if (data_idx >= 0 && (items[data_idx].revents & ZMQ_POLLIN))
-                in_consumer_->handle_data_events_nowait();
-        }
-
-        // Send heartbeat on the output channel when the loop is making progress.
-        const uint64_t cur = processor_.has_value()
-            ? processor_->iteration_count()
-            : 0;
-        if (cur != last_iter)
-        {
-            last_iter = cur;
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_heartbeat >= hb_interval)
-            {
-                out_messenger_.enqueue_heartbeat(config_.out_channel);
-                last_heartbeat = now;
-            }
-        }
-    }
+    scripting::ZmqPollLoop loop{core_, "proc:" + config_.processor_uid};
+    loop.sockets = {
+        {out_producer_->peer_ctrl_socket_handle(),
+         [&] { out_producer_->handle_peer_events_nowait(); }},
+        {in_consumer_->ctrl_zmq_socket_handle(),
+         [&] { in_consumer_->handle_ctrl_events_nowait(); }},
+        {in_consumer_->data_zmq_socket_handle(),
+         [&] { in_consumer_->handle_data_events_nowait(); }},
+    };
+    loop.get_iteration = [&] {
+        return processor_.has_value() ? processor_->iteration_count() : 0;
+    };
+    loop.periodic_tasks.emplace_back(
+        [&] { out_messenger_.enqueue_heartbeat(config_.out_channel); },
+        config_.heartbeat_interval_ms);
+    loop.run();
 }
 
 } // namespace pylabhub::processor

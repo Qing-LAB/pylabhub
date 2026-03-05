@@ -106,7 +106,7 @@ Pending:
 | RAII Layer | ✅ Complete | `docs/archive/transient-2026-03-02/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved. TODO archived; minor backlog absorbed into TESTING_TODO. |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor Phase A complete (2026-02-26)**; **P2 src/ split done (2026-02-27)**: `data_block.cpp` 3969L→2894L via `data_block_internal.hpp` + 3 new split files; **HEP-CORE-0002 restructured (2026-02-27)**: §6 RAII Abstraction Layer added, §7 Control Plane Protocol stub (→HEP-CORE-0007), stale §5.3/§5.4/§5.5 removed, §6-§15→§7-§16; **P4 messenger.cpp split done (2026-02-27)**: `messenger_internal.hpp` + `messenger_protocol.cpp`; `messenger.cpp` 1707L→811L |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | 🟡 Ongoing | `docs/todo/TESTING_TODO.md` | **750/750 passing** (2026-03-03). +16 tests: hub::Processor enhancements (11), dual-broker config (5). Active gaps: integration test (producer+consumer+hubshell), HP-C1/HP-C2/BN-H1. |
+| Testing | 🟡 Ongoing | `docs/todo/TESTING_TODO.md` | **809/809 passing** (2026-03-04). Two-tier shutdown protocol + ZmqPollLoop + protocol gap closure. Active gaps: integration test (producer+consumer+hubshell), HP-C1/HP-C2/BN-H1. |
 | Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
@@ -115,7 +115,7 @@ Pending:
 | Metrics Plane | 🟡 Design | `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` | Design drafted (2026-03-02). Fifth plane: passive SHM + voluntary ZMQ → broker aggregation. 5 phases. |
 | Interactive Signal Handler | ✅ Complete | `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md` | **Implemented (2026-03-02).** All 4 binaries integrated. Old signal handlers removed. 705/705 pass. |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
-| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Cat 1/Cat 2 health layer; Slot-Processor API (HEP-0006); 424/424 total |
+| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Two-tier shutdown (CHANNEL_CLOSING_NOTIFY + FORCE_SHUTDOWN); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay; HEP-0007 §12 |
 
 **Active code reviews:** None. (2026-02-27 reviews archived to `docs/archive/transient-2026-02-27/`; 2026-03-01 Round 2 reviews archived to `docs/archive/transient-2026-03-01/`; SECURITY/RAII/MEMORY_LAYOUT TODOs archived to `docs/archive/transient-2026-03-02/`; all logged in `docs/DOC_ARCHIVE_LOG.md`.)
 

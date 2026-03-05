@@ -5,6 +5,7 @@
  */
 
 #include <list>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -349,6 +350,19 @@ void WorkerProcess::init_with_ready_signal(const std::string &exe_path, const st
 #else
     handle_ = spawn_worker_process_with_ready_pipe(exe_path, mode, args, stdout_path_, stderr_path_,
                                                    redirect_stderr_to_console, &ready_pipe_read_);
+#endif
+}
+
+void WorkerProcess::send_signal(int sig)
+{
+    if (handle_ == NULL_PROC_HANDLE || waited_)
+        return;
+#if defined(PLATFORM_WIN64)
+    // Windows: TerminateProcess for SIGTERM equivalent.
+    if (sig == SIGTERM)
+        TerminateProcess(handle_, 1);
+#else
+    ::kill(handle_, sig);
 #endif
 }
 

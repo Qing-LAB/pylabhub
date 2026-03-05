@@ -285,16 +285,68 @@ void PythonRoleHostBase::clear_common_pyobjects_()
 }
 
 // ============================================================================
-// build_messages_list_ — default: (sender, bytes) tuples
+// json_to_py — recursive nlohmann::json → py::object conversion
+// ============================================================================
+
+py::object json_to_py(const nlohmann::json &val)
+{
+    if (val.is_string())
+        return py::str(val.get<std::string>());
+    if (val.is_boolean())
+        return py::bool_(val.get<bool>());
+    if (val.is_number_unsigned())
+        return py::int_(val.get<uint64_t>());
+    if (val.is_number_integer())
+        return py::int_(val.get<int64_t>());
+    if (val.is_number_float())
+        return py::float_(val.get<double>());
+    if (val.is_object())
+    {
+        py::dict d;
+        for (auto &[k, v] : val.items())
+            d[py::str(k)] = json_to_py(v);
+        return std::move(d);
+    }
+    if (val.is_array())
+    {
+        py::list l;
+        for (auto &elem : val)
+            l.append(json_to_py(elem));
+        return std::move(l);
+    }
+    if (val.is_null())
+        return py::none();
+    // Fallback: serialize as string.
+    return py::str(val.dump());
+}
+
+// ============================================================================
+// build_messages_list_ — default: (sender, bytes) tuples + event dicts
 // ============================================================================
 
 py::list PythonRoleHostBase::build_messages_list_(std::vector<IncomingMessage> &msgs)
 {
     py::list lst;
     for (auto &m : msgs)
-        lst.append(py::make_tuple(
-            m.sender,
-            py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size())));
+    {
+        if (!m.event.empty())
+        {
+            // Event message → Python dict with "event" key + detail fields.
+            py::dict d;
+            d["event"] = m.event;
+            for (auto &[key, val] : m.details.items())
+                d[py::str(key)] = json_to_py(val);
+            lst.append(std::move(d));
+        }
+        else
+        {
+            // m.sender may contain binary ZMQ identity bytes — use py::bytes,
+            // not py::str, to avoid UnicodeDecodeError on non-UTF-8 identities.
+            lst.append(py::make_tuple(
+                py::bytes(m.sender),
+                py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size())));
+        }
+    }
     return lst;
 }
 
