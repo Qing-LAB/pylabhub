@@ -60,6 +60,10 @@
 #include <string_view>
 #include <thread>
 
+#if defined(PYLABHUB_IS_POSIX)
+#include <unistd.h> // isatty, STDIN_FILENO
+#endif
+
 using namespace pylabhub::utils;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +77,7 @@ struct ProdArgs
 {
     std::string config_path;
     std::string prod_dir;
+    std::string init_name;  ///< --name for --init (skips stdin prompt)
     bool        validate_only{false};
     bool        keygen_only{false};
     bool        init_only{false};
@@ -87,6 +92,7 @@ void print_usage(const char *prog)
         << "  " << prog << " --config <path.json> [--validate | --keygen | --run]\n\n"
         << "Options:\n"
         << "  --init [dir]    Create producer directory with producer.json template; exit 0\n"
+        << "  --name <name>   Producer name for --init (skips interactive prompt)\n"
         << "  <prod_dir>      Producer directory containing producer.json\n"
         << "  --config <path> Path to producer JSON config file\n"
         << "  --validate      Validate config + script, print schema layout; exit 0 on success\n"
@@ -115,6 +121,10 @@ ProdArgs parse_args(int argc, char *argv[])
             args.init_only = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 args.prod_dir = argv[++i];
+        }
+        else if (arg == "--name" && i + 1 < argc)
+        {
+            args.init_name = argv[++i];
         }
         else if (arg == "--validate")
         {
@@ -190,7 +200,7 @@ static std::string get_producer_password(const char *prompt)
 // do_init — create producer directory with producer.json template
 // ---------------------------------------------------------------------------
 
-static int do_init(const std::string &prod_dir_str)
+static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
 
@@ -219,8 +229,27 @@ static int do_init(const std::string &prod_dir_str)
     }
 
     std::string prod_name;
-    std::cout << "Producer name (human-readable, e.g. 'TempSensor'): ";
-    std::getline(std::cin, prod_name);
+    if (!cli_name.empty())
+    {
+        prod_name = cli_name;  // --name provided on command line
+    }
+#if defined(PYLABHUB_IS_POSIX)
+    else if (::isatty(STDIN_FILENO))
+    {
+        std::cout << "Producer name (human-readable, e.g. 'TempSensor'): ";
+        std::getline(std::cin, prod_name);
+    }
+    else
+    {
+        prod_name = "Producer";  // non-interactive fallback
+    }
+#else
+    else
+    {
+        std::cout << "Producer name (human-readable, e.g. 'TempSensor'): ";
+        std::getline(std::cin, prod_name);
+    }
+#endif
 
     const std::string prod_uid = pylabhub::uid::generate_producer_uid(prod_name);
 
@@ -341,7 +370,7 @@ int main(int argc, char *argv[])
     const ProdArgs args = parse_args(argc, argv);
 
     if (args.init_only)
-        return do_init(args.prod_dir);
+        return do_init(args.prod_dir, args.init_name);
 
     pylabhub::producer::ProducerConfig config;
     try
