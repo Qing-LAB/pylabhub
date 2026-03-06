@@ -48,6 +48,20 @@
 namespace pylabhub
 {
 
+/**
+ * @brief Configuration for a single hub federation peer (HEP-CORE-0022).
+ *
+ * Parsed from one entry in hub.json["peers"].  The broker uses this to
+ * create an outbound DEALER connection and relay broadcasts.
+ */
+struct HubPeerConfig
+{
+    std::string                   hub_uid;          ///< Peer hub UID (e.g. "HUB-DEMOB-00000002")
+    std::string                   broker_endpoint;  ///< Peer broker ROUTER endpoint
+    std::string                   pubkey_z85;       ///< Z85 CURVE25519 public key (40 chars); empty = no auth
+    std::vector<std::string>      channels;         ///< Channels this hub relays FROM itself TO the peer
+};
+
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4251)
@@ -218,6 +232,18 @@ class PYLABHUB_UTILS_EXPORT HubConfig
 
     /** Per-channel policy overrides (first matching glob wins over hub-wide policy). */
     std::vector<broker::ChannelPolicy> channel_policies() const;
+
+    // -----------------------------------------------------------------------
+    // Hub federation peers (HEP-CORE-0022)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @brief Returns the list of configured federation peers.
+     *
+     * Each entry is parsed from `hub.json["peers"][]` and describes one outbound
+     * DEALER connection the broker should establish on startup.
+     */
+    const std::vector<HubPeerConfig>& peers() const noexcept;
 
     // -----------------------------------------------------------------------
     // Directory model (Phase 5)

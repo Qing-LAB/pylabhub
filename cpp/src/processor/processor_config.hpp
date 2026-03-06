@@ -71,6 +71,16 @@ enum class OverflowPolicy
 };
 
 // ============================================================================
+// Transport
+// ============================================================================
+
+enum class Transport
+{
+    Shm, ///< Shared-memory data path via DataBlock (default).
+    Zmq  ///< Direct point-to-point ZMQ PUSH/PULL (no broker relay).
+};
+
+// ============================================================================
 // ProcessorAuthConfig
 // ============================================================================
 
@@ -149,6 +159,12 @@ struct ProcessorConfig
     bool     out_shm_enabled{true};
     uint64_t out_shm_secret{0};
     uint32_t out_shm_slot_count{4}; ///< Must be > 0 when out_shm_enabled.
+
+    // Transport — output side only (input transport is auto-discovered via broker DISC_ACK,
+    //             see HEP-CORE-0021: Consumer::queue() returns the ZmqQueue when applicable).
+    Transport   out_transport{Transport::Shm};  ///< Output data path: Shm or Zmq.
+    std::string zmq_out_endpoint;               ///< ZMQ endpoint for output PUSH socket.
+    bool        zmq_out_bind{true};             ///< PUSH default = bind.
 
     // Schemas
     nlohmann::json in_slot_schema_json{};

@@ -103,6 +103,44 @@ ChannelInfo HubScriptAPI::channel(const std::string& name) const
     throw std::runtime_error("HubScriptAPI: channel '" + name + "' not found in snapshot");
 }
 
+// ── Hub federation (HEP-CORE-0022) ──────────────────────────────────────────
+
+void HubScriptAPI::notify_hub(const std::string& target_hub_uid,
+                               const std::string& channel,
+                               const std::string& payload_json)
+{
+    if (broker_)
+        broker_->send_hub_targeted_msg(target_hub_uid, channel, payload_json);
+}
+
+void HubScriptAPI::push_hub_connected(const std::string& hub_uid)
+{
+    std::lock_guard<std::mutex> lk(m_hub_event_mu_);
+    pending_hub_events_.push_back({HubEvent::Type::Connected, hub_uid, {}, {}});
+}
+
+void HubScriptAPI::push_hub_disconnected(const std::string& hub_uid)
+{
+    std::lock_guard<std::mutex> lk(m_hub_event_mu_);
+    pending_hub_events_.push_back({HubEvent::Type::Disconnected, hub_uid, {}, {}});
+}
+
+void HubScriptAPI::push_hub_message(const std::string& channel,
+                                     const std::string& payload,
+                                     const std::string& source_hub_uid)
+{
+    std::lock_guard<std::mutex> lk(m_hub_event_mu_);
+    pending_hub_events_.push_back({HubEvent::Type::Message, source_hub_uid, channel, payload});
+}
+
+std::vector<HubScriptAPI::HubEvent> HubScriptAPI::take_hub_events()
+{
+    std::lock_guard<std::mutex> lk(m_hub_event_mu_);
+    std::vector<HubEvent> out;
+    out.swap(pending_hub_events_);
+    return out;
+}
+
 } // namespace pylabhub
 
 // ---------------------------------------------------------------------------
@@ -224,6 +262,10 @@ channel(name)           → ChannelInfo        — Lookup by name (raises if not
         .def("channel",          &HubScriptAPI::channel,
              py::arg("name"),
              "Look up a channel by name (raises RuntimeError if not found).")
+        // HEP-CORE-0022: hub-targeted message
+        .def("notify_hub",       &HubScriptAPI::notify_hub,
+             py::arg("target_hub_uid"), py::arg("channel"), py::arg("payload_json"),
+             "Send a hub-targeted message to a direct federation peer.")
         .def("__repr__", [](const HubScriptAPI& a) {
             return "<HubScriptAPI hub='" + a.hub_name() + "'>";
         });

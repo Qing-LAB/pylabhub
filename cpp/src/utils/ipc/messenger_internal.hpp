@@ -186,6 +186,9 @@ struct CreateChannelCmd
     // Phase 3: named schema (HEP-CORE-0016).
     std::string schema_id;   ///< Named schema ID (e.g. "lab.sensors.temperature.raw@1"); empty = unnamed
     std::string schema_blds; ///< BLDS string; empty when DataT has no PYLABHUB_SCHEMA macros
+    // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+    std::string data_transport{"shm"}; ///< "shm" (default) or "zmq"
+    std::string zmq_node_endpoint;     ///< PUSH bind endpoint; non-empty only when data_transport="zmq"
     std::promise<bool> result; ///< true = broker accepted (REG_ACK received)
 };
 /// Internal: sent by connect_channel() to discover and register as consumer.

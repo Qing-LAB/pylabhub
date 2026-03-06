@@ -27,12 +27,16 @@ ChannelHandle make_producer_handle(const std::string &channel,
 /// Build a consumer-side ChannelHandle from pre-connected sockets.
 /// @p data_sock_or_dummy is moved only when @p has_data_sock is true.
 /// @p shm_name is the shared memory segment name from the broker's DISC_ACK.
+/// @p data_transport and @p zmq_node_endpoint are set from ConsumerInfo (HEP-CORE-0021).
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 ChannelHandle make_consumer_handle(const std::string &channel,
                                    ChannelPattern     pattern,
                                    bool               has_shm,
                                    zmq::socket_t    &&ctrl_sock,
                                    zmq::socket_t    &&data_sock_or_dummy,
                                    bool               has_data_sock,
-                                   const std::string &shm_name = {});
+                                   const std::string &shm_name        = {},
+                                   const std::string &data_transport   = {},
+                                   const std::string &zmq_node_endpoint = {});
 
 } // namespace pylabhub::hub

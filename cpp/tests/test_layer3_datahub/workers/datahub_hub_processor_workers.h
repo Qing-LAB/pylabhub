@@ -59,5 +59,9 @@ int zmq_queue_roundtrip();
 int zmq_queue_null_flexzone();
 /** Timeout handler works with ZmqQueue transport. */
 int zmq_queue_timeout_handler();
+/** ShmQueue(read) → Processor → ZmqQueue(write): mixed transport. */
+int shm_in_zmq_out();
+/** ZmqQueue(read) → Processor → ShmQueue(write): mixed transport. */
+int zmq_in_shm_out();
 
 } // namespace pylabhub::tests::worker::hub_processor

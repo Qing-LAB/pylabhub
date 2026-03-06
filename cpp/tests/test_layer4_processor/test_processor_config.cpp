@@ -498,6 +498,138 @@ TEST_F(ProcessorConfigTest, DualBroker_OutHubDir)
     fs::remove_all(tmp);
 }
 
+// ── Transport config tests ─────────────────────────────────────────────────────
+// Input transport is auto-discovered via HEP-CORE-0021 (Consumer::queue()).
+// Only out_transport is configurable in processor.json.
+
+TEST_F(ProcessorConfigTest, Transport_DefaultsToShm)
+{
+    const auto tmp      = unique_temp_dir("tdefsh");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No transport fields — output defaults to Shm
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TDEFSH-00000001", "name": "TDefSh" },
+        "in_channel":  "lab.tdefsh.in",
+        "out_channel": "lab.tdefsh.out"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport, pylabhub::processor::Transport::Shm);
+    EXPECT_TRUE(cfg.zmq_out_endpoint.empty());
+    EXPECT_TRUE(cfg.zmq_out_bind);  // default bind=true
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_ParsesZmq)
+{
+    const auto tmp      = unique_temp_dir("tzmq");
+    const auto cfg_path = tmp / "processor.json";
+
+    // HEP-CORE-0021: out_transport=zmq with endpoint; in_transport is auto-discovered
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TZMQ-00000001", "name": "TZmq" },
+        "in_channel":  "lab.tzmq.in",
+        "out_channel": "lab.tzmq.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5581"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport,    pylabhub::processor::Transport::Zmq);
+    EXPECT_EQ(cfg.zmq_out_endpoint, "tcp://127.0.0.1:5581");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_OutZmqInShm)
+{
+    const auto tmp      = unique_temp_dir("tmix");
+    const auto cfg_path = tmp / "processor.json";
+
+    // Typical bridge pattern: SHM in (auto-discovered) → ZMQ out
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TMIX-00000001", "name": "TMix" },
+        "in_channel":  "lab.tmix.in",
+        "out_channel": "lab.tmix.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5580"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport, pylabhub::processor::Transport::Zmq);
+    EXPECT_EQ(cfg.zmq_out_endpoint, "tcp://127.0.0.1:5580");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_ZmqMissingEndpoint_Throws)
+{
+    const auto tmp      = unique_temp_dir("tnoep");
+    const auto cfg_path = tmp / "processor.json";
+
+    // out_transport=zmq but no zmq_out_endpoint — must throw
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TNOEP-00000001", "name": "TNoEp" },
+        "in_channel":  "lab.tnoep.in",
+        "out_channel": "lab.tnoep.out",
+        "out_transport": "zmq"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("tbadtr");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TBADTR-00000001", "name": "TBadTr" },
+        "in_channel":  "lab.tbadtr.in",
+        "out_channel": "lab.tbadtr.out",
+        "out_transport": "tcp"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_BindFlag)
+{
+    const auto tmp      = unique_temp_dir("tbind");
+    const auto cfg_path = tmp / "processor.json";
+
+    // zmq_out_bind=false — PUSH connects instead of binding
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TBIND-00000001", "name": "TBind" },
+        "in_channel":  "lab.tbind.in",
+        "out_channel": "lab.tbind.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5581",
+        "zmq_out_bind": false
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_FALSE(cfg.zmq_out_bind);
+
+    fs::remove_all(tmp);
+}
+
+// ── Dual-broker config tests (continued) ─────────────────────────────────────
+
 TEST_F(ProcessorConfigTest, DualBroker_MixedConfig)
 {
     const auto tmp = unique_temp_dir("dualmix");

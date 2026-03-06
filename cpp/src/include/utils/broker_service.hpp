@@ -64,6 +64,16 @@ struct ChannelSnapshot
     }
 };
 
+/// Configuration for one outbound federation peer (HEP-CORE-0022).
+/// Mirrors pylabhub::HubPeerConfig but lives in broker namespace to avoid pulling in hub_config.hpp.
+struct FederationPeer
+{
+    std::string              hub_uid;          ///< Peer hub UID
+    std::string              broker_endpoint;  ///< Peer's broker ROUTER endpoint
+    std::string              pubkey_z85;       ///< Z85 CURVE25519 public key; empty = no CURVE
+    std::vector<std::string> channels;         ///< Channels this hub relays TO the peer
+};
+
 class PYLABHUB_UTILS_EXPORT BrokerService
 {
 public:
@@ -125,6 +135,31 @@ public:
         /// (PYLABHUB_SCHEMA_PATH env, ~/.pylabhub/schemas, /usr/share/pylabhub/schemas).
         /// Set in tests to an explicit temp directory containing schema fixtures.
         std::vector<std::string>    schema_search_dirs;
+
+        // ── Hub federation (HEP-CORE-0022) ──────────────────────────────────
+        /// This hub's UID — included in HUB_PEER_HELLO_ACK and HUB_RELAY_MSG.
+        /// Required for federation; empty disables all peer connection/relay.
+        std::string                          self_hub_uid;
+
+        /// Outbound peer connections.  The broker creates one DEALER socket per
+        /// entry and sends HUB_PEER_HELLO after the CURVE handshake completes.
+        std::vector<FederationPeer> peers;
+
+        /// Called (from run() thread) when a peer completes the HELLO handshake.
+        /// @param hub_uid  UID reported by the peer in HUB_PEER_HELLO.
+        std::function<void(const std::string& hub_uid)> on_hub_connected;
+
+        /// Called (from run() thread) when a peer sends BYE or times out.
+        /// @param hub_uid  UID of the disconnecting peer.
+        std::function<void(const std::string& hub_uid)> on_hub_disconnected;
+
+        /// Called (from run() thread) when a HUB_TARGETED_MSG arrives for this hub.
+        /// @param channel       Context channel name from the message.
+        /// @param payload       Raw payload bytes.
+        /// @param source_hub_uid UID of the sending hub.
+        std::function<void(const std::string& channel,
+                           const std::string& payload,
+                           const std::string& source_hub_uid)> on_hub_message;
     };
 
     explicit BrokerService(Config cfg);
@@ -210,6 +245,21 @@ public:
      * @return JSON string with the METRICS_ACK-format response.
      */
     [[nodiscard]] std::string query_metrics_json_str(const std::string& channel = {}) const;
+
+    /**
+     * @brief Send a hub-targeted message to a direct federation peer (HEP-CORE-0022).
+     *
+     * Thread-safe. The request is queued and sent during the next broker run() poll
+     * iteration.  If the target hub UID is not a known connected peer, the message
+     * is silently dropped with a warning log.
+     *
+     * @param target_hub_uid  UID of the destination hub (must be a direct peer).
+     * @param channel         Context channel name (informational, not filtered).
+     * @param payload         Raw payload bytes.
+     */
+    void send_hub_targeted_msg(const std::string& target_hub_uid,
+                               const std::string& channel,
+                               const std::string& payload);
 
 private:
 #if defined(_MSC_VER)

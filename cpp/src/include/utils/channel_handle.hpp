@@ -115,6 +115,21 @@ class PYLABHUB_UTILS_EXPORT ChannelHandle
     bool               has_shm()      const;
     const std::string &channel_name() const;
 
+    // ── HEP-CORE-0021: ZMQ Virtual Channel Node (consumer side) ───────────────
+
+    /**
+     * @brief Data transport type for this channel: "shm" or "zmq".
+     * Set from the broker's DISC_ACK on consumer handles.
+     */
+    [[nodiscard]] const std::string &data_transport() const;
+
+    /**
+     * @brief For data_transport()=="zmq": the PUSH socket bind endpoint.
+     * Empty when data_transport()=="shm".
+     * Discovered from the broker's DISC_ACK; used by Consumer to create ZmqQueue PULL.
+     */
+    [[nodiscard]] const std::string &zmq_node_endpoint() const;
+
     /**
      * @brief Returns the shared memory segment name.
      *

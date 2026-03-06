@@ -156,6 +156,7 @@ bool ProcessorScriptHost::start_role()
                                        in_slot_spec_, scripting::SchemaSpec{});
     in_opts.consumer_uid         = config_.processor_uid;
     in_opts.consumer_name        = config_.processor_name;
+    in_opts.zmq_slot_size        = in_schema_slot_size_; // HEP-CORE-0021
 
     const auto &in_ep  = config_.resolved_in_broker();
     const auto &in_pub = config_.resolved_in_broker_pubkey();
@@ -279,6 +280,16 @@ bool ProcessorScriptHost::start_role()
             out_opts.shm_config.logical_unit_size  =
                 static_cast<size_t>(hub::DataBlockPageSize::Size16M);
         }
+    }
+
+    // HEP-CORE-0021: for ZMQ output, register as a ZMQ Virtual Channel Node.
+    if (config_.out_transport == Transport::Zmq)
+    {
+        out_opts.has_shm           = false; // ZMQ node carries no SHM segment
+        out_opts.data_transport    = "zmq";
+        out_opts.zmq_node_endpoint = config_.zmq_out_endpoint;
+        out_opts.zmq_bind          = config_.zmq_out_bind;
+        out_opts.zmq_slot_size     = out_schema_slot_size_;
     }
 
     const auto &out_ep  = config_.resolved_out_broker();
@@ -411,7 +422,8 @@ bool ProcessorScriptHost::start_role()
         api_.set_consumer(&*in_consumer_);
         api_.set_messenger(&out_messenger_);
 
-        if (core_.has_fz)
+        // Flexzone only available when output is SHM-backed.
+        if (core_.has_fz && config_.out_transport == Transport::Shm)
         {
             auto *out_shm = out_producer_->shm();
             if (out_shm != nullptr)
@@ -459,28 +471,55 @@ bool ProcessorScriptHost::start_role()
     LOGGER_INFO("[proc] Processor started: '{}' → '{}'",
                 config_.in_channel, config_.out_channel);
 
-    // ── Create ShmQueues wrapping the Consumer/Producer DataBlocks ──────────
-    auto *in_shm  = in_consumer_->shm();
-    auto *out_shm = out_producer_->shm();
-
-    if (in_shm == nullptr)
+    // ── Create data queues ─────────────────────────────────────────────────
+    // Input: use ZmqQueue owned by Consumer (HEP-CORE-0021) if transport=="zmq",
+    //        otherwise create an owned ShmQueue.
+    if (auto *zmq_in = in_consumer_->queue())
     {
-        LOGGER_ERROR("[proc] Input SHM unavailable (in_channel='{}')", config_.in_channel);
-        return false;
+        // ZMQ: Consumer already created and started the PULL socket (item_size set via
+        // in_opts.zmq_slot_size when ConsumerOptions was constructed above).
+        in_q_ = zmq_in;
     }
-    if (out_shm == nullptr)
+    else
     {
-        LOGGER_ERROR("[proc] Output SHM unavailable (out_channel='{}')", config_.out_channel);
-        return false;
+        // SHM: create owned ShmQueue from the Consumer's DataBlock.
+        auto *in_shm = in_consumer_->shm();
+        if (in_shm == nullptr)
+        {
+            LOGGER_ERROR("[proc] Input SHM unavailable (in_channel='{}')", config_.in_channel);
+            return false;
+        }
+        in_queue_ = hub::ShmQueue::from_consumer_ref(
+            *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel);
+        in_queue_->start();
+        in_q_ = in_queue_.get();
     }
 
-    in_queue_ = hub::ShmQueue::from_consumer_ref(
-        *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel);
-    out_queue_ = hub::ShmQueue::from_producer_ref(
-        *out_shm, out_schema_slot_size_, core_.schema_fz_size, config_.out_channel);
-
-    if (config_.update_checksum)
-        out_queue_->set_checksum_options(true, core_.has_fz);
+    // Output: use ZmqQueue owned by Producer (HEP-CORE-0021) if transport=="zmq",
+    //         otherwise create an owned ShmQueue.
+    if (auto *zmq_out = out_producer_->queue())
+    {
+        // ZMQ: Producer already created and started the PUSH socket (item_size set via
+        // out_opts.zmq_slot_size when ProducerOptions was constructed above).
+        out_q_ = zmq_out;
+    }
+    else
+    {
+        // SHM: create owned ShmQueue from the Producer's DataBlock.
+        auto *out_shm = out_producer_->shm();
+        if (out_shm == nullptr)
+        {
+            LOGGER_ERROR("[proc] Output SHM unavailable (out_channel='{}')", config_.out_channel);
+            return false;
+        }
+        auto shm_q = hub::ShmQueue::from_producer_ref(
+            *out_shm, out_schema_slot_size_, core_.schema_fz_size, config_.out_channel);
+        if (config_.update_checksum)
+            shm_q->set_checksum_options(true, core_.has_fz);
+        out_queue_ = std::move(shm_q);
+        out_queue_->start();
+        out_q_ = out_queue_.get();
+    }
 
     // ── Create hub::Processor ───────────────────────────────────────────────
     hub::ProcessorOptions proc_opts;
@@ -492,7 +531,7 @@ bool ProcessorScriptHost::start_role()
                                     : std::chrono::milliseconds{5000};
     proc_opts.zero_fill_output = true;
 
-    auto maybe_proc = hub::Processor::create(*in_queue_, *out_queue_, proc_opts);
+    auto maybe_proc = hub::Processor::create(*in_q_, *out_q_, proc_opts);
     if (!maybe_proc.has_value())
     {
         LOGGER_ERROR("[proc] Failed to create hub::Processor");
@@ -506,8 +545,8 @@ bool ProcessorScriptHost::start_role()
                void* out_data, void* /*out_fz*/) -> bool
         {
             auto msgs = core_.drain_messages();
-            const size_t in_sz  = in_queue_->item_size();
-            const size_t out_sz = out_queue_->item_size();
+            const size_t in_sz  = in_q_->item_size();
+            const size_t out_sz = out_q_->item_size();
 
             py::gil_scoped_acquire g;
             try
@@ -547,7 +586,7 @@ bool ProcessorScriptHost::start_role()
                 if (msgs.empty() && config_.timeout_ms <= 0)
                     return false;
 
-                const size_t out_sz = out_data ? out_queue_->item_size() : 0;
+                const size_t out_sz = out_data ? out_q_->item_size() : 0;
 
                 py::gil_scoped_acquire g;
                 try
@@ -613,10 +652,13 @@ void ProcessorScriptHost::stop_role()
 
     call_on_stop_common_();
 
-    // Release Processor and Queues first (they reference Producer/Consumer SHM).
+    // Stop and release Processor and Queues first (they reference Producer/Consumer SHM).
     processor_.reset();
-    out_queue_.reset();
-    in_queue_.reset();
+    // Only stop owned SHM queues; ZMQ queues are owned by Consumer/Producer and stopped below.
+    if (in_queue_)  { in_queue_->stop();  in_queue_.reset(); }
+    if (out_queue_) { out_queue_->stop(); out_queue_.reset(); }
+    in_q_  = nullptr;
+    out_q_ = nullptr;
 
     if (out_producer_.has_value())
     {
@@ -666,7 +708,7 @@ void ProcessorScriptHost::clear_role_pyobjects()
 
 void ProcessorScriptHost::update_fz_checksum_after_init()
 {
-    if (core_.has_fz)
+    if (core_.has_fz && config_.out_transport == Transport::Shm)
     {
         if (auto *shm = out_producer_->shm())
             (void)shm->update_checksum_flexible_zone();
@@ -753,9 +795,15 @@ void ProcessorScriptHost::run_zmq_thread_()
          [&] { out_producer_->handle_peer_events_nowait(); }},
         {in_consumer_->ctrl_zmq_socket_handle(),
          [&] { in_consumer_->handle_ctrl_events_nowait(); }},
-        {in_consumer_->data_zmq_socket_handle(),
-         [&] { in_consumer_->handle_data_events_nowait(); }},
     };
+    // Consumer data socket is only needed when data comes via broker relay (SHM transport).
+    // When transport is ZMQ, data arrives through ZmqQueue (not broker relay).
+    if (in_consumer_->data_transport() != "zmq")
+    {
+        loop.sockets.push_back(
+            {in_consumer_->data_zmq_socket_handle(),
+             [&] { in_consumer_->handle_data_events_nowait(); }});
+    }
     loop.get_iteration = [&] {
         return processor_.has_value() ? processor_->iteration_count() : 0;
     };

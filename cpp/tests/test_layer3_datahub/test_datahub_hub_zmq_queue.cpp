@@ -32,9 +32,14 @@ namespace
 
 /// Return a tcp endpoint with a port derived from PID + offset.
 /// Range: 30000 + (pid % 10000) * 5 + offset — ensures 5 ports per PID slice.
+// Port formula: map PID into a wide range of high-numbered ports (40000–64990).
+// Ports above 40000 are rarely used by system services. The *5 spacing means two
+// processes whose PIDs differ by 5000 would need the same offset to collide —
+// unlikely in a short CI window.  TIME_WAIT issues are avoided because the range
+// is broad enough that re-using the exact same port in a 60-second window is rare.
 std::string test_endpoint(int offset = 0)
 {
-    int base_port = 30000 + static_cast<int>(getpid() % 10000) * 5 + offset;
+    int base_port = 40000 + static_cast<int>(getpid() % 5000) * 5 + offset;
     return "tcp://127.0.0.1:" + std::to_string(base_port);
 }
 

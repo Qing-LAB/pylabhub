@@ -1,5 +1,6 @@
 // src/utils/hub_producer.cpp
 #include "utils/hub_producer.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
 
@@ -100,6 +101,9 @@ struct ProducerImpl
 
     // Messaging facade: filled by create_from_parts(); used by WriteProcessorContext<F,D>.
     ProducerMessagingFacade facade{};
+
+    // HEP-CORE-0021: ZMQ PUSH socket (non-null only when data_transport=="zmq").
+    std::unique_ptr<ZmqQueue> zmq_queue_;
 
     void run_peer_thread();
     void run_write_thread();
@@ -376,7 +380,9 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
 {
     auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
                                         opts.schema_hash, opts.schema_version, opts.timeout_ms,
-                                        opts.actor_name, opts.actor_uid);
+                                        opts.actor_name, opts.actor_uid,
+                                        {}, {},
+                                        opts.data_transport, opts.zmq_node_endpoint);
     if (!ch.has_value())
     {
         return std::nullopt;
@@ -507,6 +513,20 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
             raw->on_channel_error_cb(event, details);
     });
 
+    // HEP-CORE-0021: create ZMQ PUSH socket when data_transport == "zmq".
+    if (opts.data_transport == "zmq")
+    {
+        if (opts.zmq_node_endpoint.empty())
+        {
+            LOGGER_ERROR("[producer] data_transport='zmq' but zmq_node_endpoint is empty");
+            return std::nullopt;
+        }
+        impl->zmq_queue_ = ZmqQueue::push_to(
+            opts.zmq_node_endpoint, opts.zmq_slot_size, opts.zmq_bind);
+        impl->zmq_queue_->start();
+        LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
+    }
+
     return Producer(std::move(impl));
 }
 
@@ -623,6 +643,12 @@ void Producer::stop()
     if (pImpl->write_thread_handle.joinable())
     {
         pImpl->write_thread_handle.join();
+    }
+
+    // Stop ZMQ PUSH socket after threads join (they may still be sending).
+    if (pImpl->zmq_queue_)
+    {
+        pImpl->zmq_queue_->stop();
     }
 }
 
@@ -833,6 +859,11 @@ bool Producer::has_shm() const
 DataBlockProducer *Producer::shm() noexcept
 {
     return pImpl ? pImpl->shm.get() : nullptr;
+}
+
+ZmqQueue *Producer::queue() noexcept
+{
+    return pImpl ? pImpl->zmq_queue_.get() : nullptr;
 }
 
 ChannelHandle &Producer::channel_handle()

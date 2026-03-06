@@ -36,6 +36,7 @@
 #include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
+#include "utils/hub_zmq_queue.hpp"  // ZmqQueue — returned by queue() accessor (HEP-CORE-0021)
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
@@ -199,6 +200,13 @@ struct ConsumerOptions
     /// against the schema loaded from PYLABHUB_SCHEMA_PATH (or default search dirs).
     /// Throws SchemaValidationException on mismatch. No-op when empty.
     std::string expected_schema_id{};
+
+    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
+    /// Slot payload size in bytes for ZmqQueue frames when data_transport=="zmq".
+    /// 0 = caller sets item_size separately before first read.
+    size_t zmq_slot_size{0};
+    /// Internal receive-buffer depth for ZmqQueue PULL.
+    size_t zmq_buffer_depth{64};
 };
 
 // ============================================================================
@@ -387,6 +395,28 @@ class PYLABHUB_UTILS_EXPORT Consumer
     [[nodiscard]] bool               has_shm() const;
     DataBlockConsumer               *shm() noexcept; ///< nullptr if !has_shm
     ChannelHandle                   &channel_handle();
+
+    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
+
+    /**
+     * @brief Data transport type discovered from broker: "shm" or "zmq".
+     * Set from the broker's DISC_ACK when connect() completes.
+     */
+    [[nodiscard]] const std::string &data_transport() const noexcept;
+
+    /**
+     * @brief ZMQ PUSH bind endpoint for the ZMQ virtual channel (HEP-CORE-0021).
+     * Non-empty only when data_transport()=="zmq". Discovered from the broker's DISC_ACK.
+     * Use this endpoint to create a ZmqQueue PULL (connect) socket.
+     */
+    [[nodiscard]] const std::string &zmq_node_endpoint() const noexcept;
+
+    /**
+     * @brief Returns the ZmqQueue PULL socket owned by this Consumer (HEP-CORE-0021).
+     * Non-null only when data_transport()=="zmq" at connect() time.
+     * Null when data_transport()=="shm". Lifetime is tied to this Consumer.
+     */
+    [[nodiscard]] ZmqQueue *queue() noexcept;
 
     /// Returns the Messenger used by this Consumer.
     [[nodiscard]] Messenger &messenger() const;

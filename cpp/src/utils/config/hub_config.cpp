@@ -161,6 +161,9 @@ struct HubConfig::Impl
     std::vector<broker::KnownActor>      known_actors;
     std::vector<broker::ChannelPolicy>   channel_policies;
 
+    // ── Federation peers (HEP-CORE-0022) ────────────────────────────────────
+    std::vector<HubPeerConfig>           peers_;
+
     utils::JsonConfig cfg; ///< Holds the merged JSON for raw access.
 
     // ------------------------------------------------------------------
@@ -190,6 +193,7 @@ struct HubConfig::Impl
         connection_policy  = broker::ConnectionPolicy::Open;
         known_actors.clear();
         channel_policies.clear();
+        peers_.clear();
         cfg = utils::JsonConfig{};
     }
 
@@ -311,6 +315,29 @@ struct HubConfig::Impl
             if (sc.contains("health_log_interval_ms") &&
                 sc.at("health_log_interval_ms").is_number_integer())
                 health_log_interval_ms_ = sc.at("health_log_interval_ms").get<int>();
+        }
+
+        // ── Federation peers (HEP-CORE-0022) ────────────────────────────────
+        if (j.contains("peers") && j.at("peers").is_array())
+        {
+            peers_.clear();
+            for (const auto& p : j.at("peers"))
+            {
+                HubPeerConfig pc;
+                pc.hub_uid         = p.value("hub_uid",         "");
+                pc.broker_endpoint = p.value("broker_endpoint", "");
+                pc.pubkey_z85      = p.value("pubkey_z85",      "");
+                if (p.contains("channels") && p.at("channels").is_array())
+                {
+                    for (const auto& ch : p.at("channels"))
+                        if (ch.is_string())
+                            pc.channels.push_back(ch.get<std::string>());
+                }
+                if (!pc.broker_endpoint.empty())
+                    peers_.push_back(std::move(pc));
+                else
+                    LOGGER_WARN("HubConfig: peers[] entry missing 'broker_endpoint' — skipped");
+            }
         }
 
         // Python-specific settings ("python" block).
@@ -495,6 +522,9 @@ std::vector<broker::ChannelPolicy> HubConfig::channel_policies() const
 {
     return pImpl->channel_policies;
 }
+
+// ── Federation peers (HEP-CORE-0022) ────────────────────────────────────────
+const std::vector<HubPeerConfig>& HubConfig::peers() const noexcept { return pImpl->peers_; }
 
 // ── Directory model (Phase 5) ───────────────────────────────────────────────
 const fs::path& HubConfig::hub_dir() const noexcept { return pImpl->config_dir; }

@@ -555,7 +555,9 @@ Messenger::create_channel(const std::string &channel_name,
                            const std::string &actor_name,
                            const std::string &actor_uid,
                            const std::string &schema_id,
-                           const std::string &schema_blds)
+                           const std::string &schema_blds,
+                           const std::string &data_transport,
+                           const std::string &zmq_node_endpoint)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -622,6 +624,8 @@ Messenger::create_channel(const std::string &channel_name,
     cmd.actor_uid         = actor_uid;
     cmd.schema_id         = schema_id;
     cmd.schema_blds       = schema_blds;
+    cmd.data_transport    = data_transport.empty() ? std::string{"shm"} : data_transport;
+    cmd.zmq_node_endpoint = zmq_node_endpoint;
     cmd.result            = std::move(reg_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -724,9 +728,10 @@ Messenger::connect_channel(const std::string &channel_name,
     }
 
     // Build and return ChannelHandle owning the connected sockets.
+    // HEP-CORE-0021: pass data_transport and zmq_node_endpoint for ZMQ Virtual Channel Node.
     return make_consumer_handle(channel_name, cinfo->pattern, cinfo->has_shared_memory,
                                 std::move(ctrl_sock), std::move(data_sock), has_data_sock,
-                                cinfo->shm_name);
+                                cinfo->shm_name, cinfo->data_transport, cinfo->zmq_node_endpoint);
 }
 
 void Messenger::on_channel_closing(std::function<void(const std::string &)> cb)

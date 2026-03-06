@@ -58,6 +58,15 @@ OverflowPolicy parse_overflow_policy(const std::string &s)
         "' (must be 'block' or 'drop')");
 }
 
+Transport parse_transport(const std::string &s)
+{
+    if (s == "shm") return Transport::Shm;
+    if (s == "zmq") return Transport::Zmq;
+    throw std::runtime_error(
+        "Processor config: invalid transport = '" + s +
+        "' (must be 'shm' or 'zmq')");
+}
+
 /// Load broker endpoint and pubkey from a hub directory.
 /// On success, sets ep and pubkey; on failure logs a warning and returns false.
 bool load_broker_from_hub_dir(const std::string &hub_dir,
@@ -213,6 +222,17 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
             cfg.out_shm_slot_count = shm["out"].value("slot_count", uint32_t{4});
         }
     }
+
+    // ── Transport ─────────────────────────────────────────────────────────────
+    // Input transport is auto-discovered via HEP-CORE-0021 (Consumer::queue()).
+    // Only output transport is configured here.
+    cfg.out_transport     = parse_transport(j.value("out_transport", "shm"));
+    cfg.zmq_out_endpoint  = j.value("zmq_out_endpoint", "");
+    cfg.zmq_out_bind      = j.value("zmq_out_bind", true);
+
+    if (cfg.out_transport == Transport::Zmq && cfg.zmq_out_endpoint.empty())
+        throw std::runtime_error(
+            "Processor config: 'out_transport' is 'zmq' but 'zmq_out_endpoint' is empty");
 
     // ── Schemas ───────────────────────────────────────────────────────────────
     if (j.contains("in_slot_schema") && !j["in_slot_schema"].is_null())
