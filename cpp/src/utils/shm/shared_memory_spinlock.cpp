@@ -86,15 +86,18 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
             // Lost the reclaim race — another process grabbed it first; fall through to spin/timeout.
         }
 
-        // Timeout check
+        // Timeout check (0 = non-blocking, < 0 = infinite, > 0 = wait N ms)
+        if (timeout_ms == 0)
+            return false; // Non-blocking: give up immediately on first miss
         if (timeout_ms > 0)
         {
             uint64_t elapsed_ms = pylabhub::platform::elapsed_time_ns(start_ns) / kNsPerMs;
             if (elapsed_ms >= static_cast<uint64_t>(timeout_ms))
             {
-                return false; // Timeout
+                return false; // Timed out
             }
         }
+        // timeout_ms < 0: spin indefinitely — fall through
 
         expected_pid = 0;              // Reset for next CAS attempt
         backoff_strategy(iteration++); // Exponential backoff
@@ -109,7 +112,7 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
 
 void SharedSpinLock::lock()
 {
-    if (!try_lock_for(0)) // 0 means indefinite wait
+    if (!try_lock_for(-1)) // -1 means indefinite wait
     {
         // This should theoretically not happen for indefinite wait,
         // but included for robustness.

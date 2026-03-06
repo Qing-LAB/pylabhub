@@ -90,12 +90,14 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
     SharedSpinLock(SharedSpinLockState *state, std::string name);
 
     /**
-     * @brief Acquires the spin-lock, blocking if necessary.
-     * @param timeout_ms The maximum time to wait for the lock. 0 means no timeout (spin
-     * indefinitely).
-     * @return True if the lock was acquired, false if timeout occurred.
+     * @brief Attempts to acquire the spin-lock with a timeout.
+     * @param timeout_ms  Timeout convention (consistent with acquire_write_slot / POSIX):
+     *   -  `< 0` : wait indefinitely until acquired (spin forever).
+     *   - `== 0` : non-blocking — return false immediately if not free.
+     *   -  `> 0` : wait up to N milliseconds, then return false.
+     * @return True if the lock was acquired, false on timeout.
      */
-    bool try_lock_for(int timeout_ms = 0);
+    bool try_lock_for(int timeout_ms = -1);
 
     /**
      * @brief Acquires the spin-lock, blocking indefinitely until acquired.
