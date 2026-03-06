@@ -6,15 +6,34 @@
 
 ## Archive batches
 
-### 2026-03-06 (Old Code Review Triage + Security Fixes)
+### 2026-03-06 Batch 2 (Closed Reviews + Deferred Design Docs)
 
-Triaged three code review documents from 2026-03-03 against current source (848 tests).
+Archived all remaining open tech_draft/ review documents after verifying all items
+fixed or deferred. ZmqQueue+Broadcast review had 22 items (all fixed; PC4 deferred
+to HEP-0023). ZmqVirtualChannel+Federation review had 6 items (all fixed). Memory
+layout redesign (single flex zone + re-mapping) remains a deferred future design.
+Deferred security items tracked in `docs/TODO_MASTER.md`. Test count: 882 (881 pass; 1 flake).
+
+**Archived to `docs/archive/transient-2026-03-06/` (Batch 2):**
+
+| Archived | Reason |
+|---|---|
+| `REVIEW_codebase_2026-03-06.md` | Consolidated review CLOSED; deferred items in TODO_MASTER.md |
+| `REVIEW-ZmqQueue-Broadcast-2026-03-06.md` | All 22 items fixed; PC4 deferred to HEP-0023 |
+| `REVIEW-ZmqVirtualChannel-Federation-2026-03-06.md` | All 6 items fixed; CLOSED |
+| `DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md` | Deferred design (not actively in progress); find in archive when ready to implement |
+
+---
+
+### 2026-03-06 Batch 1 (Old Code Review Triage + Security Fixes)
+
+Triaged three code review documents from 2026-03-03 against current source (882 tests).
 Fixes applied: SHM-C1 (heartbeat CAS corruption), IPC-C3 (thread lambda this-capture),
 SVC-C1/C2/C3 (key material not zeroed), HDR-C1 (namespace outside __cplusplus).
 
-**Consolidated source-of-truth review**: `docs/code_review/REVIEW_codebase_2026-03-06.md`
+**Consolidated source-of-truth review**: `docs/archive/transient-2026-03-06/REVIEW_codebase_2026-03-06.md` (archived Batch 2)
 
-**Archived to `docs/archive/transient-2026-03-06/`:**
+**Archived to `docs/archive/transient-2026-03-06/` (Batch 1):**
 
 | Archived | Reason |
 |---|---|
