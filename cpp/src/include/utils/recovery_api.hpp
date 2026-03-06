@@ -55,7 +55,7 @@ extern "C"
         uint8_t writer_waiting;    ///< 1 if a writer is blocked for readers to drain.
         bool is_stuck;             ///< Heuristic: true if the slot appears to be stuck.
         uint64_t
-            stuck_duration_ms; ///< Approximate duration the slot has been stuck (if applicable).
+            stuck_duration_ms; ///< Always 0 — not yet implemented (requires acquire timestamp in SharedSpinLockState).
     } SlotDiagnostic;
 
     /**

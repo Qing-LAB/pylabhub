@@ -87,17 +87,25 @@ class InProcessSpinState
             backoff(i++);
     }
 
-    /** Try to acquire with timeout using the given token. Uses std::chrono (header-only; cross-process code uses platform::monotonic_time_ns). */
+    /** Try to acquire with timeout using the given token. Uses std::chrono (header-only; cross-process code uses platform::monotonic_time_ns).
+     *  Timeout convention: 0 = non-blocking, < 0 = wait indefinitely, > 0 = wait up to N ms. */
     bool try_lock_for_with_token(int timeout_ms, uint64_t token) noexcept
     {
         if (detail::try_acquire_token(&state_, token))
             return true;
-        if (timeout_ms <= 0)
-            return false;
-        auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeout_ms);
+        if (timeout_ms == 0)
+            return false; // non-blocking
         pylabhub::utils::ThreePhaseBackoff backoff;
         int iteration = 0;
+        if (timeout_ms < 0)
+        {
+            // Infinite wait
+            while (!detail::try_acquire_token(&state_, token))
+                backoff(iteration++);
+            return true;
+        }
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeout_ms);
         while (std::chrono::steady_clock::now() < deadline)
         {
             if (detail::try_acquire_token(&state_, token))

@@ -14,6 +14,7 @@
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 #include <zmq.h>
 
 #include <algorithm>
@@ -113,6 +114,15 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
 class BrokerServiceImpl
 {
 public:
+    /// [IPC-H2] Zero secret key material before member destructors run.
+    ~BrokerServiceImpl()
+    {
+        if (!server_secret_z85.empty())
+            sodium_memzero(server_secret_z85.data(), server_secret_z85.size());
+        if (!cfg.server_secret_key.empty())
+            sodium_memzero(cfg.server_secret_key.data(), cfg.server_secret_key.size());
+    }
+
     BrokerService::Config cfg;
     std::string           server_public_z85;
     std::string           server_secret_z85;
