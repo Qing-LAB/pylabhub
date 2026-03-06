@@ -118,7 +118,8 @@ extern "C"
                 if (!pylabhub::hub::is_writer_alive(header, out->write_lock))
                 {
                     out->is_stuck = true;
-                    // Not yet implemented: stuck_duration_ms requires timestamp when lock was acquired. See DATAHUB_TODO.
+                    // Not yet implemented: stuck_duration_ms requires timestamp when lock was acquired.
+                    // See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
                 }
             }
             else if (out->reader_count > 0)

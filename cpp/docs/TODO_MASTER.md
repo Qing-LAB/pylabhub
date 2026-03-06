@@ -132,13 +132,15 @@ Completed:
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
 | Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Two-tier shutdown (CHANNEL_CLOSING_NOTIFY + FORCE_SHUTDOWN); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay; HEP-0007 §12 |
 | ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
-| Hub Federation Broadcast | ✅ Core implemented | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 broker protocol implemented.** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG (originator_uid), dedup window (relay_dedup_queue_+set_), channel_to_peer_identities_ index. L3 federation tests in test_datahub_hub_federation.cpp. Remaining: HubScript on_hub_connected/disconnected/message callbacks + api.notify_hub (Phase 5+6). |
+| Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
 **Active code reviews:** None. (All 2026-03-06 reviews closed and archived to `docs/archive/transient-2026-03-06/`; see `docs/DOC_ARCHIVE_LOG.md` for full history.)
 
 **Security fixes applied (2026-03-06):** SHM-C1 (heartbeat CAS uid/name write-before-CAS → data corruption), IPC-C3 (thread lambda `this`-capture → use-after-move), SVC-C1 (vault_crypto key not zeroed), SVC-C2/C3 (hub_vault sec+admin token buffers not zeroed), HDR-C1 (namespace outside `#ifdef __cplusplus`). See `REVIEW_codebase_2026-03-06.md` for full triage.
 
-**Deferred security items (from 2026-03-06 review):** SHM-C2 (write_index burned on timeout — known limitation); IPC-H2 (BrokerService secret key not zeroed on destruction — needs SecureString or custom dtor); IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
+**Security fixes applied (2026-03-06, session 2):** IPC-H2 (BrokerService `server_secret_z85` + `cfg.server_secret_key` now zeroed in `~BrokerServiceImpl()` via `sodium_memzero`).
+
+**Remaining deferred security items:** SHM-C2 (write_index burned on timeout — known limitation); IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred
@@ -165,9 +167,9 @@ See `docs/todo/README.md` for full list and archiving history.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Dual-hub bridge demo (`share/demo-dual-hub/`) | 🟡 In Progress | Demo dir exists (untracked); configs need update now that HEP-0021/0022 are implemented. See `calm-herding-koala.md` plan. |
-| HEP-0022 Phase 5+6: HubScript federation callbacks | 🔵 Pending | `on_hub_connected`, `on_hub_disconnected`, `on_hub_message`, `api.notify_hub()` not yet wired into HubScript. Broker protocol is done. |
-| Security: IPC-H2 BrokerService key zeroing | 🔵 Deferred | `BrokerServiceImpl` holds `server_secret_key` std::string; needs SecureString or zeroing destructor. |
+| Dual-hub bridge demo (`share/demo-dual-hub/`) | 🔵 Deferred | Explicitly deferred (2026-03-06). Demo dir exists (untracked); defer until transport field plan is revisited. |
+| HEP-0022 Phase 5+6: HubScript federation callbacks | ✅ Complete | `on_hub_connected`, `on_hub_disconnected`, `on_hub_message`, `api.notify_hub()` fully wired in `hub_script.cpp` + `hub_script_api.cpp` + `hubshell.cpp`. Confirmed 2026-03-06. |
+| Security: IPC-H2 BrokerService key zeroing | ✅ Fixed (2026-03-06) | `~BrokerServiceImpl()` zeros `server_secret_z85` + `cfg.server_secret_key` via `sodium_memzero`. |
 
 See `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md`.
 

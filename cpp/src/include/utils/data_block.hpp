@@ -700,7 +700,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * 3. Producer calls `commit_structure_remap()` → updates schema_hash
      * 4. Broker signals consumers to call `reattach_after_remap()`
      *
-     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
+     * See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
     [[nodiscard]] uint64_t request_structure_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
@@ -716,7 +716,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @param new_datablock_schema New slot structure (if remapping slots)
      * @throws std::runtime_error always — not yet implemented.
      *
-     * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
+     * See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
     void commit_structure_remap(
         uint64_t request_id,
