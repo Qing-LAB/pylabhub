@@ -140,14 +140,24 @@ of transport. This section explains when to choose each.
 ### 4.1 Interface
 
 ```cpp
-// hub::Queue (abstract base, hub_queue.hpp)
+// hub::Queue (abstract base, hub_queue.hpp) — acquire/release protocol
 class Queue {
 public:
-    virtual void        start()          = 0;  // ShmQueue: no-op; ZmqQueue: bind/connect + recv thread
-    virtual void        stop()           = 0;  // ShmQueue: no-op; ZmqQueue: join recv thread
-    virtual ReadResult  read(duration)   = 0;  // blocking read with timeout
-    virtual bool        write(const void* data, size_t size) = 0;
-    virtual OverflowPolicy overflow_policy() const = 0;
+    virtual bool  start()   = 0;  // ShmQueue: no-op; ZmqQueue: bind/connect + recv thread
+    virtual void  stop()    = 0;  // ShmQueue: no-op; ZmqQueue: join recv thread
+
+    // Reading
+    virtual const void* read_acquire(std::chrono::milliseconds timeout) noexcept = 0;
+    virtual void        read_release() noexcept = 0;
+
+    // Writing
+    virtual void* write_acquire(std::chrono::milliseconds timeout) noexcept = 0;
+    virtual void  write_commit() noexcept  = 0;
+    virtual void  write_abort() noexcept   = 0;
+
+    virtual size_t      item_size()  const noexcept = 0;
+    virtual std::string name()       const          = 0;
+    virtual bool        is_running() const noexcept = 0;
 };
 ```
 
@@ -410,19 +420,21 @@ in_queue_  = in_consumer_->queue();   // ShmQueue or ZmqQueue, resolved by broke
 out_queue_ = out_producer_->queue();  // ShmQueue or ZmqQueue, declared by producer
 ```
 
-`ProcessorConfig` fields `in_transport`, `out_transport`, `zmq_in_endpoint`,
-`zmq_out_endpoint`, `zmq_in_bind`, `zmq_out_bind`, `zmq_buffer_depth` are
-**replaced** by:
+`ProcessorConfig` fields `in_transport`, `zmq_in_endpoint`, `zmq_in_bind`, and
+`zmq_buffer_depth` are **removed** (input transport auto-discovered from broker).
+The output-side fields are retained but reduced to:
 
 ```json
 {
   "out_transport":    "zmq",
-  "zmq_out_endpoint": "tcp://127.0.0.1:5580"
+  "zmq_out_endpoint": "tcp://127.0.0.1:5580",
+  "zmq_out_bind":     true
 }
 ```
 
-Only the **producer side** (`out_transport`, `zmq_out_endpoint`) needs explicit
-configuration — the consumer side discovers dynamically from the broker.
+Only the **producer side** (`out_transport`, `zmq_out_endpoint`, `zmq_out_bind`)
+needs explicit configuration — the consumer side discovers dynamically from the broker.
+`zmq_out_bind` defaults to `true` (PUSH socket binds; PULL connects).
 
 ---
 

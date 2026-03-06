@@ -23,6 +23,7 @@
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 namespace pylabhub::broker
@@ -144,9 +145,23 @@ public:
     /// hub_uid → InboundPeer; only accessed from the run() thread (no mutex needed).
     std::unordered_map<std::string, InboundPeer> inbound_peers_;
 
-    /// Rolling dedup window: msg_id → expiry time. Prevents double-delivery of relays.
+    /// [BR5] Inverted index: channel_name → list of peer zmq_identities subscribed to it.
+    /// Updated on HELLO/BYE. Enables O(1) per-channel relay lookup instead of O(peers×channels).
+    std::unordered_map<std::string, std::vector<std::string>> channel_to_peer_identities_;
+
+    /// [BR1] Track which hub_uids have already triggered on_hub_connected, to avoid
+    /// double-firing in bidirectional federation (each side sends HELLO + receives ACK).
+    std::unordered_set<std::string> hub_connected_notified_;
+
+    /// [BR7] Relay dedup: ordered deque for O(expired) pruning + set for O(1) lookup.
     static constexpr std::chrono::seconds kRelayDedupeWindow{5};
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_dedup_;
+    struct RelayDedupEntry
+    {
+        std::string                            msg_id;
+        std::chrono::steady_clock::time_point  expiry;
+    };
+    std::deque<RelayDedupEntry>       relay_dedup_queue_; ///< Ordered by expiry (monotone insert)
+    std::unordered_set<std::string>   relay_dedup_set_;   ///< O(1) existence check
 
     /// Monotone sequence counter for outgoing HUB_RELAY_MSG msg_id.
     uint64_t relay_seq_{0};
@@ -1430,10 +1445,14 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
     }
 
     // Forward as CHANNEL_EVENT_NOTIFY to the producer.
+    // [BR3] Include originator_uid="" (empty = local origin) so the script can detect
+    // whether an event was originated locally or relayed from a federation peer, allowing
+    // it to avoid re-notifying in response to a relayed event (application-layer loop guard).
     nlohmann::json fwd;
-    fwd["channel_name"] = target_channel;
-    fwd["event"]        = event;
-    fwd["sender_uid"]   = sender_uid;
+    fwd["channel_name"]   = target_channel;
+    fwd["event"]          = event;
+    fwd["sender_uid"]     = sender_uid;
+    fwd["originator_uid"] = "";   // Empty = originated on this hub
     if (req.contains("data") && req["data"].is_string())
         fwd["data"] = req["data"];
 
@@ -1516,9 +1535,13 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
                  target_channel, message, entry->consumers.size());
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
+    // [BR6] Use fixed event name "broadcast" and put the message in the payload field,
+    // consistent with how CHANNEL_EVENT_NOTIFY delivers local broadcast events.
     const std::string data_str = req.contains("data") && req["data"].is_string()
                                      ? req["data"].get<std::string>() : std::string{};
-    relay_notify_to_peers(socket, target_channel, "broadcast:" + message, sender_uid, data_str);
+    const std::string relay_payload = data_str.empty() ? message
+                                                       : message + "|" + data_str;
+    relay_notify_to_peers(socket, target_channel, "broadcast", sender_uid, relay_payload);
 }
 
 // ============================================================================
@@ -1855,9 +1878,33 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
         }
     }
 
-    // Register as inbound peer.
     const std::string identity_str(static_cast<const char*>(identity.data()), identity.size());
+
+    // [BR2] If this peer was already registered (e.g. reconnect after crash), fire
+    // on_hub_disconnected for the old entry before overwriting it.
+    auto existing = inbound_peers_.find(peer_hub_uid);
+    if (existing != inbound_peers_.end())
+    {
+        LOGGER_INFO("Broker: federation peer '{}' re-connected — treating as reconnect",
+                    peer_hub_uid);
+        // Remove old channels from the inverted index. [BR5]
+        for (const auto& ch : existing->second.relay_channels)
+        {
+            auto& vec = channel_to_peer_identities_[ch];
+            vec.erase(std::remove(vec.begin(), vec.end(), existing->second.zmq_identity),
+                      vec.end());
+        }
+        hub_connected_notified_.erase(peer_hub_uid); // Allow re-notification after reconnect.
+        if (cfg.on_hub_disconnected)
+            cfg.on_hub_disconnected(peer_hub_uid);
+    }
+
+    // Register as inbound peer.
     inbound_peers_[peer_hub_uid] = {peer_hub_uid, identity_str, relay_channels};
+
+    // [BR5] Update inverted channel → peer-identities index.
+    for (const auto& ch : relay_channels)
+        channel_to_peer_identities_[ch].push_back(identity_str);
 
     LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]",
                 peer_hub_uid, [&]{
@@ -1872,7 +1919,9 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     ack["hub_uid"]           = cfg.self_hub_uid;
     send_reply(socket, identity, "HUB_PEER_HELLO_ACK", ack);
 
-    if (cfg.on_hub_connected)
+    // [BR1] Fire on_hub_connected only if not already notified (prevents double-fire
+    // in bidirectional federation where each side sends HELLO and receives an ACK).
+    if (cfg.on_hub_connected && hub_connected_notified_.insert(peer_hub_uid).second)
         cfg.on_hub_connected(peer_hub_uid);
 }
 
@@ -1881,13 +1930,21 @@ void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
     const std::string peer_hub_uid = payload.value("hub_uid", "");
     if (peer_hub_uid.empty()) return;
 
-    const bool was_known = inbound_peers_.erase(peer_hub_uid) > 0;
-    if (was_known)
+    auto it = inbound_peers_.find(peer_hub_uid);
+    if (it == inbound_peers_.end()) return;
+
+    // [BR5] Remove this peer's identity from the inverted channel index.
+    for (const auto& ch : it->second.relay_channels)
     {
-        LOGGER_INFO("Broker: federation peer '{}' sent BYE — removed", peer_hub_uid);
-        if (cfg.on_hub_disconnected)
-            cfg.on_hub_disconnected(peer_hub_uid);
+        auto& vec = channel_to_peer_identities_[ch];
+        vec.erase(std::remove(vec.begin(), vec.end(), it->second.zmq_identity), vec.end());
     }
+    inbound_peers_.erase(it);
+    hub_connected_notified_.erase(peer_hub_uid); // [BR1] Allow re-notification on reconnect.
+
+    LOGGER_INFO("Broker: federation peer '{}' sent BYE — removed", peer_hub_uid);
+    if (cfg.on_hub_disconnected)
+        cfg.on_hub_disconnected(peer_hub_uid);
 }
 
 void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string&    peer_hub_uid,
@@ -1897,7 +1954,8 @@ void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string&    peer_hub
     if (status == "ok")
     {
         LOGGER_INFO("Broker: federation HUB_PEER_HELLO_ACK from '{}' — connected", peer_hub_uid);
-        if (cfg.on_hub_connected)
+        // [BR1] Only fire on_hub_connected once per peer (insert returns false if already present).
+        if (cfg.on_hub_connected && hub_connected_notified_.insert(peer_hub_uid).second)
             cfg.on_hub_connected(peer_hub_uid);
     }
     else
@@ -1911,18 +1969,18 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
                                               const nlohmann::json& payload)
 {
     // Protocol invariant: relay=true means never re-relay to our own peers.
-    // Check dedup window.
+    // [BR7] Check dedup using O(1) set lookup; insert into ordered deque for O(expired) prune.
     const std::string msg_id = payload.value("msg_id", "");
     if (!msg_id.empty())
     {
-        const auto now = std::chrono::steady_clock::now();
-        auto it = relay_dedup_.find(msg_id);
-        if (it != relay_dedup_.end() && it->second > now)
+        if (relay_dedup_set_.count(msg_id) > 0)
         {
             LOGGER_DEBUG("Broker: HUB_RELAY_MSG dedup drop msg_id='{}'", msg_id);
             return;
         }
-        relay_dedup_[msg_id] = now + kRelayDedupeWindow;
+        const auto expiry = std::chrono::steady_clock::now() + kRelayDedupeWindow;
+        relay_dedup_set_.insert(msg_id);
+        relay_dedup_queue_.push_back({msg_id, expiry});
     }
 
     const std::string channel      = payload.value("channel_name",   "");
@@ -1945,11 +2003,13 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
         return;
     }
 
+    // [BR3] Include originator_uid (non-empty = relayed from federation peer) so the script
+    // can detect the relay origin and avoid re-notifying (which would create an app-level loop).
     nlohmann::json fwd;
-    fwd["channel_name"] = channel;
-    fwd["event"]        = event;
-    fwd["sender_uid"]   = sender_uid;
-    fwd["relayed_from"] = originator;
+    fwd["channel_name"]   = channel;
+    fwd["event"]          = event;
+    fwd["sender_uid"]     = sender_uid;
+    fwd["originator_uid"] = originator;  // Non-empty = relayed from a federation peer
     if (payload.contains("payload"))
         fwd["data"] = payload["payload"];
 
@@ -1960,7 +2020,14 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
 
 void BrokerServiceImpl::handle_hub_targeted_msg(const nlohmann::json& payload)
 {
-    if (!cfg.on_hub_message) return;
+    // [BR4] Log a warning so operators know targeted messages are being silently dropped.
+    if (!cfg.on_hub_message)
+    {
+        const std::string ch = payload.value("channel_name", "?");
+        LOGGER_WARN("Broker: HUB_TARGETED_MSG for channel '{}' dropped — on_hub_message not configured",
+                    ch);
+        return;
+    }
 
     const std::string channel    = payload.value("channel_name", "");
     const std::string p_payload  = payload.value("payload",      "");
@@ -1974,45 +2041,47 @@ void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t&     socket,
                                                const std::string& sender_uid,
                                                const std::string& data)
 {
-    if (inbound_peers_.empty() || cfg.self_hub_uid.empty()) return;
+    if (cfg.self_hub_uid.empty()) return;
 
-    for (const auto& [uid, peer] : inbound_peers_)
+    // [BR5] O(1) lookup via inverted index instead of O(peers × relay_channels).
+    auto idx_it = channel_to_peer_identities_.find(channel);
+    if (idx_it == channel_to_peer_identities_.end() || idx_it->second.empty()) return;
+
+    const std::string msg_id = cfg.self_hub_uid + ":" + std::to_string(relay_seq_++);
+
+    for (const auto& peer_identity : idx_it->second)
     {
-        // Check if this peer is subscribed to this channel.
-        const auto& chans = peer.relay_channels;
-        if (std::find(chans.begin(), chans.end(), channel) == chans.end()) continue;
-
         nlohmann::json relay;
         relay["relay"]          = true;
         relay["channel_name"]   = channel;
         relay["originator_uid"] = cfg.self_hub_uid;
-        relay["msg_id"]         = cfg.self_hub_uid + ":" + std::to_string(relay_seq_++);
+        relay["msg_id"]         = msg_id;
         relay["event"]          = event;
         relay["sender_uid"]     = sender_uid;
         if (!data.empty()) relay["payload"] = data;
 
         try
         {
-            send_to_identity(socket, peer.zmq_identity, "HUB_RELAY_MSG", relay);
-            LOGGER_DEBUG("Broker: relayed '{}' event='{}' to peer '{}'",
-                         channel, event, uid);
+            send_to_identity(socket, peer_identity, "HUB_RELAY_MSG", relay);
+            LOGGER_DEBUG("Broker: relayed '{}' event='{}' to peer identity '{}'",
+                         channel, event, peer_identity);
         }
         catch (const zmq::error_t& e)
         {
-            LOGGER_WARN("Broker: relay to peer '{}' failed: {}", uid, e.what());
+            LOGGER_WARN("Broker: relay to peer '{}' for channel '{}' failed: {}",
+                        peer_identity, channel, e.what());
         }
     }
 }
 
 void BrokerServiceImpl::prune_relay_dedup()
 {
+    // [BR7] O(expired) prune: pop from the front of the ordered deque while expired.
     const auto now = std::chrono::steady_clock::now();
-    for (auto it = relay_dedup_.begin(); it != relay_dedup_.end(); )
+    while (!relay_dedup_queue_.empty() && relay_dedup_queue_.front().expiry <= now)
     {
-        if (it->second <= now)
-            it = relay_dedup_.erase(it);
-        else
-            ++it;
+        relay_dedup_set_.erase(relay_dedup_queue_.front().msg_id);
+        relay_dedup_queue_.pop_front();
     }
 }
 

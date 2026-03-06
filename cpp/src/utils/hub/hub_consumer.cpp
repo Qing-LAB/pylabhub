@@ -8,11 +8,13 @@
 #include "cppzmq/zmq_addon.hpp"
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <optional>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
@@ -66,9 +68,13 @@ struct ConsumerImpl
 
     // Active mode
     std::atomic<bool> running{false};
+    std::atomic<bool> stop_requested_{false}; ///< Set by stop(); used by is_stopping(). [PC2]
     std::thread       data_thread_handle;
     std::thread       ctrl_thread_handle;
     std::thread       shm_thread_handle;
+
+    // Guards user-facing callbacks during concurrent close(). [PC1]
+    mutable std::mutex callbacks_mu;
 
     // Outgoing ctrl messages queued for ctrl_thread to send on the DEALER socket.
     // Prevents cross-thread ZMQ socket access when Consumer is started.
@@ -478,19 +484,24 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
     // them before destroying pImpl, preventing use-after-free.
     const std::string ch = raw->handle.channel_name();
 
+    // [PC1] Messenger callbacks run on the Messenger worker thread and may race with
+    // close(). Copy the user callback under callbacks_mu before invoking it.
     messenger.on_channel_closing(ch, [raw]() {
-        if (!raw->closed && raw->on_channel_closing_cb)
-            raw->on_channel_closing_cb();
+        std::function<void()> cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_channel_closing_cb; }
+        if (!raw->closed && cb) cb();
     });
 
     messenger.on_force_shutdown(ch, [raw]() {
-        if (!raw->closed && raw->on_force_shutdown_cb)
-            raw->on_force_shutdown_cb();
+        std::function<void()> cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_force_shutdown_cb; }
+        if (!raw->closed && cb) cb();
     });
 
     messenger.on_channel_error(ch, [raw](std::string event, nlohmann::json details) {
-        if (!raw->closed && raw->on_channel_error_cb)
-            raw->on_channel_error_cb(event, details);
+        Consumer::ChannelErrorCallback cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_channel_error_cb; }
+        if (!raw->closed && cb) cb(event, details);
     });
 
     // HEP-CORE-0021: create ZMQ PULL socket when broker reported data_transport=="zmq".
@@ -504,9 +515,25 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
             return std::nullopt;
         }
         // PUSH binds → PULL connects (bind=false).
-        impl->zmq_queue_ = ZmqQueue::pull_from(ep, opts.zmq_slot_size, /*bind=*/false,
-                                                opts.zmq_buffer_depth);
-        impl->zmq_queue_->start();
+        // Derive 8-byte schema tag from the first 8 bytes of expected_schema_hash (binary).
+        std::optional<std::array<uint8_t, 8>> schema_tag;
+        if (opts.expected_schema_hash.size() >= 8)
+        {
+            std::array<uint8_t, 8> tag{};
+            std::memcpy(tag.data(), opts.expected_schema_hash.data(), 8);
+            schema_tag = tag;
+        }
+        impl->zmq_queue_ = ZmqQueue::pull_from(ep, opts.zmq_schema, opts.zmq_packing,
+                                                /*bind=*/false, opts.zmq_buffer_depth, schema_tag);
+        if (!impl->zmq_queue_)
+        {
+            return std::nullopt; // Error already logged by factory (empty/invalid schema, etc.)
+        }
+        if (!impl->zmq_queue_->start()) // [ZQ2] Check return value — connect may fail.
+        {
+            LOGGER_ERROR("[consumer] ZMQ PULL socket start() failed for '{}'", ep);
+            return std::nullopt;
+        }
         LOGGER_INFO("[consumer] ZMQ PULL socket connected to '{}'", ep);
     }
 
@@ -571,20 +598,22 @@ bool Consumer::start()
     {
         return false; // Already running
     }
+    pImpl->stop_requested_.store(false, std::memory_order_relaxed); // [PC2]
 
     // data_thread handles the data socket (SUB/PULL for PubSub/Pipeline; not for Bidir)
+    auto *impl_ptr = pImpl.get();
     if (channel_handle_data_socket(pImpl->handle))
     {
-        pImpl->data_thread_handle = std::thread([this] { pImpl->run_data_thread(); });
+        pImpl->data_thread_handle = std::thread([impl_ptr] { impl_ptr->run_data_thread(); });
     }
 
     // ctrl_thread handles the ctrl socket (DEALER for all patterns)
-    pImpl->ctrl_thread_handle = std::thread([this] { pImpl->run_ctrl_thread(); });
+    pImpl->ctrl_thread_handle = std::thread([impl_ptr] { impl_ptr->run_ctrl_thread(); });
 
     // shm_thread only when SHM is attached
     if (pImpl->shm)
     {
-        pImpl->shm_thread_handle = std::thread([this] { pImpl->run_shm_thread(); });
+        pImpl->shm_thread_handle = std::thread([impl_ptr] { impl_ptr->run_shm_thread(); });
     }
 
     return true;
@@ -600,6 +629,7 @@ void Consumer::stop()
     {
         return; // Was not running
     }
+    pImpl->stop_requested_.store(true, std::memory_order_relaxed); // [PC2]
 
     // Wake shm_thread if it is sleeping in Queue-mode idle wait.
     // Without this notify, shm_thread would sleep indefinitely until the CV timeout.
@@ -622,6 +652,7 @@ void Consumer::stop()
     if (pImpl->zmq_queue_)
     {
         pImpl->zmq_queue_->stop();
+        pImpl->zmq_queue_.reset(); // [PC3 analog] Null after stop.
     }
 }
 
@@ -769,7 +800,9 @@ void Consumer::_store_read_handler(std::shared_ptr<InternalReadHandlerFn> h) noe
 
 bool Consumer::is_stopping() const noexcept
 {
-    return pImpl && !pImpl->running.load(std::memory_order_relaxed);
+    // [PC2] Use stop_requested_ (defaults false before start()) instead of !running,
+    // which was true before start() causing is_stopping() to incorrectly return true.
+    return pImpl && pImpl->stop_requested_.load(std::memory_order_relaxed);
 }
 
 bool Consumer::has_realtime_handler() const noexcept
@@ -856,9 +889,17 @@ void Consumer::close()
     if (pImpl->messenger && pImpl->handle.is_valid())
     {
         const std::string &ch = pImpl->handle.channel_name();
+        // Clear Messenger-registered lambdas first so no new invocations can start.
         pImpl->messenger->on_channel_closing(ch, nullptr);
         pImpl->messenger->on_force_shutdown(ch, nullptr);
         pImpl->messenger->on_channel_error(ch, nullptr);
+        // Null user callbacks under the guard used by Messenger lambdas. [PC1]
+        {
+            std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
+            pImpl->on_channel_closing_cb = nullptr;
+            pImpl->on_force_shutdown_cb  = nullptr;
+            pImpl->on_channel_error_cb   = nullptr;
+        }
         // Deregister from broker (fire-and-forget via Messenger worker thread).
         pImpl->messenger->deregister_consumer(ch);
     }

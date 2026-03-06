@@ -132,9 +132,13 @@ Completed:
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
 | Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Two-tier shutdown (CHANNEL_CLOSING_NOTIFY + FORCE_SHUTDOWN); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay; HEP-0007 §12 |
 | ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
-| Hub Federation Broadcast | 🔵 Design | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 draft (2026-03-05).** Stable inter-hub ctrl relay; one-hop; loop-safe; CURVE auth; `hub.json` peers config; HubScript callbacks. Implementation pending. |
+| Hub Federation Broadcast | ✅ Core implemented | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 broker protocol implemented.** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG (originator_uid), dedup window (relay_dedup_queue_+set_), channel_to_peer_identities_ index. L3 federation tests in test_datahub_hub_federation.cpp. Remaining: HubScript on_hub_connected/disconnected/message callbacks + api.notify_hub (Phase 5+6). |
 
-**Active code reviews:** None. (2026-02-27 reviews archived to `docs/archive/transient-2026-02-27/`; 2026-03-01 Round 2 reviews archived to `docs/archive/transient-2026-03-01/`; SECURITY/RAII/MEMORY_LAYOUT TODOs archived to `docs/archive/transient-2026-03-02/`; all logged in `docs/DOC_ARCHIVE_LOG.md`.)
+**Active code reviews:** None. (2026-03-06 consolidated review closed — `docs/code_review/REVIEW_codebase_2026-03-06.md`; old 2026-03-03 reviews archived to `docs/archive/transient-2026-03-06/`; all prior reviews in `docs/DOC_ARCHIVE_LOG.md`.)
+
+**Security fixes applied (2026-03-06):** SHM-C1 (heartbeat CAS uid/name write-before-CAS → data corruption), IPC-C3 (thread lambda `this`-capture → use-after-move), SVC-C1 (vault_crypto key not zeroed), SVC-C2/C3 (hub_vault sec+admin token buffers not zeroed), HDR-C1 (namespace outside `#ifdef __cplusplus`). See `REVIEW_codebase_2026-03-06.md` for full triage.
+
+**Deferred security items (from 2026-03-06 review):** SHM-C2 (write_index burned on timeout — known limitation); IPC-H2 (BrokerService secret key not zeroed on destruction — needs SecureString or custom dtor); IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred
@@ -157,15 +161,15 @@ See `docs/todo/README.md` for full list and archiving history.
 - `RAII_LAYER_TODO.md` → `docs/archive/transient-2026-03-02/` (RAII layer complete)
 - `MEMORY_LAYOUT_TODO.md` → `docs/archive/transient-2026-03-02/` (memory layout complete)
 
-### Active Design Drafts
+### Pending / In-Progress
 
-| HEP | Title | Status |
-|-----|-------|--------|
-| HEP-CORE-0021 | ZMQ Virtual Channel Node — broker-aware peer-to-peer endpoints; discovery via `in_hub_dir` | **Draft** (2026-03-05) — design complete, implementation pending |
-| HEP-CORE-0022 | Hub Federation Broadcast — stable inter-hub ctrl relay, one-hop, loop-safe, CURVE auth | **Draft** (2026-03-05) — design complete, implementation pending |
+| Item | Status | Notes |
+|------|--------|-------|
+| Dual-hub bridge demo (`share/demo-dual-hub/`) | 🟡 In Progress | Demo dir exists (untracked); configs need update now that HEP-0021/0022 are implemented. See `calm-herding-koala.md` plan. |
+| HEP-0022 Phase 5+6: HubScript federation callbacks | 🔵 Pending | `on_hub_connected`, `on_hub_disconnected`, `on_hub_message`, `api.notify_hub()` not yet wired into HubScript. Broker protocol is done. |
+| Security: IPC-H2 BrokerService key zeroing | 🔵 Deferred | `BrokerServiceImpl` holds `server_secret_key` std::string; needs SecureString or zeroing destructor. |
 
-See `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` and
-`docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md`.
+See `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md`.
 
 ---
 

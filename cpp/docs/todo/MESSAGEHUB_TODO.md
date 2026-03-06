@@ -10,6 +10,12 @@
 
 ## Current Status
 
+✅ **848 tests (2026-03-06).** Security fixes applied from old code review triage.
+Active code review: `docs/code_review/REVIEW_codebase_2026-03-06.md` (CLOSED — all items resolved)
+
+✅ **848 tests (2026-03-05/06).** HEP-CORE-0021 ZMQ Virtual Channel Node implemented.
+Security fixes: SHM-C1 (heartbeat CAS), IPC-C3 (thread lambda), SVC-C1/C2/C3 (key zeroing), HDR-C1 (C-safety).
+
 ✅ **828 tests (2026-03-05).** HEP-CORE-0019 Metrics Plane fully implemented.
 All event handlers wired, CHANNEL_NOTIFY_REQ broker relay, `notify_channel()` on all 3 APIs.
 L4 integration test validation hardened: ASSERT on file existence/non-empty before content checks.

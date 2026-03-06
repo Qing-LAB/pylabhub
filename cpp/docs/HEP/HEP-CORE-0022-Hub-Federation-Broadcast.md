@@ -319,7 +319,7 @@ sequenceDiagram
     HA->>HA: Is "lab.bridge.raw" in Hub B's relay_channels?  YES
     HA->>HB: HUB_RELAY_MSG {relay=true, msg_id="HUB-A:1",<br/>channel, event, sender_uid, data}
     HB->>HB: relay=true → do NOT re-relay<br/>Check msg_id dedup → not seen<br/>Record msg_id (5s TTL)
-    HB->>PB: CHANNEL_EVENT_NOTIFY {event, sender_uid, data,<br/>relayed_from="HUB-A"}
+    HB->>PB: CHANNEL_EVENT_NOTIFY {event, sender_uid, data,<br/>originator_uid="HUB-A"}
 ```
 
 ### 6.3 Hub-Targeted Message
@@ -467,13 +467,14 @@ as a standard `CHANNEL_EVENT_NOTIFY` with the following additional field:
 {
     "event":           "calibration",        # original event string
     "sender_uid":      "PROD-BRIDGE-...",    # original sender
-    "relayed_from":    "HUB-DEMOA-00000001", # new field: source hub UID
+    "originator_uid":  "HUB-DEMOA-00000001", # non-empty = relayed from peer hub
     "channel_name":    "lab.bridge.status"
 }
 ```
 
-The `relayed_from` field allows local scripts to distinguish relayed events from
-locally-originated ones if needed.
+The `originator_uid` field is always present in `CHANNEL_EVENT_NOTIFY`. It is empty
+(`""`) for locally-originated events and non-empty (the source hub UID) for events
+relayed from a federation peer. Scripts use this to distinguish relayed events.
 
 ---
 

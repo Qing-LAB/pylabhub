@@ -1337,10 +1337,10 @@ int zmq_queue_roundtrip()
         {
             // Test Processor with ZmqQueue input and output.
             // Producer → ZmqQueue(PUSH) → ZmqQueue(PULL) → Processor → ZmqQueue(PUSH) → ZmqQueue(PULL) → verify
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17050",  sizeof(double), true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17050", sizeof(double), false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17051",  sizeof(double), true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17051", sizeof(double), false);
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17050",  {{"float64", 1, 0}}, "natural", true);
+            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17050", {{"float64", 1, 0}}, "natural", false);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17051",  {{"float64", 1, 0}}, "natural", true);
+            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17051", {{"float64", 1, 0}}, "natural", false);
 
             ASSERT_NE(in_push, nullptr);
             ASSERT_NE(in_pull, nullptr);
@@ -1402,10 +1402,10 @@ int zmq_queue_null_flexzone()
     return run_gtest_worker(
         []()
         {
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17052",  sizeof(double), true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17052", sizeof(double), false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17053",  sizeof(double), true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17053", sizeof(double), false);
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17052",  {{"float64", 1, 0}}, "natural", true);
+            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17052", {{"float64", 1, 0}}, "natural", false);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17053",  {{"float64", 1, 0}}, "natural", true);
+            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17053", {{"float64", 1, 0}}, "natural", false);
 
             ASSERT_NE(in_push, nullptr);
             ASSERT_NE(in_pull, nullptr);
@@ -1463,10 +1463,10 @@ int zmq_queue_timeout_handler()
     return run_gtest_worker(
         []()
         {
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17054",  sizeof(double), true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17054", sizeof(double), false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17055",  sizeof(double), true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17055", sizeof(double), false);
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17054",  {{"float64", 1, 0}}, "natural", true);
+            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17054", {{"float64", 1, 0}}, "natural", false);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17055",  {{"float64", 1, 0}}, "natural", true);
+            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17055", {{"float64", 1, 0}}, "natural", false);
 
             ASSERT_NE(in_push, nullptr);
             ASSERT_NE(in_pull, nullptr);
@@ -1541,8 +1541,8 @@ int shm_in_zmq_out()
             ASSERT_NE(in_queue, nullptr);
 
             // Output: ZMQ PUSH → PULL
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17056",  sizeof(double), true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17056", sizeof(double), false);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17056",  {{"float64", 1, 0}}, "natural", true);
+            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17056", {{"float64", 1, 0}}, "natural", false);
             ASSERT_NE(out_push, nullptr);
             ASSERT_NE(out_pull, nullptr);
 
@@ -1594,8 +1594,8 @@ int zmq_in_shm_out()
         []()
         {
             // Input: ZMQ PUSH → PULL
-            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:17057",  sizeof(double), true);
-            auto in_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17057", sizeof(double), false);
+            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:17057",  {{"float64", 1, 0}}, "natural", true);
+            auto in_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17057", {{"float64", 1, 0}}, "natural", false);
             ASSERT_NE(in_push, nullptr);
             ASSERT_NE(in_pull, nullptr);
 
