@@ -87,6 +87,13 @@ struct ConsumerInfo
     // ── actor identity (Phase 2) ─────────────────────────────────────────────
     std::string consumer_uid;  ///< Consumer actor UUID4; empty = anonymous
     std::string consumer_name; ///< Human-readable consumer actor name; empty = anonymous
+    // ── ZMQ Virtual Channel Node (HEP-CORE-0021) ─────────────────────────────
+    /// Data transport type: "shm" (default) or "zmq".
+    /// Set by the broker in DISC_ACK based on the producer's REG_REQ registration.
+    std::string data_transport{"shm"};
+    /// For data_transport="zmq": the PUSH endpoint to connect a PULL socket to.
+    /// Empty when data_transport="shm".
+    std::string zmq_node_endpoint;
 };
 
 /**
@@ -181,7 +188,9 @@ class PYLABHUB_UTILS_EXPORT Messenger
                    const std::string &actor_name        = {},
                    const std::string &actor_uid         = {},
                    const std::string &schema_id         = {},
-                   const std::string &schema_blds       = {});
+                   const std::string &schema_blds       = {},
+                   const std::string &data_transport    = {},
+                   const std::string &zmq_node_endpoint = {});
 
     /**
      * @brief Consumer side: discover channel (retrying until Ready), connect P2C

@@ -433,10 +433,13 @@ bool MessengerImpl::handle_command(DiscoverProducerCmd &cmd,
                 cinfo.has_shared_memory = resp->value("has_shared_memory", false);
                 cinfo.pattern           = channel_pattern_from_str(
                     resp->value("channel_pattern", std::string("PubSub")));
-                cinfo.zmq_ctrl_endpoint = resp->value("zmq_ctrl_endpoint", "");
-                cinfo.zmq_data_endpoint = resp->value("zmq_data_endpoint", "");
-                cinfo.zmq_pubkey        = resp->value("zmq_pubkey", "");
-                cinfo.consumer_count    = resp->value("consumer_count", uint32_t{0});
+                cinfo.zmq_ctrl_endpoint  = resp->value("zmq_ctrl_endpoint", "");
+                cinfo.zmq_data_endpoint  = resp->value("zmq_data_endpoint", "");
+                cinfo.zmq_pubkey         = resp->value("zmq_pubkey", "");
+                cinfo.consumer_count     = resp->value("consumer_count", uint32_t{0});
+                // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+                cinfo.data_transport     = resp->value("data_transport", std::string{"shm"});
+                cinfo.zmq_node_endpoint  = resp->value("zmq_node_endpoint", "");
                 cmd.result.set_value(cinfo);
                 return false;
             }
@@ -495,6 +498,9 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
         // Named schema fields (HEP-CORE-0016 Phase 3) are optional.
         if (!cmd.schema_id.empty())  payload["schema_id"]   = cmd.schema_id;
         if (!cmd.schema_blds.empty()) payload["schema_blds"] = cmd.schema_blds;
+        // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+        if (cmd.data_transport != "shm") payload["data_transport"] = cmd.data_transport;
+        if (!cmd.zmq_node_endpoint.empty()) payload["zmq_node_endpoint"] = cmd.zmq_node_endpoint;
 
         const std::string msg_type    = "REG_REQ";
         const std::string payload_str = payload.dump();

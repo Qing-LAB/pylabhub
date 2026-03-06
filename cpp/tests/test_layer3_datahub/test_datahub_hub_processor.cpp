@@ -180,3 +180,19 @@ TEST_F(DatahubHubProcessorTest, ZmqQueue_TimeoutHandler)
     auto proc = SpawnWorker("hub_processor.zmq_queue_timeout_handler", {});
     ExpectWorkerOk(proc);
 }
+
+// ── Mixed transport tests ────────────────────────────────────────────────────
+
+TEST_F(DatahubHubProcessorTest, ShmInZmqOut)
+{
+    // ShmQueue(read) → Processor → ZmqQueue(write): mixed transport bridge.
+    auto proc = SpawnWorker("hub_processor.shm_in_zmq_out", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubProcessorTest, ZmqInShmOut)
+{
+    // ZmqQueue(read) → Processor → ShmQueue(write): mixed transport bridge.
+    auto proc = SpawnWorker("hub_processor.zmq_in_shm_out", {});
+    ExpectWorkerOk(proc);
+}

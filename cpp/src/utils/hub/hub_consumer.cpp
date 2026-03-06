@@ -1,5 +1,6 @@
 // src/utils/hub_consumer.cpp
 #include "utils/hub_consumer.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
 
@@ -85,6 +86,9 @@ struct ConsumerImpl
 
     // Messaging facade: filled by connect_from_parts(); used by ReadProcessorContext<F,D>.
     ConsumerMessagingFacade facade{};
+
+    // HEP-CORE-0021: ZMQ PULL socket (non-null only when data_transport=="zmq").
+    std::unique_ptr<ZmqQueue> zmq_queue_;
 
     void run_data_thread();
     void run_ctrl_thread();
@@ -489,6 +493,23 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
             raw->on_channel_error_cb(event, details);
     });
 
+    // HEP-CORE-0021: create ZMQ PULL socket when broker reported data_transport=="zmq".
+    const std::string &dt = raw->handle.data_transport();
+    if (dt == "zmq")
+    {
+        const std::string &ep = raw->handle.zmq_node_endpoint();
+        if (ep.empty())
+        {
+            LOGGER_ERROR("[consumer] data_transport='zmq' but zmq_node_endpoint from broker is empty");
+            return std::nullopt;
+        }
+        // PUSH binds → PULL connects (bind=false).
+        impl->zmq_queue_ = ZmqQueue::pull_from(ep, opts.zmq_slot_size, /*bind=*/false,
+                                                opts.zmq_buffer_depth);
+        impl->zmq_queue_->start();
+        LOGGER_INFO("[consumer] ZMQ PULL socket connected to '{}'", ep);
+    }
+
     return Consumer(std::move(impl));
 }
 
@@ -595,6 +616,12 @@ void Consumer::stop()
     if (pImpl->shm_thread_handle.joinable())
     {
         pImpl->shm_thread_handle.join();
+    }
+
+    // Stop ZMQ PULL socket after threads join.
+    if (pImpl->zmq_queue_)
+    {
+        pImpl->zmq_queue_->stop();
     }
 }
 
@@ -790,6 +817,23 @@ ChannelHandle &Consumer::channel_handle()
 {
     assert(pImpl);
     return pImpl->handle;
+}
+
+const std::string &Consumer::data_transport() const noexcept
+{
+    static const std::string kShm{"shm"};
+    return pImpl ? pImpl->handle.data_transport() : kShm;
+}
+
+const std::string &Consumer::zmq_node_endpoint() const noexcept
+{
+    static const std::string kEmpty;
+    return pImpl ? pImpl->handle.zmq_node_endpoint() : kEmpty;
+}
+
+ZmqQueue *Consumer::queue() noexcept
+{
+    return pImpl ? pImpl->zmq_queue_.get() : nullptr;
 }
 
 // ============================================================================

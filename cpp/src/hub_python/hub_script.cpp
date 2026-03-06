@@ -160,6 +160,23 @@ void HubScript::startup_()
     base_startup_(script_dir);
 }
 
+void HubScript::on_hub_peer_connected(const std::string& hub_uid)
+{
+    api_.push_hub_connected(hub_uid);
+}
+
+void HubScript::on_hub_peer_disconnected(const std::string& hub_uid)
+{
+    api_.push_hub_disconnected(hub_uid);
+}
+
+void HubScript::on_hub_peer_message(const std::string& channel,
+                                     const std::string& payload,
+                                     const std::string& source_hub_uid)
+{
+    api_.push_hub_message(channel, payload, source_hub_uid);
+}
+
 void HubScript::shutdown_()
 {
     // base_shutdown_ sets stop_ and joins the interpreter thread.
@@ -212,6 +229,10 @@ void HubScript::do_python_work(const fs::path& script_path)
     py::object on_start_fn{py::none()};
     py::object on_tick_fn{py::none()};
     py::object on_stop_fn{py::none()};
+    // HEP-CORE-0022 federation callbacks (optional)
+    py::object on_hub_connected_fn{py::none()};
+    py::object on_hub_disconnected_fn{py::none()};
+    py::object on_hub_message_fn{py::none()};
     bool script_loaded = false;
 
     [&]() -> void
@@ -251,14 +272,21 @@ void HubScript::do_python_work(const fs::path& script_path)
             script_module = load_hub_script_package(script_path,
                                                     HubConfig::get_instance().hub_uid());
 
-            on_start_fn = py::getattr(script_module, "on_start", py::none());
-            on_tick_fn  = py::getattr(script_module, "on_tick",  py::none());
-            on_stop_fn  = py::getattr(script_module, "on_stop",  py::none());
+            on_start_fn            = py::getattr(script_module, "on_start",             py::none());
+            on_tick_fn             = py::getattr(script_module, "on_tick",              py::none());
+            on_stop_fn             = py::getattr(script_module, "on_stop",              py::none());
+            on_hub_connected_fn    = py::getattr(script_module, "on_hub_connected",     py::none());
+            on_hub_disconnected_fn = py::getattr(script_module, "on_hub_disconnected",  py::none());
+            on_hub_message_fn      = py::getattr(script_module, "on_hub_message",       py::none());
 
-            LOGGER_INFO("HubScript: callbacks — on_start={} on_tick={} on_stop={}",
-                        is_callable(on_start_fn) ? "yes" : "no",
-                        is_callable(on_tick_fn)  ? "yes" : "no",
-                        is_callable(on_stop_fn)  ? "yes" : "no");
+            LOGGER_INFO("HubScript: callbacks — on_start={} on_tick={} on_stop={} "
+                        "on_hub_connected={} on_hub_disconnected={} on_hub_message={}",
+                        is_callable(on_start_fn)            ? "yes" : "no",
+                        is_callable(on_tick_fn)             ? "yes" : "no",
+                        is_callable(on_stop_fn)             ? "yes" : "no",
+                        is_callable(on_hub_connected_fn)    ? "yes" : "no",
+                        is_callable(on_hub_disconnected_fn) ? "yes" : "no",
+                        is_callable(on_hub_message_fn)      ? "yes" : "no");
             script_loaded = true;
         }
         catch (const py::error_already_set& e)
@@ -369,6 +397,37 @@ void HubScript::do_python_work(const fs::path& script_path)
             {
                 py::gil_scoped_acquire gil;
 
+                // 4a. Dispatch hub federation events queued from the broker thread.
+                {
+                    const auto hub_events = api_.take_hub_events();
+                    for (const auto& ev : hub_events)
+                    {
+                        try
+                        {
+                            if (ev.type == HubScriptAPI::HubEvent::Type::Connected &&
+                                is_callable(on_hub_connected_fn))
+                            {
+                                on_hub_connected_fn(ev.hub_uid, py::cast(&api_));
+                            }
+                            else if (ev.type == HubScriptAPI::HubEvent::Type::Disconnected &&
+                                     is_callable(on_hub_disconnected_fn))
+                            {
+                                on_hub_disconnected_fn(ev.hub_uid, py::cast(&api_));
+                            }
+                            else if (ev.type == HubScriptAPI::HubEvent::Type::Message &&
+                                     is_callable(on_hub_message_fn))
+                            {
+                                on_hub_message_fn(ev.channel, ev.payload,
+                                                  ev.hub_uid, py::cast(&api_));
+                            }
+                        }
+                        catch (const py::error_already_set& e)
+                        {
+                            LOGGER_ERROR("HubScript: hub event callback raised: {}", e.what());
+                        }
+                    }
+                }
+
                 api_.set_snapshot(snap);
 
                 if (is_callable(on_tick_fn))
@@ -426,10 +485,13 @@ void HubScript::do_python_work(const fs::path& script_path)
     // function, because py::scoped_interpreter's destructor (Py_Finalize)
     // runs in PythonScriptHost::do_initialize() immediately after we return.
     // ------------------------------------------------------------------
-    on_stop_fn    = py::none();
-    on_tick_fn    = py::none();
-    on_start_fn   = py::none();
-    script_module = py::none();
+    on_stop_fn             = py::none();
+    on_tick_fn             = py::none();
+    on_start_fn            = py::none();
+    on_hub_message_fn      = py::none();
+    on_hub_disconnected_fn = py::none();
+    on_hub_connected_fn    = py::none();
+    script_module          = py::none();
 
     PythonInterpreter::get_instance().release_namespace_();
 

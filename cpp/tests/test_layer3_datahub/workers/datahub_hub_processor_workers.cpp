@@ -1517,6 +1517,141 @@ int zmq_queue_timeout_handler()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// shm_in_zmq_out — ShmQueue(read) → Processor → ZmqQueue(write)
+// ============================================================================
+
+int shm_in_zmq_out()
+{
+    return run_gtest_worker(
+        []()
+        {
+            // Input: SHM DataBlock (test producer writes, proc consumer reads via ShmQueue)
+            DataBlockTestGuard g_in("ShmInZmqOut_in");
+            DataBlockConfig cfg_in = make_config(70050);
+
+            auto in_dbp_test = create_datablock_producer_impl(
+                g_in.channel_name(), DataBlockPolicy::RingBuffer, cfg_in, nullptr, nullptr);
+            ASSERT_NE(in_dbp_test, nullptr);
+            auto in_dbc_proc = find_datablock_consumer_impl(
+                g_in.channel_name(), cfg_in.shared_secret, &cfg_in, nullptr, nullptr);
+            ASSERT_NE(in_dbc_proc, nullptr);
+
+            auto in_queue = ShmQueue::from_consumer(std::move(in_dbc_proc), sizeof(double));
+            ASSERT_NE(in_queue, nullptr);
+
+            // Output: ZMQ PUSH → PULL
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17056",  sizeof(double), true);
+            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17056", sizeof(double), false);
+            ASSERT_NE(out_push, nullptr);
+            ASSERT_NE(out_pull, nullptr);
+
+            ASSERT_TRUE(out_push->start());
+            ASSERT_TRUE(out_pull->start());
+            std::this_thread::sleep_for(100ms);
+
+            auto maybe_proc = Processor::create(*in_queue, *out_push, fast_opts());
+            ASSERT_TRUE(maybe_proc.has_value());
+            Processor& proc = *maybe_proc;
+
+            proc.set_process_handler<void, double, void, double>(
+                [](ProcessorContext<void, double, void, double>& ctx) -> bool {
+                    ctx.output() = ctx.input() * 2.0;
+                    return true;
+                });
+            proc.start();
+
+            // Write one, read one (Latest_only policy requires sequential access)
+            for (int i = 1; i <= 3; ++i)
+            {
+                double val = static_cast<double>(i);
+                ASSERT_TRUE(write_double(in_dbp_test.get(), val))
+                    << "Failed to write input slot " << i;
+
+                const void* out = out_pull->read_acquire(3000ms);
+                ASSERT_NE(out, nullptr) << "No output for item " << i;
+                double result = 0.0;
+                std::memcpy(&result, out, sizeof(double));
+                out_pull->read_release();
+                EXPECT_DOUBLE_EQ(result, val * 2.0);
+            }
+
+            proc.stop();
+            out_pull->stop();
+            out_push->stop();
+        },
+        "hub_processor.shm_in_zmq_out",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// zmq_in_shm_out — ZmqQueue(read) → Processor → ShmQueue(write)
+// ============================================================================
+
+int zmq_in_shm_out()
+{
+    return run_gtest_worker(
+        []()
+        {
+            // Input: ZMQ PUSH → PULL
+            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:17057",  sizeof(double), true);
+            auto in_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17057", sizeof(double), false);
+            ASSERT_NE(in_push, nullptr);
+            ASSERT_NE(in_pull, nullptr);
+
+            ASSERT_TRUE(in_push->start());
+            ASSERT_TRUE(in_pull->start());
+
+            // Output: SHM DataBlock (proc producer writes via ShmQueue, test consumer reads)
+            DataBlockTestGuard g_out("ZmqInShmOut_out");
+            DataBlockConfig cfg_out = make_config(70051);
+
+            auto out_dbp_proc = create_datablock_producer_impl(
+                g_out.channel_name(), DataBlockPolicy::RingBuffer, cfg_out, nullptr, nullptr);
+            ASSERT_NE(out_dbp_proc, nullptr);
+            auto out_dbc_test = find_datablock_consumer_impl(
+                g_out.channel_name(), cfg_out.shared_secret, &cfg_out, nullptr, nullptr);
+            ASSERT_NE(out_dbc_test, nullptr);
+
+            auto out_queue = ShmQueue::from_producer(std::move(out_dbp_proc), sizeof(double));
+            ASSERT_NE(out_queue, nullptr);
+
+            std::this_thread::sleep_for(100ms);
+
+            auto maybe_proc = Processor::create(*in_pull, *out_queue, fast_opts());
+            ASSERT_TRUE(maybe_proc.has_value());
+            Processor& proc = *maybe_proc;
+
+            proc.set_process_handler<void, double, void, double>(
+                [](ProcessorContext<void, double, void, double>& ctx) -> bool {
+                    ctx.output() = ctx.input() * 3.0;
+                    return true;
+                });
+            proc.start();
+
+            // Write one, read one (Latest_only policy requires sequential access)
+            for (int i = 1; i <= 3; ++i)
+            {
+                double val = static_cast<double>(i);
+                void* buf = in_push->write_acquire(1000ms);
+                ASSERT_NE(buf, nullptr);
+                std::memcpy(buf, &val, sizeof(double));
+                in_push->write_commit();
+
+                double result = -1.0;
+                ASSERT_TRUE(read_double(out_dbc_test.get(), result, 3000))
+                    << "Timeout waiting for output slot " << i;
+                EXPECT_DOUBLE_EQ(result, val * 3.0);
+            }
+
+            proc.stop();
+            in_pull->stop();
+            in_push->stop();
+        },
+        "hub_processor.zmq_in_shm_out",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_processor
 
 // ============================================================================
@@ -1563,6 +1698,8 @@ struct HubProcessorWorkerRegistrar
                 if (scenario == "zmq_queue_roundtrip") return zmq_queue_roundtrip();
                 if (scenario == "zmq_queue_null_flexzone") return zmq_queue_null_flexzone();
                 if (scenario == "zmq_queue_timeout_handler") return zmq_queue_timeout_handler();
+                if (scenario == "shm_in_zmq_out") return shm_in_zmq_out();
+                if (scenario == "zmq_in_shm_out") return zmq_in_shm_out();
                 fmt::print(stderr, "ERROR: Unknown hub_processor scenario '{}'\n", scenario);
                 return 1;
             });

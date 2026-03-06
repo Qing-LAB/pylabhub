@@ -34,6 +34,7 @@
 #include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
+#include "utils/hub_zmq_queue.hpp"  // ZmqQueue — returned by queue() accessor (HEP-CORE-0021)
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
@@ -222,6 +223,21 @@ struct ProducerOptions
     /// against the schema loaded from PYLABHUB_SCHEMA_PATH (or default search dirs).
     /// Throws SchemaValidationException on mismatch. No-op when empty.
     std::string schema_id{};
+
+    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
+    /// Data transport type: "shm" (default) or "zmq".
+    /// When "zmq", the producer registers a ZMQ Virtual Channel Node with the broker,
+    /// advertising @p zmq_node_endpoint. Consumers discover this endpoint via DISC_ACK.
+    std::string data_transport{"shm"};
+    /// Bind address for the ZMQ PUSH socket (used only when data_transport=="zmq").
+    /// Example: "tcp://127.0.0.1:5580"
+    std::string zmq_node_endpoint{};
+    /// If true, PUSH socket binds to zmq_node_endpoint; otherwise connects (default: bind).
+    bool zmq_bind{true};
+    /// Slot payload size in bytes for ZmqQueue frames.  0 = caller sets item_size separately.
+    size_t zmq_slot_size{0};
+    /// Internal receive-buffer depth for ZmqQueue PULL (read side).
+    size_t zmq_buffer_depth{64};
 };
 
 // ============================================================================
@@ -431,6 +447,15 @@ class PYLABHUB_UTILS_EXPORT Producer
     DataBlockProducer               *shm() noexcept; ///< nullptr if !has_shm
     ChannelHandle                   &channel_handle();
 
+    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
+
+    /**
+     * @brief Returns the ZmqQueue PUSH socket owned by this Producer (HEP-CORE-0021).
+     * Non-null only when ProducerOptions::data_transport=="zmq" at create() time.
+     * Null when data_transport=="shm". Lifetime is tied to this Producer.
+     */
+    [[nodiscard]] ZmqQueue *queue() noexcept;
+
     /// Returns the Messenger used by this Producer.
     [[nodiscard]] Messenger &messenger() const;
 
@@ -510,7 +535,8 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
                                         opts.schema_hash, opts.schema_version, opts.timeout_ms,
                                         opts.actor_name, opts.actor_uid,
-                                        opts.schema_id, schema_blds_str);
+                                        opts.schema_id, schema_blds_str,
+                                        opts.data_transport, opts.zmq_node_endpoint);
     if (!ch.has_value())
     {
         return std::nullopt;

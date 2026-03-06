@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -212,8 +213,47 @@ public:
     ChannelInfo channel(const std::string& name) const;
 
     // -----------------------------------------------------------------------
+    // Hub federation (HEP-CORE-0022)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @brief Send a hub-targeted message to a direct federation peer.
+     *
+     * Queued and sent via BrokerService during the next broker run() poll iteration.
+     * The payload must be a valid JSON-encoded string.
+     *
+     * @param target_hub_uid  UID of the destination hub (direct neighbor only).
+     * @param channel         Context channel name (informational).
+     * @param payload_json    JSON payload string.
+     */
+    void notify_hub(const std::string& target_hub_uid,
+                    const std::string& channel,
+                    const std::string& payload_json);
+
+    // -----------------------------------------------------------------------
     // Internal — used by HubScript tick runner
     // -----------------------------------------------------------------------
+
+    /// Hub event pushed from the broker thread (thread-safe).
+    struct HubEvent
+    {
+        enum class Type { Connected, Disconnected, Message } type;
+        std::string hub_uid;      ///< Connected/Disconnected: peer hub UID; Message: sender hub UID
+        std::string channel;      ///< Message only
+        std::string payload;      ///< Message only
+    };
+
+    /// Called from broker thread — push "connected" event.
+    void push_hub_connected(const std::string& hub_uid);
+    /// Called from broker thread — push "disconnected" event.
+    void push_hub_disconnected(const std::string& hub_uid);
+    /// Called from broker thread — push "message" event.
+    void push_hub_message(const std::string& channel,
+                          const std::string& payload,
+                          const std::string& source_hub_uid);
+
+    /// Take (move-out) all pending hub events (tick thread only).
+    std::vector<HubEvent> take_hub_events();
 
     /// Set the current channel snapshot (refreshed every tick by HubScript).
     void set_snapshot(broker::ChannelSnapshot snap) { snapshot_ = std::move(snap); }
@@ -234,6 +274,9 @@ private:
     std::atomic<bool>*          shutdown_flag_{nullptr};
     broker::ChannelSnapshot     snapshot_;
     std::vector<std::string>    pending_closes_;
+
+    mutable std::mutex          m_hub_event_mu_;
+    std::vector<HubEvent>       pending_hub_events_;
 };
 
 } // namespace pylabhub
