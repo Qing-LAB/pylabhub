@@ -22,12 +22,14 @@
 #endif
 
 // Forward declarations of C++ types used in the C API.
-// Must be outside extern "C" — namespace keyword is not valid in C linkage context.
+// Must be inside #ifdef __cplusplus — namespace keyword is not valid C syntax.
+#ifdef __cplusplus
 namespace pylabhub::hub
 {
 struct SlotRWState;
 struct SharedMemoryHeader;
 }
+#endif
 
 #ifdef __cplusplus
 extern "C"

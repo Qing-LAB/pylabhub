@@ -6,6 +6,24 @@
 
 ## Archive batches
 
+### 2026-03-06 (Old Code Review Triage + Security Fixes)
+
+Triaged three code review documents from 2026-03-03 against current source (848 tests).
+Fixes applied: SHM-C1 (heartbeat CAS corruption), IPC-C3 (thread lambda this-capture),
+SVC-C1/C2/C3 (key material not zeroed), HDR-C1 (namespace outside __cplusplus).
+
+**Consolidated source-of-truth review**: `docs/code_review/REVIEW_codebase_2026-03-06.md`
+
+**Archived to `docs/archive/transient-2026-03-06/`:**
+
+| Archived | Reason |
+|---|---|
+| `REVIEW_full-codebase_2026-03-03.md` | Superseded by consolidated 2026-03-06 review |
+| `gemini_review_20260303_detailed.md` | Superseded by consolidated 2026-03-06 review |
+| `gemini_review_20260303.md` | Superseded by consolidated 2026-03-06 review |
+
+---
+
 ### 2026-03-03 (HEP-0005 Archived + Actor Terminology Scrub)
 
 Session 0 housekeeping for the comprehensive HEP document review plan. Two activities:

@@ -202,9 +202,13 @@ struct ConsumerOptions
     std::string expected_schema_id{};
 
     // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
-    /// Slot payload size in bytes for ZmqQueue frames when data_transport=="zmq".
-    /// 0 = caller sets item_size separately before first read.
-    size_t zmq_slot_size{0};
+    /// Schema for ZMQ PULL frames (required when data_transport=="zmq").
+    /// Empty schema → LOGGER_ERROR + Consumer::connect returns nullopt.
+    /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.
+    std::vector<ZmqSchemaField> zmq_schema{};
+    /// "natural" (ctypes.LittleEndianStructure default) or "packed" (no padding).
+    /// Must match the producer's packing.
+    std::string zmq_packing{"natural"};
     /// Internal receive-buffer depth for ZmqQueue PULL.
     size_t zmq_buffer_depth{64};
 };

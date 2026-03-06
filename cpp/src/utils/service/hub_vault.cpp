@@ -53,7 +53,10 @@ std::string generate_admin_token()
     randombytes_buf(raw, sizeof(raw));
     char hex[kAdminRawBytes * 2 + 1]{};
     sodium_bin2hex(hex, sizeof(hex), raw, sizeof(raw));
-    return std::string(hex, kAdminRawBytes * 2);
+    std::string token(hex, kAdminRawBytes * 2);
+    sodium_memzero(raw, sizeof(raw));
+    sodium_memzero(hex, sizeof(hex));
+    return token;
 }
 
 } // anonymous namespace
@@ -84,6 +87,8 @@ HubVault HubVault::create(const fs::path    &hub_dir,
         throw std::runtime_error("HubVault: zmq_curve_keypair failed");
     const std::string broker_public(pub.data(), kZ85KeyLen);
     const std::string broker_secret(sec.data(), kZ85KeyLen);
+    sodium_memzero(sec.data(), sec.size()); // zero secret key buffer after copying to string
+    sodium_memzero(pub.data(), pub.size()); // zero public key buffer after copying to string
 
     // Generate admin token.
     const std::string admin_tok = generate_admin_token();

@@ -50,6 +50,14 @@ namespace pylabhub::schema
  * @endcode
  *
  * Arrays of any primitive type are supported via `"count": N`.
+ *
+ * @par Differences vs FieldDef / ZmqSchemaField
+ * This type set uses `"char"` (not `"string"` or `"bytes"`).  When a SchemaEntry
+ * is converted to a FieldDef for ctypes slot exposure, `"char"` with `count=N`
+ * becomes `FieldDef{type_str="string", length=N}` via schema_entry_to_spec().
+ * There is no BLDS equivalent for `"bytes"` — use `uint8[N]` as a workaround.
+ * @see FieldDef (script_host_schema.hpp) — the runtime ctypes type set (13 types)
+ * @see ZmqSchemaField (hub_zmq_queue.hpp) — identical 13-type set used for ZMQ transport
  */
 struct SchemaFieldDef
 {

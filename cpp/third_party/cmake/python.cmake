@@ -82,11 +82,10 @@ if(NOT EXISTS "${_py_sentinel}")
     file(COPY_FILE "${PYLABHUB_PYTHON_LOCAL_ARCHIVE}" "${_py_archive}")
   elseif(NOT EXISTS "${_py_archive}")
     # Online build: download from GitHub.
-    message(STATUS "[pylabhub-third-party] Downloading Python ${PYTHON_STANDALONE_VERSION}...")
+    message(STATUS "[pylabhub-third-party] Downloading Python ${PYTHON_STANDALONE_VERSION} (this may take a minute)...")
     file(DOWNLOAD
         "${_py_url}" "${_py_archive}"
         EXPECTED_HASH "SHA256=${_py_sha256}"
-        SHOW_PROGRESS
         STATUS _dl_status
     )
     list(GET _dl_status 0 _dl_rc)
@@ -98,6 +97,7 @@ if(NOT EXISTS "${_py_sentinel}")
         "Tip: download the archive manually and set:\n"
         "  -DPYLABHUB_PYTHON_LOCAL_ARCHIVE=/path/to/${_py_filename}")
     endif()
+    message(STATUS "[pylabhub-third-party] Python download complete.")
   endif()
 
   message(STATUS "[pylabhub-third-party] Extracting Python standalone...")
@@ -252,8 +252,8 @@ add_custom_command(
 # The stamp file makes this idempotent — only re-runs when requirements.txt changes.
 add_custom_command(
     OUTPUT  "${_pip_stamp}"
-    COMMAND "${_staged_python}" -m pip install --upgrade pip setuptools wheel ${_pip_flags}
-    COMMAND "${_staged_python}" -m pip install -r "${_requirements_dst}" ${_pip_flags}
+    COMMAND "${_staged_python}" -m pip install --progress-bar off --upgrade pip setuptools wheel ${_pip_flags}
+    COMMAND "${_staged_python}" -m pip install --progress-bar off -r "${_requirements_dst}" ${_pip_flags}
     COMMAND ${CMAKE_COMMAND} -E touch "${_pip_stamp}"
     DEPENDS "${_requirements_dst}"
     COMMENT "pip: installing packages from requirements.txt into staged Python"

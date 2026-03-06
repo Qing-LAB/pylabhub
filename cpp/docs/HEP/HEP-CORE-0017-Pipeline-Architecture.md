@@ -36,7 +36,7 @@ These planes are strictly orthogonal: changes to one have no effect on the other
 
 | Plane | What flows | Mechanism | Where defined |
 |-------|-----------|-----------|---------------|
-| **Data plane** | Slot payloads (raw bytes) | SHM ring buffer (`DataBlockProducer`/`Consumer`) or ZMQ frames (`hub::Queue`) | HEP-CORE-0002 §3 |
+| **Data plane** | Slot payloads (typed fields) | SHM ring buffer (`DataBlockProducer`/`Consumer`) or msgpack-encoded ZMQ frames (`hub::ZmqQueue`) | HEP-CORE-0002 §3, §7.1 |
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets + Broker | HEP-CORE-0007 |
 | **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | HEP-CORE-0007 §6 |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
@@ -129,7 +129,7 @@ interface; cross-machine reading is achieved by composing with a bridge Processo
 | Property | Value |
 |----------|-------|
 | Abstraction | Virtual base: `read_acquire` / `read_release` / `write_acquire` / `write_commit` / `write_abort` |
-| Concrete types | `ShmQueue` (wraps `DataBlockConsumer`/`Producer`) · `ZmqQueue` (wraps raw ZMQ PULL/PUSH) |
+| Concrete types | `ShmQueue` (wraps `DataBlockConsumer`/`Producer`) · `ZmqQueue` (wraps typed ZMQ PULL/PUSH with msgpack schema encoding) |
 | Used by | `hub::Processor` exclusively |
 | Does NOT carry | Control plane, message plane, timing plane |
 | Runtime cost | ~2 ns virtual dispatch vs 100–500 ns SHM acquire — < 1% overhead |
@@ -139,6 +139,46 @@ provides a transport-agnostic interface so that `hub::Processor`'s transform loo
 does not need to know whether the underlying transport is SHM or ZMQ. Everything
 above the data plane (control, message, timing) is handled by the components that
 own the endpoints, not by the Queue.
+
+#### ZmqQueue — API contract and schema requirements
+
+`hub::ZmqQueue` always operates in **schema mode**. A non-empty
+`std::vector<ZmqSchemaField>` and a packing rule are **required** at construction.
+
+```cpp
+// Required fields — both push_to and pull_from have the same signature contract:
+std::unique_ptr<ZmqQueue> ZmqQueue::push_to(
+    const std::string& endpoint,
+    std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
+    std::string packing,                 // REQUIRED: "natural" or "packed"
+    bool bind = true,
+    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
+
+std::unique_ptr<ZmqQueue> ZmqQueue::pull_from(
+    const std::string& endpoint,
+    std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
+    std::string packing,                 // REQUIRED: "natural" or "packed"
+    bool bind = false, size_t max_buffer_depth = 64,
+    std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
+```
+
+**Violation of these requirements** causes the factory to log a `LOGGER_ERROR` and
+return `nullptr`. When called through `ProducerOptions`/`ConsumerOptions`, the outer
+`Producer::create` / `Consumer::connect` propagates the failure as `std::nullopt`.
+
+Key differences from `ShmQueue`:
+
+| Property | ShmQueue | ZmqQueue |
+|---|---|---|
+| Encoding | Raw slot bytes (no overhead) | msgpack field-by-field |
+| Type safety | Schema hash checked at attach | Type tag checked per frame |
+| Flexzone | Supported | Not supported (fz=None in scripts) |
+| Alignment | SHM slot alignment rules | ctypes-compatible (per `packing`) |
+| Overflow | `OverflowPolicy::Block` or `Drop` | Bounded internal buffer (drop oldest) |
+| Checksum | Manual `set_checksum_options()` | Not applicable |
+| Cross-machine | No (SHM is host-local) | Yes (TCP, PGM, etc.) |
+
+See HEP-CORE-0002 §7.1 for the complete wire format specification.
 
 See HEP-CORE-0002 §17.3 for detailed rationale.
 

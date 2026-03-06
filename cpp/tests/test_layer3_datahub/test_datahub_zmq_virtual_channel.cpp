@@ -317,6 +317,7 @@ TEST_F(ZmqVirtualChannelTest, HubProducer_ZmqTransport_RoundTrip)
     opts.has_shm           = false;
     opts.data_transport    = "zmq";
     opts.zmq_node_endpoint = endpoint;
+    opts.zmq_schema        = {{"bytes", 1, 8}};
 
     auto prod = Producer::create(prod_m, opts);
     ASSERT_TRUE(prod.has_value()) << "Producer::create failed";
@@ -365,6 +366,7 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_ZmqTransport_Accessors)
     co.channel_name  = channel;
     co.consumer_uid  = "CONS-ZMQVC-00000001";
     co.consumer_name = "zmqvc-consumer";
+    co.zmq_schema    = {{"bytes", 1, 8}};
 
     auto consumer = Consumer::connect(cons_m, co);
     ASSERT_TRUE(consumer.has_value()) << "Consumer::connect failed";
@@ -564,7 +566,7 @@ TEST_F(ZmqVirtualChannelTest, HubProducer_ZmqTransport_QueueNonNull)
     opts.has_shm           = false;
     opts.data_transport    = "zmq";
     opts.zmq_node_endpoint = endpoint;
-    opts.zmq_slot_size     = 8;
+    opts.zmq_schema = {{"bytes", 1, 8}};
 
     auto prod = Producer::create(prod_m, opts);
     ASSERT_TRUE(prod.has_value()) << "Producer::create failed";
@@ -618,7 +620,7 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_ZmqTransport_QueueNonNull)
     co.channel_name  = channel;
     co.consumer_uid  = "CONS-ZMQVC-00000003";
     co.consumer_name = "zmqvc-cons-q-nonnull";
-    co.zmq_slot_size = 8;
+    co.zmq_schema = {{"bytes", 1, 8}};
 
     auto consumer = Consumer::connect(cons_m, co);
     ASSERT_TRUE(consumer.has_value()) << "Consumer::connect failed";
@@ -672,7 +674,7 @@ TEST_F(ZmqVirtualChannelTest, ZmqTransport_ProducerToConsumer_DataFlow)
     po.has_shm           = false;
     po.data_transport    = "zmq";
     po.zmq_node_endpoint = endpoint;
-    po.zmq_slot_size     = kItemSz;
+    po.zmq_schema = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
 
     auto prod = Producer::create(prod_m, po);
     ASSERT_TRUE(prod.has_value()) << "Producer::create failed";
@@ -686,7 +688,7 @@ TEST_F(ZmqVirtualChannelTest, ZmqTransport_ProducerToConsumer_DataFlow)
     co.channel_name  = channel;
     co.consumer_uid  = "CONS-ZMQVC-E2E-0001";
     co.consumer_name = "zmqvc-e2e-consumer";
-    co.zmq_slot_size = kItemSz;
+    co.zmq_schema = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
 
     auto consumer = Consumer::connect(cons_m, co);
     ASSERT_TRUE(consumer.has_value()) << "Consumer::connect failed";
