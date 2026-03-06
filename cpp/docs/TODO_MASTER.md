@@ -140,7 +140,9 @@ Completed:
 
 **Security fixes applied (2026-03-06, session 2):** IPC-H2 (BrokerService `server_secret_z85` + `cfg.server_secret_key` now zeroed in `~BrokerServiceImpl()` via `sodium_memzero`).
 
-**Remaining deferred security items:** SHM-C2 (write_index burned on timeout — known limitation); IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
+**Closed non-issues (2026-03-06, session 2):** SHM-C2 (write_index burned on timeout) — analysis confirmed not a real issue with the single-writer model. The broker enforces one producer per channel; `acquire_write` Phase 1 (write_lock CAS) always succeeds for a single writer. Phase 2 (reader drain) can time out only with `timeout_ms==0` (non-blocking) and a slow reader on the recycled slot — not a supported production configuration. Documented in `data_block.cpp` near the `write_index.fetch_add` call.
+
+**Remaining deferred items:** IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred
