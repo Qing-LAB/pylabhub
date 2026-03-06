@@ -315,6 +315,22 @@ The actor files (`src/actor/`, `tests/test_layer4_actor/`) have been deleted fro
 - [x] **Schema registry** — ✅ Complete (2026-03-02). All 5 phases of HEP-CORE-0016 done.
   SchemaLibrary + SchemaStore + broker protocol + script integration.
 
+- [ ] **ZMQ data-plane runtime safety (deferred, HEP-CORE-0023)** — ZMQ channels currently
+  have no data-plane safety beyond compile-time struct layout. Two gaps to close:
+  1. **Per-frame checksum**: Append BLAKE2b-32 (4 bytes) to every ZMQ frame so the receiver
+     can detect corruption / mismatched item_size silently introduced by a config error.
+     `ZmqQueue::push()` appends the checksum; `ZmqQueue::pop()` verifies it; mismatch →
+     logged + frame dropped (not crash).
+  2. **Type-tag handshake**: On ZmqQueue connection, sender sends a one-time `TYPE_INFO`
+     frame containing `{schema_blds, item_size}` before the data stream. Receiver compares
+     against its own compiled-in values; mismatch → `LOGGER_ERROR` + connection refused.
+     This mirrors the SHM `DataBlockConfig` validation at connect time.
+  Design note: both features are optional flags on `ZmqQueue` (default off for raw-bytes
+  compat); `ProcessorScriptHost` enables them when `out_transport="zmq"`.
+  **Precondition**: ZmqQueue must expose a `type_info_t` derived from `DataBlockT` BLDS —
+  requires schema BLDS to flow into ZmqQueue options (not wired today).
+  Reference: HEP-CORE-0017 §4.3 "Known Limitations".
+
 ### By design — explicitly out of scope
 
 - **Broker reconnection** — A broker crash is a catastrophic failure: all channel registration

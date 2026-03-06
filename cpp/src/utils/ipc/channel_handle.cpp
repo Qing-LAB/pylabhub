@@ -49,6 +49,11 @@ struct ChannelHandleImpl
     // data_socket: XPUB/PUSH (producer, non-Bidir) or SUB/PULL (consumer, non-Bidir)
     std::optional<zmq::socket_t> ctrl_socket;
     std::optional<zmq::socket_t> data_socket;
+
+    // HEP-CORE-0021: ZMQ Virtual Channel Node transport (consumer side only).
+    // Set from ConsumerInfo.data_transport / zmq_node_endpoint in make_consumer_handle().
+    std::string data_transport{"shm"};   ///< "shm" or "zmq"
+    std::string zmq_node_endpoint;       ///< ZMQ PUSH bind endpoint (non-empty when data_transport="zmq")
 };
 
 // ============================================================================
@@ -94,6 +99,18 @@ const std::string &ChannelHandle::shm_name() const
 {
     static const std::string kEmpty;
     return pImpl ? pImpl->shm_name : kEmpty;
+}
+
+const std::string &ChannelHandle::data_transport() const
+{
+    static const std::string kShm{"shm"};
+    return pImpl ? pImpl->data_transport : kShm;
+}
+
+const std::string &ChannelHandle::zmq_node_endpoint() const
+{
+    static const std::string kEmpty;
+    return pImpl ? pImpl->zmq_node_endpoint : kEmpty;
 }
 
 bool ChannelHandle::is_valid() const
@@ -463,15 +480,19 @@ ChannelHandle make_consumer_handle(const std::string &channel,
                                    zmq::socket_t    &&ctrl_sock,
                                    zmq::socket_t    &&data_sock_or_dummy,
                                    bool               has_data_sock,
-                                   const std::string &shm_name)
+                                   const std::string &shm_name,
+                                   const std::string &data_transport,
+                                   const std::string &zmq_node_endpoint)
 {
     auto impl = std::make_unique<ChannelHandleImpl>();
-    impl->channel     = channel;
-    impl->shm_name    = shm_name;
-    impl->pattern     = pattern;
-    impl->has_shm     = has_shm;
-    impl->is_producer = false;
-    impl->valid       = true;
+    impl->channel           = channel;
+    impl->shm_name          = shm_name;
+    impl->pattern           = pattern;
+    impl->has_shm           = has_shm;
+    impl->is_producer       = false;
+    impl->valid             = true;
+    impl->data_transport    = data_transport.empty() ? std::string{"shm"} : data_transport;
+    impl->zmq_node_endpoint = zmq_node_endpoint;
     impl->ctrl_socket.emplace(std::move(ctrl_sock));
     if (has_data_sock)
     {

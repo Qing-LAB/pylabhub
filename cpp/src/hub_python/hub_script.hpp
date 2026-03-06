@@ -109,6 +109,34 @@ public:
     void set_shutdown_flag(std::atomic<bool>* flag) noexcept;
 
     // -----------------------------------------------------------------------
+    // Hub federation event push (HEP-CORE-0022) — called from broker thread
+    // -----------------------------------------------------------------------
+
+    /**
+     * @brief Notify HubScript that a federation peer connected.
+     *
+     * Thread-safe: queued and delivered to `on_hub_connected(hub_uid, api)` on
+     * the next tick (if the callback is defined in the user script).
+     */
+    void on_hub_peer_connected(const std::string& hub_uid);
+
+    /**
+     * @brief Notify HubScript that a federation peer disconnected.
+     *
+     * Thread-safe: queued and delivered to `on_hub_disconnected(hub_uid, api)`.
+     */
+    void on_hub_peer_disconnected(const std::string& hub_uid);
+
+    /**
+     * @brief Deliver a HUB_TARGETED_MSG to the HubScript.
+     *
+     * Thread-safe: queued and delivered to `on_hub_message(channel, payload, source_uid, api)`.
+     */
+    void on_hub_peer_message(const std::string& channel,
+                             const std::string& payload,
+                             const std::string& source_hub_uid);
+
+    // -----------------------------------------------------------------------
     // Internal lifecycle hooks — public so anonymous-namespace lifecycle
     // functions in the .cpp can call them.
     // -----------------------------------------------------------------------

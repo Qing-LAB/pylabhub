@@ -22,6 +22,7 @@
 #include "utils/hub_processor.hpp"
 #include "utils/hub_producer.hpp"
 #include "utils/hub_shm_queue.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "utils/messenger.hpp"
 
 #include <memory>
@@ -95,8 +96,13 @@ class ProcessorScriptHost : public scripting::PythonRoleHostBase
     py::object py_on_process_{py::none()};
 
     // ── hub::Processor delegation ────────────────────────────────────────────
-    std::unique_ptr<hub::ShmQueue>  in_queue_;
-    std::unique_ptr<hub::ShmQueue>  out_queue_;
+    // Owned SHM queues (non-null only for SHM transport; null for ZMQ transport).
+    std::unique_ptr<hub::Queue>     in_queue_;
+    std::unique_ptr<hub::Queue>     out_queue_;
+    // Raw pointers used by Processor: point to either owned SHM queue or
+    // borrowed ZmqQueue owned by in_consumer_ / out_producer_.
+    hub::Queue                     *in_q_{nullptr};
+    hub::Queue                     *out_q_{nullptr};
     std::optional<hub::Processor>   processor_;
 
     // ── Internal methods ─────────────────────────────────────────────────────

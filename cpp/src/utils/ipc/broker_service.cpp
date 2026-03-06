@@ -133,6 +133,29 @@ public:
     struct BroadcastRequest { std::string channel, message, data; };
     std::deque<BroadcastRequest> broadcast_request_queue_;
 
+    // ── Hub federation (HEP-CORE-0022) ─────────────────────────────────────
+    /// Inbound peer: a remote hub whose DEALER connected to our ROUTER and sent HELLO.
+    struct InboundPeer
+    {
+        std::string              hub_uid;
+        std::string              zmq_identity;    ///< Raw routing identity for send_to_identity
+        std::vector<std::string> relay_channels;  ///< Channels we relay TO this peer
+    };
+    /// hub_uid → InboundPeer; only accessed from the run() thread (no mutex needed).
+    std::unordered_map<std::string, InboundPeer> inbound_peers_;
+
+    /// Rolling dedup window: msg_id → expiry time. Prevents double-delivery of relays.
+    static constexpr std::chrono::seconds kRelayDedupeWindow{5};
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_dedup_;
+
+    /// Monotone sequence counter for outgoing HUB_RELAY_MSG msg_id.
+    uint64_t relay_seq_{0};
+
+    /// Thread-safe queue for send_hub_targeted_msg().
+    struct HubTargetedRequest { std::string target_hub_uid, channel, payload; };
+    mutable std::mutex             m_hub_targeted_mu;
+    std::deque<HubTargetedRequest> hub_targeted_queue_;
+
     // ── Metrics store (HEP-CORE-0019) ──────────────────────────────────────
     struct ParticipantMetrics
     {
@@ -229,6 +252,26 @@ public:
     /// Timestamp of last consumer liveness check (for interval gating).
     std::chrono::steady_clock::time_point m_last_consumer_check{};
 
+    // ── Hub federation handlers (HEP-CORE-0022) ───────────────────────────
+    void handle_hub_peer_hello(zmq::socket_t&       socket,
+                               const zmq::message_t& identity,
+                               const nlohmann::json& payload);
+    void handle_hub_peer_bye(const nlohmann::json& payload);
+    void handle_hub_peer_hello_ack(const std::string& peer_hub_uid,
+                                   const nlohmann::json& payload);
+    void handle_hub_relay_msg(zmq::socket_t& socket, const nlohmann::json& payload);
+    void handle_hub_targeted_msg(const nlohmann::json& payload);
+
+    /// Relay a CHANNEL_NOTIFY_REQ event to all inbound peers subscribed to channel.
+    void relay_notify_to_peers(zmq::socket_t&    socket,
+                                const std::string& channel,
+                                const std::string& event,
+                                const std::string& sender_uid,
+                                const std::string& data);
+
+    /// Prune expired entries from relay_dedup_.
+    void prune_relay_dedup();
+
     // ── Connection policy (Phase 3) ────────────────────────────────────────────
     /// Resolve effective policy for a channel: per-channel override > hub-wide default.
     [[nodiscard]] ConnectionPolicy effective_policy(const std::string& channel_name) const noexcept;
@@ -272,10 +315,64 @@ void BrokerServiceImpl::run()
         LOGGER_INFO("Broker: server_public_key = {}", server_public_z85);
     }
 
+    // ── Federation: outbound DEALER sockets per peer (HEP-CORE-0022) ────────
+    // Stored as unique_ptr so socket handles remain stable in the pollitem_t vector.
+    struct OutboundPeer
+    {
+        const FederationPeer* cfg_entry;
+        zmq::socket_t                  socket;
+    };
+    std::vector<std::unique_ptr<OutboundPeer>> peer_sockets;
+
+    if (!cfg.self_hub_uid.empty())
+    {
+        for (const auto& peer_cfg : cfg.peers)
+        {
+            if (peer_cfg.broker_endpoint.empty()) continue;
+            auto ps = std::make_unique<OutboundPeer>();
+            ps->cfg_entry = &peer_cfg;
+            ps->socket = zmq::socket_t(ctx, zmq::socket_type::dealer);
+
+            if (cfg.use_curve && !peer_cfg.pubkey_z85.empty())
+            {
+                ps->socket.set(zmq::sockopt::curve_serverkey, peer_cfg.pubkey_z85);
+                ps->socket.set(zmq::sockopt::curve_publickey, server_public_z85);
+                ps->socket.set(zmq::sockopt::curve_secretkey, server_secret_z85);
+            }
+
+            // Give the DEALER a stable routing-id so the peer can identify us.
+            const std::string dealer_id = cfg.self_hub_uid;
+            ps->socket.set(zmq::sockopt::routing_id, dealer_id);
+
+            ps->socket.connect(peer_cfg.broker_endpoint);
+            LOGGER_INFO("Broker: federation DEALER connected to peer '{}' at {}",
+                        peer_cfg.hub_uid, peer_cfg.broker_endpoint);
+
+            // Send HUB_PEER_HELLO immediately after connect.
+            // ZMQ queues the message until the connection is established.
+            nlohmann::json hello;
+            hello["hub_uid"]              = cfg.self_hub_uid;
+            hello["subscribed_channels"]  = nlohmann::json::array(); // let peer decide from its config
+            hello["protocol_version"]     = 1;
+            const std::string hello_body  = hello.dump();
+            ps->socket.send(zmq::message_t(&kFrameTypeControl, 1),         zmq::send_flags::sndmore);
+            ps->socket.send(zmq::message_t("HUB_PEER_HELLO", 14),          zmq::send_flags::sndmore);
+            ps->socket.send(zmq::message_t(hello_body.data(), hello_body.size()),
+                            zmq::send_flags::none);
+
+            peer_sockets.push_back(std::move(ps));
+        }
+    }
+
     while (!stop_requested.load(std::memory_order_acquire))
     {
         // --- Poll phase (no mutex: zmq_poll blocks up to kPollTimeout, no registry access) ---
-        std::vector<zmq::pollitem_t> items = {{router.handle(), 0, ZMQ_POLLIN, 0}};
+        std::vector<zmq::pollitem_t> items;
+        items.reserve(1 + peer_sockets.size());
+        items.push_back({router.handle(), 0, ZMQ_POLLIN, 0});
+        for (const auto& ps : peer_sockets)
+            items.push_back({ps->socket.handle(), 0, ZMQ_POLLIN, 0});
+
         zmq::poll(items, kPollTimeout);
 
         // --- Post-poll phase (mutex held: all registry reads/writes are protected) ---
@@ -325,55 +422,144 @@ void BrokerServiceImpl::run()
                 handle_channel_broadcast_req(router, req);
             }
 
+            // Drain hub_targeted_msg queue (thread-safe send from external callers).
+            {
+                std::vector<HubTargetedRequest> pending_targeted;
+                {
+                    std::lock_guard<std::mutex> ht_lk(m_hub_targeted_mu);
+                    pending_targeted.assign(
+                        std::make_move_iterator(hub_targeted_queue_.begin()),
+                        std::make_move_iterator(hub_targeted_queue_.end()));
+                    hub_targeted_queue_.clear();
+                }
+                for (const auto& ht : pending_targeted)
+                {
+                    auto it = inbound_peers_.find(ht.target_hub_uid);
+                    if (it == inbound_peers_.end())
+                    {
+                        LOGGER_WARN("Broker: send_hub_targeted_msg: peer '{}' not connected",
+                                    ht.target_hub_uid);
+                        continue;
+                    }
+                    nlohmann::json msg;
+                    msg["target_hub_uid"] = ht.target_hub_uid;
+                    msg["channel_name"]   = ht.channel;
+                    msg["sender_uid"]     = cfg.self_hub_uid;
+                    msg["payload"]        = ht.payload;
+                    send_to_identity(router, it->second.zmq_identity, "HUB_TARGETED_MSG", msg);
+                    LOGGER_DEBUG("Broker: sent HUB_TARGETED_MSG to peer '{}'", ht.target_hub_uid);
+                }
+            }
+
             // Check heartbeat timeouts and consumer liveness every poll cycle (≈100ms resolution).
             check_heartbeat_timeouts(router);
             check_dead_consumers(router);
             check_closing_deadlines(router);
+            prune_relay_dedup();
 
-            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            // --- Handle ROUTER socket (local clients + inbound peer DEALERs) ---
+            if ((items[0].revents & ZMQ_POLLIN) != 0)
             {
-                continue;
-            }
-
-            std::vector<zmq::message_t> frames;
-            auto num_parts = zmq::recv_multipart(router, std::back_inserter(frames));
-            if (!num_parts.has_value())
-            {
-                LOGGER_WARN("Broker: recv_multipart failed, possible ZMQ error or context termination.");
-                continue;
-            }
-
-            // Expected layout: [identity, 'C', msg_type_string, json_body]
-            if (*num_parts < 4)
-            {
-                LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})",
-                            *num_parts);
-                continue;
-            }
-
-            try
-            {
-                // Reject oversized payloads before string construction and JSON parse.
-                // ROUTER socket: silently drop — no mandatory reply.
-                static constexpr size_t kMaxPayloadBytes = 1u << 20; // 1 MB
-                if (frames[3].size() > kMaxPayloadBytes)
+                std::vector<zmq::message_t> frames;
+                auto num_parts = zmq::recv_multipart(router, std::back_inserter(frames));
+                if (!num_parts.has_value())
                 {
-                    LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
-                                frames[3].size());
-                    continue;
+                    LOGGER_WARN("Broker: recv_multipart failed, possible ZMQ error or context termination.");
                 }
-                const std::string msg_type = frames[2].to_string();
-                const std::string payload_raw = frames[3].to_string();
-                LOGGER_TRACE("Broker: recv msg_type='{}' payload_len={}",
-                             msg_type, payload_raw.size());
-                nlohmann::json payload = nlohmann::json::parse(payload_raw);
-                process_message(router, frames[0], msg_type, payload);
+                // Expected layout: [identity, 'C', msg_type_string, json_body]
+                else if (*num_parts < 4)
+                {
+                    LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})",
+                                *num_parts);
+                }
+                else
+                {
+                    try
+                    {
+                        // Reject oversized payloads before string construction and JSON parse.
+                        // ROUTER socket: silently drop — no mandatory reply.
+                        static constexpr size_t kMaxPayloadBytes = 1u << 20; // 1 MB
+                        if (frames[3].size() > kMaxPayloadBytes)
+                        {
+                            LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
+                                        frames[3].size());
+                        }
+                        else
+                        {
+                            const std::string msg_type    = frames[2].to_string();
+                            const std::string payload_raw = frames[3].to_string();
+                            LOGGER_TRACE("Broker: recv msg_type='{}' payload_len={}",
+                                         msg_type, payload_raw.size());
+                            nlohmann::json payload = nlohmann::json::parse(payload_raw);
+                            process_message(router, frames[0], msg_type, payload);
+                        }
+                    }
+                    catch (const nlohmann::json::exception& e)
+                    {
+                        LOGGER_WARN("Broker: malformed JSON: {}", e.what());
+                    }
+                }
             }
-            catch (const nlohmann::json::exception& e)
+
+            // --- Handle outbound peer DEALER sockets (ACKs and relays from peers) ---
+            // DEALER receives: ['C', msg_type, json_body]  (3 frames, no identity)
+            for (size_t i = 0; i < peer_sockets.size(); ++i)
             {
-                LOGGER_WARN("Broker: malformed JSON: {}", e.what());
+                if ((items[1 + i].revents & ZMQ_POLLIN) == 0) continue;
+                std::vector<zmq::message_t> peer_frames;
+                auto np = zmq::recv_multipart(peer_sockets[i]->socket,
+                                              std::back_inserter(peer_frames));
+                if (!np.has_value() || *np < 3) continue;
+                try
+                {
+                    const std::string peer_msg_type = peer_frames[1].to_string();
+                    const std::string peer_body_raw = peer_frames[2].to_string();
+                    nlohmann::json peer_payload = nlohmann::json::parse(peer_body_raw);
+                    if (peer_msg_type == "HUB_PEER_HELLO_ACK")
+                    {
+                        handle_hub_peer_hello_ack(
+                            peer_sockets[i]->cfg_entry->hub_uid, peer_payload);
+                    }
+                    else if (peer_msg_type == "HUB_RELAY_MSG")
+                    {
+                        handle_hub_relay_msg(router, peer_payload);
+                    }
+                    else if (peer_msg_type == "HUB_TARGETED_MSG")
+                    {
+                        handle_hub_targeted_msg(peer_payload);
+                    }
+                    else
+                    {
+                        LOGGER_WARN("Broker: unexpected msg_type '{}' from peer DEALER",
+                                    peer_msg_type);
+                    }
+                }
+                catch (const nlohmann::json::exception& e)
+                {
+                    LOGGER_WARN("Broker: malformed JSON from peer DEALER: {}", e.what());
+                }
             }
         } // mutex released before next poll
+    }
+
+    // Send HUB_PEER_BYE on all outbound sockets before closing.
+    if (!cfg.self_hub_uid.empty())
+    {
+        nlohmann::json bye;
+        bye["hub_uid"] = cfg.self_hub_uid;
+        const std::string bye_body = bye.dump();
+        for (auto& ps : peer_sockets)
+        {
+            try
+            {
+                ps->socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
+                ps->socket.send(zmq::message_t("HUB_PEER_BYE", 12),    zmq::send_flags::sndmore);
+                ps->socket.send(zmq::message_t(bye_body.data(), bye_body.size()),
+                                zmq::send_flags::none);
+            }
+            catch (const zmq::error_t&) {} // best-effort on shutdown
+            ps->socket.close();
+        }
     }
 
     router.close();
@@ -474,6 +660,21 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         nlohmann::json resp = handle_metrics_req(payload);
         send_reply(socket, identity, "METRICS_ACK", resp);
     }
+    else if (msg_type == "HUB_PEER_HELLO")
+    {
+        // HEP-CORE-0022: inbound peer DEALER connected and is announcing itself.
+        handle_hub_peer_hello(socket, identity, payload);
+    }
+    else if (msg_type == "HUB_PEER_BYE")
+    {
+        // HEP-CORE-0022: peer is disconnecting gracefully.
+        handle_hub_peer_bye(payload);
+    }
+    else if (msg_type == "HUB_TARGETED_MSG")
+    {
+        // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER → our ROUTER).
+        handle_hub_targeted_msg(payload);
+    }
     else
     {
         LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
@@ -524,6 +725,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
     entry.zmq_data_endpoint     = req.value("zmq_data_endpoint", "");
     entry.zmq_pubkey            = req.value("zmq_pubkey", "");
+    // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+    entry.data_transport        = req.value("data_transport", std::string{"shm"});
+    entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         entry.metadata = req["metadata"];
@@ -661,9 +865,12 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         static_cast<uint32_t>(registry.find_consumers(channel_name).size());
     resp["has_shared_memory"] = entry->has_shared_memory;
     resp["channel_pattern"]   = channel_pattern_to_str(entry->pattern);
-    resp["zmq_ctrl_endpoint"] = entry->zmq_ctrl_endpoint;
-    resp["zmq_data_endpoint"] = entry->zmq_data_endpoint;
-    resp["zmq_pubkey"]        = entry->zmq_pubkey;
+    resp["zmq_ctrl_endpoint"]  = entry->zmq_ctrl_endpoint;
+    resp["zmq_data_endpoint"]  = entry->zmq_data_endpoint;
+    resp["zmq_pubkey"]         = entry->zmq_pubkey;
+    // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+    resp["data_transport"]     = entry->data_transport;
+    resp["zmq_node_endpoint"]  = entry->zmq_node_endpoint;
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -1233,6 +1440,11 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
     send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
     LOGGER_DEBUG("Broker: relayed CHANNEL_NOTIFY_REQ to producer of '{}' event='{}'",
                  target_channel, event);
+
+    // HEP-CORE-0022: relay to federation peers subscribed to this channel.
+    const std::string data_str = req.contains("data") && req["data"].is_string()
+                                     ? req["data"].get<std::string>() : std::string{};
+    relay_notify_to_peers(socket, target_channel, event, sender_uid, data_str);
 }
 
 // ============================================================================
@@ -1302,6 +1514,11 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
 
     LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' → {} consumers + producer",
                  target_channel, message, entry->consumers.size());
+
+    // HEP-CORE-0022: relay to federation peers subscribed to this channel.
+    const std::string data_str = req.contains("data") && req["data"].is_string()
+                                     ? req["data"].get<std::string>() : std::string{};
+    relay_notify_to_peers(socket, target_channel, "broadcast:" + message, sender_uid, data_str);
 }
 
 // ============================================================================
@@ -1503,6 +1720,14 @@ void BrokerService::request_broadcast_channel(const std::string& channel,
     pImpl->broadcast_request_queue_.push_back({channel, message, data});
 }
 
+void BrokerService::send_hub_targeted_msg(const std::string& target_hub_uid,
+                                          const std::string& channel,
+                                          const std::string& payload)
+{
+    std::lock_guard<std::mutex> lk(pImpl->m_hub_targeted_mu);
+    pImpl->hub_targeted_queue_.push_back({target_hub_uid, channel, payload});
+}
+
 // ============================================================================
 // MetricsStore (HEP-CORE-0019)
 // ============================================================================
@@ -1602,6 +1827,193 @@ nlohmann::json BrokerServiceImpl::query_metrics(const std::string &channel) cons
         result["channels"] = std::move(channels);
     }
     return result;
+}
+
+// ============================================================================
+// Hub Federation handlers (HEP-CORE-0022)
+// ============================================================================
+
+void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
+                                               const zmq::message_t& identity,
+                                               const nlohmann::json& payload)
+{
+    const std::string peer_hub_uid = payload.value("hub_uid", "");
+    if (peer_hub_uid.empty())
+    {
+        LOGGER_WARN("Broker: HUB_PEER_HELLO missing hub_uid — ignored");
+        return;
+    }
+
+    // Find the relay_channels this hub is configured to send to this peer.
+    std::vector<std::string> relay_channels;
+    for (const auto& pc : cfg.peers)
+    {
+        if (pc.hub_uid == peer_hub_uid)
+        {
+            relay_channels = pc.channels;
+            break;
+        }
+    }
+
+    // Register as inbound peer.
+    const std::string identity_str(static_cast<const char*>(identity.data()), identity.size());
+    inbound_peers_[peer_hub_uid] = {peer_hub_uid, identity_str, relay_channels};
+
+    LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]",
+                peer_hub_uid, [&]{
+                    std::string s;
+                    for (const auto& c : relay_channels) { if (!s.empty()) s+=','; s+=c; }
+                    return s; }());
+
+    // Send ACK.
+    nlohmann::json ack;
+    ack["status"]            = "ok";
+    ack["accepted_channels"] = relay_channels;
+    ack["hub_uid"]           = cfg.self_hub_uid;
+    send_reply(socket, identity, "HUB_PEER_HELLO_ACK", ack);
+
+    if (cfg.on_hub_connected)
+        cfg.on_hub_connected(peer_hub_uid);
+}
+
+void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
+{
+    const std::string peer_hub_uid = payload.value("hub_uid", "");
+    if (peer_hub_uid.empty()) return;
+
+    const bool was_known = inbound_peers_.erase(peer_hub_uid) > 0;
+    if (was_known)
+    {
+        LOGGER_INFO("Broker: federation peer '{}' sent BYE — removed", peer_hub_uid);
+        if (cfg.on_hub_disconnected)
+            cfg.on_hub_disconnected(peer_hub_uid);
+    }
+}
+
+void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string&    peer_hub_uid,
+                                                    const nlohmann::json& payload)
+{
+    const std::string status = payload.value("status", "error");
+    if (status == "ok")
+    {
+        LOGGER_INFO("Broker: federation HUB_PEER_HELLO_ACK from '{}' — connected", peer_hub_uid);
+        if (cfg.on_hub_connected)
+            cfg.on_hub_connected(peer_hub_uid);
+    }
+    else
+    {
+        LOGGER_WARN("Broker: federation HUB_PEER_HELLO_ACK from '{}': status={}",
+                    peer_hub_uid, status);
+    }
+}
+
+void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
+                                              const nlohmann::json& payload)
+{
+    // Protocol invariant: relay=true means never re-relay to our own peers.
+    // Check dedup window.
+    const std::string msg_id = payload.value("msg_id", "");
+    if (!msg_id.empty())
+    {
+        const auto now = std::chrono::steady_clock::now();
+        auto it = relay_dedup_.find(msg_id);
+        if (it != relay_dedup_.end() && it->second > now)
+        {
+            LOGGER_DEBUG("Broker: HUB_RELAY_MSG dedup drop msg_id='{}'", msg_id);
+            return;
+        }
+        relay_dedup_[msg_id] = now + kRelayDedupeWindow;
+    }
+
+    const std::string channel      = payload.value("channel_name",   "");
+    const std::string event        = payload.value("event",          "");
+    const std::string sender_uid   = payload.value("sender_uid",     "");
+    const std::string originator   = payload.value("originator_uid", "");
+
+    if (channel.empty())
+    {
+        LOGGER_WARN("Broker: HUB_RELAY_MSG missing channel_name");
+        return;
+    }
+
+    // Deliver locally as CHANNEL_EVENT_NOTIFY (to channel producer only, like CHANNEL_NOTIFY_REQ).
+    // Include relayed_from so scripts can distinguish relayed events.
+    auto entry = registry.find_channel(channel);
+    if (!entry || entry->producer_zmq_identity.empty())
+    {
+        LOGGER_DEBUG("Broker: HUB_RELAY_MSG for '{}' — no local channel or producer", channel);
+        return;
+    }
+
+    nlohmann::json fwd;
+    fwd["channel_name"] = channel;
+    fwd["event"]        = event;
+    fwd["sender_uid"]   = sender_uid;
+    fwd["relayed_from"] = originator;
+    if (payload.contains("payload"))
+        fwd["data"] = payload["payload"];
+
+    send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
+    LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' → local producer",
+                 channel, event, originator);
+}
+
+void BrokerServiceImpl::handle_hub_targeted_msg(const nlohmann::json& payload)
+{
+    if (!cfg.on_hub_message) return;
+
+    const std::string channel    = payload.value("channel_name", "");
+    const std::string p_payload  = payload.value("payload",      "");
+    const std::string sender_uid = payload.value("sender_uid",   "");
+    cfg.on_hub_message(channel, p_payload, sender_uid);
+}
+
+void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t&     socket,
+                                               const std::string& channel,
+                                               const std::string& event,
+                                               const std::string& sender_uid,
+                                               const std::string& data)
+{
+    if (inbound_peers_.empty() || cfg.self_hub_uid.empty()) return;
+
+    for (const auto& [uid, peer] : inbound_peers_)
+    {
+        // Check if this peer is subscribed to this channel.
+        const auto& chans = peer.relay_channels;
+        if (std::find(chans.begin(), chans.end(), channel) == chans.end()) continue;
+
+        nlohmann::json relay;
+        relay["relay"]          = true;
+        relay["channel_name"]   = channel;
+        relay["originator_uid"] = cfg.self_hub_uid;
+        relay["msg_id"]         = cfg.self_hub_uid + ":" + std::to_string(relay_seq_++);
+        relay["event"]          = event;
+        relay["sender_uid"]     = sender_uid;
+        if (!data.empty()) relay["payload"] = data;
+
+        try
+        {
+            send_to_identity(socket, peer.zmq_identity, "HUB_RELAY_MSG", relay);
+            LOGGER_DEBUG("Broker: relayed '{}' event='{}' to peer '{}'",
+                         channel, event, uid);
+        }
+        catch (const zmq::error_t& e)
+        {
+            LOGGER_WARN("Broker: relay to peer '{}' failed: {}", uid, e.what());
+        }
+    }
+}
+
+void BrokerServiceImpl::prune_relay_dedup()
+{
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = relay_dedup_.begin(); it != relay_dedup_.end(); )
+    {
+        if (it->second <= now)
+            it = relay_dedup_.erase(it);
+        else
+            ++it;
+    }
 }
 
 } // namespace pylabhub::broker

@@ -131,6 +131,8 @@ Completed:
 | Interactive Signal Handler | ✅ Complete | `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md` | **Implemented (2026-03-02).** All 4 binaries integrated. Old signal handlers removed. 705/705 pass. |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
 | Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Two-tier shutdown (CHANNEL_CLOSING_NOTIFY + FORCE_SHUTDOWN); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay; HEP-0007 §12 |
+| ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
+| Hub Federation Broadcast | 🔵 Design | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 draft (2026-03-05).** Stable inter-hub ctrl relay; one-hop; loop-safe; CURVE auth; `hub.json` peers config; HubScript callbacks. Implementation pending. |
 
 **Active code reviews:** None. (2026-02-27 reviews archived to `docs/archive/transient-2026-02-27/`; 2026-03-01 Round 2 reviews archived to `docs/archive/transient-2026-03-01/`; SECURITY/RAII/MEMORY_LAYOUT TODOs archived to `docs/archive/transient-2026-03-02/`; all logged in `docs/DOC_ARCHIVE_LOG.md`.)
 
@@ -156,7 +158,14 @@ See `docs/todo/README.md` for full list and archiving history.
 - `MEMORY_LAYOUT_TODO.md` → `docs/archive/transient-2026-03-02/` (memory layout complete)
 
 ### Active Design Drafts
-- *(no active design drafts — ACTOR_DESIGN.md superseded by HEP-CORE-0018; actor eliminated)*
+
+| HEP | Title | Status |
+|-----|-------|--------|
+| HEP-CORE-0021 | ZMQ Virtual Channel Node — broker-aware peer-to-peer endpoints; discovery via `in_hub_dir` | **Draft** (2026-03-05) — design complete, implementation pending |
+| HEP-CORE-0022 | Hub Federation Broadcast — stable inter-hub ctrl relay, one-hop, loop-safe, CURVE auth | **Draft** (2026-03-05) — design complete, implementation pending |
+
+See `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` and
+`docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md`.
 
 ---
 

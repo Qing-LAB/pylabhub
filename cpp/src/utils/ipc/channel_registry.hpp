@@ -79,6 +79,13 @@ struct ChannelEntry
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
 
+    // ── ZMQ Virtual Channel Node (HEP-CORE-0021) ──────────────────────────────
+    /// Data transport type: "shm" (default) or "zmq" (ZMQ Virtual Channel Node).
+    std::string    data_transport{"shm"};
+    /// For data_transport="zmq": the bind endpoint registered by the producer's PUSH socket.
+    /// Empty when data_transport="shm". Returned verbatim in DISC_ACK for consumer discovery.
+    std::string    zmq_node_endpoint;
+
     // ── Schema identity (HEP-CORE-0016 Phase 3) ───────────────────────────────
     /// Named schema ID set by producer in REG_REQ or annotated by broker via reverse hash
     /// lookup. Empty string = anonymous channel (no named schema confirmed).

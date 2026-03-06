@@ -573,6 +573,31 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     broker_cfg.connection_policy                = hub_cfg.connection_policy();
     broker_cfg.known_actors                     = hub_cfg.known_actors();
     broker_cfg.channel_policies                 = hub_cfg.channel_policies();
+    // HEP-CORE-0022: federation peers (convert HubPeerConfig → FederationPeer)
+    broker_cfg.self_hub_uid = hub_cfg.hub_uid();
+    for (const auto& p : hub_cfg.peers())
+    {
+        pylabhub::broker::FederationPeer fp;
+        fp.hub_uid         = p.hub_uid;
+        fp.broker_endpoint = p.broker_endpoint;
+        fp.pubkey_z85      = p.pubkey_z85;
+        fp.channels        = p.channels;
+        broker_cfg.peers.push_back(std::move(fp));
+    }
+    broker_cfg.on_hub_connected = [](const std::string& hub_uid)
+    {
+        pylabhub::HubScript::get_instance().on_hub_peer_connected(hub_uid);
+    };
+    broker_cfg.on_hub_disconnected = [](const std::string& hub_uid)
+    {
+        pylabhub::HubScript::get_instance().on_hub_peer_disconnected(hub_uid);
+    };
+    broker_cfg.on_hub_message = [](const std::string& channel,
+                                   const std::string& payload,
+                                   const std::string& source_hub_uid)
+    {
+        pylabhub::HubScript::get_instance().on_hub_peer_message(channel, payload, source_hub_uid);
+    };
     broker_cfg.on_ready = [dev_mode, &hub_dir](const std::string& endpoint, const std::string& pubkey)
     {
         LOGGER_INFO("HubShell: broker ready at {} (pubkey={})", endpoint, pubkey);
