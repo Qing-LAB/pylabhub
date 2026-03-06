@@ -1483,7 +1483,21 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         }
     }
 
-    // Acquire a new slot ID (monotonically increasing)
+    // Single-writer invariant: the broker enforces exactly one registered producer per channel.
+    // DataBlockProducer is therefore always driven by a single writer thread.
+    // The atomic fetch_add is defensive (prevents torn reads on 32-bit platforms) but there
+    // is no real concurrent-writer contention in practice.
+    //
+    // SHM-C2 note (known, benign): write_index is incremented here BEFORE acquire_write()
+    // confirms the slot is ready. acquire_write() has two phases:
+    //   Phase 1 — CAS on write_lock:   always succeeds with single writer (slot is FREE).
+    //   Phase 2 — wait for reader_count==0: can time out if a slow reader still holds the
+    //             recycled slot AND timeout_ms == 0 (non-blocking). In that case acquire_write()
+    //             restores the slot to COMMITTED and returns TIMEOUT, but write_index is already
+    //             advanced — the slot_id is "burned" (never committed, never seen by consumers).
+    // Impact: at most one skipped slot_id per such event; no corruption; self-healing within
+    // one ring-buffer rotation. Only triggered by timeout_ms==0 with an active slow reader,
+    // which is not a supported production configuration (default timeout is 5 s).
     uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel);
     auto slot_index = static_cast<size_t>(slot_id % slot_count);
 
@@ -1494,7 +1508,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         return nullptr; // Should not happen: slot_id % slot_count always in range
     }
 
-    // Acquire write lock for this slot
+    // Acquire write lock for this slot (see SHM-C2 note above)
     SlotAcquireResult acquire_res = acquire_write(rw_state, header, timeout_ms);
     if (acquire_res != SLOT_ACQUIRE_OK)
     {
