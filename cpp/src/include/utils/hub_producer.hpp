@@ -234,8 +234,13 @@ struct ProducerOptions
     std::string zmq_node_endpoint{};
     /// If true, PUSH socket binds to zmq_node_endpoint; otherwise connects (default: bind).
     bool zmq_bind{true};
-    /// Slot payload size in bytes for ZmqQueue frames.  0 = caller sets item_size separately.
-    size_t zmq_slot_size{0};
+    /// Schema for ZMQ PUSH frames (required when data_transport=="zmq").
+    /// Empty schema → LOGGER_ERROR + Producer::create returns nullopt.
+    /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.
+    std::vector<ZmqSchemaField> zmq_schema{};
+    /// "natural" (ctypes.LittleEndianStructure default) or "packed" (no padding).
+    /// Must match the receiver's packing.
+    std::string zmq_packing{"natural"};
     /// Internal receive-buffer depth for ZmqQueue PULL (read side).
     size_t zmq_buffer_depth{64};
 };

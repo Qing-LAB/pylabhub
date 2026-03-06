@@ -9,11 +9,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <optional>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
@@ -45,9 +47,9 @@ constexpr auto kManagedProducerShutdownMs = std::chrono::milliseconds(10000);
 struct PendingCtrlSend
 {
     std::string            identity; ///< ZMQ identity of the target consumer
-    std::string            type;     ///< Ctrl type string (ignored for data frames)
+    std::string            type;     ///< Ctrl type string; empty (unused) when is_data=true.
     std::vector<std::byte> data;
-    bool                   is_data{false}; ///< true = data frame; false = ctrl frame
+    bool                   is_data{false}; ///< true = data frame (type ignored); false = ctrl frame
 };
 
 // ============================================================================
@@ -64,6 +66,9 @@ struct ProducerImpl
     // Consumer identity tracking (updated exclusively from peer_thread, read under lock)
     mutable std::mutex       consumer_list_mu;
     std::vector<std::string> consumer_identities;
+
+    // Guards user-facing callbacks during concurrent close(). [PC1]
+    mutable std::mutex callbacks_mu;
     /// Maps consumer_pid → ZMQ identity (populated from HELLO body consumer_pid field).
     std::unordered_map<uint64_t, std::string> pid_to_identity;
 
@@ -479,14 +484,19 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
     // destroying pImpl, preventing use-after-free.
     const std::string ch = raw->handle.channel_name();
 
+    // [PC1] Messenger callbacks run on the Messenger worker thread and may race with
+    // close(). Copy the user callback under callbacks_mu before invoking it so that
+    // close()'s null-assignment cannot produce a null std::function call.
     messenger.on_channel_closing(ch, [raw]() {
-        if (!raw->closed && raw->on_channel_closing_cb)
-            raw->on_channel_closing_cb();
+        std::function<void()> cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_channel_closing_cb; }
+        if (!raw->closed && cb) cb();
     });
 
     messenger.on_force_shutdown(ch, [raw]() {
-        if (!raw->closed && raw->on_force_shutdown_cb)
-            raw->on_force_shutdown_cb();
+        std::function<void()> cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_force_shutdown_cb; }
+        if (!raw->closed && cb) cb();
     });
 
     messenger.on_consumer_died(ch, [raw](uint64_t pid, std::string reason) {
@@ -504,13 +514,15 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
                 raw->pid_to_identity.erase(it);
             }
         }
-        if (raw->on_consumer_died_cb)
-            raw->on_consumer_died_cb(pid, reason);
+        Producer::ConsumerDiedCallback cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_consumer_died_cb; }
+        if (cb) cb(pid, reason);
     });
 
     messenger.on_channel_error(ch, [raw](std::string event, nlohmann::json details) {
-        if (!raw->closed && raw->on_channel_error_cb)
-            raw->on_channel_error_cb(event, details);
+        Producer::ChannelErrorCallback cb;
+        { std::lock_guard<std::mutex> lk(raw->callbacks_mu); cb = raw->on_channel_error_cb; }
+        if (!raw->closed && cb) cb(event, details);
     });
 
     // HEP-CORE-0021: create ZMQ PUSH socket when data_transport == "zmq".
@@ -521,9 +533,26 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
             LOGGER_ERROR("[producer] data_transport='zmq' but zmq_node_endpoint is empty");
             return std::nullopt;
         }
+        // Derive 8-byte schema tag from the first 8 bytes of schema_hash (binary).
+        std::optional<std::array<uint8_t, 8>> schema_tag;
+        if (opts.schema_hash.size() >= 8)
+        {
+            std::array<uint8_t, 8> tag{};
+            std::memcpy(tag.data(), opts.schema_hash.data(), 8);
+            schema_tag = tag;
+        }
         impl->zmq_queue_ = ZmqQueue::push_to(
-            opts.zmq_node_endpoint, opts.zmq_slot_size, opts.zmq_bind);
-        impl->zmq_queue_->start();
+            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing, opts.zmq_bind, schema_tag);
+        if (!impl->zmq_queue_)
+        {
+            return std::nullopt; // Error already logged by factory (empty/invalid schema, etc.)
+        }
+        if (!impl->zmq_queue_->start()) // [ZQ2] Check return value — bind/connect may fail.
+        {
+            LOGGER_ERROR("[producer] ZMQ PUSH socket start() failed for '{}'",
+                         opts.zmq_node_endpoint);
+            return std::nullopt;
+        }
         LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
     }
 
@@ -607,11 +636,12 @@ bool Producer::start()
 
     pImpl->write_stop.store(false, std::memory_order_relaxed);
 
-    pImpl->peer_thread_handle = std::thread([this] { pImpl->run_peer_thread(); });
+    auto *impl_ptr = pImpl.get();
+    pImpl->peer_thread_handle = std::thread([impl_ptr] { impl_ptr->run_peer_thread(); });
 
     if (pImpl->shm)
     {
-        pImpl->write_thread_handle = std::thread([this] { pImpl->run_write_thread(); });
+        pImpl->write_thread_handle = std::thread([impl_ptr] { impl_ptr->run_write_thread(); });
     }
 
     return true;
@@ -645,10 +675,11 @@ void Producer::stop()
         pImpl->write_thread_handle.join();
     }
 
-    // Stop ZMQ PUSH socket after threads join (they may still be sending).
+    // Stop ZMQ PUSH socket after threads join (they may still be sending). [PC3]
     if (pImpl->zmq_queue_)
     {
         pImpl->zmq_queue_->stop();
+        pImpl->zmq_queue_.reset(); // Null after stop so a hypothetical re-start cannot use a stale queue.
     }
 }
 
@@ -896,15 +927,20 @@ void Producer::close()
         pImpl->messenger->unregister_channel(ch);
     }
 
-    // Clear all user-facing callbacks so that any std::function captures releasing
-    // after this point do not invoke stale references into user state.
+    // Clear all user-facing callbacks. Messenger-registered lambdas (which run on the
+    // Messenger worker thread) copy callbacks under callbacks_mu before invoking, so
+    // nulling here is race-free with respect to those lambdas. Peer-thread callbacks
+    // (joined_cb, left_cb, message_cb) are safe because peer_thread has already joined.
+    {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
+        pImpl->on_channel_closing_cb  = nullptr;
+        pImpl->on_force_shutdown_cb   = nullptr;
+        pImpl->on_consumer_died_cb    = nullptr;
+        pImpl->on_channel_error_cb    = nullptr;
+    }
     pImpl->on_consumer_joined_cb  = nullptr;
     pImpl->on_consumer_left_cb    = nullptr;
     pImpl->on_consumer_message_cb = nullptr;
-    pImpl->on_channel_closing_cb  = nullptr;
-    pImpl->on_force_shutdown_cb   = nullptr;
-    pImpl->on_consumer_died_cb    = nullptr;
-    pImpl->on_channel_error_cb    = nullptr;
 
     pImpl->handle.invalidate();
     pImpl->shm.reset();

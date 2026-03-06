@@ -6,7 +6,7 @@
  *
  * Tests the federation ctrl-plane relay between two in-process brokers:
  *   - HUB_PEER_HELLO / HUB_PEER_HELLO_ACK handshake (on_hub_connected)
- *   - CHANNEL_NOTIFY_REQ relayed as CHANNEL_EVENT_NOTIFY (relay=true) with relayed_from
+ *   - CHANNEL_NOTIFY_REQ relayed as CHANNEL_EVENT_NOTIFY (relay=true) with originator_uid
  *   - CHANNEL_BROADCAST_REQ relayed across hubs to Hub B subscribers
  *   - HUB_TARGETED_MSG delivery to on_hub_message callback
  *   - Channel-filtered relay: channels not in relay list are not forwarded
@@ -309,7 +309,7 @@ TEST_F(BrokerFederationTest, RelayChannelNotify_DeliveredToHubB)
     //   Hub A also relays HUB_RELAY_MSG to Hub B (Hub B is an inbound peer
     //   subscribed to this channel).
     //   Hub B delivers as CHANNEL_EVENT_NOTIFY to P_B (producer on Hub B),
-    //   with an extra `relayed_from` field identifying Hub A.
+    //   with an extra `originator_uid` field identifying Hub A.
 
     const std::string channel = pid_chan("fed.relay.notify");
 
@@ -374,13 +374,13 @@ TEST_F(BrokerFederationTest, RelayChannelNotify_DeliveredToHubB)
     ASSERT_TRUE(cons_handle.has_value());
     consumer_a.enqueue_channel_notify(channel, "CONS-A-UID", "sensor_alarm", "temp=99");
 
-    // Hub B's producer must receive the relayed event with relayed_from set.
+    // Hub B's producer must receive the relayed event with originator_uid set.
     ASSERT_TRUE(prod_b_events.wait_for(1, 3000))
         << "Hub B producer did not receive relayed CHANNEL_EVENT_NOTIFY";
 
     auto details = prod_b_events.get_details(0);
     EXPECT_EQ(details.value("data", ""), "temp=99");
-    EXPECT_EQ(details.value("relayed_from", ""), "HUB-RELAY-A");
+    EXPECT_EQ(details.value("originator_uid", ""), "HUB-RELAY-A");
 
     hub_b.stop_and_join();
     hub_a.stop_and_join();
@@ -461,7 +461,7 @@ TEST_F(BrokerFederationTest, RelayChannelBroadcast_DeliveredToHubB)
     auto ev_str = prod_b_events.get_event(0);
     EXPECT_FALSE(ev_str.empty());
     auto details = prod_b_events.get_details(0);
-    EXPECT_EQ(details.value("relayed_from", ""), "HUB-BCAST-A");
+    EXPECT_EQ(details.value("originator_uid", ""), "HUB-BCAST-A");
 
     hub_b.stop_and_join();
     hub_a.stop_and_join();

@@ -1911,18 +1911,62 @@ Frame 3: raw payload bytes
 Consumer → Producer messages arrive on the same socket; the producer dispatches them
 via `on_consumer_message(identity, data)`.
 
-#### ZmqQueue data framing (raw transport)
+#### ZmqQueue data framing (schema-mode msgpack transport)
 
-`hub::ZmqQueue` uses PUSH/PULL sockets for raw fixed-size data transport. Messages are
-single-frame, containing exactly `item_size` bytes with **no type prefix**:
+`hub::ZmqQueue` uses PUSH/PULL sockets for typed data transport encoded with
+**MessagePack**. Every `ZmqQueue` instance requires an explicit **field schema**
+(`std::vector<ZmqSchemaField>`) and a **packing** rule (`"natural"` or `"packed"`).
+Passing an empty schema is a hard error — the factory logs an error and returns
+`nullptr`. Raw (schema-less) transport is not supported.
+
+**Wire format** — every ZMQ message is one frame containing a msgpack fixarray of 4 elements:
 
 ```
-Frame 0: [raw data]    (item_size bytes)
+msgpack fixarray[4]:
+  [0]  magic      : uint32  = 0x51484C50  ('PLHQ') — frame identity guard
+  [1]  schema_tag : bin8    = 8-byte slice of BLAKE2b-256(BLDS), or zeros if not set
+  [2]  seq        : uint64  — monotonic send counter (wraps around)
+  [3]  payload    : array(N) — one element per schema field (see below)
+```
+
+**Payload element encoding per field**:
+
+| Field kind | `ZmqSchemaField` | Wire encoding |
+|---|---|---|
+| Scalar (`count==1`, not string/bytes) | `type_str` in `{bool,int8…uint64,float32,float64}` | native msgpack type (integer, float, bool) |
+| Array (`count>1`) | any numeric type | `bin(count × elem_size)` raw bytes |
+| String / bytes | `"string"` or `"bytes"`, `length=N` | `bin(N)` raw bytes |
+
+Scalar fields are encoded with their declared msgpack type, preserving the
+integer/float distinction on the wire. The receiver calls `msgpack::convert()`
+which throws `type_error` on integer↔float mismatch, guaranteeing type safety.
+Array and string/bytes fields are encoded as `bin` and validated by exact byte
+size. Mismatches increment `recv_frame_error_count()` and discard the frame.
+
+**Item size** is computed from the schema using the same alignment rules as Python
+`ctypes.LittleEndianStructure` (natural packing = each field aligned to its element
+size, struct padded to max alignment; packed = no padding). Both sender and receiver
+must use the same schema and packing — mismatched packing produces incorrect layout.
+
+**Opaque byte payloads** — callers that treat the slot as untyped bytes should use a
+single-field blob schema:
+```cpp
+// Single bytes field of N bytes — no per-byte type checking, just size validation.
+std::vector<hub::ZmqSchemaField> blob = {{"bytes", 1, N}};
 ```
 
 This is the data-plane transport for `hub::Processor` when operating in ZMQ-only mode
 (no SHM). There is no flexzone support in ZmqQueue — flexzone data is only available
 when using SHM-backed `hub::ShmQueue`.
+
+#### API contract (enforced at construction)
+
+| Requirement | Consequence of violation |
+|---|---|
+| `schema` must be non-empty | Factory returns `nullptr`; caller must check |
+| `packing` must be `"natural"` or `"packed"` | Factory returns `nullptr` |
+| Both sides must use identical `schema` and `packing` | Silent data corruption or `recv_frame_error_count` increments |
+| `zmq_schema` must be set in `ProducerOptions` / `ConsumerOptions` when `data_transport=="zmq"` | `Producer::create` / `Consumer::connect` returns `std::nullopt` |
 
 #### Design notes
 
@@ -1930,8 +1974,11 @@ when using SHM-backed `hub::ShmQueue`.
   shared memory. ZMQ carries only control messages (registration, heartbeats, notifications)
   and optional peer messaging (broadcast/send_to).
 - **ZmqQueue enables cross-machine transport**: When SHM is not available (e.g., processor
-  bridging two separate machines), ZmqQueue provides a raw PUSH/PULL data plane using the
+  bridging two separate machines), ZmqQueue provides a typed PUSH/PULL data plane using the
   same `hub::Queue` abstraction that `hub::Processor` consumes.
+- **Schema mode vs SHM**: ShmQueue carries raw slot bytes (layout validated at attach via
+  BLDS hash); ZmqQueue encodes each field individually (type-checked per frame). ShmQueue
+  has zero copy overhead; ZmqQueue has per-frame msgpack encode/decode cost.
 - **All control messages use JSON**: Human-readable, debuggable, extensible. Performance
   is not critical for control plane messages (O(1)/sec, not per-slot).
 
@@ -3146,6 +3193,7 @@ as of 2026-03-03. Schema validation (§12) implemented via HEP-CORE-0016 (Named 
 
 **Revision History:**
 - 2026-03-03: Actor terminology scrub; source file reference added; stale cross-refs fixed
+- 2026-03-06: §7.1 ZmqQueue wire format rewritten — schema-mode only (msgpack field encoding); API contract table; ShmQueue vs ZmqQueue comparison; ProducerOptions/ConsumerOptions zmq_schema requirement documented
 - 2026-03-01: §7.1 ZMQ wire format; §17 Architectural Layers (Queue + Processor)
 - 2026-02-27: Header refactor; source splits (lifecycle, messenger, actor_host)
 - 2026-02-08: Complete unified specification (Sections 1-15)

@@ -2258,27 +2258,24 @@ int DataBlockConsumer::register_heartbeat()
     for (size_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
     {
         uint64_t expected = 0;
-        // Write identity BEFORE the CAS so any reader that sees consumer_pid != 0
-        // via acquire-load also sees consistent uid/name (released by the acq_rel CAS).
-        std::memcpy(header->consumer_heartbeats[i].consumer_uid, pImpl->consumer_uid_buf,
-                    sizeof(pImpl->consumer_uid_buf));
-        std::memcpy(header->consumer_heartbeats[i].consumer_name, pImpl->consumer_name_buf,
-                    sizeof(pImpl->consumer_name_buf));
         if (header->consumer_heartbeats[i].consumer_pid.compare_exchange_strong(
                 expected, pid, std::memory_order_acq_rel))
         {
+            // CAS succeeded: we own this slot. Write identity fields only after
+            // taking ownership to avoid corrupting another consumer's data.
+            // Ordering: uid/name writes happen before last_heartbeat_ns.store(release),
+            // so readers who acquire-load last_heartbeat_ns will see a consistent identity.
+            std::memcpy(header->consumer_heartbeats[i].consumer_uid, pImpl->consumer_uid_buf,
+                        sizeof(pImpl->consumer_uid_buf));
+            std::memcpy(header->consumer_heartbeats[i].consumer_name, pImpl->consumer_name_buf,
+                        sizeof(pImpl->consumer_name_buf));
             header->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
             header->consumer_heartbeats[i].last_heartbeat_ns.store(
                 pylabhub::platform::monotonic_time_ns(), std::memory_order_release);
             pImpl->heartbeat_slot = static_cast<int>(i);
             return static_cast<int>(i);
         }
-        // CAS failed — another consumer claimed this slot; zero the identity we just wrote
-        // (leaves the slot clean for the real owner)
-        std::memset(header->consumer_heartbeats[i].consumer_uid, 0,
-                    sizeof(pImpl->consumer_uid_buf));
-        std::memset(header->consumer_heartbeats[i].consumer_name, 0,
-                    sizeof(pImpl->consumer_name_buf));
+        // CAS failed — slot is owned by another consumer; leave it untouched.
     }
     return -1; // No available slot
 }

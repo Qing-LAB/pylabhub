@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <sodium.h>
 #include <stdexcept>
 #include <vector>
 
@@ -90,7 +91,12 @@ void vault_write(const fs::path &path,
 {
     vault_require_sodium();
 
-    const auto key = vault_derive_key(password, uid);
+    auto key = vault_derive_key(password, uid);
+    struct KeyGuard
+    {
+        std::array<uint8_t, kVaultKeyBytes> &k;
+        ~KeyGuard() { sodium_memzero(k.data(), k.size()); }
+    } key_guard{key};
 
     // Random nonce.
     uint8_t nonce[kVaultNonceBytes]{};
@@ -128,7 +134,12 @@ std::string vault_read(const fs::path &path,
     const uint8_t *ciphertext = vault_bytes.data() + kVaultNonceBytes;
     const std::size_t clen    = vault_bytes.size() - kVaultNonceBytes;
 
-    const auto key = vault_derive_key(password, uid);
+    auto key = vault_derive_key(password, uid);
+    struct KeyGuard
+    {
+        std::array<uint8_t, kVaultKeyBytes> &k;
+        ~KeyGuard() { sodium_memzero(k.data(), k.size()); }
+    } key_guard{key};
 
     std::vector<uint8_t> plaintext(clen - kVaultMacBytes);
     if (crypto_secretbox_open_easy(plaintext.data(), ciphertext, clen, nonce, key.data()) != 0)

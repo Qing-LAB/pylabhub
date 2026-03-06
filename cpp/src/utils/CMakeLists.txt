@@ -203,6 +203,8 @@ target_link_libraries(pylabhub-utils
     pylabhub::third_party::libsodium
     pylabhub::third_party::luajit
     Threads::Threads
+  PRIVATE
+    pylabhub::third_party::msgpack
 )
 
 if(PYLABHUB_EXECINFO_LIB)

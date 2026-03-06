@@ -31,6 +31,24 @@ using scripting::IncomingMessage;
 namespace
 {
 
+/// Convert a SchemaSpec to a ZmqSchemaField list for ZmqQueue construction.
+/// NumpyArray exposure or no fields → single-blob schema of @p slot_size bytes.
+std::vector<hub::ZmqSchemaField>
+schema_spec_to_zmq_fields(const scripting::SchemaSpec &spec, size_t slot_size)
+{
+    if (spec.exposure == scripting::SlotExposure::NumpyArray || spec.fields.empty())
+    {
+        return {{"bytes", 1, static_cast<uint32_t>(slot_size)}};
+    }
+    std::vector<hub::ZmqSchemaField> out;
+    out.reserve(spec.fields.size());
+    for (const auto &f : spec.fields)
+    {
+        out.push_back({f.type_str, f.count, f.length});
+    }
+    return out;
+}
+
 bool parse_on_process_return(const py::object &ret)
 {
     if (ret.is_none())
@@ -156,7 +174,8 @@ bool ProcessorScriptHost::start_role()
                                        in_slot_spec_, scripting::SchemaSpec{});
     in_opts.consumer_uid         = config_.processor_uid;
     in_opts.consumer_name        = config_.processor_name;
-    in_opts.zmq_slot_size        = in_schema_slot_size_; // HEP-CORE-0021
+    in_opts.zmq_schema  = schema_spec_to_zmq_fields(in_slot_spec_, in_schema_slot_size_); // HEP-CORE-0021
+    in_opts.zmq_packing = in_slot_spec_.packing;
 
     const auto &in_ep  = config_.resolved_in_broker();
     const auto &in_pub = config_.resolved_in_broker_pubkey();
@@ -289,7 +308,8 @@ bool ProcessorScriptHost::start_role()
         out_opts.data_transport    = "zmq";
         out_opts.zmq_node_endpoint = config_.zmq_out_endpoint;
         out_opts.zmq_bind          = config_.zmq_out_bind;
-        out_opts.zmq_slot_size     = out_schema_slot_size_;
+        out_opts.zmq_schema  = schema_spec_to_zmq_fields(out_slot_spec_, out_schema_slot_size_);
+        out_opts.zmq_packing = out_slot_spec_.packing;
     }
 
     const auto &out_ep  = config_.resolved_out_broker();
@@ -476,8 +496,8 @@ bool ProcessorScriptHost::start_role()
     //        otherwise create an owned ShmQueue.
     if (auto *zmq_in = in_consumer_->queue())
     {
-        // ZMQ: Consumer already created and started the PULL socket (item_size set via
-        // in_opts.zmq_slot_size when ConsumerOptions was constructed above).
+        // ZMQ: Consumer already created and started the PULL socket (schema set via
+        // in_opts.zmq_schema when ConsumerOptions was constructed above).
         in_q_ = zmq_in;
     }
     else
@@ -499,8 +519,8 @@ bool ProcessorScriptHost::start_role()
     //         otherwise create an owned ShmQueue.
     if (auto *zmq_out = out_producer_->queue())
     {
-        // ZMQ: Producer already created and started the PUSH socket (item_size set via
-        // out_opts.zmq_slot_size when ProducerOptions was constructed above).
+        // ZMQ: Producer already created and started the PUSH socket (schema set via
+        // out_opts.zmq_schema when ProducerOptions was constructed above).
         out_q_ = zmq_out;
     }
     else
