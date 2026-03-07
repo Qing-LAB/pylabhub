@@ -64,13 +64,17 @@ bool ChannelRegistry::register_consumer(const std::string& channel_name, Consume
         return false;
     }
     auto& consumers = pos->second.consumers;
-    // Dedup: remove any stale entry with the same consumer_pid before adding the new one.
-    // Under reconnect/retry races a consumer may send CONSUMER_REG_REQ again without
-    // first sending CONSUMER_DEREG_REQ; keeping the old entry causes duplicate notifications.
-    consumers.erase(std::remove_if(consumers.begin(), consumers.end(),
-                                   [&entry](const ConsumerEntry& e)
-                                   { return e.consumer_pid == entry.consumer_pid; }),
-                    consumers.end());
+    // Dedup: if the same DEALER socket (same zmq_identity) sends CONSUMER_REG_REQ twice
+    // without a prior CONSUMER_DEREG_REQ, replace the stale entry to avoid duplicate
+    // notifications. Keying on zmq_identity (not consumer_pid) preserves multiple distinct
+    // consumer connections from the same process (each has a unique DEALER socket identity).
+    if (!entry.zmq_identity.empty())
+    {
+        consumers.erase(std::remove_if(consumers.begin(), consumers.end(),
+                                       [&entry](const ConsumerEntry& e)
+                                       { return e.zmq_identity == entry.zmq_identity; }),
+                        consumers.end());
+    }
     consumers.push_back(std::move(entry));
     return true;
 }

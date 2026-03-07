@@ -256,13 +256,17 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
     HubEventCollector hub_a_events;
     HubEventCollector hub_b_events;
 
-    // Start Hub A — no outbound peers; just wires on_hub_connected callback.
+    // Start Hub A — accepts inbound HELLO from Hub B (static topology: configured peers only).
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
     cfg_a.channel_shutdown_grace = std::chrono::seconds(0);
     cfg_a.self_hub_uid           = "HUB-TEST-A";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
+    // No broker_endpoint — Hub A doesn't connect outbound to Hub B; just allows inbound.
+    FederationPeer peer_b_inbound;
+    peer_b_inbound.hub_uid = "HUB-TEST-B";
+    cfg_a.peers.push_back(std::move(peer_b_inbound));
 
     auto hub_a = start_local_broker(std::move(cfg_a));
 
@@ -619,6 +623,10 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     { hub_a_events.push_connected(uid); };
     cfg_a.on_hub_disconnected = [&](const std::string &uid)
     { hub_a_events.push_disconnected(uid); };
+    // Allow inbound HELLO from HUB-BYE-B (static topology: configured peers only).
+    FederationPeer peer_b_inbound;
+    peer_b_inbound.hub_uid = "HUB-BYE-B";
+    cfg_a.peers.push_back(std::move(peer_b_inbound));
 
     auto hub_a = start_local_broker(std::move(cfg_a));
 
