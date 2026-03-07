@@ -206,6 +206,9 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     cfg.timeout_ms       = j.value("timeout_ms",       -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
+    if (cfg.timeout_ms < -1)
+        throw std::runtime_error("Processor config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
+
     // ── SHM ───────────────────────────────────────────────────────────────────
     if (j.contains("shm") && j["shm"].is_object())
     {
@@ -220,6 +223,8 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
             cfg.out_shm_enabled    = shm["out"].value("enabled",    true);
             cfg.out_shm_secret     = shm["out"].value("secret",     uint64_t{0});
             cfg.out_shm_slot_count = shm["out"].value("slot_count", uint32_t{4});
+            if (cfg.out_shm_enabled && cfg.out_shm_slot_count == 0)
+                throw std::runtime_error("Processor config: 'shm.out.slot_count' must be > 0");
         }
     }
 
