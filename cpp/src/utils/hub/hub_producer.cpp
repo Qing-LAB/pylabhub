@@ -231,10 +231,12 @@ bool ProducerImpl::recv_and_dispatch_ctrl_()
                 }
             }
         }
-        if (on_consumer_joined_cb)
-        {
-            on_consumer_joined_cb(identity);
-        }
+        // [PC1-ext] Copy under callbacks_mu before invoking — matches the
+        // close() null-assignment pattern at callbacks_mu (lines 942-954).
+        Producer::ConsumerCallback joined_cb;
+        { std::lock_guard<std::mutex> lk(callbacks_mu); joined_cb = on_consumer_joined_cb; }
+        if (joined_cb)
+            joined_cb(identity);
     }
     else if (type_str == "BYE")
     {
@@ -253,17 +255,17 @@ bool ProducerImpl::recv_and_dispatch_ctrl_()
                     ++map_it;
             }
         }
-        if (on_consumer_left_cb)
-        {
-            on_consumer_left_cb(identity);
-        }
+        Producer::ConsumerCallback left_cb;
+        { std::lock_guard<std::mutex> lk(callbacks_mu); left_cb = on_consumer_left_cb; }
+        if (left_cb)
+            left_cb(identity);
     }
     else
     {
-        if (on_consumer_message_cb)
-        {
-            on_consumer_message_cb(identity, body);
-        }
+        Producer::MessageCallback msg_cb;
+        { std::lock_guard<std::mutex> lk(callbacks_mu); msg_cb = on_consumer_message_cb; }
+        if (msg_cb)
+            msg_cb(identity, body);
     }
     return true;
 }
@@ -578,6 +580,7 @@ void Producer::on_consumer_joined(ConsumerCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_consumer_joined_cb = std::move(cb);
     }
 }
@@ -586,6 +589,7 @@ void Producer::on_consumer_left(ConsumerCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_consumer_left_cb = std::move(cb);
     }
 }
@@ -594,6 +598,7 @@ void Producer::on_consumer_message(MessageCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_consumer_message_cb = std::move(cb);
     }
 }
@@ -602,6 +607,7 @@ void Producer::on_channel_closing(std::function<void()> cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_channel_closing_cb = std::move(cb);
     }
 }
@@ -610,6 +616,7 @@ void Producer::on_force_shutdown(std::function<void()> cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_force_shutdown_cb = std::move(cb);
     }
 }
@@ -618,6 +625,7 @@ void Producer::on_consumer_died(ConsumerDiedCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_consumer_died_cb = std::move(cb);
     }
 }
@@ -626,6 +634,7 @@ void Producer::on_channel_error(ChannelErrorCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_channel_error_cb = std::move(cb);
     }
 }
