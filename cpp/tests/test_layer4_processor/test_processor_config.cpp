@@ -664,3 +664,31 @@ TEST_F(ProcessorConfigTest, DualBroker_MixedConfig)
 
     fs::remove_all(tmp);
 }
+
+TEST_F(ProcessorConfigTest, Validation_BadTimeoutThrows)
+{
+    const auto tmp = unique_temp_dir("valtmo");
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-VALTMO-00000001", "name": "ValTmo" },
+        "in_channel":  "lab.val.in",
+        "out_channel": "lab.val.out",
+        "timeout_ms":  -5
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Validation_ZeroOutSlotCountThrows)
+{
+    const auto tmp = unique_temp_dir("valslot");
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-VALSLOT-00000001", "name": "ValSlot" },
+        "in_channel":  "lab.val.in",
+        "out_channel": "lab.val.out",
+        "shm": { "out": { "enabled": true, "slot_count": 0 } }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}

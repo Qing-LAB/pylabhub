@@ -240,3 +240,17 @@ TEST_F(ConsumerConfigTest, FromDirectory_Basic)
 
     fs::remove_all(tmp);
 }
+
+TEST_F(ConsumerConfigTest, Validation_BadTimeoutThrows)
+{
+    const auto tmp      = unique_temp_dir("valtmo");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-VALTMO-00000001", "name": "ValTmo" },
+        "channel":    "lab.val.tmo",
+        "timeout_ms": -5
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
