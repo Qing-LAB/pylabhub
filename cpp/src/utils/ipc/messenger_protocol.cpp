@@ -8,7 +8,7 @@
 //   DeregisterConsumerCmd — CONSUMER_DEREG_REQ / CONSUMER_DEREG_ACK
 //   UnregisterChannelCmd  — DEREG_REQ / DEREG_ACK (non-fatal on timeout)
 //   ChecksumErrorReportCmd— CHECKSUM_ERROR_REPORT (fire-and-forget)
-//   DiscoverProducerCmd   — DISC_REQ / DISC_ACK (retry on CHANNEL_NOT_READY)
+//   DiscoverChannelCmd    — DISC_REQ / DISC_ACK (retry on CHANNEL_NOT_READY)
 //   CreateChannelCmd      — REG_REQ / REG_ACK + immediate heartbeat + heartbeat registration
 //   ConnectChannelCmd     — DISC + schema validation + CONSUMER_REG_REQ
 //
@@ -374,7 +374,7 @@ std::optional<nlohmann::json> MessengerImpl::send_disc_req(zmq::socket_t &socket
     }
 }
 
-bool MessengerImpl::handle_command(DiscoverProducerCmd &cmd,
+bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
@@ -578,7 +578,7 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
     try
     {
         // Discover channel (retry on CHANNEL_NOT_READY until timeout).
-        DiscoverProducerCmd disc_cmd;
+        DiscoverChannelCmd disc_cmd;
         disc_cmd.channel    = cmd.channel;
         disc_cmd.timeout_ms = cmd.timeout_ms;
         // We borrow a promise/future just to get the ConsumerInfo from the handler.

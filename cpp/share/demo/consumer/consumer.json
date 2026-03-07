@@ -4,7 +4,7 @@
     "Run with: pylabhub-consumer <path-to-this-dir>",
     "Script at: ./script/python/__init__.py  (on_init / on_consume / on_stop)"
   ],
-  "hub_dir": "",
+  "hub_dir": "../hub",
   "consumer": {
     "uid":       "CONS-LOGGER-00000004",
     "name":      "DemoConsumer",
@@ -20,16 +20,8 @@
     "secret":  2222222222
   },
 
-  "slot_schema": {
-    "packing": "natural",
-    "fields": [
-      {"name": "count",   "type": "int64"},
-      {"name": "ts",      "type": "float64"},
-      {"name": "value",   "type": "float32"},
-      {"name": "doubled", "type": "float32"}
-    ]
-  },
-  "flexzone_schema": null,
+  "slot_schema": "lab.demo.processed@1",
+  "flexzone_schema": "lab.demo.processed@1",
 
   "script": { "type": "python", "path": "." },
 

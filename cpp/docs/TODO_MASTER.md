@@ -121,7 +121,7 @@ Completed:
 | RAII Layer | ✅ Complete | `docs/archive/transient-2026-03-02/RAII_LAYER_TODO.md` | Phase 3 complete; all code review items resolved. TODO archived; minor backlog absorbed into TESTING_TODO. |
 | API / Primitives | 🟢 Ready | `docs/todo/API_TODO.md` | WriteAttach mode + `attach_datablock_as_writer_impl` added; timeout constants; ScopedDiagnosticHandle; **header layering refactor Phase A complete (2026-02-26)**; **P2 src/ split done (2026-02-27)**: `data_block.cpp` 3969L→2894L via `data_block_internal.hpp` + 3 new split files; **HEP-CORE-0002 restructured (2026-02-27)**: §6 RAII Abstraction Layer added, §7 Control Plane Protocol stub (→HEP-CORE-0007), stale §5.3/§5.4/§5.5 removed, §6-§15→§7-§16; **P4 messenger.cpp split done (2026-02-27)**: `messenger_internal.hpp` + `messenger_protocol.cpp`; `messenger.cpp` 1707L→811L |
 | Platform / Windows | 🟢 Mostly done | `docs/todo/PLATFORM_TODO.md` | Major pass done; 2 Windows CI items in backlog |
-| Testing | ✅ Complete | `docs/todo/TESTING_TODO.md` | **882/881 passing** (2026-03-06; 1 flake: ProcessorHandlerRemoval — passes alone). 5 new ZmqQueue data-integrity tests added. All gaps closed: HP-C1/HP-C2 in `test_admin_shell.cpp`, BN-H1 in `test_pipeline_roundtrip.cpp`. Remaining: Phase D extended stress (backlog). |
+| Testing | ✅ Complete | `docs/todo/TESTING_TODO.md` | **884/884 passing** (2026-03-07). SHM-C2 audit: +2 draining tests, fixed stalling DrainingTimeoutRestoresCommitted. ProcessorHandlerRemoval flake fixed (sleep→poll_until barrier). Full sleep audit: 8 races eliminated in hub_processor_workers.cpp. `test_sync_utils.h` shared facility created. |
 | Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
@@ -134,15 +134,19 @@ Completed:
 | ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
-**Active code reviews:** None. (All 2026-03-06 reviews closed and archived to `docs/archive/transient-2026-03-06/`; see `docs/DOC_ARCHIVE_LOG.md` for full history.)
+**Active code reviews:** `docs/code_review/REVIEW_FullSource_2026-03-06.md` (47 findings). 3 false positives (#21 #32 #41), 3 accepted (#11 #16 #23). **All HIGH items resolved.** 32 ✅ FIXED across multiple sessions. 12 MEDIUM/LOW remain in backlog: #5 #6 #8 #12 #26 #33 #39 #42 #43 #44 #46 #47.
 
 **Security fixes applied (2026-03-06):** SHM-C1 (heartbeat CAS uid/name write-before-CAS → data corruption), IPC-C3 (thread lambda `this`-capture → use-after-move), SVC-C1 (vault_crypto key not zeroed), SVC-C2/C3 (hub_vault sec+admin token buffers not zeroed), HDR-C1 (namespace outside `#ifdef __cplusplus`). See `REVIEW_codebase_2026-03-06.md` for full triage.
 
 **Security fixes applied (2026-03-06, session 2):** IPC-H2 (BrokerService `server_secret_z85` + `cfg.server_secret_key` now zeroed in `~BrokerServiceImpl()` via `sodium_memzero`).
 
-**Closed non-issues (2026-03-06, session 2):** SHM-C2 (write_index burned on timeout) — analysis confirmed not a real issue with the single-writer model. The broker enforces one producer per channel; `acquire_write` Phase 1 (write_lock CAS) always succeeds for a single writer. Phase 2 (reader drain) can time out only with `timeout_ms==0` (non-blocking) and a slow reader on the recycled slot — not a supported production configuration. Documented in `data_block.cpp` near the `write_index.fetch_add` call.
+**Bugs fixed (2026-03-06, session 3):**
+- #22 (zmq_context.cpp): Use-after-free — swapped `delete ctx` / `g_context.store(nullptr)` order. Now stores nullptr FIRST so no thread can observe a valid pointer to freed memory.
+- #2 (python_interpreter.cpp): TOCTOU in `exec()` — added second `ready_` check after acquiring exec_mu AND GIL. Since `release_namespace()` needs the GIL, the check after GIL acquisition is authoritative and race-free.
 
-**Remaining deferred items:** IPC-C2/H5 (zmq_context check-then-store — lifecycle-protected, low risk); IPC-H3 (callback data race — documented design contract).
+**Closed non-issues (2026-03-06, session 2):** SHM-C2 (write_index burned on timeout) — analyzed and documented in `data_block.cpp`. For `Latest_only`: fully immune (reads commit_index). For `Single_reader`: stale-data read is possible only with `acquire_timeout_ms==0` (non-blocking) + slow reader — NOT a supported production configuration. Documented per-policy impact in source.
+
+**Remaining deferred items:** IPC-C2/H5 (zmq_context check-then-store — ✅ now fixed as #22); IPC-H3 (callback data race — documented design contract). Full backlog of 38 open review items in REVIEW_FullSource_2026-03-06.md.
 
 **Legend:**  
 🔴 Blocked | 🟡 In Progress | 🟢 Ready | ✅ Complete | 🔵 Deferred

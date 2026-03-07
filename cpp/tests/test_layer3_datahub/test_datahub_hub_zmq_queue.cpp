@@ -62,10 +62,12 @@ inline std::vector<ZmqSchemaField> blob_schema(size_t n)
     return {{"bytes", 1, static_cast<uint32_t>(n)}};
 }
 
-/// Separate port range for schema-mode tests: 48000 + (pid % 2000) * 12 + offset.
+/// Separate port range for schema-mode tests: 48000 + (pid % 1460) * 12 + offset.
+/// Max offset in use is 10, so max port = 48000 + 1459*12 + 10 = 65518 < 65535.
+/// (pid%2000 would overflow: 48000 + 1999*12 = 71988 > 65535.)
 std::string schema_ep(int offset = 0)
 {
-    int base_port = 48000 + static_cast<int>(getpid() % 2000) * 12 + offset;
+    int base_port = 48000 + static_cast<int>(getpid() % 1460) * 12 + offset;
     return "tcp://127.0.0.1:" + std::to_string(base_port);
 }
 

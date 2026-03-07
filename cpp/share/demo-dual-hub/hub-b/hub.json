@@ -1,0 +1,17 @@
+{
+  "_comment": "Hub B — broker at tcp://0.0.0.0:5571",
+  "hub": {
+    "name":             "DemoHub-B",
+    "uid":              "HUB-DEMOB-00000002",
+    "description":      "Dual-hub demo — Hub B (sink side)",
+    "broker_endpoint":  "tcp://127.0.0.1:5571",
+    "admin_endpoint":   "tcp://127.0.0.1:5601"
+  },
+  "admin": {
+    "password": "",
+    "enable_shell": false
+  },
+  "broker": {
+    "channel_shutdown_grace_s": 2
+  }
+}

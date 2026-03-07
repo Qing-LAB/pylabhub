@@ -13,6 +13,9 @@
 
 namespace pylabhub::utils
 {
+using lifecycle_internal::validate_module_name;
+using lifecycle_internal::timedShutdown;
+using lifecycle_internal::ShutdownOutcome;
 
 // ============================================================================
 // loadModule / loadModuleInternal

@@ -2,7 +2,7 @@
 # run_demo.sh — pylabhub end-to-end pipeline demo
 #
 # Starts four processes in the correct order:
-#   1. pylabhub-hubshell --dev   (broker; ephemeral keypair, no password)
+#   1. pylabhub-hubshell hub/ --dev   (broker; ephemeral keypair, no password)
 #   2. pylabhub-producer producer/   (produces lab.demo.counter at 10 Hz)
 #   3. pylabhub-processor processor/ (reads counter, writes lab.demo.processed)
 #   4. pylabhub-consumer consumer/   (reads lab.demo.processed; foreground)
@@ -40,13 +40,57 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-BIN_DIR="${REPO_ROOT}/build/stage-${BUILD_TYPE}/bin"
+# ── Resolve binaries ───────────────────────────────────────────────────────
+BUILD_TYPE_LC="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
+BUILD_TYPE_UC="$(printf '%s' "${BUILD_TYPE_LC}" | tr '[:lower:]' '[:upper:]')"
+
+REQUIRED_BINS=(
+    "pylabhub-hubshell"
+    "pylabhub-producer"
+    "pylabhub-processor"
+    "pylabhub-consumer"
+)
+
+is_valid_bin_dir() {
+    local d="$1"
+    [[ -d "${d}" ]] || return 1
+    for b in "${REQUIRED_BINS[@]}"; do
+        [[ -x "${d}/${b}" ]] || return 1
+    done
+    return 0
+}
+
+BIN_DIR=""
+CANDIDATES=(
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE}/bin"
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE_LC}/bin"
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE_UC}/bin"
+    "${REPO_ROOT}/build/bin"
+)
+
+for CAND in "${CANDIDATES[@]}"; do
+    if is_valid_bin_dir "${CAND}"; then
+        BIN_DIR="${CAND}"
+        break
+    fi
+done
+
+if [[ -z "${BIN_DIR}" ]]; then
+    while IFS= read -r MATCH; do
+        if is_valid_bin_dir "${MATCH}"; then
+            BIN_DIR="${MATCH}"
+            break
+        fi
+    done < <(find "${REPO_ROOT}" -maxdepth 4 -type d -path "*/build*/stage-*/bin" 2>/dev/null | sort)
+fi
 
 # ── Verify binaries ────────────────────────────────────────────────────────
-for BIN in pylabhub-hubshell pylabhub-producer pylabhub-processor pylabhub-consumer; do
+for BIN in "${REQUIRED_BINS[@]}"; do
     if [[ ! -x "${BIN_DIR}/${BIN}" ]]; then
-        echo "ERROR: ${BIN_DIR}/${BIN} not found or not executable." >&2
-        echo "  Run: cmake --build build" >&2
+        echo "ERROR: ${BIN} not found in expected build output." >&2
+        echo "  Requested build type: ${BUILD_TYPE}" >&2
+        echo "  Checked bin dir: ${BIN_DIR:-<none>}" >&2
+        echo "  Run: cmake --build ${REPO_ROOT}/build" >&2
         exit 1
     fi
 done
@@ -71,9 +115,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ── 1. Start hub (dev mode — no hub directory or password required) ────────
+# ── 1. Start hub (dev mode + demo hub_dir for broker metadata/keys) ───────
 echo "[demo] Starting hub (--dev mode, broker at tcp://127.0.0.1:5570)..."
-"${BIN_DIR}/pylabhub-hubshell" --dev &
+"${BIN_DIR}/pylabhub-hubshell" "${SCRIPT_DIR}/hub" --dev &
 HUB_PID=$!
 sleep 0.5
 
@@ -112,7 +156,7 @@ echo "[demo] processor running (pid=${PROC_PID})"
 
 # ── 4. Start consumer (foreground) ────────────────────────────────────────
 echo "[demo] Starting consumer (lab.demo.processed)... (Ctrl-C to stop)"
-echo "[demo] Output: count | ts | value | doubled | rate"
+echo "[demo] Output: count | ts | value | doubled | rate | flexzone"
 echo ""
 "${BIN_DIR}/pylabhub-consumer" "${SCRIPT_DIR}/consumer"
 # Consumer exits first → cleanup trap fires

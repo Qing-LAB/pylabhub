@@ -82,9 +82,12 @@ struct PipelinePorts
 
 static PipelinePorts allocate_pipeline_ports()
 {
-    // Offset from admin shell tests: start at +100 to avoid overlap.
-    const int pid_offset = (::getpid() % 5000) * 10;
-    constexpr int kBasePort = 16570;  // different range from admin shell tests
+    // Port range: 13000–15999 (pipeline tests).
+    // Non-overlapping with admin (10000–12999) and broadcast (16000–18999).
+    // pid%500*6 → max offset 2994; with slot*2 → max port 15999 < 65535.
+    // L3 ZmqQueue tests use 33000+, so no cross-binary collision possible.
+    const int pid_offset = (::getpid() % 500) * 6;
+    constexpr int kBasePort = 13000;
     const int slot = s_pipeline_port_counter.fetch_add(1);
     return {kBasePort + pid_offset + slot * 2, kBasePort + pid_offset + slot * 2 + 1};
 }

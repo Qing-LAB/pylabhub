@@ -159,7 +159,7 @@ struct ChecksumErrorReportCmd
     int32_t     slot_index;
     std::string error_description;
 };
-struct DiscoverProducerCmd
+struct DiscoverChannelCmd
 {
     std::string channel;
     int         timeout_ms;
@@ -266,7 +266,7 @@ struct HeartbeatNowCmd
 };
 
 using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProducerCmd,
-                                      RegisterConsumerCmd, DiscoverProducerCmd,
+                                      RegisterConsumerCmd, DiscoverChannelCmd,
                                       DeregisterConsumerCmd, UnregisterChannelCmd,
                                       ChecksumErrorReportCmd, CreateChannelCmd,
                                       ConnectChannelCmd, StopCmd,
@@ -375,7 +375,7 @@ class MessengerImpl
     bool handle_command(UnregisterChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
     bool handle_command(ChecksumErrorReportCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(DiscoverProducerCmd &cmd,
+    bool handle_command(DiscoverChannelCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(CreateChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
     bool handle_command(ConnectChannelCmd &cmd,

@@ -200,6 +200,24 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 
 ## Recent Completions
 
+### 2026-03-07 (Port formula audit — overflow + cross-binary collision fixes)
+- ✅ **Root cause found**: Two parallel test failures (`ZmqQueueTest.SchemaTag_Match_DeliversItem`
+  port 49980 and `PipelineRoundtripTest.ProducerProcessorConsumer_E2E` "hub.pubkey not written")
+  were caused by logic errors in port formulas, not random collisions:
+  1. **L4 overflow**: `kBasePort=16570/17570` + `(pid%5000)*10` → max port 67560 > 65535.
+     For `pid%5000 >= 4897` (~2% of PIDs), hub broker silently fails to bind → test timeout.
+  2. **L3 schema_ep overflow**: `48000 + (pid%2000)*12` → max 71988 > 65535.
+     For `pid%2000 >= 1461` (~27% of PIDs), ZmqQueue schema-mode tests get invalid ports.
+  3. **Cross-binary range overlap**: L4 tests (15570–65560) overlapped with L3 ZmqQueue (33000–65005).
+     Two parallel CTest processes with suitable PIDs can compute the same TCP port simultaneously.
+- ✅ **Fixes applied** (4 files, no API changes):
+  - `test_admin_shell.cpp`: kBasePort=10000, pid%500*6 → range 10000–12999
+  - `test_pipeline_roundtrip.cpp`: kBasePort=13000, pid%500*6 → range 13000–15999
+  - `test_channel_broadcast.cpp`: kBasePort=16000, pid%500*6 → range 16000–18999
+  - `test_datahub_hub_zmq_queue.cpp`: `schema_ep()` uses pid%1460 → max port 65518
+  - L3 tests (33000–65535) and L4 tests (10000–18999) are now **non-overlapping**.
+  - **884/884 still passing** after fix.
+
 ### 2026-03-03 (HEP Document Review + Code Review + Source Polish)
 - ✅ **All 17 HEP documents updated** — mermaid diagrams, source file references, status fields
 - ✅ **5-pass code review** (L0-1, L2, L3, L4, cross-cutting) — all passes EXCELLENT/PASS
@@ -485,6 +503,20 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
   c_api checksum, exception safety, handle semantics. Phase 5 renaming also complete (all
   files follow `test_datahub_*` convention). Verified: 358/358 passing.
   — All transient test planning docs archived to `docs/archive/transient-2026-02-17/`
+
+### 2026-03-07
+- ✅ `DatahubSlotDrainingTest` extended to 9 tests (SHM-C2 audit):
+  - `DrainHoldTrueNeverReturnsNullptr`: directly tests SHM-C2 core invariant — `DataBlockProducer::acquire_write_slot()` (drain_hold=true) never returns nullptr on drain timeout; verified still blocked after 4 × timeout_ms intervals
+  - `DrainHoldTrueMetricsAccumulated`: verifies `writer_reader_timeout_count` and `writer_blocked_total_ns` both accumulate on each drain-hold timer reset
+  - Fixed pre-existing stalling test `DrainingTimeoutRestoresCommitted` (#431): replaced `DataBlockProducer::acquire_write_slot()` (drain_hold=true → deadlock) with C API `slot_rw_acquire_write()` (drain_hold=false → SLOT_ACQUIRE_TIMEOUT); documented C API passes header=nullptr so metrics not updated via this path
+  — `tests/test_layer3_datahub/workers/datahub_c_api_draining_workers.cpp` secrets 72008-72009
+- ✅ **Sleep-based race condition audit — all 8 occurrences fixed** in `datahub_hub_processor_workers.cpp`:
+  - All `std::this_thread::sleep_for(Nms)` used to ORDER concurrent operations replaced with `poll_until(condition, deadline)`
+  - Key patterns used: `poll_until([&proc] { return proc.iteration_count() >= N; })` for processor loop sync; `poll_until([&proc] { return proc.out_drop_count() >= 1; })` for counter lag; `iteration_count > n_before + 1` barrier for handler hot-swap and handler removal
+  - Fixed `ProcessorHandlerRemoval` flaky test: was a race between `sleep_for(300ms)` and handler load; now uses `iteration_count` barrier to guarantee null-handler path entered before asserting output queue empty
+  - 5 `sleep_for(100ms)` calls after ZMQ `start()` intentionally retained — these wait for TCP connection establishment (no synchronous callback available), not ordering of operations
+- ✅ **`test_sync_utils.h` shared facility created** — `tests/test_framework/test_sync_utils.h`; `poll_until(pred, timeout, poll_ms)` template; lightweight (only `<chrono>` + `<thread>`); no gtest/lifecycle dependency; available transitively via `shared_test_helpers.h`; correctly placed in test framework (sleep-based polling is test-only — production code uses busy-spin)
+  — 884/884 tests passing
 
 ### 2026-02-17
 - ✅ `DatahubSlotDrainingTest` (7 tests): DRAINING state machine tests — entered on wraparound,

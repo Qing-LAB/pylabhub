@@ -406,8 +406,8 @@ class DataBlock
         m_header = new (m_shm.base) SharedMemoryHeader{};
 
         // 2. Initialize SharedMemoryHeader fields
-        m_header->version_major = DATABLOCK_VERSION_MAJOR;
-        m_header->version_minor = DATABLOCK_VERSION_MINOR;
+        m_header->version_major = HEADER_VERSION_MAJOR;
+        m_header->version_minor = HEADER_VERSION_MINOR;
         m_header->total_block_size = m_size;
 
         pylabhub::crypto::generate_random_bytes(
@@ -547,14 +547,14 @@ class DataBlock
         }
 
         // Validate version compatibility
-        if (m_header->version_major != DATABLOCK_VERSION_MAJOR ||
-            m_header->version_minor > DATABLOCK_VERSION_MINOR)
+        if (m_header->version_major != HEADER_VERSION_MAJOR ||
+            m_header->version_minor > HEADER_VERSION_MINOR)
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
                 fmt::format("DataBlock '{}' version mismatch. Creator: {}.{}, Attacher: {}.{}",
                             m_name, m_header->version_major, m_header->version_minor,
-                            DATABLOCK_VERSION_MAJOR, DATABLOCK_VERSION_MINOR));
+                            HEADER_VERSION_MAJOR, HEADER_VERSION_MINOR));
         }
 
         // Validate total size
@@ -608,15 +608,15 @@ class DataBlock
         }
 
         // Validate version compatibility
-        if (m_header->version_major != DATABLOCK_VERSION_MAJOR ||
+        if (m_header->version_major != HEADER_VERSION_MAJOR ||
             m_header->version_minor >
-                DATABLOCK_VERSION_MINOR) // Consumer can read older minor versions
+                HEADER_VERSION_MINOR) // Consumer can read older minor versions
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
                 fmt::format("DataBlock '{}' version mismatch. Producer: {}.{}, Consumer: {}.{}",
                             m_name, m_header->version_major, m_header->version_minor,
-                            DATABLOCK_VERSION_MAJOR, DATABLOCK_VERSION_MINOR));
+                            HEADER_VERSION_MAJOR, HEADER_VERSION_MINOR));
         }
 
         // Validate total size
@@ -1451,6 +1451,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     {
         return nullptr;
     }
+
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     auto [header, slot_count] = get_header_and_slot_count(pImpl->dataBlock.get());
     if (header == nullptr || slot_count == 0)
@@ -1485,34 +1486,41 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
 
     // Single-writer invariant: the broker enforces exactly one registered producer per channel.
     // DataBlockProducer is therefore always driven by a single writer thread.
-    // The atomic fetch_add is defensive (prevents torn reads on 32-bit platforms) but there
-    // is no real concurrent-writer contention in practice.
     //
-    // SHM-C2 note (known, benign): write_index is incremented here BEFORE acquire_write()
-    // confirms the slot is ready. acquire_write() has two phases:
-    //   Phase 1 — CAS on write_lock:   always succeeds with single writer (slot is FREE).
-    //   Phase 2 — wait for reader_count==0: can time out if a slow reader still holds the
-    //             recycled slot AND timeout_ms == 0 (non-blocking). In that case acquire_write()
-    //             restores the slot to COMMITTED and returns TIMEOUT, but write_index is already
-    //             advanced — the slot_id is "burned" (never committed, never seen by consumers).
-    // Impact: at most one skipped slot_id per such event; no corruption; self-healing within
-    // one ring-buffer rotation. Only triggered by timeout_ms==0 with an active slow reader,
-    // which is not a supported production configuration (default timeout is 5 s).
-    uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel);
+    // SHM-C2 design: write_index is advanced FIRST (fetch_add) to atomically claim a
+    // unique slot_id, then acquire_write() confirms the physical slot is ready.
+    //
+    // SHM-C2 fix (Phase 2 drain-hold): if readers are still active when the Phase 2
+    // timeout expires, acquire_write() resets its timer and keeps waiting rather than
+    // releasing write_lock and restoring COMMITTED. While DRAINING is held, no new readers
+    // can enter the slot — existing readers will eventually drain — so slot_id can never
+    // be burned by a Phase 2 timeout. acquire_write() only returns SLOT_ACQUIRE_TIMEOUT
+    // for Phase 1 failures (zombie write_lock reclaim), which are impossible under normal
+    // single-writer operation.
+    //
+    // NOTE — single-writer only: this design assumes exactly one producer. For future
+    // multi-writer support, two changes are required before touching this code:
+    //   1. update_commit_index() must be a max-CAS (not plain store) to handle out-of-order
+    //      commits from concurrent writers.
+    //   2. Consumer read sequencing (latest slot_id tracking, Single_reader ordering) must
+    //      be redesigned for the multi-writer commit ordering that results.
+    // Do not extend to multi-writer without fully resolving both protocols first.
+    uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel); // claim unique slot_id
     auto slot_index = static_cast<size_t>(slot_id % slot_count);
 
-    // Get the SlotRWState for this slot
     SlotRWState *rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
     if (rw_state == nullptr)
     {
         return nullptr; // Should not happen: slot_id % slot_count always in range
     }
 
-    // Acquire write lock for this slot (see SHM-C2 note above)
-    SlotAcquireResult acquire_res = acquire_write(rw_state, header, timeout_ms);
+    // drain_hold=true: Phase 2 timeout resets timer and keeps waiting (no burn).
+    // Phase 1 timeout (zombie writer) still releases and returns SLOT_ACQUIRE_TIMEOUT.
+    SlotAcquireResult acquire_res = acquire_write(rw_state, header, timeout_ms, /*drain_hold=*/true);
     if (acquire_res != SLOT_ACQUIRE_OK)
     {
-        // Error already logged in acquire_write. Just return nullptr.
+        // Phase 1 timeout (zombie write_lock) — slot_id is burned but this path is
+        // unreachable under normal single-writer operation.
         return nullptr;
     }
 

@@ -1,5 +1,6 @@
 #include "utils/heartbeat_manager.hpp"
 #include "utils/data_block.hpp"
+#include <cassert>
 
 namespace pylabhub::hub
 {
@@ -42,6 +43,7 @@ void HeartbeatManager::pulse()
 {
     if (is_registered())
     {
+        assert(consumer_ != nullptr && "pulse() called on registered HeartbeatManager with null consumer");
         consumer_->update_heartbeat(heartbeat_slot_);
     }
 }

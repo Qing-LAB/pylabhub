@@ -112,9 +112,9 @@
 #endif
 
 // --- Require C++20 or later --------------------------------------------------
-// This header (and the codebase) uses C++17 features: inline variables,
-// std::scoped_lock, and others. Fail early with a clear message when an
-// older language standard is used.
+// This codebase uses C++20 features: concepts, designated initialisers,
+// std::span, and others. Fail early with a clear message when an older
+// language standard is used.
 // For GCC/Clang use __cplusplus; for MSVC use _MSVC_LANG (MSVC sets // __cplusplus only when
 // /Zc:__cplusplus is enabled).
 

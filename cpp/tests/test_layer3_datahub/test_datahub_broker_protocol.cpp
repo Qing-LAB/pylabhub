@@ -195,9 +195,7 @@ TEST_F(BrokerProtocolTest, BroadcastReq_FansOutToProducer)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     EventCollector prod_events;
@@ -222,9 +220,7 @@ TEST_F(BrokerProtocolTest, BroadcastReq_FansOutToConsumer)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     Messenger consumer;
@@ -253,9 +249,7 @@ TEST_F(BrokerProtocolTest, BroadcastReq_FansOutToAll)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     Messenger consumer;
@@ -306,9 +300,7 @@ TEST_F(BrokerProtocolTest, BroadcastReq_FieldsMatchSpec)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     EventCollector prod_events;
@@ -340,9 +332,7 @@ TEST_F(BrokerProtocolTest, NotifyReq_DeliveredToProducerOnly)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     Messenger consumer;
@@ -379,9 +369,7 @@ TEST_F(BrokerProtocolTest, NotifyReq_EventFieldCorrect)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     EventCollector prod_events;
@@ -431,9 +419,7 @@ TEST_F(BrokerProtocolTest, ListChannels_ViaMessenger_OneChannel)
 
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
-    auto handle = m.create_channel(channel, ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                   /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     auto channels = m.list_channels(3000);
@@ -460,9 +446,7 @@ TEST_F(BrokerProtocolTest, ListChannels_ViaMessenger_WithConsumer)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     Messenger consumer;
@@ -496,9 +480,7 @@ TEST_F(BrokerProtocolTest, AdminBroadcast_DeliveredViaInternalQueue)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     EventCollector prod_events;
@@ -535,9 +517,7 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     EventCollector prod_events;
@@ -572,9 +552,7 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToConsumer)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     Messenger consumer;
@@ -625,9 +603,7 @@ TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumers)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto prod_handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                               /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                               /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Register two consumers.
@@ -668,9 +644,7 @@ TEST_F(BrokerProtocolTest, ClosingNotify_ChannelRemovedFromList)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     // Verify channel is in the list.
@@ -715,17 +689,13 @@ TEST_F(BrokerProtocolTest, DuplicateReg_SameSchemaHash_Succeeds)
 
     Messenger m1;
     ASSERT_TRUE(m1.connect(ep(), pk()));
-    auto h1 = m1.create_channel(channel, ChannelPattern::PubSub,
-                                /*has_shared_memory=*/false, hash_hex,
-                                /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto h1 = m1.create_channel(channel, {.schema_hash = hash_hex, .timeout_ms = 3000});
     ASSERT_TRUE(h1.has_value());
 
     // Second registration with same hash — should succeed (update).
     Messenger m2;
     ASSERT_TRUE(m2.connect(ep(), pk()));
-    auto h2 = m2.create_channel(channel, ChannelPattern::PubSub,
-                                /*has_shared_memory=*/false, hash_hex,
-                                /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto h2 = m2.create_channel(channel, {.schema_hash = hash_hex, .timeout_ms = 3000});
     ASSERT_TRUE(h2.has_value()) << "Same schema hash re-registration should succeed";
 }
 
@@ -739,9 +709,7 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 
     Messenger m1;
     ASSERT_TRUE(m1.connect(ep(), pk()));
-    auto h1 = m1.create_channel(channel, ChannelPattern::PubSub,
-                                /*has_shared_memory=*/false, hash_a,
-                                /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto h1 = m1.create_channel(channel, {.schema_hash = hash_a, .timeout_ms = 3000});
     ASSERT_TRUE(h1.has_value());
 
     // Collect error notifications on the original producer.
@@ -753,9 +721,7 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     // Second registration with DIFFERENT hash — should be rejected.
     Messenger m2;
     ASSERT_TRUE(m2.connect(ep(), pk()));
-    auto h2 = m2.create_channel(channel, ChannelPattern::PubSub,
-                                /*has_shared_memory=*/false, hash_b,
-                                /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto h2 = m2.create_channel(channel, {.schema_hash = hash_b, .timeout_ms = 3000});
     EXPECT_FALSE(h2.has_value())
         << "Different schema hash re-registration should be rejected";
 
@@ -778,9 +744,7 @@ TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     // After registration + immediate heartbeat, channel should be "Ready".
@@ -810,9 +774,7 @@ TEST_F(BrokerProtocolTest, Heartbeat_ExplicitSend_UpdatesTimestamp)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                          /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = producer.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     // The Messenger has already sent the immediate heartbeat after REG.

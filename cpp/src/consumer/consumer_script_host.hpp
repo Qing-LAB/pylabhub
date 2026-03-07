@@ -8,7 +8,7 @@
  *  - Demand-driven consumption loop (run_loop_shm_)
  *  - Single input channel with Consumer + Messenger
  *  - on_consume(in_slot, fz, msgs, api) → void callback
- *  - Read-only flexzone (from_buffer_copy for ctypes)
+ *  - Flexzone: zero-copy R/W live view (from_buffer); in_slot: zero-copy with write-guard
  *  - Messages list omits sender field
  *
  * See HEP-CORE-0018 for the full consumer binary specification.

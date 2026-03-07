@@ -148,16 +148,7 @@ TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
 
-    auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false,
-                                   /*schema_hash=*/{},
-                                   /*schema_version=*/0,
-                                   /*timeout_ms=*/3000,
-                                   /*actor_name=*/{},
-                                   /*actor_uid=*/{},
-                                   /*schema_id=*/schema_id,
-                                   /*schema_blds=*/{});
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000, .schema_id = schema_id});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     auto info = m.query_channel_schema(channel, 3000);
@@ -176,15 +167,8 @@ TEST_F(BrokerSchemaTest, SchemaBlds_StoredOnReg)
     ASSERT_TRUE(m.connect(ep(), pk()));
 
     auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false,
-                                   /*schema_hash=*/{},
-                                   /*schema_version=*/0,
-                                   /*timeout_ms=*/3000,
-                                   /*actor_name=*/{},
-                                   /*actor_uid=*/{},
-                                   /*schema_id=*/"lab.temp@1",
-                                   /*schema_blds=*/blds);
+                                   {.timeout_ms = 3000, .schema_id = "lab.temp@1",
+                                    .schema_blds = blds});
     ASSERT_TRUE(handle.has_value());
 
     auto info = m.query_channel_schema(channel, 3000);
@@ -202,15 +186,7 @@ TEST_F(BrokerSchemaTest, SchemaHash_ReturnedOnQuery)
     ASSERT_TRUE(m.connect(ep(), pk()));
 
     auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false,
-                                   /*schema_hash=*/kTestHashRaw,
-                                   /*schema_version=*/0,
-                                   /*timeout_ms=*/3000,
-                                   /*actor_name=*/{},
-                                   /*actor_uid=*/{},
-                                   /*schema_id=*/{},
-                                   /*schema_blds=*/{});
+                                   {.schema_hash = kTestHashRaw, .timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     auto info = m.query_channel_schema(channel, 3000);
@@ -241,15 +217,7 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_IdMatch_Succeeds)
     Messenger producer_m;
     ASSERT_TRUE(producer_m.connect(ep(), pk()));
     auto prod_handle = producer_m.create_channel(channel,
-                                                  ChannelPattern::PubSub,
-                                                  /*has_shared_memory=*/false,
-                                                  /*schema_hash=*/{},
-                                                  /*schema_version=*/0,
-                                                  /*timeout_ms=*/3000,
-                                                  /*actor_name=*/{},
-                                                  /*actor_uid=*/{},
-                                                  /*schema_id=*/schema_id,
-                                                  /*schema_blds=*/{});
+                                                  {.timeout_ms = 3000, .schema_id = schema_id});
     ASSERT_TRUE(prod_handle.has_value()) << "Producer create_channel failed";
 
     // Consumer expects the same schema_id → CONSUMER_REG_REQ should succeed.
@@ -276,15 +244,7 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
     Messenger producer_m;
     ASSERT_TRUE(producer_m.connect(ep(), pk()));
     auto prod_handle = producer_m.create_channel(channel,
-                                                  ChannelPattern::PubSub,
-                                                  /*has_shared_memory=*/false,
-                                                  /*schema_hash=*/{},
-                                                  /*schema_version=*/0,
-                                                  /*timeout_ms=*/3000,
-                                                  /*actor_name=*/{},
-                                                  /*actor_uid=*/{},
-                                                  /*schema_id=*/prod_sid,
-                                                  /*schema_blds=*/{});
+                                                  {.timeout_ms = 3000, .schema_id = prod_sid});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Consumer expects a different schema_id that is not in the empty library.
@@ -311,16 +271,7 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_EmptyProducer_Fails)
     // Producer registers with no schema_id (anonymous).
     Messenger producer_m;
     ASSERT_TRUE(producer_m.connect(ep(), pk()));
-    auto prod_handle = producer_m.create_channel(channel,
-                                                  ChannelPattern::PubSub,
-                                                  /*has_shared_memory=*/false,
-                                                  /*schema_hash=*/{},
-                                                  /*schema_version=*/0,
-                                                  /*timeout_ms=*/3000,
-                                                  /*actor_name=*/{},
-                                                  /*actor_uid=*/{},
-                                                  /*schema_id=*/{},  // anonymous
-                                                  /*schema_blds=*/{});
+    auto prod_handle = producer_m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Consumer expects a schema_id but the channel has none, and the library is empty.
