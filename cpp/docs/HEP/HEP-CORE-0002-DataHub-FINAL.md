@@ -751,7 +751,7 @@ stateDiagram-v2
     COMMITTED --> DRAINING: wrap-around, reader_count>0\n[Latest_only ONLY — see §11 of HEP-0007]
 
     DRAINING --> WRITING: drain success\n(reader_count→0, write_lock held)
-    DRAINING --> COMMITTED: drain timeout\n(slot_state restored, write_lock released)
+    DRAINING --> COMMITTED: drain timeout — C API only\n(slot_state restored, write_lock released)
 
     note right of WRITING
         write_lock = producer PID
@@ -772,14 +772,25 @@ stateDiagram-v2
         but readers still active [Latest_only]
         Waiting for reader_count → 0
         New readers rejected (slot_state≠COMMITTED)
+        drain_hold=true: timer resets each timeout_ms
+        until readers drain — no COMMITTED restore
     end note
 ```
 
 > **⚠️ State machine authoritative source:** The Mermaid diagram above is an architectural
-> overview only. The **canonical, verified state machine** (including the correct
-> `DRAINING → COMMITTED` drain-timeout path) lives in **HEP-CORE-0007 §1**.
+> overview only. The **canonical, verified state machine** lives in **HEP-CORE-0007 §1**.
 > The diagram above was previously incorrect (showed `COMMITTED→FREE` and `DRAINING→FREE`
 > transitions — both wrong); see HEP-CORE-0007 §1 for the corrected transitions.
+>
+> **DRAINING → COMMITTED (drain timeout)** applies only to the C API path
+> (`slot_rw_acquire_write`, `drain_hold=false`). The `DataBlockProducer` path uses
+> `drain_hold=true`, which keeps `write_lock` held and slot in `DRAINING` on each
+> timeout interval — resetting the timer and continuing — until `reader_count` reaches
+> zero. This makes Phase 2 a blocking operation that cannot burn a slot_id.
+> ⚠ **Dead reader risk (Latest_only only):** if a reader crashes while holding
+> `reader_count > 0`, Phase 2 blocks indefinitely. Reader-heartbeat detection is not
+> currently implemented. `Single_reader` and `Sync_reader` are immune: `DRAINING` is
+> structurally unreachable for those policies (ring-full gate fires first).
 >
 > **Authoritative protocol detail:** For the exact step-by-step producer and consumer flows,
 > DRAINING formal proof, RAII guarantees, and user responsibilities, see

@@ -560,11 +560,26 @@ extern "C"
                         // recovery is called multiple times or count got out of sync.
                         uint32_t prev_count = header->active_consumer_count.load(
                             std::memory_order_acquire);
-                        while (prev_count > 0 &&
-                               !header->active_consumer_count.compare_exchange_weak(
-                                   prev_count, prev_count - 1,
-                                   std::memory_order_acq_rel, std::memory_order_acquire))
+                        if (prev_count == 0)
                         {
+                            LOGGER_WARN("RECOVERY: active_consumer_count already 0 while clearing dead "
+                                        "consumer PID {} — count/heartbeat table out of sync.",
+                                        pid);
+                        }
+                        else
+                        {
+                            while (!header->active_consumer_count.compare_exchange_weak(
+                                prev_count, prev_count - 1,
+                                std::memory_order_acq_rel, std::memory_order_acquire))
+                            {
+                                if (prev_count == 0)
+                                {
+                                    LOGGER_WARN("RECOVERY: active_consumer_count underflow avoided for "
+                                                "dead consumer PID {}.",
+                                                pid);
+                                    break;
+                                }
+                            }
                         }
                         cleaned_count++;
                         LOGGER_WARN("RECOVERY: Cleaned up dead consumer with PID {}.", pid);

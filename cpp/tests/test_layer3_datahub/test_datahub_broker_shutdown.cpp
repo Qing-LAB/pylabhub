@@ -179,9 +179,7 @@ TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Register closing callback
@@ -240,9 +238,7 @@ TEST_F(BrokerShutdownTest, ForceShutdown_GraceExpires)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Register callbacks
@@ -291,9 +287,7 @@ TEST_F(BrokerShutdownTest, EarlyCleanup_AllConsumersDeregister)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Connect consumer
@@ -349,9 +343,7 @@ TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Connect consumer
@@ -400,9 +392,7 @@ TEST_F(BrokerShutdownTest, ClosingStatus_InSnapshot)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Register closing callback
@@ -455,9 +445,7 @@ TEST_F(BrokerShutdownTest, ZeroGrace_ImmediateForceShutdown)
     // Create producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Request close

@@ -86,7 +86,12 @@ struct ProducerImpl
     std::thread       peer_thread_handle;
     std::thread       write_thread_handle;
 
-    // Outgoing ctrl/data messages queued for peer_thread to send on the ROUTER socket
+    // Outgoing ctrl/data messages queued for peer_thread to send on the ROUTER socket.
+    // DESIGN: unbounded by intent — producers run at scripted intervals (typ. ≥1 ms)
+    // and the peer_thread drains on every iteration. The queue only grows if the broker
+    // becomes unreachable; in that case dropping messages is safe (fire-and-forget
+    // callbacks, heartbeats). If persistent backlog is a concern in future, add a
+    // configurable max_depth with a drop-oldest policy here.
     std::mutex                   ctrl_send_mu;
     std::queue<PendingCtrlSend>  ctrl_send_queue;
 
@@ -383,11 +388,17 @@ Producer &Producer::operator=(Producer &&) noexcept = default;
 std::optional<Producer>
 Producer::create(Messenger &messenger, const ProducerOptions &opts)
 {
-    auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
-                                        opts.schema_hash, opts.schema_version, opts.timeout_ms,
-                                        opts.actor_name, opts.actor_uid,
-                                        {}, {},
-                                        opts.data_transport, opts.zmq_node_endpoint);
+    ChannelRegistrationOptions ch_opts;
+    ch_opts.pattern           = opts.pattern;
+    ch_opts.has_shared_memory = opts.has_shm;
+    ch_opts.schema_hash       = opts.schema_hash;
+    ch_opts.schema_version    = opts.schema_version;
+    ch_opts.timeout_ms        = opts.timeout_ms;
+    ch_opts.actor_name        = opts.actor_name;
+    ch_opts.actor_uid         = opts.actor_uid;
+    ch_opts.data_transport    = opts.data_transport;
+    ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
+    auto ch = messenger.create_channel(opts.channel_name, ch_opts);
     if (!ch.has_value())
     {
         return std::nullopt;

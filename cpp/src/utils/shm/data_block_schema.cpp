@@ -17,6 +17,7 @@
 #include "utils/data_block.hpp"
 #include "utils/deterministic_checksum.hpp"
 #include <cassert>
+#include <stdexcept>
 
 namespace pylabhub::hub
 {
@@ -128,8 +129,12 @@ void store_layout_checksum(SharedMemoryHeader *header)
     uint8_t *out = header->reserved_header + detail::LAYOUT_CHECKSUM_OFFSET;
     if (!pylabhub::crypto::compute_blake2b(out, buf.data(), buf.size()))
     {
-        LOGGER_ERROR("[DataBlock] store_layout_checksum: compute_blake2b failed; storing zeros.");
-        std::memset(out, 0, detail::LAYOUT_CHECKSUM_SIZE);
+        // A zero checksum would silently pass future validate_layout_checksum() calls if the
+        // computed hash also happened to be zero — a security blind spot. Throw so the caller
+        // knows the SHM segment was not safely initialized.
+        throw std::runtime_error(
+            "[DataBlock] store_layout_checksum: compute_blake2b failed; "
+            "cannot initialize SHM integrity checksum");
     }
 }
 

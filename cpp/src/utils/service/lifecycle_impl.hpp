@@ -22,141 +22,40 @@
 #include <stdexcept>          // For std::runtime_error, std::length_error
 #include <thread>             // For std::thread
 
-// Suppress unused-function warnings: not every TU that includes this header uses all helpers.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
-#endif
+// ---------------------------------------------------------------------------
+// Internal helper declarations (bodies in lifecycle_helpers.cpp — one definition,
+// shared between lifecycle.cpp, lifecycle_topology.cpp, lifecycle_dynamic.cpp).
+// These helpers are NOT part of the public API and are not installed.
+// ---------------------------------------------------------------------------
 
-namespace
+namespace pylabhub::utils::lifecycle_internal
 {
-/**
- * @brief Validates a module name string_view: non-empty, within MAX_MODULE_NAME_LEN.
- *
- * @param name       The view to validate.
- * @param param_name For error messages (e.g., "module name", "dependency name").
- * @throws std::invalid_argument if `name` is empty.
- * @throws std::length_error     if `name.size() > MAX_MODULE_NAME_LEN`.
- */
-void validate_module_name(std::string_view name, const char *param_name)
-{
-    if (name.empty())
-    {
-        throw std::invalid_argument(std::string("Lifecycle: ") + param_name +
-                                    " must not be empty.");
-    }
-    if (name.size() > pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN)
-    {
-        throw std::length_error(std::string("Lifecycle: ") + param_name + " exceeds maximum of " +
-                                std::to_string(pylabhub::utils::ModuleDef::MAX_MODULE_NAME_LEN) +
-                                " characters.");
-    }
-}
 
 /**
  * @brief Outcome of a timed shutdown call.
  */
 struct ShutdownOutcome
 {
-    bool success;           ///< true if the callback completed without throwing
-    bool timed_out;         ///< true if the callback did not complete within the deadline
+    bool        success;       ///< true if the callback completed without throwing
+    bool        timed_out;     ///< true if the callback did not complete within the deadline
     std::string exception_msg; ///< non-empty if the callback threw an exception
 };
 
 /**
- * @brief Runs `func` on a thread with a real deadline. Returns without blocking
- *        beyond the deadline even if `func` hangs (the thread is detached on timeout).
- *
- * @note **Design Rationale for `thread.detach()`**:
- *       Using `detach()` is a deliberate trade-off. It prevents a misbehaving
- *       (hanging) module shutdown from blocking the entire application finalization
- *       process indefinitely. The alternative, `std::async`, is unsuitable because its
- *       destructor blocks, defeating the purpose of a timeout.
- *
- *       **Risk**: A detached thread might continue running after its module's resources
- *       or other dependent modules have been destroyed, leading to use-after-free
- *       or other undefined behavior.
- *
- *       **Mitigation**: The `LifecycleManager` marks any module that times out as
- *       "contaminated". This prevents any future attempts to load or interact with
- *       the module or its dependents, reducing the impact of a runaway thread.
- *
- * @param func       The shutdown callback to invoke. Ignored if empty.
- * @param timeout    Maximum time to wait for `func` to complete.
- * @return ShutdownOutcome with success/timed_out/exception_msg fields.
+ * @brief Validates a module name: non-empty, within MAX_MODULE_NAME_LEN.
+ * @throws std::invalid_argument / std::length_error on failure.
+ * @note Defined in lifecycle_helpers.cpp (one definition, shared by all lifecycle TUs).
+ */
+void validate_module_name(std::string_view name, const char *param_name);
+
+/**
+ * @brief Runs `func` on a thread with a real deadline.
+ *        Returns without blocking beyond the deadline (detaches thread on timeout).
+ * @note Defined in lifecycle_helpers.cpp.
  */
 ShutdownOutcome timedShutdown(const std::function<void()> &func,
-                              std::chrono::milliseconds timeout)
-{
-    if (!func)
-    {
-        return {true, false, {}};
-    }
+                              std::chrono::milliseconds    timeout);
 
-    // Shared state lives on the heap so a detached thread can safely write to it
-    // after timedShutdown() returns. Without shared ownership, detach() + return
-    // would destroy completed/ex_ptr while the thread still holds references → UAF/UB.
-    struct SharedState
-    {
-        std::atomic<bool>  completed{false};
-        std::exception_ptr ex_ptr{nullptr};
-    };
-    auto state = std::make_shared<SharedState>();
-
-    std::thread thread([func, state]()
-                  {
-                      try
-                      {
-                          func();
-                      }
-                      catch (...)
-                      {
-                          state->ex_ptr = std::current_exception();
-                      }
-                      state->completed.store(true, std::memory_order_release);
-                  });
-
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!state->completed.load(std::memory_order_acquire))
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            // Detach: the thread keeps `state` alive via shared_ptr; no UAF.
-            thread.detach();
-            return {false, true, {}};
-        }
-        constexpr std::chrono::milliseconds kPollInterval(10);
-        std::this_thread::sleep_for(kPollInterval);
-    }
-
-    thread.join();
-
-    if (state->ex_ptr)
-    {
-        try
-        {
-            std::rethrow_exception(state->ex_ptr);
-        }
-        catch (const std::exception &e)
-        {
-            return {false, false, e.what()};
-        }
-        catch (...)
-        {
-            return {false, false, "unknown exception"};
-        }
-    }
-    return {true, false, {}};
-}
-
-} // namespace
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-
-namespace pylabhub::utils::lifecycle_internal
-{
 struct InternalModuleShutdownDef
 {
     std::function<void()> func;

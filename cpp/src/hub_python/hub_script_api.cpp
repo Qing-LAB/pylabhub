@@ -25,12 +25,6 @@ namespace py = pybind11;
 namespace pylabhub
 {
 
-void ChannelInfo::request_close()
-{
-    if (api_)
-        api_->mark_for_close(snap_.name);
-}
-
 // ---------------------------------------------------------------------------
 // HubScriptAPI
 // ---------------------------------------------------------------------------
@@ -67,40 +61,44 @@ std::vector<ChannelInfo> HubScriptAPI::channels() const
 {
     std::vector<ChannelInfo> out;
     out.reserve(snapshot_.channels.size());
-    // Const cast: ChannelInfo back-pointer is mutable self (pending_closes_ write).
-    auto* self = const_cast<HubScriptAPI*>(this);
     for (const auto& e : snapshot_.channels)
-        out.emplace_back(e, self);
+        out.emplace_back(e);
     return out;
 }
 
 std::vector<ChannelInfo> HubScriptAPI::ready_channels() const
 {
     std::vector<ChannelInfo> out;
-    auto* self = const_cast<HubScriptAPI*>(this);
     for (const auto& e : snapshot_.channels)
         if (e.status == "Ready")
-            out.emplace_back(e, self);
+            out.emplace_back(e);
     return out;
 }
 
 std::vector<ChannelInfo> HubScriptAPI::pending_channels() const
 {
     std::vector<ChannelInfo> out;
-    auto* self = const_cast<HubScriptAPI*>(this);
     for (const auto& e : snapshot_.channels)
         if (e.status == "PendingReady")
-            out.emplace_back(e, self);
+            out.emplace_back(e);
     return out;
 }
 
 ChannelInfo HubScriptAPI::channel(const std::string& name) const
 {
-    auto* self = const_cast<HubScriptAPI*>(this);
     for (const auto& e : snapshot_.channels)
         if (e.name == name)
-            return ChannelInfo(e, self);
+            return ChannelInfo(e);
     throw std::runtime_error("HubScriptAPI: channel '" + name + "' not found in snapshot");
+}
+
+void HubScriptAPI::close_channel(const std::string& name)
+{
+    if (broker_)
+    {
+        LOGGER_INFO("[hub_script] close_channel('{}')", name);
+        broker_->request_close_channel(name);
+    }
 }
 
 // ── Hub federation (HEP-CORE-0022) ──────────────────────────────────────────
@@ -168,6 +166,8 @@ Do not import it directly; receive the api and tick objects from C++:
     py::class_<ChannelInfo>(m, "ChannelInfo", R"doc(
 Read-only snapshot of a single hub channel.
 
+Read-only snapshot of a channel. To close it, call ``api.close_channel(ch.name())``.
+
 Methods
 -------
 name()                 → str   — Channel name.
@@ -177,7 +177,6 @@ producer_pid()         → int   — PID of the producer (0 if unknown).
 schema_hash()          → str   — 64-char hex hash, or "" if no schema.
 producer_actor_name()  → str   — Actor name (empty if not set).
 producer_actor_uid()   → str   — Actor UID (empty if not set).
-request_close()               — Mark channel for close after on_tick returns.
 )doc")
         .def("name",                &ChannelInfo::name)
         .def("status",              &ChannelInfo::status)
@@ -186,8 +185,6 @@ request_close()               — Mark channel for close after on_tick returns.
         .def("schema_hash",         &ChannelInfo::schema_hash)
         .def("producer_actor_name", &ChannelInfo::producer_actor_name)
         .def("producer_actor_uid",  &ChannelInfo::producer_actor_uid)
-        .def("request_close",       &ChannelInfo::request_close,
-             "Mark channel for close after on_tick returns.")
         .def("__repr__", [](const ChannelInfo& c) {
             return "<ChannelInfo name='" + c.name() + "' status='" + c.status() +
                    "' consumers=" + std::to_string(c.consumer_count()) + ">";
@@ -245,6 +242,7 @@ channels()              → list[ChannelInfo]  — All channels.
 ready_channels()        → list[ChannelInfo]  — Ready channels only.
 pending_channels()      → list[ChannelInfo]  — PendingReady channels only.
 channel(name)           → ChannelInfo        — Lookup by name (raises if not found).
+close_channel(name)                          — Request graceful channel close.
 )doc")
         .def("hub_name",         &HubScriptAPI::hub_name)
         .def("hub_uid",          &HubScriptAPI::hub_uid)
@@ -262,6 +260,9 @@ channel(name)           → ChannelInfo        — Lookup by name (raises if not
         .def("channel",          &HubScriptAPI::channel,
              py::arg("name"),
              "Look up a channel by name (raises RuntimeError if not found).")
+        .def("close_channel",    &HubScriptAPI::close_channel,
+             py::arg("name"),
+             "Request graceful close of a channel by name (sends CHANNEL_CLOSING_NOTIFY).")
         // HEP-CORE-0022: hub-targeted message
         .def("notify_hub",       &HubScriptAPI::notify_hub,
              py::arg("target_hub_uid"), py::arg("channel"), py::arg("payload_json"),

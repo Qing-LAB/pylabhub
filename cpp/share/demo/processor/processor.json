@@ -11,6 +11,7 @@
   },
   "in_channel":  "lab.demo.counter",
   "out_channel": "lab.demo.processed",
+  "hub_dir":     "../hub",
   "broker":      "tcp://127.0.0.1:5570",
   "timeout_ms":  5000,
   "overflow_policy": "drop",
@@ -20,24 +21,9 @@
     "out": {"enabled": true, "secret": 2222222222, "slot_count": 8}
   },
 
-  "in_slot_schema": {
-    "packing": "natural",
-    "fields": [
-      {"name": "count", "type": "int64"},
-      {"name": "ts",    "type": "float64"},
-      {"name": "value", "type": "float32"}
-    ]
-  },
-  "out_slot_schema": {
-    "packing": "natural",
-    "fields": [
-      {"name": "count",   "type": "int64"},
-      {"name": "ts",      "type": "float64"},
-      {"name": "value",   "type": "float32"},
-      {"name": "doubled", "type": "float32"}
-    ]
-  },
-  "flexzone_schema": null,
+  "in_slot_schema": "lab.demo.counter@1",
+  "out_slot_schema": "lab.demo.processed@1",
+  "flexzone_schema": "lab.demo.processed@1",
 
   "script": {"type": "python", "path": "."},
 

@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Bridge A: reads SHM from Hub A (lab.bridge.raw), pushes via ZMQ to processor-b.",
+    "in_transport=shm  → reads from SHM DataBlock (producer's secret 3333333333)",
+    "out_transport=zmq → PUSH to tcp://127.0.0.1:5580 (processor-b PULL connects)"
+  ],
+  "processor": {
+    "uid":       "PROC-BRIDGEA-00000001",
+    "name":      "BridgeA",
+    "log_level": "info"
+  },
+  "in_channel":  "lab.bridge.raw",
+  "out_channel": "lab.bridge.raw.bridge",
+  "hub_dir":     "../hub-a",
+  "timeout_ms":  5000,
+  "overflow_policy": "drop",
+
+  "in_transport": "shm",
+  "out_transport": "zmq",
+  "zmq_out_endpoint": "tcp://127.0.0.1:5580",
+  "zmq_out_bind": true,
+
+  "shm": {
+    "in":  {"enabled": true, "secret": 3333333333},
+    "out": {"enabled": false}
+  },
+
+  "in_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "flexzone_schema": null,
+
+  "script": {"type": "python", "path": "."},
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

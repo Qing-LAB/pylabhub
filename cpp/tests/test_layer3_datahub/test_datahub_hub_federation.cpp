@@ -350,17 +350,13 @@ TEST_F(BrokerFederationTest, RelayChannelNotify_DeliveredToHubB)
     // Register the channel on Hub A (producer P_A).
     Messenger prod_a;
     ASSERT_TRUE(prod_a.connect(hub_a.endpoint, hub_a.pubkey));
-    auto handle_a = prod_a.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_a = prod_a.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_a.has_value());
 
     // Register the same channel on Hub B (producer P_B listens for relay events).
     Messenger prod_b;
     ASSERT_TRUE(prod_b.connect(hub_b.endpoint, hub_b.pubkey));
-    auto handle_b = prod_b.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_b = prod_b.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_b.has_value());
 
     EventCollector prod_b_events;
@@ -431,17 +427,13 @@ TEST_F(BrokerFederationTest, RelayChannelBroadcast_DeliveredToHubB)
     // Channel on Hub A.
     Messenger prod_a;
     ASSERT_TRUE(prod_a.connect(hub_a.endpoint, hub_a.pubkey));
-    auto handle_a = prod_a.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_a = prod_a.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_a.has_value());
 
     // Same channel on Hub B — P_B listens.
     Messenger prod_b;
     ASSERT_TRUE(prod_b.connect(hub_b.endpoint, hub_b.pubkey));
-    auto handle_b = prod_b.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_b = prod_b.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_b.has_value());
 
     EventCollector prod_b_events;
@@ -579,17 +571,13 @@ TEST_F(BrokerFederationTest, RelayChannelFilter_UnsubscribedChannelNotRelayed)
     // Register other_channel on Hub A.
     Messenger prod_a;
     ASSERT_TRUE(prod_a.connect(hub_a.endpoint, hub_a.pubkey));
-    auto handle_other_a = prod_a.create_channel(other_channel, ChannelPattern::PubSub,
-                                                 /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                                 /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_other_a = prod_a.create_channel(other_channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_other_a.has_value());
 
     // Register other_channel on Hub B to capture any mistaken relays.
     Messenger prod_b;
     ASSERT_TRUE(prod_b.connect(hub_b.endpoint, hub_b.pubkey));
-    auto handle_other_b = prod_b.create_channel(other_channel, ChannelPattern::PubSub,
-                                                 /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                                 /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle_other_b = prod_b.create_channel(other_channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle_other_b.has_value());
 
     EventCollector prod_b_events;

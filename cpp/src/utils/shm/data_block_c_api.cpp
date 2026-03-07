@@ -5,6 +5,15 @@
 //
 // These are thin wrappers over the coordination functions defined in
 // data_block_slot_ops.cpp (declared in data_block_internal.hpp).
+//
+// LIMITATION — metrics not updated via C API:
+//   The internal acquire_write() / acquire_read() functions accept a
+//   SharedMemoryHeader* for populating performance counters (writer_timeout_count,
+//   writer_blocked_total_ns, etc.). The C API wrappers pass nullptr for that
+//   parameter, so metrics are NOT updated when code calls the raw C API directly.
+//   The C API is intended for low-level testing and recovery tools, not for
+//   production data paths. Production code should use DataBlockProducer /
+//   DataBlockConsumer (C++ API), which always supply the header pointer.
 
 #include "data_block_internal.hpp"
 #include "utils/slot_rw_coordinator.h"
@@ -99,8 +108,10 @@ extern "C"
             return -1;
         }
         /* State snapshot (not reset by reset_metrics) */
+        // acquire: pairs with the release store in update_commit_index() so the caller
+        // observes a commit_index that is consistent with the data written before it.
         out_metrics->commit_index =
-            shared_memory_header->commit_index.load(std::memory_order_relaxed);
+            shared_memory_header->commit_index.load(std::memory_order_acquire);
         out_metrics->slot_count = pylabhub::hub::detail::get_slot_count(shared_memory_header);
         out_metrics->_reserved_metrics_pad = 0;
         /* Metrics */
@@ -177,8 +188,9 @@ extern "C"
 
     PYLABHUB_UTILS_EXPORT uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header)
     {
+        // acquire: consistent with the release store in update_commit_index()
         return header != nullptr
-                   ? header->commit_index.load(std::memory_order_relaxed)
+                   ? header->commit_index.load(std::memory_order_acquire)
                    : 0;
     }
 

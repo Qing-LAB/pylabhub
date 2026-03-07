@@ -59,7 +59,12 @@ bool PythonScriptHost::do_initialize(const fs::path& script_path)
     // Force unbuffered Python I/O. Must be set before PyConfig_InitPythonConfig
     // reads the environment. This is the C-level mechanism; no Python-side
     // monkey-patching needed.
+    // XPLAT: setenv is POSIX-only; _putenv_s is the Windows equivalent.
+#if defined(_WIN32)
+    _putenv_s("PYTHONUNBUFFERED", "1");
+#else
     setenv("PYTHONUNBUFFERED", "1", 1);
+#endif
 
     PyConfig config;
     PyConfig_InitPythonConfig(&config);

@@ -149,12 +149,7 @@ TEST_F(ZmqVirtualChannelTest, DefaultTransport_IsShm)
 
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
-    auto handle = prod_m.create_channel(channel,
-                                        ChannelPattern::PubSub,
-                                        /*has_shared_memory=*/false,
-                                        /*schema_hash=*/{},
-                                        /*schema_version=*/0,
-                                        /*timeout_ms=*/3000);
+    auto handle = prod_m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     // Consumer discovers transport.
@@ -177,17 +172,9 @@ TEST_F(ZmqVirtualChannelTest, ZmqTransport_RoundTrip_DiscoverProducer)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto handle = prod_m.create_channel(channel,
-                                        ChannelPattern::PubSub,
-                                        /*has_shared_memory=*/false,
-                                        /*schema_hash=*/{},
-                                        /*schema_version=*/0,
-                                        /*timeout_ms=*/3000,
-                                        /*actor_name=*/{},
-                                        /*actor_uid=*/{},
-                                        /*schema_id=*/{},
-                                        /*schema_blds=*/{},
-                                        /*data_transport=*/"zmq",
-                                        /*zmq_node_endpoint=*/endpoint);
+                                        {.timeout_ms = 3000,
+                                         .data_transport = "zmq",
+                                         .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     // Consumer discovers transport fields from broker.
@@ -210,17 +197,9 @@ TEST_F(ZmqVirtualChannelTest, ChannelHandle_ZmqTransport_Accessors)
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
     auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false,
-                                   /*schema_hash=*/{},
-                                   /*schema_version=*/0,
-                                   /*timeout_ms=*/3000,
-                                   /*actor_name=*/{},
-                                   /*actor_uid=*/{},
-                                   /*schema_id=*/{},
-                                   /*schema_blds=*/{},
-                                   /*data_transport=*/"zmq",
-                                   /*zmq_node_endpoint=*/endpoint);
+                                   {.timeout_ms = 3000,
+                                    .data_transport = "zmq",
+                                    .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     // Producer-side handle accessors must not crash and return valid strings.
@@ -239,17 +218,9 @@ TEST_F(ZmqVirtualChannelTest, ConsumerHandle_ZmqTransport_FromDisc)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             /*has_shared_memory=*/false,
-                                             /*schema_hash=*/{},
-                                             /*schema_version=*/0,
-                                             /*timeout_ms=*/3000,
-                                             /*actor_name=*/{},
-                                             /*actor_uid=*/{},
-                                             /*schema_id=*/{},
-                                             /*schema_blds=*/{},
-                                             /*data_transport=*/"zmq",
-                                             /*zmq_node_endpoint=*/endpoint);
+                                             {.timeout_ms = 3000,
+                                              .data_transport = "zmq",
+                                              .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(prod_handle.has_value()) << "Producer create_channel failed";
 
     // Consumer connects: broker DISC_ACK carries transport fields → ChannelHandle.
@@ -277,12 +248,7 @@ TEST_F(ZmqVirtualChannelTest, ConsumerHandle_ShmTransport_FromDisc)
     // Producer registers with default (SHM) transport.
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
-    auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             /*has_shared_memory=*/false,
-                                             /*schema_hash=*/{},
-                                             /*schema_version=*/0,
-                                             /*timeout_ms=*/3000);
+    auto prod_handle = prod_m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value()) << "Producer create_channel failed";
 
     Messenger cons_m;
@@ -345,17 +311,9 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_ZmqTransport_Accessors)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             /*has_shared_memory=*/false,
-                                             /*schema_hash=*/{},
-                                             /*schema_version=*/0,
-                                             /*timeout_ms=*/3000,
-                                             /*actor_name=*/{},
-                                             /*actor_uid=*/{},
-                                             /*schema_id=*/{},
-                                             /*schema_blds=*/{},
-                                             /*data_transport=*/"zmq",
-                                             /*zmq_node_endpoint=*/endpoint);
+                                             {.timeout_ms = 3000,
+                                              .data_transport = "zmq",
+                                              .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(prod_handle.has_value()) << "create_channel failed";
 
     // Consumer connects via hub::Consumer.
@@ -385,12 +343,7 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_DefaultTransport_IsShm)
 
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
-    auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             /*has_shared_memory=*/false,
-                                             /*schema_hash=*/{},
-                                             /*schema_version=*/0,
-                                             /*timeout_ms=*/3000);
+    auto prod_handle = prod_m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value()) << "create_channel failed";
 
     Messenger cons_m;
@@ -420,17 +373,9 @@ TEST_F(ZmqVirtualChannelTest, MultipleConsumers_DiscoverSameEndpoint)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             /*has_shared_memory=*/false,
-                                             /*schema_hash=*/{},
-                                             /*schema_version=*/0,
-                                             /*timeout_ms=*/3000,
-                                             /*actor_name=*/{},
-                                             /*actor_uid=*/{},
-                                             /*schema_id=*/{},
-                                             /*schema_blds=*/{},
-                                             /*data_transport=*/"zmq",
-                                             /*zmq_node_endpoint=*/endpoint);
+                                             {.timeout_ms = 3000,
+                                              .data_transport = "zmq",
+                                              .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(prod_handle.has_value()) << "create_channel failed";
 
     // Two independent consumers discover the same endpoint.
@@ -457,17 +402,7 @@ TEST_F(ZmqVirtualChannelTest, ZmqTransport_EmptyEndpoint_StoredAsIs)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto handle = prod_m.create_channel(channel,
-                                        ChannelPattern::PubSub,
-                                        /*has_shared_memory=*/false,
-                                        /*schema_hash=*/{},
-                                        /*schema_version=*/0,
-                                        /*timeout_ms=*/3000,
-                                        /*actor_name=*/{},
-                                        /*actor_uid=*/{},
-                                        /*schema_id=*/{},
-                                        /*schema_blds=*/{},
-                                        /*data_transport=*/"zmq",
-                                        /*zmq_node_endpoint=*/{});
+                                        {.timeout_ms = 3000, .data_transport = "zmq"});
     ASSERT_TRUE(handle.has_value()) << "create_channel with empty ZMQ endpoint should succeed";
 
     Messenger cons_m;
@@ -491,16 +426,14 @@ TEST_F(ZmqVirtualChannelTest, ShmAndZmq_ChannelsCoexist)
     ASSERT_TRUE(m.connect(ep(), pk()));
 
     // Register SHM channel.
-    auto shm_handle = m.create_channel(shm_channel, ChannelPattern::PubSub,
-                                       false, {}, 0, 3000);
+    auto shm_handle = m.create_channel(shm_channel, {.timeout_ms = 3000});
     ASSERT_TRUE(shm_handle.has_value()) << "SHM create_channel failed";
 
     // Register ZMQ channel.
     auto zmq_handle = m.create_channel(zmq_channel,
-                                       ChannelPattern::PubSub,
-                                       false, {}, 0, 3000,
-                                       {}, {}, {}, {},
-                                       "zmq", endpoint);
+                                       {.timeout_ms = 3000,
+                                        .data_transport = "zmq",
+                                        .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(zmq_handle.has_value()) << "ZMQ create_channel failed";
 
     // Both channels discoverable with correct transports.
@@ -528,10 +461,9 @@ TEST_F(ZmqVirtualChannelTest, ChannelList_IncludesZmqChannel)
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
     auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   false, {}, 0, 3000,
-                                   {}, {}, {}, {},
-                                   "zmq", endpoint);
+                                   {.timeout_ms = 3000,
+                                    .data_transport = "zmq",
+                                    .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     // list_channels returns vector<json>; each entry has a "channel" field.
@@ -607,10 +539,9 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_ZmqTransport_QueueNonNull)
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
     auto prod_handle = prod_m.create_channel(channel,
-                                             ChannelPattern::PubSub,
-                                             false, {}, 0, 3000,
-                                             {}, {}, {}, {},
-                                             "zmq", endpoint);
+                                             {.timeout_ms = 3000,
+                                              .data_transport = "zmq",
+                                              .zmq_node_endpoint = endpoint});
     ASSERT_TRUE(prod_handle.has_value()) << "create_channel failed";
 
     Messenger cons_m;
@@ -637,8 +568,7 @@ TEST_F(ZmqVirtualChannelTest, HubConsumer_ShmTransport_QueueNull)
 
     Messenger prod_m;
     ASSERT_TRUE(prod_m.connect(ep(), pk()));
-    auto prod_handle = prod_m.create_channel(channel, ChannelPattern::PubSub,
-                                             false, {}, 0, 3000);
+    auto prod_handle = prod_m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value()) << "create_channel failed";
 
     Messenger cons_m;

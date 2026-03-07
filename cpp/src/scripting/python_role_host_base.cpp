@@ -193,7 +193,8 @@ bool PythonRoleHostBase::build_flexzone_type_()
 // ============================================================================
 
 bool PythonRoleHostBase::build_schema_type_(const SchemaSpec &spec, py::object &type_out,
-                                            size_t &size_out, const char *struct_name)
+                                            size_t &size_out, const char *struct_name,
+                                            bool readonly)
 {
     if (!spec.has_schema)
         return true;
@@ -202,6 +203,10 @@ bool PythonRoleHostBase::build_schema_type_(const SchemaSpec &spec, py::object &
     {
         type_out = build_ctypes_struct(spec, struct_name);
         size_out = ctypes_sizeof(type_out);
+        // Wrap read-side types to block accidental field writes from scripts.
+        // __setattr__ is only invoked on writes, so reads have zero extra cost.
+        if (readonly)
+            type_out = wrap_as_readonly_ctypes(type_out);
     }
     else
     {

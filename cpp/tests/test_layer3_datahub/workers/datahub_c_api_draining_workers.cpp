@@ -25,6 +25,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
+#include "utils/slot_rw_coordinator.h" // C API: slot_rw_acquire_write (drain_hold=false)
 #include <gtest/gtest.h>
 #include <fmt/core.h>
 #include <atomic>
@@ -336,11 +337,16 @@ int draining_timeout_restores_committed()
             auto rh = consumer->acquire_consume_slot(1000);
             ASSERT_NE(rh, nullptr);
 
-            // Producer tries to acquire with a very short timeout (10 ms) while reader holds
-            // the slot. This forces the drain to time out.
-            auto wh = producer->acquire_write_slot(10);
-            EXPECT_EQ(wh, nullptr)
-                << "acquire_write_slot must return nullptr when drain times out";
+            // Use the C API (drain_hold=false) to trigger the drain-timeout-restores-COMMITTED
+            // path. DataBlockProducer::acquire_write_slot uses drain_hold=true (SHM-C2 fix),
+            // which blocks until readers drain and never returns nullptr on Phase 2 timeout —
+            // that path is correct for production use but would deadlock here because the
+            // consumer only releases after this call returns. The C API slot_rw_acquire_write
+            // always passes drain_hold=false: on Phase 2 timeout it restores COMMITTED,
+            // releases write_lock, and returns SLOT_ACQUIRE_TIMEOUT.
+            SlotAcquireResult acquire_res = slot_rw_acquire_write(rw, 10);
+            EXPECT_EQ(acquire_res, SLOT_ACQUIRE_TIMEOUT)
+                << "slot_rw_acquire_write must return TIMEOUT when drain times out";
 
             // After timeout: slot_state must be COMMITTED (restored) and write_lock must be 0.
             EXPECT_EQ(rw->slot_state.load(std::memory_order_acquire),
@@ -616,6 +622,173 @@ int sync_reader_ring_full_blocks_not_draining()
         hub_module());
 }
 
+// ============================================================================
+// 8. drain_hold_true_never_returns_nullptr
+// Directly tests the SHM-C2 core invariant: DataBlockProducer::acquire_write_slot()
+// (drain_hold=true) NEVER returns nullptr due to a drain timeout — it keeps
+// blocking until readers release. A writer thread uses a 20 ms timeout_ms with
+// drain_hold=true. The main thread waits 80 ms (4 intervals) while the consumer
+// holds the slot, then verifies the writer is still blocked, then releases the
+// consumer and verifies the writer ultimately returns a valid slot handle.
+// ============================================================================
+
+int drain_hold_true_never_returns_nullptr()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("DrainHoldNoNull");
+            auto cfg = make_one_slot_config(72008);
+
+            auto producer = create_datablock_producer_impl(channel,
+                                                           DataBlockPolicy::RingBuffer,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
+                                                         &cfg, nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            // First write: slot 0 → COMMITTED
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h, nullptr);
+                uint64_t val = 0xDEAD;
+                std::memcpy(h->buffer_span().data(), &val, sizeof(val));
+                EXPECT_TRUE(h->commit(sizeof(val)));
+                EXPECT_TRUE(producer->release_write_slot(*h));
+            }
+
+            // Consumer holds the slot (reader_count = 1)
+            auto rh = consumer->acquire_consume_slot(1000);
+            ASSERT_NE(rh, nullptr);
+
+            // Atomic flag: set by writer thread when it finishes (nullptr or not)
+            std::atomic<bool> writer_returned{false};
+            std::atomic<bool> writer_got_null{false};
+
+            // Writer thread: acquire_write_slot(20) wraps around → DRAINING, then
+            // drain_hold=true resets timer every 20 ms instead of returning nullptr.
+            std::thread writer(
+                [&]()
+                {
+                    auto h = producer->acquire_write_slot(20); // 20 ms timeout_ms
+                    writer_returned.store(true, std::memory_order_release);
+                    writer_got_null.store(h == nullptr, std::memory_order_release);
+                    if (h)
+                    {
+                        (void)h->commit(0);
+                        (void)producer->release_write_slot(*h);
+                    }
+                });
+
+            // Wait for DRAINING so writer is definitely blocked
+            auto diag = open_datablock_for_diagnostic(channel);
+            ASSERT_NE(diag, nullptr);
+            SlotRWState *rw = diag->slot_rw_state(0);
+            ASSERT_NE(rw, nullptr);
+            bool saw_draining = wait_for_slot_state(rw, SlotRWState::SlotState::DRAINING);
+            ASSERT_TRUE(saw_draining) << "Expected DRAINING state before checking blocking invariant";
+
+            // Hold for 80 ms (≥ 4 × 20 ms timeout resets). Writer must still be blocked.
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            EXPECT_FALSE(writer_returned.load(std::memory_order_acquire))
+                << "drain_hold=true: writer must NOT return (nullptr or otherwise) on drain "
+                   "timeout — it must keep blocking until readers release";
+
+            // Release reader → drain completes → writer acquires slot and returns
+            (void)consumer->release_consume_slot(*rh);
+            writer.join();
+
+            EXPECT_FALSE(writer_got_null.load(std::memory_order_acquire))
+                << "drain_hold=true: writer must return a valid slot handle after drain "
+                   "completes, never nullptr";
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "drain_hold_true_never_returns_nullptr", logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// 9. drain_hold_true_metrics_accumulated
+// When DataBlockProducer::acquire_write_slot() (drain_hold=true) blocks across
+// multiple timeout intervals, writer_reader_timeout_count and writer_blocked_total_ns
+// are both incremented on each reset (slot_ops.cpp lines 153-158). This test
+// verifies that both metrics accumulate correctly during a prolonged drain wait.
+// ============================================================================
+
+int drain_hold_true_metrics_accumulated()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("DrainHoldMetrics");
+            auto cfg = make_one_slot_config(72009);
+
+            auto producer = create_datablock_producer_impl(channel,
+                                                           DataBlockPolicy::RingBuffer,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret,
+                                                         &cfg, nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            // First write: slot 0 → COMMITTED
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h, nullptr);
+                uint64_t val = 0xFACE;
+                std::memcpy(h->buffer_span().data(), &val, sizeof(val));
+                EXPECT_TRUE(h->commit(sizeof(val)));
+                EXPECT_TRUE(producer->release_write_slot(*h));
+            }
+
+            // Reset metrics to get a clean baseline
+            ASSERT_EQ(producer->reset_metrics(), 0);
+
+            // Consumer holds the slot (reader_count = 1)
+            auto rh = consumer->acquire_consume_slot(1000);
+            ASSERT_NE(rh, nullptr);
+
+            // Writer thread: acquire_write_slot(25ms) — drain_hold=true resets timer
+            // and increments metrics on each 25 ms timeout interval.
+            std::thread writer(
+                [&]()
+                {
+                    auto h = producer->acquire_write_slot(25);
+                    if (h)
+                    {
+                        (void)h->commit(0);
+                        (void)producer->release_write_slot(*h);
+                    }
+                });
+
+            // Hold reader for ~110 ms — gives ≥ 4 timeout resets (4 × 25 ms = 100 ms).
+            std::this_thread::sleep_for(std::chrono::milliseconds(110));
+            (void)consumer->release_consume_slot(*rh);
+            writer.join();
+
+            DataBlockMetrics m{};
+            ASSERT_EQ(producer->get_metrics(m), 0);
+
+            // Each drain-hold reset increments writer_reader_timeout_count by 1.
+            // With 110 ms hold and 25 ms timeout: expect ≥ 3 resets.
+            EXPECT_GE(m.writer_reader_timeout_count, 3u)
+                << "writer_reader_timeout_count must accumulate on each drain-hold timeout reset";
+
+            // writer_blocked_total_ns is the sum of all drain-hold intervals recorded.
+            // Must be > 0 after any drain-hold timeout reset occurs.
+            EXPECT_GT(m.writer_blocked_total_ns, 0u)
+                << "writer_blocked_total_ns must be > 0 after drain-hold timeout resets";
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "drain_hold_true_metrics_accumulated", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::c_api_draining
 
 // ============================================================================
@@ -653,6 +826,10 @@ struct CApiDrainingWorkerRegistrar
                     return single_reader_ring_full_blocks_not_draining();
                 if (scenario == "sync_reader_ring_full_blocks_not_draining")
                     return sync_reader_ring_full_blocks_not_draining();
+                if (scenario == "drain_hold_true_never_returns_nullptr")
+                    return drain_hold_true_never_returns_nullptr();
+                if (scenario == "drain_hold_true_metrics_accumulated")
+                    return drain_hold_true_metrics_accumulated();
                 fmt::print(stderr, "ERROR: Unknown c_api_draining scenario '{}'\n", scenario);
                 return 1;
             });

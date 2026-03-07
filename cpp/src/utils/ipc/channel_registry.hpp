@@ -4,10 +4,26 @@
  * @brief In-memory channel registry for the pylabhub broker.
  *
  * Stores channel metadata (shared memory segment, ZMQ endpoints, heartbeat state).
- * Single-threaded access only — all methods are called exclusively from the
- * BrokerService run() thread.
  *
- * This is a private implementation header — not part of the installed public API.
+ * ACCESS DISCIPLINE
+ * -----------------
+ * This is a private broker-internal class. It is:
+ *   - Included only by broker_service.cpp and channel_registry.cpp.
+ *   - Never part of the installed public API (not in src/include/).
+ *   - Always accessed under BrokerService's m_query_mu mutex.
+ *
+ * All methods are called exclusively from the BrokerService run() thread
+ * (or from query methods that hold m_query_mu). No internal locking is
+ * needed or provided — that responsibility lies entirely with the caller.
+ *
+ * MUTABILITY DISCIPLINE
+ * ---------------------
+ * Prefer the narrowest API that satisfies each use case:
+ *   - For field reads:         find_channel() (returns value copy) or const all_channels()
+ *   - For lifecycle mutations: find_channel_mutable() — ONLY for status / deadline / identity
+ *                              updates. Do NOT use for read-only field access.
+ *   - For full iteration with mutation: all_channels() (mutable overload)
+ *   - For full iteration read-only: all_channels() const overload or find_timed_out_channels()
  */
 #include "utils/channel_pattern.hpp"
 
@@ -169,16 +185,28 @@ public:
     [[nodiscard]] size_t size() const;
 
     /**
-     * @brief Mutable pointer to an entry for in-place field updates (e.g. producer_zmq_identity).
+     * @brief Mutable pointer to an entry for in-place lifecycle field updates.
+     *
+     * Use ONLY for mutations: status transitions, closing_deadline, producer_zmq_identity.
+     * For read-only field access use find_channel() instead — it returns a const value copy
+     * and makes the intent clear.
+     *
      * @return nullptr if not found.
      */
     ChannelEntry* find_channel_mutable(const std::string& channel_name) noexcept;
 
     /**
-     * @brief Mutable access to all entries for liveness iteration.
+     * @brief Mutable access to all entries — for liveness iteration that modifies entries
+     *        (e.g. removing dead consumers, transitioning status to Closing).
      *        Caller must not add/remove entries during iteration (single-threaded invariant).
      */
     std::unordered_map<std::string, ChannelEntry>& all_channels() noexcept;
+
+    /**
+     * @brief Read-only access to all entries — for snapshot / reporting iteration.
+     *        Prefer this overload whenever no mutation is needed.
+     */
+    const std::unordered_map<std::string, ChannelEntry>& all_channels() const noexcept;
 
 private:
     std::unordered_map<std::string, ChannelEntry> m_channels;

@@ -21,8 +21,43 @@ using namespace internal; // brings spin_elapsed_ms_exceeded, backoff, etc. into
 // ============================================================================
 // 4.2.1 Writer Acquisition Flow
 // ============================================================================
+//
+// Two-phase acquisition:
+//
+//   Phase 1 — write_lock CAS (writer-vs-writer exclusion, per physical slot):
+//     Spins until write_lock transitions from 0 to my_pid. Handles zombie locks
+//     (dead writer processes) via heartbeat-first liveness check and CAS reclaim.
+//     On Phase 1 timeout: lock not held, returns SLOT_ACQUIRE_TIMEOUT immediately.
+//
+//   Phase 2 — reader drain (wait for reader_count == 0):
+//     If the slot was COMMITTED, transitions to DRAINING first so no new readers
+//     can enter. Waits for existing in-flight readers to release their reader_count.
+//
+//     drain_hold=false (default, C API path):
+//       On Phase 2 timeout: restores COMMITTED, releases write_lock, returns
+//       SLOT_ACQUIRE_TIMEOUT. Caller is free to retry from scratch.
+//
+//     drain_hold=true (DataBlockProducer path):
+//       On Phase 2 timeout: resets the timer and continues waiting. write_lock
+//       stays held; slot stays DRAINING so no new readers can enter. This makes
+//       Phase 2 a blocking operation — it will not return until readers drain.
+//       Metrics (writer_reader_timeout_count, writer_blocked_total_ns) are updated
+//       each timeout_ms interval to expose slow-reader events.
+//       ⚠ Dead reader risk: if a Latest_only reader crashes while holding
+//       reader_count > 0, Phase 2 will block forever. Detection requires an
+//       external reader-heartbeat mechanism (not currently implemented).
+//
+// Design constraint — single-writer only:
+//   This code assumes exactly one active writer per channel (enforced by the broker).
+//   For future multi-writer support, two prerequisites must be resolved first:
+//     1. update_commit_index() uses a plain store; it must become a max-CAS to
+//        handle out-of-order commits from concurrent writers.
+//     2. Consumer read sequencing (latest slot_id tracking, Single_reader ordering)
+//        must be redesigned for the out-of-order commit ordering that results.
+//   Do not extend to multi-writer without fully resolving both protocols.
+//
 SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header,
-                                int timeout_ms)
+                                int timeout_ms, bool drain_hold)
 {
     auto start_time = pylabhub::platform::monotonic_time_ns();
     uint64_t my_pid = pylabhub::platform::get_pid();
@@ -106,10 +141,45 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
 
         if (spin_elapsed_ms_exceeded(start_time, timeout_ms))
         {
+            if (drain_hold)
+            {
+                // Phase 2 drain-hold path: keep write_lock held and slot in DRAINING state.
+                // No new readers can enter while DRAINING. Existing readers will drain
+                // naturally — we just need more patience. Reset the timer and continue
+                // waiting rather than releasing the slot and burning the slot_id.
+                auto now = pylabhub::platform::monotonic_time_ns();
+                if (header != nullptr)
+                {
+                    detail::increment_metric_writer_timeout(header);
+                    detail::increment_metric_writer_reader_timeout(header);
+                    // Record the actual time spent blocked in this interval so that
+                    // writer_blocked_total_ns reflects cumulative drain-wait duration.
+                    detail::add_metric_writer_blocked_ns(header, now - start_time);
+                }
+                start_time = now; // reset timer — wait another timeout_ms
+                iteration = 0;
+                continue;
+            }
             slot_rw_state->writer_waiting.store(0, std::memory_order_relaxed);
             if (entered_draining)
             {
-                // Previous commit data is still valid — restore so consumers can read it.
+                // Restore COMMITTED so readers can continue accessing the still-valid data.
+                //
+                // Design intent: the writer is giving up this reclaim attempt (C API path,
+                // drain_hold=false). The data committed in this slot by the previous write
+                // is still intact and meaningful. Restoring COMMITTED allows:
+                //   - Readers already in-flight (reader_count > 0) to finish their read
+                //     without data being invalidated under them.
+                //   - New readers that arrive after this point to still acquire and read
+                //     the valid committed data.
+                // The slot is not "abandoned" — it will be reclaimed on the next wrap-around
+                // when the writer circles back to this slot_index.
+                //
+                // Note (re code review #32): this restore followed by write_lock release
+                // cannot cause a multi-writer race. The broker enforces exactly one producer
+                // per channel (single-writer invariant). The concern in #32 was a false
+                // positive for that reason. The DataBlockProducer path uses drain_hold=true
+                // and never reaches this branch — it keeps write_lock held and waits.
                 slot_rw_state->slot_state.store(SlotRWState::SlotState::COMMITTED,
                                                 std::memory_order_release);
             }

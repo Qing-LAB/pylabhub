@@ -13,7 +13,7 @@
  * def on_tick(api, tick):
  *     for ch in api.ready_channels():
  *         if ch.consumer_count() == 0:
- *             ch.request_close()
+ *             api.close_channel(ch.name())
  *
  * def on_stop(api):
  *     api.log("info", "stopping")
@@ -21,11 +21,9 @@
  *
  * ## Thread safety
  *
- * All methods on HubScriptAPI and ChannelInfo are called only from the tick thread, which
- * holds the GIL.  `pending_closes_` is read by the tick thread after `on_tick` returns,
- * before the GIL is released — no extra synchronisation is needed.
- *
- * `HubScriptAPI::shutdown()` stores to an atomic flag; safe from any thread.
+ * All methods on HubScriptAPI and ChannelInfo are called only from the tick thread,
+ * which holds the GIL.  `HubScriptAPI::shutdown()` stores to an atomic flag; safe
+ * from any thread.
  */
 
 #include "utils/broker_service.hpp"
@@ -48,14 +46,15 @@ namespace pylabhub
  * @brief Typed read-only snapshot of a single channel, exposed to Python.
  *
  * Instances are created fresh per `on_tick` call from the snapshot returned by
- * `BrokerService::query_channel_snapshot()`.  `request_close()` records the channel
- * name in the parent `HubScriptAPI::pending_closes_` list for post-tick processing.
+ * `BrokerService::query_channel_snapshot()`. This is a pure value type — it carries
+ * no back-pointer and is safe to inspect at any time within or outside the callback.
+ * To close a channel, call `api.close_channel(ch.name())`.
  */
 class ChannelInfo
 {
 public:
-    explicit ChannelInfo(broker::ChannelSnapshotEntry snap, class HubScriptAPI* api)
-        : snap_(std::move(snap)), api_(api)
+    explicit ChannelInfo(broker::ChannelSnapshotEntry snap)
+        : snap_(std::move(snap))
     {
     }
 
@@ -80,17 +79,8 @@ public:
     /** UID of the producer actor (empty if not set). */
     const std::string& producer_actor_uid() const noexcept { return snap_.producer_actor_uid; }
 
-    /**
-     * @brief Mark this channel for close after `on_tick` returns.
-     *
-     * The C++ tick runner calls `BrokerService::request_close_channel()` for every
-     * channel marked here, sending CHANNEL_CLOSING_NOTIFY to all parties.
-     */
-    void request_close();
-
 private:
     broker::ChannelSnapshotEntry snap_;
-    HubScriptAPI*                api_{nullptr};
 };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +220,15 @@ public:
                     const std::string& channel,
                     const std::string& payload_json);
 
+    /**
+     * @brief Request graceful close of a channel by name.
+     *
+     * Calls `BrokerService::request_close_channel()` directly, sending
+     * CHANNEL_CLOSING_NOTIFY to the producer and all consumers.
+     * Safe to call from any hub script callback.
+     */
+    void close_channel(const std::string& name);
+
     // -----------------------------------------------------------------------
     // Internal — used by HubScript tick runner
     // -----------------------------------------------------------------------
@@ -258,22 +257,10 @@ public:
     /// Set the current channel snapshot (refreshed every tick by HubScript).
     void set_snapshot(broker::ChannelSnapshot snap) { snapshot_ = std::move(snap); }
 
-    /// Take (move-out) the list of channels to close after on_tick returns.
-    std::vector<std::string> take_pending_closes()
-    {
-        std::vector<std::string> out;
-        out.swap(pending_closes_);
-        return out;
-    }
-
-    /// Called by ChannelInfo::request_close() — appends channel name.
-    void mark_for_close(const std::string& name) { pending_closes_.push_back(name); }
-
 private:
     broker::BrokerService*      broker_{nullptr};
     std::atomic<bool>*          shutdown_flag_{nullptr};
     broker::ChannelSnapshot     snapshot_;
-    std::vector<std::string>    pending_closes_;
 
     mutable std::mutex          m_hub_event_mu_;
     std::vector<HubEvent>       pending_hub_events_;

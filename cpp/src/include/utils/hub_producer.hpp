@@ -537,11 +537,19 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     }
 
     // Create ZMQ channel
-    auto ch = messenger.create_channel(opts.channel_name, opts.pattern, opts.has_shm,
-                                        opts.schema_hash, opts.schema_version, opts.timeout_ms,
-                                        opts.actor_name, opts.actor_uid,
-                                        opts.schema_id, schema_blds_str,
-                                        opts.data_transport, opts.zmq_node_endpoint);
+    ChannelRegistrationOptions ch_opts;
+    ch_opts.pattern           = opts.pattern;
+    ch_opts.has_shared_memory = opts.has_shm;
+    ch_opts.schema_hash       = opts.schema_hash;
+    ch_opts.schema_version    = opts.schema_version;
+    ch_opts.timeout_ms        = opts.timeout_ms;
+    ch_opts.actor_name        = opts.actor_name;
+    ch_opts.actor_uid         = opts.actor_uid;
+    ch_opts.schema_id         = opts.schema_id;
+    ch_opts.schema_blds       = schema_blds_str;
+    ch_opts.data_transport    = opts.data_transport;
+    ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
+    auto ch = messenger.create_channel(opts.channel_name, ch_opts);
     if (!ch.has_value())
     {
         return std::nullopt;

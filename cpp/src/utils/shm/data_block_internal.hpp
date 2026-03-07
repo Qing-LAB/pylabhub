@@ -67,10 +67,21 @@ inline std::atomic<uint64_t> *producer_heartbeat_id_ptr(SharedMemoryHeader *head
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
                                                     PRODUCER_HEARTBEAT_OFFSET);
 }
+inline const std::atomic<uint64_t> *producer_heartbeat_id_ptr(const SharedMemoryHeader *header)
+{
+    return reinterpret_cast<const std::atomic<uint64_t> *>(header->reserved_header +
+                                                           PRODUCER_HEARTBEAT_OFFSET);
+}
 inline std::atomic<uint64_t> *producer_heartbeat_ns_ptr(SharedMemoryHeader *header)
 {
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
                                                     PRODUCER_HEARTBEAT_OFFSET) +
+           1;
+}
+inline const std::atomic<uint64_t> *producer_heartbeat_ns_ptr(const SharedMemoryHeader *header)
+{
+    return reinterpret_cast<const std::atomic<uint64_t> *>(header->reserved_header +
+                                                           PRODUCER_HEARTBEAT_OFFSET) +
            1;
 }
 
@@ -108,6 +119,12 @@ inline void increment_metric_writer_lock_timeout(SharedMemoryHeader* header) noe
 inline void increment_metric_writer_reader_timeout(SharedMemoryHeader* header) noexcept {
     if (header != nullptr) {
         header->writer_reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+inline void add_metric_writer_blocked_ns(SharedMemoryHeader* header, uint64_t elapsed_ns) noexcept {
+    if (header != nullptr) {
+        header->writer_blocked_total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
     }
 }
 
@@ -254,12 +271,11 @@ inline bool is_producer_heartbeat_fresh(const SharedMemoryHeader *header, uint64
     if (header == nullptr || pid == 0) {
         return false;
     }
-    auto *mut_header = const_cast<SharedMemoryHeader *>(header);
-    uint64_t stored_id = producer_heartbeat_id_ptr(mut_header)->load(std::memory_order_acquire);
+    uint64_t stored_id = producer_heartbeat_id_ptr(header)->load(std::memory_order_acquire);
     if (stored_id != pid) {
         return false;
     }
-    uint64_t stored_ns = producer_heartbeat_ns_ptr(mut_header)->load(std::memory_order_acquire);
+    uint64_t stored_ns = producer_heartbeat_ns_ptr(header)->load(std::memory_order_acquire);
     uint64_t now = pylabhub::platform::monotonic_time_ns();
     return (now - stored_ns) <= PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 }
@@ -298,8 +314,6 @@ using pylabhub::hub::detail::CONSUMER_READ_POSITIONS_OFFSET;
 using pylabhub::hub::detail::PRODUCER_HEARTBEAT_OFFSET;
 using pylabhub::hub::detail::PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 
-constexpr uint16_t DATABLOCK_VERSION_MAJOR = HEADER_VERSION_MAJOR;
-constexpr uint16_t DATABLOCK_VERSION_MINOR = HEADER_VERSION_MINOR;
 constexpr uint64_t INVALID_SLOT_ID = std::numeric_limits<uint64_t>::max();
 
 /// Sync_reader: pointer to the slot_index-th consumer's next-read slot id in reserved_header.
@@ -308,6 +322,13 @@ inline std::atomic<uint64_t> *consumer_next_read_slot_ptr(SharedMemoryHeader *he
 {
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
                                                     CONSUMER_READ_POSITIONS_OFFSET) +
+           slot_index;
+}
+inline const std::atomic<uint64_t> *consumer_next_read_slot_ptr(const SharedMemoryHeader *header,
+                                                                 size_t slot_index)
+{
+    return reinterpret_cast<const std::atomic<uint64_t> *>(header->reserved_header +
+                                                           CONSUMER_READ_POSITIONS_OFFSET) +
            slot_index;
 }
 
@@ -332,14 +353,18 @@ inline bool spin_elapsed_ms_exceeded(uint64_t start_time_ns, int timeout_ms)
 
 /// Returns the SHM attach timeout in milliseconds (init handshake only, not runtime ops).
 /// Default: 5000ms. Override via PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS env var.
+/// Cached in a static local on first call — the env var is not expected to change at runtime.
 inline int get_attach_timeout_ms() noexcept
 {
-    const char *env = std::getenv("PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS");
-    if (env)
-    {
-        try { return std::stoi(env); } catch (...) {}
-    }
-    return 5000;
+    static int cached = []() -> int {
+        const char *env = std::getenv("PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS");
+        if (env)
+        {
+            try { return std::stoi(env); } catch (...) {}
+        }
+        return 5000;
+    }();
+    return cached;
 }
 
 /// Waits for the SHM header magic number to become valid (creator finished initializing).
@@ -407,8 +432,7 @@ inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLIN
         return INVALID_SLOT_ID;
     }
     uint64_t next =
-        consumer_next_read_slot_ptr(const_cast<SharedMemoryHeader *>(header),
-                                    static_cast<size_t>(heartbeat_slot))
+        consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
             ->load(std::memory_order_acquire);
     if (header->commit_index.load(std::memory_order_acquire) < next)
     {
@@ -430,8 +454,13 @@ inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLIN
 // with hidden visibility (inherited from -fvisibility=hidden on the library target).
 
 // 4.2.1 Writer Acquisition Flow
+// drain_hold=true: on Phase 2 timeout (readers still draining), reset the timer and
+// keep waiting instead of restoring COMMITTED + releasing write_lock. This prevents
+// slot_id burns when write_index was already advanced before this call.
+// drain_hold=false (default): old behavior — Phase 2 timeout releases everything and
+// returns SLOT_ACQUIRE_TIMEOUT. Used by the C API (slot_rw_acquire_write).
 SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header,
-                                int timeout_ms);
+                                int timeout_ms, bool drain_hold = false);
 
 // 4.2.2 Writer Commit Flow
 void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header, uint64_t slot_id);

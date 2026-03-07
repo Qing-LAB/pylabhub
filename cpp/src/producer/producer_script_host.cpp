@@ -18,8 +18,10 @@
 #include "zmq_poll_loop.hpp"
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -98,8 +100,12 @@ bool ProducerScriptHost::build_role_types()
 
     try
     {
-        slot_spec_    = resolve_schema(config_.slot_schema_json,     false, "prod");
-        core_.fz_spec = resolve_schema(config_.flexzone_schema_json, true,  "prod");
+        std::vector<std::string> schema_dirs;
+        if (!config_.hub_dir.empty())
+            schema_dirs.push_back((std::filesystem::path(config_.hub_dir) / "schemas").string());
+
+        slot_spec_    = resolve_schema(config_.slot_schema_json,     false, "prod", schema_dirs);
+        core_.fz_spec = resolve_schema(config_.flexzone_schema_json, true,  "prod", schema_dirs);
     }
     catch (const std::exception &e)
     {
@@ -302,6 +308,12 @@ bool ProducerScriptHost::start_role()
         // to be known to pybind11 before py::cast.
         py::module_::import("pylabhub_producer");
 
+        // LIFETIME: api_obj_ borrows a raw pointer to api_ (reference policy).
+        // api_ must outlive any Python code that holds a reference to api_obj_.
+        // This is guaranteed because api_ is a member of ProducerScriptHost and
+        // Python callbacks only run while the script host is alive (between start_role
+        // and stop_role). set_producer/set_messenger are cleared in stop_role before
+        // out_producer_ is destroyed.
         api_obj_ = py::cast(&api_, py::return_value_policy::reference);
         api_.set_producer(&*out_producer_);
         api_.set_messenger(&out_messenger_);
@@ -376,6 +388,12 @@ void ProducerScriptHost::stop_role()
 
     {
         py::gil_scoped_release release;
+        // join() is unbounded: if a thread is stuck (e.g., SHM acquire hung or ZMQ
+        // context not yet terminated), this call blocks indefinitely. In practice the
+        // shutdown path sets shutdown_requested and closes the ZMQ context (ETERM),
+        // which unblocks both threads within milliseconds. A timed join would require
+        // a detach fallback, which risks use-after-free on the ProducerImpl data.
+        // Revisit if watchdog-driven kill is ever needed.
         if (loop_thread_.joinable()) loop_thread_.join();
         if (zmq_thread_.joinable())  zmq_thread_.join();
     }
@@ -428,22 +446,8 @@ void ProducerScriptHost::update_fz_checksum_after_init()
 
 py::object ProducerScriptHost::make_out_slot_view_(void *data, size_t size) const
 {
-    auto mv = py::memoryview::from_memory(data, static_cast<ssize_t>(size),
-                                           /*readonly=*/false);
-    if (!slot_spec_.has_schema)
-        return py::bytearray(reinterpret_cast<const char *>(data), size);
-    if (slot_spec_.exposure == scripting::SlotExposure::Ctypes)
-        return slot_type_.attr("from_buffer")(mv);
-    py::module_ np = py::module_::import("numpy");
-    if (!slot_spec_.numpy_shape.empty())
-    {
-        py::list shape;
-        for (auto d : slot_spec_.numpy_shape) shape.append(d);
-        return np.attr("ndarray")(shape, slot_type_, mv);
-    }
-    const size_t itemsize = slot_type_.attr("itemsize").cast<size_t>();
-    const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
-    return np.attr("ndarray")(py::make_tuple(static_cast<ssize_t>(count)), slot_type_, mv);
+    return scripting::make_slot_view(
+        slot_spec_, slot_type_, data, size, /*is_read_side=*/false);
 }
 
 // ============================================================================

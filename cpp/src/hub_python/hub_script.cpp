@@ -160,6 +160,16 @@ void HubScript::startup_()
     base_startup_(script_dir);
 }
 
+// These callbacks are invoked by BrokerService (from the broker thread) whenever a
+// hub federation event arrives. They do NOT call Python directly — they enqueue an
+// IncomingMessage into the HubAPI event queue. The hub_thread_ main loop dequeues
+// and dispatches to the Python callbacks on each tick.
+//
+// Startup ordering: BrokerService starts before HubScript, so federation events may
+// arrive before the Python module finishes loading. That is safe: events queue up
+// in the IncomingMessage deque and are processed on the first tick after the script
+// module loads (guarded by `if (script_module.is_none()) continue;` in hub_thread_fn_()).
+
 void HubScript::on_hub_peer_connected(const std::string& hub_uid)
 {
     api_.push_hub_connected(hub_uid);
@@ -235,7 +245,11 @@ void HubScript::do_python_work(const fs::path& script_path)
     py::object on_hub_message_fn{py::none()};
     bool script_loaded = false;
 
-    [&]() -> void
+    // Named lambda instead of raw IIFE so the purpose is clear at a glance.
+    // Uses a lambda (not a helper method) to capture the many local py::object
+    // variables by reference — avoiding a large parameter list. `return` exits
+    // the load block early without affecting the outer function.
+    auto load_hub_script = [&]() -> void
     {
         // "script_path" is empty when hub.json has no "script" block, or when
         // "script.type" was absent (both are normal: hub runs without a user script).
@@ -297,7 +311,8 @@ void HubScript::do_python_work(const fs::path& script_path)
         {
             LOGGER_ERROR("HubScript: failed to load script package: {}", e.what());
         }
-    }();
+    };
+    load_hub_script();
 
     // ------------------------------------------------------------------
     // Phase 3: Call on_start (GIL held).
@@ -389,11 +404,13 @@ void HubScript::do_python_work(const fs::path& script_path)
             }
 
             // 3. If no script loaded, skip GIL acquisition.
-            if (script_module.is_none()) // pointer check; safe without GIL
+            // script_module is a local variable on hub_thread_ (never shared with
+            // other threads), so reading it without the GIL is safe — no race.
+            // is_none() is a single pointer comparison; no Python C API calls.
+            if (script_module.is_none())
                 continue;
 
             // 4. Acquire GIL for Python calls.
-            std::vector<std::string> closes;
             {
                 py::gil_scoped_acquire gil;
 
@@ -450,16 +467,7 @@ void HubScript::do_python_work(const fs::path& script_path)
                                      e.what());
                     }
                 }
-
-                closes = api_.take_pending_closes();
-                for (const auto& ch : closes)
-                    LOGGER_INFO("HubScript: script requested close of channel '{}'", ch);
             } // GIL released here
-
-            // 5. Dispatch closes without GIL (broker is C++, thread-safe).
-            if (broker_)
-                for (const auto& ch : closes)
-                    broker_->request_close_channel(ch);
         }
     } // outer_release destructor: GIL re-acquired
 

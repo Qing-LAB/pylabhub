@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Bridge B: reads ZMQ data from processor-a, writes SHM to Hub B (lab.bridge.processed).",
+    "in_transport=zmq  → ZMQ PULL; endpoint auto-discovered from Hub A broker via HEP-CORE-0021.",
+    "out_transport=shm → writes to SHM DataBlock with secret 4444444444.",
+    "",
+    "With HEP-CORE-0021, no zmq_in_endpoint is needed here: processor-a registers",
+    "lab.bridge.raw.bridge with data_transport=zmq on Hub A's broker. This processor",
+    "connects to Hub A (in_hub_dir) and discovers the endpoint from the DISC_ACK."
+  ],
+  "processor": {
+    "uid":       "PROC-BRIDGEB-00000001",
+    "name":      "BridgeB",
+    "log_level": "info"
+  },
+  "in_channel":  "lab.bridge.raw.bridge",
+  "out_channel": "lab.bridge.processed",
+  "hub_dir":     "../hub-b",
+  "in_hub_dir":  "../hub-a",
+  "timeout_ms":  5000,
+  "overflow_policy": "drop",
+
+  "out_transport": "shm",
+
+  "shm": {
+    "in":  {"enabled": false},
+    "out": {"enabled": true, "secret": 4444444444, "slot_count": 8}
+  },
+
+  "in_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "value",   "type": "float32"},
+      {"name": "doubled", "type": "float32"}
+    ]
+  },
+  "flexzone_schema": null,
+
+  "script": {"type": "python", "path": "."},
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

@@ -71,6 +71,18 @@ struct ProducerInfo
     std::string actor_uid;  ///< Actor UUID4 or ACTOR-{NAME}-{8HEX}; empty = anonymous
 };
 
+/**
+ * @brief Channel connection details returned to a consumer by DISC_ACK.
+ *
+ * Naming note: "ConsumerInfo" means "information FOR the consumer" — it describes
+ * what the consumer needs to attach to the channel (SHM name, ZMQ endpoints, schema).
+ * It is the consumer's view of a channel, not a description of a consumer identity.
+ * Compare with ProducerInfo (the producer's own registration record).
+ *
+ * DiscoverProducerCmd returns ConsumerInfo because the consumer sends the discovery
+ * request and receives this struct in response — it is the consumer-facing channel
+ * descriptor returned by the broker's DISC_ACK.
+ */
 struct ConsumerInfo
 {
     // ── existing ──────────────────────────────────────────────────────────────
@@ -106,6 +118,32 @@ struct ConsumerInfo
  * P2C (producer-to-consumer) sockets owned by ChannelHandle objects are created
  * in the calling thread and are NOT shared with the Messenger worker thread.
  */
+
+/**
+ * @brief Options for Messenger::create_channel().
+ *
+ * Grouping the 12 registration parameters into a struct avoids a positional call
+ * that is both error-prone and hard to read at call sites.
+ * All fields have sensible defaults; set only what you need.
+ *
+ * Declared at namespace scope (not nested in Messenger) so that GCC can aggregate-
+ * initialize it from `{}` in default argument expressions.
+ */
+struct PYLABHUB_UTILS_EXPORT ChannelRegistrationOptions
+{
+    ChannelPattern pattern{ChannelPattern::PubSub};
+    bool           has_shared_memory{false};
+    std::string    schema_hash;       ///< Raw 32 bytes; empty = all-zeros
+    uint32_t       schema_version{0};
+    int            timeout_ms{5000};
+    std::string    actor_name;
+    std::string    actor_uid;
+    std::string    schema_id;         ///< Named schema ID (e.g. "lab.temp.raw@1")
+    std::string    schema_blds;       ///< BLDS raw bytes for schema registry
+    std::string    data_transport;    ///< "shm" (default) or "zmq"
+    std::string    zmq_node_endpoint; ///< ZMQ virtual channel PUSH endpoint
+};
+
 class PYLABHUB_UTILS_EXPORT Messenger
 {
   public:
@@ -163,34 +201,19 @@ class PYLABHUB_UTILS_EXPORT Messenger
     // ── High-level channel API (new) ───────────────────────────────────────────
 
     /**
-     * @brief Producer side: bind P2C ZMQ sockets, register channel with broker,
-     *        start periodic heartbeat.
+     * @brief Producer side: register a new channel with the broker.
      *
      * Binds the ROUTER ctrl socket (and XPUB/PUSH data socket unless Bidir).
      * Sends REG_REQ and waits for REG_ACK. Starts heartbeat timer.
-     * Creates a DataBlock segment if @p has_shared_memory is true.
+     * Creates a DataBlock segment if @p opts.has_shared_memory is true.
      *
-     * @param channel_name    Logical channel name.
-     * @param pattern         ZMQ socket pattern (PubSub / Pipeline / Bidir).
-     * @param has_shared_memory  Whether to also allocate a DataBlock segment.
-     * @param schema_hash     Schema hash (raw 32 bytes); empty = all-zeros.
-     * @param schema_version  Schema version.
-     * @param timeout_ms      Max time to wait for broker REG_ACK.
+     * @param channel_name  Logical channel name.
+     * @param opts          Registration options (see ChannelRegistrationOptions).
      * @return ChannelHandle on success, nullopt on error/timeout.
      */
     [[nodiscard]] std::optional<ChannelHandle>
-    create_channel(const std::string &channel_name,
-                   ChannelPattern     pattern           = ChannelPattern::PubSub,
-                   bool               has_shared_memory = false,
-                   const std::string &schema_hash       = {},
-                   uint32_t           schema_version    = 0,
-                   int                timeout_ms        = 5000,
-                   const std::string &actor_name        = {},
-                   const std::string &actor_uid         = {},
-                   const std::string &schema_id         = {},
-                   const std::string &schema_blds       = {},
-                   const std::string &data_transport    = {},
-                   const std::string &zmq_node_endpoint = {});
+    create_channel(const std::string              &channel_name,
+                   const ChannelRegistrationOptions &opts = {});
 
     /**
      * @brief Consumer side: discover channel (retrying until Ready), connect P2C

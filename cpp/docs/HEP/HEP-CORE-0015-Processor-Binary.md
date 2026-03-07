@@ -190,9 +190,11 @@ def on_process(in_slot, out_slot, flexzone, messages, api) -> bool:
     """
     Called for each input slot received (or on timeout if timeout_ms > 0).
 
-    in_slot:   read-only ctypes struct (input schema). None on timeout.
+    in_slot:   zero-copy ctypes struct (input schema), write-guarded via __setattr__.
+               None on timeout. See §5.2 for field access and numpy conversion.
     out_slot:  writable ctypes struct (output schema). Always non-None.
-    flexzone:  writable ctypes struct for output flexzone. None if not configured.
+    flexzone:  writable ctypes struct for output flexzone (user-coordinated R/W).
+               None if not configured.
     messages:  list of (sender: str, data: bytes) from Messenger.
     api:       ProcessorAPI — see §5.1.
 
@@ -246,6 +248,69 @@ api.spinlock(idx)        # → context manager; only valid if out_flexzone confi
 api.stop()               # Request clean shutdown from inside on_process
 api.set_critical_error(msg)  # Mark as failed and trigger shutdown
 ```
+
+---
+
+### 5.2 Slot Types and Field Access
+
+The slot objects passed to `on_process` are **zero-copy views** into shared memory.
+
+#### ctypes slots (default, `expose_as: ctypes`)
+
+Fields map directly to the schema definition. Assignment is always in-place (no copy):
+
+```python
+# in_slot_schema: {"name": "ts", "type": "float64"}, {"name": "value", "type": "int32"}
+# out_slot_schema: {"name": "ts", "type": "float64"}, {"name": "value_norm", "type": "float32"}
+out_slot.ts         = in_slot.ts              # copy timestamp field
+out_slot.value_norm = float(in_slot.value) / 100.0
+```
+
+`in_slot` has `__setattr__` overridden to raise `AttributeError` on writes:
+
+```python
+in_slot.value        # OK — read
+in_slot.value = 42   # raises AttributeError: read-only slot: field 'value' cannot be written
+out_slot.value = 42  # OK
+```
+
+*Known limitation:* Array sub-elements (`in_slot.arr[0] = x`) bypass the struct-level guard —
+this is a ctypes limitation (`__setitem__` on the subarray object, not `__setattr__` on the struct).
+
+#### Array fields (`"count": N > 1`)
+
+Fields with `"count": N` (e.g., `{"name": "samples", "type": "float32", "count": 100}`) become
+ctypes arrays (`c_float * 100`). Use `np.ctypeslib.as_array()` for a zero-copy numpy view:
+
+```python
+import numpy as np
+
+# Input (read) — zero-copy numpy view; do not write back:
+arr_in = np.ctypeslib.as_array(in_slot.samples)   # shape=(100,), dtype=float32
+
+# Output (write) — zero-copy writable numpy view:
+arr_out = np.ctypeslib.as_array(out_slot.samples)
+arr_out[:] = arr_in * 2.0                          # writes directly into SHM output slot
+```
+
+Note: `expose_as` is slot-level, not per-field. All fields in a ctypes slot come as ctypes types;
+manual `np.ctypeslib.as_array()` is the correct approach for per-field numpy access.
+
+#### Raw buffer access
+
+The raw bytes of any slot are accessible via the Python buffer protocol:
+
+```python
+data = bytes(in_slot)                # immutable copy of all bytes
+view = memoryview(in_slot).cast('B') # zero-copy byte view
+```
+
+This is equivalent to the C++ `buffer_span()` accessor.
+
+#### numpy slots (`expose_as: numpy`)
+
+When `expose_as: numpy` is configured, the slot is a `numpy.ndarray`. `in_slot` has
+`writeable=False` enforced via the buffer readonly flag, so writes raise `ValueError`.
 
 ---
 

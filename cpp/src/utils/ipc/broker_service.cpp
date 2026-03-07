@@ -820,12 +820,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     if (!registry.register_channel(channel_name, std::move(entry)))
     {
         // Cat 1: schema mismatch — invariant violation. Log + notify existing producer.
-        auto* existing = registry.find_channel_mutable(channel_name);
-        const std::string existing_schema = existing ? existing->schema_hash : "(unknown)";
+        // Read-only access: use find_channel() not find_channel_mutable().
+        auto existing_opt = registry.find_channel(channel_name);
+        const std::string existing_schema = existing_opt ? existing_opt->schema_hash : "(unknown)";
         LOGGER_ERROR(
             "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
             channel_name, existing_schema, attempted_schema, attempted_pid);
-        if (existing && !existing->producer_zmq_identity.empty())
+        if (existing_opt && !existing_opt->producer_zmq_identity.empty())
         {
             nlohmann::json err;
             err["channel_name"]          = channel_name;
@@ -833,7 +834,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             err["existing_schema_hash"]  = existing_schema;
             err["attempted_schema_hash"] = attempted_schema;
             err["attempted_pid"]         = attempted_pid;
-            send_to_identity(socket, existing->producer_zmq_identity, "CHANNEL_ERROR_NOTIFY",
+            send_to_identity(socket, existing_opt->producer_zmq_identity, "CHANNEL_ERROR_NOTIFY",
                              err);
         }
         return make_error(corr_id, "SCHEMA_MISMATCH",
@@ -921,6 +922,9 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req)
         return make_error(corr_id, "NOT_REGISTERED",
                           "Channel '" + channel_name + "' not registered or pid mismatch");
     }
+
+    // Remove accumulated metrics so the store doesn't grow unboundedly.
+    metrics_store_.erase(channel_name);
 
     LOGGER_INFO("Broker: deregistered channel '{}'", channel_name);
     nlohmann::json resp;

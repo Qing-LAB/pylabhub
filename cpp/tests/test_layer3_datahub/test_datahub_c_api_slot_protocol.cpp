@@ -129,3 +129,20 @@ TEST_F(DatahubSlotDrainingTest, SyncReaderRingFullBlocksNotDraining)
     auto proc = SpawnWorker("c_api_draining.sync_reader_ring_full_blocks_not_draining", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
+
+// SHM-C2 core invariant: DataBlockProducer (drain_hold=true) must NEVER return nullptr
+// due to a drain timeout — it must keep blocking until readers release the slot.
+// Verifies writer is still blocked after 4 × timeout_ms intervals; then releases.
+TEST_F(DatahubSlotDrainingTest, DrainHoldTrueNeverReturnsNullptr)
+{
+    auto proc = SpawnWorker("c_api_draining.drain_hold_true_never_returns_nullptr", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+// drain_hold=true accumulates metrics on each timeout reset: writer_reader_timeout_count
+// and writer_blocked_total_ns are both incremented in slot_ops.cpp on every interval.
+TEST_F(DatahubSlotDrainingTest, DrainHoldTrueMetricsAccumulated)
+{
+    auto proc = SpawnWorker("c_api_draining.drain_hold_true_metrics_accumulated", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}

@@ -184,6 +184,11 @@ target_link_libraries(test_layer3_datahub
 
 target_compile_features(test_layer3_datahub PRIVATE cxx_std_20)
 target_compile_definitions(test_layer3_datahub PRIVATE LOGGER_COMPILE_LEVEL=0)
+# GCC false-positive: -Wmissing-field-initializers fires for C++20 designated
+# initializers even when omitted fields have in-class defaults.  Not applicable
+# to ChannelRegistrationOptions, which provides a default for every member.
+target_compile_options(test_layer3_datahub PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
 
 pylabhub_ensure_sanitizer_for_executable(test_layer3_datahub)
 

@@ -94,7 +94,7 @@ int create_not_connected(int /*argc*/, char** /*argv*/)
         {
             Messenger& messenger = Messenger::get_instance();
 
-            auto handle = messenger.create_channel("channel.no_broker", ChannelPattern::Pipeline);
+            auto handle = messenger.create_channel("channel.no_broker", {.pattern = ChannelPattern::Pipeline});
             EXPECT_FALSE(handle.has_value())
                 << "create_channel must return nullopt when Messenger is not connected";
         },
@@ -151,7 +151,7 @@ int pipeline_exchange(int /*argc*/, char** /*argv*/)
             const std::string channel = make_test_channel_name("Pipeline");
 
             // Producer: create Pipeline channel (binds ROUTER ctrl + PUSH data).
-            auto producer = messenger.create_channel(channel, ChannelPattern::Pipeline);
+            auto producer = messenger.create_channel(channel, {.pattern = ChannelPattern::Pipeline});
             ASSERT_TRUE(producer.has_value()) << "create_channel(Pipeline) failed";
             EXPECT_EQ(producer->channel_name(), channel);
             EXPECT_EQ(producer->pattern(), ChannelPattern::Pipeline);
@@ -204,7 +204,7 @@ int pubsub_exchange(int /*argc*/, char** /*argv*/)
             const std::string channel = make_test_channel_name("PubSub");
 
             // Producer: create PubSub channel (binds ROUTER ctrl + XPUB data).
-            auto producer = messenger.create_channel(channel, ChannelPattern::PubSub);
+            auto producer = messenger.create_channel(channel);
             ASSERT_TRUE(producer.has_value()) << "create_channel(PubSub) failed";
             EXPECT_EQ(producer->pattern(), ChannelPattern::PubSub);
             EXPECT_TRUE(producer->is_valid());
@@ -262,7 +262,7 @@ int channel_introspection(int /*argc*/, char** /*argv*/)
             EXPECT_FALSE(empty_handle.is_valid());
 
             // Producer handle introspection.
-            auto producer = messenger.create_channel(channel, ChannelPattern::Pipeline);
+            auto producer = messenger.create_channel(channel, {.pattern = ChannelPattern::Pipeline});
             ASSERT_TRUE(producer.has_value());
             EXPECT_EQ(producer->channel_name(), channel);
             EXPECT_EQ(producer->pattern(), ChannelPattern::Pipeline);

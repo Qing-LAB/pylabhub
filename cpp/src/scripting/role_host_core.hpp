@@ -65,6 +65,18 @@ class RoleHostCore
     void notify_incoming();
 
     // ── Shutdown coordination ────────────────────────────────────────────────
+    //
+    // Two separate shutdown paths by design:
+    //   g_shutdown        — EXTERNAL: pointer to the process-level flag set by
+    //                       the signal handler in main(). All role threads poll
+    //                       this flag to react to SIGINT/SIGTERM. The flag is
+    //                       owned by main(); we hold only a non-owning pointer.
+    //   shutdown_requested — INTERNAL: set by Python API stop() or by the role
+    //                        itself (e.g., set_critical_error). Independent of
+    //                        the external signal — allows graceful self-stop
+    //                        without affecting the whole process.
+    //
+    // Both are checked in the role main loop; either one triggers shutdown.
 
     std::atomic<bool> *g_shutdown{nullptr};        ///< External shutdown flag (from main)
     std::atomic<bool>  shutdown_requested{false};   ///< Internal shutdown (from API stop())
@@ -74,6 +86,11 @@ class RoleHostCore
     std::atomic<bool> running_threads{false};
 
     // ── State flags ──────────────────────────────────────────────────────────
+    //
+    // These plain bools are written by the interpreter thread BEFORE signal_ready_()
+    // (which does memory_order_release), and read by the main thread AFTER future.get()
+    // (which provides the corresponding acquire). The release-acquire chain through
+    // the promise/future makes these reads safe without extra atomics.
 
     bool validate_only{false};
     bool script_load_ok{false};

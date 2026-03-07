@@ -132,10 +132,15 @@ class PythonRoleHostBase : public PythonScriptHost
      * @param type_out     [out] The built Python type.
      * @param size_out     [out] The computed size in bytes.
      * @param struct_name  Name for the ctypes struct (e.g., "SlotFrame").
+     * @param readonly     If true and exposure==Ctypes, wraps the generated struct
+     *                     with wrap_as_readonly_ctypes() to block field writes at
+     *                     the Python level. Use for read-side types only (consumer
+     *                     in_slot, processor in_slot).
      * @return true on success; false should not happen (throws on error).
      */
     static bool build_schema_type_(const SchemaSpec &spec, py::object &type_out,
-                                   size_t &size_out, const char *struct_name);
+                                   size_t &size_out, const char *struct_name,
+                                   bool readonly = false);
 
     /** Print a single slot/flexzone layout for --validate mode. */
     static void print_slot_layout_(const py::object &type, const SchemaSpec &spec,

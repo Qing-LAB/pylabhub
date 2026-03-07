@@ -518,6 +518,36 @@ gtest_discover_tests(test_layer2_interactive_signal_handler
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: SlotView helpers (make_slot_view + wrap_as_readonly_ctypes)
+# Requires pylabhub-scripting (pybind11 embedded Python interpreter).
+# ============================================================================
+
+add_executable(test_layer2_slot_view_helpers
+    test_slot_view_helpers.cpp
+)
+
+target_link_libraries(test_layer2_slot_view_helpers
+    PRIVATE
+        pylabhub::scripting
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_slot_view_helpers)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_slot_view_helpers
+    SUITE_NAME "Layer2_SlotViewHelpers"
+)
+layer2_require_staged_utils(test_layer2_slot_view_helpers)
+
+gtest_discover_tests(test_layer2_slot_view_helpers
+    PROPERTIES
+        LABELS "layer2;service;scripting;slotview"
+        TIMEOUT 60
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")

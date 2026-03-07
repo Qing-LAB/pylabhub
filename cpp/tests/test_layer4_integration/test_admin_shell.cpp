@@ -62,10 +62,12 @@ struct PortPair
 
 static PortPair allocate_ports()
 {
-    // Use PID to avoid port collisions when CTest runs tests in parallel.
-    // PID % 5000 gives a unique offset within the ephemeral range.
-    const int pid_offset = (::getpid() % 5000) * 10;
-    constexpr int kBasePort = 15570;
+    // Port range: 10000–12999 (admin shell tests).
+    // Non-overlapping with pipeline (13000–15999) and broadcast (16000–18999).
+    // pid%500*6 → max offset 2994; with slot*2 → max port 12999 < 65535.
+    // L3 ZmqQueue tests use 33000+, so no cross-binary collision possible.
+    const int pid_offset = (::getpid() % 500) * 6;
+    constexpr int kBasePort = 10000;
     const int slot = s_port_counter.fetch_add(1);
     return {kBasePort + pid_offset + slot * 2, kBasePort + pid_offset + slot * 2 + 1};
 }

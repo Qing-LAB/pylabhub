@@ -11,12 +11,12 @@
  *
  * ## Interpreter ownership
  *
- * | Who           | What                                                        |
- * |---------------|-------------------------------------------------------------|
- * | `HubScript`   | Creates `py::scoped_interpreter` on `hub_thread_` → owns   |
- *                 | `Py_Initialize` + `Py_Finalize`.                            |
- * | `PythonInterpreter` | Owns the persistent `__main__` namespace (set up by   |
- *                 | `init_namespace_()`, torn down by `release_namespace_()`).  |
+ * | Who                  | What                                                              |
+ * |----------------------|-------------------------------------------------------------------|
+ * | `HubScript`          | Creates `py::scoped_interpreter` on `hub_thread_` — owns         |
+ * |                      | `Py_Initialize` + `Py_Finalize`.                                  |
+ * | `PythonInterpreter`  | Owns the persistent `__main__` namespace (set up by               |
+ * |                      | `init_namespace_()`, torn down by `release_namespace_()`).        |
  *
  * ## Lifecycle
  *

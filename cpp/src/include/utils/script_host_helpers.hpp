@@ -154,9 +154,13 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
 }
 
 inline SchemaSpec resolve_named_schema(const std::string &schema_id, bool use_flexzone,
-                                       const char *label)
+                                       const char *label,
+                                       const std::vector<std::string> &extra_search_dirs = {})
 {
-    schema::SchemaLibrary lib(schema::SchemaLibrary::default_search_dirs());
+    auto search_dirs = extra_search_dirs;
+    const auto defaults = schema::SchemaLibrary::default_search_dirs();
+    search_dirs.insert(search_dirs.end(), defaults.begin(), defaults.end());
+    schema::SchemaLibrary lib(std::move(search_dirs));
     lib.load_all();
     auto entry = lib.get(schema_id);
     if (!entry)
@@ -172,13 +176,103 @@ inline SchemaSpec resolve_named_schema(const std::string &schema_id, bool use_fl
 }
 
 inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_flexzone,
-                                 const char *label)
+                                 const char *label,
+                                 const std::vector<std::string> &extra_search_dirs = {})
 {
     if (schema_json.is_null())
         return {};
     if (schema_json.is_string())
-        return resolve_named_schema(schema_json.get<std::string>(), use_flexzone, label);
+        return resolve_named_schema(schema_json.get<std::string>(), use_flexzone, label,
+                                    extra_search_dirs);
     return parse_schema_json(schema_json);
+}
+
+// ── Slot view builder (unified) ──────────────────────────────────────────────
+
+/// Build a zero-copy Python slot view from raw SHM memory.
+///
+/// @param spec         SchemaSpec for this slot.
+/// @param type         The ctypes type or numpy dtype built at init time.
+/// @param data         Pointer to raw slot data (may be const or writable).
+/// @param size         Size in bytes.
+/// @param is_read_side True for consumer/processor in_slot: no-schema path
+///                     returns py::bytes (immutable); write side returns bytearray.
+///                     Schema path always uses from_buffer() (requires non-const
+///                     backing buffer even when the type blocks writes via __setattr__).
+///
+/// Note: for schema-based types, from_buffer() requires a non-const pointer.
+/// The NOLINTNEXTLINE suppresses the const_cast warning — the slot is held alive
+/// for the duration of the callback, and writes are blocked at the Python level
+/// via the readonly wrapper (for read-side types) or are intentional (write side).
+inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
+                                  const void *data, size_t size, bool is_read_side)
+{
+    if (!spec.has_schema)
+    {
+        if (is_read_side)
+            return py::bytes(reinterpret_cast<const char *>(data), size);
+        return py::bytearray(reinterpret_cast<const char *>(data), size);
+    }
+
+    if (spec.exposure == SlotExposure::Ctypes)
+    {
+        // ctypes.from_buffer() requires a writable buffer regardless of logical intent.
+        // Write protection for the read side is enforced via __setattr__ on the type
+        // (see wrap_as_readonly_ctypes). Subobject mutation through array subscript
+        // is not blocked at the ctypes level — a known limitation of the approach.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        auto mv = py::memoryview::from_memory(const_cast<void *>(data),
+                                               static_cast<ssize_t>(size),
+                                               /*readonly=*/false);
+        return type.attr("from_buffer")(mv);
+    }
+
+    // NumpyArray path.
+    // For read-side, use a readonly memoryview: numpy respects the buffer readonly
+    // flag and sets ndarray.flags.writeable = False, raising ValueError on write.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    auto mv = py::memoryview::from_memory(const_cast<void *>(data),
+                                           static_cast<ssize_t>(size),
+                                           /*readonly=*/is_read_side);
+    py::module_ np = py::module_::import("numpy");
+    if (!spec.numpy_shape.empty())
+    {
+        py::list shape;
+        for (auto d : spec.numpy_shape) shape.append(d);
+        return np.attr("ndarray")(shape, type, mv);
+    }
+    const size_t itemsize = type.attr("itemsize").cast<size_t>();
+    const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
+    return np.attr("ndarray")(py::make_tuple(static_cast<ssize_t>(count)), type, mv);
+}
+
+// ── Read-only ctypes wrapper ──────────────────────────────────────────────────
+
+/// Wrap a ctypes.Structure subclass to block accidental field writes.
+///
+/// Creates a new Python class that inherits from base_type and overrides
+/// __setattr__ to raise AttributeError. The override fires only on writes,
+/// so reads have zero extra cost. Applied to read-side types (consumer in_slot,
+/// processor in_slot) to enforce the read-only contract at the Python level.
+///
+/// The underlying SHM buffer IS writable (required by from_buffer()), but the
+/// __setattr__ guard ensures no script accidentally corrupts a producer's slot.
+inline py::object wrap_as_readonly_ctypes(const py::object &base_type)
+{
+    py::dict ns;
+    py::exec(R"PLH(
+def _plh_readonly_setattr(self, name, value):
+    raise AttributeError(
+        "read-only slot: field '{}' cannot be written "
+        "(in_slot is a zero-copy SHM view -- use out_slot to write)".format(name)
+    )
+)PLH",
+             py::globals(), ns);
+
+    const std::string name = base_type.attr("__name__").cast<std::string>() + "Readonly";
+    py::dict kw;
+    kw["__setattr__"] = ns["_plh_readonly_setattr"];
+    return py::eval("type")(name.c_str(), py::make_tuple(base_type), kw);
 }
 
 // ── ctypes / numpy builders ──────────────────────────────────────────────────

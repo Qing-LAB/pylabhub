@@ -37,7 +37,7 @@ typedef int ssize_t;
 #include <algorithm>
 #include <atomic>
 #include <exception>
-#include <thread>
+#include "test_sync_utils.h" // poll_until — condition-based waiting primitive
 
 namespace pylabhub::tests::helper
 {

@@ -142,8 +142,7 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub,
-                                          /*has_shared_memory=*/false);
+    auto handle = producer.create_channel(channel);
     ASSERT_TRUE(handle.has_value());
 
     // Send heartbeat with metrics payload.
@@ -176,7 +175,7 @@ TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto phandle = producer.create_channel(channel);
     ASSERT_TRUE(phandle.has_value());
 
     // Heartbeat to transition channel to Ready.
@@ -233,12 +232,12 @@ TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 
     Messenger prod1;
     ASSERT_TRUE(prod1.connect(ep(), pk()));
-    auto h1 = prod1.create_channel(ch1, ChannelPattern::PubSub, false);
+    auto h1 = prod1.create_channel(ch1);
     ASSERT_TRUE(h1.has_value());
 
     Messenger prod2;
     ASSERT_TRUE(prod2.connect(ep(), pk()));
-    auto h2 = prod2.create_channel(ch2, ChannelPattern::PubSub, false);
+    auto h2 = prod2.create_channel(ch2);
     ASSERT_TRUE(h2.has_value());
 
     json m1;
@@ -273,7 +272,7 @@ TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto handle = producer.create_channel(channel);
     ASSERT_TRUE(handle.has_value());
 
     // Send heartbeat without metrics (old API).
@@ -296,7 +295,7 @@ TEST_F(MetricsPlaneTest, MultipleConsumers_MergeMetrics)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto phandle = producer.create_channel(channel);
     ASSERT_TRUE(phandle.has_value());
 
     producer.enqueue_heartbeat(channel);
@@ -340,7 +339,7 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto handle = producer.create_channel(channel);
     ASSERT_TRUE(handle.has_value());
 
     json m1;
@@ -371,7 +370,7 @@ TEST_F(MetricsPlaneTest, ProducerAndConsumer_SameChannel)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto phandle = producer.create_channel(channel);
     ASSERT_TRUE(phandle.has_value());
 
     // Producer heartbeat with metrics.
@@ -411,7 +410,7 @@ TEST_F(MetricsPlaneTest, MetricsReport_MissingFields_Ignored)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto phandle = producer.create_channel(channel);
     ASSERT_TRUE(phandle.has_value());
 
     producer.enqueue_heartbeat(channel);
@@ -446,7 +445,7 @@ TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
 
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel, ChannelPattern::PubSub, false);
+    auto handle = producer.create_channel(channel);
     ASSERT_TRUE(handle.has_value());
 
     json metrics;
