@@ -66,16 +66,46 @@ void MessengerImpl::worker_loop()
 
         // Process any unsolicited incoming broker messages
         // (e.g. CHANNEL_CLOSING_NOTIFY).
+        // ETERM: ZMQ context destroyed during shutdown — exit cleanly.
         if (socket.has_value())
         {
-            process_incoming(*socket);
+            try
+            {
+                process_incoming(*socket);
+            }
+            catch (const zmq::error_t &e)
+            {
+                if (e.num() == ETERM)
+                {
+                    LOGGER_INFO("Messenger: ZMQ context terminated; worker exiting.");
+                    m_running.store(false, std::memory_order_release);
+                    return;
+                }
+                LOGGER_ERROR("Messenger: ZMQ error in process_incoming: {} ({})",
+                             e.what(), e.num());
+            }
         }
 
         // Send heartbeats if due.
+        // ETERM guard: context may be closed during shutdown.
         auto now = std::chrono::steady_clock::now();
         if (socket.has_value() && now >= m_next_heartbeat)
         {
-            send_heartbeats(*socket);
+            try
+            {
+                send_heartbeats(*socket);
+            }
+            catch (const zmq::error_t &e)
+            {
+                if (e.num() == ETERM)
+                {
+                    LOGGER_INFO("Messenger: ZMQ context terminated during heartbeat; exiting.");
+                    m_running.store(false, std::memory_order_release);
+                    return;
+                }
+                LOGGER_ERROR("Messenger: ZMQ error in send_heartbeats: {} ({})",
+                             e.what(), e.num());
+            }
             m_next_heartbeat = now + kHeartbeatInterval;
         }
     }
@@ -541,24 +571,27 @@ std::optional<ConsumerInfo> Messenger::discover_producer(const std::string &chan
     }
     std::promise<std::optional<ConsumerInfo>> promise;
     auto future = promise.get_future();
-    pImpl->enqueue(DiscoverProducerCmd{channel, timeout_ms, std::move(promise)});
+    pImpl->enqueue(DiscoverChannelCmd{channel, timeout_ms, std::move(promise)});
     return future.get();
 }
 
 std::optional<ChannelHandle>
-Messenger::create_channel(const std::string &channel_name,
-                           ChannelPattern     pattern,
-                           bool               has_shared_memory,
-                           const std::string &schema_hash,
-                           uint32_t           schema_version,
-                           int                timeout_ms,
-                           const std::string &actor_name,
-                           const std::string &actor_uid,
-                           const std::string &schema_id,
-                           const std::string &schema_blds,
-                           const std::string &data_transport,
-                           const std::string &zmq_node_endpoint)
+Messenger::create_channel(const std::string              &channel_name,
+                           const ChannelRegistrationOptions &opts)
 {
+    // Unpack options into local names for readability.
+    const ChannelPattern &pattern           = opts.pattern;
+    const bool            has_shared_memory = opts.has_shared_memory;
+    const std::string    &schema_hash       = opts.schema_hash;
+    const uint32_t        schema_version    = opts.schema_version;
+    const int             timeout_ms        = opts.timeout_ms;
+    const std::string    &actor_name        = opts.actor_name;
+    const std::string    &actor_uid         = opts.actor_uid;
+    const std::string    &schema_id         = opts.schema_id;
+    const std::string    &schema_blds       = opts.schema_blds;
+    const std::string    &data_transport    = opts.data_transport;
+    const std::string    &zmq_node_endpoint = opts.zmq_node_endpoint;
+
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
         LOGGER_ERROR("Messenger: create_channel('{}') — not connected.", channel_name);

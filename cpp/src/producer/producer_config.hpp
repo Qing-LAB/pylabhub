@@ -104,7 +104,11 @@ struct ProducerConfig
     // SHM — output side
     bool     shm_enabled{true};
     uint64_t shm_secret{0};
-    uint32_t shm_slot_count{8}; ///< Must be > 0 when shm_enabled.
+    /// SHM ring-buffer capacity. Must be > 0 when shm_enabled.
+    /// Default 8: producers typically write faster than scripts consume, so a small buffer
+    /// absorbs bursts without dropping frames. Processors use 4 (smaller pipeline buffer)
+    /// because the processor loop is tightly coupled to input availability.
+    uint32_t shm_slot_count{8};
 
     // Schemas
     nlohmann::json slot_schema_json{};

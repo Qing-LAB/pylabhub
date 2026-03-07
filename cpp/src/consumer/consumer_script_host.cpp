@@ -7,7 +7,7 @@
  *  - Demand-driven consumption loop
  *  - Single input channel with hub::Consumer
  *  - on_consume callback dispatch
- *  - Read-only flexzone and message list without sender
+ *  - Writable flexzone (zero-copy from_buffer — user-coordinated R/W) and message list without sender
  */
 #include "consumer_script_host.hpp"
 
@@ -19,8 +19,10 @@
 #include "zmq_poll_loop.hpp"
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -84,8 +86,12 @@ bool ConsumerScriptHost::build_role_types()
 
     try
     {
-        slot_spec_    = resolve_schema(config_.slot_schema_json,     false, "cons");
-        core_.fz_spec = resolve_schema(config_.flexzone_schema_json, true,  "cons");
+        std::vector<std::string> schema_dirs;
+        if (!config_.hub_dir.empty())
+            schema_dirs.push_back((std::filesystem::path(config_.hub_dir) / "schemas").string());
+
+        slot_spec_    = resolve_schema(config_.slot_schema_json,     false, "cons", schema_dirs);
+        core_.fz_spec = resolve_schema(config_.flexzone_schema_json, true,  "cons", schema_dirs);
     }
     catch (const std::exception &e)
     {
@@ -95,7 +101,8 @@ bool ConsumerScriptHost::build_role_types()
 
     try
     {
-        if (!build_schema_type_(slot_spec_, slot_type_, schema_slot_size_, "SlotFrame"))
+        if (!build_schema_type_(slot_spec_, slot_type_, schema_slot_size_, "SlotFrame",
+                                /*readonly=*/true))
             return false;
         if (!build_flexzone_type_())
             return false;
@@ -233,15 +240,20 @@ bool ConsumerScriptHost::start_role()
             if (in_shm != nullptr)
             {
                 auto fz_span = in_shm->flexible_zone_span();
-                // Consumer: read-only memoryview into the input SHM flexzone.
+                // Flexzone is user-coordinated shared memory: expose writable zero-copy
+                // view so consumer scripts can both read and write it freely.
+                // DataBlockConsumer::flexible_zone_span() returns std::span<const std::byte>
+                // by API convention, but the underlying mmap region is physically writable.
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
                 fz_mv_ = py::memoryview::from_memory(
                     const_cast<std::byte *>(fz_span.data()),
                     static_cast<ssize_t>(fz_span.size_bytes()),
-                    /*readonly=*/true);
+                    /*readonly=*/false);
 
                 if (core_.fz_spec.exposure == scripting::SlotExposure::Ctypes)
                 {
-                    fz_inst_ = fz_type_.attr("from_buffer_copy")(fz_mv_);
+                    // from_buffer() creates a zero-copy live view — no refresh needed.
+                    fz_inst_ = fz_type_.attr("from_buffer")(fz_mv_);
                 }
                 else
                 {
@@ -359,30 +371,12 @@ py::list ConsumerScriptHost::build_messages_list_(std::vector<IncomingMessage> &
 }
 
 // ============================================================================
-// Slot view builder (read-only view)
+// Slot view builder
 // ============================================================================
 
 py::object ConsumerScriptHost::make_in_slot_view_(const void *data, size_t size) const
 {
-    if (!slot_spec_.has_schema)
-        return py::bytes(reinterpret_cast<const char *>(data), size);
-
-    auto mv = py::memoryview::from_memory(
-        const_cast<void *>(data), static_cast<ssize_t>(size), /*readonly=*/true);
-
-    if (slot_spec_.exposure == scripting::SlotExposure::Ctypes)
-        return slot_type_.attr("from_buffer_copy")(mv);
-
-    py::module_ np = py::module_::import("numpy");
-    if (!slot_spec_.numpy_shape.empty())
-    {
-        py::list shape;
-        for (auto d : slot_spec_.numpy_shape) shape.append(d);
-        return np.attr("ndarray")(shape, slot_type_, mv);
-    }
-    const size_t itemsize = slot_type_.attr("itemsize").cast<size_t>();
-    const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
-    return np.attr("ndarray")(py::make_tuple(static_cast<ssize_t>(count)), slot_type_, mv);
+    return scripting::make_slot_view(slot_spec_, slot_type_, data, size, /*is_read_side=*/true);
 }
 
 // ============================================================================

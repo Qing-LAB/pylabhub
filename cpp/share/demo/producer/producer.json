@@ -4,7 +4,7 @@
     "Run with: pylabhub-producer <path-to-this-dir>",
     "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
   ],
-  "hub_dir": "",
+  "hub_dir": "../hub",
   "producer": {
     "uid":       "PROD-COUNTER-00000001",
     "name":      "DemoProducer",
@@ -21,21 +21,8 @@
     "slot_count": 8
   },
 
-  "slot_schema": {
-    "packing": "natural",
-    "fields": [
-      {"name": "count", "type": "int64"},
-      {"name": "ts",    "type": "float64"},
-      {"name": "value", "type": "float32"}
-    ]
-  },
-  "flexzone_schema": {
-    "fields": [
-      {"name": "producer_pid", "type": "uint64"},
-      {"name": "start_ts",     "type": "float64"},
-      {"name": "label",        "type": "string", "length": 32}
-    ]
-  },
+  "slot_schema": "lab.demo.counter@1",
+  "flexzone_schema": null,
 
   "script": { "type": "python", "path": "." },
 

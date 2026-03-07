@@ -25,6 +25,7 @@ set(UTILS_SOURCES
 
   # --- service: lifecycle, I/O, crypto, secrets ---
   service/lifecycle.cpp
+  service/lifecycle_helpers.cpp
   service/lifecycle_topology.cpp
   service/lifecycle_dynamic.cpp
   service/file_lock.cpp

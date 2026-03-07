@@ -58,7 +58,10 @@ struct PythonInterpreter::Impl
                 keys_to_delete.append(item.first);
 
         for (auto k : keys_to_delete)
-            PyDict_DelItem(ns_dict.ptr(), k.ptr());
+        {
+            if (PyDict_DelItem(ns_dict.ptr(), k.ptr()) != 0)
+                PyErr_Clear(); // key already removed — harmless; continue reset
+        }
 
         LOGGER_INFO("PythonInterpreter: namespace reset");
     }
@@ -186,7 +189,7 @@ bool PythonInterpreter::is_ready() const noexcept
 
 PyExecResult PythonInterpreter::exec(const std::string& code)
 {
-    // Guard: interpreter must be initialized and namespace set up.
+    // Fast-path guard (racy but cheap — avoids lock overhead when clearly not ready).
     if (!pImpl->ready_.load(std::memory_order_acquire))
     {
         PyExecResult result;
@@ -197,6 +200,17 @@ PyExecResult PythonInterpreter::exec(const std::string& code)
 
     std::lock_guard exec_lock(pImpl->exec_mu);
     py::gil_scoped_acquire gil;
+    // [REVIEW-2] Authoritative check after holding exec_mu AND the GIL.
+    // release_namespace() also needs the GIL, so once we hold it ns cannot be
+    // nulled under us — eliminating the TOCTOU between the fast-path check above
+    // and actual use of pImpl->ns below.
+    if (!pImpl->ready_.load(std::memory_order_acquire))
+    {
+        PyExecResult result;
+        result.success = false;
+        result.error   = "Python interpreter not ready (shutting down)";
+        return result;
+    }
 
     PyExecResult result;
     try
@@ -252,6 +266,8 @@ void PythonInterpreter::reset_namespace()
     py::gil_scoped_acquire gil;
 
     // ns is stored as py::object; borrow as py::dict for dict-specific iteration.
+    // Debug-assert that the contract holds: ns must be a real dict (not None/null).
+    assert(PyDict_Check(pImpl->ns.ptr()) && "PythonInterpreter::ns must be a dict");
     auto ns_dict = py::reinterpret_borrow<py::dict>(pImpl->ns.ptr());
     Impl::do_reset(ns_dict);
 }

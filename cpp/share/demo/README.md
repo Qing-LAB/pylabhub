@@ -12,6 +12,11 @@ DemoProducer  ──▶  lab.demo.counter  ──▶  DemoDoubler  ──▶  la
 
 The processor reads each incoming slot, doubles `value`, and publishes the
 enriched slot on the output channel.
+This demo enables flexzone metadata on the processed channel and updates it in
+the processor script for the consumer to read.
+Consumer verification is race-tolerant: it validates flexzone values against
+recently observed processed slots instead of requiring strict same-callback
+matching.
 
 ## Quick start
 
@@ -28,7 +33,7 @@ bash share/demo/run_demo.sh
 ```
 share/demo/
 ├── hub/
-│   └── hub.json                          # Hub config (reference; --dev mode skips it)
+│   └── hub.json                          # Hub config used by run_demo.sh (with --dev)
 ├── producer/
 │   ├── producer.json                     # Producer config: channel, schema, shm
 │   └── script/
@@ -90,8 +95,8 @@ def on_init(api: cons.ConsumerAPI) -> None:
 def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
     """
     Called for each received slot, or on timeout.
-      in_slot  — read-only ctypes struct, or None on timeout
-      flexzone — read-only flexzone struct, or None
+      in_slot  — zero-copy ctypes struct (write-guarded via __setattr__), or None on timeout
+      flexzone — zero-copy writable ctypes struct (user-coordinated R/W), or None
       messages — list of (sender: str, data: bytes)
       api      — ConsumerAPI proxy
     No return value.
@@ -112,7 +117,7 @@ def on_init(api: proc.ProcessorAPI) -> None:
 def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) -> bool:
     """
     Called for each input slot.
-      in_slot  — read-only ctypes struct from in_channel, or None on timeout
+      in_slot  — zero-copy ctypes struct from in_channel (write-guarded), or None on timeout
       out_slot — writable ctypes struct for out_channel, or None on timeout
       flexzone — output-side persistent flexzone, or None
       messages — list of (sender: str, data: bytes)
@@ -132,8 +137,49 @@ def on_stop(api: proc.ProcessorAPI) -> None:
 | Consumer | `slot_schema` | Must match the producer's `slot_schema` exactly |
 | Processor in | `in_slot_schema` | Must match the upstream producer's `slot_schema` |
 | Processor out | `out_slot_schema` | Shape of the output slot; consumer's `slot_schema` must match |
+| All stages | `flexzone_schema` | Must match along the connected path when flexzone is enabled |
 
 Field types: `int8/16/32/64`, `uint8/16/32/64`, `float32`, `float64`, `string`/`char` (fixed-length), plus `"count": N` for arrays.
+
+## Slot types and field access
+
+Slot objects (`in_slot`, `out_slot`) are **zero-copy views** into shared memory.
+
+### Scalar fields
+
+```python
+out_slot.ts    = time.monotonic()   # float64 — writes directly into SHM
+out_slot.value = sensor_reading     # int32
+```
+
+Consumer `in_slot` is write-guarded: assigning a field raises `AttributeError`.
+
+### Array fields (`"count": N > 1`)
+
+Fields with `"count": N` become ctypes arrays. Use `np.ctypeslib.as_array()` for numpy access:
+
+```python
+import numpy as np
+
+# Read-side (consumer or processor in_slot):
+arr = np.ctypeslib.as_array(in_slot.samples)    # shape=(N,), dtype matches field type
+
+# Write-side (producer out_slot or processor out_slot):
+arr = np.ctypeslib.as_array(out_slot.samples)
+arr[:] = new_data                                # writes directly into SHM slot
+```
+
+`expose_as` is slot-level — all fields in a ctypes slot remain ctypes types.
+Manual `np.ctypeslib.as_array()` is the correct way to get per-field numpy arrays.
+
+### Raw buffer access
+
+```python
+data = bytes(in_slot)                # immutable copy (all bytes)
+view = memoryview(in_slot).cast('B') # zero-copy byte view
+```
+
+---
 
 ## hub_dir integration
 

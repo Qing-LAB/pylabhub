@@ -207,6 +207,8 @@ static std::string read_password_interactive(const char *prompt)
 #endif
 }
 
+// getenv is called once at startup — not in a hot loop, so no caching needed.
+// XPLAT: std::getenv is portable (C++11 and POSIX/Windows).
 static std::string get_processor_password(const char *prompt)
 {
     if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))

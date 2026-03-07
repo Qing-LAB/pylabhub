@@ -158,7 +158,10 @@ struct ProcessorConfig
     // SHM — output side
     bool     out_shm_enabled{true};
     uint64_t out_shm_secret{0};
-    uint32_t out_shm_slot_count{4}; ///< Must be > 0 when out_shm_enabled.
+    /// Output SHM ring-buffer capacity. Must be > 0 when out_shm_enabled.
+    /// Default 4: processor output is demand-driven (consumer pulls at its own rate),
+    /// so a smaller buffer is sufficient. Producers use 8 to absorb burst writes.
+    uint32_t out_shm_slot_count{4};
 
     // Transport — output side only (input transport is auto-discovered via broker DISC_ACK,
     //             see HEP-CORE-0021: Consumer::queue() returns the ZmqQueue when applicable).

@@ -93,13 +93,8 @@ bool try_register(const std::string& endpoint,
     if (!m.connect(endpoint, pubkey))
         return false;
     auto handle = m.create_channel(channel,
-                                   ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false,
-                                   /*schema_hash=*/{},
-                                   /*schema_version=*/0,
-                                   /*timeout_ms=*/3000,
-                                   actor_name,
-                                   actor_uid);
+                                   {.timeout_ms = 3000, .actor_name = actor_name,
+                                    .actor_uid = actor_uid});
     return handle.has_value();
 }
 

@@ -1,0 +1,24 @@
+{
+  "id": "lab.demo.processed",
+  "version": 1,
+  "description": "Demo processed stream from processor with flexzone tracking",
+  "slot": {
+    "packing": "natural",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts", "type": "float64"},
+      {"name": "value", "type": "float32"},
+      {"name": "doubled", "type": "float32"}
+    ]
+  },
+  "flexzone": {
+    "packing": "natural",
+    "fields": [
+      {"name": "stage", "type": "char", "count": 16},
+      {"name": "label", "type": "char", "count": 32},
+      {"name": "last_count", "type": "int64"},
+      {"name": "last_value", "type": "float32"},
+      {"name": "updated_ts", "type": "float64"}
+    ]
+  }
+}

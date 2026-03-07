@@ -156,4 +156,9 @@ std::unordered_map<std::string, ChannelEntry>& ChannelRegistry::all_channels() n
     return m_channels;
 }
 
+const std::unordered_map<std::string, ChannelEntry>& ChannelRegistry::all_channels() const noexcept
+{
+    return m_channels;
+}
+
 } // namespace pylabhub::broker

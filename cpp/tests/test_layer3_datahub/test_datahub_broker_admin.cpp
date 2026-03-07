@@ -147,9 +147,7 @@ TEST_F(BrokerAdminTest, ListChannels_OneChannel)
 
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
-    auto handle = m.create_channel(channel, ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                   /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value()) << "create_channel failed";
 
     std::string result = svc().list_channels_json_str();
@@ -176,9 +174,7 @@ TEST_F(BrokerAdminTest, ListChannels_FieldPresence)
 
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
-    auto handle = m.create_channel(channel, ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                   /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     std::string result = svc().list_channels_json_str();
@@ -219,9 +215,7 @@ TEST_F(BrokerAdminTest, Snapshot_OneChannel)
 
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
-    auto handle = m.create_channel(channel, ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                   /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     ChannelSnapshot snap = svc().query_channel_snapshot();
@@ -249,9 +243,7 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
     // Register producer
     Messenger prod;
     ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, ChannelPattern::PubSub,
-                                           /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                           /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(prod_handle.has_value());
 
     // Register consumer
@@ -284,9 +276,7 @@ TEST_F(BrokerAdminTest, CloseChannel_Existing)
 
     Messenger m;
     ASSERT_TRUE(m.connect(ep(), pk()));
-    auto handle = m.create_channel(channel, ChannelPattern::PubSub,
-                                   /*has_shared_memory=*/false, /*schema_hash=*/{},
-                                   /*schema_version=*/0, /*timeout_ms=*/3000);
+    auto handle = m.create_channel(channel, {.timeout_ms = 3000});
     ASSERT_TRUE(handle.has_value());
 
     // Request close

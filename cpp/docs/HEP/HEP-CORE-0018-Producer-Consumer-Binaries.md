@@ -252,7 +252,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `timeout_ms` | no | `5000` | `on_consume(in_slot=None,…)` fires after this many ms of silence |
 | `loop_trigger` | no | `"shm"` | `"shm"` (slot-paced) or `"messenger"` (message-event-driven) |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer's schema) |
-| `flexzone_schema` | no | absent | Read-only flexzone layout |
+| `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W) |
 | `shm.enabled` | no | `true` | Use SHM transport |
 | `shm.slot_count` | no | — | Local consumer buffer depth (optional hint; broker-advertised value used) |
 | `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
@@ -306,8 +306,10 @@ def on_consume(in_slot, flexzone, messages, api) -> None:
     """
     Called for each slot received, or on timeout.
 
-    in_slot:   read-only ctypes struct (slot_schema layout). None on timeout.
-    flexzone:  read-only ctypes struct (flexzone_schema layout). None if not configured.
+    in_slot:   zero-copy ctypes struct (slot_schema layout), write-guarded via __setattr__.
+               None on timeout. See §6.4 for field access and numpy conversion.
+    flexzone:  zero-copy writable ctypes struct (flexzone_schema layout). User-coordinated R/W.
+               None if not configured.
     messages:  list of (sender: str, data: bytes) received via Messenger since last call.
     api:       ConsumerAPI — see §6.3.
 
@@ -357,6 +359,67 @@ api.spinlock(idx)            # → context manager; valid only if flexzone confi
 api.stop()                   # Request clean shutdown from inside callback
 api.set_critical_error(msg)  # Mark as failed and trigger shutdown
 ```
+
+---
+
+### 6.4 Slot Types and Field Access
+
+The slot objects passed to `on_produce` and `on_consume` are **zero-copy views** into shared memory.
+
+#### ctypes slots (default, `expose_as: ctypes`)
+
+Fields map directly to the schema definition. Assignment is always in-place (no copy):
+
+```python
+# Schema: {"name": "ts", "type": "float64"}, {"name": "value", "type": "int32"}
+out_slot.ts    = time.monotonic()   # float64 field — writes into SHM
+out_slot.value = sensor_reading     # int32 field
+```
+
+Consumer `in_slot` has `__setattr__` overridden to raise `AttributeError` on writes:
+
+```python
+in_slot.ts              # OK — read
+in_slot.value = 42      # raises AttributeError: read-only slot: field 'value' cannot be written
+```
+
+*Known limitation:* Array sub-elements (`in_slot.arr[0] = x`) bypass the struct-level guard —
+this is a ctypes limitation (`__setitem__` on the subarray object, not `__setattr__` on the struct).
+
+#### Array fields (`"count": N > 1`)
+
+Fields with `"count": N` (e.g., `{"name": "samples", "type": "float32", "count": 100}`) become
+ctypes arrays (`c_float * 100`). Use `np.ctypeslib.as_array()` for a zero-copy numpy view:
+
+```python
+import numpy as np
+
+# Consumer — read-only numpy view (do not write back):
+arr = np.ctypeslib.as_array(in_slot.samples)    # shape=(100,), dtype=float32
+
+# Producer — writable numpy view:
+arr = np.ctypeslib.as_array(out_slot.samples)
+arr[:] = new_data                                # writes directly into SHM slot
+```
+
+Note: `expose_as` is slot-level, not per-field. All fields in a ctypes slot come as ctypes types;
+manual `np.ctypeslib.as_array()` is the correct approach for per-field numpy access.
+
+#### Raw buffer access
+
+The raw bytes of any slot are accessible via the Python buffer protocol:
+
+```python
+data = bytes(in_slot)                # immutable copy of all bytes
+view = memoryview(in_slot).cast('B') # zero-copy byte view
+```
+
+This is equivalent to the C++ `buffer_span()` accessor.
+
+#### numpy slots (`expose_as: numpy`)
+
+When `expose_as: numpy` is configured, the slot is a `numpy.ndarray`. Consumer (`in_slot`)
+arrays have `writeable=False` set on the numpy array, so writes raise `ValueError`.
 
 ---
 

@@ -17,9 +17,12 @@
 
 #include "zmq_poll_loop.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -117,9 +120,21 @@ bool ProcessorScriptHost::build_role_types()
 
     try
     {
-        in_slot_spec_  = resolve_schema(config_.in_slot_schema_json,  false, "proc");
-        out_slot_spec_ = resolve_schema(config_.out_slot_schema_json, false, "proc");
-        core_.fz_spec  = resolve_schema(config_.flexzone_schema_json, true,  "proc");
+        std::vector<std::string> schema_dirs;
+        auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
+            if (hub_dir.empty())
+                return;
+            const std::string d = (std::filesystem::path(hub_dir) / "schemas").string();
+            if (std::find(schema_dirs.begin(), schema_dirs.end(), d) == schema_dirs.end())
+                schema_dirs.push_back(d);
+        };
+        add_schema_dir(config_.in_hub_dir);
+        add_schema_dir(config_.out_hub_dir);
+        add_schema_dir(config_.hub_dir);
+
+        in_slot_spec_  = resolve_schema(config_.in_slot_schema_json,  false, "proc", schema_dirs);
+        out_slot_spec_ = resolve_schema(config_.out_slot_schema_json, false, "proc", schema_dirs);
+        core_.fz_spec  = resolve_schema(config_.flexzone_schema_json, true,  "proc", schema_dirs);
     }
     catch (const std::exception &e)
     {
@@ -130,7 +145,7 @@ bool ProcessorScriptHost::build_role_types()
     try
     {
         if (!build_schema_type_(in_slot_spec_, in_slot_type_, in_schema_slot_size_,
-                                "InSlotFrame"))
+                                "InSlotFrame", /*readonly=*/true))
             return false;
         if (!build_schema_type_(out_slot_spec_, out_slot_type_, out_schema_slot_size_,
                                 "OutSlotFrame"))
@@ -741,43 +756,14 @@ void ProcessorScriptHost::update_fz_checksum_after_init()
 
 py::object ProcessorScriptHost::make_in_slot_view_(const void *data, size_t size) const
 {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    auto mv = py::memoryview::from_memory(const_cast<void *>(data),
-                                           static_cast<ssize_t>(size),
-                                           /*readonly=*/true);
-    if (!in_slot_spec_.has_schema)
-        return py::bytes(reinterpret_cast<const char *>(data), size);
-    if (in_slot_spec_.exposure == scripting::SlotExposure::Ctypes)
-        return in_slot_type_.attr("from_buffer_copy")(mv);
-    py::module_ np  = py::module_::import("numpy");
-    py::object  arr = np.attr("frombuffer")(mv, in_slot_type_);
-    if (!in_slot_spec_.numpy_shape.empty())
-    {
-        py::list shape;
-        for (auto d : in_slot_spec_.numpy_shape) shape.append(d);
-        arr = arr.attr("reshape")(shape);
-    }
-    return arr;
+    return scripting::make_slot_view(
+        in_slot_spec_, in_slot_type_, data, size, /*is_read_side=*/true);
 }
 
 py::object ProcessorScriptHost::make_out_slot_view_(void *data, size_t size) const
 {
-    auto mv = py::memoryview::from_memory(data, static_cast<ssize_t>(size),
-                                           /*readonly=*/false);
-    if (!out_slot_spec_.has_schema)
-        return py::bytearray(reinterpret_cast<const char *>(data), size);
-    if (out_slot_spec_.exposure == scripting::SlotExposure::Ctypes)
-        return out_slot_type_.attr("from_buffer")(mv);
-    py::module_ np = py::module_::import("numpy");
-    if (!out_slot_spec_.numpy_shape.empty())
-    {
-        py::list shape;
-        for (auto d : out_slot_spec_.numpy_shape) shape.append(d);
-        return np.attr("ndarray")(shape, out_slot_type_, mv);
-    }
-    const size_t itemsize = out_slot_type_.attr("itemsize").cast<size_t>();
-    const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
-    return np.attr("ndarray")(py::make_tuple(static_cast<ssize_t>(count)), out_slot_type_, mv);
+    return scripting::make_slot_view(
+        out_slot_spec_, out_slot_type_, data, size, /*is_read_side=*/false);
 }
 
 // ============================================================================

@@ -59,8 +59,12 @@ struct BcastPorts
 
 static BcastPorts allocate_bcast_ports()
 {
-    const int pid_offset = (::getpid() % 5000) * 10;
-    constexpr int kBasePort = 17570;  // unique range: admin=15xxx, pipeline=16xxx, broadcast=17xxx
+    // Port range: 16000–18999 (broadcast tests).
+    // Non-overlapping with admin (10000–12999) and pipeline (13000–15999).
+    // pid%500*6 → max offset 2994; with slot*2 → max port 18999 < 65535.
+    // L3 ZmqQueue tests use 33000+, so no cross-binary collision possible.
+    const int pid_offset = (::getpid() % 500) * 6;
+    constexpr int kBasePort = 16000;
     const int slot = s_bcast_port_counter.fetch_add(1);
     return {kBasePort + pid_offset + slot * 2, kBasePort + pid_offset + slot * 2 + 1};
 }

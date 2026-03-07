@@ -85,20 +85,6 @@ bool read_double(DataBlockConsumer* dbc, double& out, int timeout_ms = 2000)
     return true;
 }
 
-// Poll predicate with timeout.  Returns true when pred() becomes true.
-template <typename Pred>
-bool wait_for(Pred pred, std::chrono::milliseconds timeout)
-{
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!pred())
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
-            return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds{10});
-    }
-    return true;
-}
-
 } // anonymous namespace
 
 // ============================================================================
@@ -182,12 +168,13 @@ int processor_no_handler()
             proc.start();
             EXPECT_TRUE(proc.is_running());
 
-            // Write one item — Processor should ignore it (no handler = no read).
+            // Write one item — Processor structurally cannot read it: the null-handler
+            // branch (hub_processor.cpp) sleeps 10ms then continues without calling
+            // read_acquire. Wait until at least 3 null-handler iterations have completed,
+            // proving the processor has been active and still did not consume the slot.
             EXPECT_TRUE(write_double(in_dbp_test.get(), 1.0));
-
-            // Wait 300ms; the Processor's loop only sleeps 10ms between handler checks
-            // but never calls read_acquire without a handler.
-            std::this_thread::sleep_for(300ms);
+            ASSERT_TRUE(poll_until([&proc] { return proc.iteration_count() >= 3; }, 1000ms))
+                << "Processor did not advance 3 null-handler iterations within 1s";
 
             EXPECT_EQ(proc.in_slots_received(), 0u);
             EXPECT_EQ(proc.out_slots_written(), 0u);
@@ -364,11 +351,13 @@ int processor_drop_false()
             ASSERT_TRUE(write_double(in_dbp_test.get(), 99.0));
 
             // Wait for Processor to consume the input.
-            bool consumed = wait_for([&proc] { return proc.in_slots_received() >= 1; }, 3000ms);
+            bool consumed = poll_until([&proc] { return proc.in_slots_received() >= 1; }, 3000ms);
             ASSERT_TRUE(consumed) << "Processor did not consume input slot within 3s";
 
-            // Allow a brief settling period for the drop counter to be updated.
-            std::this_thread::sleep_for(50ms);
+            // Wait for out_drop_count to reflect the drop. The counter is incremented
+            // after in_slots_received, so we must not assume they update atomically.
+            ASSERT_TRUE(poll_until([&proc] { return proc.out_drop_count() >= 1; }, 1000ms))
+                << "out_drop_count did not reach 1 within 1s";
 
             EXPECT_EQ(proc.out_drop_count(),    1u);
             EXPECT_EQ(proc.out_slots_written(), 0u);
@@ -433,17 +422,22 @@ int processor_overflow_drop()
             {
                 uint64_t before = proc.in_slots_received();
                 ASSERT_TRUE(write_double(in_dbp_test.get(), static_cast<double>(i)));
-                bool consumed = wait_for(
+                bool consumed = poll_until(
                     [&proc, before] { return proc.in_slots_received() > before; }, 3000ms);
                 ASSERT_TRUE(consumed) << "Item " << i << " not consumed within 3s";
-                std::this_thread::sleep_for(20ms); // allow commit/drop counter to update
             }
 
-            // Accounting: in_received == out_written + out_drops (no item lost unaccounted).
+            // Wait for the accounting invariant to be satisfied: out_written + out_drops must
+            // equal in_received. The counters are not updated atomically — in_slots_received
+            // increments before out_slots_written/out_drop_count, so we wait rather than sleep.
             uint64_t received = proc.in_slots_received();
-            uint64_t written  = proc.out_slots_written();
-            uint64_t drops    = proc.out_drop_count();
-            EXPECT_EQ(received, written + drops);
+            ASSERT_TRUE(poll_until(
+                [&proc, received] {
+                    return proc.out_slots_written() + proc.out_drop_count() >= received;
+                }, 1000ms))
+                << "out counters did not settle within 1s";
+
+            EXPECT_EQ(proc.out_slots_written() + proc.out_drop_count(), proc.in_slots_received());
 
             proc.stop();
             EXPECT_FALSE(proc.is_running());
@@ -567,11 +561,18 @@ int processor_counters()
             {
                 uint64_t before = proc.in_slots_received();
                 ASSERT_TRUE(write_double(in_dbp_test.get(), static_cast<double>(i)));
-                bool consumed = wait_for(
+                bool consumed = poll_until(
                     [&proc, before] { return proc.in_slots_received() > before; }, 3000ms);
                 ASSERT_TRUE(consumed) << "Item " << i << " not consumed within 3s";
-                std::this_thread::sleep_for(20ms); // allow commit/drop counter to update
             }
+
+            // Wait for both counters to settle before asserting exact values. The counters
+            // are not updated atomically with in_slots_received.
+            ASSERT_TRUE(poll_until(
+                [&proc] {
+                    return proc.out_slots_written() + proc.out_drop_count() >= 4u;
+                }, 1000ms))
+                << "out counters did not reach 4 within 1s";
 
             proc.stop();
 
@@ -723,23 +724,28 @@ int processor_handler_hot_swap()
             ASSERT_TRUE(read_double(out_dbc_test.get(), result));
             EXPECT_DOUBLE_EQ(result, 20.0);
 
-            // Swap to handler B: triples the value
+            // Swap to handler B: triples the value.
+            // The process_thread_ loads the handler at the TOP of its loop, before
+            // read_acquire(). After processing item 1 it has already loaded handler A
+            // and is now blocking in read_acquire(). We must wait for the current
+            // iteration to complete (input_timeout = 200ms) so the loop cycles back
+            // and loads handler B. Observing iteration_count > n+1 guarantees that
+            // at least one full iteration has completed after the swap and a subsequent
+            // iteration has started — which necessarily loaded the new handler B.
+            uint64_t n_before_swap = proc.iteration_count();
             proc.set_process_handler<void, double, void, double>(
                 [](ProcessorContext<void, double, void, double>& ctx) -> bool {
                     ctx.output() = ctx.input() * 3.0;
                     return true;
                 });
-
-            // The process_thread_ loads the handler at the TOP of its loop,
-            // before read_acquire().  After processing item 1 it already loaded
-            // handler A and is now blocking on read_acquire.  We must wait for
-            // input_timeout (200ms) to expire so the processor cycles back to
-            // the loop top and reloads handler B.
-            std::this_thread::sleep_for(400ms);
+            ASSERT_TRUE(poll_until(
+                [&proc, n_before_swap] { return proc.iteration_count() > n_before_swap + 1; },
+                1000ms))
+                << "Processor did not reload handler B within 1s";
 
             // Write with handler B
             ASSERT_TRUE(write_double(in_dbp_test.get(), 10.0));
-            ASSERT_TRUE(wait_for([&]() { return proc.in_slots_received() >= 2; }, 2000ms))
+            ASSERT_TRUE(poll_until([&]() { return proc.in_slots_received() >= 2; }, 2000ms))
                 << "Processor did not consume second input within timeout";
 
             result = 0.0;
@@ -797,16 +803,27 @@ int processor_handler_removal()
 
             proc.start();
 
-            // Remove handler (nullptr)
+            // Remove handler: wait until the processor thread has definitely loaded nullptr.
+            // iteration_count_ is incremented at the TOP of the loop BEFORE handler load.
+            // Observing iteration_count > n_before + 1 guarantees that the in-flight
+            // iteration (which may have already loaded the old handler) has completed AND
+            // a subsequent iteration has started with the null handler loaded.
+            uint64_t n_before_remove = proc.iteration_count();
             proc.set_process_handler<void, double, void, double>(nullptr);
             EXPECT_FALSE(proc.has_process_handler());
+            ASSERT_TRUE(poll_until(
+                [&proc, n_before_remove] {
+                    return proc.iteration_count() > n_before_remove + 1;
+                }, 1000ms))
+                << "Processor did not enter null-handler loop within 1s";
 
-            // Write data — processor should not crash; data just gets ignored
+            // With null handler the processor structurally never calls read_acquire,
+            // so in_slots_received cannot advance and no output is ever committed.
+            // timeout=0: non-blocking check; output queue must be empty.
             ASSERT_TRUE(write_double(in_dbp_test.get(), 99.0));
-            std::this_thread::sleep_for(300ms);
             double dummy = 0.0;
-            EXPECT_FALSE(read_double(out_dbc_test.get(), dummy, 200))
-                << "No handler installed — nothing should be produced";
+            EXPECT_FALSE(read_double(out_dbc_test.get(), dummy, 0))
+                << "No handler installed — output queue must be empty";
 
             // Re-install handler
             proc.set_process_handler<void, double, void, double>(
@@ -950,15 +967,16 @@ int timeout_handler_null_output_on_drop()
 
             proc.start();
 
-            // Wait for a few timeout iterations. The output will eventually fill in
-            // Latest_only mode (ring buffer wraps), so we may or may not see null.
-            // But we do exercise the code path. Just wait and verify no crash.
-            std::this_thread::sleep_for(800ms);
+            // Wait until at least 3 timeout iterations have occurred. Each timeout
+            // fires after input_timeout (200ms), so ≥3 iterations proves the null-output
+            // path was exercised multiple times without crashing.
+            ASSERT_TRUE(poll_until([&proc] { return proc.iteration_count() >= 3; }, 3000ms))
+                << "Processor did not reach 3 timeout iterations within 3s";
 
             proc.stop();
-            // The test passes if no crash occurred. The null_count may be 0 if
-            // the ring buffer kept wrapping, which is fine.
-            EXPECT_GE(proc.iteration_count(), 1u);
+            // null_count may be 0 if the ring buffer kept wrapping (drop policy fills output),
+            // which is fine — the test verifies the null-output code path does not crash.
+            EXPECT_GE(proc.iteration_count(), 3u);
         },
         "hub_processor.timeout_handler_null_output_on_drop",
         logger_module(), crypto_module(), hub_module());
@@ -1003,10 +1021,13 @@ int iteration_count_advances_on_timeout()
                 });
             proc.start();
 
-            // No input — let timeouts occur (200ms each). Wait ~600ms → expect ≥2 iterations.
-            std::this_thread::sleep_for(700ms);
+            // No input: the processor blocks in read_acquire until input_timeout (200ms),
+            // then loops back. Wait directly for the expected condition — ≥3 iterations —
+            // rather than sleeping a fixed duration. 3s budget is ample.
+            ASSERT_TRUE(poll_until([&proc] { return proc.iteration_count() >= 3; }, 3000ms))
+                << "Processor did not reach 3 timeout iterations within 3s";
 
-            EXPECT_GE(proc.iteration_count(), 2u);
+            EXPECT_GE(proc.iteration_count(), 3u);
             EXPECT_EQ(proc.in_slots_received(), 0u);
             EXPECT_GT(proc.iteration_count(), proc.in_slots_received());
 
@@ -1058,10 +1079,10 @@ int critical_error_stops_loop()
             ASSERT_TRUE(write_double(in_dbp_test.get(), 1.0));
 
             // Wait for the loop to exit due to critical error.
-            bool stopped = wait_for([&proc] { return !proc.is_running(); }, 3000ms);
+            bool stopped = poll_until([&proc] { return !proc.is_running(); }, 3000ms);
             // The loop exits but is_running stays true until stop() is called.
             // Check critical error state instead.
-            bool has_error = wait_for([&proc] { return proc.has_critical_error(); }, 3000ms);
+            bool has_error = poll_until([&proc] { return proc.has_critical_error(); }, 3000ms);
             ASSERT_TRUE(has_error) << "Critical error not set within 3s";
 
             EXPECT_TRUE(proc.has_critical_error());
@@ -1120,7 +1141,7 @@ int critical_error_from_timeout_handler()
             proc.start();
 
             // Don't write any input — let the timeout handler fire and set critical error.
-            bool has_error = wait_for([&proc] { return proc.has_critical_error(); }, 3000ms);
+            bool has_error = poll_until([&proc] { return proc.has_critical_error(); }, 3000ms);
             ASSERT_TRUE(has_error) << "Critical error from timeout handler not set within 3s";
 
             EXPECT_EQ(proc.critical_error_reason(), "timeout fatal");
@@ -1183,7 +1204,7 @@ int pre_hook_called_before_handler()
             {
                 uint64_t before = proc.in_slots_received();
                 ASSERT_TRUE(write_double(in_dbp_test.get(), static_cast<double>(i)));
-                ASSERT_TRUE(wait_for(
+                ASSERT_TRUE(poll_until(
                     [&proc, before] { return proc.in_slots_received() > before; }, 3000ms));
                 double dummy = 0.0;
                 ASSERT_TRUE(read_double(out_dbc_test.get(), dummy, 2000));
@@ -1249,12 +1270,15 @@ int pre_hook_called_before_timeout()
 
             proc.start();
 
-            // Don't write any input — timeout handler fires.
-            std::this_thread::sleep_for(700ms);
+            // Wait directly for the expected condition: ≥2 timeout iterations.
+            // Each iteration fires after input_timeout (200ms). Waiting for the condition
+            // itself is correct and robust — no fixed sleep duration needed.
+            ASSERT_TRUE(poll_until([&timeout_count] { return timeout_count.load() >= 2; }, 3000ms))
+                << "Timeout handler did not fire ≥2 times within 3s";
 
             proc.stop();
 
-            EXPECT_GE(timeout_count.load(), 1);
+            EXPECT_GE(timeout_count.load(), 2);
             // Pre-hook must have fired at least as many times as the timeout handler.
             EXPECT_GE(hook_count.load(), timeout_count.load());
         },

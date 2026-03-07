@@ -55,6 +55,9 @@ struct AdminShell::Impl
             LOGGER_INFO("AdminShell: token authentication enabled");
         }
 
+        // `token` is written above (lines 45+) before this thread ctor; the
+        // std::thread constructor provides a happens-before barrier, so the
+        // worker thread is guaranteed to observe the token value written here.
         running.store(true, std::memory_order_release);
         worker = std::thread([this] { run(); });
     }

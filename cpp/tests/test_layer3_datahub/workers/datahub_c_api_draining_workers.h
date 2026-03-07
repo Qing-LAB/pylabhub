@@ -11,5 +11,7 @@ int draining_timeout_restores_committed();
 int no_reader_races_on_clean_wraparound();
 int single_reader_ring_full_blocks_not_draining();
 int sync_reader_ring_full_blocks_not_draining();
+int drain_hold_true_never_returns_nullptr();
+int drain_hold_true_metrics_accumulated();
 
 } // namespace pylabhub::tests::worker::c_api_draining

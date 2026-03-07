@@ -71,8 +71,10 @@ void zmq_context_shutdown()
     // zmq_ctx_term() normally returns quickly.  shutdown() handles the edge case
     // where a socket was explicitly set to LINGER > 0 after creation.
     ctx->shutdown();
-    delete ctx;
+    // [REVIEW-22] Store nullptr BEFORE delete so no other thread can observe a
+    // valid-looking pointer to freed memory between delete and the store.
     g_context.store(nullptr, std::memory_order_release);
+    delete ctx;
     LOGGER_INFO("ZMQContext: ZeroMQ context destroyed.");
 }
 
