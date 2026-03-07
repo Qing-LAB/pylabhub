@@ -177,11 +177,17 @@ bool ConsumerImpl::recv_and_dispatch_data_()
         return true; // Not a data frame — discard
     }
 
-    if (on_zmq_data_cb)
     {
-        std::span<const std::byte> payload(
-            static_cast<const std::byte *>(frames[1].data()), frames[1].size());
-        on_zmq_data_cb(payload);
+        // [PC1-ext] Copy under callbacks_mu — on_zmq_data_cb setter and
+        // close() both write under callbacks_mu; invocation must match.
+        Consumer::DataCallback data_cb;
+        { std::lock_guard<std::mutex> lk(callbacks_mu); data_cb = on_zmq_data_cb; }
+        if (data_cb)
+        {
+            std::span<const std::byte> payload(
+                static_cast<const std::byte *>(frames[1].data()), frames[1].size());
+            data_cb(payload);
+        }
     }
     return true;
 }
@@ -223,11 +229,13 @@ bool ConsumerImpl::recv_and_dispatch_ctrl_()
     if (type_byte == 'A')
     {
         // Data frame on ctrl socket (Bidir pattern)
-        if (on_zmq_data_cb && frames.size() >= 2)
+        Consumer::DataCallback data_cb;
+        { std::lock_guard<std::mutex> lk(callbacks_mu); data_cb = on_zmq_data_cb; }
+        if (data_cb && frames.size() >= 2)
         {
             std::span<const std::byte> payload(
                 static_cast<const std::byte *>(frames[1].data()), frames[1].size());
-            on_zmq_data_cb(payload);
+            data_cb(payload);
         }
         return true;
     }
@@ -241,10 +249,10 @@ bool ConsumerImpl::recv_and_dispatch_ctrl_()
     std::span<const std::byte> body(static_cast<const std::byte *>(frames[2].data()),
                                      frames[2].size());
 
-    if (on_producer_message_cb)
-    {
-        on_producer_message_cb(type_str, body);
-    }
+    Consumer::CtrlCallback ctrl_cb;
+    { std::lock_guard<std::mutex> lk(callbacks_mu); ctrl_cb = on_producer_message_cb; }
+    if (ctrl_cb)
+        ctrl_cb(type_str, body);
     return true;
 }
 
@@ -548,6 +556,7 @@ void Consumer::on_zmq_data(DataCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_zmq_data_cb = std::move(cb);
     }
 }
@@ -556,6 +565,7 @@ void Consumer::on_producer_message(CtrlCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_producer_message_cb = std::move(cb);
     }
 }
@@ -564,6 +574,7 @@ void Consumer::on_channel_closing(std::function<void()> cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_channel_closing_cb = std::move(cb);
     }
 }
@@ -572,6 +583,7 @@ void Consumer::on_force_shutdown(std::function<void()> cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_force_shutdown_cb = std::move(cb);
     }
 }
@@ -580,6 +592,7 @@ void Consumer::on_channel_error(ChannelErrorCallback cb)
 {
     if (pImpl)
     {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_channel_error_cb = std::move(cb);
     }
 }
