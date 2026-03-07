@@ -63,7 +63,15 @@ bool ChannelRegistry::register_consumer(const std::string& channel_name, Consume
     {
         return false;
     }
-    pos->second.consumers.push_back(std::move(entry));
+    auto& consumers = pos->second.consumers;
+    // Dedup: remove any stale entry with the same consumer_pid before adding the new one.
+    // Under reconnect/retry races a consumer may send CONSUMER_REG_REQ again without
+    // first sending CONSUMER_DEREG_REQ; keeping the old entry causes duplicate notifications.
+    consumers.erase(std::remove_if(consumers.begin(), consumers.end(),
+                                   [&entry](const ConsumerEntry& e)
+                                   { return e.consumer_pid == entry.consumer_pid; }),
+                    consumers.end());
+    consumers.push_back(std::move(entry));
     return true;
 }
 

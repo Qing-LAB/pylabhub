@@ -1882,14 +1882,29 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     }
 
     // Find the relay_channels this hub is configured to send to this peer.
+    // HEP-CORE-0022 §3: "static topology — configured peers only, no runtime discovery."
+    // Reject inbound HELLO from any hub_uid not found in cfg.peers.
     std::vector<std::string> relay_channels;
+    bool peer_configured = false;
     for (const auto& pc : cfg.peers)
     {
         if (pc.hub_uid == peer_hub_uid)
         {
             relay_channels = pc.channels;
+            peer_configured = true;
             break;
         }
+    }
+    if (!peer_configured)
+    {
+        LOGGER_WARN("Broker: rejecting HUB_PEER_HELLO from unconfigured hub '{}' — "
+                    "only configured peers are accepted (HEP-0022 static topology).",
+                    peer_hub_uid);
+        nlohmann::json nack;
+        nack["status"] = "rejected";
+        nack["reason"] = "hub_uid not in configured peers";
+        send_reply(socket, identity, "HUB_PEER_HELLO_ACK", nack);
+        return;
     }
 
     const std::string identity_str(static_cast<const char*>(identity.data()), identity.size());
