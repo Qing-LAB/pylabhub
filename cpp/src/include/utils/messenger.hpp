@@ -386,6 +386,20 @@ class PYLABHUB_UTILS_EXPORT Messenger
     [[nodiscard]] std::vector<nlohmann::json> list_channels(int timeout_ms = 5000);
 
     /**
+     * @brief Query the broker for SHM block topology and DataBlockMetrics.
+     *
+     * Sends SHM_BLOCK_QUERY_REQ to the broker; the broker opens each SHM segment
+     * read-only, reads DataBlockMetrics directly from the header (no lock needed —
+     * relaxed-atomic reads), and responds with SHM_BLOCK_QUERY_ACK.
+     *
+     * @param channel     Channel name to query; empty = all SHM-enabled channels.
+     * @param timeout_ms  Max time to wait for broker response.
+     * @return JSON string with block topology and metrics (empty on error/timeout).
+     */
+    [[nodiscard]] std::string query_shm_blocks(const std::string& channel = {},
+                                               int timeout_ms = 5000);
+
+    /**
      * @brief Report a Cat 2 slot checksum error to broker (fire-and-forget).
      *        Broker's ChecksumRepairPolicy determines further action.
      */

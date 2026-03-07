@@ -564,12 +564,12 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
 
     pylabhub::broker::BrokerService::Config broker_cfg;
     broker_cfg.endpoint                         = hub_cfg.broker_endpoint();
-    broker_cfg.use_curve                        = true;
+    broker_cfg.use_curve                        = (broker_cfg.endpoint.rfind("tcp://", 0) == 0);
     broker_cfg.channel_timeout                  = hub_cfg.channel_timeout();
     broker_cfg.consumer_liveness_check_interval = hub_cfg.consumer_liveness_check();
     broker_cfg.channel_shutdown_grace           = hub_cfg.channel_shutdown_grace();
-    broker_cfg.server_secret_key                = vault_broker_secret; // empty → ephemeral
-    broker_cfg.server_public_key                = vault_broker_public;
+    broker_cfg.server_secret_key                = broker_cfg.use_curve ? vault_broker_secret : std::string{};
+    broker_cfg.server_public_key                = broker_cfg.use_curve ? vault_broker_public : std::string{};
     broker_cfg.connection_policy                = hub_cfg.connection_policy();
     broker_cfg.known_actors                     = hub_cfg.known_actors();
     broker_cfg.channel_policies                 = hub_cfg.channel_policies();
@@ -619,6 +619,12 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         LOGGER_INFO("HubShell: connection_policy={} known_actors={}",
                     pylabhub::broker::connection_policy_to_str(hub_cfg.connection_policy()),
                     hub_cfg.known_actors().size());
+    }
+
+    if (!broker_cfg.use_curve)
+    {
+        LOGGER_WARN("HubShell: CURVE disabled for non-TCP broker endpoint '{}'",
+                    broker_cfg.endpoint);
     }
 
     pylabhub::broker::BrokerService broker(broker_cfg);
@@ -687,6 +693,15 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         [&broker](const std::string& channel) -> std::string
         {
             return broker.query_metrics_json_str(channel);
+        });
+
+    // -----------------------------------------------------------------------
+    // Wire pylabhub.blocks() → BrokerService::query_shm_blocks_json_str().
+    // -----------------------------------------------------------------------
+    pylabhub::hub_python::set_blocks_callback(
+        [&broker](const std::string& channel) -> std::string
+        {
+            return broker.query_shm_blocks_json_str(channel);
         });
 
     // -----------------------------------------------------------------------

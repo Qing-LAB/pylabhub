@@ -774,6 +774,86 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
     return false;
 }
 
+// ── SHM_BLOCK_QUERY_REQ ───────────────────────────────────────────────────────
+
+bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: query_shm_blocks('{}') — not connected.", cmd.channel);
+        cmd.result.set_value({});
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["channel"] = cmd.channel;
+
+        const std::string msg_type    = "SHM_BLOCK_QUERY_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: query_shm_blocks('{}') send failed.", cmd.channel);
+            cmd.result.set_value({});
+            return false;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+
+        while (true)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
+                cmd.result.set_value({});
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
+                cmd.result.set_value({});
+                return false;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue;
+
+            const std::string resp_type(static_cast<const char*>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            if (resp_type != "SHM_BLOCK_QUERY_ACK")
+                continue; // skip unrelated messages (e.g. heartbeat ACKs)
+
+            cmd.result.set_value(recv_msgs.back().to_string());
+            return false;
+        }
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in query_shm_blocks('{}'): {}",
+                     cmd.channel, e.what());
+        cmd.result.set_value({});
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in query_shm_blocks('{}'): {}",
+                     cmd.channel, e.what());
+        cmd.result.set_value({});
+    }
+    return false;
+}
+
 // ── CHANNEL_NOTIFY_REQ (fire-and-forget) ─────────────────────────────────────
 
 bool MessengerImpl::handle_command(ChannelNotifyCmd &cmd,

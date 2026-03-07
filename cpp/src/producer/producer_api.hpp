@@ -106,6 +106,10 @@ class ProducerAPI
     /// Query the broker for the list of registered channels.
     py::list list_channels();
 
+    /// Query the broker for SHM block topology and DataBlockMetrics.
+    /// Returns a Python dict parsed from the SHM_BLOCK_QUERY_ACK JSON.
+    py::object shm_blocks(const std::string& channel = {});
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }

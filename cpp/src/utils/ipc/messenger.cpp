@@ -917,6 +917,19 @@ Messenger::query_channel_schema(const std::string &channel_name, int timeout_ms)
     return future.get();
 }
 
+std::string Messenger::query_shm_blocks(const std::string& channel, int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: query_shm_blocks('{}') — not connected.", channel);
+        return {};
+    }
+    std::promise<std::string> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(QueryShmBlocksCmd{channel, timeout_ms, std::move(promise)});
+    return future.get();
+}
+
 Messenger &Messenger::get_instance()
 {
     assert(g_hub_initialized.load(std::memory_order_acquire) &&

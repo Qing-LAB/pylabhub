@@ -247,6 +247,16 @@ struct MetricsReportCmd
     nlohmann::json metrics;
 };
 
+/// Query broker for SHM block topology + DataBlockMetrics.
+/// Worker sends SHM_BLOCK_QUERY_REQ and waits for SHM_BLOCK_QUERY_ACK.
+/// Returns the raw JSON string from the broker (empty on error/timeout).
+struct QueryShmBlocksCmd
+{
+    std::string channel;    ///< Channel name to query; empty = all channels.
+    int         timeout_ms{5000};
+    std::promise<std::string> result;
+};
+
 struct StopCmd
 {
 };
@@ -273,7 +283,7 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       SuppressHeartbeatCmd, HeartbeatNowCmd,
                                       QuerySchemaCmd, ChannelNotifyCmd,
                                       ChannelBroadcastCmd, ChannelListCmd,
-                                      MetricsReportCmd>;
+                                      MetricsReportCmd, QueryShmBlocksCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -389,6 +399,8 @@ class MessengerImpl
     bool handle_command(ChannelListCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(MetricsReportCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(QueryShmBlocksCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,
