@@ -255,6 +255,62 @@ TEST_F(ProducerConfigTest, SchemaNullField_StillWorks)
     fs::remove_all(tmp);
 }
 
+TEST_F(ProducerConfigTest, Validation_ZeroIntervalThrows)
+{
+    const auto tmp      = unique_temp_dir("valint");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-VALINT-00000001", "name": "ValInt" },
+        "channel": "lab.val.int",
+        "interval_ms": 0
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, Validation_NegativeIntervalThrows)
+{
+    const auto tmp      = unique_temp_dir("valn");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-VALN-00000001", "name": "ValN" },
+        "channel": "lab.val.neg",
+        "interval_ms": -5
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, Validation_BadTimeoutThrows)
+{
+    const auto tmp      = unique_temp_dir("valtmo");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-VALTMO-00000001", "name": "ValTmo" },
+        "channel": "lab.val.tmo",
+        "timeout_ms": -5
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, Validation_ZeroSlotCountThrows)
+{
+    const auto tmp      = unique_temp_dir("valslot");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-VALSLOT-00000001", "name": "ValSlot" },
+        "channel": "lab.val.slot",
+        "shm": { "enabled": true, "slot_count": 0 }
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
 TEST_F(ProducerConfigTest, StopOnScriptError_DefaultFalse)
 {
     const auto tmp      = unique_temp_dir("def");

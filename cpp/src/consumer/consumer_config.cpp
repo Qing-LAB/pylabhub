@@ -95,6 +95,9 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
     cfg.timeout_ms            = j.value("timeout_ms",            -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
+    if (cfg.timeout_ms < -1)
+        throw std::runtime_error("Consumer config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
+
     if (j.contains("shm") && j["shm"].is_object())
     {
         const auto &shm = j["shm"];
