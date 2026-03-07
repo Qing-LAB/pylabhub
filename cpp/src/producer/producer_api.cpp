@@ -147,6 +147,16 @@ py::list ProducerAPI::list_channels()
     return result;
 }
 
+py::object ProducerAPI::shm_blocks(const std::string& channel)
+{
+    if (!messenger_)
+        return py::none();
+    const std::string json_str = messenger_->query_shm_blocks(channel);
+    if (json_str.empty())
+        return py::none();
+    return py::module_::import("json").attr("loads")(json_str);
+}
+
 // ============================================================================
 // ProducerAPI — custom metrics (HEP-CORE-0019)
 // ============================================================================
@@ -262,6 +272,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("broadcast_channel", &ProducerAPI::broadcast_channel,
              py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ProducerAPI::list_channels)
+        .def("shm_blocks",     &ProducerAPI::shm_blocks, py::arg("channel") = "")
         .def("script_error_count", &ProducerAPI::script_error_count)
         .def("out_slots_written",  &ProducerAPI::out_slots_written)
         .def("out_drop_count",     &ProducerAPI::out_drop_count)

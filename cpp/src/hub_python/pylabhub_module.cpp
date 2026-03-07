@@ -72,6 +72,15 @@ void set_metrics_callback(std::function<std::string(const std::string&)> cb)
 {
     g_metrics_cb = std::move(cb);
 }
+
+/// Registered by hubshell when BrokerService is ready.
+/// Returns SHM block topology + DataBlockMetrics JSON for a channel (or all channels).
+static std::function<std::string(const std::string&)> g_blocks_cb;
+
+void set_blocks_callback(std::function<std::string(const std::string&)> cb)
+{
+    g_blocks_cb = std::move(cb);
+}
 } // namespace pylabhub::hub_python
 
 // ---------------------------------------------------------------------------
@@ -288,6 +297,47 @@ Example::
 
     metrics = pylabhub.metrics()          # all channels
     ch = pylabhub.metrics('my-channel')   # single channel
+)doc");
+
+    // ------------------------------------------------------------------
+    // SHM block query (topology + DataBlockMetrics, read directly by broker)
+    // ------------------------------------------------------------------
+    m.def("blocks", [](const std::string& channel) -> py::object
+    {
+        if (!pylabhub::hub_python::g_blocks_cb)
+            throw py::value_error("Broker not wired — blocks() unavailable");
+        std::string json_str;
+        {
+            py::gil_scoped_release release;
+            json_str = pylabhub::hub_python::g_blocks_cb(channel);
+        }
+        py::module_ json_mod = py::module_::import("json");
+        return json_mod.attr("loads")(json_str);
+    },
+    py::arg("channel") = "",
+    R"doc(
+Query SHM block topology and low-level DataBlock metrics.
+
+With no arguments (or empty string), returns info for all channels.
+With a channel name, returns info for just that channel.
+
+The broker opens each SHM segment read-only and reads DataBlockMetrics
+directly from the shared memory header — no roundtrip to producer/consumer.
+
+Returns a dict with 'status' and 'blocks' (list of per-channel dicts), each
+containing:
+  - channel: channel name
+  - shm_name: SHM segment name
+  - producer: {pid, uid, name}
+  - consumers: [{pid, uid, name}]
+  - shm_metrics: DataBlockMetrics fields (null if segment not accessible)
+
+Example::
+
+    info = pylabhub.blocks()              # all channels
+    b = pylabhub.blocks('lab.raw')        # single channel
+    for blk in info['blocks']:
+        print(blk['channel'], blk['shm_metrics']['total_slots_written'])
 )doc");
 
     // ------------------------------------------------------------------
