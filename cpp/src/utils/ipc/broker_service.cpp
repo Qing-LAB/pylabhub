@@ -2,6 +2,7 @@
 
 #include "channel_registry.hpp"
 
+#include "utils/recovery_api.hpp"
 #include "utils/schema_library.hpp"
 
 #include "plh_platform.hpp"
@@ -206,6 +207,8 @@ public:
 
     void handle_metrics_report_req(const nlohmann::json &req);
     nlohmann::json handle_metrics_req(const nlohmann::json &req);
+    nlohmann::json handle_shm_block_query(const nlohmann::json &req) const;
+    nlohmann::json query_shm_blocks(const std::string &channel) const;
 
     void run();
 
@@ -684,6 +687,11 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // HEP-CORE-0019: query aggregated metrics.
         nlohmann::json resp = handle_metrics_req(payload);
         send_reply(socket, identity, "METRICS_ACK", resp);
+    }
+    else if (msg_type == "SHM_BLOCK_QUERY_REQ")
+    {
+        send_reply(socket, identity, "SHM_BLOCK_QUERY_ACK",
+                   handle_shm_block_query(payload));
     }
     else if (msg_type == "HUB_PEER_HELLO")
     {
@@ -1740,6 +1748,121 @@ std::string BrokerService::query_metrics_json_str(const std::string& channel) co
 {
     std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
     return pImpl->query_metrics(channel).dump();
+}
+
+nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& req) const
+{
+    return query_shm_blocks(req.value("channel", ""));
+}
+
+nlohmann::json BrokerServiceImpl::query_shm_blocks(const std::string& channel) const
+{
+    // Snapshot registry data under the query mutex, then read SHM outside it.
+    struct BlockInfo
+    {
+        std::string channel;
+        std::string shm_name;
+        uint64_t    producer_pid{0};
+        std::string producer_uid;
+        std::string producer_name;
+        std::vector<ConsumerEntry> consumers;
+    };
+
+    std::vector<BlockInfo> blocks;
+    {
+        std::lock_guard<std::mutex> lock(m_query_mu);
+        for (const auto& [name, entry] : registry.all_channels())
+        {
+            if (!channel.empty() && name != channel)
+                continue;
+            if (!entry.has_shared_memory || entry.shm_name.empty())
+                continue;
+            BlockInfo bi;
+            bi.channel       = name;
+            bi.shm_name      = entry.shm_name;
+            bi.producer_pid  = entry.producer_pid;
+            bi.producer_uid  = entry.producer_actor_uid;
+            bi.producer_name = entry.producer_actor_name;
+            bi.consumers     = entry.consumers;
+            blocks.push_back(std::move(bi));
+        }
+    }
+
+    // For each block, read DataBlockMetrics directly from the SHM header.
+    // datablock_get_metrics() opens read-only, reads relaxed-atomic fields, closes.
+    nlohmann::json result;
+    result["status"] = "success";
+    nlohmann::json arr = nlohmann::json::array();
+
+    for (const auto& bi : blocks)
+    {
+        nlohmann::json blk;
+        blk["channel"]  = bi.channel;
+        blk["shm_name"] = bi.shm_name;
+
+        nlohmann::json prod;
+        prod["pid"]  = bi.producer_pid;
+        prod["uid"]  = bi.producer_uid;
+        prod["name"] = bi.producer_name;
+        blk["producer"] = std::move(prod);
+
+        nlohmann::json cons_arr = nlohmann::json::array();
+        for (const auto& ce : bi.consumers)
+        {
+            nlohmann::json c;
+            c["pid"]  = ce.consumer_pid;
+            c["uid"]  = ce.actor_uid;
+            c["name"] = ce.actor_name;
+            cons_arr.push_back(std::move(c));
+        }
+        blk["consumers"] = std::move(cons_arr);
+
+        DataBlockMetrics m{};
+        if (::datablock_get_metrics(bi.shm_name.c_str(), &m) == 0)
+        {
+            nlohmann::json sm;
+            sm["slot_count"]                  = m.slot_count;
+            sm["commit_index"]                = m.commit_index;
+            sm["total_slots_written"]         = m.total_slots_written;
+            sm["total_slots_read"]            = m.total_slots_read;
+            sm["total_bytes_written"]         = m.total_bytes_written;
+            sm["total_bytes_read"]            = m.total_bytes_read;
+            sm["writer_timeout_count"]        = m.writer_timeout_count;
+            sm["writer_lock_timeout_count"]   = m.writer_lock_timeout_count;
+            sm["writer_reader_timeout_count"] = m.writer_reader_timeout_count;
+            sm["writer_blocked_total_ns"]     = m.writer_blocked_total_ns;
+            sm["write_lock_contention"]       = m.write_lock_contention;
+            sm["write_generation_wraps"]      = m.write_generation_wraps;
+            sm["reader_not_ready_count"]      = m.reader_not_ready_count;
+            sm["reader_race_detected"]        = m.reader_race_detected;
+            sm["reader_validation_failed"]    = m.reader_validation_failed;
+            sm["reader_peak_count"]           = m.reader_peak_count;
+            sm["checksum_failures"]           = m.checksum_failures;
+            sm["slot_acquire_errors"]         = m.slot_acquire_errors;
+            sm["slot_commit_errors"]          = m.slot_commit_errors;
+            sm["schema_mismatch_count"]       = m.schema_mismatch_count;
+            sm["recovery_actions_count"]      = m.recovery_actions_count;
+            sm["last_error_code"]             = m.last_error_code;
+            sm["last_error_timestamp_ns"]     = m.last_error_timestamp_ns;
+            sm["uptime_seconds"]              = m.uptime_seconds;
+            sm["creation_timestamp_ns"]       = m.creation_timestamp_ns;
+            blk["shm_metrics"] = std::move(sm);
+        }
+        else
+        {
+            blk["shm_metrics"] = nullptr; // segment gone (producer already exited)
+        }
+
+        arr.push_back(std::move(blk));
+    }
+
+    result["blocks"] = std::move(arr);
+    return result;
+}
+
+std::string BrokerService::query_shm_blocks_json_str(const std::string& channel) const
+{
+    return pImpl->query_shm_blocks(channel).dump();
 }
 
 void BrokerService::request_close_channel(const std::string& name)

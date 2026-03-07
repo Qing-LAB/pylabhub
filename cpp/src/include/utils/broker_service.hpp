@@ -247,6 +247,21 @@ public:
     [[nodiscard]] std::string query_metrics_json_str(const std::string& channel = {}) const;
 
     /**
+     * @brief Query SHM block topology and DataBlockMetrics for all channels (or one).
+     *
+     * Thread-safe: locks the query mutex to copy registry data, then reads each
+     * SHM segment directly via datablock_get_metrics() — opens read-only, reads
+     * the fixed-layout DataBlockMetrics from the shared memory header, closes.
+     * No lock on the SHM side is needed; metrics fields are relaxed-atomic reads.
+     *
+     * @param channel  Channel name (empty = all channels with SHM).
+     * @return JSON string: {"status":"success","blocks":[{channel, shm_name,
+     *         producer:{pid,uid,name}, consumers:[{pid,uid,name}],
+     *         shm_metrics:{...} or null}, ...]}
+     */
+    [[nodiscard]] std::string query_shm_blocks_json_str(const std::string& channel = {}) const;
+
+    /**
      * @brief Send a hub-targeted message to a direct federation peer (HEP-CORE-0022).
      *
      * Thread-safe. The request is queued and sent during the next broker run() poll

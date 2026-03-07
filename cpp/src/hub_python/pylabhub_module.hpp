@@ -57,4 +57,14 @@ void set_broadcast_channel_callback(
  */
 void set_metrics_callback(std::function<std::string(const std::string&)> cb);
 
+/**
+ * @brief Register the callback invoked by `pylabhub.blocks()`.
+ *
+ * The callback receives an optional channel name (empty = all channels) and
+ * returns a JSON string with SHM block topology and DataBlockMetrics for each
+ * channel that has shared memory. The broker reads the SHM header directly
+ * (read-only, no lock required) via datablock_get_metrics().
+ */
+void set_blocks_callback(std::function<std::string(const std::string&)> cb);
+
 } // namespace pylabhub::hub_python

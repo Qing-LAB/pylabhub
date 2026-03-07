@@ -78,6 +78,16 @@ py::list ConsumerAPI::list_channels()
     return result;
 }
 
+py::object ConsumerAPI::shm_blocks(const std::string& channel)
+{
+    if (!messenger_)
+        return py::none();
+    const std::string json_str = messenger_->query_shm_blocks(channel);
+    if (json_str.empty())
+        return py::none();
+    return py::module_::import("json").attr("loads")(json_str);
+}
+
 // ============================================================================
 // ConsumerAPI — custom metrics (HEP-CORE-0019)
 // ============================================================================
@@ -159,6 +169,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("broadcast_channel", &ConsumerAPI::broadcast_channel,
              py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ConsumerAPI::list_channels)
+        .def("shm_blocks",     &ConsumerAPI::shm_blocks, py::arg("channel") = "")
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received)
         .def("report_metric", &ConsumerAPI::report_metric,
