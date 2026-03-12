@@ -154,7 +154,7 @@ public:
      * ZmqQueue: no-op (TCP ensures transport integrity; different threat model).
      * Call once at initialization before the first read_acquire().
      */
-    virtual void set_verify_checksum(bool /*slot*/, bool /*fz*/) noexcept {}
+    virtual void set_verify_checksum(bool /*slot*/, bool /*fz*/) const noexcept {}
 
     // ── Ring buffer status ────────────────────────────────────────────────────
 

@@ -366,14 +366,19 @@ output_queue.flexzone   # ctypes view of output flexzone (fully mutable, user-co
 ### 6.3 ProcessorAPI
 
 ```python
-# Identity
+# Identity / environment
 api.name()               # → str: "TempNorm"
 api.uid()                # → str: "PROC-TEMPNORM-A3F7C219"
 api.in_channel()         # → str: input channel name
 api.out_channel()        # → str: output channel name
+api.log_level()          # → str: configured log level
+api.script_dir()         # → str: absolute path to the script directory
+api.role_dir()           # → str: absolute path to the role directory (empty if --config launch)
+api.logs_dir()           # → str: role_dir + "/logs"
+api.run_dir()            # → str: role_dir + "/run"
 
 # Logging
-api.log(msg, level="info")
+api.log(level, msg)
 
 # Hub messaging — dual-hub access
 api.in_hub.send(target, data)                   # → send to input-side hub
@@ -398,8 +403,9 @@ api.wait_for_role(uid, timeout_ms=5000)  # → bool; polls presence; GIL release
 # Queue metrics
 api.in_capacity()        # → int: input queue ring-buffer depth
 api.in_policy()          # → str: input queue overflow policy ("block"/"drop")
-api.last_seq()           # → int: last consumed slot sequence
-api.overrun_count()      # → int: input queue overrun counter
+api.last_seq()           # → int: SHM=ring-buffer slot index (wraps at capacity); ZMQ=monotone wire seq
+api.loop_overrun_count() # → int: always 0 (processor is queue-driven, no deadline)
+api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only; no-op for ZMQ)
 
 api.out_capacity()       # → int: output queue ring-buffer depth
 api.out_policy()         # → str: output queue overflow policy
