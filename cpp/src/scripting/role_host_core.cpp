@@ -7,6 +7,7 @@
 
 #include "utils/logger.hpp"
 
+#include <chrono>
 #include <utility>
 
 namespace pylabhub::scripting
@@ -14,14 +15,16 @@ namespace pylabhub::scripting
 
 void RoleHostCore::enqueue_message(IncomingMessage msg)
 {
-    std::unique_lock<std::mutex> lk(incoming_mu_);
-    if (incoming_queue_.size() >= kMaxIncomingQueue)
     {
-        LOGGER_WARN("[RoleHostCore] Incoming queue full — dropping message");
-        return;
+        std::unique_lock<std::mutex> lk(incoming_mu_);
+        if (incoming_queue_.size() >= kMaxIncomingQueue)
+        {
+            LOGGER_WARN("[RoleHostCore] Incoming queue full — dropping message");
+            return;
+        }
+        incoming_queue_.push_back(std::move(msg));
     }
-    incoming_queue_.push_back(std::move(msg));
-    incoming_cv_.notify_one();
+    incoming_cv_.notify_one(); // wake any wait_for_incoming() waiter
 }
 
 std::vector<IncomingMessage> RoleHostCore::drain_messages()
@@ -38,9 +41,16 @@ std::vector<IncomingMessage> RoleHostCore::drain_messages()
     return msgs;
 }
 
-void RoleHostCore::notify_incoming()
+
+void RoleHostCore::notify_incoming() noexcept
 {
     incoming_cv_.notify_all();
+}
+
+void RoleHostCore::wait_for_incoming(int timeout_ms) noexcept
+{
+    std::unique_lock<std::mutex> lk(incoming_mu_);
+    incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms));
 }
 
 } // namespace pylabhub::scripting

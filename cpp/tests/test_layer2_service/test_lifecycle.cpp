@@ -22,9 +22,11 @@ TEST_F(LifecycleTest, MultipleGuardsWarning)
     WorkerProcess proc(g_self_exe_path, "lifecycle.test_multiple_guards_warning", {});
     ASSERT_TRUE(proc.valid());
     ASSERT_EQ(proc.wait_for_exit(), 0);
-    // The warning is a PLH_DEBUG message, which goes to stderr.
+    // The warning is a PLH_DEBUG message — only visible when debug messages are enabled.
+#if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
     ASSERT_THAT(proc.get_stderr(),
                 HasSubstr("WARNING: LifecycleGuard constructed but an owner already exists."));
+#endif
 }
 
 // Test that modules are correctly registered and initialized.

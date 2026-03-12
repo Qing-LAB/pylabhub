@@ -90,6 +90,17 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     static void set_config_path(const std::filesystem::path& path);
 
     /**
+     * @brief Supply the admin token from the vault before LifecycleGuard starts.
+     *
+     * The admin token is a secret and must NEVER be stored in hub.json (which is
+     * world-readable at 0644).  The vault (hub.vault, 0600) is the sole source.
+     * Call this after opening the vault, before the lifecycle starts.
+     * hub.json must not contain an "admin.token" field; any such field is ignored
+     * with an error log at runtime.
+     */
+    static void set_admin_token(const std::string& token);
+
+    /**
      * @brief Returns the ModuleDef for use with LifecycleGuard.
      * Dependencies: Logger, JsonConfig.
      */
@@ -213,10 +224,10 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     // -----------------------------------------------------------------------
 
     /**
-     * @brief Optional pre-shared token for the admin shell.
+     * @brief Pre-shared token for the admin shell.
      *
-     * Read from `hub.json["admin"]["token"]`. Empty string means no auth
-     * (connections from localhost are accepted without a token).
+     * Set exclusively via set_admin_token() (called by hubshell after vault.open()).
+     * Never stored in hub.json. Empty = no auth (dev / ephemeral mode only).
      */
     const std::string& admin_token() const noexcept;
 

@@ -9,6 +9,7 @@
  */
 #include "python_role_host_base.hpp"
 
+#include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
 
 #include <pybind11/embed.h>
@@ -345,10 +346,10 @@ py::list PythonRoleHostBase::build_messages_list_(std::vector<IncomingMessage> &
         }
         else
         {
-            // m.sender may contain binary ZMQ identity bytes — use py::bytes,
-            // not py::str, to avoid UnicodeDecodeError on non-UTF-8 identities.
+            // ZMQ identities are opaque binary — hex-encode to a printable str
+            // so scripts never see raw bytes or UnicodeDecodeError.
             lst.append(py::make_tuple(
-                py::bytes(m.sender),
+                py::str(format_tools::bytes_to_hex(m.sender)),
                 py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size())));
         }
     }

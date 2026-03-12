@@ -9,7 +9,7 @@
   },
   "channel":    "lab.bridge.processed",
   "broker":     "tcp://127.0.0.1:5571",
-  "timeout_ms": 5000,
+  "timeout_ms": 500,
 
   "shm": {
     "enabled": true,
@@ -17,7 +17,7 @@
   },
 
   "slot_schema": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "count",   "type": "int64"},
       {"name": "ts",      "type": "float64"},

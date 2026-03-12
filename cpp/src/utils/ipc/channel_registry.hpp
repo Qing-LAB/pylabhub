@@ -101,6 +101,13 @@ struct ChannelEntry
     /// For data_transport="zmq": the bind endpoint registered by the producer's PUSH socket.
     /// Empty when data_transport="shm". Returned verbatim in DISC_ACK for consumer discovery.
     std::string    zmq_node_endpoint;
+    /// Role inbox endpoint registered in REG_REQ (Phase 3). Empty if no inbox configured.
+    std::string    inbox_endpoint;
+    /// JSON-serialized ZmqSchemaField array for the inbox (Phase 4). Empty if no inbox.
+    /// Format: [{"type":"float64","count":1,"length":0}, ...]
+    std::string    inbox_schema_json;
+    /// Packing for the inbox schema (Phase 4): "aligned" or "packed". Empty if no inbox.
+    std::string    inbox_packing;
 
     // ── Schema identity (HEP-CORE-0016 Phase 3) ───────────────────────────────
     /// Named schema ID set by producer in REG_REQ or annotated by broker via reverse hash

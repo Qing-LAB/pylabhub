@@ -5,9 +5,13 @@
  *
  * Inherits the common do_python_work() skeleton from PythonRoleHostBase and
  * overrides virtual hooks for producer-specific behavior:
- *  - Timer-driven production loop (run_loop_shm_)
+ *  - Timer-driven, transport-agnostic production loop (run_loop_)
  *  - Single output channel with Producer + Messenger
  *  - on_produce(out_slot, fz, msgs, api) → bool callback
+ *
+ * The data path is abstracted by hub::QueueWriter.  Depending on config_.transport:
+ *  - Transport::Shm → hub::ShmQueue::from_producer_ref (wraps DataBlockProducer; checksum-aware)
+ *  - Transport::Zmq → hub::ZmqQueue::push_to (PUSH socket; fire-and-forget send_thread_)
  *
  * See HEP-CORE-0018 for the full producer binary specification.
  */
@@ -18,7 +22,11 @@
 
 #include "python_role_host_base.hpp"
 
+#include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/hub_queue.hpp"
+#include "utils/hub_shm_queue.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "utils/messenger.hpp"
 
 #include <atomic>
@@ -75,8 +83,12 @@ class ProducerScriptHost : public scripting::PythonRoleHostBase
     ProducerConfig config_;
     ProducerAPI    api_;
 
-    hub::Messenger              out_messenger_;
+    hub::Messenger               out_messenger_;
     std::optional<hub::Producer> out_producer_;
+
+    /// Transport-agnostic output queue.  Created by start_role() based on
+    /// config_.transport.  ShmQueue (write) for Shm; ZmqQueue (write) for Zmq.
+    std::unique_ptr<hub::QueueWriter>  queue_;
 
     SchemaSpec slot_spec_;
     size_t     schema_slot_size_{0};
@@ -87,12 +99,22 @@ class ProducerScriptHost : public scripting::PythonRoleHostBase
     std::thread              loop_thread_;
     std::atomic<uint64_t>    iteration_count_{0};
 
+    // Inbox facility (optional — active only when config_.has_inbox())
+    std::unique_ptr<hub::InboxQueue>  inbox_queue_;
+    scripting::SchemaSpec             inbox_spec_;
+    size_t                            inbox_schema_slot_size_{0};
+    py::object                        inbox_type_{py::none()};
+    py::object                        py_on_inbox_{py::none()};
+    std::thread                       inbox_thread_;
+
     py::object make_out_slot_view_(void *data, size_t size) const;
+    py::object make_inbox_slot_view_(const void *data, size_t size) const;
 
     bool call_on_produce_(py::object &out_sv, py::object &fz, py::list &msgs);
 
-    void run_loop_shm_();
-    void run_zmq_thread_();
+    void run_loop_();
+    void run_ctrl_thread_();
+    void run_inbox_thread_();
 };
 
 } // namespace pylabhub::producer

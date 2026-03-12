@@ -40,7 +40,7 @@ class FileLockTest : public ::testing::Test
     {
         s_lifecycle = std::make_unique<pylabhub::utils::LifecycleGuard>(
             pylabhub::utils::MakeModDefList(pylabhub::utils::FileLock::GetLifecycleModule(),
-                                            pylabhub::utils::Logger::GetLifecycleModule()));
+                                            pylabhub::utils::Logger::GetLifecycleModule()), std::source_location::current());
         g_temp_dir_ = fs::temp_directory_path() /
                       ("pylabhub_filelock_tests_" +
                        std::to_string(pylabhub::platform::get_pid()));

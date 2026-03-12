@@ -206,11 +206,25 @@ struct ConsumerOptions
     /// Empty schema → LOGGER_ERROR + Consumer::connect returns nullopt.
     /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.
     std::vector<ZmqSchemaField> zmq_schema{};
-    /// "natural" (ctypes.LittleEndianStructure default) or "packed" (no padding).
+    /// "aligned" (ctypes.LittleEndianStructure default) or "packed" (no padding).
     /// Must match the producer's packing.
-    std::string zmq_packing{"natural"};
+    std::string zmq_packing{"aligned"};
     /// Internal receive-buffer depth for ZmqQueue PULL.
     size_t zmq_buffer_depth{64};
+
+    /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
+    size_t ctrl_queue_max_depth{256};
+    /// Peer silence timeout before on_peer_dead fires (ms). 0 = disabled.
+    int    peer_dead_timeout_ms{30000};
+
+    // ── Transport arbitration (Phase 6/7) ────────────────────────────────────
+    /// Declares the consumer's intended data transport to the broker.
+    /// "shm" — consumer expects SHM data; broker rejects if channel uses ZMQ.
+    /// "zmq" — consumer expects ZMQ data; broker rejects if channel uses SHM.
+    /// ""    — no declaration; broker skips transport mismatch check (processor use-case:
+    ///         transport is auto-discovered from CONSUMER_REG_ACK data_transport field).
+    /// Set this explicitly; do NOT rely on zmq_schema being set as a proxy.
+    std::string queue_type{};
 };
 
 // ============================================================================
@@ -285,6 +299,10 @@ class PYLABHUB_UTILS_EXPORT Consumer
     using ChannelErrorCallback =
         std::function<void(const std::string &event, const nlohmann::json &details)>;
     void on_channel_error(ChannelErrorCallback cb);
+
+    /// Callback fired when the peer (producer) has been silent for peer_dead_timeout_ms.
+    /// Called from ctrl_thread — callback must be thread-safe.
+    void on_peer_dead(std::function<void()> cb);
 
     // ── Active mode ───────────────────────────────────────────────────────────
 
@@ -421,6 +439,15 @@ class PYLABHUB_UTILS_EXPORT Consumer
      * Null when data_transport()=="shm". Lifetime is tied to this Consumer.
      */
     [[nodiscard]] ZmqQueue *queue() noexcept;
+    /// Number of ctrl queue items dropped due to max_depth overflow.
+    [[nodiscard]] uint64_t ctrl_queue_dropped() const;
+
+    /**
+     * @brief Transport-agnostic read side: returns the ZmqQueue cast to QueueReader*,
+     * or nullptr when data_transport()=="shm" (SHM consumers use the DataBlock API).
+     * Convenience wrapper for ProcessorScriptHost / ConsumerScriptHost.
+     */
+    [[nodiscard]] QueueReader *queue_reader() noexcept { return queue(); }
 
     /// Returns the Messenger used by this Consumer.
     [[nodiscard]] Messenger &messenger() const;
@@ -468,10 +495,11 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
     schema::validate_named_schema_from_env<DataBlockT, FlexZoneT>(opts.expected_schema_id);
 
     // Connect the ZMQ channel (sends HELLO, gets ConsumerInfo from broker).
+    const std::string queue_type_str = opts.queue_type;
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
                                          opts.expected_schema_hash,
                                          opts.consumer_uid, opts.consumer_name,
-                                         opts.expected_schema_id);
+                                         opts.expected_schema_id, queue_type_str);
     if (!ch.has_value())
     {
         return std::nullopt;

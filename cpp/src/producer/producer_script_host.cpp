@@ -17,6 +17,7 @@
 
 #include "zmq_poll_loop.hpp"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -33,14 +34,16 @@ using scripting::IncomingMessage;
 namespace
 {
 
-bool parse_on_produce_return(const py::object &ret)
+/// Returns {commit, script_error}. commit=false, script_error=true on wrong type.
+std::pair<bool, bool> parse_on_produce_return(const py::object &ret)
 {
     if (ret.is_none())
-        return true;
+        return {true, false};
     if (py::isinstance<py::bool_>(ret))
-        return ret.cast<bool>();
+        return {ret.cast<bool>(), false};
+    // LR-05: wrong return type is a script error — increment counter + log.
     LOGGER_ERROR("[prod] on_produce() must return bool or None — treating as skip");
-    return false;
+    return {false, true};
 }
 
 } // anonymous namespace
@@ -76,6 +79,7 @@ void ProducerScriptHost::wire_api_identity()
     api_.set_script_dir(config_.script_path);
     api_.set_shutdown_flag(core_.g_shutdown);
     api_.set_shutdown_requested(&core_.shutdown_requested);
+    api_.set_stop_reason(&stop_reason_);
 }
 
 void ProducerScriptHost::extract_callbacks(py::module_ &mod)
@@ -83,6 +87,9 @@ void ProducerScriptHost::extract_callbacks(py::module_ &mod)
     py_on_produce_ = py::getattr(mod, "on_produce", py::none());
     py_on_init_    = py::getattr(mod, "on_init",    py::none());
     py_on_stop_    = py::getattr(mod, "on_stop",    py::none());
+    // on_inbox is optional — only extract when inbox is configured
+    if (config_.has_inbox() && py::hasattr(mod, "on_inbox"))
+        py_on_inbox_ = mod.attr("on_inbox");
 }
 
 bool ProducerScriptHost::has_required_callback() const
@@ -98,6 +105,11 @@ bool ProducerScriptHost::build_role_types()
 {
     using scripting::resolve_schema;
 
+    // HEP-0011 §3.1: script.type should be explicit. Warn when defaulted.
+    if (!config_.script_type_explicit)
+        LOGGER_WARN("[prod] Config 'script.type' absent — defaulting to '{}'. "
+                    "Set it explicitly to suppress this warning.", config_.script_type);
+
     try
     {
         std::vector<std::string> schema_dirs;
@@ -106,6 +118,10 @@ bool ProducerScriptHost::build_role_types()
 
         slot_spec_    = resolve_schema(config_.slot_schema_json,     false, "prod", schema_dirs);
         core_.fz_spec = resolve_schema(config_.flexzone_schema_json, true,  "prod", schema_dirs);
+
+        // Inbox schema (optional) — resolve here while schema_dirs is in scope
+        if (config_.has_inbox())
+            inbox_spec_ = resolve_schema(config_.inbox_schema_json, false, "prod", schema_dirs);
     }
     catch (const std::exception &e)
     {
@@ -119,6 +135,13 @@ bool ProducerScriptHost::build_role_types()
             return false;
         if (!build_flexzone_type_())
             return false;
+
+        // Build inbox Python type
+        if (config_.has_inbox())
+        {
+            if (!build_schema_type_(inbox_spec_, inbox_type_, inbox_schema_slot_size_, "InboxFrame"))
+                return false;
+        }
     }
     catch (const std::exception &e)
     {
@@ -153,6 +176,54 @@ bool ProducerScriptHost::start_role()
     opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
     opts.actor_name   = config_.producer_name;
     opts.actor_uid    = config_.producer_uid;
+    // DataBlock-layer overrun detection: auto-activated when target_period_ms > 0.
+    // This wires the same period into acquire_write_slot() so overrun_count tracks
+    // start-to-start violations without a separate config field.
+    if (config_.target_period_ms > 0)
+    {
+        opts.loop_policy = hub::LoopPolicy::FixedRate;
+        opts.period_ms   = std::chrono::milliseconds{config_.target_period_ms};
+    }
+    opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
+    opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
+
+    // Inbox setup (optional) — must start before Producer::create so actual_endpoint
+    // can be included in opts.inbox_endpoint → REG_REQ.
+    if (config_.has_inbox())
+    {
+        const std::string ep = config_.inbox_endpoint.empty()
+            ? "tcp://127.0.0.1:0"  // OS-assigned port
+            : config_.inbox_endpoint;
+        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec_, inbox_schema_slot_size_);
+        // Serialize full SchemaSpec JSON (with field names) for ROLE_INFO_REQ discovery.
+        // parse_schema_json() on the receiver side needs {"fields":[{"name":...,"type":...}]}.
+        nlohmann::json spec_json;
+        spec_json["fields"] = nlohmann::json::array();
+        for (const auto &f : inbox_spec_.fields)
+        {
+            nlohmann::json fj = {{"name", f.name}, {"type", f.type_str}};
+            if (f.count > 1)  fj["count"]  = f.count;
+            if (f.length > 0) fj["length"] = f.length;
+            spec_json["fields"].push_back(fj);
+        }
+        if (inbox_spec_.packing != "aligned") spec_json["packing"] = inbox_spec_.packing;
+        const std::string packing = config_.zmq_packing.empty() ? "aligned" : config_.zmq_packing;
+        const int inbox_rcvhwm = (config_.inbox_overflow_policy == "block")
+            ? 0
+            : static_cast<int>(config_.inbox_buffer_depth);
+        inbox_queue_ = hub::InboxQueue::bind_at(ep, std::move(zmq_fields),
+                                                  packing,
+                                                  inbox_rcvhwm);
+        if (!inbox_queue_ || !inbox_queue_->start())
+        {
+            LOGGER_ERROR("[prod] Failed to start InboxQueue for channel '{}'", config_.channel);
+            if (inbox_queue_) inbox_queue_.reset();
+            return false;
+        }
+        opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
+        opts.inbox_schema_json = spec_json.dump();
+        opts.inbox_packing     = packing;
+    }
 
     if (config_.shm_enabled)
     {
@@ -187,7 +258,10 @@ bool ProducerScriptHost::start_role()
     {
         if (!out_messenger_.connect(config_.broker, config_.broker_pubkey,
                                     config_.auth.client_pubkey, config_.auth.client_seckey))
-            LOGGER_WARN("[prod] broker connect failed ({}); degraded", config_.broker);
+        {
+            LOGGER_ERROR("[prod] broker connect failed ({}); aborting", config_.broker);
+            return false;
+        }
     }
 
     auto maybe_producer = hub::Producer::create(out_messenger_, opts);
@@ -197,6 +271,10 @@ bool ProducerScriptHost::start_role()
         return false;
     }
     out_producer_ = std::move(maybe_producer);
+
+    // Initialize DataBlock metrics tracking for this run.
+    if (auto *out_shm = out_producer_->shm(); out_shm != nullptr)
+        out_shm->clear_metrics();
 
     if (!config_.channel.empty())
     {
@@ -224,15 +302,7 @@ bool ProducerScriptHost::start_role()
     // UnicodeDecodeError when json_to_py() converts to py::str.
     auto hex_identity = [](const std::string &raw) -> std::string
     {
-        static constexpr char kHex[] = "0123456789abcdef";
-        std::string out;
-        out.reserve(raw.size() * 2);
-        for (unsigned char c : raw)
-        {
-            out.push_back(kHex[c >> 4]);
-            out.push_back(kHex[c & 0x0f]);
-        }
-        return out;
+        return format_tools::bytes_to_hex(raw);
     };
 
     // Wire peer events → IncomingMessage queue as event dicts.
@@ -300,6 +370,56 @@ bool ProducerScriptHost::start_role()
         return false;
     }
 
+    // ── Wire peer-dead and hub-dead monitoring ─────────────────────────────────
+    out_producer_->on_peer_dead([this]() {
+        LOGGER_WARN("[prod] peer-dead: consumer silent for {} ms; triggering shutdown",
+                    config_.peer_dead_timeout_ms);
+        stop_reason_.store(static_cast<int>(scripting::StopReason::PeerDead), std::memory_order_relaxed);
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
+    out_messenger_.on_hub_dead([this]() {
+        LOGGER_WARN("[prod] hub-dead: broker connection lost; triggering shutdown");
+        stop_reason_.store(static_cast<int>(scripting::StopReason::HubDead), std::memory_order_relaxed);
+        core_.shutdown_requested.store(true, std::memory_order_release);
+    });
+
+    // ── Create transport queue ─────────────────────────────────────────────────
+    if (config_.transport == Transport::Shm)
+    {
+        auto *out_shm = out_producer_->shm();
+        if (out_shm == nullptr)
+        {
+            LOGGER_ERROR("[prod] transport=shm but SHM unavailable for channel '{}'",
+                         config_.channel);
+            return false;
+        }
+        auto shm_q = hub::ShmQueue::from_producer_ref(
+            *out_shm, schema_slot_size_, core_.schema_fz_size, config_.channel);
+        queue_ = std::move(shm_q);
+    }
+    else // Transport::Zmq
+    {
+        auto zmq_fields = scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
+        queue_ = hub::ZmqQueue::push_to(
+            config_.zmq_out_endpoint, std::move(zmq_fields), config_.zmq_packing,
+            config_.zmq_out_bind, std::nullopt, 0, config_.zmq_buffer_depth);
+        if (!queue_)
+        {
+            LOGGER_ERROR("[prod] Failed to create ZmqQueue for endpoint '{}'",
+                         config_.zmq_out_endpoint);
+            return false;
+        }
+    }
+
+    if (!queue_->start())
+    {
+        LOGGER_ERROR("[prod] Queue::start() failed for channel '{}'", config_.channel);
+        queue_.reset();
+        return false;
+    }
+    queue_->set_checksum_options(config_.update_checksum, core_.has_fz);
+
     // Wire API + flexzone.
     try
     {
@@ -317,38 +437,34 @@ bool ProducerScriptHost::start_role()
         api_obj_ = py::cast(&api_, py::return_value_policy::reference);
         api_.set_producer(&*out_producer_);
         api_.set_messenger(&out_messenger_);
+        api_.set_queue(queue_.get());
 
-        if (core_.has_fz)
+        if (void *fz = queue_->write_flexzone();
+            fz != nullptr && queue_->flexzone_size() > 0)
         {
-            auto *out_shm = out_producer_->shm();
-            if (out_shm != nullptr)
-            {
-                auto fz_span = out_shm->flexible_zone_span();
-                fz_mv_ = py::memoryview::from_memory(
-                    fz_span.data(),
-                    static_cast<ssize_t>(fz_span.size_bytes()),
-                    /*readonly=*/false);
+            const size_t fz_sz = queue_->flexzone_size();
+            fz_mv_ = py::memoryview::from_memory(fz, static_cast<ssize_t>(fz_sz),
+                                                 /*readonly=*/false);
 
-                if (core_.fz_spec.exposure == scripting::SlotExposure::Ctypes)
+            if (core_.fz_spec.exposure == scripting::SlotExposure::Ctypes)
+            {
+                fz_inst_ = fz_type_.attr("from_buffer")(fz_mv_);
+            }
+            else
+            {
+                py::module_ np = py::module_::import("numpy");
+                if (!core_.fz_spec.numpy_shape.empty())
                 {
-                    fz_inst_ = fz_type_.attr("from_buffer")(fz_mv_);
+                    py::list shape;
+                    for (auto d : core_.fz_spec.numpy_shape) shape.append(d);
+                    fz_inst_ = np.attr("ndarray")(shape, fz_type_, fz_mv_);
                 }
                 else
                 {
-                    py::module_ np = py::module_::import("numpy");
-                    if (!core_.fz_spec.numpy_shape.empty())
-                    {
-                        py::list shape;
-                        for (auto d : core_.fz_spec.numpy_shape) shape.append(d);
-                        fz_inst_ = np.attr("ndarray")(shape, fz_type_, fz_mv_);
-                    }
-                    else
-                    {
-                        const size_t items =
-                            fz_span.size_bytes() / fz_type_.attr("itemsize").cast<size_t>();
-                        fz_inst_ = np.attr("ndarray")(
-                            py::make_tuple(static_cast<ssize_t>(items)), fz_type_, fz_mv_);
-                    }
+                    const size_t items =
+                        fz_sz / fz_type_.attr("itemsize").cast<size_t>();
+                    fz_inst_ = np.attr("ndarray")(
+                        py::make_tuple(static_cast<ssize_t>(items)), fz_type_, fz_mv_);
                 }
             }
         }
@@ -366,16 +482,51 @@ bool ProducerScriptHost::start_role()
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", config_.channel,
                 out_producer_->has_shm());
 
+    // Startup coordination (HEP-0023): wait for required peer roles before on_init.
+    for (const auto &wr : config_.wait_for_roles)
+    {
+        LOGGER_INFO("[prod] Startup: waiting for role '{}' (timeout {}ms)...",
+                    wr.uid, wr.timeout_ms);
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds{wr.timeout_ms};
+        static constexpr int kPollMs = 200;
+        bool found = false;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+                break;
+            const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
+            py::gil_scoped_release rel;
+            if (out_messenger_.query_role_presence(wr.uid, poll_ms))
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            LOGGER_ERROR("[prod] Startup wait failed: role '{}' not present after {}ms",
+                         wr.uid, wr.timeout_ms);
+            return false;
+        }
+        LOGGER_INFO("[prod] Startup: role '{}' found", wr.uid);
+    }
+
     core_.running_threads.store(true);
 
-    zmq_thread_ = std::thread([this] { run_zmq_thread_(); });
+    ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
+
+    if (inbox_queue_)
+        inbox_thread_ = std::thread([this] { run_inbox_thread_(); });
 
     call_on_init_common_();
 
     if (!core_.running_threads.load())
         return true;
 
-    loop_thread_ = std::thread([this] { run_loop_shm_(); });
+    loop_thread_ = std::thread([this] { run_loop_(); });
 
     main_thread_release_.emplace();
     return true;
@@ -384,7 +535,7 @@ bool ProducerScriptHost::start_role()
 void ProducerScriptHost::stop_role()
 {
     core_.running_threads.store(false);
-    core_.notify_incoming();
+    core_.notify_incoming(); // unblock run_role_main_loop() immediately
 
     {
         py::gil_scoped_release release;
@@ -394,11 +545,31 @@ void ProducerScriptHost::stop_role()
         // which unblocks both threads within milliseconds. A timed join would require
         // a detach fallback, which risks use-after-free on the ProducerImpl data.
         // Revisit if watchdog-driven kill is ever needed.
-        if (loop_thread_.joinable()) loop_thread_.join();
-        if (zmq_thread_.joinable())  zmq_thread_.join();
+        if (loop_thread_.joinable())  loop_thread_.join();
+        if (ctrl_thread_.joinable())   ctrl_thread_.join();
+        // Inbox thread: join BEFORE stopping inbox_queue_.
+        // The inbox loop checks core_.running_threads (already false) at every
+        // iteration and exits naturally after the next recv_one() timeout (~100ms).
+        // Closing the ZMQ socket via inbox_queue_->stop() while inbox_thread_ is
+        // inside zmq_recv() would violate ZMQ's single-thread-per-socket rule. CR-02.
+        if (inbox_thread_.joinable()) inbox_thread_.join();
+        if (inbox_queue_) inbox_queue_->stop();
+        if (inbox_queue_) inbox_queue_.reset();
     }
 
     call_on_stop_common_();
+
+    // Stop the transport queue before stopping the producer connection so any
+    // in-flight send_thread_ work drains cleanly before the broker tears down.
+    if (queue_)
+    {
+        queue_->stop();
+        queue_.reset();
+    }
+
+    // Deregister hub-dead callback before closing the messenger so the worker
+    // thread cannot invoke a callback pointing into this (now-stopping) object.
+    out_messenger_.on_hub_dead(nullptr);
 
     if (out_producer_.has_value())
     {
@@ -409,6 +580,7 @@ void ProducerScriptHost::stop_role()
 
     api_.set_flexzone_obj(nullptr);
     api_.set_producer(nullptr);
+    api_.set_queue(nullptr);
     clear_role_pyobjects();
     clear_common_pyobjects_();
 
@@ -417,6 +589,16 @@ void ProducerScriptHost::stop_role()
 
 void ProducerScriptHost::cleanup_on_start_failure()
 {
+    if (inbox_queue_)
+    {
+        inbox_queue_->stop();
+        inbox_queue_.reset();
+    }
+    if (queue_)
+    {
+        queue_->stop();
+        queue_.reset();
+    }
     if (out_producer_.has_value())
     {
         out_producer_->stop();
@@ -427,17 +609,17 @@ void ProducerScriptHost::cleanup_on_start_failure()
 
 void ProducerScriptHost::clear_role_pyobjects()
 {
+    api_.clear_inbox_cache();
     py_on_produce_ = py::none();
     slot_type_     = py::none();
+    py_on_inbox_   = py::none();
+    inbox_type_    = py::none();
 }
 
 void ProducerScriptHost::update_fz_checksum_after_init()
 {
-    if (core_.has_fz)
-    {
-        if (auto *shm = out_producer_->shm())
-            (void)shm->update_checksum_flexible_zone();
-    }
+    if (queue_)
+        queue_->sync_flexzone_checksum();
 }
 
 // ============================================================================
@@ -470,58 +652,70 @@ bool ProducerScriptHost::call_on_produce_(py::object &out_sv, py::object &fz,
             core_.running_threads.store(false);
         return false;
     }
-    return parse_on_produce_return(ret);
+    auto [commit, is_err] = parse_on_produce_return(ret);
+    if (is_err)
+        api_.increment_script_errors();
+    return commit;
 }
 
 // ============================================================================
-// run_loop_shm_ — timer-driven production loop
+// run_loop_ — transport-agnostic timer-driven production loop
+//
+// Uses the hub::QueueWriter interface for both SHM and ZMQ transports:
+//   - ShmQueue (transport=shm): write_acquire blocks up to acquire_timeout;
+//     write_commit() applies checksum if configured via set_checksum_options().
+//   - ZmqQueue (transport=zmq): write_acquire returns immediately (Drop policy);
+//     write_commit() enqueues to the internal send ring; send_thread_ delivers async.
 // ============================================================================
 
-void ProducerScriptHost::run_loop_shm_()
+void ProducerScriptHost::run_loop_()
 {
-    auto *out_shm = out_producer_->shm();
-
-    if (out_shm == nullptr)
+    if (!queue_)
     {
-        LOGGER_ERROR("[prod] Output SHM unavailable (channel='{}')", config_.channel);
+        LOGGER_ERROR("[prod] run_loop_: transport queue not initialized — aborting");
         core_.running_threads.store(false);
         return;
     }
 
-    static constexpr int kShmBlockMs = 5000;
-    const int acquire_ms = config_.timeout_ms > 0 ? config_.timeout_ms : kShmBlockMs;
+    // Acquire timeout: positive config value, or fallback to 5 s for SHM blocking.
+    // ZmqQueue with Drop policy ignores the timeout (returns immediately).
+    static constexpr int kDefaultBlockMs = 5000;
+    const auto acquire_timeout = std::chrono::milliseconds{
+        config_.timeout_ms > 0 ? config_.timeout_ms : kDefaultBlockMs};
+
+    // Deadline tracking: each iteration targets a start-to-start period of target_period_ms.
+    // When target_period_ms == 0, free-run mode: no sleep, no deadline.
+    // The first iteration fires immediately; subsequent iterations sleep to hit the deadline.
+    auto next_deadline = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds{config_.target_period_ms};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !api_.critical_error())
     {
-        // Timer-driven: sleep interval_ms between iterations.
-        if (config_.interval_ms > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds{config_.interval_ms});
-
-        if (!core_.running_threads.load() || core_.shutdown_requested.load() ||
-            api_.critical_error())
-            break;
+        const auto iter_start = std::chrono::steady_clock::now();
 
         auto msgs = core_.drain_messages();
 
-        auto out_handle = out_shm->acquire_write_slot(acquire_ms);
-        if (!out_handle)
+        void *buf = queue_->write_acquire(acquire_timeout);
+        if (!buf)
         {
             api_.increment_drops();
-            LOGGER_WARN("[prod] Output SHM full — skipped iteration");
+            LOGGER_WARN("[prod] write_acquire() returned nullptr — skipped iteration "
+                        "(transport={}, channel='{}')",
+                        (config_.transport == Transport::Shm ? "shm" : "zmq"),
+                        config_.channel);
             continue;
         }
 
-        auto         out_span = out_handle->buffer_span();
-        const size_t out_sz   = std::min(out_span.size_bytes(), schema_slot_size_);
-        std::memset(out_span.data(), 0, out_sz);
+        const size_t buf_sz = queue_->item_size();
+        std::memset(buf, 0, buf_sz);
 
         bool commit = false;
         {
             py::gil_scoped_acquire g;
             try
             {
-                py::object out_sv = make_out_slot_view_(out_span.data(), out_sz);
+                py::object out_sv = make_out_slot_view_(buf, buf_sz);
                 py::list   mlst   = build_messages_list_(msgs);
                 commit = call_on_produce_(out_sv, fz_inst_, mlst);
             }
@@ -536,25 +730,45 @@ void ProducerScriptHost::run_loop_shm_()
 
         if (commit)
         {
-            (void)out_handle->commit(out_sz);
-            if (config_.update_checksum)
-            {
-                (void)out_handle->update_checksum_slot();
-                if (core_.has_fz)
-                    (void)out_handle->update_checksum_flexible_zone();
-            }
+            queue_->write_commit();
             api_.increment_out_written();
         }
         else
         {
+            queue_->write_discard();
             api_.increment_drops();
         }
-        (void)out_shm->release_write_slot(*out_handle);
 
         iteration_count_.fetch_add(1, std::memory_order_relaxed);
+
+        // Record work time (always), then sleep to hit target_period_ms (if FixedRate policy).
+        {
+            const auto now     = std::chrono::steady_clock::now();
+            const auto work_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(now - iter_start).count());
+            api_.set_last_cycle_work_us(work_us);
+
+            if (config_.loop_timing != LoopTimingPolicy::MaxRate)
+            {
+                if (now < next_deadline)
+                {
+                    std::this_thread::sleep_for(next_deadline - now);
+                    next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                }
+                else
+                {
+                    // Overrun: start-to-start exceeded target_period_ms.
+                    if (config_.loop_timing == LoopTimingPolicy::FixedRateWithCompensation) {
+                        next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                    } else { // FixedRate: reset from now — no catch-up
+                        next_deadline = now + std::chrono::milliseconds{config_.target_period_ms};
+                    }
+                }
+            }
+        }
     }
 
-    LOGGER_INFO("[prod] run_loop_shm_ exiting: running_threads={} shutdown_requested={} "
+    LOGGER_INFO("[prod] run_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={} g_shutdown={}",
                 core_.running_threads.load(), core_.shutdown_requested.load(),
                 api_.critical_error(),
@@ -562,10 +776,10 @@ void ProducerScriptHost::run_loop_shm_()
 }
 
 // ============================================================================
-// run_zmq_thread_ — polls producer peer socket, sends heartbeats
+// run_ctrl_thread_ — polls producer peer socket, sends heartbeats
 // ============================================================================
 
-void ProducerScriptHost::run_zmq_thread_()
+void ProducerScriptHost::run_ctrl_thread_()
 {
     scripting::ZmqPollLoop loop{core_, "prod:" + config_.producer_uid};
     loop.sockets = {
@@ -578,6 +792,69 @@ void ProducerScriptHost::run_zmq_thread_()
                                                 api_.snapshot_metrics_json()); },
         config_.heartbeat_interval_ms);
     loop.run();
+}
+
+// ============================================================================
+// make_inbox_slot_view_ — read-only slot view for on_inbox callback
+// ============================================================================
+
+py::object ProducerScriptHost::make_inbox_slot_view_(const void* data, size_t size) const
+{
+    auto mv = py::memoryview::from_memory(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        const_cast<void*>(data), static_cast<ssize_t>(size), /*readonly=*/true);
+    if (inbox_spec_.exposure == scripting::SlotExposure::Ctypes)
+        return inbox_type_.attr("from_buffer_copy")(mv);
+    // NumpyArray or raw: return bytes view
+    return mv;
+}
+
+// ============================================================================
+// run_inbox_thread_ — receives inbox messages, dispatches on_inbox callback
+// ============================================================================
+
+void ProducerScriptHost::run_inbox_thread_()
+{
+    static constexpr auto kPollTimeout = std::chrono::milliseconds{100};
+
+    while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
+           !api_.critical_error())
+    {
+        if (!inbox_queue_) break;
+
+        const auto* item = inbox_queue_->recv_one(kPollTimeout);
+        if (!item) continue;
+
+        uint8_t ack_code = 0;
+        {
+            py::gil_scoped_acquire g;
+            try
+            {
+                if (!py_on_inbox_.is_none())
+                {
+                    auto sv = make_inbox_slot_view_(item->data, inbox_schema_slot_size_);
+                    py_on_inbox_(sv, py::str(item->sender_id), api_obj_);
+                }
+            }
+            catch (py::error_already_set &e)
+            {
+                LOGGER_ERROR("[prod] on_inbox raised: {}", e.what());
+                api_.increment_script_errors();
+                ack_code = 3; // handler_error
+                if (config_.stop_on_script_error)
+                    core_.shutdown_requested.store(true, std::memory_order_release);
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_ERROR("[prod] on_inbox exception: {}", e.what());
+                api_.increment_script_errors();
+                ack_code = 3;
+            }
+        }
+        inbox_queue_->send_ack(ack_code);
+    }
+
+    LOGGER_INFO("[prod] run_inbox_thread_ exiting");
 }
 
 } // namespace pylabhub::producer

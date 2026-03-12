@@ -13,6 +13,8 @@
  */
 
 #include "utils/crypto_utils.hpp"
+#include "utils/hub_inbox_queue.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_library.hpp"
 #include "utils/script_host_schema.hpp"
 
@@ -75,9 +77,9 @@ inline SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
         throw std::runtime_error("Schema: unknown 'expose_as' value '" + expose_as + "'");
 
     spec.exposure = SlotExposure::Ctypes;
-    spec.packing  = schema_obj.value("packing", "natural");
-    if (spec.packing != "natural" && spec.packing != "packed")
-        throw std::runtime_error("Schema: 'packing' must be 'natural' or 'packed'");
+    spec.packing  = schema_obj.value("packing", "aligned");
+    if (spec.packing != "aligned" && spec.packing != "packed")
+        throw std::runtime_error("Schema: 'packing' must be 'aligned' or 'packed'");
 
     if (!schema_obj.contains("fields") || !schema_obj["fields"].is_array())
         throw std::runtime_error("Schema: ctypes mode requires a 'fields' array");
@@ -130,7 +132,7 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
     SchemaSpec spec;
     spec.has_schema = true;
     spec.exposure   = SlotExposure::Ctypes;
-    spec.packing    = "natural";
+    spec.packing    = "aligned";
 
     for (const auto &sf : layout.fields)
     {
@@ -466,5 +468,110 @@ inline void print_numpy_layout(const py::object &dtype, const SchemaSpec &spec, 
     }
     std::cout << "\n";
 }
+
+// ── ZMQ schema conversion ────────────────────────────────────────────────────
+
+/// Convert a SchemaSpec to a ZmqSchemaField list for ZmqQueue/InboxQueue.
+/// NumpyArray exposure or no fields → single-blob schema of slot_size bytes.
+inline std::vector<hub::ZmqSchemaField>
+schema_spec_to_zmq_fields(const SchemaSpec &spec, size_t slot_size)
+{
+    if (spec.exposure == SlotExposure::NumpyArray || spec.fields.empty())
+        return {{"bytes", 1, static_cast<uint32_t>(slot_size)}};
+    std::vector<hub::ZmqSchemaField> out;
+    out.reserve(spec.fields.size());
+    for (const auto &f : spec.fields)
+        out.push_back({f.type_str, f.count, f.length});
+    return out;
+}
+
+// ── InboxHandle — Python-facing wrapper for hub::InboxClient ─────────────────
+
+/**
+ * @class InboxHandle
+ * @brief Python-visible wrapper for hub::InboxClient.
+ *
+ * Returned by api.open_inbox(uid). The script holds this object to send typed
+ * messages to another role's inbox.
+ *
+ * Typical script pattern:
+ * @code
+ *   handle = api.open_inbox("PROD-SENSOR-12345678")  # None if not online
+ *   if handle and handle.is_ready():
+ *       slot = handle.acquire()
+ *       slot.value = 42.0
+ *       rc = handle.send()           # 0=OK
+ *       if rc != 0:
+ *           handle = None            # let check_readiness() rediscover next cycle
+ * @endcode
+ */
+class InboxHandle
+{
+  public:
+    InboxHandle(std::shared_ptr<hub::InboxClient> client,
+                SchemaSpec                         spec,
+                py::object                         slot_type,
+                size_t                             item_size)
+        : client_(std::move(client))
+        , spec_(std::move(spec))
+        , slot_type_(std::move(slot_type))
+        , item_size_(item_size)
+    {
+    }
+
+    /// Returns a writable ctypes slot view backed by the client's write buffer.
+    /// Returns None if the client is not connected.
+    py::object acquire()
+    {
+        if (!client_ || !client_->is_running())
+            return py::none();
+        void *buf = client_->acquire();
+        if (!buf)
+            return py::none();
+        return make_slot_view(spec_, slot_type_, buf, item_size_, /*is_read_side=*/false);
+    }
+
+    /// Send the slot contents. Blocks for ACK up to timeout_ms. GIL released during wait.
+    /// Returns 0=OK, non-zero=error code, 255=send failure or ACK timeout.
+    int send(int timeout_ms = 5000)
+    {
+        if (!client_ || !client_->is_running())
+            return 255;
+        py::gil_scoped_release rel;
+        return static_cast<int>(client_->send(std::chrono::milliseconds{timeout_ms}));
+    }
+
+    /// Discard the current slot without sending. The caller's loop continues normally.
+    void discard()
+    {
+        if (client_)
+            client_->abort();
+    }
+
+    [[nodiscard]] bool is_ready() const noexcept
+    {
+        return client_ && client_->is_running();
+    }
+
+    /// Stop the underlying client and invalidate this handle.
+    /// After calling this, is_ready() returns false; acquire/send return error values.
+    void close()
+    {
+        if (client_)
+            client_->stop();
+    }
+
+    /// Release Python objects. Call with GIL held before interpreter shutdown.
+    void clear_pyobjects()
+    {
+        slot_type_ = py::none();
+    }
+
+  private:
+    std::shared_ptr<hub::InboxClient> client_;
+    SchemaSpec                         spec_;
+    py::object                         slot_type_{py::none()};
+    size_t                             item_size_{0};
+};
 
 } // namespace pylabhub::scripting

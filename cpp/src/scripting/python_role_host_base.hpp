@@ -43,6 +43,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <thread>
@@ -54,6 +55,16 @@ namespace pylabhub::scripting
 
 /// Recursively convert nlohmann::json to py::object (dict, list, str, int, float, bool, None).
 py::object json_to_py(const nlohmann::json &val);
+
+/// Reason why the role script host stopped.
+/// 0=Normal, 1=PeerDead, 2=HubDead, 3=CriticalError
+enum class StopReason : int
+{
+    Normal        = 0,
+    PeerDead      = 1,
+    HubDead       = 2,
+    CriticalError = 3,
+};
 
 class PythonRoleHostBase : public PythonScriptHost
 {
@@ -73,6 +84,14 @@ class PythonRoleHostBase : public PythonScriptHost
 
     void set_validate_only(bool v) noexcept { core_.validate_only = v; }
     void set_shutdown_flag(std::atomic<bool> *flag) noexcept { core_.g_shutdown = flag; }
+
+    /**
+     * @brief Block until notified or timeout_ms elapses.
+     *
+     * Used by run_role_main_loop() instead of sleep_for() so that stop_role()
+     * can wake the monitoring thread immediately via core_.notify_incoming().
+     */
+    void wait_for_wakeup(int timeout_ms) noexcept { core_.wait_for_incoming(timeout_ms); }
 
     // ── Common post-startup results ──────────────────────────────────────────
 
@@ -96,7 +115,11 @@ class PythonRoleHostBase : public PythonScriptHost
     py::object py_on_stop_{py::none()}; ///< on_stop callback
 
     std::optional<py::gil_scoped_release> main_thread_release_;
-    std::thread                           zmq_thread_;
+    std::thread                           ctrl_thread_;
+
+    // ── Stop reason (set from peer/hub-dead callbacks before shutdown_requested) ──
+
+    std::atomic<int> stop_reason_{0};  // 0=Normal, 1=PeerDead, 2=CriticalError
 
     // ── Common implementations ───────────────────────────────────────────────
 

@@ -27,8 +27,9 @@
  * }
  * @endcode
  *
- * If an `admin_token` is configured in `hub.json`, the request `token`
- * field must match; otherwise the response is `{"success":false,"error":"unauthorized"}`.
+ * If an admin token is configured (supplied from the vault via HubConfig::set_admin_token()),
+ * the request `token` field must match; otherwise the response is
+ * `{"success":false,"error":"unauthorized"}`.
  * If no token is configured, any local connection is accepted (the socket is
  * bound to `127.0.0.1` by default, restricting access to the local machine).
  *

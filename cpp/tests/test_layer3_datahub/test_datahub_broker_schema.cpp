@@ -109,7 +109,7 @@ class BrokerSchemaTest : public ::testing::Test
             pylabhub::utils::MakeModDefList(
                 pylabhub::utils::Logger::GetLifecycleModule(),
                 pylabhub::crypto::GetLifecycleModule(),
-                pylabhub::hub::GetLifecycleModule()));
+                pylabhub::hub::GetLifecycleModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 

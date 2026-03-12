@@ -1,7 +1,8 @@
 # pyLabHub Directory Layout and Packaging Design
 
 **Purpose:** Authoritative reference for all on-disk directory structures in pyLabHub.
-Covers the installed binary tree, hub instance directories, and actor instance directories.
+Covers the installed binary tree, hub instance directories, and role instance directories
+(producer, consumer, processor).
 
 **Related:** `docs/todo/SECURITY_TODO.md` (identity and directory model design),
 `docs/README/README_CMake_Design.md` (build/staging system),
@@ -17,10 +18,10 @@ pyLabHub uses **two distinct directory types** that serve different purposes:
 |---|---|---|
 | **Install tree** | Binaries, libraries, headers, shared scripts | Build system (`cmake --install`) |
 | **Hub instance directory** | One hub's identity, secrets, config, logs | `pylabhub-hubshell --init` |
-| **Actor instance directory** | One actor's identity, config, script | `pylabhub-actor --init` |
+| **Role instance directory** | One role's config, vault, script | `pylabhub-producer --init` / `pylabhub-consumer --init` / `pylabhub-processor --init` |
 
 The install tree is read-only at runtime and shared across all hubs running on the
-same machine. Hub and actor directories are mutable, per-instance, and created at
+same machine. Hub and role directories are mutable, per-instance, and created at
 init time.
 
 ---
@@ -34,7 +35,9 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
 <install-root>/
   bin/
     pylabhub-hubshell          ← hub process (broker + admin shell + lifecycle)
-    pylabhub-actor             ← actor process (producer or consumer worker)
+    pylabhub-producer          ← producer role binary
+    pylabhub-consumer          ← consumer role binary
+    pylabhub-processor         ← processor role binary
   lib/
     libpylabhub-utils-stable.so.M.m.p   ← shared library (POSIX versioned)
     libpylabhub-utils-stable.so.M       ← soname symlink
@@ -127,7 +130,8 @@ field reference).
       { "channel": "lab.daq.raw.*", "connection_policy": "verified" }
     ],
     "known_actors": [
-      { "name": "lab.daq.sensor1", "uid": "ACTOR-SENSOR1-A1B2C3D4", "role": "producer" }
+      { "name": "lab.daq.sensor1", "uid": "PROD-SENSOR1-A1B2C3D4", "role": "producer" },
+      { "name": "lab.daq.logger",  "uid": "CONS-LOGGER-B5C6D7E8",  "role": "consumer" }
     ]
   },
   "paths": {
@@ -173,85 +177,105 @@ vault is cryptographically bound to the hub identity.
 
 ---
 
-## 3. Actor Instance Directory
+## 3. Role Instance Directories
 
-Each actor has a **persistent identity directory**. Contains its config and per-role
-Python script packages.
+Each role (producer, consumer, or processor) has a **persistent instance directory**.
+The directory holds the role's config, vault (for credentials), script, logs, and
+runtime state. The directory *is* the role — moving it preserves all state; creating a
+new one with `--init` gives a fresh identity.
 
-Created by: `pylabhub-actor --init <actor_dir>`
-Started by: `pylabhub-actor <actor_dir>`
+### Producer instance directory
+
+Created by: `pylabhub-producer --init <producer_dir>`
+Started by: `pylabhub-producer <producer_dir>`
 
 ```
-<actor_dir>/
-  actor.json        ← actor_name, actor_uid, hub_dir, roles (each with script ref)
-  roles/
-    <role_name>/    ← one subdirectory per role (e.g. "data_out", "cfg_in")
-      script/       ← Python package for this role
-        __init__.py ← callbacks: on_init, on_iteration, on_stop
-        helpers.py  ← optional submodule (from . import helpers)
-  logs/             ← log files (optional; created at startup)
+<producer_dir>/
+  producer.json     ← role config: uid, name, broker, channel, transport, schema, script
+  script/
+    python/
+      __init__.py   ← callbacks: on_init, on_produce, on_stop
+  logs/             ← log files (created at startup)
   run/
-    actor.pid       ← PID of running process
+    producer.pid    ← PID of running process
 ```
 
-Each role's script is a **Python package** — a directory named `script/` containing
-`__init__.py`. The package is loaded with `importlib.util.spec_from_file_location`
-using a role-unique `sys.modules` alias (`_plh_<uid_hex>_<role_name>`), ensuring
-isolation between roles even when they share the same module name `"script"`.
+### Consumer instance directory
 
-Relative imports within the package work: `from . import helpers` in `__init__.py`
-imports `roles/<role_name>/script/helpers.py`.
+Created by: `pylabhub-consumer --init <consumer_dir>`
+Started by: `pylabhub-consumer <consumer_dir>`
 
-### actor.json schema (key fields)
+```
+<consumer_dir>/
+  consumer.json     ← role config: uid, name, broker, channel, transport, schema, script
+  script/
+    python/
+      __init__.py   ← callbacks: on_init, on_consume, on_stop
+  logs/             ← log files (created at startup)
+  run/
+    consumer.pid    ← PID of running process
+```
+
+### Processor instance directory
+
+Created by: `pylabhub-processor --init <processor_dir>`
+Started by: `pylabhub-processor <processor_dir>`
+
+```
+<processor_dir>/
+  processor.json    ← role config: uid, name, broker, channels, transport, schema, script
+  script/
+    python/
+      __init__.py   ← callbacks: on_init, on_process, on_stop
+  logs/             ← log files (created at startup)
+  run/
+    processor.pid   ← PID of running process
+```
+
+### Role config key fields
+
+All three role configs share the same structural pattern. Example `producer.json`:
 
 ```json
 {
-  "actor_name": "lab.daq.sensor1",
-  "actor_uid":  "ACTOR-lab.daq.sensor1-A1B2C3D4",
-  "hub_dir":    "/opt/pylabhub/hubs/daq1",
-  "roles": [
-    {
-      "name":    "data_out",
-      "kind":    "producer",
-      "channel": "lab.daq.sensor1.raw",
-      "interval_ms": 100,
-      "slot_schema": { ... },
-      "flexzone_schema": { ... },
-      "script": {
-        "module": "script",
-        "path":   "./roles/data_out"
-      }
-    },
-    {
-      "name":    "cfg_in",
-      "kind":    "consumer",
-      "channel": "lab.daq.sensor1.config",
-      "timeout_ms": 1000,
-      "slot_schema": { ... },
-      "script": {
-        "module": "script",
-        "path":   "./roles/cfg_in"
-      }
-    }
-  ]
+  "producer": {
+    "uid":       "PROD-SENSOR1-3A7F2B1C",
+    "name":      "Sensor1",
+    "log_level": "info"
+  },
+  "broker":          "tcp://127.0.0.1:5570",
+  "broker_pubkey":   "<Z85 40-char>",
+  "channel":         "lab.daq.sensor1.raw",
+  "target_period_ms": 100,
+  "shm": {
+    "enabled":    true,
+    "secret":     1234567890,
+    "slot_count": 8
+  },
+  "slot_schema": [
+    { "name": "ts",    "type": "float64", "count": 1 },
+    { "name": "value", "type": "float32", "count": 1 }
+  ],
+  "script": { "type": "python", "path": "." }
 }
 ```
 
-`hub_dir` is resolved at startup to read `hub.json` (broker endpoint) and `hub.pubkey`
-(CurveZMQ public key). Role names (`"data_out"`, `"cfg_in"`) are user-defined semantic
-identifiers; the role type (`"kind"`) is always separate.
+The `script.path` field is resolved relative to the role directory. `"path": "."` means
+`<role_dir>/script/python/__init__.py`. The hub's CurveZMQ public key is read from
+`broker_pubkey` in the config (or from `<hub_dir>/hub.pubkey` if a hub directory
+reference is used).
 
-See `docs/tech_draft/ACTOR_DESIGN.md §2–3` for the complete config and script
-interface documentation.
+### Role UID formats
 
-`hub_dir` is the only external reference an actor needs:
-- `<hub_dir>/hub.json` → `broker_endpoint`
-- `<hub_dir>/hub.pubkey` → broker CurveZMQ public key for the Messenger CURVE connection
+| Role | Format | Example |
+|------|--------|---------|
+| Producer | `PROD-{NAME}-{8HEX}` | `PROD-SENSOR1-3A7F2B1C` |
+| Consumer | `CONS-{NAME}-{8HEX}` | `CONS-LOGGER-9E1D4C2A` |
+| Processor | `PROC-{NAME}-{8HEX}` | `PROC-SCALER-B3F12E9D` |
 
-### Actor UID format
-
-`ACTOR-{NAME}-{8HEX}` — generated by `uid_utils::generate_actor_uid(actor_name)`.
-Stored in `actor.json["actor_uid"]`. Auto-generated at `--init`; reused across restarts.
+UIDs are auto-generated at `--init` and reused across restarts. They are what the
+broker records in its channel registry and what `known_actors` in `hub.json` must
+reference for `verified` connection policy enforcement.
 
 ---
 
@@ -289,44 +313,41 @@ The password is read from `PYLABHUB_MASTER_PASSWORD` env var when set; otherwise
 `getpass()` prompts interactively (POSIX). The `--dev` mode skips the vault and uses
 an ephemeral CurveZMQ keypair regenerated on each restart (suitable for development).
 
-### Actor directory — current state (actor_dir model, complete)
+### Role directories — current state (fully implemented)
 
-The actor process accepts either a JSON file path (`--config`) or an actor directory
-positional argument:
+Each role binary has a symmetric `--init` flow and directory-based startup:
 
 ```bash
-# Directory-based startup (standard)
-pylabhub-actor <actor_dir>
-  # → reads actor.json from the directory
-  # → resolves broker_endpoint from hub_dir/hub.json
-  # → reads hub.pubkey from hub_dir/hub.pubkey → connects with CurveZMQ
-  # → loads each role's script package from roles/<role_name>/script/__init__.py
-  # → runs role workers (loop_thread_ + zmq_thread_ per role)
-
-# Init flow (creates a new actor directory)
-pylabhub-actor --init <actor_dir>
-  # → prompts: actor_name
-  # → generates actor_uid (ACTOR-{name}-{8HEX})
-  # → writes actor.json (with example data_out role)
+# First-time setup (producer example; same pattern for consumer/processor)
+pylabhub-producer --init <producer_dir>
+  # → prompts: role name (e.g. "Sensor1")
+  # → prompts: master password (twice, confirm) — written to producer.vault
+  # → generates producer_uid (PROD-{NAME}-{8HEX})
+  # → writes producer.json with uid, name, defaults
+  # → creates script/python/__init__.py with template callbacks
   # → creates logs/, run/ subdirectories
-  # → creates roles/data_out/script/__init__.py with template callbacks
 
+# Subsequent runs
+pylabhub-producer <producer_dir>
+  # → reads producer.json (broker endpoint, channel, schema, transport)
+  # → decrypts producer.vault (password prompt or PYLABHUB_MASTER_PASSWORD env var)
+  # → connects to broker with CurveZMQ using hub.pubkey from broker_pubkey field
+  # → runs producer loop: on_init → on_produce (per period) → on_stop
 ```
 
 ```bash
-# Register with hub (for 'verified' connection policy)
-pylabhub-actor --register-with <hub_dir> <actor_dir>
-  # → appends actor_name + actor_uid to hub.json known_actors
+# Same pattern for consumer:
+pylabhub-consumer --init <consumer_dir>
+pylabhub-consumer <consumer_dir>
+
+# Same pattern for processor:
+pylabhub-processor --init <processor_dir>
+pylabhub-processor <processor_dir>
 ```
 
-### Producer and Consumer directories
-
-pyLabHub does not have separate producer/consumer directories. Each actor is either
-a producer or a consumer (or has multiple roles). The actor directory holds one
-actor's config and script for all its roles.
-
-The `hub_dir` reference in `actor.json` is the only link from actor to hub — the
-actor reads `hub.pubkey` and `hub.json["broker_endpoint"]` from there.
+The broker's CurveZMQ public key is embedded in the role config as `broker_pubkey`
+(a Z85 40-char string). This is copied from `<hub_dir>/hub.pubkey` at setup time.
+There is no runtime `hub_dir` reference — the role config is self-contained.
 
 ---
 
@@ -341,13 +362,15 @@ The hub directory model is fully implemented:
 - `pylabhub-hubshell --dev` uses built-in compiled-in defaults and an ephemeral keypair
 - `pylabhub-hubshell --init <hub_dir>` creates the hub instance directory
 
-**Complete (2026-02-27):** `uuid_utils.hpp/cpp` (UUID4 via libsodium CSRNG),
-`uid_utils.hpp` (pylabhub-format UIDs: `HUB-{NAME}-{8HEX}`, `ACTOR-{NAME}-{8HEX}`),
+**Complete (2026-02-27 – 2026-03-10):** `uuid_utils.hpp/cpp` (UUID4 via libsodium CSRNG),
+`uid_utils.hpp` (pylabhub-format UIDs: `HUB-{NAME}-{8HEX}`, `PROD-{NAME}-{8HEX}`,
+`CONS-{NAME}-{8HEX}`, `PROC-{NAME}-{8HEX}`),
 `hub_vault.hpp/cpp` (`HubVault::create()` / `HubVault::open()` / `publish_public_key()`),
 `pylabhub-hubshell --init <hub_dir>` CLI, `pylabhub-hubshell <hub_dir>` directory startup,
 `channel_access_policy.hpp` (ConnectionPolicy: Open/Tracked/Required/Verified enforcement),
-actor identity fields wired into REG_REQ/CONSUMER_REG_REQ broker protocol,
-single-file HubConfig (compiled-in defaults + hub.json; layered flat-config removed).
+role identity fields wired into REG_REQ/CONSUMER_REG_REQ broker protocol,
+single-file HubConfig (compiled-in defaults + hub.json; layered flat-config removed),
+producer/consumer/processor `--init` flows with correct config templates.
 
 ---
 
@@ -376,20 +399,21 @@ Hub config files (`hub.json`) are not staged by CMake — they are created by
 | CurveZMQ stable keypair from vault | ✅ complete (2026-02-26) |
 | Admin token from vault | ✅ complete (2026-02-26) |
 | HubConfig single-file load (`hub.json`) | ✅ complete (2026-02-27) |
-| Actor config path (`<actor_dir>/actor.json`) | ✅ complete (2026-02-25) |
+| Producer config path (`<producer_dir>/producer.json`) | ✅ complete (2026-03-08) |
+| Consumer config path (`<consumer_dir>/consumer.json`) | ✅ complete (2026-03-10) |
+| Processor config path (`<processor_dir>/processor.json`) | ✅ complete (2026-03-10) |
 | Hub pubkey distribution (`hub.pubkey`) | ✅ complete (2026-02-26) |
-| Actor registration (`--register-with`) | ✅ complete (2026-02-26) |
 | Connection policy enforcement | ✅ complete (2026-02-26) |
 
-### Hub and actor directories are NOT in the install tree
+### Hub and role directories are NOT in the install tree
 
-Hub and actor instance directories live **outside** the install tree — they are
+Hub and role instance directories live **outside** the install tree — they are
 created by `--init` at a user-chosen path, not by the build system. The install
 tree provides the binaries and shared scripts; the instance directories hold
-per-hub/per-actor identity and runtime state.
+per-hub/per-role config and runtime state.
 
 This is the standard Unix pattern: binaries in `/usr/local/bin/`, instance data
-in `/opt/pylabhub/hubs/daq1/` or `~/.pylabhub/hubs/daq1/`.
+in `/opt/pylabhub/hubs/daq1/` or `~/.pylabhub/producers/sensor1/`.
 
 ### Directory creation at startup
 
@@ -406,12 +430,14 @@ is otherwise not managed by CMake.
 |---|---|
 | System install (multi-user) | `/usr/local/lib/pylabhub/` (install tree) |
 | Hub instance | `/opt/pylabhub/hubs/<hub_name>/` or `~/pylabhub/hubs/<hub_name>/` |
-| Actor instance | `/opt/pylabhub/actors/<actor_name>/` or `~/pylabhub/actors/<actor_name>/` |
-| Development (staged) | `cpp/build/stage-debug/` (install tree); `./hubs/`, `./actors/` (instances) |
+| Producer instance | `/opt/pylabhub/producers/<name>/` or `~/pylabhub/producers/<name>/` |
+| Consumer instance | `/opt/pylabhub/consumers/<name>/` or `~/pylabhub/consumers/<name>/` |
+| Processor instance | `/opt/pylabhub/processors/<name>/` or `~/pylabhub/processors/<name>/` |
+| Development (staged) | `cpp/build/stage-debug/` (install tree); `./hubs/`, `./roles/` (instances) |
 
-No default instance paths are hardwired in the binary. The `<hub_dir>` and
-`<actor_dir>` are always passed as CLI arguments. Running `pylabhub-hubshell`
-without a `<hub_dir>` is an error unless `--dev` is passed.
+No default instance paths are hardwired in any binary. The `<role_dir>` is always
+passed as a CLI argument. Running `pylabhub-hubshell` without a `<hub_dir>` is an
+error unless `--dev` is passed.
 
 ---
 

@@ -27,8 +27,12 @@
  */
 
 #include "utils/hub_consumer.hpp"
+#include "utils/hub_inbox_queue.hpp"
+#include "utils/hub_queue.hpp"
 #include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
+#include "utils/script_host_helpers.hpp"
+#include "utils/shared_memory_spinlock.hpp"
 
 #include <nlohmann/json_fwd.hpp>
 #include <pybind11/pybind11.h>
@@ -65,10 +69,18 @@ class ConsumerAPI
 
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
+    void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
+    void set_reader(const hub::QueueReader *r) noexcept
+        { reader_.store(r, std::memory_order_release); }
+    void update_last_seq(uint64_t seq) noexcept
+        { last_seq_snapshot_.store(seq, std::memory_order_relaxed); }
 
-    void increment_script_errors() noexcept { ++script_errors_; }
+    void increment_script_errors() noexcept
+        { script_errors_.fetch_add(1, std::memory_order_relaxed); }
     void increment_in_received() noexcept
         { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
+    void set_last_cycle_work_us(uint64_t us) noexcept
+        { last_cycle_work_us_.store(us, std::memory_order_relaxed); }
 
     // ── Python-accessible — identity / environment ────────────────────────────
 
@@ -97,11 +109,48 @@ class ConsumerAPI
     /// Query the broker for SHM block topology and DataBlockMetrics.
     py::object shm_blocks(const std::string& channel = {});
 
+    /// Open (or return cached) an InboxHandle to send typed messages to another role.
+    /// Discovers inbox_endpoint + schema from the broker via ROLE_INFO_REQ.
+    /// Returns py::none() if the target is not online or has no inbox.
+    py::object open_inbox(const std::string &target_uid);
+
+    /// Block until the broker confirms the role with @p uid is registered,
+    /// or until @p timeout_ms elapses. GIL is released during polling.
+    /// Returns true if the role is online before timeout.
+    bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
+
+    /// Clear all InboxHandle Python objects and stop clients. Call with GIL held.
+    void clear_inbox_cache();
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
-    [[nodiscard]] uint64_t in_slots_received()  const noexcept
+    [[nodiscard]] uint64_t script_error_count()  const noexcept
+        { return script_errors_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t in_slots_received()   const noexcept
         { return in_slots_received_.load(std::memory_order_relaxed); }
+    /// Consumer is demand-driven (no deadline); always returns 0. Present for API symmetry.
+    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
+
+    /// Enable/disable BLAKE2b checksum verification on input slots (SHM path only).
+    /// No-op when the input path is ZMQ (TCP provides integrity).
+    void set_verify_checksum(bool enable);
+    /// Microseconds of active work (GIL acquire + on_consume callback + slot release) last iteration.
+    [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
+        { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+    /// Monotonic sequence number of the last slot returned by read_acquire(). 0 until first slot.
+    [[nodiscard]] uint64_t last_seq() const noexcept
+        { return last_seq_snapshot_.load(std::memory_order_relaxed); }
+    /// Ring/recv buffer slot count for the input transport queue. 0 if not connected.
+    [[nodiscard]] size_t      in_capacity() const noexcept;
+    /// Overflow policy description for the input queue (e.g. "shm_read", "zmq_pull_ring_64").
+    [[nodiscard]] std::string in_policy()   const;
+    /// Combined metrics dict: DataBlock ContextMetrics + last_cycle_work_us + script_errors.
+    [[nodiscard]] py::dict metrics() const;
+
+    // ── Python-accessible — SHM spinlocks (SHM transport only) ───────────────
+
+    py::object spinlock(std::size_t index);
+    [[nodiscard]] uint32_t spinlock_count() const noexcept;
 
     // ── Python-accessible — custom metrics (HEP-CORE-0019) ─────────────────
 
@@ -113,11 +162,20 @@ class ConsumerAPI
 
     [[nodiscard]] nlohmann::json snapshot_metrics_json() const;
 
+    // ── Python-accessible — shutdown diagnostics ─────────────────────────────
+
+    /// Returns reason the role stopped: "normal", "peer_dead", or "critical_error".
+    [[nodiscard]] std::string stop_reason() const noexcept;
+    /// Number of ctrl-send messages dropped due to queue overflow.
+    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
+
   private:
-    hub::Consumer    *consumer_{nullptr};
-    hub::Messenger   *messenger_{nullptr};
-    std::atomic<bool>*shutdown_flag_{nullptr};
-    std::atomic<bool>*shutdown_requested_{nullptr};
+    hub::Consumer         *consumer_{nullptr};
+    hub::Messenger        *messenger_{nullptr};
+    std::atomic<const hub::QueueReader*> reader_{nullptr}; ///< Non-owning; set by ConsumerScriptHost
+    std::atomic<bool>     *shutdown_flag_{nullptr};
+    std::atomic<bool>     *shutdown_requested_{nullptr};
+    std::atomic<int>      *stop_reason_{nullptr};
 
     std::atomic<bool> critical_error_{false};
 
@@ -127,11 +185,39 @@ class ConsumerAPI
     std::string log_level_;
     std::string script_dir_;
 
-    uint64_t              script_errors_{0};
+    std::atomic<uint64_t> script_errors_{0};
     std::atomic<uint64_t> in_slots_received_{0};
+    std::atomic<uint64_t> last_cycle_work_us_{0};
+    std::atomic<uint64_t> last_seq_snapshot_{0};  ///< Updated by loop_thread_ after each read_acquire()
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;
+    std::unordered_map<std::string, py::object>      inbox_cache_;
+};
+
+// ============================================================================
+// ConsumerSpinLockPy — Python context-manager for SHM spinlocks
+// ============================================================================
+
+class ConsumerSpinLockPy
+{
+  public:
+    explicit ConsumerSpinLockPy(hub::SharedSpinLock lock) : lock_(std::move(lock)) {}
+
+    void lock()   { lock_.lock(); }
+    void unlock() { lock_.unlock(); }
+
+    bool try_lock_for(int timeout_ms) { return lock_.try_lock_for(timeout_ms); }
+
+    [[nodiscard]] bool is_locked_by_current_process() const
+        { return lock_.is_locked_by_current_process(); }
+
+    ConsumerSpinLockPy &enter() { lock_.lock(); return *this; }
+    void exit(py::object /*exc_type*/, py::object /*exc_val*/, py::object /*exc_tb*/)
+        { lock_.unlock(); }
+
+  private:
+    hub::SharedSpinLock lock_;
 };
 
 } // namespace pylabhub::consumer

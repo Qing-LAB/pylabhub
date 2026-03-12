@@ -33,6 +33,7 @@ static fs::path unique_temp_dir(const std::string &prefix)
     const int id = counter.fetch_add(1);
     fs::path dir = fs::temp_directory_path()
                    / ("plh_prodcli_" + prefix + "_" + std::to_string(id));
+    fs::remove_all(dir);          // start fresh regardless of previous runs
     fs::create_directories(dir);
     return dir;
 }
@@ -101,6 +102,12 @@ TEST_F(ProducerCliTest, Init_DefaultValues)
 
     // stop_on_script_error defaults to false
     EXPECT_FALSE(j["validation"]["stop_on_script_error"].get<bool>());
+
+    // target_period_ms must be present (not the obsolete interval_ms)
+    EXPECT_TRUE(j.contains("target_period_ms"))
+        << "Generated config missing 'target_period_ms'";
+    EXPECT_FALSE(j.contains("interval_ms"))
+        << "Generated config contains obsolete 'interval_ms'";
 
     fs::remove_all(tmp);
 }
@@ -220,4 +227,19 @@ TEST_F(ProducerCliTest, Config_FileNotFound_NonZeroExit)
         << "Expected non-zero exit for missing config file";
     EXPECT_FALSE(proc.get_stderr().empty())
         << "Expected error text in stderr";
+}
+
+/// --init without --name in non-interactive mode (subprocess stdin is not a TTY):
+/// binary must exit non-zero and print a useful error message.
+TEST_F(ProducerCliTest, Init_NonInteractiveNoName_ExitsWithError)
+{
+    const auto tmp = unique_temp_dir("noname");
+
+    WorkerProcess proc(producer_binary(), "--init", {tmp.string()});
+    EXPECT_NE(proc.wait_for_exit(), 0)
+        << "Expected non-zero exit when --name not provided in non-interactive mode";
+    EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
+        << "Expected '--name' in error message, got:\n" << proc.get_stderr();
+
+    fs::remove_all(tmp);
 }

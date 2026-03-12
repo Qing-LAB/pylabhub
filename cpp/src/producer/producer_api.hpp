@@ -24,9 +24,12 @@
  * @endcode
  */
 
+#include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/hub_queue.hpp"
 #include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
+#include "utils/script_host_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include <nlohmann/json_fwd.hpp>
@@ -64,13 +67,18 @@ class ProducerAPI
 
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
+    void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
     void set_flexzone_obj(py::object *fz) noexcept { flexzone_obj_ = fz; }
+    void set_queue(hub::QueueWriter *q) noexcept { queue_ = q; }
 
-    void increment_script_errors() noexcept { ++script_errors_; }
+    void increment_script_errors() noexcept
+        { script_errors_.fetch_add(1, std::memory_order_relaxed); }
     void increment_out_written() noexcept
         { out_slots_written_.fetch_add(1, std::memory_order_relaxed); }
     void increment_drops() noexcept
         { out_drops_.fetch_add(1, std::memory_order_relaxed); }
+    void set_last_cycle_work_us(uint64_t us) noexcept
+        { last_cycle_work_us_.store(us, std::memory_order_relaxed); }
 
     // ── Python-accessible — identity / environment ────────────────────────────
 
@@ -110,13 +118,41 @@ class ProducerAPI
     /// Returns a Python dict parsed from the SHM_BLOCK_QUERY_ACK JSON.
     py::object shm_blocks(const std::string& channel = {});
 
+    /// Open (or return cached) an InboxHandle to send typed messages to another role.
+    /// Discovers inbox_endpoint + schema from the broker via ROLE_INFO_REQ.
+    /// Returns py::none() if the target is not online or has no inbox.
+    py::object open_inbox(const std::string &target_uid);
+
+    /// Block until the broker confirms the role with @p uid is registered,
+    /// or until @p timeout_ms elapses. GIL is released during polling.
+    /// Returns true if the role is online before timeout.
+    bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
+
+    /// Clear all InboxHandle Python objects and stop clients. Call with GIL held.
+    void clear_inbox_cache();
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
-    [[nodiscard]] uint64_t out_slots_written()  const noexcept
+    [[nodiscard]] uint64_t script_error_count()  const noexcept
+        { return script_errors_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t out_slots_written()   const noexcept
         { return out_slots_written_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t out_drop_count()     const noexcept
+    [[nodiscard]] uint64_t out_drop_count()      const noexcept
         { return out_drops_.load(std::memory_order_relaxed); }
+    /// Number of cycles where start-to-start time exceeded target_period_ms.
+    /// Reads from the DataBlock acquire layer (same counter used for overrun detection).
+    /// Returns 0 if target_period_ms == 0 (free-run) or SHM is not connected.
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept;
+    /// Ring/send buffer slot count for the output transport queue. 0 if not connected.
+    [[nodiscard]] size_t      out_capacity() const noexcept;
+    /// Overflow policy description for the output transport queue (e.g. "shm_write",
+    /// "zmq_push_drop"). Empty string if not connected.
+    [[nodiscard]] std::string out_policy()   const;
+    /// Microseconds of active work (acquire+script+commit) in the last loop iteration.
+    [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
+        { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+    /// Combined metrics dict: DataBlock ContextMetrics + loop_overruns + script_errors.
+    [[nodiscard]] py::dict metrics() const;
 
     // ── Python-accessible — custom metrics (HEP-CORE-0019) ─────────────────
 
@@ -128,6 +164,13 @@ class ProducerAPI
 
     [[nodiscard]] nlohmann::json snapshot_metrics_json() const;
 
+    // ── Python-accessible — shutdown diagnostics ─────────────────────────────
+
+    /// Returns reason the role stopped: "normal", "peer_dead", or "critical_error".
+    [[nodiscard]] std::string stop_reason() const noexcept;
+    /// Number of ctrl-send messages dropped due to queue overflow.
+    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
+
     // ── Python-accessible — shared spinlocks ──────────────────────────────────
 
     py::object spinlock(std::size_t index);
@@ -136,8 +179,10 @@ class ProducerAPI
   private:
     hub::Producer    *producer_{nullptr};
     hub::Messenger   *messenger_{nullptr};
+    hub::QueueWriter *queue_{nullptr};
     std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
+    std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 
     std::atomic<bool> critical_error_{false};
@@ -148,12 +193,14 @@ class ProducerAPI
     std::string log_level_;
     std::string script_dir_;
 
-    uint64_t              script_errors_{0};
+    std::atomic<uint64_t> script_errors_{0};
     std::atomic<uint64_t> out_slots_written_{0};
     std::atomic<uint64_t> out_drops_{0};
+    std::atomic<uint64_t> last_cycle_work_us_{0};
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;
+    std::unordered_map<std::string, py::object>      inbox_cache_;
 };
 
 // ============================================================================

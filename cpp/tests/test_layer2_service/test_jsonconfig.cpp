@@ -56,7 +56,7 @@ class JsonConfigTest : public ::testing::Test
     {
         s_lifecycle = std::make_unique<LifecycleGuard>(
             MakeModDefList(JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-                           Logger::GetLifecycleModule()));
+                           Logger::GetLifecycleModule()), std::source_location::current());
         g_temp_dir = fs::temp_directory_path() /
                      ("pylabhub_jsonconfig_tests_" +
                       std::to_string(pylabhub::platform::get_pid()));

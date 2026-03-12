@@ -209,6 +209,17 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     if (cfg.timeout_ms < -1)
         throw std::runtime_error("Processor config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
 
+    cfg.target_period_ms = j.value("target_period_ms", 0);
+    if (cfg.target_period_ms < 0)
+        throw std::runtime_error("Processor config: 'target_period_ms' must be >= 0");
+
+    if (j.contains("loop_timing")) {
+        cfg.loop_timing = ::pylabhub::parse_loop_timing_policy(
+            j["loop_timing"].get<std::string>(), cfg.target_period_ms, "Processor config");
+    } else {
+        cfg.loop_timing = ::pylabhub::default_loop_timing_policy(cfg.target_period_ms);
+    }
+
     // ── SHM ───────────────────────────────────────────────────────────────────
     if (j.contains("shm") && j["shm"].is_object())
     {
@@ -228,16 +239,39 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
         }
     }
 
-    // ── Transport ─────────────────────────────────────────────────────────────
-    // Input transport is auto-discovered via HEP-CORE-0021 (Consumer::queue()).
-    // Only output transport is configured here.
-    cfg.out_transport     = parse_transport(j.value("out_transport", "shm"));
-    cfg.zmq_out_endpoint  = j.value("zmq_out_endpoint", "");
-    cfg.zmq_out_bind      = j.value("zmq_out_bind", true);
+    // ── Transport — input ────────────────────────────────────────────────────
+    cfg.in_transport        = parse_transport(j.value("in_transport", "shm"));
+    cfg.zmq_in_endpoint     = j.value("zmq_in_endpoint", "");
+    cfg.zmq_in_bind         = j.value("zmq_in_bind", false);
+    cfg.in_zmq_buffer_depth = j.value("in_zmq_buffer_depth", size_t{64});
+    cfg.in_zmq_packing      = j.value("in_zmq_packing", std::string{"aligned"});
+
+    if (cfg.in_transport == Transport::Zmq && cfg.zmq_in_endpoint.empty())
+        throw std::runtime_error(
+            "Processor config: 'in_transport' is 'zmq' but 'zmq_in_endpoint' is empty");
+    if (cfg.in_zmq_buffer_depth == 0)
+        throw std::runtime_error("Processor config: 'in_zmq_buffer_depth' must be > 0");
+    if (cfg.in_zmq_packing != "aligned" && cfg.in_zmq_packing != "packed")
+        throw std::runtime_error(
+            "Processor config: invalid 'in_zmq_packing': '" + cfg.in_zmq_packing +
+            "' (expected 'aligned' or 'packed')");
+
+    // ── Transport — output ───────────────────────────────────────────────────
+    cfg.out_transport        = parse_transport(j.value("out_transport", "shm"));
+    cfg.zmq_out_endpoint     = j.value("zmq_out_endpoint", "");
+    cfg.zmq_out_bind         = j.value("zmq_out_bind", true);
+    cfg.out_zmq_buffer_depth = j.value("out_zmq_buffer_depth", size_t{64});
+    cfg.out_zmq_packing      = j.value("out_zmq_packing", std::string{"aligned"});
 
     if (cfg.out_transport == Transport::Zmq && cfg.zmq_out_endpoint.empty())
         throw std::runtime_error(
             "Processor config: 'out_transport' is 'zmq' but 'zmq_out_endpoint' is empty");
+    if (cfg.out_zmq_buffer_depth == 0)
+        throw std::runtime_error("Processor config: 'out_zmq_buffer_depth' must be > 0");
+    if (cfg.out_zmq_packing != "aligned" && cfg.out_zmq_packing != "packed")
+        throw std::runtime_error(
+            "Processor config: invalid 'out_zmq_packing': '" + cfg.out_zmq_packing +
+            "' (expected 'aligned' or 'packed')");
 
     // ── Schemas ───────────────────────────────────────────────────────────────
     if (j.contains("in_slot_schema") && !j["in_slot_schema"].is_null())
@@ -247,20 +281,75 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     if (j.contains("flexzone_schema") && !j["flexzone_schema"].is_null())
         cfg.flexzone_schema_json = j["flexzone_schema"];
 
+    // ── Inbox (optional) ─────────────────────────────────────────────────────
+    if (j.contains("inbox_schema") && !j["inbox_schema"].is_null())
+        cfg.inbox_schema_json = j["inbox_schema"];
+    cfg.inbox_endpoint        = j.value("inbox_endpoint",        std::string{});
+    cfg.inbox_buffer_depth    = j.value("inbox_buffer_depth",    size_t{64});
+    cfg.inbox_overflow_policy = j.value("inbox_overflow_policy", std::string{"drop"});
+    if (cfg.inbox_buffer_depth == 0)
+        throw std::runtime_error("Processor config: 'inbox_buffer_depth' must be > 0");
+    if (cfg.inbox_overflow_policy != "drop" && cfg.inbox_overflow_policy != "block")
+        throw std::runtime_error(
+            "Processor config: invalid 'inbox_overflow_policy': '" + cfg.inbox_overflow_policy +
+            "' (expected 'drop' or 'block')");
+    if (cfg.has_inbox())
+    {
+        if (!cfg.inbox_schema_json.is_string() && !cfg.inbox_schema_json.is_object())
+            throw std::runtime_error(
+                "Processor config: 'inbox_schema' must be a JSON object (inline schema) "
+                "or string (named schema reference)");
+    }
+
+    // ── Startup coordination (HEP-0023) ──────────────────────────────────────
+    if (j.contains("startup") && j.at("startup").is_object())
+    {
+        const auto &s = j.at("startup");
+        if (s.contains("wait_for_roles") && s.at("wait_for_roles").is_array())
+        {
+            for (const auto &w : s.at("wait_for_roles"))
+            {
+                if (!w.contains("uid") || !w.at("uid").is_string())
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: each entry must have a string 'uid'");
+                WaitForRole wr;
+                wr.uid = w.at("uid").get<std::string>();
+                if (wr.uid.empty())
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: 'uid' must not be empty");
+                wr.timeout_ms = w.value("timeout_ms", pylabhub::kDefaultStartupWaitTimeoutMs);
+                if (wr.timeout_ms <= 0)
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: timeout_ms must be > 0 for uid='" +
+                        wr.uid + "'");
+                if (wr.timeout_ms > pylabhub::kMaxStartupWaitTimeoutMs)
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: timeout_ms exceeds maximum (3600000 ms) for uid='" +
+                        wr.uid + "'");
+                cfg.wait_for_roles.push_back(std::move(wr));
+            }
+        }
+    }
+
+    // ── Peer/hub-dead monitoring ─────────────────────────────────────────────
+    cfg.ctrl_queue_max_depth = j.value("ctrl_queue_max_depth", size_t{256});
+    cfg.peer_dead_timeout_ms = j.value("peer_dead_timeout_ms", 30000);
+
     // ── Script ────────────────────────────────────────────────────────────────
-    // script.path is the base directory containing the "script/" package.
-    // Default "." means the script package is at <proc_dir>/script/__init__.py.
     if (j.contains("script") && j["script"].is_object())
     {
-        cfg.script_type = j["script"].value("type", std::string{"python"});
-        cfg.script_path = j["script"].value("path", std::string{"."});
+        const auto &s = j["script"];
+        cfg.script_type_explicit = s.contains("type");
+        cfg.script_type = s.value("type", std::string{"python"});
+        cfg.script_path = s.value("path", std::string{"."});
     }
 
     // ── Validation ────────────────────────────────────────────────────────────
     if (j.contains("validation") && j["validation"].is_object())
     {
         const auto &val = j["validation"];
-        cfg.update_checksum    = val.value("update_checksum",    true);
+        cfg.update_checksum      = val.value("update_checksum",      true);
+        cfg.verify_checksum      = val.value("verify_checksum",      false);
         cfg.stop_on_script_error = val.value("stop_on_script_error", false);
     }
 

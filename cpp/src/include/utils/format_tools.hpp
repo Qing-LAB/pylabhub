@@ -66,6 +66,54 @@ PYLABHUB_UTILS_EXPORT std::wstring s2ws(const std::string &s);
 PYLABHUB_UTILS_EXPORT std::string ws2s(const std::wstring &w);
 
 /**
+ * @brief Encodes arbitrary bytes to a lowercase hex string.
+ *
+ * Used to expose ZMQ identities and other opaque byte blobs to Python scripts
+ * as printable, loggable strings.  Each byte maps to exactly 2 hex characters.
+ */
+inline std::string bytes_to_hex(std::string_view raw)
+{
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(raw.size() * 2);
+    for (const unsigned char c : raw)
+    {
+        result += kHex[c >> 4u];
+        result += kHex[c & 0xfu];
+    }
+    return result;
+}
+
+/**
+ * @brief Decodes a lowercase (or uppercase) hex string back to raw bytes.
+ *
+ * Returns the input unchanged if it is not valid hex (odd length or invalid chars).
+ * Used to decode hex-encoded ZMQ identities passed back from Python scripts.
+ */
+inline std::string bytes_from_hex(std::string_view hex)
+{
+    if (hex.size() % 2 != 0)
+        return std::string{hex};
+    std::string result;
+    result.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2)
+    {
+        const auto h = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        const int hi = h(hex[i]);
+        const int lo = h(hex[i + 1]);
+        if (hi < 0 || lo < 0)
+            return std::string{hex};
+        result += static_cast<char>((hi << 4) | lo);
+    }
+    return result;
+}
+
+/**
  * @brief Creates a `fmt::memory_buffer` from a compile-time format string and arguments.
  * @tparam Args Argument types for the format string.
  * @param fmt_str The `fmt`-style format string.

@@ -92,7 +92,13 @@ TEST_F(LoggerTest, BadFormatString)
     WorkerProcess proc(g_self_exe_path, "logger.test_bad_format_string", {log_path.string()});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    expect_worker_ok(proc, {}, {"[FORMAT ERROR]"});
+    ASSERT_EQ(proc.exit_code(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+    // [FORMAT ERROR] is written to the log file after set_logfile() redirects the sink.
+    // Verify the file directly — stderr is not the right place to check for this.
+    std::string log_contents;
+    ASSERT_TRUE(read_file_contents(log_path.string(), log_contents))
+        << "Log file not found: " << log_path;
+    ASSERT_THAT(log_contents, ::testing::HasSubstr("[FORMAT ERROR]"));
 }
 
 /// Delegates the DefaultSinkAndSwitching test logic to a worker process.

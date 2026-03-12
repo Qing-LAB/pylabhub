@@ -119,19 +119,19 @@ cd build/stage-debug/tests
 **Workflow 1: Test-Driven Development**
 ```bash
 # Edit code in src/utils/file_lock.cpp
-# Edit test in tests/test_pylabhub_utils/test_filelock.cpp
+# Edit test in tests/test_layer2_service/test_filelock.cpp
 
 # Quick rebuild and test
-cmake --build build --target test_pylabhub_utils
+cmake --build build --target test_layer2_service
 cd build/stage-debug/tests
-./test_pylabhub_utils --gtest_filter=FileLockTest.BasicLocking
+./test_layer2_filelock --gtest_filter=FileLockTest.BasicLocking
 ```
 
 **Workflow 2: Debugging Test Failures**
 ```bash
 # Run single test with debugger
 cd build/stage-debug/tests
-gdb ./test_pylabhub_utils
+gdb ./test_layer2_filelock
 (gdb) run --gtest_filter=FileLockTest.FailingTest
 ```
 
@@ -197,20 +197,20 @@ sequenceDiagram
 
 Let's add tests for a new `StringUtils` class in `pylabhub-utils`.
 
-1.  **Create the test file:** `tests/test_pylabhub_utils/test_stringutils.cpp`
+1.  **Create the test file:** `tests/test_layer2_service/test_stringutils.cpp`
     ```cpp
     #include <gtest/gtest.h>
     #include "utils/StringUtils.hpp"  // Your new header
-    
+
     using namespace pylabhub::utils;
-    
+
     // Test suite name should match the class/component being tested
     TEST(StringUtilsTest, TrimWhitespace) {
         EXPECT_EQ(StringUtils::trim("  hello  "), "hello");
         EXPECT_EQ(StringUtils::trim(""), "");
         EXPECT_EQ(StringUtils::trim("   "), "");
     }
-    
+
     TEST(StringUtilsTest, SplitString) {
         auto result = StringUtils::split("a,b,c", ',');
         ASSERT_EQ(result.size(), 3);
@@ -218,16 +218,16 @@ Let's add tests for a new `StringUtils` class in `pylabhub-utils`.
         EXPECT_EQ(result[1], "b");
         EXPECT_EQ(result[2], "c");
     }
-    
+
     TEST(StringUtilsTest, EdgeCases) {
         EXPECT_THROW(StringUtils::parse_int("not-a-number"), std::invalid_argument);
         EXPECT_NO_THROW(StringUtils::parse_int("42"));
     }
     ```
 
-2.  **Update `tests/test_pylabhub_utils/CMakeLists.txt`:**
+2.  **Update `tests/test_layer2_service/CMakeLists.txt`:**
     ```cmake
-    add_executable(test_pylabhub_utils
+    add_executable(test_layer2_service
       # ... existing test files
       test_stringutils.cpp  # <-- Add your new test file here
     )
@@ -235,7 +235,7 @@ Let's add tests for a new `StringUtils` class in `pylabhub-utils`.
 
 3.  **Build and run:**
     ```bash
-    cmake --build build --target test_pylabhub_utils
+    cmake --build build --target test_layer2_service
     ctest -R "^StringUtilsTest"
     ```
 
@@ -244,7 +244,7 @@ Let's add tests for a new `StringUtils` class in `pylabhub-utils`.
 For tests that need common setup:
 
 ```cpp
-// tests/test_pylabhub_utils/test_database.cpp
+// tests/test_layer2_service/test_database.cpp
 #include <gtest/gtest.h>
 #include "utils/Database.hpp"
 
@@ -290,7 +290,7 @@ TEST_F(DatabaseTest, InsertAndQuery) {
 For testing components that require multiple processes (like file locks):
 
 ```cpp
-// tests/test_pylabhub_utils/test_mylock.cpp
+// tests/test_layer2_service/test_mylock.cpp
 #include <gtest/gtest.h>
 #include "test_framework/test_process_utils.h"
 #include "utils/MyLock.hpp"
@@ -320,7 +320,7 @@ TEST(MyLockTest, MultiProcessExclusion) {
 }
 ```
 
-Then create the worker function in `tests/test_pylabhub_utils/mylock_workers.cpp`:
+Then create the worker function in `tests/test_layer2_service/mylock_workers.cpp`:
 ```cpp
 #include "mylock_workers.h"
 #include "utils/MyLock.hpp"
@@ -400,20 +400,20 @@ When you build tests, the CMake system performs these steps:
 
 **On Linux/macOS:**
 - Test executables use `RPATH` set to `$ORIGIN/../lib`
-- When `./test_pylabhub_utils` runs, it looks for `.so` files in `../lib/`
-- Example: `tests/test_pylabhub_utils` finds `lib/libpylabhub-utils.so`
+- When `./test_layer2_filelock` runs, it looks for `.so` files in `../lib/`
+- Example: `tests/test_layer2_filelock` finds `lib/libpylabhub-utils.so`
 
 **On Windows:**
 - Test executables look for `.dll` files in the same directory
 - The `stage_tests` target ensures DLLs are copied to `tests/`
-- Example: `tests/test_pylabhub_utils.exe` finds `tests/pylabhub-utils.dll`
+- Example: `tests/test_layer2_filelock.exe` finds `tests/pylabhub-utils.dll`
 
 ### Viewing Dependencies
 
 **Linux:**
 ```bash
 cd build/stage-debug/tests
-ldd ./test_pylabhub_utils
+ldd ./test_layer2_filelock
 # Shows:
 #   libpylabhub-utils.so => ../lib/libpylabhub-utils.so
 #   libfmt.so.10 => ../lib/libfmt.so.10
@@ -422,7 +422,7 @@ ldd ./test_pylabhub_utils
 **macOS:**
 ```bash
 cd build/stage-debug/tests
-otool -L ./test_pylabhub_utils
+otool -L ./test_layer2_filelock
 # Shows:
 #   @rpath/libpylabhub-utils.dylib
 #   @rpath/libfmt.10.dylib
@@ -431,7 +431,7 @@ otool -L ./test_pylabhub_utils
 **Windows:**
 ```powershell
 cd build\stage-debug\tests
-dumpbin /DEPENDENTS test_pylabhub_utils.exe
+dumpbin /DEPENDENTS test_layer2_filelock.exe
 # Shows:
 #   pylabhub-utils.dll
 #   fmt.dll
@@ -449,11 +449,11 @@ ls -la build/stage-debug/lib/*.dylib
 ls -la build/stage-debug/tests/*.dll  # Windows
 
 # Does test have correct RPATH? (Linux)
-readelf -d build/stage-debug/tests/test_pylabhub_utils | grep RPATH
+readelf -d build/stage-debug/tests/test_layer2_filelock | grep RPATH
 
 # Check what libraries test is looking for
-ldd build/stage-debug/tests/test_pylabhub_utils  # Linux
-otool -L build/stage-debug/tests/test_pylabhub_utils  # macOS
+ldd build/stage-debug/tests/test_layer2_filelock  # Linux
+otool -L build/stage-debug/tests/test_layer2_filelock  # macOS
 ```
 
 **Issue: Test executable not staged**
@@ -462,7 +462,7 @@ Check registration:
 ```bash
 # Did CMake find the test?
 cd build
-cmake .. | grep "test_pylabhub_utils"
+cmake .. | grep "test_layer"
 
 # Is it in the staging target dependencies?
 cmake --build . --target help | grep stage
@@ -516,32 +516,32 @@ For more control, run test executables directly:
 ```bash
 cd build/stage-debug/tests
 
-# Run all tests in executable
-./test_pylabhub_utils
+# Run all tests in an executable (replace with the layer executable you want)
+./test_layer2_filelock
 
 # Filter by test suite
-./test_pylabhub_utils --gtest_filter=FileLockTest.*
+./test_layer2_filelock --gtest_filter=FileLockTest.*
 
 # Filter by specific test
-./test_pylabhub_utils --gtest_filter=FileLockTest.BasicLocking
+./test_layer2_filelock --gtest_filter=FileLockTest.BasicLocking
 
 # Exclude tests
-./test_pylabhub_utils --gtest_filter=-*MultiProcess*
+./test_layer3_datahub --gtest_filter=-*MultiProcess*
 
 # List available tests
-./test_pylabhub_utils --gtest_list_tests
+./test_layer3_datahub --gtest_list_tests
 
 # Run with repeat (stress testing)
-./test_pylabhub_utils --gtest_repeat=100
+./test_layer1_spinlock --gtest_repeat=100
 
 # Break on first failure
-./test_pylabhub_utils --gtest_break_on_failure
+./test_layer2_filelock --gtest_break_on_failure
 
 # Shuffle test order
-./test_pylabhub_utils --gtest_shuffle
+./test_layer3_datahub --gtest_shuffle
 
 # Run with specific random seed (for reproducibility)
-./test_pylabhub_utils --gtest_shuffle --gtest_random_seed=12345
+./test_layer3_datahub --gtest_shuffle --gtest_random_seed=12345
 ```
 
 ### Integration with IDEs
@@ -560,7 +560,7 @@ Configure in `.vscode/settings.json`:
 **CLion:**
 1. Go to Run → Edit Configurations
 2. Add "Google Test" configuration
-3. Set Target: `test_pylabhub_utils`
+3. Set Target: `test_layer2_filelock` (or whichever layer executable you want)
 4. Set Test filter: `FileLockTest.*`
 
 ## 8. Platform-Specific Behavior and Gotchas
@@ -583,7 +583,7 @@ However, there is a significant gotcha on **Windows** when testing functions tha
 
 For any test that validates the output of `pylabhub::debug::print_stack_trace`, do **not** use `StringCapture`. Instead, redirect `stderr` to a temporary file for the duration of the test. This avoids the blocking behavior of pipes and makes the test robust.
 
-See `PlatformTest.PrintStackTrace` in `tests/test_pylabhub_corelib/test_platform.cpp` for a canonical example of this file-based redirection.
+See `PlatformTest.PrintStackTrace` in `tests/test_layer0_platform/test_platform.cpp` for a canonical example of this file-based redirection.
 
 ---
 
@@ -723,10 +723,15 @@ build/stage-debug/
 ├── lib/                    # Shared libraries (POSIX)
 ├── include/                # Headers
 ├── tests/                  # Test executables + DLLs (Windows)
-│   ├── test_pylabhub_corelib
-│   ├── test_pylabhub_utils
+│   ├── test_layer0_platform
+│   ├── test_layer1_spinlock
+│   ├── test_layer2_filelock
+│   ├── test_layer2_logger
+│   ├── test_layer3_datahub
+│   ├── test_layer4_producer
+│   ├── test_layer4_consumer
+│   ├── test_layer4_processor
+│   ├── test_layer4_integration
 │   └── *.dll (Windows only)
 └── .stage_complete         # Marker file
 ```
-
-**Executable names:** Use `test_layer0_platform`, `test_layer1_spinlock` (and other layer1 targets), `test_layer2_*` (e.g. `test_layer2_filelock`, `test_layer2_logger`), and `test_layer3_datahub` for DataHub tests. Replace any legacy `test_pylabhub_utils` references in docs with the appropriate layer executable.

@@ -8,6 +8,7 @@
  *
  * Provides:
  *  - Thread-safe bounded incoming message queue (ZMQ → handler path)
+ *  - Condvar-based wakeup for the monitoring loop (notify_incoming / wait_for_incoming)
  *  - Shutdown coordination flags
  *  - Worker thread lifecycle flag
  *  - State flags (validate_only, script_load_ok, running)
@@ -55,14 +56,27 @@ class RoleHostCore
 
     // ── Message queue ────────────────────────────────────────────────────────
 
-    /** Thread-safe enqueue; drops if at capacity. */
+    /** Thread-safe enqueue; drops if at capacity. Notifies any wait_for_incoming() waiter. */
     void enqueue_message(IncomingMessage msg);
 
     /** Drain all queued messages (returns empty vector if none). */
     std::vector<IncomingMessage> drain_messages();
 
-    /** Wake any thread blocked on the condition variable. */
-    void notify_incoming();
+    /**
+     * @brief Wake all wait_for_incoming() waiters immediately.
+     *
+     * Called from stop_role() so the monitoring loop (run_role_main_loop) exits
+     * without waiting the full kAdminPollIntervalMs sleep.
+     */
+    void notify_incoming() noexcept;
+
+    /**
+     * @brief Block until notified or timeout_ms elapses.
+     *
+     * Used by the monitoring loop (run_role_main_loop) instead of sleep_for so
+     * that stop_role() can unblock it instantly via notify_incoming().
+     */
+    void wait_for_incoming(int timeout_ms) noexcept;
 
     // ── Shutdown coordination ────────────────────────────────────────────────
     //

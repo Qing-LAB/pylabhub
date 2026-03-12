@@ -73,6 +73,7 @@ set(UTILS_SOURCES
   hub/hub_consumer.cpp
   hub/hub_shm_queue.cpp
   hub/hub_zmq_queue.cpp
+  hub/hub_inbox_queue.cpp
   hub/hub_processor.cpp
 
   # --- schema: Named Schema Registry (HEP-CORE-0016) ---

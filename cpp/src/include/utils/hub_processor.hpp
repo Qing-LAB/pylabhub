@@ -197,7 +197,7 @@ public:
      * @return           Processor on success; std::nullopt on invalid queues.
      */
     [[nodiscard]] static std::optional<Processor>
-    create(Queue& in_queue, Queue& out_queue, ProcessorOptions opts = {});
+    create(QueueReader& in_queue, QueueWriter& out_queue, ProcessorOptions opts = {});
 
     ~Processor();
     Processor(Processor&&) noexcept;
