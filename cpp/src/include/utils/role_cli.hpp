@@ -195,6 +195,7 @@ struct RoleArgs
     std::string config_path;    ///< --config <path>
     std::string role_dir;       ///< positional <role_dir> or --init [dir]
     std::string init_name;      ///< --name <name>  (for --init)
+    std::string log_file;       ///< --log-file <path>  (redirect logger to file)
     bool        validate_only{false};
     bool        keygen_only{false};
     bool        init_only{false};
@@ -220,6 +221,7 @@ inline void print_role_usage(const char *prog, const char *role_name)
         << "  --config <path> Path to role JSON config file\n"
         << "  --validate      Validate config + script; exit 0 on success\n"
         << "  --keygen        Generate NaCl keypair at auth.keyfile path; exit 0\n"
+        << "  --log-file <p>  Redirect log output to file instead of stderr\n"
         << "  --run           Explicit run mode (default when no other mode given)\n"
         << "  --help          Show this message\n";
 }
@@ -260,6 +262,10 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
         else if (arg == "--name" && i + 1 < argc)
         {
             args.init_name = argv[++i];
+        }
+        else if (arg == "--log-file" && i + 1 < argc)
+        {
+            args.log_file = argv[++i];
         }
         else if (arg == "--validate")
         {
