@@ -548,6 +548,35 @@ gtest_discover_tests(test_layer2_slot_view_helpers
         TIMEOUT 60
 )
 
+# ============================================================================
+# Test: RoleDirectory + role_cli (pure filesystem API — no lifecycle)
+# ============================================================================
+
+add_executable(test_layer2_role_directory
+    test_role_directory.cpp
+)
+
+target_link_libraries(test_layer2_role_directory
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_directory)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_directory
+    SUITE_NAME "Layer2_RoleDirectory"
+)
+layer2_require_staged_utils(test_layer2_role_directory)
+
+gtest_discover_tests(test_layer2_role_directory
+    PROPERTIES
+        LABELS "layer2;service;role_directory"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")

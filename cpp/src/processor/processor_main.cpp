@@ -61,6 +61,8 @@
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
+#include "utils/role_cli.hpp"
+#include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/interactive_signal_handler.hpp"
@@ -81,107 +83,8 @@
 
 
 using namespace pylabhub::utils;
-namespace scripting = pylabhub::scripting;
-
-// ---------------------------------------------------------------------------
-// Argument parsing
-// ---------------------------------------------------------------------------
-
-namespace
-{
-
-struct ProcArgs
-{
-    std::string config_path;  ///< Explicit JSON file path (--config mode)
-    std::string proc_dir;     ///< Processor directory (positional or --init target)
-    std::string init_name;    ///< --name for --init (skips stdin prompt)
-    bool        validate_only{false};
-    bool        keygen_only{false};
-    bool        init_only{false};
-};
-
-void print_usage(const char *prog)
-{
-    std::cout
-        << "Usage:\n"
-        << "  " << prog << " --init [<proc_dir>]              # Create processor directory\n"
-        << "  " << prog << " <proc_dir>                        # Run from directory\n"
-        << "  " << prog << " --config <path.json> [--validate | --keygen | --run]\n\n"
-        << "Options:\n"
-        << "  --init [dir]    Create processor directory with processor.json template; exit 0\n"
-        << "  --name <name>   Processor name for --init (skips interactive prompt)\n"
-        << "  <proc_dir>      Processor directory containing processor.json\n"
-        << "  --config <path> Path to processor JSON config file\n"
-        << "  --validate      Validate config + script, print schema layout; exit 0 on success\n"
-        << "  --keygen        Generate processor NaCl keypair at auth.keyfile path; exit 0\n"
-        << "  --run           Explicit run mode (default when no other mode given)\n"
-        << "  --help          Show this message\n";
-}
-
-ProcArgs parse_args(int argc, char *argv[])
-{
-    ProcArgs args;
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string_view arg(argv[i]);
-        if (arg == "--help" || arg == "-h")
-        {
-            print_usage(argv[0]);
-            std::exit(0);
-        }
-        if (arg == "--config" && i + 1 < argc)
-        {
-            args.config_path = argv[++i];
-        }
-        else if (arg == "--init")
-        {
-            args.init_only = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                args.proc_dir = argv[++i];
-        }
-        else if (arg == "--name" && i + 1 < argc)
-        {
-            args.init_name = argv[++i];
-        }
-        else if (arg == "--validate")
-        {
-            args.validate_only = true;
-        }
-        else if (arg == "--keygen")
-        {
-            args.keygen_only = true;
-        }
-        else if (arg == "--run")
-        {
-            // explicit run — default; no-op
-        }
-        else if (arg[0] != '-')
-        {
-            if (!args.proc_dir.empty())
-            {
-                std::cerr << "Error: multiple positional arguments not supported\n\n";
-                print_usage(argv[0]);
-                std::exit(1);
-            }
-            args.proc_dir = std::string(arg);
-        }
-        else
-        {
-            std::cerr << "Unknown argument: " << arg << "\n";
-            print_usage(argv[0]);
-            std::exit(1);
-        }
-    }
-    if (!args.init_only && args.config_path.empty() && args.proc_dir.empty())
-    {
-        std::cerr << "Error: specify a processor directory, --init, or --config <path>\n\n";
-        print_usage(argv[0]);
-        std::exit(1);
-    }
-    return args;
-}
-
-} // anonymous namespace
+namespace scripting  = pylabhub::scripting;
+namespace role_cli   = pylabhub::role_cli;
 
 // ---------------------------------------------------------------------------
 // do_init — create processor directory with processor.json template
@@ -195,15 +98,13 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
                               ? fs::current_path()
                               : fs::path(proc_dir_str);
 
-    std::error_code ec;
-    fs::create_directories(proc_dir / "logs",              ec);
-    fs::create_directories(proc_dir / "run",               ec);
-    fs::create_directories(proc_dir / "vault",             ec);
-    fs::create_directories(proc_dir / "script" / "python", ec);
-    if (ec)
+    try
     {
-        std::cerr << "Error: cannot create directory '" << proc_dir.string()
-                  << "': " << ec.message() << "\n";
+        RoleDirectory::create(proc_dir, "processor.json");
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
@@ -216,21 +117,11 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
     }
 
     // ── Resolve processor name ────────────────────────────────────────────────
-    std::string proc_name;
-    if (!cli_name.empty())
-    {
-        proc_name = cli_name;
-    }
-    else if (scripting::is_stdin_tty())
-    {
-        std::cout << "Processor name (human-readable, e.g. 'Doubler'): ";
-        std::getline(std::cin, proc_name);
-    }
-    else
-    {
-        std::cerr << "Error: --name is required in non-interactive mode\n";
+    const auto name_opt = role_cli::resolve_init_name(
+        cli_name, "Processor name (human-readable, e.g. 'Doubler'): ");
+    if (!name_opt)
         return 1;
-    }
+    const std::string proc_name = *name_opt;
 
     const std::string proc_uid = pylabhub::uid::generate_processor_uid(proc_name);
 
@@ -378,20 +269,20 @@ int main(int argc, char *argv[])
     signal_handler.install();
 
     // ── Parse arguments ───────────────────────────────────────────────────────
-    const ProcArgs args = parse_args(argc, argv);
+    const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "processor");
 
     // ── Init mode: create processor directory and exit ────────────────────────
     if (args.init_only)
     {
-        return do_init(args.proc_dir, args.init_name);
+        return do_init(args.role_dir, args.init_name);
     }
 
     // ── Load config ───────────────────────────────────────────────────────────
     pylabhub::processor::ProcessorConfig config;
     try
     {
-        if (!args.proc_dir.empty())
-            config = pylabhub::processor::ProcessorConfig::from_directory(args.proc_dir);
+        if (!args.role_dir.empty())
+            config = pylabhub::processor::ProcessorConfig::from_directory(args.role_dir);
         else
             config = pylabhub::processor::ProcessorConfig::from_json_file(args.config_path);
     }
@@ -412,32 +303,17 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        std::string password;
-        if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
-        {
-            password = env;
-        }
-        else if (!scripting::is_stdin_tty())
-        {
-            std::cerr << "Error: vault password required; set PYLABHUB_ACTOR_PASSWORD "
-                         "for non-interactive use\n";
+        const auto pw_opt = role_cli::get_new_role_password(
+            "processor",
+            "Processor vault password (empty = no encryption): ",
+            "Confirm password: ");
+        if (!pw_opt)
             return 1;
-        }
-        else
-        {
-            password = scripting::read_password_interactive("processor", "Processor vault password (empty = no encryption): ");
-            const std::string confirm = scripting::read_password_interactive("processor", "Confirm password: ");
-            if (password != confirm)
-            {
-                std::cerr << "Error: passwords do not match\n";
-                return 1;
-            }
-        }
 
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth.keyfile, config.processor_uid, password);
+                config.auth.keyfile, config.processor_uid, *pw_opt);
 
             std::cout << "Processor vault written to: " << config.auth.keyfile << "\n"
                       << "  processor_uid : " << config.processor_uid << "\n"
@@ -474,8 +350,8 @@ int main(int argc, char *argv[])
     //   4. Waits until stop_ is set (by shutdown_()) or api.stop() fires
     //   5. Stops threads, calls on_stop, releases all py::objects (Py_Finalize)
     // Resolve the config directory for status display.
-    const std::string config_dir = !args.proc_dir.empty()
-        ? args.proc_dir
+    const std::string config_dir = !args.role_dir.empty()
+        ? args.role_dir
         : std::filesystem::path(args.config_path).parent_path().string();
 
     pylabhub::processor::ProcessorScriptHost proc_script;
