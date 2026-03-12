@@ -208,7 +208,7 @@ Completed:
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
 **Active code reviews:**
-- `docs/code_review/REVIEW_FullSource_2026-03-06.md` (47 findings). 3 false positives (#21 #32 #41), 4 accepted (#11 #16 #23 #47). **All HIGH items resolved.** 36 ✅ FIXED. 8 MEDIUM/LOW remain in backlog: #5 #6 #12 #26 #33 #42 #44 #46.
+- `docs/code_review/REVIEW_FullSource_2026-03-06.md` — ✅ CLOSED 2026-03-12. All 47 items resolved: 28 fixed, 10 false positives, 9 accepted/by-design. Last batch: #33 (seq_cst fences correct+necessary), #42 (abort pre-existing), #44 (FIXED by HEP-0024), #12 (accepted — no in-process repair strategy for interconnected roles; graceful coordinated shutdown is the only sound model).
 - `docs/code_review/review_high_level.md` — HIGH-1 ✅ FIXED 2026-03-11 (admin token security: removed from hub.json, vault-only via set_admin_token()); HIGH-2 ✅ FIXED 2026-03-11 (interval_ms→target_period_ms, script.type added to all --init templates, CLI tests extended, README hub.json corrected); HIGH-3 ✅ FIXED 2026-03-11 (misleading WARN removed — processor loop is correctly demand-driven). MEDIUM/LOW items remain open.
 - `docs/code_review/review_design_and_code.md` — ❌ NEEDS FORMAL TRIAGE. 6 P1/P2 findings (see Priority 0 above). Must be promoted to REVIEW_DesignAndCode_2026-03-09.md with proper status table.
 - `docs/code_review/REVIEW_DataHubInbox_2026-03-09.md` — ✅ CLOSED 2026-03-09, archived to `docs/archive/transient-2026-03-09/`.
