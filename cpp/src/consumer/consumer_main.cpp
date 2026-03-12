@@ -44,6 +44,8 @@
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
+#include "utils/role_cli.hpp"
+#include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/interactive_signal_handler.hpp"
@@ -64,107 +66,8 @@
 
 
 using namespace pylabhub::utils;
-namespace scripting = pylabhub::scripting;
-
-// ---------------------------------------------------------------------------
-// Argument parsing
-// ---------------------------------------------------------------------------
-
-namespace
-{
-
-struct ConsArgs
-{
-    std::string config_path;
-    std::string cons_dir;
-    std::string init_name;  ///< --name for --init (skips stdin prompt)
-    bool        validate_only{false};
-    bool        keygen_only{false};
-    bool        init_only{false};
-};
-
-void print_usage(const char *prog)
-{
-    std::cout
-        << "Usage:\n"
-        << "  " << prog << " --init [<cons_dir>]              # Create consumer directory\n"
-        << "  " << prog << " <cons_dir>                        # Run from directory\n"
-        << "  " << prog << " --config <path.json> [--validate | --keygen | --run]\n\n"
-        << "Options:\n"
-        << "  --init [dir]    Create consumer directory with consumer.json template; exit 0\n"
-        << "  --name <name>   Consumer name for --init (skips interactive prompt)\n"
-        << "  <cons_dir>      Consumer directory containing consumer.json\n"
-        << "  --config <path> Path to consumer JSON config file\n"
-        << "  --validate      Validate config + script, print schema layout; exit 0 on success\n"
-        << "  --keygen        Generate consumer NaCl keypair at auth.keyfile path; exit 0\n"
-        << "  --run           Explicit run mode (default when no other mode given)\n"
-        << "  --help          Show this message\n";
-}
-
-ConsArgs parse_args(int argc, char *argv[])
-{
-    ConsArgs args;
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string_view arg(argv[i]);
-        if (arg == "--help" || arg == "-h")
-        {
-            print_usage(argv[0]);
-            std::exit(0);
-        }
-        if (arg == "--config" && i + 1 < argc)
-        {
-            args.config_path = argv[++i];
-        }
-        else if (arg == "--init")
-        {
-            args.init_only = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                args.cons_dir = argv[++i];
-        }
-        else if (arg == "--name" && i + 1 < argc)
-        {
-            args.init_name = argv[++i];
-        }
-        else if (arg == "--validate")
-        {
-            args.validate_only = true;
-        }
-        else if (arg == "--keygen")
-        {
-            args.keygen_only = true;
-        }
-        else if (arg == "--run")
-        {
-            // no-op
-        }
-        else if (arg[0] != '-')
-        {
-            if (!args.cons_dir.empty())
-            {
-                std::cerr << "Error: multiple positional arguments not supported\n\n";
-                print_usage(argv[0]);
-                std::exit(1);
-            }
-            args.cons_dir = std::string(arg);
-        }
-        else
-        {
-            std::cerr << "Unknown argument: " << arg << "\n";
-            print_usage(argv[0]);
-            std::exit(1);
-        }
-    }
-    if (!args.init_only && args.config_path.empty() && args.cons_dir.empty())
-    {
-        std::cerr << "Error: specify a consumer directory, --init, or --config <path>\n\n";
-        print_usage(argv[0]);
-        std::exit(1);
-    }
-    return args;
-}
-
-} // anonymous namespace
+namespace scripting  = pylabhub::scripting;
+namespace role_cli   = pylabhub::role_cli;
 
 // ---------------------------------------------------------------------------
 // do_init — create consumer directory with consumer.json template
@@ -178,15 +81,13 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
                               ? fs::current_path()
                               : fs::path(cons_dir_str);
 
-    std::error_code ec;
-    fs::create_directories(cons_dir / "logs",              ec);
-    fs::create_directories(cons_dir / "run",               ec);
-    fs::create_directories(cons_dir / "vault",             ec);
-    fs::create_directories(cons_dir / "script" / "python", ec);
-    if (ec)
+    try
     {
-        std::cerr << "Error: cannot create directory '" << cons_dir.string()
-                  << "': " << ec.message() << "\n";
+        RoleDirectory::create(cons_dir, "consumer.json");
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
@@ -198,21 +99,11 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
         return 1;
     }
 
-    std::string cons_name;
-    if (!cli_name.empty())
-    {
-        cons_name = cli_name;
-    }
-    else if (scripting::is_stdin_tty())
-    {
-        std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
-        std::getline(std::cin, cons_name);
-    }
-    else
-    {
-        std::cerr << "Error: --name is required in non-interactive mode\n";
+    const auto name_opt = role_cli::resolve_init_name(
+        cli_name, "Consumer name (human-readable, e.g. 'Logger'): ");
+    if (!name_opt)
         return 1;
-    }
+    const std::string cons_name = *name_opt;
 
     const std::string cons_uid = pylabhub::uid::generate_consumer_uid(cons_name);
 
@@ -329,16 +220,16 @@ int main(int argc, char *argv[])
         {.binary_name = "pylabhub-consumer"}, &g_shutdown);
     signal_handler.install();
 
-    const ConsArgs args = parse_args(argc, argv);
+    const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "consumer");
 
     if (args.init_only)
-        return do_init(args.cons_dir, args.init_name);
+        return do_init(args.role_dir, args.init_name);
 
     pylabhub::consumer::ConsumerConfig config;
     try
     {
-        if (!args.cons_dir.empty())
-            config = pylabhub::consumer::ConsumerConfig::from_directory(args.cons_dir);
+        if (!args.role_dir.empty())
+            config = pylabhub::consumer::ConsumerConfig::from_directory(args.role_dir);
         else
             config = pylabhub::consumer::ConsumerConfig::from_json_file(args.config_path);
     }
@@ -356,32 +247,17 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        std::string password;
-        if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
-        {
-            password = env;
-        }
-        else if (!scripting::is_stdin_tty())
-        {
-            std::cerr << "Error: vault password required; set PYLABHUB_ACTOR_PASSWORD "
-                         "for non-interactive use\n";
+        const auto pw_opt = role_cli::get_new_role_password(
+            "consumer",
+            "Consumer vault password (empty = no encryption): ",
+            "Confirm password: ");
+        if (!pw_opt)
             return 1;
-        }
-        else
-        {
-            password = scripting::read_password_interactive("consumer", "Consumer vault password (empty = no encryption): ");
-            const std::string confirm = scripting::read_password_interactive("consumer", "Confirm password: ");
-            if (password != confirm)
-            {
-                std::cerr << "Error: passwords do not match\n";
-                return 1;
-            }
-        }
 
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth.keyfile, config.consumer_uid, password);
+                config.auth.keyfile, config.consumer_uid, *pw_opt);
             std::cout << "Consumer vault written to: " << config.auth.keyfile << "\n"
                       << "  consumer_uid : " << config.consumer_uid << "\n"
                       << "  public_key   : " << vault.public_key() << "\n";
@@ -395,8 +271,8 @@ int main(int argc, char *argv[])
     }
 
     // Resolve the config directory for status display.
-    const std::string config_dir = !args.cons_dir.empty()
-        ? args.cons_dir
+    const std::string config_dir = !args.role_dir.empty()
+        ? args.role_dir
         : std::filesystem::path(args.config_path).parent_path().string();
 
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());

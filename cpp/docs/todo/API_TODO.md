@@ -17,34 +17,38 @@
 enables custom role binary development with correct security defaults; eliminates
 triplication of path/hub-resolution logic across the three role config classes.
 
-**Phase 1** — `RoleDirectory` class
-- [ ] `src/include/utils/role_directory.hpp` — public header: `open()`, `create()`, `from_config_file()`, `logs()`, `run()`, `vault()`, `config_file()`, `subdir()`, `script_entry()`, `default_keyfile()`, `resolve_hub_dir()`, `hub_pubkey_path()`, `hub_broker_endpoint()`, `has_standard_layout()`
-- [ ] `src/utils/config/role_directory.cpp` — implementation; `create()` sets `vault/` to 0700 on POSIX
-- [ ] `src/utils/CMakeLists.txt` — add `role_directory.cpp` to `pylabhub-utils` sources
-- [ ] L2 tests: `tests/test_layer2_service/test_role_directory.cpp` (create/open/paths/hub-resolution)
+**Phase 1** — `RoleDirectory` class ✅ DONE 2026-03-12
+- [x] `src/include/utils/role_directory.hpp` — public header
+- [x] `src/utils/config/role_directory.cpp` — implementation; `create()` sets `vault/` to 0700 on POSIX
+- [x] `src/utils/CMakeLists.txt` — added `config/role_directory.cpp`
+- [x] 18 L2 tests: `tests/test_layer2_service/test_role_directory.cpp`
 
-**Phase 2** — `role_cli.hpp` (header-only, public)
-- [ ] `src/include/utils/role_cli.hpp` — `RoleArgs`, `parse_role_args()`, `resolve_init_name()`, `is_stdin_tty()`, `read_password_interactive()`, `get_role_password()`, `get_new_role_password()`
-- [ ] Move password/tty helpers from `src/scripting/role_main_helpers.hpp` to `role_cli.hpp`; update `role_main_helpers.hpp` to `#include "utils/role_cli.hpp"` + retain only lifecycle/monitoring helpers
+**Phase 2** — `role_cli.hpp` (header-only, public) ✅ DONE 2026-03-12
+- [x] `src/include/utils/role_cli.hpp` — `RoleArgs`, `parse_role_args()`, `resolve_init_name()`, `is_stdin_tty()`, `read_password_interactive()`, `get_role_password()`, `get_new_role_password()`
+- [x] `role_main_helpers.hpp` updated to delegate to `role_cli.hpp`; 8 L2 tests added
+- Total: 26 new L2 tests (18 + 8)
 
-**Phase 3** — Migrate `Config::from_directory()` in all 3 role configs
-- [ ] `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` — use `RoleDirectory::open()` and `config_file()`
+**Phases 3+4** — Migrate `Config::from_directory()` + hub-reference resolution ✅ DONE 2026-03-12
+- [x] `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` — use `RoleDirectory::open()`, `config_file()`, `resolve_hub_dir()`, `hub_broker_endpoint()`, `hub_broker_pubkey()`
+- [x] `load_broker_from_hub_dir()` in `processor_config.cpp` refactored to use `RoleDirectory`
 
-**Phase 4** — Migrate hub-reference resolution in config parsing
-- [ ] All 3 config `.cpp` files — use `role_dir.resolve_hub_dir()`, `hub_pubkey_path()`, `hub_broker_endpoint()`
+**Phase 5** — Migrate script-path resolution in script hosts ⚪ DEFERRED
+- [ ] `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` — use `role_dir_.script_entry(config_.script_path, config_.script_type)` (requires storing `RoleDirectory` in script host)
 
-**Phase 5** — Migrate script-path resolution in script hosts
-- [ ] `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` — use `role_dir_.script_entry(config_.script_path, config_.script_type)`
+**Phase 6** — Migrate `do_init()` and `main()` arg parsing in all 3 binaries ✅ DONE 2026-03-12
+- [x] `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` — use `RoleDirectory::create()`, `role_cli::parse_role_args()`, `role_cli::resolve_init_name()`, `role_cli::get_new_role_password()`
 
-**Phase 6** — Migrate `do_init()` and `main()` arg parsing in all 3 binaries
-- [ ] `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` — use `RoleDirectory::create()`, `role_cli::parse_role_args()`, `role_cli::resolve_init_name()`, `role_cli::get_new_role_password()`
-
-**Phase 7** — Docs
+**Phase 7** — Docs ⚪ DEFERRED
 - [ ] `docs/README/README_EmbeddedAPI.md` — add section on using `RoleDirectory` + `role_cli.hpp` in custom role binaries
 - [ ] `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` — reference `role_cli.hpp` as standard CLI builder
 
-**Phase 8** — Tests
+**Phase 8** — Tests ⚪ DEFERRED
 - [ ] L4 CLI tests: extend `test_producer_cli.cpp`, `test_consumer_cli.cpp`, `test_processor_cli.cpp` to verify `default_keyfile` path + `has_standard_layout()` after `--init`
+
+**Open Design Question (2026-03-12)**
+- Expose `RoleDirectory` path accessors to script engine (`api.role_dir()`, `api.logs_dir()`, `api.run_dir()`)
+  for scripts that need to read supplementary files or write runtime state from the role directory.
+  See discussion in chat 2026-03-12. Vault/security operations should NOT be exposed to scripts.
 
 ---
 

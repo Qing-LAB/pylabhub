@@ -4,8 +4,9 @@
  */
 #include "producer_config.hpp"
 
-#include "utils/actor_vault.hpp"  // ActorVault::open (reused for producer vault)
-#include "utils/uid_utils.hpp"    // has_producer_prefix, generate_producer_uid
+#include "utils/actor_vault.hpp"    // ActorVault::open (reused for producer vault)
+#include "utils/role_directory.hpp" // RoleDirectory — canonical directory layout
+#include "utils/uid_utils.hpp"      // has_producer_prefix, generate_producer_uid
 
 #include <cstdio>   // std::fprintf (pre-lifecycle warnings)
 #include <filesystem>
@@ -251,41 +252,23 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
 
 ProducerConfig ProducerConfig::from_directory(const std::string &prod_dir)
 {
+    using pylabhub::utils::RoleDirectory;
     namespace fs = std::filesystem;
 
-    const fs::path dir  = prod_dir;
-    const fs::path json = dir / "producer.json";
+    const RoleDirectory rd  = RoleDirectory::open(prod_dir);
+    auto                cfg = from_json_file(rd.config_file("producer.json").string());
 
-    auto cfg = from_json_file(json.string());
-
-    // Resolve hub_dir relative to prod_dir.
-    if (!cfg.hub_dir.empty() && !fs::path(cfg.hub_dir).is_absolute())
-        cfg.hub_dir = fs::weakly_canonical(dir / cfg.hub_dir).string();
-
-    // Resolve script_path relative to prod_dir.
-    if (!cfg.script_path.empty() && !fs::path(cfg.script_path).is_absolute())
-        cfg.script_path = fs::weakly_canonical(dir / cfg.script_path).string();
-
-    // ── Override broker from hub_dir ──────────────────────────────────────────
-    if (!cfg.hub_dir.empty())
+    // Resolve hub_dir relative to the role directory, then read broker info.
+    if (const auto hub = rd.resolve_hub_dir(cfg.hub_dir))
     {
-        const fs::path hub_json   = fs::path(cfg.hub_dir) / "hub.json";
-        const fs::path hub_pubkey = fs::path(cfg.hub_dir) / "hub.pubkey";
-
-        std::ifstream f(hub_json);
-        if (!f.is_open())
-            throw std::runtime_error(
-                "Producer config: cannot open hub.json at '" + hub_json.string() + "'");
-
-        nlohmann::json hj = nlohmann::json::parse(f);
-        cfg.broker = hj.at("hub").at("broker_endpoint").get<std::string>();
-
-        if (fs::exists(hub_pubkey))
-        {
-            std::ifstream pk(hub_pubkey);
-            std::getline(pk, cfg.broker_pubkey);
-        }
+        cfg.hub_dir       = hub->string();
+        cfg.broker        = RoleDirectory::hub_broker_endpoint(*hub);
+        cfg.broker_pubkey = RoleDirectory::hub_broker_pubkey(*hub);
     }
+
+    // Resolve script_path relative to the role directory.
+    if (!cfg.script_path.empty() && !fs::path(cfg.script_path).is_absolute())
+        cfg.script_path = fs::weakly_canonical(rd.base() / cfg.script_path).string();
 
     return cfg;
 }

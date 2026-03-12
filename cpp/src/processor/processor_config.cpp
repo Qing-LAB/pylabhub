@@ -4,9 +4,10 @@
  */
 #include "processor_config.hpp"
 
-#include "utils/actor_vault.hpp"  // ActorVault::open (reused for processor vault)
+#include "utils/actor_vault.hpp"    // ActorVault::open (reused for processor vault)
 #include "utils/logger.hpp"
-#include "utils/uid_utils.hpp"    // has_processor_prefix, generate_processor_uid
+#include "utils/role_directory.hpp" // RoleDirectory — canonical directory layout
+#include "utils/uid_utils.hpp"      // has_processor_prefix, generate_processor_uid
 
 #include <cstdio>   // std::fprintf (pre-lifecycle warnings)
 #include <filesystem>
@@ -67,31 +68,23 @@ Transport parse_transport(const std::string &s)
         "' (must be 'shm' or 'zmq')");
 }
 
-/// Load broker endpoint and pubkey from a hub directory.
+/// Load broker endpoint and pubkey from a hub directory via RoleDirectory.
 /// On success, sets ep and pubkey; on failure logs a warning and returns false.
 bool load_broker_from_hub_dir(const std::string &hub_dir,
                                std::string &ep, std::string &pubkey)
 {
+    using pylabhub::utils::RoleDirectory;
     namespace fs = std::filesystem;
-    const fs::path hub_json   = fs::path(hub_dir) / "hub.json";
-    const fs::path hub_pubkey = fs::path(hub_dir) / "hub.pubkey";
 
-    std::ifstream f(hub_json);
-    if (!f.is_open())
+    try
     {
-        std::fprintf(stderr,
-                     "[proc] Warning: cannot open hub.json at '%s'\n",
-                     hub_json.c_str());
-        return false;
+        ep     = RoleDirectory::hub_broker_endpoint(fs::path(hub_dir));
+        pubkey = RoleDirectory::hub_broker_pubkey(fs::path(hub_dir));
     }
-
-    nlohmann::json hj = nlohmann::json::parse(f);
-    ep = hj.at("hub").at("broker_endpoint").get<std::string>();
-
-    if (fs::exists(hub_pubkey))
+    catch (const std::exception &e)
     {
-        std::ifstream pk(hub_pubkey);
-        std::getline(pk, pubkey);
+        std::fprintf(stderr, "[proc] Warning: %s\n", e.what());
+        return false;
     }
     return true;
 }
@@ -362,53 +355,38 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
 
 ProcessorConfig ProcessorConfig::from_directory(const std::string &proc_dir)
 {
+    using pylabhub::utils::RoleDirectory;
     namespace fs = std::filesystem;
 
-    const fs::path dir  = proc_dir;
-    const fs::path json = dir / "processor.json";
+    const RoleDirectory rd  = RoleDirectory::open(proc_dir);
+    auto                cfg = from_json_file(rd.config_file("processor.json").string());
 
-    auto cfg = from_json_file(json.string());
-
-    // Resolve relative paths relative to proc_dir so that `pylabhub-processor <proc_dir>`
-    // works from any working directory.
-    auto resolve_rel = [&](std::string &p)
+    // Resolve hub_dir relative to the role directory, then read broker info.
+    if (const auto hub = rd.resolve_hub_dir(cfg.hub_dir))
     {
-        if (!p.empty() && !fs::path(p).is_absolute())
-            p = fs::weakly_canonical(dir / p).string();
-    };
-    resolve_rel(cfg.hub_dir);
-    resolve_rel(cfg.in_hub_dir);
-    resolve_rel(cfg.out_hub_dir);
-    resolve_rel(cfg.script_path);
-
-    // ── Override broker from hub_dir ──────────────────────────────────────────
-    if (!cfg.hub_dir.empty())
-    {
-        const fs::path hub_json   = fs::path(cfg.hub_dir) / "hub.json";
-        const fs::path hub_pubkey = fs::path(cfg.hub_dir) / "hub.pubkey";
-
-        // Read broker endpoint from hub.json.
-        std::ifstream f(hub_json);
-        if (!f.is_open())
-            throw std::runtime_error(
-                "Processor config: cannot open hub.json at '" + hub_json.string() + "'");
-
-        nlohmann::json hj = nlohmann::json::parse(f);
-        cfg.broker = hj.at("hub").at("broker_endpoint").get<std::string>();
-
-        // Read broker public key.
-        if (fs::exists(hub_pubkey))
-        {
-            std::ifstream pk(hub_pubkey);
-            std::getline(pk, cfg.broker_pubkey);
-        }
+        cfg.hub_dir       = hub->string();
+        cfg.broker        = RoleDirectory::hub_broker_endpoint(*hub);
+        cfg.broker_pubkey = RoleDirectory::hub_broker_pubkey(*hub);
     }
 
-    // ── Per-direction hub_dir overrides ──────────────────────────────────────
+    // ── Per-direction hub_dir overrides ───────────────────────────────────────
+    auto resolve_hub_dir_rel = [&](std::string &hd)
+    {
+        if (hd.empty()) return;
+        if (const auto hub = rd.resolve_hub_dir(hd))
+            hd = hub->string();
+    };
+    resolve_hub_dir_rel(cfg.in_hub_dir);
+    resolve_hub_dir_rel(cfg.out_hub_dir);
+
     if (!cfg.in_hub_dir.empty())
         (void)load_broker_from_hub_dir(cfg.in_hub_dir, cfg.in_broker, cfg.in_broker_pubkey);
     if (!cfg.out_hub_dir.empty())
         (void)load_broker_from_hub_dir(cfg.out_hub_dir, cfg.out_broker, cfg.out_broker_pubkey);
+
+    // Resolve script_path relative to the role directory.
+    if (!cfg.script_path.empty() && !fs::path(cfg.script_path).is_absolute())
+        cfg.script_path = fs::weakly_canonical(rd.base() / cfg.script_path).string();
 
     return cfg;
 }

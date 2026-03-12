@@ -16,6 +16,7 @@
 
 #include "plh_datahub.hpp"
 #include "utils/interactive_signal_handler.hpp"
+#include "utils/role_cli.hpp"      // public TTY + password helpers (HEP-CORE-0024)
 #include "utils/timeout_constants.hpp"
 
 #include <atomic>
@@ -27,114 +28,32 @@
 #include <thread>
 #include <vector>
 
-#if defined(PYLABHUB_IS_POSIX)
-#include <unistd.h> // getpass, isatty, STDIN_FILENO
-#elif defined(_WIN32)
-#include <io.h>      // _isatty, _fileno
-#include <windows.h> // SetConsoleMode, GetConsoleMode, ENABLE_ECHO_INPUT
-#endif
-
 namespace pylabhub::scripting
 {
 
 // ============================================================================
-// TTY detection
+// TTY detection + password helpers
 // ============================================================================
+// These thin wrappers forward to the public pylabhub::role_cli API so that
+// existing callers in producer/consumer/processor main files continue to compile
+// without change while the public API becomes the single canonical implementation.
 
-/**
- * @brief Return true when stdin is an interactive terminal (not a pipe or redirect).
- *
- * Used to gate prompts: if stdin is not a TTY, interactive prompts are skipped and
- * callers must supply values via CLI flags or environment variables instead.
- */
+/** @copydoc pylabhub::role_cli::is_stdin_tty */
 inline bool is_stdin_tty()
 {
-#if defined(PYLABHUB_IS_POSIX)
-    return ::isatty(STDIN_FILENO) != 0;
-#elif defined(_WIN32)
-    return ::_isatty(::_fileno(stdin)) != 0;
-#else
-    return false;
-#endif
+    return ::pylabhub::role_cli::is_stdin_tty();
 }
 
-// ============================================================================
-// Password helpers
-// ============================================================================
-
-/**
- * @brief Read a password from the terminal without echoing.
- *
- * POSIX: uses getpass(). Windows: temporarily disables ENABLE_ECHO_INPUT on the
- * console handle. Only call this when is_stdin_tty() is true.
- *
- * @param role_name  Used in the error message when reading fails (e.g. "producer").
- * @param prompt     Prompt displayed to the user.
- * @return Password string; empty if the user pressed Enter with no input.
- */
+/** @copydoc pylabhub::role_cli::read_password_interactive */
 inline std::string read_password_interactive(const char *role_name, const char *prompt)
 {
-#if defined(PYLABHUB_IS_POSIX)
-    char *pw = ::getpass(prompt);
-    if (!pw)
-    {
-        std::fprintf(stderr, "%s: failed to read password from terminal\n", role_name);
-        return {};
-    }
-    return pw;
-#elif defined(_WIN32)
-    (void)role_name;
-    HANDLE hStdin     = ::GetStdHandle(STD_INPUT_HANDLE);
-    DWORD  old_mode   = 0;
-    // GetConsoleMode returns 0 for non-console handles (pipes, redirected files),
-    // and for INVALID_HANDLE_VALUE — is_con guards all subsequent SetConsoleMode calls.
-    const bool is_con = (hStdin != INVALID_HANDLE_VALUE) &&
-                        (::GetConsoleMode(hStdin, &old_mode) != 0);
-    if (is_con)
-        ::SetConsoleMode(hStdin, old_mode & ~ENABLE_ECHO_INPUT);
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    if (is_con)
-    {
-        ::SetConsoleMode(hStdin, old_mode);
-        std::fprintf(stderr, "\n"); // newline since echo was suppressed
-    }
-    return pw;
-#else
-    (void)role_name;
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    return pw;
-#endif
+    return ::pylabhub::role_cli::read_password_interactive(role_name, prompt);
 }
 
-/**
- * @brief Return the vault password from the environment or by prompting.
- *
- * Priority: PYLABHUB_ACTOR_PASSWORD env var → interactive terminal prompt.
- * Returns nullopt when stdin is not a TTY and the env var is not set; the caller
- * should treat nullopt as a fatal error (error message already printed to stderr).
- *
- * @param role_name  Used in error messages and the terminal-read failure message.
- * @param prompt     Prompt displayed to the user when falling back to interactive input.
- */
+/** @copydoc pylabhub::role_cli::get_role_password */
 inline std::optional<std::string> get_role_password(const char *role_name, const char *prompt)
 {
-    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
-        return std::string(env);
-    if (!is_stdin_tty())
-    {
-        std::fprintf(stderr,
-                     "%s: vault password required; set PYLABHUB_ACTOR_PASSWORD "
-                     "for non-interactive use\n",
-                     role_name);
-        return std::nullopt;
-    }
-    return read_password_interactive(role_name, prompt);
+    return ::pylabhub::role_cli::get_role_password(role_name, prompt);
 }
 
 // ============================================================================

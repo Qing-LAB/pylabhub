@@ -1,0 +1,225 @@
+#pragma once
+/**
+ * @file role_directory.hpp
+ * @brief RoleDirectory — formalised role directory layout and path resolution (HEP-CORE-0024).
+ *
+ * A role directory is the canonical on-disk layout for a pyLabHub role instance:
+ *
+ *   <base>/
+ *     <role>.json          ← JSON config file
+ *     script/<type>/       ← script entry point (e.g. script/python/__init__.py)
+ *     logs/                ← log files
+ *     run/                 ← runtime state (PID files, etc.)
+ *     vault/               ← NaCl keypairs (0700 on POSIX)
+ *
+ * RoleDirectory provides:
+ *   - Path accessors (base, logs, run, vault, config_file, script_entry)
+ *   - Hub reference resolution (resolve_hub_dir, hub_broker_endpoint, hub_pubkey_path)
+ *   - Directory creation (create — creates subdirectories with correct permissions)
+ *   - Layout validation (has_standard_layout)
+ *   - Default keyfile path (inside vault/, named <uid>.vault)
+ *
+ * See: docs/HEP/HEP-CORE-0024-Role-Directory-Service.md
+ */
+
+#include "pylabhub_utils_export.h"
+
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace pylabhub::utils
+{
+
+/**
+ * @brief Canonical role directory layout with path resolution helpers.
+ *
+ * RoleDirectory is a thin, value-like wrapper around a base path.  It does NOT
+ * manage the lifetime of the directory or its contents; it merely provides
+ * strongly-typed, centralised path resolution.
+ *
+ * Thread-safety: RoleDirectory is immutable after construction.  All methods are
+ * safe to call from any thread.
+ */
+class PYLABHUB_UTILS_EXPORT RoleDirectory
+{
+public:
+    // ── Construction ───────────────────────────────────────────────────────────
+
+    /**
+     * @brief Open an existing role directory.
+     *
+     * Does not check whether the directory or any of its subdirectories exist;
+     * use @ref has_standard_layout() to verify.
+     *
+     * @param base  Path to the role directory root (absolute or relative).
+     *              Stored as weakly-canonical.
+     */
+    static RoleDirectory open(const std::filesystem::path &base);
+
+    /**
+     * @brief Open the role directory that owns the given config file.
+     *
+     * Equivalent to `open(config_path.parent_path())`.
+     *
+     * @param config_path  Path to the role JSON config file.
+     */
+    static RoleDirectory from_config_file(const std::filesystem::path &config_path);
+
+    /**
+     * @brief Create a new role directory with the standard subdirectory layout.
+     *
+     * Creates the following subdirectories under @p base (creating intermediate
+     * directories as needed):
+     *   - logs/
+     *   - run/
+     *   - vault/  (mode 0700 on POSIX — private keypair storage)
+     *   - script/python/
+     *
+     * The function is idempotent: if subdirectories already exist it succeeds
+     * silently (does not reset vault/ permissions on an existing directory).
+     *
+     * @param base             Directory to create / populate.
+     * @param config_filename  Name of the config file the caller will write
+     *                         (e.g. "producer.json").  Not created by this method;
+     *                         only informs the returned RoleDirectory instance.
+     * @return RoleDirectory pointing to @p base (weakly-canonical).
+     * @throws std::runtime_error if any required subdirectory cannot be created.
+     */
+    static RoleDirectory create(const std::filesystem::path &base,
+                                std::string_view             config_filename);
+
+    // ── Path accessors ─────────────────────────────────────────────────────────
+
+    /** @brief Absolute (weakly-canonical) path to the role directory root. */
+    const std::filesystem::path &base() const noexcept { return base_; }
+
+    /** @brief `<base>/logs` — role log-file directory. */
+    std::filesystem::path logs() const { return base_ / "logs"; }
+
+    /** @brief `<base>/run` — PID file and runtime state directory. */
+    std::filesystem::path run() const { return base_ / "run"; }
+
+    /** @brief `<base>/vault` — private keypair storage (0700 on POSIX). */
+    std::filesystem::path vault() const { return base_ / "vault"; }
+
+    /**
+     * @brief `<base>/<filename>` — path to the role JSON config file.
+     * @param filename  Config file name, e.g. "producer.json".
+     */
+    std::filesystem::path config_file(std::string_view filename) const
+    {
+        return base_ / std::filesystem::path(filename);
+    }
+
+    /**
+     * @brief `<base>/<name>` — arbitrary named subdirectory under base.
+     * @param name  Subdirectory name.
+     */
+    std::filesystem::path subdir(std::string_view name) const
+    {
+        return base_ / std::filesystem::path(name);
+    }
+
+    // ── Script entry point ─────────────────────────────────────────────────────
+
+    /**
+     * @brief Resolve the script entry-point file.
+     *
+     * Convention: `<resolved_script_path>/script/<type>/__init__.<ext>`
+     *
+     * The @p script_path from the config (`script.path`) is first resolved
+     * relative to the role base directory (if relative).  This method does NOT
+     * verify that the resulting path exists.
+     *
+     * @param script_path  Value of `script.path` from the role JSON config.
+     *                     Relative paths are resolved relative to @ref base().
+     * @param type         Script type: "python" (→ `__init__.py`) or
+     *                     "lua" (→ `__init__.lua`).
+     * @return Absolute path to the script entry-point file.
+     */
+    std::filesystem::path script_entry(std::string_view script_path,
+                                       std::string_view type) const;
+
+    // ── Security helpers ───────────────────────────────────────────────────────
+
+    /**
+     * @brief Default keyfile path inside vault/ for the given UID.
+     *
+     * Returns `<base>/vault/<uid>.vault`.  The `vault/` directory is created
+     * with 0700 permissions by @ref create().
+     *
+     * @param uid  Role UID, e.g. "PROD-TEMPSENS-12345678".
+     */
+    std::filesystem::path default_keyfile(std::string_view uid) const
+    {
+        return vault() / (std::string(uid) + ".vault");
+    }
+
+    // ── Hub reference resolution ───────────────────────────────────────────────
+
+    /**
+     * @brief Resolve a `hub_dir` value from the role config.
+     *
+     * - Empty string → nullopt (no hub_dir configured).
+     * - Absolute path → returned as weakly_canonical.
+     * - Relative path → resolved relative to @ref base(), then weakly_canonical.
+     *
+     * @param hub_dir_value  Value of the `hub_dir` JSON field.
+     * @return Absolute (weakly-canonical) path to the hub directory, or nullopt.
+     */
+    std::optional<std::filesystem::path> resolve_hub_dir(
+        std::string_view hub_dir_value) const;
+
+    /**
+     * @brief Path to the hub's public key file.
+     * @param hub_dir  Absolute path to the hub directory.
+     * @return `<hub_dir>/hub.pubkey`
+     */
+    static std::filesystem::path hub_pubkey_path(const std::filesystem::path &hub_dir)
+    {
+        return hub_dir / "hub.pubkey";
+    }
+
+    /**
+     * @brief Read the broker endpoint from a hub directory.
+     *
+     * Opens `<hub_dir>/hub.json` and extracts `hub.broker_endpoint`.
+     *
+     * @param hub_dir  Absolute path to the hub directory.
+     * @return Broker endpoint string, e.g. "tcp://127.0.0.1:5570".
+     * @throws std::runtime_error if hub.json cannot be opened or the field
+     *         is missing.
+     */
+    static std::string hub_broker_endpoint(const std::filesystem::path &hub_dir);
+
+    /**
+     * @brief Read the broker public key from a hub directory (if present).
+     *
+     * Returns the first line of `<hub_dir>/hub.pubkey`, or empty string if the
+     * file does not exist.
+     *
+     * @param hub_dir  Absolute path to the hub directory.
+     */
+    static std::string hub_broker_pubkey(const std::filesystem::path &hub_dir);
+
+    // ── Layout inspection ──────────────────────────────────────────────────────
+
+    /**
+     * @brief Return true when all standard subdirectories exist under base.
+     *
+     * Checks for: `logs/`, `run/`, `vault/`, `script/python/`.
+     */
+    bool has_standard_layout() const;
+
+private:
+    explicit RoleDirectory(std::filesystem::path base) noexcept
+        : base_(std::move(base))
+    {
+    }
+
+    std::filesystem::path base_;
+};
+
+} // namespace pylabhub::utils

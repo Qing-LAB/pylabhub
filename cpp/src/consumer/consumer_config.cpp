@@ -5,6 +5,7 @@
 #include "consumer_config.hpp"
 
 #include "utils/actor_vault.hpp"
+#include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
 
 #include <cstdio>
@@ -216,38 +217,23 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
 
 ConsumerConfig ConsumerConfig::from_directory(const std::string &cons_dir)
 {
+    using pylabhub::utils::RoleDirectory;
     namespace fs = std::filesystem;
 
-    const fs::path dir  = cons_dir;
-    const fs::path json = dir / "consumer.json";
+    const RoleDirectory rd  = RoleDirectory::open(cons_dir);
+    auto                cfg = from_json_file(rd.config_file("consumer.json").string());
 
-    auto cfg = from_json_file(json.string());
-
-    if (!cfg.hub_dir.empty() && !fs::path(cfg.hub_dir).is_absolute())
-        cfg.hub_dir = fs::weakly_canonical(dir / cfg.hub_dir).string();
-
-    if (!cfg.script_path.empty() && !fs::path(cfg.script_path).is_absolute())
-        cfg.script_path = fs::weakly_canonical(dir / cfg.script_path).string();
-
-    if (!cfg.hub_dir.empty())
+    // Resolve hub_dir relative to the role directory, then read broker info.
+    if (const auto hub = rd.resolve_hub_dir(cfg.hub_dir))
     {
-        const fs::path hub_json   = fs::path(cfg.hub_dir) / "hub.json";
-        const fs::path hub_pubkey = fs::path(cfg.hub_dir) / "hub.pubkey";
-
-        std::ifstream f(hub_json);
-        if (!f.is_open())
-            throw std::runtime_error(
-                "Consumer config: cannot open hub.json at '" + hub_json.string() + "'");
-
-        nlohmann::json hj = nlohmann::json::parse(f);
-        cfg.broker = hj.at("hub").at("broker_endpoint").get<std::string>();
-
-        if (fs::exists(hub_pubkey))
-        {
-            std::ifstream pk(hub_pubkey);
-            std::getline(pk, cfg.broker_pubkey);
-        }
+        cfg.hub_dir       = hub->string();
+        cfg.broker        = RoleDirectory::hub_broker_endpoint(*hub);
+        cfg.broker_pubkey = RoleDirectory::hub_broker_pubkey(*hub);
     }
+
+    // Resolve script_path relative to the role directory.
+    if (!cfg.script_path.empty() && !fs::path(cfg.script_path).is_absolute())
+        cfg.script_path = fs::weakly_canonical(rd.base() / cfg.script_path).string();
 
     return cfg;
 }
