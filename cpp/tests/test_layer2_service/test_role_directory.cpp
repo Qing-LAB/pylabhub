@@ -332,3 +332,56 @@ TEST(RoleCliTest, ParseRoleArgs_PositionalDir)
 
     EXPECT_EQ(args.role_dir, "/tmp/myrole");
 }
+
+// ── Security: warn_if_keyfile_in_role_dir ─────────────────────────────────────
+
+TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_NoWarnWhenEmpty)
+{
+    const auto tmp = unique_temp_dir("wkf_empty");
+    fs::create_directories(tmp);
+    const auto rd = RoleDirectory::open(tmp);
+
+    // Must not crash or warn for empty keyfile
+    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), ""));
+}
+
+TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_InsideRoleDir_Absolute)
+{
+    // Smoke-test: just verifies the function executes without throwing when
+    // the keyfile is inside the role dir (the warning goes to stderr).
+    const auto tmp = unique_temp_dir("wkf_inside");
+    fs::create_directories(tmp / "vault");
+    const auto rd = RoleDirectory::open(tmp);
+
+    const auto kf = (rd.vault() / "PROD-TEST.vault").string();
+    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf));
+}
+
+TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
+{
+    // Keyfile outside role dir must not trigger a warning (no-throw, no crash).
+    const auto role_tmp = unique_temp_dir("wkf_out_role");
+    const auto sys_tmp  = unique_temp_dir("wkf_out_sys");
+    fs::create_directories(role_tmp);
+    fs::create_directories(sys_tmp);
+
+    const auto rd = RoleDirectory::open(role_tmp);
+    const auto kf = (sys_tmp / "PROD-TEST.vault").string();
+
+    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf));
+    fs::remove_all(role_tmp);
+    fs::remove_all(sys_tmp);
+}
+
+TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
+{
+    // A relative keyfile path "vault/PROD-TEST.vault" resolved under the role
+    // dir is inside it — must not crash.
+    const auto tmp = unique_temp_dir("wkf_rel");
+    fs::create_directories(tmp / "vault");
+    const auto rd = RoleDirectory::open(tmp);
+
+    EXPECT_NO_THROW(
+        RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/PROD-TEST.vault"));
+    fs::remove_all(tmp);
+}

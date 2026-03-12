@@ -204,6 +204,29 @@ public:
      */
     static std::string hub_broker_pubkey(const std::filesystem::path &hub_dir);
 
+    // ── Security diagnostics ───────────────────────────────────────────────────
+
+    /**
+     * @brief Emit a security warning if the keyfile is inside the role directory.
+     *
+     * An encrypted keypair stored inside the role directory can be exfiltrated
+     * by a user script (which has full filesystem access as the role process
+     * user).  An attacker who obtains the `.vault` file can attempt offline
+     * brute-force against the Argon2id password.
+     *
+     * The warning is printed unconditionally to stderr (pre-lifecycle, so the
+     * Logger may not yet be initialised).
+     *
+     * No warning is emitted when @p keyfile is empty.
+     *
+     * @param role_base  Absolute (weakly-canonical) role directory base path.
+     * @param keyfile    Value of `auth.keyfile` from the role JSON config
+     *                   (absolute or relative; relative paths are resolved
+     *                   relative to @p role_base for the comparison).
+     */
+    static void warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
+                                             const std::string           &keyfile);
+
     // ── Layout inspection ──────────────────────────────────────────────────────
 
     /**
