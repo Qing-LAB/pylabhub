@@ -1,8 +1,10 @@
 # Full Source Code Review: cpp/src
 
 **Date:** 2026-03-06
+**Closed:** 2026-03-12
 **Scope:** All C++ source code under `/cpp/src/` checked against HEP design documents under `/cpp/docs/HEP/`
 **Reviewer:** Claude (automated comprehensive review)
+**Status:** ✅ CLOSED — all 47 items resolved (28 fixed, 10 false positives, 9 accepted/by-design)
 
 ## Status Table
 
@@ -19,7 +21,7 @@
 | 9 | MEDIUM | Resource Leak | `python_script_host.cpp:62` | `setenv("PYTHONUNBUFFERED", ...)` — not portable to Windows | ✅ FIXED 2026-03-06 — `#ifdef _WIN32` / `_putenv_s` / `#else` / `setenv` guard added |
 | 10 | MEDIUM | Protocol Design | `data_block_internal.hpp` | `get_attach_timeout_ms()` uses `std::getenv()` on every call (not cached) | ✅ FIXED 2026-03-07 — `static int cached` IIFE caches on first call |
 | 11 | MEDIUM | Race Condition | `data_block_internal.hpp:85` | Non-atomic two-store heartbeat update (id then ns) can be torn | ACCEPTED — producer handoff is rare; document as known limitation |
-| 12 | MEDIUM | Missing Impl | `plh_datahub_client.hpp` | Header includes recovery/diagnostics headers but doc says "lightweight client" | OPEN — move heavy includes to plh_datahub.hpp (backlog) |
+| 12 | MEDIUM | Missing Impl | `plh_datahub_client.hpp` | Header includes recovery/diagnostics headers but doc says "lightweight client" | ACCEPTED 2026-03-12 — no good in-process repair strategy exists for an interconnected multi-role system; the only sound recovery model is graceful coordinated shutdown (ask all roles to quit via the broker). Inlining repair/recovery headers serves documentation/tooling consumers of the client header. Moving includes would reduce coupling but not enable a better recovery path. Tracked in MESSAGEHUB_TODO.md if a coordinated-shutdown signal is ever added. |
 | 13 | LOW | API Design | `shared_memory_spinlock.hpp:98` | `try_lock_for(0)` means "spin forever" — inverted from standard convention | ✅ FIXED 2026-03-06 (session 2) — POSIX convention: 0=non-blocking, <0=infinite |
 | 14 | LOW | Inconsistency | `plh_platform.hpp:117` | Comment says "C++17 features" but `static_assert` checks `C++20` | ✅ FIXED 2026-03-07 — file already says "C++20" throughout; no "C++17" text present |
 | 15 | LOW | Redundant Code | `data_block_internal.hpp` | Version constants re-aliased: `DATABLOCK_VERSION_MAJOR = HEADER_VERSION_MAJOR` | ✅ FIXED 2026-03-07 — aliases removed; file uses `using pylabhub::hub::detail::HEADER_VERSION_MAJOR/MINOR` |
