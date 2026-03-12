@@ -68,6 +68,10 @@ inline std::optional<std::string> get_role_password(const char *role_name, const
  *   utils::LifecycleGuard lifecycle(scripting::role_lifecycle_modules());
  * @endcode
  *
+ * When @p log_file is non-empty, a lightweight "LogFileSink" module is injected
+ * that depends on "Logger" and switches the log sink to the specified file
+ * before any other module initialises — eliminating early console log spew.
+ *
  * All six modules (Logger, FileLock, Crypto, JsonConfig, ZMQ, DataExchangeHub) are
  * required by every role binary. A binary needing extra modules can append them:
  * @code
@@ -76,37 +80,53 @@ inline std::optional<std::string> get_role_password(const char *role_name, const
  *   utils::LifecycleGuard lifecycle(std::move(mods));
  * @endcode
  */
-inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
+inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
+    const std::string &log_file = {})
 {
-    return pylabhub::utils::MakeModDefList(
+    // Hub/role-related modules that emit LOGGER_INFO during startup.
+    // When a log file is requested, these get an extra dependency on
+    // "LogFileSink" so the topo sort places them after the sink switch.
+    auto zmq_mod = pylabhub::hub::GetZMQContextModule();
+    auto hub_mod = pylabhub::hub::GetLifecycleModule();
+
+    if (!log_file.empty())
+    {
+        zmq_mod.add_dependency("LogFileSink");
+        hub_mod.add_dependency("LogFileSink");
+    }
+
+    auto mods = pylabhub::utils::MakeModDefList(
         pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule(),
-        pylabhub::hub::GetLifecycleModule()   // DataExchangeHub — required for SHM DataBlock
+        std::move(zmq_mod),
+        std::move(hub_mod)
     );
-}
 
-/**
- * @brief Redirect the Logger to a file sink if --log-file was specified.
- *
- * Call this immediately after creating the LifecycleGuard (which initialises
- * the Logger with the default console sink).  If @p log_file is empty this
- * is a no-op.
- *
- * @param log_file   Path from RoleArgs::log_file (may be empty).
- * @param log_tag    Tag for error messages, e.g. "[prod-main]".
- */
-inline void apply_log_file(const std::string &log_file, const char *log_tag)
-{
-    if (log_file.empty())
-        return;
-    if (!pylabhub::utils::Logger::instance().set_logfile(log_file))
+    if (!log_file.empty())
     {
-        std::fprintf(stderr, "%s WARNING: failed to open log file '%s', "
-                     "falling back to console\n", log_tag, log_file.c_str());
+        // Inject a "LogFileSink" module that depends on Logger and switches
+        // the log sink to a file immediately after Logger initialises.
+        pylabhub::utils::ModuleDef sink_mod("LogFileSink");
+        sink_mod.add_dependency("pylabhub::utils::Logger");
+        sink_mod.set_startup(
+            [](const char *path)
+            {
+                if (path && path[0] != '\0')
+                {
+                    if (!pylabhub::utils::Logger::instance().set_logfile(path))
+                    {
+                        std::fprintf(stderr, "WARNING: failed to open log file '%s', "
+                                     "falling back to console\n", path);
+                    }
+                }
+            },
+            log_file);
+        mods.push_back(std::move(sink_mod));
     }
+
+    return mods;
 }
 
 /**
