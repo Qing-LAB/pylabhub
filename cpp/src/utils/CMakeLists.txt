@@ -43,9 +43,10 @@ set(UTILS_SOURCES
   logging/logger_sinks/syslog_sink.cpp
   logging/logger_sinks/event_log_sink.cpp
 
-  # --- config: JSON config and hub identity ---
+  # --- config: JSON config, hub identity, role directory ---
   config/json_config.cpp
   config/hub_config.cpp
+  config/role_directory.cpp
 
   # --- shm: shared memory DataBlock layer ---
   shm/data_block.cpp
