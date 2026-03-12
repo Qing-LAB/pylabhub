@@ -27,6 +27,7 @@
 #include "utils/logger.hpp"
 #include "utils/timeout_constants.hpp"
 #include "utils/channel_handle.hpp"
+#include "utils/format_tools.hpp"
 #include "utils/messenger.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -40,6 +41,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -64,8 +66,6 @@ namespace internal
 inline constexpr size_t       kZ85KeyChars             = 40;
 inline constexpr size_t       kSchemaHashHexLen         = 64;
 inline constexpr size_t       kSchemaHashBytes          = 32;
-inline constexpr unsigned int kNibbleMask               = 0x0FU;
-inline constexpr int          kHexLetterOffset          = 10;
 inline constexpr size_t       kZ85KeyBufSize            = 41;
 inline constexpr int          kDefaultRegisterTimeoutMs = 5000;
 
@@ -82,36 +82,15 @@ inline bool is_valid_z85_key(const std::string &key)
 
 inline std::string hex_encode_schema_hash(const std::string &raw)
 {
-    static const std::array<char, 17> kHexChars = {"0123456789abcdef"};
-    std::string out;
-    out.reserve(kSchemaHashHexLen);
-    for (unsigned char byte : raw)
-    {
-        out += kHexChars[(byte >> 4) & kNibbleMask];
-        out += kHexChars[byte & kNibbleMask];
-    }
-    return out;
+    return format_tools::bytes_to_hex(raw);
 }
 
 inline std::string hex_decode_schema_hash(const std::string &hex_str)
 {
-    auto hex_val = [](char hex_char) -> int {
-        if (hex_char >= '0' && hex_char <= '9') return hex_char - '0';
-        if (hex_char >= 'a' && hex_char <= 'f') return hex_char - 'a' + kHexLetterOffset;
-        if (hex_char >= 'A' && hex_char <= 'F') return hex_char - 'A' + kHexLetterOffset;
-        return -1;
-    };
     if (hex_str.size() != kSchemaHashHexLen) return {};
-    std::string out;
-    out.reserve(kSchemaHashBytes);
-    for (size_t i = 0; i < kSchemaHashHexLen; i += 2)
-    {
-        int high_val = hex_val(hex_str[i]);
-        int low_val  = hex_val(hex_str[i + 1]);
-        if (high_val < 0 || low_val < 0) return {};
-        out += static_cast<char>((high_val << 4) | low_val);
-    }
-    return out;
+    auto decoded = format_tools::bytes_from_hex(hex_str);
+    if (decoded.size() != kSchemaHashBytes) return {}; // invalid chars → bytes_from_hex returned original
+    return decoded;
 }
 
 // channel_pattern_to_str() and channel_pattern_from_str() are defined in
@@ -189,6 +168,11 @@ struct CreateChannelCmd
     // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
     std::string data_transport{"shm"}; ///< "shm" (default) or "zmq"
     std::string zmq_node_endpoint;     ///< PUSH bind endpoint; non-empty only when data_transport="zmq"
+    // Phase 3 (Inbox Facility): producer inbox ROUTER endpoint.
+    std::string inbox_endpoint;        ///< ROUTER bind endpoint; empty when no inbox configured.
+    // Phase 4: inbox schema info (stored by broker for ROLE_INFO_REQ responses).
+    std::string inbox_schema_json;     ///< JSON-serialized ZmqSchemaField list; empty = no inbox.
+    std::string inbox_packing;         ///< "aligned" or "packed"; empty = no inbox.
     std::promise<bool> result; ///< true = broker accepted (REG_ACK received)
 };
 /// Internal: sent by connect_channel() to discover and register as consumer.
@@ -203,6 +187,8 @@ struct ConnectChannelCmd
     std::string consumer_name; ///< Consumer actor name; empty = omit from payload
     // Phase 3: named schema (HEP-CORE-0016).
     std::string expected_schema_id; ///< If non-empty, consumer requests named schema validation
+    // Phase 6: transport arbitration — sent to broker in CONSUMER_REG_REQ.
+    std::string consumer_queue_type; ///< "shm" or "zmq"; empty = no server-side validation
     std::promise<std::optional<ConsumerInfo>> result;
 };
 /// Phase 3 (HEP-CORE-0016): query broker for schema info of a registered channel.
@@ -257,6 +243,21 @@ struct QueryShmBlocksCmd
     std::promise<std::string> result;
 };
 
+/// Phase 4: query broker for role liveness — returns true if UID is present in any channel.
+struct RolePresenceReqCmd
+{
+    std::string        uid;
+    int                timeout_ms{5000};
+    std::promise<bool> result;
+};
+/// Phase 4: query broker for inbox connection info for a producer UID.
+struct RoleInfoReqCmd
+{
+    std::string                                     uid;
+    int                                             timeout_ms{5000};
+    std::promise<std::optional<RoleInfoResult>>     result;
+};
+
 struct StopCmd
 {
 };
@@ -283,7 +284,8 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       SuppressHeartbeatCmd, HeartbeatNowCmd,
                                       QuerySchemaCmd, ChannelNotifyCmd,
                                       ChannelBroadcastCmd, ChannelListCmd,
-                                      MetricsReportCmd, QueryShmBlocksCmd>;
+                                      MetricsReportCmd, QueryShmBlocksCmd,
+                                      RolePresenceReqCmd, RoleInfoReqCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -331,6 +333,16 @@ class MessengerImpl
     /// Backward-compat: fires for any channel when no per-channel closing cb registered.
     std::function<void(const std::string &)> m_global_channel_closing_cb;
 
+    // Hub-dead callback: fired from the worker thread when ZMQ_EVENT_DISCONNECTED is
+    // received on the monitor socket (i.e. ZMTP heartbeat timeout expired or TCP dropped).
+    // Guarded by m_cb_mutex for registration; called only from the worker thread.
+    std::function<void()> m_on_hub_dead_cb;
+
+    // ZMQ socket monitor — worker-thread-only state (no locking needed).
+    // Created in handle_command(ConnectCmd) and torn down in DisconnectCmd/StopCmd.
+    std::optional<zmq::socket_t> m_monitor_sock_;
+    std::string                  m_monitor_endpoint_; ///< inproc address of the monitor
+
     MessengerImpl() = default;
 
     ~MessengerImpl()
@@ -364,7 +376,9 @@ class MessengerImpl
 
     void worker_loop();
     void process_incoming(zmq::socket_t &socket);
+    void process_monitor_events(zmq::socket_t &monitor); ///< Fire m_on_hub_dead_cb on disconnect
     void send_heartbeats(zmq::socket_t &socket);
+    void close_monitor(); ///< Tear down monitor socket (call before closing main socket)
 
     // ── Connection management (defined in messenger.cpp) ─────────────────────
 
@@ -401,6 +415,10 @@ class MessengerImpl
     bool handle_command(MetricsReportCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
     bool handle_command(QueryShmBlocksCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(RolePresenceReqCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    bool handle_command(RoleInfoReqCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,

@@ -32,6 +32,7 @@ static fs::path unique_temp_dir(const std::string &prefix)
     const int id = counter.fetch_add(1);
     fs::path dir = fs::temp_directory_path()
                    / ("plh_conscli_" + prefix + "_" + std::to_string(id));
+    fs::remove_all(dir);          // start fresh regardless of previous runs
     fs::create_directories(dir);
     return dir;
 }
@@ -96,6 +97,9 @@ TEST_F(ConsumerCliTest, Init_DefaultValues)
 
     // script.path == "."
     EXPECT_EQ(j["script"]["path"].get<std::string>(), ".");
+
+    // script.type == "python"
+    EXPECT_EQ(j["script"]["type"].get<std::string>(), "python");
 
     // stop_on_script_error defaults to false
     EXPECT_FALSE(j["validation"]["stop_on_script_error"].get<bool>());
@@ -214,4 +218,19 @@ TEST_F(ConsumerCliTest, Config_FileNotFound_NonZeroExit)
         << "Expected non-zero exit for missing config file";
     EXPECT_FALSE(proc.get_stderr().empty())
         << "Expected error text in stderr";
+}
+
+/// --init without --name in non-interactive mode (subprocess stdin is not a TTY):
+/// binary must exit non-zero and print a useful error message.
+TEST_F(ConsumerCliTest, Init_NonInteractiveNoName_ExitsWithError)
+{
+    const auto tmp = unique_temp_dir("noname");
+
+    WorkerProcess proc(consumer_binary(), "--init", {tmp.string()});
+    EXPECT_NE(proc.wait_for_exit(), 0)
+        << "Expected non-zero exit when --name not provided in non-interactive mode";
+    EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
+        << "Expected '--name' in error message, got:\n" << proc.get_stderr();
+
+    fs::remove_all(tmp);
 }

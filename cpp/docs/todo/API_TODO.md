@@ -10,6 +10,103 @@
 
 ## Current Focus
 
+### HEP-0024: Role Directory Service (NEW — 2026-03-12)
+
+**Design**: `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md`
+**Motivation**: Formalises the implicit role directory layout convention as a public API;
+enables custom role binary development with correct security defaults; eliminates
+triplication of path/hub-resolution logic across the three role config classes.
+
+**Phase 1** — `RoleDirectory` class
+- [ ] `src/include/utils/role_directory.hpp` — public header: `open()`, `create()`, `from_config_file()`, `logs()`, `run()`, `vault()`, `config_file()`, `subdir()`, `script_entry()`, `default_keyfile()`, `resolve_hub_dir()`, `hub_pubkey_path()`, `hub_broker_endpoint()`, `has_standard_layout()`
+- [ ] `src/utils/config/role_directory.cpp` — implementation; `create()` sets `vault/` to 0700 on POSIX
+- [ ] `src/utils/CMakeLists.txt` — add `role_directory.cpp` to `pylabhub-utils` sources
+- [ ] L2 tests: `tests/test_layer2_service/test_role_directory.cpp` (create/open/paths/hub-resolution)
+
+**Phase 2** — `role_cli.hpp` (header-only, public)
+- [ ] `src/include/utils/role_cli.hpp` — `RoleArgs`, `parse_role_args()`, `resolve_init_name()`, `is_stdin_tty()`, `read_password_interactive()`, `get_role_password()`, `get_new_role_password()`
+- [ ] Move password/tty helpers from `src/scripting/role_main_helpers.hpp` to `role_cli.hpp`; update `role_main_helpers.hpp` to `#include "utils/role_cli.hpp"` + retain only lifecycle/monitoring helpers
+
+**Phase 3** — Migrate `Config::from_directory()` in all 3 role configs
+- [ ] `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` — use `RoleDirectory::open()` and `config_file()`
+
+**Phase 4** — Migrate hub-reference resolution in config parsing
+- [ ] All 3 config `.cpp` files — use `role_dir.resolve_hub_dir()`, `hub_pubkey_path()`, `hub_broker_endpoint()`
+
+**Phase 5** — Migrate script-path resolution in script hosts
+- [ ] `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` — use `role_dir_.script_entry(config_.script_path, config_.script_type)`
+
+**Phase 6** — Migrate `do_init()` and `main()` arg parsing in all 3 binaries
+- [ ] `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` — use `RoleDirectory::create()`, `role_cli::parse_role_args()`, `role_cli::resolve_init_name()`, `role_cli::get_new_role_password()`
+
+**Phase 7** — Docs
+- [ ] `docs/README/README_EmbeddedAPI.md` — add section on using `RoleDirectory` + `role_cli.hpp` in custom role binaries
+- [ ] `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` — reference `role_cli.hpp` as standard CLI builder
+
+**Phase 8** — Tests
+- [ ] L4 CLI tests: extend `test_producer_cli.cpp`, `test_consumer_cli.cpp`, `test_processor_cli.cpp` to verify `default_keyfile` path + `has_standard_layout()` after `--init`
+
+---
+
+### Design Gap Fixes (2026-03-09, ✅ CLOSED 2026-03-10)
+
+**Formal review**: `docs/code_review/REVIEW_DesignAndCode_2026-03-09.md` — all 6 items triaged.
+
+- [x] **P1**: Formal REVIEW_DesignAndCode_2026-03-09.md created ✅ 2026-03-10
+- [x] **P1**: HEP-0022 peer UID validation — already implemented (`broker_service.cpp:2137–2157`, handle_hub_peer_hello rejects unknown hub_uid) ✅ PRE-FIXED
+- [x] **P1**: hub callback thread-safety — already implemented (callbacks_mu in hub_producer.cpp:71, copy-under-lock pattern) ✅ PRE-FIXED
+- [x] **P1**: METRICS_REQ SHM merge gap — implemented 2026-03-10 (`broker_service.cpp` handle_metrics_req now calls `query_shm_blocks()` and appends `shm_blocks` key) ✅ FIXED
+- [x] **P2**: Script config type defaults silently to Python — ⚪ DEFERRED (Python is only type; revisit when second type added)
+- [x] **P2**: Consumer registry dedup under reconnect — fixed 2026-03-09 (zmq_identity dedup key in `channel_registry.cpp`) ✅ FIXED
+- [x] **P2**: Messenger API redundancy — ⚪ DEFERRED (legacy surface, not harmful)
+
+### Consumer Inbox + ShmQueue Tests (DONE 2026-03-10)
+
+- [x] Consumer/Processor `inbox_thread_` (ROUTER socket — receiving side): ConsumerConfig + ConsumerScriptHost fields; mirrors ProducerScriptHost implementation; `on_inbox()` callback ✅ 2026-03-10
+- [x] 9 new L3 ShmQueue test scenarios (`tests/test_layer3_datahub/test_datahub_hub_queue.cpp`): multiple consumers, flexzone round-trip, ref factories, latest_only policy, ring wrap, destructor safety, last_seq monotonic, capacity/policy_info, verify_checksum mismatch ✅ 2026-03-10 — 988/988
+
+### Recently Completed — Producer Transport Overhaul (✅ 2026-03-08/09)
+
+All phases done. Highlights:
+- [x] Transport enum in ProducerConfig; unified run_loop_(); InboxQueue (ROUTER) + InboxClient (DEALER); ROLE_PRESENCE/INFO protocol; transport arbitration (TRANSPORT_MISMATCH); ctrl_thread_ rename; schema_spec_to_zmq_fields shared; write_discard rename; InboxHandle + open_inbox/wait_for_role in all 3 APIs
+- [x] QueueReader/QueueWriter split; unified ConsumerScriptHost::run_loop_(); ConsumerAPI spinlock/last_seq/verify_checksum/in_capacity/in_policy/overrun_count
+- [x] Code review REVIEW_DataHubInbox_2026-03-09.md: 13 items fixed + closed + archived (2026-03-09)
+- [x] §7.4 deferred: ZmqQueue PUSH→DEALER ACK+retry (requires socket type change)
+- [x] **HR-02** — CLOSED: `ConsumerAPI::reader_` is already `std::atomic<const hub::QueueReader*>` (`consumer_api.hpp:163`). Confirmed 2026-03-10 by REVIEW_DeepStack_2026-03-10.md audit.
+- [x] **HR-03** — ✅ FIXED (pre-existing): `last_rcvtimeo` and `last_acktimeo` caching in `InboxQueueImpl`; `zmq_setsockopt(ZMQ_RCVTIMEO)` only called when value changes. Comment `// HR-03` confirmed at `hub_inbox_queue.cpp:445`. ✅ PRE-FIXED (confirmed 2026-03-10)
+- [x] **HR-05** — ✅ FIXED (pre-existing): `py::gil_scoped_release release` at `producer_api.cpp:322` wraps `query_role_info()` call in `open_inbox()`. ✅ PRE-FIXED (confirmed 2026-03-10)
+
+**HIGH (from REVIEW_FullStack_2026-03-10.md):**
+- [x] **FS-01** — FALSE POSITIVE: all `on_consumer_*` callbacks only call `enqueue_message()` (C++ mutex-protected queue); Python is called from `loop_thread_` via `drain_messages()` only. No GIL fix needed. (Confirmed 2026-03-10)
+- [x] **FS-02** — FIXED 2026-03-10: ConsumerConfig `zmq_packing` now throws on invalid value (was warn+default); `inbox_buffer_depth>0` check added; `inbox_schema_json` type check (string|object) added in both ProducerConfig and ConsumerConfig; 8 new tests → 996/996
+
+**MEDIUM:**
+- [x] **MR-02** — ✅ FIXED 2026-03-10: `InboxQueueImpl` now uses `unordered_map<string, uint64_t> expected_seq_per_sender_` keyed by sender_id. Same fix as A11/A18 in REVIEW_FullStack2_2026-03-10.md.
+- [x] **MR-05** — FALSE POSITIVE: `ConsumerAPI::in_capacity()` already wraps `r->capacity()` in try/catch (consumer_api.cpp:268-269). No fix needed. (Confirmed 2026-03-10)
+- [ ] **MR-09** — `QueueReader::is_running()` defaults to `return true` in the base; `ShmQueue` never overrides it. ShmQueue always appears "running" even before connection. (`hub_queue.hpp:197`)
+- [x] **MR-10** — FALSE POSITIVE: `send_stop_` guard already present at `hub_zmq_queue.cpp:847-848` (comment "MR-10"). No fix needed. (Confirmed 2026-03-10)
+- [ ] **IC-04** — `QueueReader::last_seq()` has different semantics: ShmQueue = ring slot index (0-indexed, wraps at ring_capacity); ZmqQueue = sender-local wire seq (monotone). Add API docstring. (Confirmed 2026-03-10: first ShmQueue read returns slot_id=0, not 1.)
+- [ ] **MR-01** — All wire-format helpers duplicated between `hub_inbox_queue.cpp` and `hub_zmq_queue.cpp` (field layout, pack/unpack, frame-size). Extract to a shared internal header. (Deferred per §7.6 comment — track here.)
+
+**LOW:**
+- [x] **LR-04** — CLOSED: `ProducerAPI::stop()` already uses `memory_order_release` (`producer_api.cpp:46`). Fix was applied in REVIEW_DataHubInbox_2026-03-09.md (LR-04 ✅). Confirmed 2026-03-10 by REVIEW_DeepStack audit.
+- [x] **LR-05** — ✅ FIXED (pre-existing): `parse_on_produce_return()` returns `is_err=true` on wrong type; caller at `producer_script_host.cpp:616` calls `api_.increment_script_errors()` when `is_err`. Confirmed by code read 2026-03-10.
+- [ ] **MR-08** — Stale `run_loop_shm_` reference in `consumer_script_host.hpp` file header comment. (`consumer_script_host.hpp:9`)
+
+### Code Review + Bug Fixes (2026-03-08)
+
+Applied 8 bug fixes across InboxQueue/ZmqQueue/ProducerConfig after static review:
+- IQ-1: Removed infinite-timeout reset before ACK frame-1 recv (recv timeout stays active across multi-part ACK)
+- IQ-2: `inbox_buffer_depth` now correctly sets `ZMQ_RCVHWM` on ROUTER socket (was unused dead config)
+- IQ-3: `zmq_packing` field added to `ProducerConfig`; `push_to()` passes it instead of hardcoded `"aligned"`
+- IQ-4: Header doc corrected: DEALER receives ACK `["", ack_byte]` not `[ack_byte]`
+- IQ-5: `zmq_recv()` truncation comment corrected (returns actual size, not bytes copied)
+- IQ-6: `kInboxMagic` cross-reference comment added
+- IQ-7: `frame_recv_buf_` moved from per-call stack alloc to persistent `InboxQueueImpl` member
+- IQ-8: `.cpp` file header comment fixed (DEALER receives `["", ack_byte]`, not just `[ack_byte]`)
+- "natural" packing → renamed to "aligned" everywhere (100+ occurrences across src/tests/share/docs)
+- 3 new `ZmqPacking_*` tests → **966/966** passing
+
 ### API Documentation Gaps
 
 - [x] **Consumer registration to broker** – ✅ Fully implemented 2026-02-18; CONSUMER_REG/DEREG handshake
@@ -87,6 +184,13 @@ RecoveryResult datablock_validate_integrity(...);
 ---
 
 ## Recent Completions
+
+### LoopTimingPolicy rename (2026-03-10) ✅
+Renamed `FixedPace`→`FixedRate`, `Compensating`→`FixedRateWithCompensation`; added `MaxRate` (explicit, enforces period=0).
+Shared header `src/include/utils/loop_timing_policy.hpp` (pylabhub namespace) with cross-field validation in `parse_loop_timing_policy()`.
+Updated: producer_config, consumer_config, producer_script_host, consumer_script_host, data_block_policy.hpp.
+Added 10 new loop timing tests (6 producer, 4 consumer) → 1021/1021.
+Docs updated: HEP-0008, 0009, 0015, 0017, 0018.
 
 ### hub::Queue + hub::Processor Layer 3 API (2026-03-01) ✅
 

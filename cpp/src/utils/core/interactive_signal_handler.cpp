@@ -181,6 +181,18 @@ struct InteractiveSignalHandler::Impl
                 return;
             }
 
+            // If the application has already initiated internal shutdown (e.g.
+            // api.stop() was called from a script), skip the interactive prompt
+            // and complete the shutdown silently.  This prevents a 5-second hang
+            // when a SIGTERM arrives during lifecycle teardown.
+            if (shutdown_flag != nullptr &&
+                shutdown_flag->load(std::memory_order_acquire))
+            {
+                do_shutdown(fmt::format("{}: shutdown already in progress.",
+                                       config.binary_name));
+                return;
+            }
+
             // Interactive path: print status + prompt.
             print_interrupted();
 
@@ -503,6 +515,32 @@ void InteractiveSignalHandler::uninstall()
 bool InteractiveSignalHandler::is_installed() const noexcept
 {
     return impl_->installed.load(std::memory_order_relaxed);
+}
+
+// ============================================================================
+// Lifecycle module support
+// ============================================================================
+
+// Process-global pointer for the C-style lifecycle callback.
+// Only one InteractiveSignalHandler may be active per process.
+static InteractiveSignalHandler *s_lifecycle_instance = nullptr;
+
+static void signal_handler_lifecycle_cleanup(const char *) noexcept
+{
+    if (s_lifecycle_instance)
+        s_lifecycle_instance->uninstall();
+}
+
+utils::ModuleDef InteractiveSignalHandler::make_lifecycle_module()
+{
+    s_lifecycle_instance = this;
+    utils::ModuleDef def("SignalHandler");
+    // No startup callback — caller calls install() explicitly before registering.
+    // Timeout slightly exceeds the watcher thread's interactive prompt timeout.
+    def.set_shutdown(signal_handler_lifecycle_cleanup,
+                     std::chrono::milliseconds(7000));
+    def.set_as_persistent(true);
+    return def;
 }
 
 } // namespace pylabhub

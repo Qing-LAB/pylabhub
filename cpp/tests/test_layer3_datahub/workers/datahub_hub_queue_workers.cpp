@@ -197,7 +197,7 @@ int shm_queue_write_acquire_abort()
             // Fill with data that should NOT appear in the output
             double val = 99.9;
             std::memcpy(out, &val, sizeof(val));
-            q_write->write_abort(); // discard without committing
+            q_write->write_discard(); // discard without committing
 
             // Consumer should see a timeout — no slot was committed.
             auto q_read = ShmQueue::from_consumer(std::move(dbc), sizeof(double));
@@ -359,6 +359,432 @@ int shm_queue_round_trip()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// shm_queue_multiple_consumers
+// ============================================================================
+
+int shm_queue_multiple_consumers()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueMultipleConsumers");
+            DataBlockConfig cfg = make_config(70010);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc1 = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc1, nullptr);
+
+            auto dbc2 = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc2, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read1 = ShmQueue::from_consumer_ref(*dbc1, sizeof(int));
+            auto q_read2 = ShmQueue::from_consumer_ref(*dbc2, sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read1, nullptr);
+            ASSERT_NE(q_read2, nullptr);
+
+            // Write one slot.
+            void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(out, nullptr);
+            *static_cast<int*>(out) = 42;
+            q_write->write_commit();
+
+            // Both consumers must independently see the slot.
+            const void* p1 = q_read1->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(p1, nullptr);
+            EXPECT_EQ(*static_cast<const int*>(p1), 42);
+            q_read1->read_release();
+
+            const void* p2 = q_read2->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(p2, nullptr);
+            EXPECT_EQ(*static_cast<const int*>(p2), 42);
+            q_read2->read_release();
+        },
+        "hub_queue.shm_queue_multiple_consumers",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_flexzone_round_trip
+// ============================================================================
+
+int shm_queue_flexzone_round_trip()
+{
+    return run_gtest_worker(
+        []()
+        {
+            static constexpr size_t kFzSize = 4096;
+            DataBlockTestGuard g("ShmQueueFlexzoneRoundTrip");
+            DataBlockConfig cfg = make_config(70011, kFzSize);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int), kFzSize);
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int), kFzSize);
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            // Write known pattern into the flexzone.
+            void* wfz = q_write->write_flexzone();
+            ASSERT_NE(wfz, nullptr);
+            static const char kPattern[] = "fz_test_payload";
+            std::memcpy(wfz, kPattern, sizeof(kPattern));
+
+            // Commit a slot to mark data visible.
+            void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(out, nullptr);
+            *static_cast<int*>(out) = 7;
+            q_write->write_commit();
+
+            // Consumer reads the slot and then inspects the flexzone.
+            const void* in = q_read->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(in, nullptr);
+            EXPECT_EQ(*static_cast<const int*>(in), 7);
+            q_read->read_release();
+
+            const void* rfz = q_read->read_flexzone();
+            ASSERT_NE(rfz, nullptr);
+            EXPECT_EQ(std::memcmp(rfz, kPattern, sizeof(kPattern)), 0);
+        },
+        "hub_queue.shm_queue_flexzone_round_trip",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_ref_factories
+// ============================================================================
+
+int shm_queue_ref_factories()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueRefFactories");
+            DataBlockConfig cfg = make_config(70012);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            // Non-owning factories; underlying objects remain valid after queue teardown.
+            {
+                auto q_write = ShmQueue::from_producer_ref(*dbp, sizeof(double));
+                auto q_read  = ShmQueue::from_consumer_ref(*dbc, sizeof(double));
+                ASSERT_NE(q_write, nullptr);
+                ASSERT_NE(q_read, nullptr);
+
+                void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(out, nullptr);
+                *static_cast<double*>(out) = 1.23;
+                q_write->write_commit();
+
+                const void* in = q_read->read_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(in, nullptr);
+                EXPECT_DOUBLE_EQ(*static_cast<const double*>(in), 1.23);
+                q_read->read_release();
+            } // queues destroyed here; dbp and dbc must still be valid
+
+            // Underlying objects must still be usable after ShmQueue teardown.
+            EXPECT_NE(dbp, nullptr);
+            EXPECT_NE(dbc, nullptr);
+        },
+        "hub_queue.shm_queue_ref_factories",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_latest_only
+// ============================================================================
+
+int shm_queue_latest_only()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueLatestOnly");
+            // ConsumerSyncPolicy::Latest_only (set in make_config): reading after multiple
+            // writes returns the most recently written slot, not the oldest.
+            DataBlockConfig cfg = make_config(70013);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            // Write 3 slots without reading (consumer does not hold any lock).
+            for (int i = 1; i <= 3; ++i)
+            {
+                void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(out, nullptr) << "write_acquire failed for i=" << i;
+                *static_cast<int*>(out) = i * 10;
+                q_write->write_commit();
+            }
+
+            // Latest_only policy: first read must return the LAST written value.
+            const void* in = q_read->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(in, nullptr);
+            EXPECT_EQ(*static_cast<const int*>(in), 30); // slot 3 = 3*10
+            q_read->read_release();
+        },
+        "hub_queue.shm_queue_latest_only",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_ring_wrap
+// ============================================================================
+
+int shm_queue_ring_wrap()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueRingWrap");
+            DataBlockConfig cfg = make_config(70014);
+            cfg.ring_buffer_capacity = 2; // tiny ring to force wrapping quickly
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            // Write 10 items into a 2-slot ring — slots overwrite each other.
+            for (int i = 1; i <= 10; ++i)
+            {
+                void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(out, nullptr) << "write_acquire failed for i=" << i;
+                *static_cast<int*>(out) = i * 100;
+                q_write->write_commit();
+            }
+
+            // Latest_only policy: consumer sees the last written value.
+            const void* in = q_read->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(in, nullptr);
+            EXPECT_EQ(*static_cast<const int*>(in), 1000); // last = 10 * 100
+            q_read->read_release();
+        },
+        "hub_queue.shm_queue_ring_wrap",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_destructor_safety
+// ============================================================================
+
+int shm_queue_destructor_safety()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueDestructorSafety");
+            DataBlockConfig cfg = make_config(70015);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            // Create queues and immediately destroy them — no acquire/release performed.
+            {
+                auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+                auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+                ASSERT_NE(q_write, nullptr);
+                ASSERT_NE(q_read, nullptr);
+                // Destroyed here without any acquire — must not crash or assert.
+            }
+            // If we reach here the destructors were safe.
+            SUCCEED();
+        },
+        "hub_queue.shm_queue_destructor_safety",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_last_seq
+// ============================================================================
+
+int shm_queue_last_seq()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueLastSeq");
+            DataBlockConfig cfg = make_config(70016);
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            // last_seq() must be 0 before any read.
+            EXPECT_EQ(q_read->last_seq(), 0u);
+
+            // Write and read 3 slots, collect the slot ids.
+            // slot_id() is the ring buffer position (0-indexed), so the first read
+            // may return 0. We compare successive values to verify monotone advance.
+            std::vector<uint64_t> seqs;
+            seqs.reserve(3);
+            for (int i = 1; i <= 3; ++i)
+            {
+                void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(out, nullptr) << "write_acquire failed for i=" << i;
+                *static_cast<int*>(out) = i;
+                q_write->write_commit();
+
+                const void* in = q_read->read_acquire(std::chrono::milliseconds{200});
+                ASSERT_NE(in, nullptr) << "read_acquire failed for i=" << i;
+                q_read->read_release();
+
+                seqs.push_back(q_read->last_seq());
+            }
+
+            // Slot ids must strictly increase across consecutive reads.
+            EXPECT_LT(seqs[0], seqs[1]) << "last_seq did not advance from slot 1→2";
+            EXPECT_LT(seqs[1], seqs[2]) << "last_seq did not advance from slot 2→3";
+        },
+        "hub_queue.shm_queue_last_seq",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_capacity_policy
+// ============================================================================
+
+int shm_queue_capacity_policy()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueCapacityPolicy");
+            DataBlockConfig cfg = make_config(70017);
+            // ring_buffer_capacity == 4 (set in make_config)
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            EXPECT_EQ(q_write->capacity(), cfg.ring_buffer_capacity);
+            EXPECT_EQ(q_read->capacity(),  cfg.ring_buffer_capacity);
+            EXPECT_EQ(q_write->policy_info(), "shm_write");
+            EXPECT_EQ(q_read->policy_info(),  "shm_read");
+        },
+        "hub_queue.shm_queue_capacity_policy",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_queue_verify_checksum_mismatch
+// ============================================================================
+
+int shm_queue_verify_checksum_mismatch()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueVerifyChecksumMismatch");
+            DataBlockConfig cfg = make_config(70018);
+            // Use None policy so release_write_slot() does NOT auto-compute checksums.
+            // (Both Enforced and Manual auto-update in release_write_slot; only None skips.)
+            // This lets us exercise the "slot written without checksum" → verify fails path.
+            cfg.checksum_policy = ChecksumPolicy::None;
+
+            auto dbp = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(dbp, nullptr);
+
+            auto dbc = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+
+            auto q_write = ShmQueue::from_producer(std::move(dbp), sizeof(int));
+            auto q_read  = ShmQueue::from_consumer(std::move(dbc), sizeof(int));
+            ASSERT_NE(q_write, nullptr);
+            ASSERT_NE(q_read, nullptr);
+
+            // 1. Write WITHOUT set_checksum_options: Manual policy → DataBlock skips
+            //    auto-update, slot_valid flag stays 0 (checksum never stored).
+            void* out = q_write->write_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(out, nullptr);
+            *static_cast<int*>(out) = 99;
+            q_write->write_commit();
+
+            // 2. Enable checksum VERIFICATION on the reader side.
+            //    slot_valid==0 → verify_checksum_slot() returns false → read_acquire returns nullptr.
+            q_read->set_verify_checksum(true, false);
+            const void* in_bad = q_read->read_acquire(std::chrono::milliseconds{200});
+            EXPECT_EQ(in_bad, nullptr) << "Expected nullptr when slot_valid=0 (no checksum stored)";
+
+            // 3. Write WITH set_checksum_options: ShmQueue calls update_checksum_slot()
+            //    before commit → slot_valid becomes 1 → verify succeeds → read returns data.
+            q_write->set_checksum_options(true, false);
+
+            void* out2 = q_write->write_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(out2, nullptr);
+            *static_cast<int*>(out2) = 55;
+            q_write->write_commit();
+
+            const void* in_ok = q_read->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(in_ok, nullptr) << "Expected valid slot after checksum-enabled write";
+            EXPECT_EQ(*static_cast<const int*>(in_ok), 55);
+            q_read->read_release();
+        },
+        "hub_queue.shm_queue_verify_checksum_mismatch",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_queue
 
 // ============================================================================
@@ -400,6 +826,24 @@ struct HubQueueWorkerRegistrar
                     return shm_queue_no_flexzone();
                 if (scenario == "shm_queue_round_trip")
                     return shm_queue_round_trip();
+                if (scenario == "shm_queue_multiple_consumers")
+                    return shm_queue_multiple_consumers();
+                if (scenario == "shm_queue_flexzone_round_trip")
+                    return shm_queue_flexzone_round_trip();
+                if (scenario == "shm_queue_ref_factories")
+                    return shm_queue_ref_factories();
+                if (scenario == "shm_queue_latest_only")
+                    return shm_queue_latest_only();
+                if (scenario == "shm_queue_ring_wrap")
+                    return shm_queue_ring_wrap();
+                if (scenario == "shm_queue_destructor_safety")
+                    return shm_queue_destructor_safety();
+                if (scenario == "shm_queue_last_seq")
+                    return shm_queue_last_seq();
+                if (scenario == "shm_queue_capacity_policy")
+                    return shm_queue_capacity_policy();
+                if (scenario == "shm_queue_verify_checksum_mismatch")
+                    return shm_queue_verify_checksum_mismatch();
                 fmt::print(stderr, "ERROR: Unknown hub_queue scenario '{}'\n", scenario);
                 return 1;
             });

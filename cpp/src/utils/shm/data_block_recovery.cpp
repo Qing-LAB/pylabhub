@@ -16,9 +16,6 @@ static uint8_t map_slot_state(pylabhub::hub::SlotRWState::SlotState state)
     return static_cast<uint8_t>(state);
 }
 
-// C API error codes
-constexpr int kRecoveryErrorUnexpected = -5;
-
 // Shared context for recovery APIs: holds handle and header to avoid repeating open/validation.
 struct RecoveryContext
 {
@@ -71,12 +68,12 @@ extern "C"
         if (out == nullptr)
         {
             LOGGER_ERROR("datablock_diagnose_slot: Invalid arguments (null pointer).");
-            return -1; // Invalid arguments
+            return DIAGNOSE_INVALID_ARGS;
         }
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
         {
-            return -2; // Internal error
+            return DIAGNOSE_INTERNAL_ERR;
         }
 
         pylabhub::hub::SharedMemoryHeader *header = ctx->header;
@@ -85,7 +82,7 @@ extern "C"
         {
             LOGGER_ERROR("datablock_diagnose_slot: Invalid slot_index {} for capacity {}.",
                          slot_index, slot_count);
-            return -3; // Invalid index
+            return DIAGNOSE_INVALID_INDEX;
         }
 
         pylabhub::hub::SlotRWState *rw_state = ctx->handle->slot_rw_state(slot_index);
@@ -94,7 +91,7 @@ extern "C"
             LOGGER_ERROR(
                 "datablock_diagnose_slot: Failed to get slot_rw_state for slot {} in '{}'.",
                 slot_index, ctx->shm_name);
-            return -2;
+            return DIAGNOSE_INTERNAL_ERR;
         }
 
         try
@@ -135,16 +132,16 @@ extern "C"
         {
             LOGGER_ERROR("datablock_diagnose_slot: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return -4; // Runtime error during DataBlock access
+            return DIAGNOSE_RUNTIME_ERR;
         }
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("datablock_diagnose_slot: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return kRecoveryErrorUnexpected; // General unexpected error
+            return DIAGNOSE_UNEXPECTED;
         }
 
-        return 0; // Success
+        return DIAGNOSE_OK;
     }
 
     PYLABHUB_UTILS_EXPORT int datablock_diagnose_all_slots(const char *shm_name_cstr,
@@ -154,13 +151,13 @@ extern "C"
         if (out_array == nullptr || out_count == nullptr)
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Invalid arguments (null pointer).");
-            return -1; // Invalid arguments
+            return DIAGNOSE_INVALID_ARGS;
         }
         *out_count = 0; // Initialize count
         auto ctx = open_for_recovery(shm_name_cstr);
         if (!ctx)
         {
-            return -2;
+            return DIAGNOSE_INTERNAL_ERR;
         }
 
         try
@@ -197,16 +194,16 @@ extern "C"
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Runtime error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return -4; // Runtime error during DataBlock access
+            return DIAGNOSE_RUNTIME_ERR;
         }
         catch (const std::exception &ex)
         {
             LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
                          ex.what());
-            return kRecoveryErrorUnexpected; // General unexpected error
+            return DIAGNOSE_UNEXPECTED;
         }
 
-        return 0; // Success
+        return DIAGNOSE_OK;
     }
 
     PYLABHUB_UTILS_EXPORT bool datablock_is_process_alive(uint64_t pid)

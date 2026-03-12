@@ -19,7 +19,7 @@
 
   "slot_schema": {
     "_comment": "Must match the producer's slot_schema (names + types).",
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "count", "type": "int64"},
       {"name": "ts",    "type": "float64"}

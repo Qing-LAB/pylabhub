@@ -25,12 +25,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # ── Parse arguments ────────────────────────────────────────────────────────
-BUILD_TYPE="debug"
+BUILD_TYPE="Debug"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--build-type debug|release]"
+            echo "Usage: $0 [--build-type Debug|Release]"
             echo ""
             echo "Topology:"
             echo "  Hub A (5570) → Producer [SHM] → Processor-A [ZMQ PUSH]"
@@ -43,16 +43,37 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-BIN_DIR="${REPO_ROOT}/build/stage-${BUILD_TYPE}/bin"
+REQUIRED_BINS=(pylabhub-hubshell pylabhub-producer pylabhub-processor pylabhub-consumer)
 
-# ── Verify binaries ────────────────────────────────────────────────────────
-for BIN in pylabhub-hubshell pylabhub-producer pylabhub-processor pylabhub-consumer; do
-    if [[ ! -x "${BIN_DIR}/${BIN}" ]]; then
-        echo "ERROR: ${BIN_DIR}/${BIN} not found or not executable." >&2
-        echo "  Run: cmake --build build" >&2
-        exit 1
+is_valid_bin_dir() {
+    local d="$1"
+    [[ -d "${d}" ]] || return 1
+    for b in "${REQUIRED_BINS[@]}"; do
+        [[ -x "${d}/${b}" ]] || return 1
+    done
+    return 0
+}
+
+BUILD_TYPE_LC="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
+BUILD_TYPE_UC="$(printf '%s' "${BUILD_TYPE_LC}" | tr '[:lower:]' '[:upper:]')"
+
+BIN_DIR=""
+for CAND in \
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE}/bin" \
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE_LC}/bin" \
+    "${REPO_ROOT}/build/stage-${BUILD_TYPE_UC}/bin" \
+    "${REPO_ROOT}/build/bin"
+do
+    if is_valid_bin_dir "${CAND}"; then
+        BIN_DIR="${CAND}"; break
     fi
 done
+
+if [[ -z "${BIN_DIR}" ]]; then
+    echo "ERROR: build binaries not found for build type '${BUILD_TYPE}'." >&2
+    echo "  Run: cmake --build ${REPO_ROOT}/build" >&2
+    exit 1
+fi
 
 # ── PIDs for cleanup ───────────────────────────────────────────────────────
 PIDS=()
@@ -73,7 +94,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── 1. Start Hub A ────────────────────────────────────────────────────────
-echo "[demo] Starting Hub A (broker at tcp://0.0.0.0:5570)..."
+echo "[demo] Starting Hub A (broker at tcp://127.0.0.1:5570)..."
 "${BIN_DIR}/pylabhub-hubshell" "${SCRIPT_DIR}/hub-a" --dev &
 PIDS+=($!)
 sleep 0.5
@@ -85,7 +106,7 @@ fi
 echo "[demo] Hub A running (pid=${PIDS[-1]})"
 
 # ── 2. Start Hub B ────────────────────────────────────────────────────────
-echo "[demo] Starting Hub B (broker at tcp://0.0.0.0:5571)..."
+echo "[demo] Starting Hub B (broker at tcp://127.0.0.1:5571)..."
 "${BIN_DIR}/pylabhub-hubshell" "${SCRIPT_DIR}/hub-b" --dev &
 PIDS+=($!)
 sleep 0.5

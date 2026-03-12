@@ -28,9 +28,12 @@
  */
 
 #include "utils/hub_consumer.hpp"
+#include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/hub_queue.hpp"
 #include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
+#include "utils/script_host_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include <nlohmann/json_fwd.hpp>
@@ -74,17 +77,27 @@ class ProcessorAPI
     /// Internal shutdown flag — used so do_python_work() wait loop can react
     /// immediately to api.stop() without waiting for the main thread to set stop_.
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
+    void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
 
     /// Pointer to the Python flexzone object returned by api.flexzone().
     void set_flexzone_obj(py::object *fz) noexcept { flexzone_obj_ = fz; }
 
+    /// Input/output queue pointers — set by ProcessorScriptHost after queue creation.
+    /// Raw pointers (non-owning); valid between start_role() and stop_role().
+    void set_in_queue(hub::QueueReader *q) noexcept  { in_queue_.store(q, std::memory_order_release); }
+    void set_out_queue(hub::QueueWriter *q) noexcept { out_queue_.store(q, std::memory_order_release); }
+
     /// Increment Python-exception counter (called in every callback catch block).
-    void increment_script_errors() noexcept { ++script_errors_; }
+    void increment_script_errors() noexcept
+        { script_errors_.fetch_add(1, std::memory_order_relaxed); }
 
     /// Increment counters (called by the loop thread).
     void increment_in_received()  noexcept { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
     void increment_out_written()  noexcept { out_slots_written_.fetch_add(1, std::memory_order_relaxed); }
     void increment_drops()        noexcept { out_drops_.fetch_add(1, std::memory_order_relaxed); }
+    /// Record µs of active work per on_process invocation (GIL acquire + callback).
+    void set_last_cycle_work_us(uint64_t us) noexcept
+        { last_cycle_work_us_.store(us, std::memory_order_relaxed); }
 
     // ── Python-accessible — identity / environment ────────────────────────────
 
@@ -147,15 +160,53 @@ class ProcessorAPI
     /// Query the broker for SHM block topology and DataBlockMetrics.
     py::object shm_blocks(const std::string& channel = {});
 
+    /// Open (or return cached) an InboxHandle to send typed messages to another role.
+    /// Discovers inbox_endpoint + schema from the broker via ROLE_INFO_REQ.
+    /// Returns py::none() if the target is not online or has no inbox.
+    py::object open_inbox(const std::string &target_uid);
+
+    /// Block until the broker confirms the role with @p uid is registered,
+    /// or until @p timeout_ms elapses. GIL is released during polling.
+    /// Returns true if the role is online before timeout.
+    bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
+
+    /// Clear all InboxHandle Python objects and stop clients. Call with GIL held.
+    void clear_inbox_cache();
+
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return script_errors_; }
-    [[nodiscard]] uint64_t in_slots_received()  const noexcept
+    [[nodiscard]] uint64_t script_error_count()  const noexcept
+        { return script_errors_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t in_slots_received()   const noexcept
         { return in_slots_received_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t out_slots_written()  const noexcept
+    [[nodiscard]] uint64_t out_slots_written()   const noexcept
         { return out_slots_written_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t out_drop_count()     const noexcept
+    [[nodiscard]] uint64_t out_drop_count()      const noexcept
         { return out_drops_.load(std::memory_order_relaxed); }
+    /// Processor is queue-driven (no deadline); always returns 0. Present for API symmetry.
+    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
+    /// Microseconds of active work (GIL acquire + on_process callback) in the last iteration.
+    [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
+        { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+    /// Combined metrics dict: in/out DataBlock ContextMetrics + D4 binary-level counters.
+    [[nodiscard]] py::dict metrics() const;
+
+    // ── Python-accessible — queue state ───────────────────────────────────────
+
+    /// Slot index of the last consumed input slot (ring-buffer index, 0-based).
+    [[nodiscard]] uint64_t last_seq() const noexcept;
+    /// Input ring-buffer capacity (slot count), or 0 if not connected.
+    [[nodiscard]] uint64_t in_capacity() const noexcept;
+    /// Input queue policy string, or empty string if not connected.
+    [[nodiscard]] std::string in_policy() const;
+    /// Output ring-buffer capacity (slot count), or 0 if not connected.
+    [[nodiscard]] uint64_t out_capacity() const noexcept;
+    /// Output queue policy string, or empty string if not connected.
+    [[nodiscard]] std::string out_policy() const;
+
+    /// Enable/disable BLAKE2b checksum verification on input slots (SHM path only).
+    /// No-op when the input path is ZMQ (TCP provides integrity).
+    void set_verify_checksum(bool enable);
 
     // ── Python-accessible — custom metrics (HEP-CORE-0019) ─────────────────
 
@@ -166,6 +217,13 @@ class ProcessorAPI
     // ── Internal — metrics snapshot (called from zmq thread) ────────────────
 
     [[nodiscard]] nlohmann::json snapshot_metrics_json() const;
+
+    // ── Python-accessible — shutdown diagnostics ─────────────────────────────
+
+    /// Returns reason the role stopped: "normal", "peer_dead", or "critical_error".
+    [[nodiscard]] std::string stop_reason() const noexcept;
+    /// Number of ctrl-send messages dropped due to queue overflow (sum of in + out queues).
+    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
 
     // ── Python-accessible — shared spinlocks ──────────────────────────────────
 
@@ -184,9 +242,12 @@ class ProcessorAPI
     hub::Messenger   *messenger_{nullptr};
     std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
+    std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 
-    std::atomic<bool> critical_error_{false};
+    std::atomic<bool>              critical_error_{false};
+    std::atomic<hub::QueueReader*> in_queue_{nullptr};
+    std::atomic<hub::QueueWriter*> out_queue_{nullptr};
 
     std::string uid_;
     std::string name_;
@@ -195,13 +256,15 @@ class ProcessorAPI
     std::string log_level_;
     std::string script_dir_;
 
-    uint64_t              script_errors_{0};
+    std::atomic<uint64_t> script_errors_{0};
     std::atomic<uint64_t> in_slots_received_{0};
     std::atomic<uint64_t> out_slots_written_{0};
     std::atomic<uint64_t> out_drops_{0};
+    std::atomic<uint64_t> last_cycle_work_us_{0};
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;
+    std::unordered_map<std::string, py::object>      inbox_cache_;
 };
 
 // ============================================================================

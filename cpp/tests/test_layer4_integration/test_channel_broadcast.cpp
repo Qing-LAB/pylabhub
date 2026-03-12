@@ -139,7 +139,7 @@ static void write_hub_config(const fs::path& dir, const BcastPorts& ports)
 static json make_slot_schema()
 {
     return {
-        {"packing", "natural"},
+        {"packing", "aligned"},
         {"fields", json::array({
             {{"name", "counter"}, {"type", "int64"}},
             {{"name", "value"},   {"type", "float64"}}
@@ -160,7 +160,7 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir,
             {"auth",      {{"keyfile", ""}}}
         }},
         {"channel",     channel},
-        {"interval_ms", 200},   // 5 Hz — slow, just needs to keep alive
+        {"target_period_ms", 200},   // 5 Hz — slow, just needs to keep alive
         {"shm", {
             {"enabled",    true},
             {"secret",     kShmSecret},

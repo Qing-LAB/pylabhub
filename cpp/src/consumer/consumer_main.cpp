@@ -48,6 +48,7 @@
 #include "utils/zmq_context.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/timeout_constants.hpp"
+#include "role_main_helpers.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -61,11 +62,9 @@
 #include <string_view>
 #include <thread>
 
-#if defined(PYLABHUB_IS_POSIX)
-#include <unistd.h> // isatty, STDIN_FILENO
-#endif
 
 using namespace pylabhub::utils;
+namespace scripting = pylabhub::scripting;
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -168,36 +167,6 @@ ConsArgs parse_args(int argc, char *argv[])
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
-// Password helpers
-// ---------------------------------------------------------------------------
-
-static std::string read_password_interactive(const char *prompt)
-{
-#if defined(PYLABHUB_IS_POSIX)
-    char *pw = ::getpass(prompt);
-    if (!pw)
-    {
-        std::fprintf(stderr, "consumer: failed to read password from terminal\n");
-        return {};
-    }
-    return pw;
-#else
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    return pw;
-#endif
-}
-
-static std::string get_consumer_password(const char *prompt)
-{
-    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
-        return env;
-    return read_password_interactive(prompt);
-}
-
-// ---------------------------------------------------------------------------
 // do_init — create consumer directory with consumer.json template
 // ---------------------------------------------------------------------------
 
@@ -234,23 +203,16 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     {
         cons_name = cli_name;
     }
-#if defined(PYLABHUB_IS_POSIX)
-    else if (::isatty(STDIN_FILENO))
+    else if (scripting::is_stdin_tty())
     {
         std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
         std::getline(std::cin, cons_name);
     }
     else
     {
-        cons_name = "Consumer";
+        std::cerr << "Error: --name is required in non-interactive mode\n";
+        return 1;
     }
-#else
-    else
-    {
-        std::cout << "Consumer name (human-readable, e.g. 'Logger'): ";
-        std::getline(std::cin, cons_name);
-    }
-#endif
 
     const std::string cons_uid = pylabhub::uid::generate_consumer_uid(cons_name);
 
@@ -274,6 +236,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     j["flexzone_schema"] = nullptr;
 
     j["script"]["path"] = ".";
+    j["script"]["type"] = "python";
 
     j["validation"]["stop_on_script_error"] = false;
 
@@ -398,10 +361,16 @@ int main(int argc, char *argv[])
         {
             password = env;
         }
+        else if (!scripting::is_stdin_tty())
+        {
+            std::cerr << "Error: vault password required; set PYLABHUB_ACTOR_PASSWORD "
+                         "for non-interactive use\n";
+            return 1;
+        }
         else
         {
-            password = read_password_interactive("Consumer vault password (empty = no encryption): ");
-            const std::string confirm = read_password_interactive("Confirm password: ");
+            password = scripting::read_password_interactive("consumer", "Consumer vault password (empty = no encryption): ");
+            const std::string confirm = scripting::read_password_interactive("consumer", "Confirm password: ");
             if (password != confirm)
             {
                 std::cerr << "Error: passwords do not match\n";
@@ -430,19 +399,15 @@ int main(int argc, char *argv[])
         ? args.cons_dir
         : std::filesystem::path(args.config_path).parent_path().string();
 
-    LifecycleGuard runner_lifecycle(MakeModDefList(
-        pylabhub::utils::Logger::GetLifecycleModule(),
-        pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule(),
-        pylabhub::hub::GetLifecycleModule()           // DataExchangeHub — required for SHM DataBlock
-    ));
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
+    scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
 
     if (!config.auth.keyfile.empty())
     {
-        const std::string vault_password = get_consumer_password("Consumer vault password: ");
-        config.auth.load_keypair(config.consumer_uid, vault_password);
+        const auto vault_password = scripting::get_role_password("consumer", "Consumer vault password: ");
+        if (!vault_password)
+            return 1;
+        config.auth.load_keypair(config.consumer_uid, *vault_password);
     }
 
     pylabhub::consumer::ConsumerScriptHost cons_script;
@@ -502,22 +467,10 @@ int main(int argc, char *argv[])
             secs / 3600, (secs % 3600) / 60, secs % 60);
     });
 
-    while (!g_shutdown.load(std::memory_order_relaxed))
-    {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
-
-        // Check if ScriptHost internal shutdown was requested (e.g. via
-        // CHANNEL_CLOSING_NOTIFY or api.stop()) but g_shutdown was not set.
-        if (!cons_script.is_running())
-        {
-            LOGGER_INFO("[cons-main] ScriptHost no longer running, exiting main loop");
-            break;
-        }
-    }
-
-    LOGGER_INFO("[cons-main] Main loop exited: g_shutdown={}", g_shutdown.load());
-    signal_handler.uninstall();
+    scripting::run_role_main_loop(g_shutdown, cons_script, "[cons-main]");
     cons_script.shutdown_();
     return 0;
+    // runner_lifecycle destructor calls finalize():
+    //   → SignalHandler (dynamic persistent) uninstalled first
+    //   → Logger, ZMQContext, etc. stopped in reverse init order
 }

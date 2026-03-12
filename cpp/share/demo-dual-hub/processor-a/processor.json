@@ -12,7 +12,7 @@
   "in_channel":  "lab.bridge.raw",
   "out_channel": "lab.bridge.raw.bridge",
   "hub_dir":     "../hub-a",
-  "timeout_ms":  5000,
+  "timeout_ms":  500,
   "overflow_policy": "drop",
 
   "in_transport": "shm",
@@ -26,7 +26,7 @@
   },
 
   "in_slot_schema": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "count", "type": "int64"},
       {"name": "ts",    "type": "float64"},
@@ -34,7 +34,7 @@
     ]
   },
   "out_slot_schema": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "count", "type": "int64"},
       {"name": "ts",    "type": "float64"},

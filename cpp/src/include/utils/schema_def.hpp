@@ -76,7 +76,7 @@ struct SchemaFieldDef
  * @struct SchemaLayoutDef
  * @brief Field list for one layout section (slot or flexzone).
  *
- * Only `"packing": "natural"` is supported (HEP-CORE-0016 §6.2).
+ * Only `"packing": "aligned"` is supported (HEP-CORE-0016 §6.2).
  * Offsets and struct size are computed by SchemaLibrary from field order and
  * C++ natural alignment rules — they are not stored in the JSON.
  */

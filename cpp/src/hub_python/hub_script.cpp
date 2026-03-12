@@ -385,6 +385,14 @@ void HubScript::do_python_work(const fs::path& script_path)
             last_tick_time = tick_start;
             next_tick      = tick_start + std::chrono::milliseconds(tick_interval_ms_);
 
+            // Warn if the previous tick overran its interval (§5.4).
+            if (tick_count_ > 1 && tick_interval_ms_ > 0 &&
+                elapsed_ms > static_cast<uint64_t>(tick_interval_ms_))
+            {
+                LOGGER_WARN("HubScript: tick overrun: elapsed={}ms target={}ms (tick #{})",
+                            elapsed_ms, tick_interval_ms_, tick_count_);
+            }
+
             // 1. Query broker (no GIL needed; broker is C++ only).
             const broker::ChannelSnapshot snap =
                 broker_ ? broker_->query_channel_snapshot()

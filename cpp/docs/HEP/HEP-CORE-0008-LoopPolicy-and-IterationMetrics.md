@@ -17,10 +17,10 @@ producer/consumer while-loops and calls `acquire_write_slot()` / `release_write_
 directly on the primitive API — it does **not** go through `ctx.slots()` / `SlotIterator`.
 
 What was added:
-- `LoopTimingPolicy`: `FixedPace` (`next = now() + interval`) / `Compensating` (`next += interval`)
+- `LoopTimingPolicy`: `MaxRate` (no sleep) / `FixedRate` (`next = now() + interval`) / `FixedRateWithCompensation` (`next += interval`)
 - `api.loop_overrun_count()` — overrun counter incremented in the script host
 - `api.last_cycle_work_us()` — work time measured in the script host
-- JSON: `"loop_timing": "fixed_pace" | "compensating"` per binary config
+- JSON: `"loop_timing": "max_rate" | "fixed_rate" | "fixed_rate_with_compensation"` per binary config
 
 These binary-level metrics are supervised (C++ host writes, Python reads).
 
@@ -51,7 +51,7 @@ Three remaining items now complete:
    so they always contain live binary-level values regardless of SHM availability.
 
 **Interaction between binary-level and RAII-layer pacing**: `LoopPolicy` (RAII/Pimpl)
-controls the sleep in `SlotIterator`. `LoopTimingPolicy` (binary-level, fixed_pace/compensating)
+controls the sleep in `SlotIterator`. `LoopTimingPolicy` (binary-level, max_rate/fixed_rate/fixed_rate_with_compensation)
 controls how the script host deadline advances after an overrun. The two are complementary
 and independent.
 
@@ -171,7 +171,7 @@ For `FixedRate`, `period = 0ms` is treated as `MaxRate` (no sleep).
 ```
 
 Both fields are optional; `loop_policy` defaults to `"max_rate"` and `period_ms` defaults to `0`.
-The existing `interval_ms` field controls the binary-level deadline loop (separate concern);
+The `target_period_ms` field controls the binary-level deadline loop (separate concern);
 `loop_policy`/`period_ms` control the DataBlock Pimpl overrun detection and (in a future pass)
 the RAII `SlotIterator` sleep.
 
@@ -364,7 +364,7 @@ api.metrics() -> dict:
 
     # Domain 4 — Script supervision (from script host metrics, binary-specific)
     "script_error_count":  int,  # unhandled Python exceptions in any callback
-    "loop_overrun_count":  int,  # write-loop deadline overruns (interval_ms exceeded)
+    "loop_overrun_count":  int,  # write-loop deadline overruns (target_period_ms exceeded)
     "last_cycle_work_us":  int,  # µs of active work in the last completed write cycle
 }
 ```
@@ -373,8 +373,8 @@ api.metrics() -> dict:
 - D3: DataBlock Pimpl detects start-to-start acquisition interval exceeded `period_ms`
   (i.e., SHM was slow or write body was slow). Works for both producer and consumer.
 - D4: Script host measures write-loop deadline was already past when checked
-  (i.e., Python callback was slow relative to `interval_ms`).
-  Producer-only. Requires `interval_ms > 0` in config.
+  (i.e., Python callback was slow relative to `target_period_ms`).
+  Producer-only. Requires `target_period_ms > 0` in config.
 
 **Individual getters**: `api.loop_overrun_count()` and `api.last_cycle_work_us()` on
 the script API remain as convenience aliases for the corresponding D4 dict keys.
@@ -394,21 +394,21 @@ producer_->clear_metrics();
 
 ### 6.3 Config additions
 
-Each binary's config adds two fields alongside the existing `interval_ms`:
+Each binary's config has:
 
 ```cpp
 // In producer_config.hpp / consumer_config.hpp:
-int interval_ms{0};                           // binary-level deadline loop
-LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedPace};
+int target_period_ms{100};                    // binary-level deadline loop (0 = free-run)
+LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedRate}; // policy for period>0
 
 // DataBlock-layer pacing (HEP-CORE-0008)
-hub::LoopPolicy          loop_policy{hub::LoopPolicy::MaxRate};
+hub::LoopPolicy           loop_policy{hub::LoopPolicy::MaxRate};
 std::chrono::milliseconds period_ms{0};
 ```
 
-`interval_ms` drives the binary-level deadline loop in the script host.
+`target_period_ms` drives the binary-level deadline loop in the script host.
 `loop_policy`/`period_ms` drive the DataBlock Pimpl overrun detection in `acquire_write_slot()`.
-They are independent: a binary can have `interval_ms=10` (script host sleep) and
+They are independent: a binary can have `target_period_ms=10` (script host sleep) and
 `loop_policy=fixed_rate, period_ms=10` (DataBlock overrun tracking) simultaneously.
 
 ---

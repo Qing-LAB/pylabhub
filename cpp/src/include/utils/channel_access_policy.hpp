@@ -84,7 +84,7 @@ inline ConnectionPolicy connection_policy_from_str(const std::string& s) noexcep
 struct PYLABHUB_UTILS_EXPORT KnownActor
 {
     std::string name; ///< Actor human name (e.g. "lab.daq.sensor1")
-    std::string uid;  ///< Actor UID string (e.g. "ACTOR-Sensor-12345678")
+    std::string uid;  ///< Role UID string (e.g. "PROD-SENSOR-12345678", "CONS-LOGGER-9E1D4C2A")
     std::string role; ///< "producer", "consumer", or "any" (empty = "any")
 };
 

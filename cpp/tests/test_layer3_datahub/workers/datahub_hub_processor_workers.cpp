@@ -825,6 +825,14 @@ int processor_handler_removal()
             EXPECT_FALSE(read_double(out_dbc_test.get(), dummy, 0))
                 << "No handler installed — output queue must be empty";
 
+            // Write fresh input BEFORE re-installing the handler.
+            // With Latest_only, this makes 4.0 the newest slot in the ring buffer —
+            // the processor will skip the stale 99.0 (from the null-handler phase)
+            // and read 4.0 directly once the handler is in place.
+            // If we wrote 4.0 after reinstalling, the processor could wake between
+            // set_process_handler and write_double, see 99.0 as Latest, and produce 495.
+            ASSERT_TRUE(write_double(in_dbp_test.get(), 4.0));
+
             // Re-install handler
             proc.set_process_handler<void, double, void, double>(
                 [](ProcessorContext<void, double, void, double>& ctx) -> bool {
@@ -833,8 +841,6 @@ int processor_handler_removal()
                 });
             EXPECT_TRUE(proc.has_process_handler());
 
-            // Write and verify new handler works
-            ASSERT_TRUE(write_double(in_dbp_test.get(), 4.0));
             double result = 0.0;
             ASSERT_TRUE(read_double(out_dbc_test.get(), result));
             EXPECT_DOUBLE_EQ(result, 20.0);
@@ -1079,7 +1085,7 @@ int critical_error_stops_loop()
             ASSERT_TRUE(write_double(in_dbp_test.get(), 1.0));
 
             // Wait for the loop to exit due to critical error.
-            bool stopped = poll_until([&proc] { return !proc.is_running(); }, 3000ms);
+            (void)poll_until([&proc] { return !proc.is_running(); }, 3000ms);
             // The loop exits but is_running stays true until stop() is called.
             // Check critical error state instead.
             bool has_error = poll_until([&proc] { return proc.has_critical_error(); }, 3000ms);
@@ -1361,19 +1367,21 @@ int zmq_queue_roundtrip()
         {
             // Test Processor with ZmqQueue input and output.
             // Producer → ZmqQueue(PUSH) → ZmqQueue(PULL) → Processor → ZmqQueue(PUSH) → ZmqQueue(PULL) → verify
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17050",  {{"float64", 1, 0}}, "natural", true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17050", {{"float64", 1, 0}}, "natural", false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17051",  {{"float64", 1, 0}}, "natural", true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17051", {{"float64", 1, 0}}, "natural", false);
-
+            // Use port 0 (OS-assigned) so concurrent test runs never collide on hardcoded ports.
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
             ASSERT_NE(in_push, nullptr);
-            ASSERT_NE(in_pull, nullptr);
             ASSERT_NE(out_push, nullptr);
-            ASSERT_NE(out_pull, nullptr);
-
             ASSERT_TRUE(in_push->start());
-            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_push->start());
+            const std::string in_ep  = static_cast<ZmqQueue*>(in_push.get())->actual_endpoint();
+            const std::string out_ep = static_cast<ZmqQueue*>(out_push.get())->actual_endpoint();
+
+            auto in_pull  = ZmqQueue::pull_from(in_ep,  {{"float64", 1, 0}}, "aligned", false);
+            auto out_pull = ZmqQueue::pull_from(out_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(in_pull, nullptr);
+            ASSERT_NE(out_pull, nullptr);
+            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_pull->start());
 
             // Let ZMQ sockets connect.
@@ -1426,19 +1434,20 @@ int zmq_queue_null_flexzone()
     return run_gtest_worker(
         []()
         {
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17052",  {{"float64", 1, 0}}, "natural", true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17052", {{"float64", 1, 0}}, "natural", false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17053",  {{"float64", 1, 0}}, "natural", true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17053", {{"float64", 1, 0}}, "natural", false);
-
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
             ASSERT_NE(in_push, nullptr);
-            ASSERT_NE(in_pull, nullptr);
             ASSERT_NE(out_push, nullptr);
-            ASSERT_NE(out_pull, nullptr);
-
             ASSERT_TRUE(in_push->start());
-            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_push->start());
+            const std::string in_ep  = static_cast<ZmqQueue*>(in_push.get())->actual_endpoint();
+            const std::string out_ep = static_cast<ZmqQueue*>(out_push.get())->actual_endpoint();
+
+            auto in_pull  = ZmqQueue::pull_from(in_ep,  {{"float64", 1, 0}}, "aligned", false);
+            auto out_pull = ZmqQueue::pull_from(out_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(in_pull, nullptr);
+            ASSERT_NE(out_pull, nullptr);
+            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_pull->start());
             std::this_thread::sleep_for(100ms);
 
@@ -1487,19 +1496,20 @@ int zmq_queue_timeout_handler()
     return run_gtest_worker(
         []()
         {
-            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:17054",  {{"float64", 1, 0}}, "natural", true);
-            auto in_pull  = ZmqQueue::pull_from("tcp://127.0.0.1:17054", {{"float64", 1, 0}}, "natural", false);
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17055",  {{"float64", 1, 0}}, "natural", true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17055", {{"float64", 1, 0}}, "natural", false);
-
+            auto in_push  = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
             ASSERT_NE(in_push, nullptr);
-            ASSERT_NE(in_pull, nullptr);
             ASSERT_NE(out_push, nullptr);
-            ASSERT_NE(out_pull, nullptr);
-
             ASSERT_TRUE(in_push->start());
-            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_push->start());
+            const std::string in_ep  = static_cast<ZmqQueue*>(in_push.get())->actual_endpoint();
+            const std::string out_ep = static_cast<ZmqQueue*>(out_push.get())->actual_endpoint();
+
+            auto in_pull  = ZmqQueue::pull_from(in_ep,  {{"float64", 1, 0}}, "aligned", false);
+            auto out_pull = ZmqQueue::pull_from(out_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(in_pull, nullptr);
+            ASSERT_NE(out_pull, nullptr);
+            ASSERT_TRUE(in_pull->start());
             ASSERT_TRUE(out_pull->start());
             std::this_thread::sleep_for(100ms);
 
@@ -1564,13 +1574,14 @@ int shm_in_zmq_out()
             auto in_queue = ShmQueue::from_consumer(std::move(in_dbc_proc), sizeof(double));
             ASSERT_NE(in_queue, nullptr);
 
-            // Output: ZMQ PUSH → PULL
-            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:17056",  {{"float64", 1, 0}}, "natural", true);
-            auto out_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17056", {{"float64", 1, 0}}, "natural", false);
+            // Output: ZMQ PUSH → PULL (port 0 for OS-assigned port)
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
             ASSERT_NE(out_push, nullptr);
-            ASSERT_NE(out_pull, nullptr);
-
             ASSERT_TRUE(out_push->start());
+            const std::string out_ep = static_cast<ZmqQueue*>(out_push.get())->actual_endpoint();
+
+            auto out_pull = ZmqQueue::pull_from(out_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(out_pull, nullptr);
             ASSERT_TRUE(out_pull->start());
             std::this_thread::sleep_for(100ms);
 
@@ -1617,13 +1628,14 @@ int zmq_in_shm_out()
     return run_gtest_worker(
         []()
         {
-            // Input: ZMQ PUSH → PULL
-            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:17057",  {{"float64", 1, 0}}, "natural", true);
-            auto in_pull = ZmqQueue::pull_from("tcp://127.0.0.1:17057", {{"float64", 1, 0}}, "natural", false);
+            // Input: ZMQ PUSH → PULL (port 0 for OS-assigned port)
+            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
             ASSERT_NE(in_push, nullptr);
-            ASSERT_NE(in_pull, nullptr);
-
             ASSERT_TRUE(in_push->start());
+            const std::string in_ep = static_cast<ZmqQueue*>(in_push.get())->actual_endpoint();
+
+            auto in_pull = ZmqQueue::pull_from(in_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(in_pull, nullptr);
             ASSERT_TRUE(in_pull->start());
 
             // Output: SHM DataBlock (proc producer writes via ShmQueue, test consumer reads)
@@ -1676,6 +1688,74 @@ int zmq_in_shm_out()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// zmq_to_zmq — ZmqQueue(PULL) → Processor → ZmqQueue(PUSH)
+// ============================================================================
+
+int zmq_to_zmq()
+{
+    return run_gtest_worker(
+        []()
+        {
+            // Input: PUSH binds port 0, PULL connects to resolved endpoint.
+            auto in_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
+            ASSERT_NE(in_push, nullptr);
+            ASSERT_TRUE(in_push->start());
+            const std::string in_ep = static_cast<ZmqQueue*>(in_push.get())->actual_endpoint();
+
+            auto in_pull = ZmqQueue::pull_from(in_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(in_pull, nullptr);
+            ASSERT_TRUE(in_pull->start());
+
+            // Output: PUSH binds port 0, PULL connects to resolved endpoint.
+            auto out_push = ZmqQueue::push_to("tcp://127.0.0.1:0", {{"float64", 1, 0}}, "aligned", true);
+            ASSERT_NE(out_push, nullptr);
+            ASSERT_TRUE(out_push->start());
+            const std::string out_ep = static_cast<ZmqQueue*>(out_push.get())->actual_endpoint();
+
+            auto out_pull = ZmqQueue::pull_from(out_ep, {{"float64", 1, 0}}, "aligned", false);
+            ASSERT_NE(out_pull, nullptr);
+            ASSERT_TRUE(out_pull->start());
+
+            std::this_thread::sleep_for(100ms);
+
+            auto maybe_proc = Processor::create(*in_pull, *out_push, fast_opts());
+            ASSERT_TRUE(maybe_proc.has_value());
+            Processor& proc = *maybe_proc;
+
+            proc.set_process_handler<void, double, void, double>(
+                [](ProcessorContext<void, double, void, double>& ctx) -> bool {
+                    ctx.output() = ctx.input() * 4.0;
+                    return true;
+                });
+            proc.start();
+
+            for (int i = 1; i <= 3; ++i)
+            {
+                double val = static_cast<double>(i);
+                void* buf = in_push->write_acquire(1000ms);
+                ASSERT_NE(buf, nullptr);
+                std::memcpy(buf, &val, sizeof(double));
+                in_push->write_commit();
+
+                const void* out = out_pull->read_acquire(3000ms);
+                ASSERT_NE(out, nullptr) << "No output for item " << i;
+                double result = 0.0;
+                std::memcpy(&result, out, sizeof(double));
+                out_pull->read_release();
+                EXPECT_DOUBLE_EQ(result, val * 4.0);
+            }
+
+            proc.stop();
+            out_pull->stop();
+            out_push->stop();
+            in_pull->stop();
+            in_push->stop();
+        },
+        "hub_processor.zmq_to_zmq",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_processor
 
 // ============================================================================
@@ -1724,6 +1804,7 @@ struct HubProcessorWorkerRegistrar
                 if (scenario == "zmq_queue_timeout_handler") return zmq_queue_timeout_handler();
                 if (scenario == "shm_in_zmq_out") return shm_in_zmq_out();
                 if (scenario == "zmq_in_shm_out") return zmq_in_shm_out();
+                if (scenario == "zmq_to_zmq")     return zmq_to_zmq();
                 fmt::print(stderr, "ERROR: Unknown hub_processor scenario '{}'\n", scenario);
                 return 1;
             });

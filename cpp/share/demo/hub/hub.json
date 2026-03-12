@@ -5,8 +5,14 @@
     "For the demo run_demo.sh uses --dev mode (no password required)."
   ],
   "hub": {
-    "hub_name":        "demo_hub",
+    "name":            "demo.hub.local",
+    "uid":             "HUB-DEMO-HUB-LOCAL-00000001",
+    "description":     "Demo hub for producer/processor/consumer pipeline",
     "broker_endpoint": "tcp://0.0.0.0:5570",
-    "log_level":       "info"
+    "admin_endpoint":  "tcp://127.0.0.1:5600"
+  },
+  "broker": {
+    "channel_timeout_s": 10,
+    "consumer_liveness_check_s": 5
   }
 }

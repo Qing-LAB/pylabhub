@@ -107,7 +107,8 @@ int test_bad_format_string(const std::string &log_path_str)
         [&]()
         {
             ASSERT_TRUE(Logger::instance().set_logfile(log_path_str));
-            LOGGER_INFO_RT("Bad format: {} {}", "one"); // Too few args should cause format error
+            // Use ERROR level so this is compiled in even in Release builds.
+            LOGGER_ERROR_RT("Bad format: {} {}", "one"); // Too few args should cause format error
             Logger::instance().flush();
 
             // Verify that a format error message was logged

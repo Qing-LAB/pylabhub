@@ -46,7 +46,7 @@ TEST_F(DatahubShmQueueTest, ShmQueueWriteAcquireCommit)
 
 TEST_F(DatahubShmQueueTest, ShmQueueWriteAcquireAbort)
 {
-    // write_acquire() + write_abort() does not commit; consumer sees timeout.
+    // write_acquire() + write_discard() does not commit; consumer sees timeout.
     auto proc = SpawnWorker("hub_queue.shm_queue_write_acquire_abort", {});
     ExpectWorkerOk(proc);
 }
@@ -77,4 +77,76 @@ TEST_F(DatahubShmQueueTest, ShmQueueRoundTrip)
     // Writer ShmQueue writes 3 slots; reader ShmQueue reads and verifies byte-for-byte.
     auto proc = SpawnWorker("hub_queue.shm_queue_round_trip", {});
     ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueMultipleConsumers)
+{
+    // Two from_consumer_ref readers on the same DataBlock each independently see the
+    // written slot — ConsumerSyncPolicy::Latest_only per-consumer state is isolated.
+    auto proc = SpawnWorker("hub_queue.shm_queue_multiple_consumers", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueFlexzoneRoundTrip)
+{
+    // Write known bytes to write_flexzone(); commit a slot; consumer reads the slot and
+    // verifies read_flexzone() returns matching bytes.
+    auto proc = SpawnWorker("hub_queue.shm_queue_flexzone_round_trip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueRefFactories)
+{
+    // from_producer_ref / from_consumer_ref factories are non-owning: the underlying
+    // DataBlockProducer/Consumer remain valid after ShmQueue teardown.
+    auto proc = SpawnWorker("hub_queue.shm_queue_ref_factories", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueLatestOnly)
+{
+    // Latest_only policy: write 3 slots without reading, then read once — returns the
+    // last written value, not the first.
+    auto proc = SpawnWorker("hub_queue.shm_queue_latest_only", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueRingWrap)
+{
+    // Write 10 items into a 2-slot ring (forces multiple wraps); consumer reads the
+    // latest value correctly after the ring has overwritten old slots.
+    auto proc = SpawnWorker("hub_queue.shm_queue_ring_wrap", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueDestructorSafety)
+{
+    // Create reader and writer ShmQueues and immediately destroy them without any
+    // acquire/release — must not crash or assert.
+    auto proc = SpawnWorker("hub_queue.shm_queue_destructor_safety", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueLastSeq)
+{
+    // last_seq() starts at 0 and increases monotonically across 3 write/read cycles.
+    auto proc = SpawnWorker("hub_queue.shm_queue_last_seq", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueCapacityPolicy)
+{
+    // capacity() returns the ring_buffer_capacity from the DataBlockConfig;
+    // policy_info() returns "shm_read" / "shm_write".
+    auto proc = SpawnWorker("hub_queue.shm_queue_capacity_policy", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, ShmQueueVerifyChecksumMismatch)
+{
+    // Slot written without set_checksum_options → slot_valid flag stays 0.
+    // read_acquire() with set_verify_checksum(true,false) must return nullptr (logs ERROR).
+    // After enabling set_checksum_options on the writer, read_acquire() succeeds.
+    auto proc = SpawnWorker("hub_queue.shm_queue_verify_checksum_mismatch", {});
+    ExpectWorkerOk(proc, {}, {"slot checksum mismatch"});
 }

@@ -170,18 +170,36 @@ policy. This is a Cat 2 (non-fatal, recoverable) error path.
 
 ### 2.6 Loop Pacing
 
+#### 2.6.0 Binary-level: LoopDriver (IMPLEMENTED, 2026-03-07)
+
+**`QueueType`** — defined in `consumer_config.hpp` (producer/processor not applicable)
+**Applied by**: `ConsumerScriptHost` — selects which backing queue implementation drives `on_consume`.
+
+A consumer connects to two potential data channels: a **SHM DataBlock** (low-latency
+shared memory ring buffer) and a **ZMQ data socket** (direct PUSH/PULL, per HEP-CORE-0021).
+`QueueType` selects which one the `hub::QueueReader*` points to for the consume loop.
+
+| Value | Main loop blocks on | ZMQ ctrl thread |
+|-------|---------------------|-----------------|
+| `Shm` (default) | SHM `acquire_consume_slot()` | Control plane only (heartbeat, shutdown) |
+| `Zmq` | ZMQ PULL receive (HEP-0021) | Data + control plane |
+
+JSON: `"queue_type": "shm"` (default) | `"zmq"`.
+
 #### 2.6.1 Binary-level: LoopTimingPolicy (IMPLEMENTED, 2026-02-23)
 
-**`LoopTimingPolicy`** — defined in each binary's config (e.g. `producer_config.hpp`)
-**Applied by**: Each binary's script host loop.
+**`LoopTimingPolicy`** — defined in `utils/loop_timing_policy.hpp` (shared, `pylabhub` namespace)
+**Applied by**: Each binary's script host loop when `loop_timing != MaxRate`.
 
-| Value | Deadline formula | Overrun behaviour |
-|-------|-----------------|-------------------|
-| `FixedPace` | `next = now() + interval_ms` | No catch-up; rate ≤ target |
-| `Compensating` | `next += interval_ms` | Fires immediately; average rate converges to target |
+| Value | JSON | Deadline formula | Overrun behaviour |
+|-------|------|-----------------|-------------------|
+| `MaxRate` | `"max_rate"` | No sleep; requires `target_period_ms == 0` | N/A |
+| `FixedRate` | `"fixed_rate"` | `next = now() + target_period_ms` | No catch-up; rate ≤ target |
+| `FixedRateWithCompensation` | `"fixed_rate_with_compensation"` | `next += target_period_ms` | Fires immediately; average rate converges to target |
 
-JSON: `"loop_timing": "fixed_pace"` (default) | `"compensating"`.
-Observability: `api.loop_overrun_count()`, `api.last_cycle_work_us()`.
+JSON: `"loop_timing": "max_rate"` | `"fixed_rate"` | `"fixed_rate_with_compensation"`.
+Cross-field constraint: `"max_rate"` requires `target_period_ms == 0`; `"fixed_rate"` / `"fixed_rate_with_compensation"` require `target_period_ms > 0`. Absent field → implicit default (0→MaxRate, >0→FixedRate).
+Observability: `api.overrun_count()`, `api.last_cycle_work_us()`.
 
 #### 2.6.2 RAII-layer: LoopPolicy ✅ Implemented (Pass 3 complete 2026-02-25)
 
@@ -319,8 +337,9 @@ For **safety-critical** applications, set:
 | `skip_on_validation_error` (bool) | `consumer_config.hpp` | `validation.on_checksum_fail` | `ConsumerScriptHost` |
 | `stop_on_script_error` (bool) | per-binary config | `validation.on_script_error` | All script hosts |
 | `ChecksumRepairPolicy` | `broker_service.hpp` | `BrokerService::Config` | `BrokerService::run()` |
-| `LoopTimingPolicy` | per-binary config | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` |
-| `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | `loop_policy` + `period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
+| `QueueType` | `consumer_config.hpp` | `queue_type` | `ConsumerScriptHost` — selects SHM vs ZMQ as backing queue for the data plane |
+| `LoopTimingPolicy` | `producer_config.hpp`, `consumer_config.hpp` | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` when `target_period_ms > 0` |
+| `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | auto-set from `target_period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
 | `ConnectionPolicy` | `channel_access_policy.hpp` | hub.json `"connection_policy"` | `BrokerServiceImpl::check_connection_policy()` |
 | `ChannelPattern` | `channel_pattern.hpp` | `ProducerOptions::channel_pattern` | `Messenger` (socket type) + `BrokerService` (CHANNEL_READY_NOTIFY) |
 
@@ -338,7 +357,7 @@ flowchart TB
 
     subgraph Binary["Binary Layer (ScriptHost)"]
         ValPol["ValidationPolicy"]
-        LTPol["LoopTimingPolicy\n(fixed_pace / compensating)"]
+        LTPol["LoopTimingPolicy\n(max_rate / fixed_rate / fixed_rate_with_compensation)"]
     end
 
     subgraph RAII["RAII / DataBlock Layer"]

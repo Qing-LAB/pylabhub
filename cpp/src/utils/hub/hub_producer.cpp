@@ -3,6 +3,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
+#include "hub_monitored_queue.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -87,13 +88,18 @@ struct ProducerImpl
     std::thread       write_thread_handle;
 
     // Outgoing ctrl/data messages queued for peer_thread to send on the ROUTER socket.
-    // DESIGN: unbounded by intent — producers run at scripted intervals (typ. ≥1 ms)
-    // and the peer_thread drains on every iteration. The queue only grows if the broker
-    // becomes unreachable; in that case dropping messages is safe (fire-and-forget
-    // callbacks, heartbeats). If persistent backlog is a concern in future, add a
-    // configurable max_depth with a drop-oldest policy here.
-    std::mutex                   ctrl_send_mu;
-    std::queue<PendingCtrlSend>  ctrl_send_queue;
+    // MonitoredQueue provides drop-oldest capping (fire_and_forget=true: no backpressure
+    // monitoring, since ZMQ always accepts sends regardless of peer liveness).
+    MonitoredQueue<PendingCtrlSend> ctrl_queue_;
+
+    // Peer-dead detection: track when we last received a message from any consumer.
+    // Updated from recv_and_dispatch_ctrl_() on any HELLO/BYE/custom message.
+    // Checked periodically in run_peer_thread() to detect silently-dead consumers.
+    bool     peer_ever_seen_{false};
+    std::chrono::steady_clock::time_point last_peer_recv_{};
+    int      peer_dead_timeout_ms_{30000};
+
+    std::function<void()> on_peer_dead_cb;
 
     // Mutex guarding sends on the data socket (peer_thread never touches data socket)
     std::mutex data_send_mu;
@@ -113,7 +119,9 @@ struct ProducerImpl
     ProducerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PUSH socket (non-null only when data_transport=="zmq").
-    std::unique_ptr<ZmqQueue> zmq_queue_;
+    // Stored as QueueWriter* since push_to() now returns unique_ptr<QueueWriter>.
+    // Actual runtime type is always ZmqQueue (created by ZmqQueue::push_to).
+    std::unique_ptr<QueueWriter> zmq_queue_;
 
     void run_peer_thread();
     void run_write_thread();
@@ -145,20 +153,12 @@ struct ProducerImpl
 
 void ProducerImpl::drain_ctrl_send_queue_()
 {
-    std::lock_guard<std::mutex> lock(ctrl_send_mu);
-    while (!ctrl_send_queue.empty())
-    {
-        PendingCtrlSend &msg = ctrl_send_queue.front();
+    ctrl_queue_.drain([this](PendingCtrlSend& msg) {
         if (msg.is_data)
-        {
             handle.send(msg.data.data(), msg.data.size(), msg.identity);
-        }
         else
-        {
             handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size(), msg.identity);
-        }
-        ctrl_send_queue.pop();
-    }
+    });
 }
 
 // ============================================================================
@@ -267,6 +267,9 @@ bool ProducerImpl::recv_and_dispatch_ctrl_()
         if (msg_cb)
             msg_cb(identity, body);
     }
+    // Track last peer contact for peer-dead detection.
+    peer_ever_seen_ = true;
+    last_peer_recv_ = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -287,6 +290,26 @@ void ProducerImpl::run_peer_thread()
     {
         // ── 1. Drain outgoing ctrl/data send queue ──────────────────────────
         drain_ctrl_send_queue_();
+
+        // ── Periodic peer-dead check ─────────────────────────────────────
+        if (peer_ever_seen_ && peer_dead_timeout_ms_ > 0)
+        {
+            std::function<void()> dead_cb;
+            { std::lock_guard<std::mutex> lk(callbacks_mu); dead_cb = on_peer_dead_cb; }
+            if (dead_cb)
+            {
+                auto gap_ms = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - last_peer_recv_).count());
+                if (gap_ms > peer_dead_timeout_ms_)
+                {
+                    LOGGER_WARN("[hub::Producer] No peer message for {}ms (timeout={}ms); "
+                                "declaring peer dead.", gap_ms, peer_dead_timeout_ms_);
+                    dead_cb();
+                    peer_ever_seen_ = false;  // Don't fire repeatedly
+                }
+            }
+        }
 
         // ── 2. Poll ctrl socket for incoming consumer messages ──────────────
         std::vector<zmq::pollitem_t> items = {{ctrl_sock->handle(), 0, ZMQ_POLLIN, 0}};
@@ -400,6 +423,9 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     ch_opts.actor_uid         = opts.actor_uid;
     ch_opts.data_transport    = opts.data_transport;
     ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
+    ch_opts.inbox_endpoint    = opts.inbox_endpoint;
+    ch_opts.inbox_schema_json = opts.inbox_schema_json;
+    ch_opts.inbox_packing     = opts.inbox_packing;
     auto ch = messenger.create_channel(opts.channel_name, ch_opts);
     if (!ch.has_value())
     {
@@ -475,8 +501,7 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
             std::vector<std::byte> buf(size);
             if (data && size > 0)
                 std::memcpy(buf.data(), data, size);
-            std::lock_guard<std::mutex> lock(p->ctrl_send_mu);
-            p->ctrl_send_queue.push(
+            p->ctrl_queue_.push(
                 PendingCtrlSend{identity, {}, std::move(buf), /*is_data=*/true});
             return true;
         }
@@ -568,6 +593,15 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
         }
         LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
     }
+
+    // ctrl_queue_ is fire_and_forget (ZMQ always accepts sends); no monitoring callbacks needed.
+    // Always apply opts.ctrl_queue_max_depth (0 = unbounded, >0 = drop-oldest cap).
+    {
+        MonitoredQueue<PendingCtrlSend>::Config qcfg;
+        qcfg.max_depth    = opts.ctrl_queue_max_depth;
+        impl->ctrl_queue_ = MonitoredQueue<PendingCtrlSend>(qcfg);
+    }
+    impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
     return Producer(std::move(impl));
 }
@@ -749,6 +783,27 @@ void Producer::handle_peer_events_nowait() noexcept
     while (pImpl->recv_and_dispatch_ctrl_() && ++n < kMaxRecvBatch) {}
     if (n >= kMaxRecvBatch)
         LOGGER_WARN("Producer: handle_peer_events_nowait hit recv batch cap ({})", n);
+
+    // Peer-dead check (embedded mode): mirrors the check in run_peer_thread().
+    // Called from the script host's ctrl_thread on each loop iteration.
+    if (pImpl->peer_ever_seen_ && pImpl->peer_dead_timeout_ms_ > 0)
+    {
+        std::function<void()> dead_cb;
+        { std::lock_guard<std::mutex> lk(pImpl->callbacks_mu); dead_cb = pImpl->on_peer_dead_cb; }
+        if (dead_cb)
+        {
+            auto gap_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - pImpl->last_peer_recv_).count());
+            if (gap_ms > pImpl->peer_dead_timeout_ms_)
+            {
+                LOGGER_WARN("[hub::Producer] No peer message for {}ms (timeout={}ms); "
+                            "declaring peer dead.", gap_ms, pImpl->peer_dead_timeout_ms_);
+                dead_cb();
+                pImpl->peer_ever_seen_ = false; // Prevent repeated firing
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -780,8 +835,7 @@ bool Producer::send_to(const std::string &identity, const void *data, size_t siz
         {
             std::memcpy(buf.data(), data, size);
         }
-        std::lock_guard<std::mutex> lock(pImpl->ctrl_send_mu);
-        pImpl->ctrl_send_queue.push(
+        pImpl->ctrl_queue_.push(
             PendingCtrlSend{identity, {}, std::move(buf), /*is_data=*/true});
         return true;
     }
@@ -803,8 +857,7 @@ bool Producer::send_ctrl(const std::string &identity, std::string_view type,
         {
             std::memcpy(buf.data(), data, size);
         }
-        std::lock_guard<std::mutex> lock(pImpl->ctrl_send_mu);
-        pImpl->ctrl_send_queue.push(
+        pImpl->ctrl_queue_.push(
             PendingCtrlSend{identity, std::string(type), std::move(buf), /*is_data=*/false});
         return true;
     }
@@ -914,13 +967,33 @@ DataBlockProducer *Producer::shm() noexcept
 
 ZmqQueue *Producer::queue() noexcept
 {
-    return pImpl ? pImpl->zmq_queue_.get() : nullptr;
+    // zmq_queue_ is stored as QueueWriter; runtime type is always ZmqQueue (from push_to).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
+    return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
 ChannelHandle &Producer::channel_handle()
 {
     assert(pImpl);
     return pImpl->handle;
+}
+
+// ============================================================================
+// Producer — peer-dead callback + metrics
+// ============================================================================
+
+void Producer::on_peer_dead(std::function<void()> cb)
+{
+    if (pImpl)
+    {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
+        pImpl->on_peer_dead_cb = std::move(cb);
+    }
+}
+
+uint64_t Producer::ctrl_queue_dropped() const
+{
+    return pImpl ? pImpl->ctrl_queue_.total_dropped() : 0;
 }
 
 // ============================================================================
@@ -950,7 +1023,8 @@ void Producer::close()
     // Clear all user-facing callbacks. Messenger-registered lambdas (which run on the
     // Messenger worker thread) copy callbacks under callbacks_mu before invoking, so
     // nulling here is race-free with respect to those lambdas. Peer-thread callbacks
-    // (joined_cb, left_cb, message_cb) are safe because peer_thread has already joined.
+    // (joined_cb, left_cb, message_cb, on_peer_dead_cb) are safe to null without lock
+    // because peer_thread has already been joined by stop() above.
     {
         std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
         pImpl->on_channel_closing_cb  = nullptr;
@@ -961,6 +1035,7 @@ void Producer::close()
     pImpl->on_consumer_joined_cb  = nullptr;
     pImpl->on_consumer_left_cb    = nullptr;
     pImpl->on_consumer_message_cb = nullptr;
+    pImpl->on_peer_dead_cb        = nullptr;
 
     pImpl->handle.invalidate();
     pImpl->shm.reset();

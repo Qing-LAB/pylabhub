@@ -9,8 +9,8 @@
   },
   "channel":     "lab.examples.counter",
   "broker":      "tcp://127.0.0.1:5570",
-  "interval_ms": 0,
-  "_comment_interval": "0 = write as fast as SHM slots allow; >0 = sleep N ms",
+  "target_period_ms": 0,
+  "_comment_target_period": "0 = free-run (write as fast as SHM allows); >0 = target start-to-start period in ms",
 
   "shm": {
     "enabled":    true,
@@ -20,7 +20,7 @@
 
   "slot_schema": {
     "_comment": "Slot layout — C++ builds ctypes.LittleEndianStructure at start().",
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "count", "type": "int64"},
       {"name": "ts",    "type": "float64"}

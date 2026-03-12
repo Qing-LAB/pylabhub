@@ -196,3 +196,10 @@ TEST_F(DatahubHubProcessorTest, ZmqInShmOut)
     auto proc = SpawnWorker("hub_processor.zmq_in_shm_out", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubHubProcessorTest, ZmqToZmq)
+{
+    // ZmqQueue(PULL) → Processor → ZmqQueue(PUSH): full ZMQ transport (no SHM).
+    auto proc = SpawnWorker("hub_processor.zmq_to_zmq", {});
+    ExpectWorkerOk(proc);
+}

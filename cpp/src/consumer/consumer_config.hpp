@@ -33,11 +33,19 @@
  *     "auth": { "keyfile": "" }
  *   },
  *
- *   "channel":    "lab.sensors.temperature",
- *   "timeout_ms": 5000,
+ *   "channel":          "lab.sensors.temperature",
+ *   "timeout_ms":       5000,
+ *   "queue_type":       "shm",
+ *   "target_period_ms": 0,
+ *   "loop_timing":      "fixed_pace",
  *
  *   "slot_schema":     { "fields": [{"name": "value", "type": "float32"}] },
  *   "flexzone_schema": null,
+ *
+ *   "inbox_schema":      null,
+ *   "inbox_endpoint":    "",
+ *   "inbox_buffer_depth": 64,
+ *   "zmq_packing":       "aligned",
  *
  *   "shm": { "enabled": true, "secret": 0 },
  *
@@ -46,12 +54,44 @@
  * @endcode
  */
 
+#include "utils/loop_timing_policy.hpp"
+#include "utils/startup_wait.hpp"
+
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 namespace pylabhub::consumer
 {
+
+// ============================================================================
+// QueueType
+// ============================================================================
+
+/**
+ * @enum QueueType
+ * @brief Selects the queue implementation backing the consumer's data channel.
+ *
+ * A consumer connects to exactly one data queue: either an SHM ring buffer
+ * (DataBlock) or a ZMQ PULL socket (HEP-CORE-0021). This selects which one.
+ *
+ * | Value | Queue backing | Notes |
+ * |-------|---------------|-------|
+ * | Shm   | SHM DataBlock (ShmQueue) | Default; ZMQ control runs in background thread |
+ * | Zmq   | ZMQ PULL socket (ZmqQueue, HEP-0021) | Requires producer to use ZMQ transport |
+ *
+ * JSON key: `"queue_type": "shm"` (default) | `"zmq"`.
+ */
+enum class QueueType : uint8_t
+{
+    Shm, ///< SHM DataBlock (ShmQueue) — default
+    Zmq, ///< ZMQ PULL socket (ZmqQueue) — requires ZMQ transport producer
+};
+
+/// LoopTimingPolicy and WaitForRole are defined in shared headers.
+using ::pylabhub::LoopTimingPolicy;
+using ::pylabhub::WaitForRole;
 
 // ============================================================================
 // ConsumerAuthConfig
@@ -85,6 +125,19 @@ struct ConsumerConfig
     /// Input channel (consumed by this consumer).
     std::string channel;
 
+    /// Which data channel drives the main on_consume callback loop.
+    /// Default: Shm (block on SHM acquire). Zmq requires ZMQ transport (HEP-CORE-0021).
+    QueueType queue_type{QueueType::Shm};
+
+    /// Target start-to-start period for DataBlock acquire pacing (ms).
+    /// 0 = free-run (block until next slot, no sleep). Default for consumers.
+    /// >0 with FixedRate/FixedRateWithCompensation: activates DataBlock overrun_count tracking.
+    int target_period_ms{0};
+
+    /// Loop timing policy. Default: MaxRate (since target_period_ms defaults to 0).
+    /// See loop_timing_policy.hpp for cross-field constraints.
+    LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
+
     /// SHM acquire-consume timeout (ms). -1 = block up to 5 s (default).
     int timeout_ms{-1};
     int heartbeat_interval_ms{0};
@@ -97,15 +150,44 @@ struct ConsumerConfig
     nlohmann::json slot_schema_json{};
     nlohmann::json flexzone_schema_json{};
 
+    // ZMQ packing for inbox messages. "aligned" (default) | "packed".
+    std::string zmq_packing{"aligned"};
+
+    // ── Inbox facility (optional — active when inbox_schema_json is non-null and non-empty) ─
+    nlohmann::json inbox_schema_json{};             ///< Schema for inbox messages. Null/empty = no inbox.
+    std::string    inbox_endpoint;                  ///< ROUTER bind endpoint. Empty = auto-assign (port 0).
+    size_t         inbox_buffer_depth{64};          ///< ZMQ RCVHWM for the inbox socket.
+    std::string    inbox_overflow_policy{"drop"};   ///< "drop" (finite RCVHWM) or "block" (unlimited queue).
+
+    // ZMQ buffer depth for ZMQ-transport data plane (PULL ring depth).
+    size_t zmq_buffer_depth{64}; ///< Internal recv-ring buffer depth for ZMQ transport. Must be > 0.
+
+    /// Returns true when an inbox is configured (inbox_schema_json is non-null and non-empty).
+    [[nodiscard]] bool has_inbox() const noexcept
+        { return !inbox_schema_json.is_null() && !inbox_schema_json.empty(); }
+
     // Script
     std::string script_type{"python"};
     std::string script_path{"."};
+    bool script_type_explicit{false}; ///< True when "type" was present in JSON; false = defaulted.
 
     // Auth
     ConsumerAuthConfig auth{};
 
+    // ── Startup coordination (HEP-0023) ─────────────────────────────────────
+    /// Roles that must be present in the broker before on_init is called.
+    std::vector<WaitForRole> wait_for_roles;
+
+    // ── Peer/hub-dead monitoring ────────────────────────────────────────────
+    size_t ctrl_queue_max_depth{256}; ///< Max depth of ctrl send queue before oldest dropped.
+    int    peer_dead_timeout_ms{30000}; ///< Peer (producer) silence timeout (ms). 0=disabled.
+
     // Validation
     bool stop_on_script_error{false};
+    /// When true, ConsumerScriptHost calls set_verify_checksum(true, has_fz) on the QueueReader.
+    /// SHM: BLAKE2b slot+fz checksum verified on each acquire; returns nullptr on mismatch.
+    /// ZMQ: no-op (TCP provides transport integrity).
+    bool verify_checksum{false};
 
     static ConsumerConfig from_json_file(const std::string &path);
     static ConsumerConfig from_directory(const std::string &cons_dir);
