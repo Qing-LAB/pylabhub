@@ -45,8 +45,10 @@ struct ShmQueueImpl
     bool checksum_fz{false};
 
     // Read-side checksum verification flags.
-    bool verify_slot{false};
-    bool verify_fz{false};
+    // mutable: set_verify_checksum() is const on the QueueReader interface
+    // (ConsumerAPI holds a const pointer; these are behavior flags, not queue state).
+    mutable bool verify_slot{false};
+    mutable bool verify_fz{false};
 
     // Last slot id from read_acquire() (monotonic slot id / commit_index).
     uint64_t last_seq{0};
@@ -137,7 +139,7 @@ void ShmQueue::sync_flexzone_checksum() noexcept
 // set_verify_checksum  (QueueReader interface)
 // ============================================================================
 
-void ShmQueue::set_verify_checksum(bool slot, bool fz) noexcept
+void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
 {
     if (pImpl)
     {

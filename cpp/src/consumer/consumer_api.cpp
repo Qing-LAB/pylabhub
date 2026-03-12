@@ -117,9 +117,9 @@ void ConsumerAPI::clear_custom_metrics()
 
 void ConsumerAPI::set_verify_checksum(bool enable)
 {
-    const auto *q = reader_.load(std::memory_order_acquire);
+    auto *q = reader_.load(std::memory_order_acquire);
     if (q)
-        const_cast<hub::QueueReader*>(q)->set_verify_checksum(enable, false);
+        q->set_verify_checksum(enable, false);
 }
 
 std::string ConsumerAPI::stop_reason() const noexcept
@@ -364,6 +364,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("channel",      &ConsumerAPI::channel)
         .def("log_level",    &ConsumerAPI::log_level)
         .def("script_dir",   &ConsumerAPI::script_dir)
+        .def("role_dir",     &ConsumerAPI::role_dir)
+        .def("logs_dir",     &ConsumerAPI::logs_dir)
+        .def("run_dir",      &ConsumerAPI::run_dir)
         .def("stop",         &ConsumerAPI::stop)
         .def("set_critical_error",    &ConsumerAPI::set_critical_error)
         .def("critical_error",        &ConsumerAPI::critical_error)
@@ -380,7 +383,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("last_cycle_work_us", &ConsumerAPI::last_cycle_work_us,
              "Microseconds of active work (callback + release) in the last consume iteration.")
         .def("last_seq",       &ConsumerAPI::last_seq,
-             "Monotonic slot sequence number of the last slot read. 0 until first slot.")
+             "Sequence number of the last slot read (0 until first slot). "
+             "IC-04: SHM=ring-buffer slot index (wraps at capacity); ZMQ=monotone wire seq.")
         .def("in_capacity",    &ConsumerAPI::in_capacity,
              "Ring/recv buffer slot count for the input transport queue. 0 if not connected.")
         .def("in_policy",      &ConsumerAPI::in_policy,

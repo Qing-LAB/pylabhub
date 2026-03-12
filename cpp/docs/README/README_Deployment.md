@@ -612,6 +612,9 @@ api.uid()            # → str: e.g. "PROD-MYSENSOR-A1B2C3D4"
 api.name()           # → str: human name from config
 api.log_level()      # → str: "debug"/"info"/"warn"/"error"
 api.script_dir()     # → str: absolute path to the script directory
+api.role_dir()       # → str: absolute path to the role directory (empty if launched via --config)
+api.logs_dir()       # → str: role_dir + "/logs" (empty if role_dir is empty)
+api.run_dir()        # → str: role_dir + "/run"  (empty if role_dir is empty)
 api.log(level, msg)  # write to hub logger
 
 # Shutdown control
@@ -644,7 +647,7 @@ api.out_policy()             # → str: overflow policy description
 
 # Queue metadata — consumer
 api.in_slots_received()      # → int
-api.last_seq()               # → int: monotonic slot sequence number of last read_acquire()
+api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
 api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
 api.in_policy()              # → str: overflow policy info
 api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only)
@@ -653,7 +656,7 @@ api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (
 api.in_slots_received()      # → int
 api.out_slots_written()      # → int
 api.out_drop_count()         # → int
-api.last_seq()               # → int: last consumed input slot sequence number
+api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
 api.in_capacity()  / api.in_policy()
 api.out_capacity() / api.out_policy()
 api.set_verify_checksum(enable)

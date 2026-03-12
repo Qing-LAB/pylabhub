@@ -78,6 +78,7 @@ void ProcessorScriptHost::wire_api_identity()
     api_.set_out_channel(config_.out_channel);
     api_.set_log_level(config_.log_level);
     api_.set_script_dir(config_.script_path);
+    api_.set_role_dir(config_.role_dir);
     api_.set_shutdown_flag(core_.g_shutdown);
     api_.set_shutdown_requested(&core_.shutdown_requested);
     api_.set_stop_reason(&stop_reason_);

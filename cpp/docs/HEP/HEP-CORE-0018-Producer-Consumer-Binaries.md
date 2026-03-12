@@ -379,13 +379,18 @@ def on_stop(api) -> None:
 Both expose a common API surface, plus role-specific methods:
 
 ```python
-# Identity
+# Identity / environment
 api.name()          # → str: binary name ("TempSensor")
 api.uid()           # → str: "PROD-TEMPSENSOR-A3F7C219"
 api.channel()       # → str: channel name
+api.log_level()     # → str: configured log level
+api.script_dir()    # → str: absolute path to the script directory
+api.role_dir()      # → str: absolute path to the role directory (empty if launched via --config)
+api.logs_dir()      # → str: role_dir + "/logs" (empty if role_dir is empty)
+api.run_dir()       # → str: role_dir + "/run"  (empty if role_dir is empty)
 
 # Logging
-api.log(msg, level="info")   # level: "debug"/"info"/"warn"/"error"
+api.log(level, msg)   # level: "debug"/"info"/"warn"/"error"
 
 # Messaging (Messenger — same semantics as ProcessorAPI)
 api.send(target, data)       # send to specific UID
@@ -406,10 +411,10 @@ api.out_capacity()           # → int: ring buffer slot count (SHM) or send buf
 api.out_policy()             # → str: overflow policy info
 
 # Queue metadata — consumer
-api.last_seq()               # → int: monotonic slot sequence number of last read_acquire()
+api.last_seq()               # → int: SHM=ring-buffer slot index (wraps at capacity); ZMQ=monotone wire seq
 api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
 api.in_policy()              # → str: overflow policy info ("latest_only", "drop", etc.)
-api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only)
+api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only; no-op for ZMQ)
 
 # Custom Metrics (HEP-CORE-0019)
 api.report_metric(key, value)     # report single custom metric (key: str, value: number)
