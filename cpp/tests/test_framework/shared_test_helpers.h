@@ -252,19 +252,20 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     }
     catch (const ::testing::internal::GoogleTestFailureException &e)
     {
-        PLH_DEBUG("[WORKER FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
+        fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n{}\n", test_name,
+                   e.what());
         pylabhub::debug::print_stack_trace();
         return 1;
     }
     catch (const std::exception &e)
     {
-        PLH_DEBUG("[WORKER FAILURE] {} threw an exception: {}", test_name, e.what());
+        fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: {}\n", test_name, e.what());
         pylabhub::debug::print_stack_trace();
         return 2;
     }
     catch (...)
     {
-        PLH_DEBUG("[WORKER FAILURE] {} threw an unknown exception.", test_name);
+        fmt::print(stderr, "[WORKER FAILURE] {} threw an unknown exception.\n", test_name);
         pylabhub::debug::print_stack_trace();
         return 3;
     }
@@ -294,19 +295,21 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
     }
     catch (const ::testing::internal::GoogleTestFailureException &e)
     {
-        PLH_DEBUG("[WORKER BARE FAILURE] GTest assertion failed in {}: \n{}", test_name, e.what());
+        fmt::print(stderr, "[WORKER BARE FAILURE] GTest assertion failed in {}: \n{}\n",
+                   test_name, e.what());
         pylabhub::debug::print_stack_trace();
         return 1;
     }
     catch (const std::exception &e)
     {
-        PLH_DEBUG("[WORKER BARE FAILURE] {} threw an exception: {}", test_name, e.what());
+        fmt::print(stderr, "[WORKER BARE FAILURE] {} threw an exception: {}\n", test_name,
+                   e.what());
         pylabhub::debug::print_stack_trace();
         return 2;
     }
     catch (...)
     {
-        PLH_DEBUG("[WORKER BARE FAILURE] {} threw an unknown exception.", test_name);
+        fmt::print(stderr, "[WORKER BARE FAILURE] {} threw an unknown exception.\n", test_name);
         pylabhub::debug::print_stack_trace();
         return 3;
     }

@@ -84,6 +84,19 @@ void MessengerImpl::worker_loop()
                 LOGGER_ERROR("Messenger: ZMQ error in process_incoming: {} ({})",
                              e.what(), e.num());
             }
+
+            // Poll ZMQ socket monitor for connection events (e.g. ZMQ_EVENT_DISCONNECTED
+            // fired when ZMTP heartbeat timeout elapses — the broker is genuinely dead).
+            if (m_monitor_sock_.has_value())
+            {
+                try { process_monitor_events(*m_monitor_sock_); }
+                catch (const zmq::error_t &e)
+                {
+                    if (e.num() != ETERM)
+                        LOGGER_WARN("Messenger: ZMQ error polling monitor: {} ({})",
+                                    e.what(), e.num());
+                }
+            }
         }
 
         // Send heartbeats if due.
@@ -318,6 +331,78 @@ void MessengerImpl::send_heartbeats(zmq::socket_t &socket)
 }
 
 // ============================================================================
+// ZMQ socket monitor — hub-dead detection
+// ============================================================================
+
+void MessengerImpl::process_monitor_events(zmq::socket_t &monitor)
+{
+    while (true)
+    {
+        zmq::pollitem_t item = {monitor.handle(), 0, ZMQ_POLLIN, 0};
+        zmq::poll(&item, 1, std::chrono::milliseconds{0});
+        if ((item.revents & ZMQ_POLLIN) == 0) break;
+
+        // ZMQ monitor protocol (v4): two frames per event.
+        //   Frame 1: uint16_t event_id + uint32_t event_value = 6 bytes total.
+        //   Frame 2: endpoint string (address).
+        zmq::message_t event_msg;
+        auto res = monitor.recv(event_msg, zmq::recv_flags::dontwait);
+        if (!res) break;
+
+        // Drain the address frame (mandatory to keep socket state clean)
+        zmq::message_t addr_msg;
+        static_cast<void>(monitor.recv(addr_msg, zmq::recv_flags::dontwait));
+
+        // Validate minimum frame size: uint16_t event_id + uint32_t value = 6 bytes
+        if (event_msg.size() < 6) continue;
+
+        uint16_t event_id{};
+        std::memcpy(&event_id, event_msg.data<uint8_t>(), sizeof(event_id));
+
+        if (event_id == ZMQ_EVENT_DISCONNECTED)
+        {
+            LOGGER_WARN("Messenger: broker connection lost (ZMQ_EVENT_DISCONNECTED) — "
+                        "firing on_hub_dead callback");
+            std::function<void()> cb;
+            {
+                std::lock_guard<std::mutex> lock(m_cb_mutex);
+                cb = m_on_hub_dead_cb;
+            }
+            if (cb)
+            {
+                try { cb(); }
+                catch (const std::exception &ex)
+                {
+                    LOGGER_ERROR("Messenger: on_hub_dead callback threw: {}", ex.what());
+                }
+                catch (...)
+                {
+                    LOGGER_ERROR("Messenger: on_hub_dead callback threw unknown exception");
+                }
+            }
+        }
+    }
+}
+
+void MessengerImpl::close_monitor()
+{
+    if (m_monitor_sock_.has_value())
+    {
+        try
+        {
+            // LINGER=0 was set at socket creation; close() is immediate.
+            m_monitor_sock_->close();
+        }
+        catch (const zmq::error_t &e)
+        {
+            LOGGER_WARN("Messenger: error closing monitor socket: {}", e.what());
+        }
+        m_monitor_sock_.reset();
+        m_monitor_endpoint_.clear();
+    }
+}
+
+// ============================================================================
 // Command handlers — connection management
 // ============================================================================
 
@@ -348,6 +433,7 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
     try
     {
         socket.emplace(get_zmq_context(), zmq::socket_type::dealer);
+        socket->set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
         if (use_curve)
         {
@@ -385,7 +471,34 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
             socket->set(zmq::sockopt::curve_secretkey, m_client_secret_key_z85);
         }
 
+        // ZMTP-level heartbeats: ZMQ automatically closes the connection if the broker
+        // does not respond within heartbeat_timeout_ms. This fires ZMQ_EVENT_DISCONNECTED
+        // on the monitor socket, which triggers the on_hub_dead callback.
+        socket->set(zmq::sockopt::heartbeat_ivl,     5000);  // probe every 5 s
+        socket->set(zmq::sockopt::heartbeat_timeout, 30000); // close after 30 s silence
+
         socket->connect(cmd.endpoint);
+
+        // Attach socket monitor so we can detect broker death via ZMQ_EVENT_DISCONNECTED.
+        static std::atomic<int> s_monitor_counter{0};
+        m_monitor_endpoint_ = fmt::format("inproc://messenger-monitor-{}",
+                                          s_monitor_counter.fetch_add(1,
+                                              std::memory_order_relaxed));
+        if (zmq_socket_monitor(socket->handle(), m_monitor_endpoint_.c_str(),
+                               ZMQ_EVENT_DISCONNECTED) == 0)
+        {
+            m_monitor_sock_.emplace(get_zmq_context(), zmq::socket_type::pair);
+            m_monitor_sock_->set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
+            m_monitor_sock_->connect(m_monitor_endpoint_);
+            LOGGER_DEBUG("Messenger: monitor socket attached at {}", m_monitor_endpoint_);
+        }
+        else
+        {
+            LOGGER_ERROR("Messenger: zmq_socket_monitor() failed (errno {}) — "
+                     "hub-dead detection disabled for this connection.", zmq_errno());
+            m_monitor_endpoint_.clear();
+        }
+
         m_is_connected.store(true, std::memory_order_release);
         LOGGER_INFO("Messenger: Connected to broker at {} ({}).",
                     cmd.endpoint, use_curve ? "CurveZMQ" : "plain TCP");
@@ -395,6 +508,7 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
     {
         LOGGER_ERROR("Messenger: Failed to connect to broker at {}: {} ({})",
                      cmd.endpoint, e.what(), e.num());
+        close_monitor();
         socket.reset();
         m_is_connected.store(false, std::memory_order_release);
         cmd.result.set_value(false);
@@ -409,9 +523,16 @@ bool MessengerImpl::handle_command(DisconnectCmd &cmd, std::optional<zmq::socket
         cmd.result.set_value();
         return false;
     }
+    // Close monitor first so any pending ZMQ_EVENT_DISCONNECTED from our voluntary close
+    // is discarded rather than triggering the hub-dead callback.
+    close_monitor();
     try
     {
-        if (socket.has_value()) socket->close();
+        if (socket.has_value())
+        {
+            // LINGER=0 was set at socket creation; close() is immediate.
+            socket->close();
+        }
         socket.reset();
         m_is_connected.store(false, std::memory_order_release);
         m_heartbeat_channels.clear();
@@ -464,9 +585,14 @@ bool MessengerImpl::handle_command(HeartbeatNowCmd &cmd,
 
 bool MessengerImpl::handle_command(StopCmd & /*cmd*/, std::optional<zmq::socket_t> &socket)
 {
+    close_monitor(); // Discard any pending monitor events before tearing down
     if (socket.has_value())
     {
-        try { socket->close(); }
+        try
+        {
+            // LINGER=0 was set at socket creation; close() is immediate.
+            socket->close();
+        }
         catch (const zmq::error_t &e)
         {
             LOGGER_ERROR("Messenger: Error closing socket on stop: {}", e.what());
@@ -591,6 +717,7 @@ Messenger::create_channel(const std::string              &channel_name,
     const std::string    &schema_blds       = opts.schema_blds;
     const std::string    &data_transport    = opts.data_transport;
     const std::string    &zmq_node_endpoint = opts.zmq_node_endpoint;
+    const std::string    &inbox_endpoint    = opts.inbox_endpoint;
 
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -614,6 +741,7 @@ Messenger::create_channel(const std::string              &channel_name,
     zmq::context_t &ctx = get_zmq_context();
 
     zmq::socket_t ctrl_sock(ctx, zmq::socket_type::router);
+    ctrl_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
     ctrl_sock.set(zmq::sockopt::curve_server, 1);
     ctrl_sock.set(zmq::sockopt::curve_secretkey, seckey);
     ctrl_sock.set(zmq::sockopt::curve_publickey, pubkey);
@@ -621,7 +749,11 @@ Messenger::create_channel(const std::string              &channel_name,
     const std::string ctrl_endpoint = ctrl_sock.get(zmq::sockopt::last_endpoint);
 
     std::string data_endpoint;
-    zmq::socket_t data_sock(ctx, zmq::socket_type::push); // placeholder
+    // Declare data_sock unconditionally so it can be std::move'd into make_producer_handle
+    // regardless of whether a data socket was actually used. Type is overwritten below
+    // for non-Bidir patterns; in the Bidir case the socket is moved but never connected.
+    zmq::socket_t data_sock(ctx, zmq::socket_type::push);
+    data_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
     bool has_data_sock = false;
 
     if (pattern != ChannelPattern::Bidir)
@@ -630,6 +762,7 @@ Messenger::create_channel(const std::string              &channel_name,
                                          ? zmq::socket_type::xpub
                                          : zmq::socket_type::push;
         data_sock = zmq::socket_t(ctx, data_type);
+        data_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0
         data_sock.set(zmq::sockopt::curve_server, 1);
         data_sock.set(zmq::sockopt::curve_secretkey, seckey);
         data_sock.set(zmq::sockopt::curve_publickey, pubkey);
@@ -659,6 +792,9 @@ Messenger::create_channel(const std::string              &channel_name,
     cmd.schema_blds       = schema_blds;
     cmd.data_transport    = data_transport.empty() ? std::string{"shm"} : data_transport;
     cmd.zmq_node_endpoint = zmq_node_endpoint;
+    cmd.inbox_endpoint    = inbox_endpoint;
+    cmd.inbox_schema_json = opts.inbox_schema_json;
+    cmd.inbox_packing     = opts.inbox_packing;
     cmd.result            = std::move(reg_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -681,7 +817,8 @@ Messenger::connect_channel(const std::string &channel_name,
                             const std::string &schema_hash,
                             const std::string &consumer_uid,
                             const std::string &consumer_name,
-                            const std::string &expected_schema_id)
+                            const std::string &expected_schema_id,
+                            const std::string &consumer_queue_type)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -699,6 +836,7 @@ Messenger::connect_channel(const std::string &channel_name,
     cmd.consumer_uid         = consumer_uid;
     cmd.consumer_name        = consumer_name;
     cmd.expected_schema_id   = expected_schema_id;
+    cmd.consumer_queue_type = consumer_queue_type;
     cmd.result               = std::move(cc_promise);
     pImpl->enqueue(std::move(cmd));
 
@@ -712,6 +850,7 @@ Messenger::connect_channel(const std::string &channel_name,
     zmq::context_t &ctx = get_zmq_context();
 
     zmq::socket_t ctrl_sock(ctx, zmq::socket_type::dealer);
+    ctrl_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
     if (!cinfo->zmq_pubkey.empty())
     {
         // Generate a client keypair for the P2C ctrl socket.
@@ -731,7 +870,10 @@ Messenger::connect_channel(const std::string &channel_name,
 
     bool has_data_sock = !cinfo->zmq_data_endpoint.empty() &&
                          cinfo->pattern != ChannelPattern::Bidir;
-    zmq::socket_t data_sock(ctx, zmq::socket_type::pull); // placeholder type
+    // Declare data_sock unconditionally so it can be moved into make_consumer_handle
+    // regardless of has_data_sock. Type is overwritten below when has_data_sock is true.
+    zmq::socket_t data_sock(ctx, zmq::socket_type::pull);
+    data_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
     if (has_data_sock)
     {
@@ -739,6 +881,7 @@ Messenger::connect_channel(const std::string &channel_name,
                                          ? zmq::socket_type::sub
                                          : zmq::socket_type::pull;
         data_sock = zmq::socket_t(ctx, data_type);
+        data_sock.set(zmq::sockopt::linger, 0); // policy: always LINGER=0
         if (!cinfo->zmq_pubkey.empty())
         {
             std::array<char, 41> cli_pub{}, cli_sec{};
@@ -821,6 +964,12 @@ void Messenger::unregister_channel(const std::string &channel)
         return;
     }
     pImpl->enqueue(UnregisterChannelCmd{channel});
+}
+
+void Messenger::on_hub_dead(std::function<void()> cb)
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_cb_mutex);
+    pImpl->m_on_hub_dead_cb = std::move(cb);
 }
 
 void Messenger::report_checksum_error(const std::string &channel, int32_t slot_index,
@@ -927,6 +1076,33 @@ std::string Messenger::query_shm_blocks(const std::string& channel, int timeout_
     std::promise<std::string> promise;
     auto future = promise.get_future();
     pImpl->enqueue(QueryShmBlocksCmd{channel, timeout_ms, std::move(promise)});
+    return future.get();
+}
+
+bool Messenger::query_role_presence(const std::string &uid, int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: query_role_presence('{}') — not connected.", uid);
+        return false;
+    }
+    std::promise<bool> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(RolePresenceReqCmd{uid, timeout_ms, std::move(promise)});
+    return future.get();
+}
+
+std::optional<RoleInfoResult>
+Messenger::query_role_info(const std::string &uid, int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: query_role_info('{}') — not connected.", uid);
+        return std::nullopt;
+    }
+    std::promise<std::optional<RoleInfoResult>> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(RoleInfoReqCmd{uid, timeout_ms, std::move(promise)});
     return future.get();
 }
 

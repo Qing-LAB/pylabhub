@@ -139,27 +139,46 @@ of transport. This section explains when to choose each.
 
 ### 4.1 Interface
 
+The framework uses two independent abstract interfaces (split 2026-03-09):
+
 ```cpp
-// hub::Queue (abstract base, hub_queue.hpp) — acquire/release protocol
-class Queue {
+// hub::QueueReader (hub_queue.hpp) — read-side abstract interface
+class QueueReader {
 public:
-    virtual bool  start()   = 0;  // ShmQueue: no-op; ZmqQueue: bind/connect + recv thread
-    virtual void  stop()    = 0;  // ShmQueue: no-op; ZmqQueue: join recv thread
-
-    // Reading
-    virtual const void* read_acquire(std::chrono::milliseconds timeout) noexcept = 0;
+    virtual bool        start()   = 0;  // ShmQueue: no-op; ZmqQueue: bind/connect + recv thread
+    virtual void        stop()    = 0;
+    virtual const void* read_acquire(int timeout_ms) noexcept = 0;
     virtual void        read_release() noexcept = 0;
-
-    // Writing
-    virtual void* write_acquire(std::chrono::milliseconds timeout) noexcept = 0;
-    virtual void  write_commit() noexcept  = 0;
-    virtual void  write_abort() noexcept   = 0;
-
-    virtual size_t      item_size()  const noexcept = 0;
-    virtual std::string name()       const          = 0;
+    virtual const void* read_flexzone() noexcept = 0;
+    virtual uint64_t    last_seq()  const noexcept = 0;
+    virtual size_t      capacity()  const = 0;
+    virtual std::string policy_info() const = 0;
+    virtual void        set_verify_checksum(bool slot, bool fz) noexcept = 0;
+    virtual size_t      item_size() const noexcept = 0;
     virtual bool        is_running() const noexcept = 0;
+    virtual QueueMetrics metrics() const noexcept = 0;
+};
+
+// hub::QueueWriter (hub_queue.hpp) — write-side abstract interface
+class QueueWriter {
+public:
+    virtual bool  start()   = 0;
+    virtual void  stop()    = 0;
+    virtual void* write_acquire(int timeout_ms) noexcept = 0;
+    virtual void  write_commit() noexcept  = 0;
+    virtual void  write_discard() noexcept = 0;  // formerly write_abort()
+    virtual void* write_flexzone() noexcept = 0;
+    virtual void  set_checksum_options(bool slot, bool fz) noexcept = 0;
+    virtual size_t      capacity()  const = 0;
+    virtual std::string policy_info() const = 0;
+    virtual size_t      item_size() const noexcept = 0;
+    virtual bool        is_running() const noexcept = 0;
+    virtual QueueMetrics metrics() const noexcept = 0;
 };
 ```
+
+`ShmQueue` and `ZmqQueue` both inherit from `QueueReader` and `QueueWriter`.
+Factories return `unique_ptr<QueueReader>` (consumer side) or `unique_ptr<QueueWriter>` (producer side).
 
 ### 4.2 Feature Comparison
 
@@ -410,19 +429,18 @@ else if (ack.transport == "zmq")
 `consumer.queue()` returns the appropriate `hub::Queue*`. The caller (ProcessorScriptHost,
 ConsumerScriptHost) uses the queue uniformly — no transport branching at the script host level.
 
-### 7.3 ProcessorScriptHost Simplification
+### 7.3 ProcessorScriptHost Simplification (Implemented 2026-03-09)
 
-Once hub::Producer and hub::Consumer handle transport internally, ProcessorScriptHost
-no longer needs `in_transport` / `out_transport` branching. The queue is obtained via:
+`ProcessorScriptHost` uses transport-resolved queues via `hub::QueueReader` / `hub::QueueWriter`:
 
 ```cpp
-in_queue_  = in_consumer_->queue();   // ShmQueue or ZmqQueue, resolved by broker
-out_queue_ = out_producer_->queue();  // ShmQueue or ZmqQueue, declared by producer
+in_queue_  = in_consumer_->queue_reader();   // QueueReader* — ShmQueue or ZmqQueue
+out_queue_ = out_producer_->queue_writer();  // QueueWriter* — ShmQueue or ZmqQueue
 ```
 
-`ProcessorConfig` fields `in_transport`, `zmq_in_endpoint`, `zmq_in_bind`, and
-`zmq_buffer_depth` are **removed** (input transport auto-discovered from broker).
-The output-side fields are retained but reduced to:
+`ProcessorConfig` fields `in_transport`, `zmq_in_endpoint`, `zmq_in_bind` are
+**removed** — input transport auto-discovered from the broker (`CONSUMER_REG_ACK`).
+Output-side fields retained:
 
 ```json
 {
@@ -432,9 +450,8 @@ The output-side fields are retained but reduced to:
 }
 ```
 
-Only the **producer side** (`out_transport`, `zmq_out_endpoint`, `zmq_out_bind`)
-needs explicit configuration — the consumer side discovers dynamically from the broker.
-`zmq_out_bind` defaults to `true` (PUSH socket binds; PULL connects).
+Only the **output side** needs explicit configuration; input side discovers dynamically.
+`zmq_out_bind` defaults to `true` (PUSH binds; PULL connects).
 
 ---
 
@@ -535,7 +552,45 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 
 ---
 
-## 13. Source File Reference
+## 13. ZmqQueue Internal Design
+
+`hub::ZmqQueue` is schema-mandatory. Every ZmqQueue must be created with a non-empty
+`std::vector<ZmqSchemaField>` + packing string. Wire format is msgpack:
+
+```
+fixarray[4]
+  [0] magic       : uint32  = 0x51484C50 ('PLHQ')
+  [1] schema_tag  : bin8    = first 8 bytes of BLAKE2b-256(BLDS) (or zeros if absent)
+  [2] seq         : uint64  = monotonic send counter (gaps detected as recv_gap_count)
+  [3] payload     : array[N] — one element per schema field
+```
+
+Payload encoding: scalars as native msgpack types; arrays/string/bytes as `bin` (raw bytes).
+
+**Packing**: `"aligned"` = C `ctypes.LittleEndianStructure` natural alignment; `"packed"` = no padding.
+Both sides must use identical schema + packing. `"natural"` is not a valid value (renamed to `"aligned"` 2026-03-08).
+
+**Factories**:
+- `ZmqQueue::pull_from(endpoint, schema, item_size, bind, buffer_depth, packing)` → PULL (recv_thread_)
+- `ZmqQueue::push_to(endpoint, schema, item_size, bind, buffer_depth, packing)` → PUSH (send_thread_)
+
+**Metrics**: `recv_overflow_count`, `recv_frame_error_count`, `recv_gap_count`, `send_drop_count`, `send_retry_count`, `overrun_count` — all `std::atomic<uint64_t>` on `ZmqQueue::metrics()`.
+
+**InboxQueue (ROUTER/DEALER pair)**: implemented 2026-03-08.
+- `hub::InboxQueue` (ROUTER): binds `inbox_endpoint`; `recv_one(timeout)` + `send_ack(code)` on inbox_thread_
+- `hub::InboxClient` (DEALER): `connect_to(ep, sender_uid, schema, packing)` + `send(timeout)` + ACK wait
+- Wire format identical to ZmqQueue data frames
+- See `src/include/utils/hub_inbox_queue.hpp` + `src/utils/hub/hub_inbox_queue.cpp`
+
+**Deferred extensions**: ACK mechanism for ZmqQueue PUSH write path (requires PUSH→DEALER socket change; deferred); flexzone over ZMQ (second frame; deferred to HEP-0023).
+
+This HEP covers the **broker protocol** (virtual node registration, service directory).
+Full ZmqQueue implementation detail was drafted in `docs/tech_draft/zmq_queue_design.md`
+(archived 2026-03-10 to `docs/archive/transient-2026-03-10/`).
+
+---
+
+## 14. Source File Reference
 
 | Component | File |
 |-----------|------|
@@ -548,3 +603,87 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | ProcessorConfig (transport fields) | `src/processor/processor_config.hpp/cpp` |
 | L3 protocol tests | `tests/test_layer3_datahub/test_datahub_zmq_virtual_channel.cpp` |
 | Demo bridge config | `share/demo-dual-hub/processor-{a,b}/processor.json` |
+
+---
+
+## 15. ZMQ Socket Lifecycle Policy
+
+### 15.1 LINGER=0 — Universal Policy
+
+**Every ZMQ socket in pyLabHub sets `ZMQ_LINGER = 0` immediately after creation.**
+
+```cpp
+// Canonical pattern — applied at socket creation, not deferred:
+zmq::socket_t sock(ctx, zmq::socket_type::push);
+sock.set(zmq::sockopt::linger, 0);  // policy: always LINGER=0
+```
+
+This is enforced in all socket creation sites:
+
+| Socket | Location | Type |
+|--------|----------|------|
+| Broker main | `src/utils/ipc/broker_service.cpp` | ROUTER |
+| Federation peer | `src/utils/ipc/broker_service.cpp` | DEALER |
+| Messenger broker connection | `src/utils/ipc/messenger.cpp` | DEALER |
+| Messenger monitor | `src/utils/ipc/messenger.cpp` | PAIR |
+| Messenger P2C ctrl (server) | `src/utils/ipc/messenger.cpp` | ROUTER |
+| Messenger P2C ctrl (client) | `src/utils/ipc/messenger.cpp` | DEALER |
+| Messenger P2C data | `src/utils/ipc/messenger.cpp` | XPUB / SUB / PUSH / PULL |
+| AdminShell | `src/hub_python/admin_shell.cpp` | REP |
+| ZmqQueue PUSH | `src/utils/hub/hub_zmq_queue.cpp` | PUSH |
+| ZmqQueue PULL | `src/utils/hub/hub_zmq_queue.cpp` | PULL |
+| InboxQueue | `src/utils/hub/hub_inbox_queue.cpp` | ROUTER |
+| InboxClient | `src/utils/hub/hub_inbox_queue.cpp` | DEALER |
+
+### 15.2 Rationale
+
+**ZMQ's default LINGER is -1** (infinite): `zmq_close()` blocks until all queued
+outgoing messages are delivered or the socket's linger timeout expires. This creates
+two failure modes in pyLabHub:
+
+1. **Hang on shutdown**: If the remote end has already closed, `zmq_close()` blocks
+   indefinitely trying to flush the send queue — particularly dangerous for the
+   monitor PAIR socket, which is closed before the main socket it monitors.
+
+2. **Release vs. Debug timing divergence**: In Release builds (no -O2 overhead, no
+   `PLH_DEBUG` I/O), the ZMQ I/O thread may not have processed a socket disconnect
+   before `zmq_close()` is called, making hangs **deterministic** in Release but a
+   **race** in Debug. This was the root cause of the `MessengerTest` hangs observed
+   only in Release (2026-03-12).
+
+**pyLabHub does not rely on socket linger for delivery guarantees.** Shutdown is
+always coordinated through explicit protocol messages:
+- Producers send `CHANNEL_CLOSING_NOTIFY` before closing.
+- Processors/consumers receive `FORCE_SHUTDOWN` or handle `CHANNEL_CLOSING_NOTIFY`.
+- All parties wait for protocol-level acknowledgment before destroying sockets.
+
+Since message delivery is guaranteed by protocol, not by socket linger, LINGER=0
+is correct and safe. `zmq_close()` discards pending sends immediately — the
+counterpart has already received a shutdown notification through the control path.
+
+### 15.3 Exceptions
+
+There are **no exceptions** to this policy in pyLabHub. If a future socket requires
+reliable delivery after `close()` (e.g., a one-shot persistent-send path with no
+protocol-level ACK), document the exception explicitly with the socket creation
+comment and provide the reason.
+
+### 15.4 Setting Location
+
+LINGER must be set **at creation**, not deferred to close time. Deferred setting:
+
+```cpp
+// WRONG — race condition: the I/O thread may have already queued sends
+// before linger is set, so it has no effect.
+sock.close();  // already sends with linger=-1
+sock.set(zmq::sockopt::linger, 0);  // too late
+
+// CORRECT — set before any use:
+zmq::socket_t sock(ctx, zmq::socket_type::push);
+sock.set(zmq::sockopt::linger, 0);
+sock.bind(endpoint);
+```
+
+This also applies when sockets are moved or reassigned — the LINGER=0 is preserved
+in the socket option, not the C++ object. Reassignment creates a new socket; always
+set LINGER=0 immediately after.

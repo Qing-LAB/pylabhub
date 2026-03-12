@@ -26,7 +26,7 @@ public:
     static void SetUpTestSuite()
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(
-            MakeModDefList(Logger::GetLifecycleModule(), GetZMQContextModule()));
+            MakeModDefList(Logger::GetLifecycleModule(), GetZMQContextModule()), std::source_location::current());
     }
 
     static void TearDownTestSuite() { s_lifecycle_.reset(); }

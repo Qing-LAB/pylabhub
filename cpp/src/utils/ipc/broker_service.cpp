@@ -1,4 +1,5 @@
 #include "utils/broker_service.hpp"
+#include "utils/format_tools.hpp"
 
 #include "channel_registry.hpp"
 
@@ -53,19 +54,9 @@ std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
 {
     std::array<uint8_t, 32> result{};
     if (hex.size() != 64) return result;
-    auto hex_val = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-    for (size_t i = 0; i < 32; ++i)
-    {
-        int hi = hex_val(hex[i * 2]);
-        int lo = hex_val(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0) return {};
-        result[i] = static_cast<uint8_t>((hi << 4) | lo);
-    }
+    const auto decoded = format_tools::bytes_from_hex(hex);
+    if (decoded.size() != 32) return result; // invalid chars → bytes_from_hex returned original
+    std::memcpy(result.data(), decoded.data(), 32);
     return result;
 }
 
@@ -221,7 +212,7 @@ public:
                                    const zmq::message_t& identity,
                                    zmq::socket_t&        socket);
     nlohmann::json handle_disc_req(const nlohmann::json& req);
-    nlohmann::json handle_dereg_req(const nlohmann::json& req);
+    nlohmann::json handle_dereg_req(const nlohmann::json& req, zmq::socket_t& socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
                                            const zmq::message_t& identity);
     nlohmann::json handle_consumer_dereg_req(const nlohmann::json& req);
@@ -260,6 +251,9 @@ public:
                                       const nlohmann::json& req);
 
     nlohmann::json handle_channel_list_req();
+    // Phase 4: role presence + info queries.
+    nlohmann::json handle_role_presence_req(const nlohmann::json& req);
+    nlohmann::json handle_role_info_req(const nlohmann::json& req);
 
     /// Push an unsolicited message to a specific ZMQ ROUTER identity (raw bytes).
     static void send_to_identity(zmq::socket_t&     socket,
@@ -323,6 +317,7 @@ void BrokerServiceImpl::run()
 {
     zmq::context_t ctx(1);
     zmq::socket_t router(ctx, zmq::socket_type::router);
+    router.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
     if (cfg.use_curve)
     {
@@ -360,6 +355,7 @@ void BrokerServiceImpl::run()
             auto ps = std::make_unique<OutboundPeer>();
             ps->cfg_entry = &peer_cfg;
             ps->socket = zmq::socket_t(ctx, zmq::socket_type::dealer);
+            ps->socket.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 
             if (cfg.use_curve && !peer_cfg.pubkey_z85.empty())
             {
@@ -622,7 +618,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "DEREG_REQ")
     {
-        nlohmann::json resp = handle_dereg_req(payload);
+        nlohmann::json resp = handle_dereg_req(payload, socket);
         const std::string ack = (resp.value("status", "") == "success") ? "DEREG_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
@@ -693,6 +689,18 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         send_reply(socket, identity, "SHM_BLOCK_QUERY_ACK",
                    handle_shm_block_query(payload));
     }
+    else if (msg_type == "ROLE_PRESENCE_REQ")
+    {
+        // Phase 4: check if a role UID is alive in any channel.
+        nlohmann::json resp = handle_role_presence_req(payload);
+        send_reply(socket, identity, "ROLE_PRESENCE_ACK", resp);
+    }
+    else if (msg_type == "ROLE_INFO_REQ")
+    {
+        // Phase 4: return inbox connection info for a producer UID.
+        nlohmann::json resp = handle_role_info_req(payload);
+        send_reply(socket, identity, "ROLE_INFO_ACK", resp);
+    }
     else if (msg_type == "HUB_PEER_HELLO")
     {
         // HEP-CORE-0022: inbound peer DEALER connected and is announcing itself.
@@ -761,6 +769,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
     entry.data_transport        = req.value("data_transport", std::string{"shm"});
     entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
+    entry.inbox_endpoint        = req.value("inbox_endpoint", "");
+    entry.inbox_schema_json     = req.value("inbox_schema_json", "");
+    entry.inbox_packing         = req.value("inbox_packing", "");
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         entry.metadata = req["metadata"];
@@ -912,7 +923,8 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
+                                                    zmq::socket_t&        socket)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -922,6 +934,13 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req)
     }
 
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
+
+    // Notify consumers BEFORE removing the entry so the consumer list is still intact.
+    auto entry = registry.find_channel(channel_name);
+    if (entry.has_value())
+    {
+        send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
+    }
 
     if (!registry.deregister_channel(channel_name, producer_pid))
     {
@@ -961,6 +980,19 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
+    }
+
+    // ── Transport arbitration (Phase 6) ─────────────────────────────────────
+    const std::string consumer_queue_type = req.value("consumer_queue_type", "");
+    if (!consumer_queue_type.empty() && consumer_queue_type != channel_entry->data_transport)
+    {
+        LOGGER_WARN("Broker: CONSUMER_REG_REQ transport mismatch on '{}': "
+                    "consumer wants '{}' but channel uses '{}'",
+                    channel_name, consumer_queue_type, channel_entry->data_transport);
+        return make_error(corr_id, "TRANSPORT_MISMATCH",
+                          "Consumer queue_type '" + consumer_queue_type +
+                              "' does not match channel transport '" +
+                              channel_entry->data_transport + "'");
     }
 
     // ── Named schema validation (HEP-CORE-0016 Phase 3) ─────────────────────
@@ -1596,6 +1628,103 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
 }
 
 // ============================================================================
+// ROLE_PRESENCE_REQ / ROLE_INFO_REQ (Phase 4)
+// ============================================================================
+
+nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json& req)
+{
+    const std::string uid = req.value("uid", "");
+    if (uid.empty())
+    {
+        nlohmann::json resp;
+        resp["present"] = false;
+        resp["error"]   = "missing uid";
+        return resp;
+    }
+
+    // Scan all channels: check producer_actor_uid and each consumer's actor_uid.
+    for (const auto& [name, entry] : registry.all_channels())
+    {
+        if (!entry.producer_actor_uid.empty() && entry.producer_actor_uid == uid)
+        {
+            nlohmann::json resp;
+            resp["present"] = true;
+            resp["channel"] = name;
+            resp["role"]    = "producer";
+            LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as producer on '{}'",
+                         uid, name);
+            return resp;
+        }
+        for (const auto& c : entry.consumers)
+        {
+            if (!c.actor_uid.empty() && c.actor_uid == uid)
+            {
+                nlohmann::json resp;
+                resp["present"] = true;
+                resp["channel"] = name;
+                resp["role"]    = "consumer";
+                LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as consumer on '{}'",
+                             uid, name);
+                return resp;
+            }
+        }
+    }
+
+    LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' not found", uid);
+    nlohmann::json resp;
+    resp["present"] = false;
+    return resp;
+}
+
+nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req)
+{
+    const std::string uid = req.value("uid", "");
+    if (uid.empty())
+    {
+        nlohmann::json resp;
+        resp["found"] = false;
+        resp["error"] = "missing uid";
+        return resp;
+    }
+
+    // Search for a channel whose producer_actor_uid matches.
+    for (const auto& [name, entry] : registry.all_channels())
+    {
+        if (!entry.producer_actor_uid.empty() && entry.producer_actor_uid == uid)
+        {
+            nlohmann::json resp;
+            resp["found"]           = !entry.inbox_endpoint.empty();
+            resp["channel"]         = name;
+            resp["inbox_endpoint"]  = entry.inbox_endpoint;
+            resp["inbox_packing"]   = entry.inbox_packing;
+            if (!entry.inbox_schema_json.empty())
+            {
+                try
+                {
+                    resp["inbox_schema"] = nlohmann::json::parse(entry.inbox_schema_json);
+                }
+                catch (const nlohmann::json::exception &)
+                {
+                    resp["inbox_schema"] = nlohmann::json::array();
+                }
+            }
+            else
+            {
+                resp["inbox_schema"] = nlohmann::json::array();
+            }
+            LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'",
+                         uid, name, entry.inbox_endpoint);
+            return resp;
+        }
+    }
+
+    LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' not found", uid);
+    nlohmann::json resp;
+    resp["found"] = false;
+    return resp;
+}
+
+// ============================================================================
 // send_to_identity — push unsolicited message to a connected DEALER by raw identity
 // ============================================================================
 
@@ -1934,7 +2063,12 @@ void BrokerServiceImpl::handle_metrics_report_req(const nlohmann::json &req)
 nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
 {
     const std::string channel = req.value("channel_name", "");
-    return query_metrics(channel);
+    nlohmann::json resp       = query_metrics(channel);
+    // HEP-CORE-0019 §3.2: merge live SHM-derived block metrics into the response.
+    // When a channel name is given we can look up the SHM block(s) directly.
+    // For the all-channels case the shm_blocks map is also populated.
+    resp["shm_blocks"] = query_shm_blocks(channel);
+    return resp;
 }
 
 nlohmann::json BrokerServiceImpl::query_metrics(const std::string &channel) const

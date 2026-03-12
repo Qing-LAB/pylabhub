@@ -213,7 +213,7 @@ Rule: dots become path separators; `@N` suffix becomes `.vN` filename suffix.
   "description": "Raw temperature measurement — ADC values + timestamp",
 
   "slot": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "ts",        "type": "float64", "unit": "s",
        "description": "Unix epoch (seconds)"},
@@ -227,7 +227,7 @@ Rule: dots become path separators; `@N` suffix becomes `.vN` filename suffix.
   },
 
   "flexzone": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "cal_factors", "type": "float64", "count": 8},
       {"name": "sensor_uid",  "type": "uint64"}
@@ -278,7 +278,7 @@ unions. Schemas describe a fixed-size flat layout only.
 
 ### 6.2 Alignment
 
-`"packing": "natural"` is the only supported value (and the default). Offsets and
+`"packing": "aligned"` is the only supported value (and the default). Offsets and
 total size are **computed** by the library from field order and natural alignment
 rules — they are not declared in the JSON. This prevents the file from lying about
 padding and keeps it consistent with how C++ naturally lays out structs.

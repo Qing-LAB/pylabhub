@@ -45,6 +45,15 @@ class MessengerImpl;
 // ChannelPattern is defined in channel_pattern.hpp and imported here.
 // pylabhub::broker::ChannelPattern is a type alias for pylabhub::hub::ChannelPattern.
 
+/// Role inbox connection info returned by Messenger::query_role_info() (Phase 4).
+/// Empty fields indicate the role has no inbox.
+struct PYLABHUB_UTILS_EXPORT RoleInfoResult
+{
+    std::string    inbox_endpoint;  ///< ZMQ ROUTER bind endpoint (empty = no inbox)
+    nlohmann::json inbox_schema;    ///< Array of {type,count,length} field defs (empty = no inbox)
+    std::string    inbox_packing;   ///< "aligned" or "packed" (empty = no inbox)
+};
+
 /// Schema information returned by Messenger::query_channel_schema() (HEP-CORE-0016 Phase 3).
 struct ChannelSchemaInfo
 {
@@ -142,6 +151,9 @@ struct PYLABHUB_UTILS_EXPORT ChannelRegistrationOptions
     std::string    schema_blds;       ///< BLDS raw bytes for schema registry
     std::string    data_transport;    ///< "shm" (default) or "zmq"
     std::string    zmq_node_endpoint; ///< ZMQ virtual channel PUSH endpoint
+    std::string    inbox_endpoint;    ///< Role inbox ROUTER endpoint (Phase 3). Empty = no inbox.
+    std::string    inbox_schema_json; ///< JSON-serialized ZmqSchemaField list (Phase 4). Empty = no inbox.
+    std::string    inbox_packing;     ///< "aligned" or "packed" (Phase 4). Empty = no inbox.
 };
 
 class PYLABHUB_UTILS_EXPORT Messenger
@@ -231,11 +243,12 @@ class PYLABHUB_UTILS_EXPORT Messenger
      */
     [[nodiscard]] std::optional<ChannelHandle>
     connect_channel(const std::string &channel_name,
-                    int                timeout_ms         = 5000,
-                    const std::string &schema_hash        = {},
-                    const std::string &consumer_uid       = {},
-                    const std::string &consumer_name      = {},
-                    const std::string &expected_schema_id = {});
+                    int                timeout_ms            = 5000,
+                    const std::string &schema_hash           = {},
+                    const std::string &consumer_uid          = {},
+                    const std::string &consumer_name         = {},
+                    const std::string &expected_schema_id    = {},
+                    const std::string &consumer_queue_type  = {});
 
     /**
      * @brief Query the broker for schema information about a registered channel.
@@ -386,6 +399,33 @@ class PYLABHUB_UTILS_EXPORT Messenger
     [[nodiscard]] std::vector<nlohmann::json> list_channels(int timeout_ms = 5000);
 
     /**
+     * @brief Query the broker for whether a role UID is alive in any channel (Phase 4).
+     *
+     * Sends ROLE_PRESENCE_REQ to the broker. The broker scans all channel entries
+     * (producer_actor_uid and consumer actor_uid fields). Returns true if the UID
+     * is found in any currently registered channel.
+     *
+     * @param uid         Role UID to look up (e.g. "PROD-MYNAME-AABBCCDD").
+     * @param timeout_ms  Max time to wait for broker response.
+     * @return true if present, false if not found or not connected.
+     */
+    [[nodiscard]] bool query_role_presence(const std::string &uid, int timeout_ms = 5000);
+
+    /**
+     * @brief Query the broker for inbox connection info for a role UID (Phase 4).
+     *
+     * Sends ROLE_INFO_REQ to the broker. The broker looks up the channel whose
+     * producer_actor_uid matches @p uid and returns the inbox endpoint, schema,
+     * and packing. Returns nullopt if the UID is not found or has no inbox.
+     *
+     * @param uid         Producer role UID to look up.
+     * @param timeout_ms  Max time to wait for broker response.
+     * @return RoleInfoResult on success; nullopt if not found or not connected.
+     */
+    [[nodiscard]] std::optional<RoleInfoResult>
+    query_role_info(const std::string &uid, int timeout_ms = 5000);
+
+    /**
      * @brief Query the broker for SHM block topology and DataBlockMetrics.
      *
      * Sends SHM_BLOCK_QUERY_REQ to the broker; the broker opens each SHM segment
@@ -405,6 +445,21 @@ class PYLABHUB_UTILS_EXPORT Messenger
      */
     void report_checksum_error(const std::string &channel, int32_t slot_index,
                                 std::string_view error_description);
+
+    // ── Hub-dead monitoring ────────────────────────────────────────────────────
+
+    /**
+     * @brief Register a callback to be invoked when the broker connection is lost.
+     *
+     * The callback fires when ZMQ detects a disconnection at the transport level
+     * (ZMQ_EVENT_DISCONNECTED from the ZMQ socket monitor) — triggered by ZMTP
+     * heartbeat timeout expiring or TCP connection drop.  This is distinct from
+     * voluntary disconnect() which does NOT fire the callback.
+     *
+     * The callback is called from the Messenger worker thread with no locks held.
+     * Pass nullptr to deregister.
+     */
+    void on_hub_dead(std::function<void()> cb);
 
     // ── Singleton ─────────────────────────────────────────────────────────────
 

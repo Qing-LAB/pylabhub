@@ -5,7 +5,7 @@
  *
  * Inherits the common do_python_work() skeleton from PythonRoleHostBase and
  * overrides virtual hooks for consumer-specific behavior:
- *  - Demand-driven consumption loop (run_loop_shm_)
+ *  - Demand-driven consumption loop (run_loop_)
  *  - Single input channel with Consumer + Messenger
  *  - on_consume(in_slot, fz, msgs, api) → void callback
  *  - Flexzone: zero-copy R/W live view (from_buffer); in_slot: zero-copy with write-guard
@@ -21,6 +21,10 @@
 #include "python_role_host_base.hpp"
 
 #include "utils/hub_consumer.hpp"
+#include "utils/hub_inbox_queue.hpp"
+#include "utils/hub_queue.hpp"
+#include "utils/hub_shm_queue.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "utils/messenger.hpp"
 
 #include <atomic>
@@ -91,12 +95,29 @@ class ConsumerScriptHost : public scripting::PythonRoleHostBase
     std::thread              loop_thread_;
     std::atomic<uint64_t>    iteration_count_{0};
 
+    /// SHM transport: owned QueueReader wrapping DataBlockConsumer.
+    /// ZMQ transport: nullptr (queue_reader_ points to Consumer-owned ZmqQueue).
+    std::unique_ptr<hub::QueueReader> shm_queue_;
+    /// Non-owning pointer to the active QueueReader (shm_queue_.get() or Consumer::queue_reader()).
+    /// Set in start_role(); cleared in stop_role().
+    hub::QueueReader *queue_reader_{nullptr};
+
+    // ── Inbox facility (optional) ──────────────────────────────────────────
+    scripting::SchemaSpec             inbox_spec_;
+    size_t                            inbox_schema_slot_size_{0};
+    py::object                        inbox_type_{py::none()};
+    py::object                        py_on_inbox_{py::none()};
+    std::unique_ptr<hub::InboxQueue>  inbox_queue_;
+    std::thread                       inbox_thread_;
+
     py::object make_in_slot_view_(const void *data, size_t size) const;
+    py::object make_inbox_slot_view_(const void *data, size_t size) const;
 
     void call_on_consume_(py::object &in_sv, py::object &fz, py::list &msgs);
 
-    void run_loop_shm_();
-    void run_zmq_thread_();
+    void run_loop_();        ///< Unified transport-agnostic loop (replaces run_loop_shm_ + run_loop_zmq_)
+    void run_ctrl_thread_();
+    void run_inbox_thread_();
 };
 
 } // namespace pylabhub::consumer

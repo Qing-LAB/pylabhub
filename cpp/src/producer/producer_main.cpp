@@ -15,8 +15,8 @@
  *     {
  *       "producer": { "uid": "PROD-TEMPSENS-12345678", "name": "TempSensor" },
  *       "hub_dir": "/var/pylabhub/my_hub",
- *       "channel":     "lab.sensors.temperature",
- *       "interval_ms": 100,
+ *       "channel":          "lab.sensors.temperature",
+ *       "target_period_ms": 100,
  *       "shm": { "enabled": true, "secret": 0, "slot_count": 8 },
  *       "slot_schema": { "fields": [{"name": "value", "type": "float32"}] },
  *       "script": { "path": "." }
@@ -47,6 +47,7 @@
 #include "utils/zmq_context.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/timeout_constants.hpp"
+#include "role_main_helpers.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -60,11 +61,9 @@
 #include <string_view>
 #include <thread>
 
-#if defined(PYLABHUB_IS_POSIX)
-#include <unistd.h> // isatty, STDIN_FILENO
-#endif
 
 using namespace pylabhub::utils;
+namespace scripting = pylabhub::scripting;
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -167,38 +166,6 @@ ProdArgs parse_args(int argc, char *argv[])
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
-// Password helpers
-// ---------------------------------------------------------------------------
-
-static std::string read_password_interactive(const char *prompt)
-{
-#if defined(PYLABHUB_IS_POSIX)
-    char *pw = ::getpass(prompt);
-    if (!pw)
-    {
-        std::fprintf(stderr, "producer: failed to read password from terminal\n");
-        return {};
-    }
-    return pw;
-#else
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    return pw;
-#endif
-}
-
-// getenv is called once at startup — not in a hot loop, so no caching needed.
-// XPLAT: std::getenv is portable (C++11 and POSIX/Windows).
-static std::string get_producer_password(const char *prompt)
-{
-    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
-        return env;
-    return read_password_interactive(prompt);
-}
-
-// ---------------------------------------------------------------------------
 // do_init — create producer directory with producer.json template
 // ---------------------------------------------------------------------------
 
@@ -235,23 +202,16 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
     {
         prod_name = cli_name;  // --name provided on command line
     }
-#if defined(PYLABHUB_IS_POSIX)
-    else if (::isatty(STDIN_FILENO))
+    else if (scripting::is_stdin_tty())
     {
         std::cout << "Producer name (human-readable, e.g. 'TempSensor'): ";
         std::getline(std::cin, prod_name);
     }
     else
     {
-        prod_name = "Producer";  // non-interactive fallback
+        std::cerr << "Error: --name is required in non-interactive mode\n";
+        return 1;
     }
-#else
-    else
-    {
-        std::cout << "Producer name (human-readable, e.g. 'TempSensor'): ";
-        std::getline(std::cin, prod_name);
-    }
-#endif
 
     const std::string prod_uid = pylabhub::uid::generate_producer_uid(prod_name);
 
@@ -263,8 +223,8 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
     j["producer"]["log_level"] = "info";
     j["producer"]["auth"]["keyfile"] = "";
 
-    j["channel"]     = "lab.my.channel";
-    j["interval_ms"] = 100;
+    j["channel"]          = "lab.my.channel";
+    j["target_period_ms"] = 100;
 
     j["shm"]["enabled"]    = true;
     j["shm"]["secret"]     = 0;
@@ -276,6 +236,7 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
     j["flexzone_schema"] = nullptr;
 
     j["script"]["path"] = ".";
+    j["script"]["type"] = "python";
 
     j["validation"]["update_checksum"]      = true;
     j["validation"]["stop_on_script_error"] = false;
@@ -406,10 +367,16 @@ int main(int argc, char *argv[])
         {
             password = env;
         }
+        else if (!scripting::is_stdin_tty())
+        {
+            std::cerr << "Error: vault password required; set PYLABHUB_ACTOR_PASSWORD "
+                         "for non-interactive use\n";
+            return 1;
+        }
         else
         {
-            password = read_password_interactive("Producer vault password (empty = no encryption): ");
-            const std::string confirm = read_password_interactive("Confirm password: ");
+            password = scripting::read_password_interactive("producer", "Producer vault password (empty = no encryption): ");
+            const std::string confirm = scripting::read_password_interactive("producer", "Confirm password: ");
             if (password != confirm)
             {
                 std::cerr << "Error: passwords do not match\n";
@@ -433,19 +400,15 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    LifecycleGuard runner_lifecycle(MakeModDefList(
-        pylabhub::utils::Logger::GetLifecycleModule(),
-        pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule(),
-        pylabhub::hub::GetLifecycleModule()           // DataExchangeHub — required for SHM DataBlock
-    ));
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
+    scripting::register_signal_handler_lifecycle(signal_handler, "[prod-main]");
 
     if (!config.auth.keyfile.empty())
     {
-        const std::string vault_password = get_producer_password("Producer vault password: ");
-        config.auth.load_keypair(config.producer_uid, vault_password);
+        const auto vault_password = scripting::get_role_password("producer", "Producer vault password: ");
+        if (!vault_password)
+            return 1;
+        config.auth.load_keypair(config.producer_uid, *vault_password);
     }
 
     pylabhub::producer::ProducerScriptHost prod_script;
@@ -506,22 +469,10 @@ int main(int argc, char *argv[])
             secs / 3600, (secs % 3600) / 60, secs % 60);
     });
 
-    while (!g_shutdown.load(std::memory_order_relaxed))
-    {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
-
-        // Check if ScriptHost internal shutdown was requested (e.g. via
-        // CHANNEL_CLOSING_NOTIFY or api.stop()) but g_shutdown was not set.
-        if (!prod_script.is_running())
-        {
-            LOGGER_INFO("[prod-main] ScriptHost no longer running, exiting main loop");
-            break;
-        }
-    }
-
-    LOGGER_INFO("[prod-main] Main loop exited: g_shutdown={}", g_shutdown.load());
-    signal_handler.uninstall();
+    scripting::run_role_main_loop(g_shutdown, prod_script, "[prod-main]");
     prod_script.shutdown_();
     return 0;
+    // runner_lifecycle destructor calls finalize():
+    //   → SignalHandler (dynamic persistent) uninstalled first
+    //   → Logger, ZMQContext, etc. stopped in reverse init order
 }

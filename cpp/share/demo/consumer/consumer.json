@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Demo consumer — reads the processed channel 'lab.demo.processed' and logs slots.",
+    "Demo consumer — reads processed 1k-sample slots and reports throughput.",
     "Run with: pylabhub-consumer <path-to-this-dir>",
     "Script at: ./script/python/__init__.py  (on_init / on_consume / on_stop)"
   ],
@@ -13,7 +13,7 @@
   },
   "channel":    "lab.demo.processed",
   "broker":     "tcp://127.0.0.1:5570",
-  "timeout_ms": 5000,
+  "timeout_ms": 500,
 
   "shm": {
     "enabled": true,
@@ -21,7 +21,7 @@
   },
 
   "slot_schema": "lab.demo.processed@1",
-  "flexzone_schema": "lab.demo.processed@1",
+  "flexzone_schema": null,
 
   "script": { "type": "python", "path": "." },
 

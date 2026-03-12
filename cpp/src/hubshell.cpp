@@ -76,6 +76,9 @@
 
 #if defined(PYLABHUB_IS_POSIX)
 #include <unistd.h> // isatty, STDIN_FILENO
+#elif defined(_WIN32)
+#include <io.h>      // _isatty, _fileno
+#include <windows.h> // SetConsoleMode, GetConsoleMode, ENABLE_ECHO_INPUT
 #endif
 
 namespace py = pybind11;
@@ -93,6 +96,18 @@ static std::atomic<bool> g_shutdown_requested{false};
 // Password helpers
 // ---------------------------------------------------------------------------
 
+/// Return true when stdin is an interactive terminal.
+static bool is_stdin_tty()
+{
+#if defined(PYLABHUB_IS_POSIX)
+    return ::isatty(STDIN_FILENO) != 0;
+#elif defined(_WIN32)
+    return ::_isatty(::_fileno(stdin)) != 0;
+#else
+    return false;
+#endif
+}
+
 /// Read password from terminal with echo suppressed.
 static std::string read_password_interactive(const char* prompt)
 {
@@ -104,8 +119,24 @@ static std::string read_password_interactive(const char* prompt)
         return {};
     }
     return pw;
+#elif defined(_WIN32)
+    HANDLE hStdin     = ::GetStdHandle(STD_INPUT_HANDLE);
+    DWORD  old_mode   = 0;
+    const bool is_con = (hStdin != INVALID_HANDLE_VALUE) &&
+                        (::GetConsoleMode(hStdin, &old_mode) != 0);
+    if (is_con)
+        ::SetConsoleMode(hStdin, old_mode & ~ENABLE_ECHO_INPUT);
+    std::fprintf(stderr, "%s", prompt);
+    std::fflush(stderr);
+    std::string pw;
+    std::getline(std::cin, pw);
+    if (is_con)
+    {
+        ::SetConsoleMode(hStdin, old_mode);
+        std::fprintf(stderr, "\n"); // newline since echo was suppressed
+    }
+    return pw;
 #else
-    std::fprintf(stderr, "Warning: echo suppression not available on this platform.\n");
     std::fprintf(stderr, "%s", prompt);
     std::fflush(stderr);
     std::string pw;
@@ -114,12 +145,24 @@ static std::string read_password_interactive(const char* prompt)
 #endif
 }
 
-/// Get master password: PYLABHUB_MASTER_PASSWORD env var, then interactive prompt.
-static std::string get_password(const char* prompt)
+/// Get master password: PYLABHUB_MASTER_PASSWORD env var → interactive prompt → error.
+/// Returns false (with error already printed) when non-interactive and env var not set.
+static bool get_password(const char* prompt, std::string& out)
 {
     if (const char* env = std::getenv("PYLABHUB_MASTER_PASSWORD"))
-        return env;
-    return read_password_interactive(prompt);
+    {
+        out = env;
+        return true;
+    }
+    if (!is_stdin_tty())
+    {
+        std::fprintf(stderr,
+                     "hubshell: vault password required; set PYLABHUB_MASTER_PASSWORD "
+                     "for non-interactive use\n");
+        return false;
+    }
+    out = read_password_interactive(prompt);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,14 +193,13 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
         return 1;
     }
 
-    // Resolve hub name: --name flag > interactive prompt > directory name fallback.
+    // Resolve hub name: --name flag > interactive prompt; error if non-interactive.
     std::string hub_name;
     if (!cli_name.empty())
     {
         hub_name = cli_name;
     }
-#if defined(PYLABHUB_IS_POSIX)
-    else if (::isatty(STDIN_FILENO))
+    else if (is_stdin_tty())
     {
         std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
         std::fflush(stdout);
@@ -169,22 +211,9 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
     }
     else
     {
-        hub_name = hub_dir.filename().string();
-        if (hub_name.empty())
-            hub_name = "hub";
+        std::fprintf(stderr, "hubshell --init: --name is required in non-interactive mode\n");
+        return 1;
     }
-#else
-    else
-    {
-        std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
-        std::fflush(stdout);
-        if (!std::getline(std::cin, hub_name) || hub_name.empty())
-        {
-            std::fprintf(stderr, "hubshell --init: hub name is required.\n");
-            return 1;
-        }
-    }
-#endif
 
     // Prompt master password (with confirmation when interactive).
     std::string password;
@@ -192,6 +221,13 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
     {
         password = env;
         std::printf("Using password from PYLABHUB_MASTER_PASSWORD.\n");
+    }
+    else if (!is_stdin_tty())
+    {
+        std::fprintf(stderr,
+                     "hubshell --init: vault password required; set PYLABHUB_MASTER_PASSWORD "
+                     "for non-interactive use\n");
+        return 1;
     }
     else
     {
@@ -213,8 +249,9 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
         auto vault = pylabhub::utils::HubVault::create(hub_dir, hub_uid, password);
 
         // Write hub.json.
-        // Note: admin_token is stored in hub.json for HubConfig compatibility
-        // (Phase 1 pragmatic choice; Phase 5 removes admin.token from hub.json).
+        // SECURITY: admin_token is NOT stored in hub.json (which is 0644, world-readable).
+        // It lives exclusively in the encrypted vault (0600) and is injected at runtime via
+        // HubConfig::set_admin_token_override() called after vault.open() in do_run().
         const nlohmann::json hub_json = {
             {"hub", {
                 {"name",            hub_name},
@@ -222,9 +259,6 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
                 {"description",     "pyLabHub instance"},
                 {"broker_endpoint", "tcp://0.0.0.0:5570"},
                 {"admin_endpoint",  "tcp://127.0.0.1:5600"}
-            }},
-            {"admin", {
-                {"token", vault.admin_token()}
             }},
             {"broker", {
                 {"channel_timeout_s",         10},
@@ -466,11 +500,15 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         // Unlock vault.
         try
         {
-            const std::string password = get_password("Master password: ");
+            std::string password;
+            if (!get_password("Master password: ", password))
+                return 1;
             auto vault = pylabhub::utils::HubVault::open(hub_dir, hub_uid, password);
             vault.publish_public_key(hub_dir);            // writes hub.pubkey at 0644
             vault_broker_secret = vault.broker_curve_secret_key();
             vault_broker_public = vault.broker_curve_public_key();
+            // Supply admin token from vault. hub.json must never store it (0644, world-readable).
+            pylabhub::HubConfig::set_admin_token(vault.admin_token());
         }
         catch (const std::exception& e)
         {

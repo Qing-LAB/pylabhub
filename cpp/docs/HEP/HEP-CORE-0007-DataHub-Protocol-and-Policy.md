@@ -5,7 +5,7 @@
 | **HEP**          | `HEP-CORE-0007`                                            |
 | **Title**        | DataHub Protocol and Policy Reference                      |
 | **Author**       | Quan Qing, AI assistant                                    |
-| **Status**       | ✅ Active — canonical reference (promoted 2026-02-21)      |
+| **Status**       | ✅ Active — canonical reference (promoted 2026-02-21; extended 2026-03-10) |
 | **Category**     | Core                                                       |
 | **Created**      | 2026-02-15                                                 |
 | **Promoted**     | 2026-02-21 (was `docs/DATAHUB_PROTOCOL_AND_POLICY.md`)     |
@@ -729,9 +729,9 @@ Messages are grouped into four categories based on their flow pattern:
 
 | Category | Pattern | Examples |
 |----------|---------|---------|
-| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK |
+| **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ, METRICS_REPORT_REQ |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_ERROR_NOTIFY, CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_ERROR_NOTIFY, CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Peer-to-Peer** | Producer ↔ Consumer (direct ZMQ) | HELLO, BYE, application ctrl messages |
 
 ### 12.3 Request/Response Messages
@@ -769,6 +769,11 @@ Payload (REG_REQ):
 
 Payload (REG_ACK):
   status                string   "success"
+
+role_type field (added 2026-03-10):
+  role_type             string   (opt) "producer" | "consumer" | "processor"
+                                 Recorded in ChannelEntry; broadcast in ROLE_REGISTERED_NOTIFY.
+                                 Absent field treated as "producer" for backward compatibility.
 ```
 
 #### DISC_REQ / DISC_ACK — Discover Channel
@@ -786,6 +791,13 @@ Sequence:
 
 Payload (DISC_REQ):
   channel_name          string
+
+Deferred DISC_ACK (added 2026-03-10):
+  When channel_name is not yet registered (or status == PendingReady), the broker
+  queues the DISC_REQ and holds the reply until the producer registers (up to
+  pending_disc_timeout_ms, default 30 s). This eliminates the need for client-side
+  retry loops in most startup scenarios. See HEP-CORE-0023 for the full protocol.
+  Timeout: broker sends ERROR "CHANNEL_NOT_FOUND" after pending_disc_timeout_ms.
 
 Payload (DISC_ACK):
   status                string   "success"
@@ -823,6 +835,11 @@ Payload (CONSUMER_REG_REQ):
 
 Payload (CONSUMER_REG_ACK):
   status                string   "success"
+
+role_type field (added 2026-03-10):
+  role_type             string   (opt) "producer" | "consumer" | "processor"
+                                 Allows broker to distinguish processor consumers from
+                                 plain consumers in ROLE_REGISTERED_NOTIFY broadcasts.
 ```
 
 #### CONSUMER_DEREG_REQ / CONSUMER_DEREG_ACK — Deregister Consumer
@@ -1030,6 +1047,41 @@ Use cases:
   - Monitoring / debugging
 ```
 
+#### ROLE_PRESENCE_REQ / ROLE_PRESENCE_ACK — Query Role Presence (added 2026-03-10)
+
+```
+Direction:  Any role → Broker → Any role
+Trigger:    api.wait_for_role() polling loop; or direct Messenger call
+Pattern:    Synchronous request/response
+
+Payload (ROLE_PRESENCE_REQ):
+  role_uid              string   Exact UID or UID prefix pattern (e.g. "PROD-SENSOR-*")
+
+Payload (ROLE_PRESENCE_ACK):
+  status                string   "success"
+  present               bool     true if any matching role is currently registered
+```
+
+#### ROLE_INFO_REQ / ROLE_INFO_ACK — Query Role Details (added 2026-03-10)
+
+```
+Direction:  Any role → Broker → Any role
+Trigger:    api.open_inbox(uid): needs inbox_endpoint + schema to connect DEALER
+Pattern:    Synchronous request/response
+
+Payload (ROLE_INFO_REQ):
+  role_uid              string   Exact UID match
+
+Payload (ROLE_INFO_ACK):
+  status                string   "success"
+  role_uid              string
+  role_type             string   "producer" | "consumer" | "processor"
+  channel               string   Channel name the role is registered on
+  inbox_endpoint        string   ZMQ ROUTER bind endpoint (empty if no inbox)
+  inbox_schema_json     string   JSON string of inbox slot schema (empty if no inbox)
+  inbox_packing         string   "aligned" | "packed" (empty if no inbox)
+```
+
 ### 12.5 Unsolicited Broker Notifications
 
 These are pushed asynchronously by the broker to connected clients. They are received
@@ -1173,6 +1225,46 @@ sender needs structured data, they encode it as JSON themselves.
 Symmetric delivery: Unlike CHANNEL_NOTIFY_REQ (producer-only), broadcast is
 delivered to ALL members — both producer and consumers. Both roles receive
 identical event dicts.
+```
+
+#### ROLE_REGISTERED_NOTIFY — Role Registration Event (added 2026-03-10)
+
+```
+Direction:  Broker → ALL connected roles on this hub
+Trigger:    Successful REG_REQ or CONSUMER_REG_REQ (role fully registered and heartbeat received)
+Delivery:   Unsolicited push; enqueued in each recipient's message queue
+
+Payload:
+  role_uid              string   UID of the newly registered role
+  role_type             string   "producer" | "consumer" | "processor"
+  channel               string   Channel the role registered on
+  hub_uid               string   UID of this hub (used as source_hub_uid in IncomingMessage)
+
+Script host delivery:
+  {"event": "role_registered", "role_uid": "PROD-SENSOR-A1B2C3D4",
+   "role_type": "producer", "channel": "lab.raw", "source_hub_uid": "HUB-..."}
+
+Use cases:
+  - wait_for_roles implementation: processor waits for "PROD-*" pattern match
+  - Dynamic pipeline adaptation: consumer reacts when new processor connects
+```
+
+#### ROLE_DEREGISTERED_NOTIFY — Role Deregistration Event (added 2026-03-10)
+
+```
+Direction:  Broker → ALL connected roles on this hub
+Trigger:    Successful DEREG_REQ or CONSUMER_DEREG_REQ; or broker-detected role death
+
+Payload:
+  role_uid              string
+  role_type             string   "producer" | "consumer" | "processor"
+  channel               string
+  reason                string   "graceful" | "heartbeat_timeout" | "process_dead"
+  hub_uid               string
+
+Script host delivery:
+  {"event": "role_deregistered", "role_uid": "...", "role_type": "...",
+   "channel": "...", "reason": "graceful", "source_hub_uid": "..."}
 ```
 
 ### 12.6 Peer-to-Peer Messages (Producer ↔ Consumer Direct)
@@ -1413,13 +1505,16 @@ def on_produce(out_slot, flexzone, msgs, api):
 
 | Event name | Source | Recipient | Dict fields |
 |-----------|--------|-----------|-------------|
-| `consumer_joined` | P2P HELLO | Producer, Processor | `event`, `identity` |
-| `consumer_left` | P2P BYE | Producer, Processor | `event`, `identity` |
-| `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `pid`, `reason` |
-| `broadcast` | Broker CHANNEL_BROADCAST_NOTIFY | All roles | `event`, `detail`, `channel_name`, `sender_uid`, `message`, `data` (opt) |
-| _(app event)_ | Broker CHANNEL_EVENT_NOTIFY (relay) | Producer (target) | `event`=_app string_, `detail`=_same_, `channel_name`, `sender_uid` |
-| _(system event)_ | Broker CHANNEL_ERROR/EVENT_NOTIFY | Affected role | `event`=_error string_, `detail`=_same_, `channel_name`, + context |
-| `producer_message` | P2P ctrl frame | Consumer, Processor | `event`, `type`, `data` |
+| `consumer_joined` | P2P HELLO | Producer, Processor | `event`, `identity`, `source_hub_uid` |
+| `consumer_left` | P2P BYE | Producer, Processor | `event`, `identity`, `source_hub_uid` |
+| `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `pid`, `reason`, `source_hub_uid` |
+| `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | All roles | `event`, `channel_name`, `reason`, `source_hub_uid` |
+| `role_registered` | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
+| `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |
+| `broadcast` | Broker CHANNEL_BROADCAST_NOTIFY | All roles | `event`, `detail`, `channel_name`, `sender_uid`, `message`, `data` (opt), `source_hub_uid` |
+| _(app event)_ | Broker CHANNEL_EVENT_NOTIFY (relay) | Producer (target) | `event`=_app string_, `detail`=_same_, `channel_name`, `sender_uid`, `source_hub_uid` |
+| _(system event)_ | Broker CHANNEL_ERROR/EVENT_NOTIFY | Affected role | `event`=_error string_, `detail`=_same_, `channel_name`, + context, `source_hub_uid` |
+| `producer_message` | P2P ctrl frame | Consumer, Processor | `event`, `type`, `data`, `source_hub_uid` |
 
 **Note on `event` field overwrite behavior**: The script host sets `msg.event = "channel_event"`,
 then copies all body fields from the broker JSON into `msg.details`. When `build_messages_list_()`
@@ -1552,3 +1647,8 @@ Python api.stop()
 | `src/utils/ipc/messenger_protocol.cpp` | impl | Protocol frame parsing, REG_REQ/ACK, CONSUMER_REG |
 | `src/utils/ipc/broker_service.cpp` | impl | `BrokerService` — channel registry, policy enforcement |
 | `tests/test_layer3_datahub/` | test | Slot state machine, DRAINING, heartbeat, checksum, broker protocol |
+
+### Related Documents
+
+- **HEP-CORE-0023** — Startup Coordination: deferred DISC_ACK, wait_for_roles, ROLE_REGISTERED/DEREGISTERED_NOTIFY spec
+- **HEP-CORE-0015** — Processor Binary: role_type usage, dual-hub messaging, source_hub_uid

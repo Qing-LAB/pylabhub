@@ -85,7 +85,7 @@ struct SchemaSpec
     // Ctypes mode
     SlotExposure          exposure{SlotExposure::Ctypes};
     std::vector<FieldDef> fields;
-    std::string           packing{"natural"};
+    std::string           packing{"aligned"};
 
     // NumpyArray mode
     std::string          numpy_dtype{};

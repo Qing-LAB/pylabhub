@@ -56,6 +56,9 @@ static std::atomic<bool> g_hub_config_initialized{false};
 static std::mutex g_config_path_mu;
 static fs::path   g_config_path_override; ///< Set by set_config_path() before startup.
 
+static std::mutex  g_admin_token_mu;
+static std::string g_admin_token; ///< Set by set_admin_token() before startup; vault is sole source.
+
 // ---------------------------------------------------------------------------
 // Helpers (anonymous namespace)
 // ---------------------------------------------------------------------------
@@ -139,7 +142,7 @@ struct HubConfig::Impl
     std::string hub_uid        {};  ///< Auto-generated if not in config: "HUB-{NAME}-{8HEX}"
     std::string broker_endpoint{"tcp://0.0.0.0:5570"};
     std::string admin_endpoint {"tcp://127.0.0.1:5600"};
-    std::string admin_token    {}; ///< Empty = no auth required.
+    std::string admin_token    {}; ///< From vault only; vault is sole source (never from hub.json).
 
     std::chrono::seconds channel_timeout         {10};
     std::chrono::seconds consumer_liveness_check {5};
@@ -265,8 +268,15 @@ struct HubConfig::Impl
         if (j.contains("admin"))
         {
             const auto& a = j.at("admin");
-            if (a.contains("token") && a.at("token").is_string())
-                admin_token = a.at("token").get<std::string>();
+            if (a.contains("token") && a.at("token").is_string() &&
+                !a.at("token").get<std::string>().empty())
+            {
+                LOGGER_ERROR("HubConfig: 'admin.token' found in hub.json — "
+                             "this is a SECURITY VIOLATION. hub.json is world-readable (0644). "
+                             "Remove 'admin.token' from hub.json. The admin token is stored "
+                             "exclusively in the encrypted vault (hub.vault, 0600) and injected "
+                             "at runtime via HubConfig::set_admin_token(). The value is IGNORED.");
+            }
         }
         if (j.contains("broker"))
         {
@@ -435,6 +445,13 @@ struct HubConfig::Impl
         if (const char* env = std::getenv("PYLABHUB_ADMIN_ENDPOINT"))
             admin_endpoint = env;
 
+        // --- Admin token: from vault only (set before lifecycle via set_admin_token()) ---
+        {
+            std::lock_guard lock(g_admin_token_mu);
+            admin_token = g_admin_token;
+        }
+
+
         // --- UID: auto-generate if not provided in config ---
         if (hub_uid.empty())
         {
@@ -469,6 +486,13 @@ void HubConfig::set_config_path(const fs::path& path)
 {
     std::lock_guard lock(g_config_path_mu);
     g_config_path_override = path;
+}
+
+// static
+void HubConfig::set_admin_token(const std::string& token)
+{
+    std::lock_guard lock(g_admin_token_mu);
+    g_admin_token = token;
 }
 
 // static
@@ -558,6 +582,8 @@ void do_hub_config_startup(const char* /*arg*/)
 void do_hub_config_shutdown(const char* /*arg*/)
 {
     g_hub_config_initialized.store(false, std::memory_order_release);
+    std::lock_guard lock(g_admin_token_mu);
+    g_admin_token.clear();
 }
 } // namespace
 

@@ -234,15 +234,28 @@ struct ProducerOptions
     std::string zmq_node_endpoint{};
     /// If true, PUSH socket binds to zmq_node_endpoint; otherwise connects (default: bind).
     bool zmq_bind{true};
+    /// Inbox endpoint registered with the broker. Empty = no inbox.
+    /// Set this to InboxQueue::actual_endpoint() before calling Producer::create().
+    std::string inbox_endpoint{};
+    /// JSON-serialized ZmqSchemaField list for the inbox (Phase 4). Empty = no inbox.
+    /// Stored by broker and returned by ROLE_INFO_REQ for InboxClient discovery.
+    std::string inbox_schema_json{};
+    /// Packing for inbox schema (Phase 4): "aligned" or "packed". Empty = no inbox.
+    std::string inbox_packing{};
     /// Schema for ZMQ PUSH frames (required when data_transport=="zmq").
     /// Empty schema → LOGGER_ERROR + Producer::create returns nullopt.
     /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.
     std::vector<ZmqSchemaField> zmq_schema{};
-    /// "natural" (ctypes.LittleEndianStructure default) or "packed" (no padding).
+    /// "aligned" (ctypes.LittleEndianStructure default) or "packed" (no padding).
     /// Must match the receiver's packing.
-    std::string zmq_packing{"natural"};
+    std::string zmq_packing{"aligned"};
     /// Internal receive-buffer depth for ZmqQueue PULL (read side).
     size_t zmq_buffer_depth{64};
+
+    /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
+    size_t ctrl_queue_max_depth{256};
+    /// Peer silence timeout before on_peer_dead fires (ms). 0 = disabled.
+    int    peer_dead_timeout_ms{30000};
 };
 
 // ============================================================================
@@ -325,6 +338,10 @@ class PYLABHUB_UTILS_EXPORT Producer
     using ChannelErrorCallback =
         std::function<void(const std::string &event, const nlohmann::json &details)>;
     void on_channel_error(ChannelErrorCallback cb);
+
+    /// Callback fired when the peer (consumer) has been silent for peer_dead_timeout_ms.
+    /// Called from peer_thread — callback must be thread-safe.
+    void on_peer_dead(std::function<void()> cb);
 
     // ── Active mode ───────────────────────────────────────────────────────────
 
@@ -460,6 +477,15 @@ class PYLABHUB_UTILS_EXPORT Producer
      * Null when data_transport=="shm". Lifetime is tied to this Producer.
      */
     [[nodiscard]] ZmqQueue *queue() noexcept;
+    /// Number of ctrl queue items dropped due to max_depth overflow.
+    [[nodiscard]] uint64_t ctrl_queue_dropped() const;
+
+    /**
+     * @brief Transport-agnostic write side: returns the ZmqQueue cast to QueueWriter*,
+     * or nullptr when data_transport()=="shm" (SHM producers use the DataBlock API).
+     * Convenience wrapper for ProcessorScriptHost / ProducerScriptHost.
+     */
+    [[nodiscard]] QueueWriter *queue_writer() noexcept { return queue(); }
 
     /// Returns the Messenger used by this Producer.
     [[nodiscard]] Messenger &messenger() const;
@@ -549,6 +575,7 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     ch_opts.schema_blds       = schema_blds_str;
     ch_opts.data_transport    = opts.data_transport;
     ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
+    ch_opts.inbox_endpoint    = opts.inbox_endpoint;
     auto ch = messenger.create_channel(opts.channel_name, ch_opts);
     if (!ch.has_value())
     {

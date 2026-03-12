@@ -1926,7 +1926,7 @@ via `on_consumer_message(identity, data)`.
 
 `hub::ZmqQueue` uses PUSH/PULL sockets for typed data transport encoded with
 **MessagePack**. Every `ZmqQueue` instance requires an explicit **field schema**
-(`std::vector<ZmqSchemaField>`) and a **packing** rule (`"natural"` or `"packed"`).
+(`std::vector<ZmqSchemaField>`) and a **packing** rule (`"aligned"` or `"packed"`).
 Passing an empty schema is a hard error — the factory logs an error and returns
 `nullptr`. Raw (schema-less) transport is not supported.
 
@@ -1975,7 +1975,7 @@ when using SHM-backed `hub::ShmQueue`.
 | Requirement | Consequence of violation |
 |---|---|
 | `schema` must be non-empty | Factory returns `nullptr`; caller must check |
-| `packing` must be `"natural"` or `"packed"` | Factory returns `nullptr` |
+| `packing` must be `"aligned"` or `"packed"` | Factory returns `nullptr` |
 | Both sides must use identical `schema` and `packing` | Silent data corruption or `recv_frame_error_count` increments |
 | `zmq_schema` must be set in `ProducerOptions` / `ConsumerOptions` when `data_transport=="zmq"` | `Producer::create` / `Consumer::connect` returns `std::nullopt` |
 

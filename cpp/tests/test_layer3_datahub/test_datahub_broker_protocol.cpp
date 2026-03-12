@@ -153,7 +153,7 @@ public:
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
             Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetLifecycleModule()));
+            pylabhub::hub::GetLifecycleModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
@@ -1014,6 +1014,337 @@ TEST_F(BrokerProtocolTest, PeerHandshake_MultipleConsumers_IndependentHelloBye)
     }
     EXPECT_EQ(left_count.load(), 2) << "Expected 2 BYE events total";
 
+    prod.stop();
+    prod.close();
+}
+
+// ============================================================================
+// Phase 4: ROLE_PRESENCE_REQ + ROLE_INFO_REQ
+// ============================================================================
+
+// 4a. Unknown UID — presence returns false, info returns nullopt.
+TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
+{
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    EXPECT_FALSE(querier.query_role_presence("PROD-UNKNOWN-DEADBEEF", /*timeout_ms=*/2000));
+}
+
+TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_ReturnsNullopt)
+{
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    EXPECT_EQ(querier.query_role_info("PROD-UNKNOWN-DEADBEEF", /*timeout_ms=*/2000),
+              std::nullopt);
+}
+
+// 4b. Producer UID registered — presence returns true.
+TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
+{
+    const std::string channel = pid_chan("proto.presence.prod");
+    const std::string uid     = "PROD-PRESTEST-AAAA0001";
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto handle = producer.create_channel(
+        channel, {.timeout_ms = 3000, .actor_name = "PresTestProd", .actor_uid = uid});
+    ASSERT_TRUE(handle.has_value());
+
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    EXPECT_TRUE(querier.query_role_presence(uid, /*timeout_ms=*/2000));
+}
+
+// 4c. Consumer UID registered — presence returns true.
+TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
+{
+    const std::string channel      = pid_chan("proto.presence.cons");
+    const std::string consumer_uid = "CONS-PRESTEST-BBBB0002";
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
+    ASSERT_TRUE(prod_handle.has_value());
+
+    Messenger consumer;
+    ASSERT_TRUE(consumer.connect(ep(), pk()));
+    auto cons_handle = consumer.connect_channel(
+        channel, /*timeout_ms=*/3000, /*schema_hash=*/{}, consumer_uid);
+    ASSERT_TRUE(cons_handle.has_value());
+
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    EXPECT_TRUE(querier.query_role_presence(consumer_uid, /*timeout_ms=*/2000));
+}
+
+// 4d. Producer has no inbox — role_info returns nullopt.
+TEST_F(BrokerProtocolTest, RoleInfoReq_NoInbox_ReturnsNullopt)
+{
+    const std::string channel = pid_chan("proto.roleinfo.noinbox");
+    const std::string uid     = "PROD-ROLEINFO-CCCC0003";
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto handle = producer.create_channel(
+        channel, {.timeout_ms = 3000, .actor_name = "NoInboxProd", .actor_uid = uid});
+    ASSERT_TRUE(handle.has_value());
+
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    EXPECT_EQ(querier.query_role_info(uid, /*timeout_ms=*/2000), std::nullopt);
+}
+
+// 4e. Producer has inbox configured — role_info returns endpoint/schema/packing.
+TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
+{
+    const std::string channel      = pid_chan("proto.roleinfo.withinbox");
+    const std::string uid          = "PROD-ROLEINFO-DDDD0004";
+    const std::string inbox_ep     = "tcp://127.0.0.1:9987";
+    const std::string schema_json  = R"([{"type":"float64","count":1,"length":0}])";
+    const std::string packing      = "aligned";
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    ChannelRegistrationOptions opts;
+    opts.timeout_ms        = 3000;
+    opts.actor_uid         = uid;
+    opts.actor_name        = "InboxProd";
+    opts.inbox_endpoint    = inbox_ep;
+    opts.inbox_schema_json = schema_json;
+    opts.inbox_packing     = packing;
+    auto handle = producer.create_channel(channel, opts);
+    ASSERT_TRUE(handle.has_value());
+
+    Messenger querier;
+    ASSERT_TRUE(querier.connect(ep(), pk()));
+    auto info = querier.query_role_info(uid, /*timeout_ms=*/2000);
+    ASSERT_TRUE(info.has_value()) << "Expected RoleInfoResult, got nullopt";
+    EXPECT_EQ(info->inbox_endpoint, inbox_ep);
+    EXPECT_EQ(info->inbox_packing, packing);
+    ASSERT_TRUE(info->inbox_schema.is_array());
+    ASSERT_EQ(info->inbox_schema.size(), 1u);
+    EXPECT_EQ(info->inbox_schema[0].value("type", ""), "float64");
+    EXPECT_EQ(info->inbox_schema[0].value("count", 0u), 1u);
+}
+
+// ── Transport arbitration (Phase 6) ─────────────────────────────────────────
+
+TEST_F(BrokerProtocolTest, TransportMismatch_ShmChannel_ZmqConsumer_Fails)
+{
+    // SHM channel (default) + consumer declares "zmq" → broker rejects.
+    const std::string channel = pid_chan("proto.transport.shm_zmq");
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
+    ASSERT_TRUE(prod_handle.has_value());
+
+    Messenger consumer;
+    ASSERT_TRUE(consumer.connect(ep(), pk()));
+    // Pass consumer_queue_type="zmq" explicitly; channel is SHM → mismatch.
+    auto cons_handle = consumer.connect_channel(
+        channel, /*timeout_ms=*/3000, {}, {}, {}, {}, "zmq");
+    EXPECT_FALSE(cons_handle.has_value())
+        << "connect_channel should fail: consumer wants ZMQ but channel uses SHM";
+}
+
+TEST_F(BrokerProtocolTest, TransportMatch_ShmConsumer_ShmChannel_Succeeds)
+{
+    // SHM channel + consumer declares "shm" → accepted.
+    const std::string channel = pid_chan("proto.transport.shm_shm");
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
+    ASSERT_TRUE(prod_handle.has_value());
+
+    Messenger consumer;
+    ASSERT_TRUE(consumer.connect(ep(), pk()));
+    auto cons_handle = consumer.connect_channel(
+        channel, /*timeout_ms=*/3000, {}, {}, {}, {}, "shm");
+    EXPECT_TRUE(cons_handle.has_value())
+        << "connect_channel should succeed: both sides use SHM";
+}
+
+TEST_F(BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
+{
+    // When consumer_queue_type is empty, broker skips validation.
+    const std::string channel = pid_chan("proto.transport.nofield");
+
+    Messenger producer;
+    ASSERT_TRUE(producer.connect(ep(), pk()));
+    auto prod_handle = producer.create_channel(channel, {.timeout_ms = 3000});
+    ASSERT_TRUE(prod_handle.has_value());
+
+    Messenger consumer;
+    ASSERT_TRUE(consumer.connect(ep(), pk()));
+    auto cons_handle = consumer.connect_channel(channel, /*timeout_ms=*/3000);
+    EXPECT_TRUE(cons_handle.has_value())
+        << "connect_channel should succeed when consumer_queue_type is omitted";
+}
+
+// ── CR-005: Embedded-mode peer-dead detection ─────────────────────────────────
+//
+// Validates that on_peer_dead fires through the handle_peer_events_nowait() path
+// (embedded mode — no internal peer thread). The consumer sends HELLO on connect()
+// but sends no further messages, so the producer declares peer-dead after
+// peer_dead_timeout_ms has elapsed.
+
+TEST_F(BrokerProtocolTest, EmbeddedMode_Producer_PeerDead_FiresViaHandlePeerEvents)
+{
+    const std::string channel = pid_chan("proto.embedded.peer_dead.prod");
+
+    Messenger prod_messenger;
+    ASSERT_TRUE(prod_messenger.connect(ep(), pk()));
+
+    ProducerOptions opts;
+    opts.channel_name        = channel;
+    opts.pattern             = ChannelPattern::PubSub;
+    opts.has_shm             = false;
+    opts.actor_name          = "test-producer-peerdead";
+    opts.actor_uid           = "TEST-PROD-PD-001";
+    opts.peer_dead_timeout_ms = 100; // Short timeout for fast test
+
+    auto maybe_producer = Producer::create(prod_messenger, opts);
+    ASSERT_TRUE(maybe_producer.has_value());
+    auto &prod = *maybe_producer;
+
+    std::atomic<int> join_count{0};
+    std::atomic<int> dead_count{0};
+
+    prod.on_consumer_joined([&](const std::string &) { join_count.fetch_add(1); });
+    prod.on_peer_dead([&]() { dead_count.fetch_add(1); });
+
+    ASSERT_TRUE(prod.start_embedded());
+
+    // Consumer connects — sends HELLO once during connect().
+    Messenger cons_messenger;
+    ASSERT_TRUE(cons_messenger.connect(ep(), pk()));
+
+    ConsumerOptions copts;
+    copts.channel_name  = channel;
+    copts.consumer_uid  = "TEST-CONS-PD-001";
+    copts.consumer_name = "test-consumer-peerdead";
+    // shm_shared_secret defaults to 0 → no SHM
+
+    auto maybe_consumer = Consumer::connect(cons_messenger, copts);
+    ASSERT_TRUE(maybe_consumer.has_value());
+    auto &cons = *maybe_consumer;
+    ASSERT_TRUE(cons.start_embedded());
+
+    // Phase 1: drive producer until HELLO is processed (peer_ever_seen_ = true).
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (join_count.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        prod.handle_peer_events_nowait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GE(join_count.load(), 1) << "HELLO not processed by handle_peer_events_nowait";
+
+    // Phase 2: stop driving consumer — no more HELLOs. Keep driving producer.
+    // After peer_dead_timeout_ms (100ms), peer-dead should fire.
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (dead_count.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        prod.handle_peer_events_nowait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(dead_count.load(), 1)
+        << "on_peer_dead not fired via handle_peer_events_nowait after "
+           "peer_dead_timeout_ms elapsed";
+
+    cons.stop();
+    cons.close();
+    prod.stop();
+    prod.close();
+}
+
+TEST_F(BrokerProtocolTest, EmbeddedMode_Consumer_PeerDead_FiresViaHandleCtrlEvents)
+{
+    const std::string channel = pid_chan("proto.embedded.peer_dead.cons");
+
+    // Producer: SHM-less channel.
+    Messenger prod_messenger;
+    ASSERT_TRUE(prod_messenger.connect(ep(), pk()));
+
+    ProducerOptions opts;
+    opts.channel_name = channel;
+    opts.pattern      = ChannelPattern::PubSub;
+    opts.has_shm      = false;
+    opts.actor_name   = "test-producer-cpd";
+    opts.actor_uid    = "TEST-PROD-CPD-001";
+
+    auto maybe_producer = Producer::create(prod_messenger, opts);
+    ASSERT_TRUE(maybe_producer.has_value());
+    auto &prod = *maybe_producer;
+
+    // Capture consumer identity when HELLO arrives so we can send ctrl back.
+    std::string consumer_identity;
+    std::atomic<int> join_count{0};
+    prod.on_consumer_joined([&](const std::string &id) {
+        consumer_identity = id;
+        join_count.fetch_add(1);
+    });
+    ASSERT_TRUE(prod.start_embedded());
+
+    // Consumer: very short peer_dead_timeout_ms.
+    Messenger cons_messenger;
+    ASSERT_TRUE(cons_messenger.connect(ep(), pk()));
+
+    ConsumerOptions copts;
+    copts.channel_name         = channel;
+    copts.consumer_uid         = "TEST-CONS-CPD-001";
+    copts.consumer_name        = "test-consumer-cpd";
+    copts.peer_dead_timeout_ms = 100;
+    // shm_shared_secret defaults to 0 → no SHM
+
+    auto maybe_consumer = Consumer::connect(cons_messenger, copts);
+    ASSERT_TRUE(maybe_consumer.has_value());
+    auto &cons = *maybe_consumer;
+
+    std::atomic<int> dead_count{0};
+    cons.on_peer_dead([&]() { dead_count.fetch_add(1); });
+
+    ASSERT_TRUE(cons.start_embedded());
+
+    // Phase 1: drive producer until HELLO is processed → capture consumer identity.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (join_count.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        prod.handle_peer_events_nowait();
+        cons.handle_ctrl_events_nowait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GE(join_count.load(), 1) << "Consumer HELLO not received by producer";
+    ASSERT_FALSE(consumer_identity.empty()) << "Consumer identity not captured";
+
+    // Phase 2: producer sends one ctrl message to consumer → consumer sees peer contact.
+    const char ping[] = "ping";
+    ASSERT_TRUE(prod.send_ctrl(consumer_identity, "PING", ping, sizeof(ping) - 1));
+
+    // Drive both sides to deliver the ctrl frame.
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        prod.handle_peer_events_nowait();
+        cons.handle_ctrl_events_nowait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    // Phase 3: stop driving producer → no more ctrl messages. Keep driving consumer.
+    // After peer_dead_timeout_ms (100ms), consumer should declare peer dead.
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (dead_count.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        cons.handle_ctrl_events_nowait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(dead_count.load(), 1)
+        << "on_peer_dead not fired on consumer via handle_ctrl_events_nowait after "
+           "peer_dead_timeout_ms elapsed";
+
+    cons.stop();
+    cons.close();
     prod.stop();
     prod.close();
 }

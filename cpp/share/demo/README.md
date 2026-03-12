@@ -10,22 +10,32 @@ DemoProducer  ──▶  lab.demo.counter  ──▶  DemoDoubler  ──▶  la
 (producer)          (SHM + ZMQ)         (processor)          (SHM + ZMQ)            (consumer)
 ```
 
-The processor reads each incoming slot, doubles `value`, and publishes the
-enriched slot on the output channel.
-This demo enables flexzone metadata on the processed channel and updates it in
-the processor script for the consumer to read.
-Consumer verification is race-tolerant: it validates flexzone values against
-recently observed processed slots instead of requiring strict same-callback
-matching.
+The processor reads each incoming slot, doubles the 1024-sample payload, appends
+`scale=2.0`, and publishes the result on the output channel.
+
+## Throughput profile (current demo mode)
+
+The demo is configured as a throughput benchmark:
+
+- Producer writes `count + ts + samples[1024]` (`float32`) on `lab.demo.counter` at **max rate** (`target_period_ms=0, loop_timing="max_rate"`)
+- Processor doubles `samples[]`, sets `scale=2.0`, and writes `lab.demo.processed`
+- Consumer prints throughput once per second:
+  - slots/sec
+  - MiB/sec (`slot_size * slots / interval`)
+  - overflow counters inferred from `count` sequence gaps
+  - `data=OK/MISMATCH` correctness check (validates `samples[0]` and `samples[-1]` against expected values, and `scale==2.0`)
 
 ## Quick start
 
 ```bash
-# From the repo root — build first if needed:
+# From cpp/ — build first if needed:
 cmake --build build
 
 # Run the demo (all four processes, Ctrl-C to stop):
 bash share/demo/run_demo.sh
+
+# If your current directory is the repository root:
+bash cpp/share/demo/run_demo.sh
 ```
 
 ## Directory layout
@@ -33,7 +43,11 @@ bash share/demo/run_demo.sh
 ```
 share/demo/
 ├── hub/
-│   └── hub.json                          # Hub config used by run_demo.sh (with --dev)
+│   ├── hub.json                          # Hub config used by run_demo.sh (with --dev)
+│   └── schemas/                          # Named schema library root (<hub_dir>/schemas)
+│       └── lab/demo/
+│           ├── counter.v1.json           # lab.demo.counter@1
+│           └── processed.v1.json         # lab.demo.processed@1
 ├── producer/
 │   ├── producer.json                     # Producer config: channel, schema, shm
 │   └── script/
@@ -75,7 +89,8 @@ def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
     Called every iteration.
       out_slot — writable ctypes struct, or None on timeout
       flexzone — persistent flexzone struct, or None
-      messages — list of (sender: str, data: bytes)
+      messages — list of items; each item is either a (sender: str, data: bytes) tuple
+                 (inbox data) or a dict {"event": str, ...} (lifecycle event)
       api      — ProducerAPI proxy
     Return True/None to commit; False to discard.
     """
@@ -97,7 +112,8 @@ def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
     Called for each received slot, or on timeout.
       in_slot  — zero-copy ctypes struct (write-guarded via __setattr__), or None on timeout
       flexzone — zero-copy writable ctypes struct (user-coordinated R/W), or None
-      messages — list of (sender: str, data: bytes)
+      messages — list of items; each item is either a (sender: str, data: bytes) tuple
+                 (inbox data) or a dict {"event": str, ...} (lifecycle event)
       api      — ConsumerAPI proxy
     No return value.
     """
@@ -120,7 +136,8 @@ def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) ->
       in_slot  — zero-copy ctypes struct from in_channel (write-guarded), or None on timeout
       out_slot — writable ctypes struct for out_channel, or None on timeout
       flexzone — output-side persistent flexzone, or None
-      messages — list of (sender: str, data: bytes)
+      messages — list of items; each item is either a (sender: str, data: bytes) tuple
+                 (inbox data) or a dict {"event": str, ...} (lifecycle event)
       api      — ProcessorAPI proxy
     Return True/None to commit; False to discard.
     """
@@ -140,6 +157,20 @@ def on_stop(api: proc.ProcessorAPI) -> None:
 | All stages | `flexzone_schema` | Must match along the connected path when flexzone is enabled |
 
 Field types: `int8/16/32/64`, `uint8/16/32/64`, `float32`, `float64`, `string`/`char` (fixed-length), plus `"count": N` for arrays.
+
+## Named schema directory setup
+
+This demo uses named schema IDs in all actor configs:
+
+- `lab.demo.counter@1`
+- `lab.demo.processed@1`
+
+They are resolved from `<hub_dir>/schemas`, so these files must exist:
+
+```text
+share/demo/hub/schemas/lab/demo/counter.v1.json
+share/demo/hub/schemas/lab/demo/processed.v1.json
+```
 
 ## Slot types and field access
 

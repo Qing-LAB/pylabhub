@@ -207,8 +207,8 @@ enum class ChecksumPolicy
  *   - LoopPolicy (this enum): controls the *sleep inside* acquire_*_slot().
  *     It is a DataBlock-level knob that slows down slot consumption.
  *   - LoopTimingPolicy: controls *when the next deadline is computed* in the actor
- *     write loop (after on_iteration returns). FixedPace resets from now();
- *     Compensating advances from the previous deadline, catching up after overruns.
+ *     write loop (after on_iteration returns). FixedRate resets from now();
+ *     FixedRateWithCompensation advances from the previous deadline, catching up after overruns.
  *
  * **Design doc:** HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md §2.1
  */

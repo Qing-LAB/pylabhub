@@ -14,11 +14,22 @@
 
 ## 0. Implementation Status
 
-**Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
-are complete. Layer 4 tests: 14 producer + 12 consumer. Metrics API added (HEP-CORE-0019,
-2026-03-05). `--name` CLI argument added (2026-03-05). 828/828 tests passing.
+**Fully implemented as of 2026-03-10. 996/996 tests passing.**
 
-For remaining work, see `docs/TODO_MASTER.md` and `docs/todo/API_TODO.md`.
+| Phase | What | Date |
+|-------|------|------|
+| Phase 1 | All files in `src/producer/` and `src/consumer/`; L4 tests: 14 producer + 12 consumer | 2026-03-01/02 |
+| Metrics | HEP-CORE-0019 metrics API; `--name` CLI argument | 2026-03-05 |
+| Transport | ZMQ transport for producer (`transport` + `zmq_out_endpoint`); unified `run_loop_()` | 2026-03-08 |
+| Inbox | Per-role inbox (`InboxQueue`/`InboxClient`; `inbox_thread_`; `inbox_schema` in REG_REQ) | 2026-03-08 |
+| Protocol | ROLE_INFO_REQ / ROLE_PRESENCE_REQ; `api.open_inbox()` / `api.wait_for_role()` | 2026-03-09 |
+| Discard | `write_discard()` (renamed from `write_abort()`) — discard-and-continue semantics | 2026-03-09 |
+| Arbitration | `consumer_queue_type` in CONSUMER_REG_REQ; `TRANSPORT_MISMATCH` rejection | 2026-03-09 |
+| QueueReader/Writer | `hub::QueueReader` / `hub::QueueWriter` split replacing `hub::Queue`; unified `ConsumerScriptHost::run_loop_()` via `QueueReader*` | 2026-03-09 |
+| Consumer API | `ConsumerAPI::spinlock()` / `spinlock_count()`; `api.last_seq()`; `api.in_capacity()`; `api.in_policy()`; `api.verify_checksum` | 2026-03-09 |
+| Consumer inbox | Consumer `inbox_thread_` (ROUTER receiving side) | 2026-03-10 |
+| ShmQueue tests | 9 additional L3 ShmQueue scenarios (multiple consumers, flexzone, ring wrap, last_seq, verify_checksum mismatch, etc.) | 2026-03-10 |
+| Config validation | ConsumerConfig/ProducerConfig inbox validation hardened (zmq_packing, inbox_buffer_depth, inbox_schema type checks) | 2026-03-10 |
 
 ---
 
@@ -149,11 +160,11 @@ Created by `pylabhub-consumer --init <dir>`:
   "broker":      "tcp://127.0.0.1:5570",
   "channel":     "lab.sensors.temperature",
 
-  "interval_ms": 100,
-  "loop_trigger": "shm",
+  "target_period_ms": 100,
+  "transport": "shm",
 
   "slot_schema": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
@@ -191,10 +202,10 @@ Created by `pylabhub-consumer --init <dir>`:
   "channel":    "lab.sensors.temperature",
 
   "timeout_ms": 5000,
-  "loop_trigger": "shm",
+  "queue_type": "shm",
 
   "slot_schema": {
-    "packing": "natural",
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
@@ -227,15 +238,26 @@ Created by `pylabhub-consumer --init <dir>`:
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; reads `hub.json` to derive `broker`/`broker_pubkey` |
 | `channel` | yes | — | Channel name to publish on |
-| `interval_ms` | no | `0` | Write loop interval; 0 = max rate (`SHM`-slot paced) |
-| `loop_trigger` | no | `"shm"` | `"shm"` (slot-paced) or `"messenger"` (message-event-driven) |
+| `transport` | no | `"shm"` | `"shm"` (SHM ring buffer) or `"zmq"` (ZMQ PUSH socket) |
+| `zmq_out_endpoint` | no† | — | Required when `transport=zmq`; ZMQ PUSH endpoint (e.g. `"tcp://0.0.0.0:5581"`) |
+| `zmq_out_bind` | no | `true` | PUSH default=bind; set false to connect to a remote PULL |
+| `zmq_buffer_depth` | no | `64` | Internal send buffer depth (>0); for `transport=zmq` |
+| `target_period_ms` | no | `0` | Write loop period; 0 = free-run |
+| `loop_timing` | no | implicit (0→`"max_rate"`, >0→`"fixed_rate"`) | `"max_rate"`, `"fixed_rate"`, or `"fixed_rate_with_compensation"` |
+| `timeout_ms` | no | `-1` | `write_acquire()` timeout; -1 = infinite, 0 = non-blocking |
 | `slot_schema` | yes‡ | — | Output slot layout (or use `schema_id` from HEP-CORE-0016) |
-| `flexzone_schema` | no | absent | Writable flexzone layout |
-| `shm.enabled` | no | `true` | Use SHM transport |
-| `shm.slot_count` | yes | — | Ring buffer depth (number of slots) |
+| `flexzone_schema` | no | absent | Writable flexzone layout; ignored (LOGGER_WARN) when `transport=zmq` |
+| `shm.enabled` | no | `true` | Allocate SHM segment (must be true for `transport=shm`) |
+| `shm.slot_count` | yes§ | — | Ring buffer depth (number of slots) |
 | `shm.secret` | no | `0` | Shared secret for SHM name derivation |
+| `inbox_schema` | no | absent | Inbox field list for `inbox_thread_` (enables inbox facility) |
+| `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
+| `inbox_buffer_depth` | no | `64` | Inbox recv buffer size |
+| `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
 | `script.type` | yes | `"python"` | Script type: `"python"` or `"lua"` |
 | `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
+
+† Required when `transport=zmq`. § Required when `shm.enabled=true`.
 
 ### 5.4 Field Reference — Consumer
 
@@ -249,18 +271,31 @@ Created by `pylabhub-consumer --init <dir>`:
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key Z85 |
 | `hub_dir` | no | — | Hub directory; derives `broker`/`broker_pubkey` from `hub.json` |
 | `channel` | yes | — | Channel name to subscribe to |
+| `queue_type` | no | `"shm"` | `"shm"` (SHM read via DataBlockConsumer) or `"zmq"` (ZMQ PULL; endpoint from broker) |
 | `timeout_ms` | no | `5000` | `on_consume(in_slot=None,…)` fires after this many ms of silence |
-| `loop_trigger` | no | `"shm"` | `"shm"` (slot-paced) or `"messenger"` (message-event-driven) |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer's schema) |
-| `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W) |
-| `shm.enabled` | no | `true` | Use SHM transport |
-| `shm.slot_count` | no | — | Local consumer buffer depth (optional hint; broker-advertised value used) |
+| `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W); SHM only |
+| `verify_checksum` | no | `false` | Enable framework-level BLAKE2b slot verification on `read_acquire()` (SHM only; no-op for ZMQ) |
+| `zmq_buffer_depth` | no | `64` | Internal recv-ring buffer depth for ZMQ transport (must be > 0) |
+| `shm.enabled` | no | `true` | Attach to SHM segment (`queue_type=shm`); set false for ZMQ transport |
 | `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
+| `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
+| `inbox_schema` | no | absent | Inbox field list for `inbox_thread_` (enables inbox facility) |
+| `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
+| `inbox_buffer_depth` | no | `64` | Inbox recv buffer size (must be > 0) |
+| `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
+| `zmq_packing` | no | `"aligned"` | ZMQ frame packing: `"aligned"` (C struct natural alignment) or `"packed"` (no padding); must be valid string |
 | `script.type` | yes | `"python"` | Script type: `"python"` or `"lua"` |
 | `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
 ‡ Exactly one of the inline `slot_schema` block or `schema_id` string is required
 (Phase 2 after HEP-CORE-0016 Phase 3).
+
+**ZMQ transport note**: When `queue_type=zmq`, the consumer discovers the producer's
+ZMQ endpoint from the broker `DISC_ACK` (no `zmq_in_endpoint` needed in consumer.json).
+The consumer connects (never binds). `flexzone_schema` is ignored and `fz=None` in script.
+Broker enforces compatibility: `TRANSPORT_MISMATCH` is returned if consumer and producer
+transports do not match.
 
 ---
 
@@ -279,11 +314,18 @@ def on_produce(out_slot, flexzone, messages, api) -> bool:
 
     out_slot:  writable ctypes struct (slot_schema layout). Always non-None.
     flexzone:  writable ctypes struct (flexzone_schema layout). None if not configured.
+               Always None when transport='zmq' (flexzone is SHM-only).
     messages:  list of (sender: str, data: bytes) received via Messenger since last call.
     api:       ProducerAPI — see §6.3.
 
-    Return True or None  → commit out_slot to the SHM ring (slot is published).
-    Return False         → skip this iteration; nothing is written to the ring.
+    Return value determines what the C++ framework does with out_slot:
+      True or None  → write_commit(): publishes out_slot to the ring/queue
+      False         → write_discard(): discards out_slot (loop continues normally)
+      Wrong type    → write_discard() + LOGGER_ERROR (loop continues; error is logged)
+
+    "Discard" means the slot for this cycle is abandoned without publishing.
+    It does NOT stop or abort the loop — the loop continues to the next iteration.
+    Return False when a prerequisite is not ready (e.g., dependent role not online).
     """
     import time
     out_slot.ts    = time.monotonic()
@@ -306,11 +348,19 @@ def on_consume(in_slot, flexzone, messages, api) -> None:
     """
     Called for each slot received, or on timeout.
 
-    in_slot:   zero-copy ctypes struct (slot_schema layout), write-guarded via __setattr__.
-               None on timeout. See §6.4 for field access and numpy conversion.
+    in_slot:   zero-copy read-only ctypes struct (slot_schema layout).
+               None on timeout (timeout_ms elapsed without a new slot).
+               Write-guarded via __setattr__: writing a field raises AttributeError.
+               The slot is valid only for the duration of this callback — do not store it.
+               See §6.4 for field access and numpy conversion.
+
     flexzone:  zero-copy writable ctypes struct (flexzone_schema layout). User-coordinated R/W.
-               None if not configured.
-    messages:  list of (sender: str, data: bytes) received via Messenger since last call.
+               None if not configured or transport=zmq.
+               Use api.spinlock(idx) for coordination with the producer.
+               Persists across callbacks (lifetime = session).
+
+    messages:  list of (sender_uid: str, data: bytes) received via Messenger since last call.
+
     api:       ConsumerAPI — see §6.3.
 
     No return value — consumer has no output slot to commit or discard.
@@ -318,7 +368,7 @@ def on_consume(in_slot, flexzone, messages, api) -> None:
     if in_slot is None:
         api.log("timeout — no slot received", level="warn")
         return
-    api.log(f"ts={in_slot.ts:.3f}  value={in_slot.value:.4f}")
+    api.log(f"seq={api.last_seq()} ts={in_slot.ts:.3f}  value={in_slot.value:.4f}")
 
 def on_stop(api) -> None:
     """Called once after the read loop exits cleanly."""
@@ -347,18 +397,101 @@ api.out_slots_written()      # → int (producer only)
 api.in_slots_received()      # → int (consumer only)
 api.script_error_count()     # → int
 
+# Loop / timing — all roles
+api.loop_overrun_count()     # → int: producer: cycles past deadline; consumer/processor: always 0
+api.last_cycle_work_us()     # → int: µs of active work in the last callback invocation
+
+# Queue metadata — producer
+api.out_capacity()           # → int: ring buffer slot count (SHM) or send buffer depth (ZMQ)
+api.out_policy()             # → str: overflow policy info
+
+# Queue metadata — consumer
+api.last_seq()               # → int: monotonic slot sequence number of last read_acquire()
+api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
+api.in_policy()              # → str: overflow policy info ("latest_only", "drop", etc.)
+api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only)
+
 # Custom Metrics (HEP-CORE-0019)
 api.report_metric(key, value)     # report single custom metric (key: str, value: number)
 api.report_metrics(dict)          # batch report {key: number} pairs
 api.clear_custom_metrics()        # clear all custom metrics (base counters unaffected)
 
-# Producer-only: spinlock on flexzone (same as ProcessorAPI.spinlock())
-api.spinlock(idx)            # → context manager; valid only if flexzone configured
+# Spinlock — producer and consumer (SHM transport only)
+api.spinlock(idx)            # → context manager; GIL released during lock wait
+api.spinlock_count()         # → int: number of spinlocks; 0 for ZMQ transport
+
+# SHM block query (all roles)
+api.shm_blocks()             # → list of dicts with SHM block metadata
+
+# Inbox — send typed messages to another role's inbox (all roles)
+api.open_inbox(target_uid)
+    # → InboxHandle if target is online, None otherwise (cached after first call)
+    # InboxHandle methods:
+    #   handle.acquire()              → writable ctypes struct (fill fields before send)
+    #   handle.send(timeout_ms=5000) → int: 0=OK, non-zero=error; GIL released during wait
+    #   handle.discard()              → abandon acquired slot without sending
+    #   handle.is_ready()             → bool
+    #   handle.close()                → disconnect and invalidate
+
+api.wait_for_role(uid, timeout_ms=5000)
+    # → bool: True if the role is online, False if timed out
+    # Polls broker with GIL released between 200 ms polls.
+    # Use in on_init() when startup order is deterministic.
 
 # Shutdown
 api.stop()                   # Request clean shutdown from inside callback
-api.set_critical_error(msg)  # Mark as failed and trigger shutdown
+api.set_critical_error()     # Mark as failed and trigger shutdown (no argument)
 ```
+
+**Note on `api.last_seq()` gap detection:**
+```python
+_prev_seq = None
+
+def on_consume(in_slot, fz, msgs, api):
+    if in_slot is None: return
+    global _prev_seq
+    seq = api.last_seq()
+    if _prev_seq is not None and seq != _prev_seq + 1:
+        api.log(f"gap: {_prev_seq} → {seq} ({seq - _prev_seq - 1} slots lost)", level="warn")
+    _prev_seq = seq
+```
+
+**Consumer spinlock — SHM only:**
+```python
+# SHM flexzone + spinlock: producer and consumer both access the same flexzone
+# Producer writes, consumer reads; spinlock arbitrates:
+def on_consume(in_slot, fz, msgs, api):
+    with api.spinlock(0):    # GIL released during lock wait
+        result = fz.accumulator   # read shared state
+# ZMQ consumer: api.spinlock_count() returns 0; api.spinlock(i) raises RuntimeError
+```
+
+#### Script Best Practice: `check_readiness()` pattern
+
+When production depends on another role being available, use a module-level state
+cache with an idempotent `check_readiness()` helper called at the top of every loop
+callback. This handles lazy discovery and self-healing when a role restarts:
+
+```python
+_inbox_handle = None
+_target_uid = "CONS-LOGGER-12345678"
+
+def check_readiness(api):
+    global _inbox_handle
+    if _inbox_handle is not None and _inbox_handle.is_ready():
+        return True
+    _inbox_handle = api.open_inbox(_target_uid)
+    return _inbox_handle is not None
+
+def on_produce(out_slot, fz, msgs, api):
+    if not check_readiness(api):
+        return False  # discard this slot; loop continues, tries again next cycle
+    # ... fill out_slot ...
+    return True
+```
+
+Note: `api` does not support arbitrary attribute assignment. Use Python module-level
+variables for state that persists across `on_produce()` calls.
 
 ---
 
@@ -468,23 +601,32 @@ interpreter thread (PythonScriptHost.thread_fn_):
   Py_Initialize → load script package → on_init(api)
   GIL released (main_thread_release_.emplace())
 
-zmq_thread_:
-  HELLO → CONSUMER_REG_REQ → await DISC_ACK (SHM name from producer)
-  attach SHM (find_datablock_consumer)
-  heartbeat loop; handles producer BYE
+ctrl_thread_:   ← renamed from zmq_thread_ (2026-03-09)
+  HELLO → CONSUMER_REG_REQ → await DISC_ACK (SHM secret or ZMQ endpoint)
+  attach SHM or connect ZmqQueue PULL (depending on queue_type)
+  heartbeat loop; handles producer BYE, CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN
 
-loop_thread_:
+loop_thread_:   ← unified via hub::QueueReader* (2026-03-09)
   while !stop_:
     drain incoming_queue_
-    in_slot = acquire_consume_slot(timeout_ms)   ← None on timeout
+    in_slot = reader_->read_acquire(timeout_ms)   ← None on timeout
     acquire GIL
     on_consume(in_slot, fz, messages, api)
     release GIL
-    release_consume_slot(in_slot) if non-None
-    update LoopPolicy
+    reader_->read_release()   ← releases slot back to ring or ZMQ recv buffer
+
+inbox_thread_:  ← optional; active when inbox_schema is configured (2026-03-10)
+  ZMQ ROUTER socket (binds inbox_endpoint)
+  Recv: msgpack frame → on_inbox(msg_slot, sender_uid, api) under GIL
+  Send: ACK back to sender DEALER identity
 
 on_stop(api) → GIL re-acquired → Py_Finalize
 ```
+
+**Key invariants:**
+- `reader_` is `hub::QueueReader*` — same interface for SHM and ZMQ transport
+- `incoming_queue_` (mutex + condvar) serialises ctrl_thread_ callbacks — no GIL race
+- `loop_thread_` and `inbox_thread_` interleave on the GIL; `ctrl_thread_` never holds GIL
 
 **Key invariants:**
 - `incoming_queue_` (mutex + condvar) serialises ZMQ callbacks to the loop thread — no GIL race
@@ -584,8 +726,8 @@ struct ProducerConfig {
 
     std::string  channel;
 
-    int          interval_ms{0};    // 0 = max rate (SHM-slot paced)
-    std::string  loop_trigger{"shm"};
+    int          target_period_ms{0};  // 0 = max rate (SHM-slot paced)
+    std::string  queue_type{"shm"};
 
     nlohmann::json slot_schema_json;
     nlohmann::json flexzone_schema_json;
@@ -593,6 +735,12 @@ struct ProducerConfig {
     bool         shm_enabled{true};
     uint32_t     shm_slot_count{8};
     uint64_t     shm_secret{0};
+
+    // Inbox facility (optional)
+    nlohmann::json inbox_schema_json;
+    std::string    inbox_endpoint;
+    size_t         inbox_buffer_depth{64};
+    std::string    inbox_overflow_policy{"drop"};
 
     std::string  script_type{"python"};
     std::string  script_path{"./script"};
@@ -618,7 +766,7 @@ struct ConsumerConfig {
     std::string  channel;
 
     int          timeout_ms{5000};
-    std::string  loop_trigger{"shm"};
+    std::string  queue_type{"shm"};  // "shm" or "zmq"; sets queue_type in CONSUMER_REG_REQ
 
     nlohmann::json slot_schema_json;
     nlohmann::json flexzone_schema_json;
@@ -626,6 +774,14 @@ struct ConsumerConfig {
     bool         shm_enabled{true};
     uint32_t     shm_slot_count{0};  // hint; broker-advertised value used
     uint64_t     shm_secret{0};
+
+    bool         verify_checksum{false};  // enable BLAKE2b slot verification on read_acquire (SHM); no-op for ZMQ
+
+    // Inbox facility (optional; shared with all role configs)
+    nlohmann::json inbox_schema_json;
+    std::string    inbox_endpoint;       // auto if empty
+    size_t         inbox_buffer_depth{64};
+    std::string    inbox_overflow_policy{"drop"};
 
     std::string  script_type{"python"};
     std::string  script_path{"./script"};
@@ -677,7 +833,7 @@ Both producer and consumer support inline (unnamed) schemas and named schemas
 
 ```json
 // Inline (unnamed):
-"slot_schema": {"packing": "natural", "fields": [...]}
+"slot_schema": {"packing": "aligned", "fields": [...]}
 
 // Named (Phase 2, after HEP-CORE-0016 Phase 3):
 "schema_id": "lab.sensors.temperature.raw@1"
@@ -708,25 +864,83 @@ See HEP-CORE-0016 for the full Named Schema Registry specification.
 
 ## 13. Binary Architecture
 
-Both binaries follow the same three-thread architecture:
+### 13.1 Shared Main-Entry Helpers
+
+All three role binaries (`pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`)
+share a common implementation file:
+
+```
+src/scripting/role_main_helpers.hpp        (namespace pylabhub::scripting)
+```
+
+This header is included by each `*_main.cpp` and provides four inline/template helpers
+that encapsulate the identical boilerplate across all three entry points:
+
+| Helper | Purpose |
+|--------|---------|
+| `read_password_interactive(role_name, prompt)` | Read password from terminal without echo (POSIX: `getpass`; Windows: `stdin`). Logs role name on failure. |
+| `get_role_password(role_name, prompt)` | Check `PYLABHUB_ACTOR_PASSWORD` env first; fall back to `read_password_interactive`. |
+| `role_lifecycle_modules()` | Return `vector<ModuleDef>` with all 6 standard modules (Logger, FileLock, Crypto, JsonConfig, ZMQContext, DataExchangeHub) in correct initialization order. |
+| `register_signal_handler_lifecycle(handler, log_tag)` | Register the installed `InteractiveSignalHandler` as a dynamic persistent lifecycle module so it is automatically uninstalled during `finalize()`. |
+| `run_role_main_loop<Host>(g_shutdown, host, log_tag)` | Poll `g_shutdown` + `host.is_running()` at `kAdminPollIntervalMs` cadence; set `g_shutdown = true` (release) and log on exit. |
+
+Each `*_main.cpp` uses these as:
+
+```cpp
+#include "role_main_helpers.hpp"
+namespace scripting = pylabhub::scripting;
+
+// In main():
+LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
+scripting::register_signal_handler_lifecycle(signal_handler, "[prod-main]");
+// ... role-specific setup (config, script host, status callback) ...
+scripting::run_role_main_loop(g_shutdown, prod_script, "[prod-main]");
+```
+
+What remains **unique per binary** (not extracted):
+- Config type and loading (`ProducerConfig` / `ConsumerConfig` / `ProcessorConfig`)
+- Script host type (`ProducerScriptHost` / `ConsumerScriptHost` / `ProcessorScriptHost`)
+- `do_init()` — JSON template and `__init__.py` stub with role-specific callback signatures
+- `--keygen` output text and vault creation
+- Status callback — different metrics fields per role
+
+### 13.2 Standard Lifecycle Modules
+
+Every role binary initializes exactly these 6 modules in order (via `role_lifecycle_modules()`):
+
+| Order | Module | What it starts |
+|-------|--------|----------------|
+| 1 | `Logger` | Async log queue + console/file sinks |
+| 2 | `FileLock` | Per-directory PID lock file |
+| 3 | `Crypto` | libsodium initialization |
+| 4 | `JsonConfig` | Schema registry JSON config subsystem |
+| 5 | `ZMQContext` | Global ZeroMQ I/O context |
+| 6 | `DataExchangeHub` | SHM DataBlock subsystem (required even for ZMQ-only transport) |
+
+The signal handler is registered as a **dynamic persistent** module after the static 6, so
+it is torn down first during `finalize()` (ensuring no signals are processed during teardown).
+
+### 13.3 Thread Architecture
+
+Both producer and consumer follow the same three-thread model:
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
 graph TB
     subgraph "pylabhub-producer"
-        PM["main thread<br/>parse config → LifecycleGuard<br/>→ wait for g_shutdown"]
+        PM["main thread<br/>parse config → LifecycleGuard<br/>→ run_role_main_loop()"]
         PI["interpreter thread<br/>Py_Initialize → on_init(api)<br/>GIL released"]
-        PZ["zmq_thread_<br/>REG_REQ → heartbeat loop<br/>→ enqueue messages"]
-        PL["loop_thread_<br/>acquire slot → GIL → on_produce<br/>→ commit/abort → GIL release"]
+        PZ["ctrl_thread_<br/>REG_REQ → heartbeat loop<br/>→ enqueue messages"]
+        PL["loop_thread_<br/>acquire slot → GIL → on_produce<br/>→ commit/discard → GIL release"]
         PM --> PI
         PI --> PZ
         PI --> PL
     end
 
     subgraph "pylabhub-consumer"
-        CM["main thread<br/>parse config → LifecycleGuard<br/>→ wait for g_shutdown"]
+        CM["main thread<br/>parse config → LifecycleGuard<br/>→ run_role_main_loop()"]
         CI["interpreter thread<br/>Py_Initialize → on_init(api)<br/>GIL released"]
-        CZ["zmq_thread_<br/>DISC_REQ → attach SHM<br/>→ heartbeat + messages"]
+        CZ["ctrl_thread_<br/>DISC_REQ → attach SHM<br/>→ heartbeat + messages"]
         CL["loop_thread_<br/>acquire slot → GIL → on_consume<br/>→ release slot → GIL release"]
         CM --> CI
         CI --> CZ
@@ -742,6 +956,9 @@ graph TB
     style CZ fill:#5a3a3a
     style CL fill:#4a2a4a
 ```
+
+See HEP-CORE-0015 §8.2 for the processor's three-thread model (`loop_thread_`,
+`ctrl_thread_`, `inbox_thread_`).
 
 ---
 
@@ -760,6 +977,11 @@ graph TB
 | `src/producer/CMakeLists.txt` | Builds `pylabhub-producer` binary |
 | `tests/test_layer4_producer/` | Config (8) + CLI (6) tests |
 
+### Shared
+| File | Description |
+|------|-------------|
+| `src/scripting/role_main_helpers.hpp` | Shared `pylabhub::scripting` helpers for all three role `main()` entry points: password prompting, lifecycle modules, signal handler registration, main poll loop |
+
 ### Consumer
 | File | Description |
 |------|-------------|
@@ -777,6 +999,5 @@ graph TB
 
 ## Document Status
 
-**Phase 1 implemented (2026-03-01–02).** All files in `src/producer/` and `src/consumer/`
-complete. Layer 4 tests: 14 producer + 12 consumer. Metrics API (HEP-0019) + `--name` CLI
-added (2026-03-05). 828/828 tests passing as of 2026-03-05.
+**Fully implemented — 1044/1045 tests (2026-03-11).** All phases complete. See §0 for
+the complete implementation timeline. §13 updated 2026-03-11 to document `role_main_helpers.hpp`.

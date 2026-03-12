@@ -44,7 +44,7 @@ class FileLockSingleProcessTest : public ::testing::Test
     static void SetUpTestSuite()
     {
         s_lifecycle = std::make_unique<LifecycleGuard>(
-            MakeModDefList(FileLock::GetLifecycleModule(), Logger::GetLifecycleModule()));
+            MakeModDefList(FileLock::GetLifecycleModule(), Logger::GetLifecycleModule()), std::source_location::current());
     }
 
     static void TearDownTestSuite() { s_lifecycle.reset(); }

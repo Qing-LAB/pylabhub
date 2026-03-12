@@ -10,8 +10,38 @@
 
 ## Current Status
 
-✅ **882/881 tests (2026-03-06).** 1 flake: ProcessorHandlerRemoval (passes alone).
-All 2026-03-06 code reviews closed and archived to `docs/archive/transient-2026-03-06/`.
+✅ **1084/1085 tests (2026-03-12).** Hub-dead ZMQ monitor path implemented; StopReason ordering restored. 1 pre-existing timing flake (`BackoffStrategyTest.ThreePhaseBackoff_Phase3_LinearSleep`) unrelated to messenger changes.
+
+### Completed 2026-03-12: Hub-Dead ZMQ Socket Monitor
+
+Replaced the application-level silence timer (`m_last_broker_recv_epoch_ms_`) with ZMQ socket monitor (`ZMQ_EVENT_DISCONNECTED`). Also restored two functions (`handle_command(ConnectCmd)` and `send_heartbeats()`) that were accidentally deleted by a prior automated agent. The deletions were masked by the shared library's deferred symbol resolution.
+
+**Files changed:**
+- `src/utils/ipc/messenger.cpp`: restored ConnectCmd handler (with ZMTP heartbeat sockopts + `zmq_socket_monitor()` setup); restored `send_heartbeats()`; added `process_monitor_events()` / `close_monitor()`; removed `m_last_broker_recv_epoch_ms_` update
+- `src/utils/ipc/messenger_internal.hpp`: removed `m_last_broker_recv_epoch_ms_`; added `m_on_hub_dead_cb`, `m_monitor_sock_`, `m_monitor_endpoint_`; added `<cstring>`
+- `src/include/utils/messenger.hpp`: replaced `hub_last_contact_ms()` with `on_hub_dead(std::function<void()>)`
+- `src/scripting/python_role_host_base.hpp`: `StopReason` corrected to `Normal=0, PeerDead=1, HubDead=2, CriticalError=3`
+- `src/producer/producer_api.cpp`, `src/consumer/consumer_api.cpp`, `src/processor/processor_api.cpp`: `stop_reason()` switch cases 1/2/3 restored; pybind11 docstrings updated
+- `src/producer/producer_script_host.cpp`: `on_hub_dead()` wired on `out_messenger_`; deregistered in `stop_role()`
+- `src/consumer/consumer_script_host.cpp`: `on_hub_dead()` wired on `in_messenger_`; deregistered in `stop_role()`
+- `src/processor/processor_script_host.cpp`: `on_hub_dead()` wired on BOTH `in_messenger_` + `out_messenger_`; both deregistered in `stop_role()`
+- All 3 role configs: `hub_dead_timeout_ms` field removed
+
+**Static code review findings fixed:**
+- Frame-size check in `process_monitor_events()`: `< 2` → `< 6` (ZMQ monitor frame 1 = uint16 + uint32 = 6 bytes)
+- Monitor setup failure: LOGGER_WARN → LOGGER_ERROR with errno
+
+**Known gap:** No automated tests for `on_hub_dead()` / `process_monitor_events()` (would require killing a broker mid-run). Noted as future test scenario.
+
+---
+
+✅ **HEP-0023 Phase 1 — `startup.wait_for_roles` implemented (2026-03-11):** `WaitForRole` struct in `startup_wait.hpp`; config parsing in all 3 role configs (uid + timeout_ms per role, exact UID matching); poll loop in all 3 script hosts before `on_init` (GIL-released 200ms polls, per-role deadline). 16 new config tests → **1078/1078 tests**.
+
+✅ **Docs cleanup — stale actor/interval_ms references fixed (2026-03-11):** `README_DirectoryLayout.md` rewritten (role directories, UID formats); `README_testing.md` stale test binary names fixed; `HEP-0008` `interval_ms` → `target_period_ms`; `channel_access_policy.hpp` + `actor_vault.hpp` comments updated. `review_high_level.md` MEDIUM-3 ✅ FIXED.
+
+✅ **Code review REVIEW_DataHubInbox_2026-03-09.md CLOSED (2026-03-09):** 13 actionable items fixed (CR-02 inbox thread join order, CR-03 ShmQueue checksum ordering, HR-01 atomic script_errors_, HR-02 atomic reader_, HR-03 ZMQ_RCVTIMEO caching, HR-05 GIL release in open_inbox, HR-06, MR-05, MR-08, MR-10 send_stop_ guard, LR-04 memory_order_release, LR-05 error counting, LR-07 comment, IC-04 docstring). MR-04 confirmed false positive. 975/975 tests passing.
+
+✅ **Code reviews REVIEW_Processor_2026-03-10.md (20 items) + REVIEW_DeepStack_2026-03-10.md (16 items) CLOSED (2026-03-10):** ProcessorAPI accessors (last_seq, in_capacity, in_policy, out_capacity, out_policy, set_verify_checksum), ConsumerAPI set_verify_checksum, ProducerAPI loop_overrun_count rename, consumer metrics snapshot schema, HEP-0015/0018 corrections, README_Deployment.md rewrite. 1045/1045 tests passing.
 
 Security fixes applied (session 1): SHM-C1, IPC-C3, SVC-C1/C2/C3, HDR-C1.
 Security fix applied (session 2): IPC-H2 — `~BrokerServiceImpl()` zeros `server_secret_z85` + `cfg.server_secret_key` via `sodium_memzero`.

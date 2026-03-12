@@ -80,7 +80,7 @@ graph LR
 
 - Replacing SHM with ZMQ on the data plane does not touch the control plane
   (HELLO/BYE/heartbeat still flow on the same ZMQ ctrl sockets).
-- Changing `LoopPolicy` from `FixedPace` to `MaxRate` has no effect on what
+- Changing `LoopTimingPolicy` from `FixedRate` to `MaxRate` has no effect on what
   messages flow on the message plane.
 - A Processor that bridges two brokers must maintain control-plane connections
   to **both** brokers independently of whether its data transport is SHM or ZMQ.
@@ -114,31 +114,56 @@ spurious ZMQ code paths, lost spinlock access).
 | Property | Value |
 |----------|-------|
 | Direction | Read-only |
-| Data transport | SHM exclusively |
-| Channel ownership | Attaches to existing SHM; registers as reader with broker |
-| SHM-specific facilities | Spinlocks, `ReadProcessorContext`, `LoopPolicy`, acquire-timing metrics |
+| Data transport | SHM (`loop_trigger=shm`) **or** ZMQ (`loop_trigger=zmq`) |
+| Channel ownership | Attaches to existing SHM or connects to ZMQ endpoint; registers as reader with broker |
+| SHM-specific facilities | Spinlocks, zero-copy slot view, flexzone R/W, acquire-timing metrics |
+| ZMQ-specific note | Endpoint discovered from broker `DISC_ACK` (HEP-0021); consumer never binds |
 | Broker protocol | `CONSUMER_REG_REQ` → `DISC_ACK`; sends HELLO to producer; `CONSUMER_DEREG_REQ` on exit |
-| Lives on | Same host as the SHM segment |
+| Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
 
-Same boundary principle as Producer. Consumer is the rich SHM-local reading
-interface; cross-machine reading is achieved by composing with a bridge Processor
-(§4.3), not by making Consumer transport-agnostic.
+The consumer data transport is declared via `loop_trigger` in `consumer.json` and sent
+as `consumer_loop_driver` in `CONSUMER_REG_REQ`. The broker enforces transport
+compatibility (rejects with `TRANSPORT_MISMATCH` if consumer and producer transports
+do not match). The control plane (`ctrl_thread_`) is always active regardless of
+data transport.
 
-### 3.3 hub::Queue
+SHM-specific facilities (spinlocks, flexzone) are only available when `loop_trigger=shm`.
+For cross-machine reading, compose with a bridge Processor (§4.3) or use `loop_trigger=zmq`
+with a ZMQ-transport producer.
+
+### 3.3 hub::QueueReader and hub::QueueWriter
+
+The data plane abstraction is split into two independent abstract classes:
+
+| Class | Role | Methods |
+|-------|------|---------|
+| `hub::QueueReader` | Read-only access | `read_acquire`, `read_release`, `read_flexzone`, `last_seq`, `capacity`, `policy_info`, `set_verify_checksum` + metadata |
+| `hub::QueueWriter` | Write-only access | `write_acquire`, `write_commit`, `write_discard`, `write_flexzone`, `capacity`, `policy_info`, `set_checksum_options` + metadata |
+
+Concrete implementations use C++ multiple inheritance:
+```
+ShmQueue : QueueReader, QueueWriter  (internal — wraps DataBlockConsumer/Producer)
+ZmqQueue : QueueReader, QueueWriter  (internal — wraps ZMQ PULL/PUSH socket)
+```
+
+`ShmQueue` and `ZmqQueue` are internal implementation details; public API exposes
+only `unique_ptr<QueueReader>` or `unique_ptr<QueueWriter>`. There is no combined
+`Queue` interface: the old `hub::Queue` class is eliminated.
+
+**No runtime cost**: metadata methods declared in both abstract classes (item_size,
+flexzone_size, name, metrics, start, stop, is_running, capacity, policy_info) are
+implemented once in the concrete class. Virtual dispatch costs ~2 ns vs 100–500 ns
+for the actual SHM acquire — < 1% overhead.
+
+`hub::Processor` receives its queues as separate references:
+```cpp
+Processor::create(QueueReader& in_q, QueueWriter& out_q, opts)
+```
 
 | Property | Value |
 |----------|-------|
-| Abstraction | Virtual base: `read_acquire` / `read_release` / `write_acquire` / `write_commit` / `write_abort` |
-| Concrete types | `ShmQueue` (wraps `DataBlockConsumer`/`Producer`) · `ZmqQueue` (wraps typed ZMQ PULL/PUSH with msgpack schema encoding) |
-| Used by | `hub::Processor` exclusively |
+| Used by | `hub::Processor` (both sides); `ConsumerScriptHost` (QueueReader); `ProducerScriptHost` (QueueWriter) |
 | Does NOT carry | Control plane, message plane, timing plane |
-| Runtime cost | ~2 ns virtual dispatch vs 100–500 ns SHM acquire — < 1% overhead |
-
-`hub::Queue` is the **data plane abstraction for the Processor layer only**. It
-provides a transport-agnostic interface so that `hub::Processor`'s transform loop
-does not need to know whether the underlying transport is SHM or ZMQ. Everything
-above the data plane (control, message, timing) is handled by the components that
-own the endpoints, not by the Queue.
 
 #### ZmqQueue — API contract and schema requirements
 
@@ -146,18 +171,18 @@ own the endpoints, not by the Queue.
 `std::vector<ZmqSchemaField>` and a packing rule are **required** at construction.
 
 ```cpp
-// Required fields — both push_to and pull_from have the same signature contract:
-std::unique_ptr<ZmqQueue> ZmqQueue::push_to(
+// Factories return unique_ptr<QueueWriter> (push_to) or unique_ptr<QueueReader> (pull_from):
+std::unique_ptr<QueueWriter> ZmqQueue::push_to(
     const std::string& endpoint,
     std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
-    std::string packing,                 // REQUIRED: "natural" or "packed"
+    std::string packing,                 // REQUIRED: "aligned" or "packed"
     bool bind = true,
     std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
 
-std::unique_ptr<ZmqQueue> ZmqQueue::pull_from(
+std::unique_ptr<QueueReader> ZmqQueue::pull_from(
     const std::string& endpoint,
     std::vector<ZmqSchemaField> schema,  // REQUIRED: must not be empty
-    std::string packing,                 // REQUIRED: "natural" or "packed"
+    std::string packing,                 // REQUIRED: "aligned" or "packed"
     bool bind = false, size_t max_buffer_depth = 64,
     std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
 ```
@@ -175,7 +200,9 @@ Key differences from `ShmQueue`:
 | Flexzone | Supported | Not supported (fz=None in scripts) |
 | Alignment | SHM slot alignment rules | ctypes-compatible (per `packing`) |
 | Overflow | `OverflowPolicy::Block` or `Drop` | Bounded internal buffer (drop oldest) |
-| Checksum | Manual `set_checksum_options()` | Not applicable |
+| Checksum (write) | `set_checksum_options()` → BLAKE2b on commit | `set_checksum_options()` → no-op (TCP integrity) |
+| Checksum (read) | `set_verify_checksum()` → BLAKE2b on acquire | `set_verify_checksum()` → no-op |
+| last_seq() | `SlotConsumeHandle::slot_id()` (commit_index) | Wire frame `seq` field |
 | Cross-machine | No (SHM is host-local) | Yes (TCP, PGM, etc.) |
 
 See HEP-CORE-0002 §7.1 for the complete wire format specification.
@@ -198,6 +225,38 @@ optionally acquire output slot → call handler → commit or discard → releas
 It has no knowledge of schema, broker protocol, or Python GIL. Those concerns are
 handled by `processor_main` (standalone binary) and `ProcessorScriptHost`,
 which construct the appropriate Queues and own the control plane.
+
+### 3.5 Producer and Consumer Operation Modes
+
+`hub::Producer` and `hub::Consumer` each support two operation modes that govern
+thread ownership and ZMQ socket management. The choice is orthogonal to the data
+transport (SHM vs ZMQ) and to the SHM data-plane mode (Queue vs Real-time).
+
+**Standalone mode** (`start()` / `stop()`): The object launches its own internal
+threads. Producer spawns `peer_thread` (ctrl socket polling, peer-dead check) and
+`write_thread` (SHM slot processing). Consumer spawns `ctrl_thread`, `data_thread`,
+and `shm_thread`. External code must not call `handle_*_events_nowait()` or obtain
+socket handles — those sockets are owned by the internal threads.
+
+**Embedded mode** (`start_embedded()` + `handle_*_events_nowait()`): No threads are
+launched. The calling code drives ZMQ polling from its own thread, inserting
+`handle_peer_events_nowait()` / `handle_ctrl_events_nowait()` / `handle_data_events_nowait()`
+into its own poll loop. Raw socket handles are available via `peer_ctrl_socket_handle()` /
+`ctrl_zmq_socket_handle()` / `data_zmq_socket_handle()` for use in `zmq::poll()`.
+All four standard binaries use embedded mode internally.
+
+**Critical invariant**: In embedded mode, all socket-touching calls (`handle_*`,
+socket-handle accessors, `pull()`, `synced_write()`) must be issued from the
+**same thread** that owns the poll loop. ZMQ sockets are not thread-safe.
+
+**Callback registration ordering**: All `on_*` callbacks (`on_peer_dead`,
+`on_consumer_joined`, `on_channel_closing`, etc.) must be registered before
+`start()` or before the first `handle_*_events_nowait()` call. Registering after
+the poll loop has started creates a data race on the callback storage.
+
+For detailed API usage, threading diagrams, and worked examples including a custom
+data recorder, a hardware acquisition loop, and a dual-hub bridge, see
+`docs/README/README_EmbeddedAPI.md`.
 
 ---
 
@@ -280,6 +339,9 @@ Each bridge Processor:
 
 `hub::Producer` and `hub::Consumer` at both ends are unchanged — they remain
 SHM-local and expose the full set of SHM-specific facilities to their callers.
+
+A runnable 6-process dual-hub bridge demo (2 hubs, 1 producer, 2 processors, 1 consumer)
+is provided at `share/demo-dual-hub/`. Run with `bash share/demo-dual-hub/run_demo.sh`.
 
 ### 4.4 Chained Transform Pipeline
 
@@ -505,14 +567,19 @@ component additions:
    via SHM or ZMQ point-to-point. The broker only coordinates registration and
    monitors liveness.
 
-2. **Producer and Consumer are permanently SHM-local.** No transport-agnostic
-   abstraction (Queue or otherwise) is inserted between `hub::Producer`/`Consumer`
-   and their underlying `DataBlockProducer`/`Consumer`. Cross-machine flow is
-   achieved via bridge Processors.
+2. **Producer is permanently SHM-local.** No transport-agnostic abstraction is
+   inserted between `hub::Producer` and its underlying `DataBlockProducer`. The
+   Consumer may use SHM or ZMQ transport (`loop_trigger` in `consumer.json`),
+   but its control-plane connection to the broker (`ctrl_thread_`) is always active
+   regardless of data transport. Cross-machine flow with SHM producer is achieved
+   via bridge Processors (§4.3) or via `loop_trigger=zmq` on the consumer when
+   the producer uses `transport=zmq`.
 
-3. **hub::Queue carries the data plane only.** Queue implementations do not
-   manage control-plane sockets, Messenger instances, or LoopPolicy. Those
-   are the responsibility of the component that owns the Queue.
+3. **hub::QueueReader and hub::QueueWriter carry the data plane only.** Queue
+   implementations do not manage control-plane sockets, Messenger instances, or
+   LoopPolicy. Those are the responsibility of the component that owns the Queue.
+   The old `hub::Queue` combined class is eliminated; access-mode enforcement
+   is by type at compile time.
 
 4. **The checksum is the schema truth.** The broker always validates the BLAKE2b-256
    hash of the BLDS string. Schema names are human-readable aliases; they never
@@ -555,7 +622,7 @@ This is an architecture overview document. The source files that implement each 
 |-----------|-----------------|
 | **hub::Producer** | `src/include/utils/hub_producer.hpp`, `src/utils/hub/` |
 | **hub::Consumer** | `src/include/utils/hub_consumer.hpp`, `src/utils/hub/` |
-| **hub::Queue** | `src/include/utils/hub_queue.hpp` (abstract base) |
+| **hub::QueueReader / hub::QueueWriter** | `src/include/utils/hub_queue.hpp` (abstract bases; replaces old `hub::Queue`) |
 | **hub::ShmQueue** | `src/include/utils/hub_shm_queue.hpp`, `src/utils/hub/hub_shm_queue.cpp` |
 | **hub::ZmqQueue** | `src/include/utils/hub_zmq_queue.hpp`, `src/utils/hub/hub_zmq_queue.cpp` |
 | **hub::Processor** | `src/include/utils/hub_processor.hpp`, `src/utils/hub/hub_processor.cpp` |

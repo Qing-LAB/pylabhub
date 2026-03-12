@@ -73,7 +73,7 @@ SchemaSpec make_int32_spec()
     SchemaSpec spec;
     spec.has_schema = true;
     spec.exposure   = SlotExposure::Ctypes;
-    spec.packing    = "natural";
+    spec.packing    = "aligned";
     spec.fields     = {{"x", "int32", 1, 0}};
     return spec;
 }
@@ -84,7 +84,7 @@ SchemaSpec make_multi_spec()
     SchemaSpec spec;
     spec.has_schema = true;
     spec.exposure   = SlotExposure::Ctypes;
-    spec.packing    = "natural";
+    spec.packing    = "aligned";
     spec.fields     = {{"a", "int32", 1, 0}, {"b", "float32", 1, 0}, {"c", "uint8", 4, 0}};
     return spec;
 }

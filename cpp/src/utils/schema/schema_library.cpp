@@ -19,6 +19,7 @@
 //   - count > 1 → array of count scalars; alignment = scalar alignment
 
 #include "utils/schema_library.hpp"
+#include "utils/format_tools.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 
@@ -255,15 +256,7 @@ SchemaLibrary::SchemaLibrary(std::vector<std::string> search_dirs)
 
 std::string SchemaLibrary::hash_to_hex(const std::array<uint8_t, 32> &h)
 {
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string            s;
-    s.reserve(64);
-    for (uint8_t b : h)
-    {
-        s += kHex[(b >> 4) & 0xF];
-        s += kHex[b & 0xF];
-    }
-    return s;
+    return format_tools::bytes_to_hex({reinterpret_cast<const char *>(h.data()), h.size()});
 }
 
 SchemaInfo SchemaLibrary::compute_layout_info(const std::vector<SchemaFieldDef> &fields,

@@ -6,6 +6,82 @@
 
 ## Archive batches
 
+### 2026-03-10 (tech_draft merge + archive — all 4 working docs)
+
+All four tech_draft working documents finalized and merged into HEP docs:
+
+| Source | Merged into | Key content |
+|--------|-------------|-------------|
+| `loop_design_producer.md` | HEP-CORE-0018 §0/§5/§6/§7 | Thread model, inbox design, timing policies, config reference |
+| `loop_design_consumer.md` | HEP-CORE-0018 §0/§5/§6/§7 | QueueReader abstraction, slot access, spinlock, verify_checksum |
+| `loop_design_hub.md` | HEP-CORE-0017 + HEP-CORE-0022 | Hub thread model, arbitration, federation |
+| `zmq_queue_design.md` | HEP-CORE-0021 §13 | Wire format, send_thread_, InboxQueue, metrics |
+
+HEP-CORE-0018 updated: §0 implementation timeline complete; §5.4 field table cleaned; §6.3 API
+all "[PLANNED]" markers removed; §7 thread model current; §9.5 ConsumerConfig struct updated.
+HEP-CORE-0021 updated: §4.1 interface updated to QueueReader/QueueWriter split; §7.3 ProcessorScriptHost
+updated to use queue_reader()/queue_writer(); §13 inlined with ZmqQueue internals summary.
+
+**Archived to `docs/archive/transient-2026-03-10/` (Batch 3):**
+
+| Archived | Reason |
+|---|---|
+| `loop_design_producer.md` | All items done (996/996); content merged into HEP-0018 |
+| `loop_design_consumer.md` | All items done (996/996); content merged into HEP-0018 |
+| `loop_design_hub.md` | All items done; content in HEP-0017/HEP-0022 |
+| `zmq_queue_design.md` | All items done; content merged into HEP-0021 §13 |
+
+---
+
+### 2026-03-10 (Informal review precursor archived)
+
+`review_design_and_code.md` (informal P1/P2 findings, 2026-03-09) archived — all 6 findings promoted to
+formal `REVIEW_DesignAndCode_2026-03-09.md` with status table. All actionable items now closed.
+
+**Archived to `docs/archive/transient-2026-03-10/`:**
+
+| Archived | Reason |
+|---|---|
+| `review_design_and_code.md` | Superseded by formal REVIEW_DesignAndCode_2026-03-09.md; all items triaged |
+
+---
+
+### 2026-03-10 (Design Review Triage + queue_refactor_plan archive)
+
+Formal review REVIEW_DesignAndCode_2026-03-09.md created from informal review_design_and_code.md triage.
+DC-01 (METRICS_REQ SHM merge) fixed: `handle_metrics_req` now calls `query_shm_blocks()` and merges
+`shm_blocks` key into response (HEP-0019 §3.2 compliance). DC-02/DC-03/DC-05 confirmed already fixed.
+DC-04/DC-06 deferred.
+
+queue_refactor_plan.md archived — all 9 phases executed (QueueReader/QueueWriter split complete).
+Lasting design decisions already merged into loop_design_consumer.md + hub_queue.hpp docstrings.
+
+**Archived to `docs/archive/transient-2026-03-09/` (Batch 2):**
+
+| Archived | Reason |
+|---|---|
+| `queue_refactor_plan.md` | All phases complete (975/975 tests); design in loop_design_consumer.md |
+
+---
+
+### 2026-03-09 (DataHub Inbox Code Review)
+
+Code review `REVIEW_DataHubInbox_2026-03-09.md` closed after fixing all 13 actionable items:
+CR-02 (inbox thread join order), CR-03 (ShmQueue checksum ordering), HR-01 (atomic script_errors_),
+HR-02 (atomic reader_), HR-03 (ZMQ_RCVTIMEO caching), HR-05 (GIL release in open_inbox), HR-06,
+MR-05, MR-08, MR-10 (send_stop_ guard), LR-04 (memory_order_release), LR-05 (error counting),
+IC-04 (last_seq docstring). MR-04 confirmed false positive. Test count: 975/975.
+
+Deferred items (accepted by design): MR-01 (dedup), MR-02 (per-sender gap), MR-07 (join-order safe), LR-01, MR-06, MR-09.
+
+**Archived to `docs/archive/transient-2026-03-09/`:**
+
+| Archived | Reason |
+|---|---|
+| `REVIEW_DataHubInbox_2026-03-09.md` | All actionable items fixed; CLOSED |
+
+---
+
 ### 2026-03-06 Batch 2 (Closed Reviews + Deferred Design Docs)
 
 Archived all remaining open tech_draft/ review documents after verifying all items

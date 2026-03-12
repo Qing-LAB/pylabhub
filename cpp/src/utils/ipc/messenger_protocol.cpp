@@ -207,8 +207,10 @@ bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
         nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         if (response.value("status", "") != "success")
         {
-            LOGGER_ERROR("Messenger: deregister_consumer('{}') failed: {}", cmd.channel,
-                         response.value("message", std::string("unknown")));
+            // NOT_REGISTERED is expected when the broker already cleaned up the channel
+            // (e.g. after CHANNEL_CLOSING_NOTIFY + deregister_channel on producer exit).
+            LOGGER_WARN("Messenger: deregister_consumer('{}') failed: {}", cmd.channel,
+                        response.value("message", std::string("unknown")));
         }
     }
     catch (const zmq::error_t &e)
@@ -501,6 +503,10 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
         // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
         if (cmd.data_transport != "shm") payload["data_transport"] = cmd.data_transport;
         if (!cmd.zmq_node_endpoint.empty()) payload["zmq_node_endpoint"] = cmd.zmq_node_endpoint;
+        if (!cmd.inbox_endpoint.empty()) payload["inbox_endpoint"] = cmd.inbox_endpoint;
+        // Phase 4: inbox schema + packing for ROLE_INFO_REQ discovery.
+        if (!cmd.inbox_schema_json.empty()) payload["inbox_schema_json"] = cmd.inbox_schema_json;
+        if (!cmd.inbox_packing.empty())     payload["inbox_packing"]     = cmd.inbox_packing;
 
         const std::string msg_type    = "REG_REQ";
         const std::string payload_str = payload.dump();
@@ -625,6 +631,8 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
         if (!cmd.consumer_name.empty()) reg_payload["consumer_name"]         = cmd.consumer_name;
         // Named schema field (HEP-CORE-0016 Phase 3) is optional.
         if (!cmd.expected_schema_id.empty()) reg_payload["expected_schema_id"] = cmd.expected_schema_id;
+        // Transport arbitration (Phase 6): broker validates against channel's data_transport.
+        if (!cmd.consumer_queue_type.empty()) reg_payload["consumer_queue_type"] = cmd.consumer_queue_type;
         const std::string msg_type   = "CONSUMER_REG_REQ";
         const std::string reg_str    = reg_payload.dump();
         std::vector<zmq::const_buffer> reg_msgs = {zmq::buffer(&kFrameTypeControl, 1),
@@ -1029,6 +1037,184 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
     {
         LOGGER_ERROR("Messenger: JSON error in list_channels(): {}", e.what());
         cmd.result.set_value({});
+    }
+    return false;
+}
+
+// ── ROLE_PRESENCE_REQ (Phase 4) ───────────────────────────────────────────────
+
+bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: query_role_presence('{}') — not connected.", cmd.uid);
+        cmd.result.set_value(false);
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["uid"] = cmd.uid;
+
+        const std::string msg_type    = "ROLE_PRESENCE_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: query_role_presence('{}') send failed.", cmd.uid);
+            cmd.result.set_value(false);
+            return false;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+        nlohmann::json response;
+        bool got_response = false;
+
+        while (!got_response)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: query_role_presence('{}') timed out.", cmd.uid);
+                cmd.result.set_value(false);
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: query_role_presence('{}') timed out.", cmd.uid);
+                cmd.result.set_value(false);
+                return false;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue;
+
+            const std::string resp_type(static_cast<const char*>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            if (resp_type != "ROLE_PRESENCE_ACK")
+                continue;
+
+            response    = nlohmann::json::parse(recv_msgs.back().to_string());
+            got_response = true;
+        }
+
+        cmd.result.set_value(response.value("present", false));
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in query_role_presence('{}'): {}",
+                     cmd.uid, e.what());
+        cmd.result.set_value(false);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in query_role_presence('{}'): {}",
+                     cmd.uid, e.what());
+        cmd.result.set_value(false);
+    }
+    return false;
+}
+
+// ── ROLE_INFO_REQ (Phase 4) ───────────────────────────────────────────────────
+
+bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: query_role_info('{}') — not connected.", cmd.uid);
+        cmd.result.set_value(std::nullopt);
+        return false;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["uid"] = cmd.uid;
+
+        const std::string msg_type    = "ROLE_INFO_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: query_role_info('{}') send failed.", cmd.uid);
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+        nlohmann::json response;
+        bool got_response = false;
+
+        while (!got_response)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: query_role_info('{}') timed out.", cmd.uid);
+                cmd.result.set_value(std::nullopt);
+                return false;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: query_role_info('{}') timed out.", cmd.uid);
+                cmd.result.set_value(std::nullopt);
+                return false;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue;
+
+            const std::string resp_type(static_cast<const char*>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            if (resp_type != "ROLE_INFO_ACK")
+                continue;
+
+            response    = nlohmann::json::parse(recv_msgs.back().to_string());
+            got_response = true;
+        }
+
+        if (!response.value("found", false))
+        {
+            LOGGER_DEBUG("Messenger: query_role_info('{}') — not found.", cmd.uid);
+            cmd.result.set_value(std::nullopt);
+            return false;
+        }
+
+        RoleInfoResult info;
+        info.inbox_endpoint = response.value("inbox_endpoint", "");
+        if (response.contains("inbox_schema") && response["inbox_schema"].is_array())
+            info.inbox_schema = response["inbox_schema"];
+        info.inbox_packing  = response.value("inbox_packing", "");
+        cmd.result.set_value(std::move(info));
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in query_role_info('{}'): {}", cmd.uid, e.what());
+        cmd.result.set_value(std::nullopt);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in query_role_info('{}'): {}", cmd.uid, e.what());
+        cmd.result.set_value(std::nullopt);
     }
     return false;
 }

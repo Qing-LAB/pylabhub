@@ -28,6 +28,7 @@
 #pragma once
 
 #include "plh_platform.hpp" // PYLABHUB_UTILS_EXPORT
+#include "utils/module_def.hpp"
 
 #include <atomic>
 #include <functional>
@@ -76,6 +77,21 @@ public:
 
     /// True if install() has been called and uninstall() has not.
     bool is_installed() const noexcept;
+
+    /// Creates a lifecycle ModuleDef for use with LifecycleManager.
+    ///
+    /// Register it as a dynamic persistent module after calling install():
+    ///
+    ///     auto mod = handler.make_lifecycle_module();
+    ///     LifecycleManager::instance().register_dynamic_module(std::move(mod));
+    ///     LifecycleManager::instance().load_module("SignalHandler", ...);
+    ///
+    /// During LifecycleGuard teardown (finalize()), the module's shutdown
+    /// callback automatically calls uninstall(), so no explicit uninstall()
+    /// call is needed in the main loop exit path.
+    ///
+    /// @note Only one InteractiveSignalHandler may use this at a time (one per process).
+    [[nodiscard]] utils::ModuleDef make_lifecycle_module();
 
 private:
     struct Impl;

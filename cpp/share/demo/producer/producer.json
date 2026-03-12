@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Demo producer — publishes a counter slot on 'lab.demo.counter' at 10 Hz.",
+    "Demo producer — publishes 1024 float32 samples per slot on 'lab.demo.counter'.",
     "Run with: pylabhub-producer <path-to-this-dir>",
     "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
   ],
@@ -13,7 +13,8 @@
   },
   "channel":     "lab.demo.counter",
   "broker":      "tcp://127.0.0.1:5570",
-  "interval_ms": 100,
+  "target_period_ms":    0,
+  "loop_timing":         "max_rate",
 
   "shm": {
     "enabled":    true,

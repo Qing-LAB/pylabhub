@@ -92,6 +92,31 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
     if (cfg.channel.empty())
         throw std::runtime_error("Consumer config: missing 'channel'");
 
+    // ── Queue type / timing ───────────────────────────────────────────────────
+    {
+        const std::string qt = j.value("queue_type", "shm");
+        if (qt == "shm")
+            cfg.queue_type = QueueType::Shm;
+        else if (qt == "zmq")
+            cfg.queue_type = QueueType::Zmq;
+        else
+            throw std::runtime_error("Consumer config: invalid 'queue_type': '" + qt +
+                                     "' (expected 'shm' or 'zmq')");
+    }
+
+    cfg.target_period_ms = j.value("target_period_ms", 0);
+    if (cfg.target_period_ms < 0) {
+        throw std::runtime_error("Consumer config: 'target_period_ms' must be >= 0");
+    }
+
+    if (j.contains("loop_timing")) {
+        cfg.loop_timing = ::pylabhub::parse_loop_timing_policy(
+            j["loop_timing"].get<std::string>(), cfg.target_period_ms, "Consumer config");
+    }
+    else {
+        cfg.loop_timing = ::pylabhub::default_loop_timing_policy(cfg.target_period_ms);
+    }
+
     cfg.timeout_ms            = j.value("timeout_ms",            -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
@@ -110,15 +135,81 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
     if (j.contains("flexzone_schema") && !j["flexzone_schema"].is_null())
         cfg.flexzone_schema_json = j["flexzone_schema"];
 
+    // ── Inbox (optional) ─────────────────────────────────────────────────────
+    if (j.contains("inbox_schema") && !j["inbox_schema"].is_null())
+        cfg.inbox_schema_json = j["inbox_schema"];
+    cfg.inbox_endpoint          = j.value("inbox_endpoint",          std::string{});
+    cfg.inbox_buffer_depth      = j.value("inbox_buffer_depth",      size_t{64});
+    cfg.inbox_overflow_policy   = j.value("inbox_overflow_policy",   std::string{"drop"});
+    cfg.zmq_buffer_depth        = j.value("zmq_buffer_depth",        size_t{64});
+    cfg.zmq_packing             = j.value("zmq_packing",             std::string{"aligned"});
+    if (cfg.zmq_packing != "aligned" && cfg.zmq_packing != "packed")
+        throw std::runtime_error(
+            "Consumer config: invalid 'zmq_packing': '" + cfg.zmq_packing +
+            "' (expected 'aligned' or 'packed')");
+    if (cfg.inbox_buffer_depth == 0)
+        throw std::runtime_error("Consumer config: 'inbox_buffer_depth' must be > 0");
+    if (cfg.zmq_buffer_depth == 0)
+        throw std::runtime_error("Consumer config: 'zmq_buffer_depth' must be > 0");
+    if (cfg.inbox_overflow_policy != "drop" && cfg.inbox_overflow_policy != "block")
+        throw std::runtime_error(
+            "Consumer config: invalid 'inbox_overflow_policy': '" + cfg.inbox_overflow_policy +
+            "' (expected 'drop' or 'block')");
+    if (cfg.has_inbox())
+    {
+        if (!cfg.inbox_schema_json.is_string() && !cfg.inbox_schema_json.is_object())
+            throw std::runtime_error(
+                "Consumer config: 'inbox_schema' must be a JSON object (inline schema) "
+                "or string (named schema reference)");
+    }
+
+    // ── Startup coordination (HEP-0023) ──────────────────────────────────────
+    if (j.contains("startup") && j.at("startup").is_object())
+    {
+        const auto &s = j.at("startup");
+        if (s.contains("wait_for_roles") && s.at("wait_for_roles").is_array())
+        {
+            for (const auto &w : s.at("wait_for_roles"))
+            {
+                if (!w.contains("uid") || !w.at("uid").is_string())
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: each entry must have a string 'uid'");
+                WaitForRole wr;
+                wr.uid = w.at("uid").get<std::string>();
+                if (wr.uid.empty())
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: 'uid' must not be empty");
+                wr.timeout_ms = w.value("timeout_ms", pylabhub::kDefaultStartupWaitTimeoutMs);
+                if (wr.timeout_ms <= 0)
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: timeout_ms must be > 0 for uid='" +
+                        wr.uid + "'");
+                if (wr.timeout_ms > pylabhub::kMaxStartupWaitTimeoutMs)
+                    throw std::runtime_error(
+                        "startup.wait_for_roles: timeout_ms exceeds maximum (3600000 ms) for uid='" +
+                        wr.uid + "'");
+                cfg.wait_for_roles.push_back(std::move(wr));
+            }
+        }
+    }
+
+    // ── Peer/hub-dead monitoring ─────────────────────────────────────────────
+    cfg.ctrl_queue_max_depth = j.value("ctrl_queue_max_depth", size_t{256});
+    cfg.peer_dead_timeout_ms = j.value("peer_dead_timeout_ms", 30000);
+
     if (j.contains("script") && j["script"].is_object())
     {
-        cfg.script_type = j["script"].value("type", std::string{"python"});
-        cfg.script_path = j["script"].value("path", std::string{"./script"});
+        const auto &s = j["script"];
+        cfg.script_type_explicit = s.contains("type");
+        cfg.script_type = s.value("type", std::string{"python"});
+        cfg.script_path = s.value("path", std::string{"."});
     }
 
     if (j.contains("validation") && j["validation"].is_object())
-        cfg.stop_on_script_error =
-            j["validation"].value("stop_on_script_error", false);
+    {
+        cfg.stop_on_script_error = j["validation"].value("stop_on_script_error", false);
+        cfg.verify_checksum      = j["validation"].value("verify_checksum", false);
+    }
 
     return cfg;
 }

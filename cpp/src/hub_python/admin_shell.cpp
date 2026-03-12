@@ -34,6 +34,7 @@ struct AdminShell::Impl
     explicit Impl()
         : socket(pylabhub::hub::get_zmq_context(), zmq::socket_type::rep)
     {
+        socket.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
     }
 
     // -----------------------------------------------------------------------

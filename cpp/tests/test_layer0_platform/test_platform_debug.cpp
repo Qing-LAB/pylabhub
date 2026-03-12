@@ -32,6 +32,10 @@ using pylabhub::tests::helper::StringCapture;
 // Debug Message Tests
 // ============================================================================
 
+// PLH_DEBUG is a no-op in Release builds (PYLABHUB_ENABLE_DEBUG_MESSAGES not defined).
+// These two tests only make sense when the macro is active.
+#if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+
 /**
  * Test PLH_DEBUG outputs correct message format
  * Note: PLH_DEBUG intentionally does NOT include source location to avoid
@@ -67,6 +71,8 @@ TEST(PlatformDebugTest, DebugMsg_MultipleArgs)
     std::string output = capture.GetOutput();
     EXPECT_THAT(output, HasSubstr("Values: 1, test, 3.14"));
 }
+
+#endif // PYLABHUB_ENABLE_DEBUG_MESSAGES
 
 /**
  * Test debug_msg_rt with runtime format strings

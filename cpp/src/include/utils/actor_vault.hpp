@@ -1,9 +1,10 @@
 /**
  * @file actor_vault.hpp
- * @brief ActorVault: encrypted keypair store for an actor instance.
+ * @brief ActorVault: encrypted CurveZMQ keypair store for a role instance.
  *
- * Stores the actor's CurveZMQ keypair, encrypted at rest with the same
- * Argon2id KDF + XSalsa20-Poly1305 scheme used by HubVault.
+ * Used by all three role types (producer, consumer, processor) to store their
+ * CurveZMQ keypair encrypted at rest, using the same Argon2id KDF +
+ * XSalsa20-Poly1305 scheme as HubVault.
  *
  * Vault file format (binary):
  *   [nonce (24 bytes)] [MAC (16 bytes) || ciphertext]
@@ -11,17 +12,18 @@
  * Decrypted payload is UTF-8 JSON:
  * @code{.json}
  * {
- *   "actor_uid":  "ACTOR-...",
+ *   "actor_uid":  "PROD-SENSOR1-3A7F2B1C",
  *   "public_key": "<Z85 40-char>",
  *   "secret_key": "<Z85 40-char>"
  * }
  * @endcode
  *
- * Key derivation: Argon2id(password, salt=BLAKE2b-16(actor_uid),
- *                           kVaultOpsLimit, kVaultMemLimit)
+ * The "actor_uid" key stores the role UID (PROD-/CONS-/PROC- prefix) and
+ * is used as the per-vault KDF domain separator so two roles using the same
+ * password produce independent encryption keys.
  *
- * The actor_uid is used as a per-vault domain separator so two actors using
- * the same password produce independent encryption keys.
+ * Key derivation: Argon2id(password, salt=BLAKE2b-16(role_uid),
+ *                           kVaultOpsLimit, kVaultMemLimit)
  *
  * Password sources (checked in order by caller):
  *   1. PYLABHUB_ACTOR_PASSWORD environment variable (service / CI)

@@ -1,65 +1,64 @@
-"""
-Processor: DemoDoubler
-
-Reads each slot from 'lab.demo.counter', doubles `value`, and writes
-'lab.demo.processed'. Also updates output flexzone metadata.
-"""
+"""Throughput processor: doubles all 1024 float32 samples, sets scale=2.0.
+Stops automatically when the upstream channel_closing event arrives."""
 
 import time
 
 import pylabhub_processor as proc
 
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+BLOCK_SIZE = 1024
+SCALE = 2.0
+
 _processed: int = 0
+_start: float = 0.0
 
 
 def on_init(api: proc.ProcessorAPI) -> None:
-    fz = api.flexzone()
-    if fz is not None:
-        fz.stage = b"processor"
-        fz.label = b"lab.demo.processed"
-        fz.last_count = 0
-        fz.last_value = 0.0
-        fz.updated_ts = time.time()
-        api.update_flexzone_checksum()
-
-    api.log("info", f"DemoDoubler: started uid={api.uid()} {api.in_channel()} -> {api.out_channel()}")
+    global _start
+    _start = time.time()
+    api.log(
+        "info",
+        f"DemoDoubler: started uid={api.uid()} {api.in_channel()} -> {api.out_channel()}",
+    )
 
 
 def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) -> bool:
     global _processed
 
-    if in_slot is None:
-        api.log("debug", "DemoDoubler: timeout - no slot from producer")
-        return False
+    # Propagate shutdown: when upstream producer stops, chain the stop downstream.
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("event") == "channel_closing":
+            api.log("info", "DemoDoubler: upstream channel closed — stopping")
+            api.stop()
+            return False
 
-    for sender, data in messages:
-        api.log("debug", f"DemoDoubler: zmq from {sender}: {data!r}")
+    if in_slot is None:
+        return False
 
     out_slot.count = in_slot.count
     out_slot.ts = in_slot.ts
-    out_slot.value = in_slot.value
-    out_slot.doubled = in_slot.value * 2.0
+    out_slot.scale = SCALE
 
-    if flexzone is not None:
-        flexzone.last_count = out_slot.count
-        flexzone.last_value = out_slot.doubled
-        flexzone.updated_ts = out_slot.ts
-        api.update_flexzone_checksum()
+    if np is not None:
+        arr_in = np.ctypeslib.as_array(in_slot.samples)
+        arr_out = np.ctypeslib.as_array(out_slot.samples)
+        arr_out[:] = arr_in * np.float32(SCALE)
+    else:
+        for i in range(BLOCK_SIZE):
+            out_slot.samples[i] = float(in_slot.samples[i]) * SCALE
 
     _processed += 1
-    if _processed % 100 == 0:
-        api.log(
-            "info",
-            f"DemoDoubler: processed={_processed} in={api.in_slots_received()} "
-            f"out={api.out_slots_written()} drops={api.out_drop_count()}",
-        )
-
     return True
 
 
 def on_stop(api: proc.ProcessorAPI) -> None:
+    elapsed = max(time.time() - _start, 1e-9)
     api.log(
         "info",
-        f"DemoDoubler: stopped processed={_processed} in={api.in_slots_received()} "
-        f"out={api.out_slots_written()} drops={api.out_drop_count()}",
+        f"DemoDoubler: stopped processed={_processed} avg_rate={_processed/elapsed:.1f} Hz "
+        f"in={api.in_slots_received()} out={api.out_slots_written()} drops={api.out_drop_count()}",
     )

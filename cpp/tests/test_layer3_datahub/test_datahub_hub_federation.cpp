@@ -231,7 +231,7 @@ public:
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
             Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetLifecycleModule()));
+            pylabhub::hub::GetLifecycleModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 

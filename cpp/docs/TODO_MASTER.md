@@ -22,6 +22,65 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (CLOSED — 2026-03-12): Hub-Dead ZMQ Monitor + StopReason Fix
+📍 **Status**: ✅ CLOSED — ZMQ socket monitor path implemented; StopReason ordering restored; **1084/1085 tests** (1 pre-existing timing flake)
+
+**Completed 2026-03-12:**
+- [x] Restored `handle_command(ConnectCmd&, ...)` in `messenger.cpp` (accidentally deleted by prior agent) ✅
+- [x] Restored `send_heartbeats()` in `messenger.cpp` (accidentally deleted by prior agent) ✅
+- [x] Replaced timer-based hub-dead (`m_last_broker_recv_epoch_ms_`/`hub_last_contact_ms()`) with ZMQ socket monitor: `zmq_socket_monitor()` + PAIR socket polling `ZMQ_EVENT_DISCONNECTED`; `process_monitor_events()` / `close_monitor()` ✅
+- [x] ZMTP heartbeat sockopts set BEFORE `connect()` in ConnectCmd handler (`ZMQ_HEARTBEAT_IVL=5s`, `ZMQ_HEARTBEAT_TIMEOUT=30s`) ✅
+- [x] `hub_dead_timeout_ms` removed from all 3 role configs (ProducerConfig, ConsumerConfig, ProcessorConfig) ✅
+- [x] `StopReason` enum corrected: `Normal=0, PeerDead=1, HubDead=2, CriticalError=3` (prior agent collapsed HubDead) ✅
+- [x] `stop_reason()` switch in all 3 API classes restored (cases 1=peer_dead, 2=hub_dead, 3=critical_error) ✅
+- [x] All 3 script hosts: `on_hub_dead()` wired (producer: out_messenger_; consumer: in_messenger_; processor: BOTH in+out messengers with shared lambda) ✅
+- [x] All 3 script hosts: `on_hub_dead(nullptr)` deregistered in `stop_role()` ✅
+- [x] Static code review: frame-size check corrected `< 2` → `< 6`; monitor setup failure LOG_WARN → LOGGER_ERROR with errno ✅
+
+### Priority -1 (CLOSED — 2026-03-11): Peer/Hub-Dead Monitoring + MonitoredQueue
+📍 **Status**: ✅ CLOSED — all items implemented and code review fixes applied; **1062/1062 tests**
+
+**Completed 2026-03-11:**
+- [x] `MonitoredQueue<T>` header at `src/utils/hub/hub_monitored_queue.hpp` (move ctor/assign, push/drain/run_check, 5 callbacks) ✅
+- [x] `hub_producer.cpp` / `hub_consumer.cpp`: replace `ctrl_send_mu`+`ctrl_send_queue` with `MonitoredQueue`; add peer-dead detection (`peer_ever_seen_`, `last_peer_recv_`); `on_peer_dead()` / `ctrl_queue_dropped()` public methods ✅
+- [x] `hub_producer.hpp` / `hub_consumer.hpp`: `ctrl_queue_max_depth` / `peer_dead_timeout_ms` in Options; `on_peer_dead()` / `ctrl_queue_dropped()` declared ✅
+- [x] `StopReason` enum + `stop_reason_` atomic in `PythonRoleHostBase` ✅
+- [x] All 3 script hosts: wire `on_peer_dead` + `on_hub_dead` callbacks; pass `ctrl_queue_max_depth`/`peer_dead_timeout_ms` in opts ✅
+- [x] All 3 API classes: `stop_reason()` / `ctrl_queue_dropped()` + pybind11 bindings + `ctrl_queue_dropped` in `snapshot_metrics_json()` ✅
+- [x] Config parsing: `ctrl_queue_max_depth`/`peer_dead_timeout_ms` in ProducerConfig/ConsumerConfig/ProcessorConfig ✅
+- [x] Code review fixes round 1: `fire_and_forget=true` default; peer-dead detection in embedded mode (handle_peer/ctrl_events_nowait); `on_peer_dead_cb` under `callbacks_mu` (producer + consumer, 3 sites each); ctrl_queue_max_depth=0 unbounded fix; README_EmbeddedAPI.md + HEP-0017 §3.5 ✅
+- [x] 9 MonitoredQueue unit tests (+2 new: FireAndForget_True_SkipsCallbacks, MoveAssignment_ResetsMonitoringState) → **1060/1060** ✅
+- [x] Code review fixes round 2: `on_peer_dead_cb` not cleared in Producer::close(); Consumer::close() missing 3 callbacks; `PendingConsumerCtrlSend`→`PendingCtrlSend` rename → **1060/1060** ✅
+- [x] CR-005: embedded-mode peer-dead tests → **1062/1062** ✅ 2026-03-11
+
+### Priority -1 (CLOSED — 2026-03-10): Full-Stack Code Review Fixes + Abstraction Cleanup
+📍 **Status**: ✅ CLOSED — all actionable items resolved; **1045/1045 tests**
+📋 **Reviews**:
+  - `docs/code_review/REVIEW_FullStack_2026-03-10.md` — ✅ CLOSED 2026-03-10
+  - `docs/code_review/REVIEW_FullStack2_2026-03-10.md` — ✅ CLOSED 2026-03-10
+  - `docs/code_review/REVIEW_DesignAndCode_2026-03-09.md` — ✅ CLOSED (DC-04/06 deferred)
+
+**Completed this sprint** (2026-03-09/10):
+- [x] REVIEW_DesignAndCode_2026-03-09.md: DC-01 METRICS_REQ SHM merge fixed; DC-02/03/05 verified; DC-04/06 deferred ✅
+- [x] Consumer inbox_thread_ (ROUTER): ConsumerConfig inbox fields + ConsumerScriptHost::run_inbox_thread_() ✅ 2026-03-10
+- [x] 9 L3 ShmQueue test scenarios → **988/988 tests** ✅ 2026-03-10
+- [x] Full-stack code review (background agent): 14 findings triaged → REVIEW_FullStack_2026-03-10.md ✅ 2026-03-10
+- [x] FS-01/MR-05/MR-10: false positives confirmed by code audit ✅ 2026-03-10
+- [x] FS-02: inbox config validation hardened in ProducerConfig+ConsumerConfig; 8 new tests → **996/996** ✅ 2026-03-10
+- [x] Code review REVIEW_DataHubInbox_2026-03-09.md: 13 items fixed, CLOSED + archived ✅ 2026-03-09
+- [x] REVIEW_FullStack2_2026-03-10.md: A1 (inbox_overflow_policy parsed), A5 (zmq_buffer_depth in ConsumerConfig), A6 (+15 config tests), A11/A18 (InboxQueue per-sender seq gap), A12 (queue_type rename), A20 (HEP doc updated) → **1011/1011** ✅ 2026-03-10
+- [x] `LoopDriver`/`loop_driver` → `QueueType`/`queue_type` throughout code+docs; wire key `consumer_queue_type` ✅ 2026-03-10
+- [x] ProcessorAPI queue-state accessors: `last_seq`, `in_capacity`, `in_policy`, `out_capacity`, `out_policy`, `set_verify_checksum`; atomic QueueReader*/QueueWriter* members; set/clear in start/stop/cleanup ✅ 2026-03-10
+- [x] API naming fix: `ProducerAPI::overrun_count()` → `loop_overrun_count()` (pybind11 + JSON keys) ✅ 2026-03-10
+- [x] ConsumerAPI: `set_verify_checksum()` added; `loop_overrun_count: 0` added to `snapshot_metrics_json()` ✅ 2026-03-10
+- [x] REVIEW_Processor_2026-03-10.md: all 20 items ✅ CLOSED 2026-03-10 → **1045/1045 tests**
+- [x] REVIEW_DeepStack_2026-03-10.md: deep review (9 dimensions, 16 findings); DS-DS-01/02, DS-MET-01, DS-DEAD-01, DS-H18-01/02, DS-CF-01/02/03, DS-H15-01, DS-API-01/02 fixed; DS-MR-09/HR-03/HR-05 deferred (tracked in API_TODO.md) ✅ CLOSED 2026-03-10
+- [x] Abstraction leak audit + fix: all 3 script hosts (producer/consumer/processor) now use QueueWriter::write_flexzone/flexzone_size/sync_flexzone_checksum and QueueReader::read_flexzone/flexzone_size; set_checksum_options moved to post-factory abstract call; update_flexzone_checksum fixed in ProducerAPI + ProcessorAPI ✅ 2026-03-10 → **1045/1045**
+- [x] REVIEW_FullStack2_2026-03-10: A2/A14 PRE-FIXED confirmed (Processor inbox receive + ProcessorAPI open_inbox/wait_for_role already implemented); A13 FIXED (script_type_explicit + LOGGER_WARN); CLOSED ✅ 2026-03-10
+- [x] HEP-0015: JSON example corrected (flexzone_schema, flat inbox keys, startup ⚠ warning); ProcessorConfig struct listing corrected ✅ 2026-03-10
+- [x] HEP-0018: JSON examples corrected (target_period_ms, no shm.slot_count, set_critical_error(), loop_overrun_count); ProducerAPI/ConsumerAPI sections expanded ✅ 2026-03-10
+- [x] README_Deployment.md: complete rewrite (stale actor content replaced with all 4 binaries, full field refs, Python API, multi-hub pipelines, operational guide) ✅ 2026-03-10
+
 ### Priority 1: Layer 4 Producer + Consumer Tests
 📍 **Status**: ✅ Complete (2026-03-02) — 26 new tests; **550/550 passing**
 📋 **Details**: `docs/todo/TESTING_TODO.md` § "Layer 4: pylabhub-producer/consumer Tests"
@@ -125,7 +184,9 @@ Completed:
 | Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
-| Processor Binary | ✅ Phase 2 done | `docs/HEP/HEP-CORE-0015-Processor-Binary.md` | **Phase 1+2 done (2026-03-03):** 15 config + 6 CLI tests. Dual-broker config; ProcessorScriptHost delegates to hub::Processor; ScriptHost dedup. |
+| Processor Binary | ✅ Phase 3 complete | `docs/HEP/HEP-CORE-0015-Processor-Binary.md` | **Phase 1+2 done (2026-03-03). Phase 3 config+ScriptHost 2026-03-10:** timing policy, inbox (ROUTER), direct ZMQ PULL input, verify_checksum, zmq_packing/buffer from config. REVIEW_Processor_2026-03-10.md: all 20 items ✅ CLOSED 2026-03-10. **1078/1078 tests.** |
+| Startup Coordination | ✅ Phase 1 complete | `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` | **HEP-0023 written 2026-03-10.** `startup.wait_for_roles` config field implemented in all 3 role configs + script hosts (poll before on_init, per-role timeout). 16 config tests. **1078/1078 tests 2026-03-11.** Deferred: DISC_ACK, ROLE_REGISTERED_NOTIFY. |
+| Role Directory Service | 🟡 Design | `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md` | **HEP-0024 written 2026-03-12.** Design: `RoleDirectory` (public layout/path-resolution service) + `role_cli.hpp` (standard CLI helpers). Formalises the implicit directory convention; enables consistent custom role binary development with correct security defaults. Implementation pending (8 phases). |
 | Pipeline Architecture | ✅ Design | `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md` | Design complete (2026-03-01, updated 2026-03-05). Five planes (Metrics added), four standalone binaries, topology patterns. |
 | Metrics Plane | ✅ Complete | `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` | **Implemented (2026-03-05).** All 5 phases. 19 tests. Heartbeat metrics extension, METRICS_REPORT_REQ, METRICS_REQ/ACK, Python bindings, AdminShell. |
 | Interactive Signal Handler | ✅ Complete | `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md` | **Implemented (2026-03-02).** All 4 binaries integrated. Old signal handlers removed. 705/705 pass. |
@@ -134,7 +195,13 @@ Completed:
 | ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
-**Active code reviews:** `docs/code_review/REVIEW_FullSource_2026-03-06.md` (47 findings). 3 false positives (#21 #32 #41), 3 accepted (#11 #16 #23). **All HIGH items resolved.** 32 ✅ FIXED across multiple sessions. 12 MEDIUM/LOW remain in backlog: #5 #6 #8 #12 #26 #33 #39 #42 #43 #44 #46 #47.
+**Active code reviews:**
+- `docs/code_review/REVIEW_FullSource_2026-03-06.md` (47 findings). 3 false positives (#21 #32 #41), 4 accepted (#11 #16 #23 #47). **All HIGH items resolved.** 36 ✅ FIXED. 8 MEDIUM/LOW remain in backlog: #5 #6 #12 #26 #33 #42 #44 #46.
+- `docs/code_review/review_high_level.md` — HIGH-1 ✅ FIXED 2026-03-11 (admin token security: removed from hub.json, vault-only via set_admin_token()); HIGH-2 ✅ FIXED 2026-03-11 (interval_ms→target_period_ms, script.type added to all --init templates, CLI tests extended, README hub.json corrected); HIGH-3 ✅ FIXED 2026-03-11 (misleading WARN removed — processor loop is correctly demand-driven). MEDIUM/LOW items remain open.
+- `docs/code_review/review_design_and_code.md` — ❌ NEEDS FORMAL TRIAGE. 6 P1/P2 findings (see Priority 0 above). Must be promoted to REVIEW_DesignAndCode_2026-03-09.md with proper status table.
+- `docs/code_review/REVIEW_DataHubInbox_2026-03-09.md` — ✅ CLOSED 2026-03-09, archived to `docs/archive/transient-2026-03-09/`.
+- `docs/code_review/REVIEW_Processor_2026-03-10.md` — ✅ CLOSED 2026-03-10 (all 20 items; PR-17 false positive).
+- `docs/code_review/REVIEW_DeepStack_2026-03-10.md` — ✅ CLOSED 2026-03-10 (16 findings; 13 fixed, 3 deferred to API_TODO.md).
 
 **Security fixes applied (2026-03-06):** SHM-C1 (heartbeat CAS uid/name write-before-CAS → data corruption), IPC-C3 (thread lambda `this`-capture → use-after-move), SVC-C1 (vault_crypto key not zeroed), SVC-C2/C3 (hub_vault sec+admin token buffers not zeroed), HDR-C1 (namespace outside `#ifdef __cplusplus`). See `REVIEW_codebase_2026-03-06.md` for full triage.
 
@@ -173,7 +240,7 @@ See `docs/todo/README.md` for full list and archiving history.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Dual-hub bridge demo (`share/demo-dual-hub/`) | 🔵 Deferred | Explicitly deferred (2026-03-06). Demo dir exists (untracked); defer until transport field plan is revisited. |
+| Dual-hub bridge demo (`share/demo-dual-hub/`) | ✅ Complete | ProcessorConfig transport fields + ProcessorScriptHost ZMQ path + L3 ShmInZmqOut/ZmqInShmOut tests + 6-process demo configs/scripts/run_demo.sh — 2026-03-11. |
 | HEP-0022 Phase 5+6: HubScript federation callbacks | ✅ Complete | `on_hub_connected`, `on_hub_disconnected`, `on_hub_message`, `api.notify_hub()` fully wired in `hub_script.cpp` + `hub_script_api.cpp` + `hubshell.cpp`. Confirmed 2026-03-06. |
 | Security: IPC-H2 BrokerService key zeroing | ✅ Fixed (2026-03-06) | `~BrokerServiceImpl()` zeros `server_secret_z85` + `cfg.server_secret_key` via `sodium_memzero`. |
 

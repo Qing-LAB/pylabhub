@@ -3,6 +3,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
+#include "hub_monitored_queue.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -40,7 +41,7 @@ constexpr auto kManagedConsumerShutdownMs = std::chrono::milliseconds(10000);
 
 /// Outgoing ctrl message queued for ctrl_thread to send on the DEALER socket.
 /// Consumer sends only one direction (no identity needed — DEALER routes automatically).
-struct PendingConsumerCtrlSend
+struct PendingCtrlSend
 {
     std::string            type;    // empty when is_raw=true
     std::vector<std::byte> data;
@@ -77,9 +78,18 @@ struct ConsumerImpl
     mutable std::mutex callbacks_mu;
 
     // Outgoing ctrl messages queued for ctrl_thread to send on the DEALER socket.
-    // Prevents cross-thread ZMQ socket access when Consumer is started.
-    mutable std::mutex                       ctrl_send_mu;
-    std::queue<PendingConsumerCtrlSend>      ctrl_send_queue;
+    // MonitoredQueue provides drop-oldest capping (fire_and_forget=true: no backpressure
+    // monitoring, since ZMQ always accepts sends regardless of peer liveness).
+    MonitoredQueue<PendingCtrlSend>  ctrl_queue_;
+
+    // Peer-dead detection: track when we last received a message from the producer.
+    // Updated from recv_and_dispatch_ctrl_() on any ctrl message.
+    // Checked in run_ctrl_thread() (standalone mode) and handle_ctrl_events_nowait() (embedded).
+    bool     peer_ever_seen_{false};
+    std::chrono::steady_clock::time_point last_peer_recv_{};
+    int      peer_dead_timeout_ms_{30000};
+
+    std::function<void()> on_peer_dead_cb;
 
     // Real-time handler (RealTime mode): shm_thread calls this in a loop.
     // nullptr = Queue mode (default). Swapped atomically via _store_read_handler().
@@ -94,7 +104,9 @@ struct ConsumerImpl
     ConsumerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PULL socket (non-null only when data_transport=="zmq").
-    std::unique_ptr<ZmqQueue> zmq_queue_;
+    // Stored as QueueReader* since pull_from() now returns unique_ptr<QueueReader>.
+    // Actual runtime type is always ZmqQueue (created by ZmqQueue::pull_from).
+    std::unique_ptr<QueueReader> zmq_queue_;
 
     void run_data_thread();
     void run_ctrl_thread();
@@ -124,20 +136,12 @@ struct ConsumerImpl
 
 void ConsumerImpl::drain_ctrl_send_queue_()
 {
-    std::lock_guard<std::mutex> lock(ctrl_send_mu);
-    while (!ctrl_send_queue.empty())
-    {
-        PendingConsumerCtrlSend &msg = ctrl_send_queue.front();
+    ctrl_queue_.drain([this](PendingCtrlSend& msg) {
         if (msg.is_raw)
-        {
             handle.send(msg.data.data(), msg.data.size());
-        }
         else
-        {
             handle.send_typed_ctrl(msg.type, msg.data.data(), msg.data.size());
-        }
-        ctrl_send_queue.pop();
-    }
+    });
 }
 
 // ============================================================================
@@ -253,6 +257,9 @@ bool ConsumerImpl::recv_and_dispatch_ctrl_()
     { std::lock_guard<std::mutex> lk(callbacks_mu); ctrl_cb = on_producer_message_cb; }
     if (ctrl_cb)
         ctrl_cb(type_str, body);
+    // Track last peer contact for peer-dead detection.
+    peer_ever_seen_ = true;
+    last_peer_recv_ = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -307,6 +314,26 @@ void ConsumerImpl::run_ctrl_thread()
     {
         // ── 1. Drain outgoing ctrl send queue ───────────────────────────────
         drain_ctrl_send_queue_();
+
+        // ── Periodic peer-dead check ─────────────────────────────────────
+        if (peer_ever_seen_ && peer_dead_timeout_ms_ > 0)
+        {
+            std::function<void()> dead_cb;
+            { std::lock_guard<std::mutex> lk(callbacks_mu); dead_cb = on_peer_dead_cb; }
+            if (dead_cb)
+            {
+                auto gap_ms = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - last_peer_recv_).count());
+                if (gap_ms > peer_dead_timeout_ms_)
+                {
+                    LOGGER_WARN("[hub::Consumer] No peer message for {}ms (timeout={}ms); "
+                                "declaring peer dead.", gap_ms, peer_dead_timeout_ms_);
+                    dead_cb();
+                    peer_ever_seen_ = false;  // Don't fire repeatedly
+                }
+            }
+        }
 
         // ── 2. Poll ctrl socket for incoming producer messages ───────────────
         std::vector<zmq::pollitem_t> items = {{ctrl_sock->handle(), 0, ZMQ_POLLIN, 0}};
@@ -388,9 +415,11 @@ Consumer &Consumer::operator=(Consumer &&) noexcept = default;
 std::optional<Consumer>
 Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
 {
+    // loop_driver: explicit declaration wins; empty = no declaration (processor transport-agnostic use-case).
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
                                          opts.expected_schema_hash,
-                                         opts.consumer_uid, opts.consumer_name);
+                                         opts.consumer_uid, opts.consumer_name,
+                                         {}, opts.queue_type);
     if (!ch.has_value())
     {
         return std::nullopt;
@@ -454,8 +483,7 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
             std::vector<std::byte> buf(size);
             if (data && size > 0)
                 std::memcpy(buf.data(), data, size);
-            std::lock_guard<std::mutex> lock(c->ctrl_send_mu);
-            c->ctrl_send_queue.push({std::string(type), std::move(buf)});
+            c->ctrl_queue_.push({std::string(type), std::move(buf)});
             return true;
         }
         return c->handle.send_typed_ctrl(type, data, size);
@@ -544,6 +572,15 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
         }
         LOGGER_INFO("[consumer] ZMQ PULL socket connected to '{}'", ep);
     }
+
+    // ctrl_queue_ is fire_and_forget (ZMQ always accepts sends); no monitoring callbacks needed.
+    // Always apply opts.ctrl_queue_max_depth (0 = unbounded, >0 = drop-oldest cap).
+    {
+        MonitoredQueue<PendingCtrlSend>::Config qcfg;
+        qcfg.max_depth    = opts.ctrl_queue_max_depth;
+        impl->ctrl_queue_ = MonitoredQueue<PendingCtrlSend>(qcfg);
+    }
+    impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
     return Consumer(std::move(impl));
 }
@@ -736,6 +773,27 @@ void Consumer::handle_ctrl_events_nowait() noexcept
     while (pImpl->recv_and_dispatch_ctrl_() && ++n < kMaxRecvBatch) {}
     if (n >= kMaxRecvBatch)
         LOGGER_WARN("Consumer: handle_ctrl_events_nowait hit recv batch cap ({})", n);
+
+    // Peer-dead check (embedded mode): mirrors the check in run_ctrl_thread().
+    // Called from the script host's ctrl_thread on each loop iteration.
+    if (pImpl->peer_ever_seen_ && pImpl->peer_dead_timeout_ms_ > 0)
+    {
+        std::function<void()> dead_cb;
+        { std::lock_guard<std::mutex> lk(pImpl->callbacks_mu); dead_cb = pImpl->on_peer_dead_cb; }
+        if (dead_cb)
+        {
+            auto gap_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - pImpl->last_peer_recv_).count());
+            if (gap_ms > pImpl->peer_dead_timeout_ms_)
+            {
+                LOGGER_WARN("[hub::Consumer] No peer message for {}ms (timeout={}ms); "
+                            "declaring peer dead.", gap_ms, pImpl->peer_dead_timeout_ms_);
+                dead_cb();
+                pImpl->peer_ever_seen_ = false; // Prevent repeated firing
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -756,8 +814,7 @@ bool Consumer::send(const void *data, size_t size)
         {
             std::memcpy(buf.data(), data, size);
         }
-        std::lock_guard<std::mutex> lock(pImpl->ctrl_send_mu);
-        pImpl->ctrl_send_queue.push({"", std::move(buf), true});
+        pImpl->ctrl_queue_.push({"", std::move(buf), true});
         return true;
     }
     // Not started — caller owns the socket; send directly.
@@ -778,12 +835,29 @@ bool Consumer::send_ctrl(std::string_view type, const void *data, size_t size)
         {
             std::memcpy(buf.data(), data, size);
         }
-        std::lock_guard<std::mutex> lock(pImpl->ctrl_send_mu);
-        pImpl->ctrl_send_queue.push({std::string(type), std::move(buf)});
+        pImpl->ctrl_queue_.push({std::string(type), std::move(buf)});
         return true;
     }
     // Not started — caller owns the socket; send directly.
     return pImpl->handle.send_typed_ctrl(type, data, size);
+}
+
+// ============================================================================
+// Consumer — peer-dead callback + metrics
+// ============================================================================
+
+void Consumer::on_peer_dead(std::function<void()> cb)
+{
+    if (pImpl)
+    {
+        std::lock_guard<std::mutex> lk(pImpl->callbacks_mu);
+        pImpl->on_peer_dead_cb = std::move(cb);
+    }
+}
+
+uint64_t Consumer::ctrl_queue_dropped() const
+{
+    return pImpl ? pImpl->ctrl_queue_.total_dropped() : 0;
 }
 
 // ============================================================================
@@ -879,7 +953,9 @@ const std::string &Consumer::zmq_node_endpoint() const noexcept
 
 ZmqQueue *Consumer::queue() noexcept
 {
-    return pImpl ? pImpl->zmq_queue_.get() : nullptr;
+    // zmq_queue_ is stored as QueueReader; runtime type is always ZmqQueue (from pull_from).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
+    return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
 // ============================================================================
@@ -916,6 +992,14 @@ void Consumer::close()
         // Deregister from broker (fire-and-forget via Messenger worker thread).
         pImpl->messenger->deregister_consumer(ch);
     }
+
+    // Clear ctrl/data-thread and peer-dead callbacks. ctrl_thread, data_thread, and
+    // shm_thread have all been joined by stop() above, so no concurrent reads exist.
+    // Releasing captures here prevents unnecessary lifetime extension of any objects
+    // captured by these callbacks (e.g. script host references).
+    pImpl->on_zmq_data_cb         = nullptr;
+    pImpl->on_producer_message_cb = nullptr;
+    pImpl->on_peer_dead_cb        = nullptr;
 
     // Now the ctrl socket is owned by this thread (ctrl_thread has exited).
     // Send BYE so the producer's peer_thread can update its consumer list.

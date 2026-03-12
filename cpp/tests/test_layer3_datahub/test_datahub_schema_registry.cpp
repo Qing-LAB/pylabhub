@@ -62,7 +62,7 @@ protected:
         s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
             pylabhub::utils::MakeModDefList(
                 pylabhub::utils::Logger::GetLifecycleModule(),
-                SchemaStore::GetLifecycleModule()));
+                SchemaStore::GetLifecycleModule()), std::source_location::current());
     }
 
     static void TearDownTestSuite()

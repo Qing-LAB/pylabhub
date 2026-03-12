@@ -31,8 +31,8 @@ namespace pylabhub::hub
 
 struct ProcessorImpl
 {
-    Queue*           in_queue{nullptr};
-    Queue*           out_queue{nullptr};
+    QueueReader*     in_queue{nullptr};
+    QueueWriter*     out_queue{nullptr};
     ProcessorOptions opts;
 
     std::atomic<bool> running_{false};
@@ -132,7 +132,7 @@ void ProcessorImpl::run_process_thread_()
                 }
                 else
                 {
-                    out_queue->write_abort();
+                    out_queue->write_discard();
                     ++out_drops_;
                 }
             }
@@ -199,7 +199,7 @@ void ProcessorImpl::run_process_thread_()
         }
         else
         {
-            out_queue->write_abort();
+            out_queue->write_discard();
             ++out_drops_;
         }
 
@@ -212,7 +212,7 @@ void ProcessorImpl::run_process_thread_()
 // ============================================================================
 
 std::optional<Processor>
-Processor::create(Queue& in_queue, Queue& out_queue, ProcessorOptions opts)
+Processor::create(QueueReader& in_queue, QueueWriter& out_queue, ProcessorOptions opts)
 {
     auto impl          = std::make_unique<ProcessorImpl>();
     impl->in_queue     = &in_queue;

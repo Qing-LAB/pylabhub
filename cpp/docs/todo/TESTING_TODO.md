@@ -10,7 +10,7 @@
 ## Current Focus
 
 ### Phase C: Integration Tests
-**Status**: ✅ Complete (424/424 passing as of 2026-02-19)
+**Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1045/1045** by 2026-03-10)
 
 - [x] **MessageHub and broker tests** – Phase C broker integration + consumer registration complete
 - [x] **Multi-process IPC tests** – Producer/consumer across process boundaries (E2E test)
@@ -199,6 +199,14 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 ---
 
 ## Recent Completions
+
+### 2026-03-10 (ProcessorConfig/ScriptHost Phase 3 + InboxQueue + ShmQueue + API parity)
+- ✅ **ProcessorConfig Phase 3 tests** (+24 tests): `target_period_ms`/`loop_timing`, `in_transport`/`zmq_in_endpoint`, `in_zmq_buffer_depth`/`out_zmq_buffer_depth`, inbox fields, `verify_checksum`, `script_path` default, timing-policy cross-field validation → **1045/1045 tests**
+- ✅ **9 L3 ShmQueue test scenarios** (`test_datahub_hub_queue.cpp`): multiple_consumers, flexzone_round_trip, ref_factories, latest_only, ring_wrap, destructor_safety, last_seq monotonic, capacity_policy, verify_checksum_mismatch → **988/988**
+- ✅ **Consumer inbox config tests** (+4): ConsumerConfig `inbox_schema_json`, `inbox_endpoint`, `inbox_buffer_depth`, `inbox_zmq_packing`
+- ✅ **InboxQueue per-sender seq fix** (A11/A18): `unordered_map<string,uint64_t>` per sender_id
+- ✅ **LoopTimingPolicy rename tests** (+10): MaxRate/FixedRate/FixedRateWithCompensation cross-field validation → **1021/1021**
+- ✅ **FullStack2 config tests** (+15 A6): `verify_checksum` field (ConsumerConfig), `heartbeat_interval_ms` (both), `zmq_buffer_depth` (ConsumerConfig), `inbox_overflow_policy` (both) → **1011/1011**
 
 ### 2026-03-07 (Port formula audit — overflow + cross-binary collision fixes)
 - ✅ **Root cause found**: Two parallel test failures (`ZmqQueueTest.SchemaTag_Match_DeliversItem`

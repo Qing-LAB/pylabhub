@@ -171,14 +171,14 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir)
             {"auth",      {{"keyfile", ""}}}
         }},
         {"channel",     "test.pipe.raw"},
-        {"interval_ms", 50},  // 20 Hz — continuous high-frequency production
+        {"target_period_ms", 50},  // 20 Hz — continuous high-frequency production
         {"shm", {
             {"enabled",    true},
             {"secret",     kShmSecretA},
             {"slot_count", 16}
         }},
         {"slot_schema", {
-            {"packing", "natural"},
+            {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "value"},   {"type", "float64"}}
@@ -258,14 +258,14 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
             {"out", {{"enabled", true}, {"secret", kShmSecretB}, {"slot_count", 16}}}
         }},
         {"in_slot_schema", {
-            {"packing", "natural"},
+            {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "value"},   {"type", "float64"}}
             })}
         }},
         {"out_slot_schema", {
-            {"packing", "natural"},
+            {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "doubled"}, {"type", "float64"}}
@@ -334,7 +334,7 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
             {"secret",  kShmSecretB}
         }},
         {"slot_schema", {
-            {"packing", "natural"},
+            {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "doubled"}, {"type", "float64"}}

@@ -90,7 +90,7 @@ class HubConfigScriptConfiguredTest : public ::testing::Test
                 pylabhub::crypto::GetLifecycleModule(),
                 pylabhub::utils::FileLock::GetLifecycleModule(),
                 pylabhub::utils::JsonConfig::GetLifecycleModule(),
-                pylabhub::HubConfig::GetLifecycleModule()));
+                pylabhub::HubConfig::GetLifecycleModule()), std::source_location::current());
     }
 
     static void TearDownTestSuite()
@@ -183,7 +183,7 @@ class HubConfigScriptDefaultsTest : public ::testing::Test
                 pylabhub::crypto::GetLifecycleModule(),
                 pylabhub::utils::FileLock::GetLifecycleModule(),
                 pylabhub::utils::JsonConfig::GetLifecycleModule(),
-                pylabhub::HubConfig::GetLifecycleModule()));
+                pylabhub::HubConfig::GetLifecycleModule()), std::source_location::current());
     }
 
     static void TearDownTestSuite()

@@ -77,7 +77,10 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
 
     si.hStdOutput = hStdout;
     si.hStdError = hStderr;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    // Always redirect stdin from NUL so the child process is never interactive,
+    // regardless of whether the parent is running in a terminal.
+    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     BOOL ok = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr,
                              /*bInheritHandles*/ TRUE, 0, nullptr, nullptr, &si, &pi);
@@ -109,6 +112,16 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
     pid_t pid = fork();
     if (pid == 0)
     {
+        // Always redirect stdin to /dev/null so isatty(0) returns false in the child.
+        // This ensures CLI binaries never block waiting for interactive input,
+        // regardless of whether the parent process is running in a terminal.
+        int devnull_fd = open("/dev/null", O_RDONLY);
+        if (devnull_fd != -1)
+        {
+            dup2(devnull_fd, 0);
+            close(devnull_fd);
+        }
+
         int stdout_fd = open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (stdout_fd != -1)
         {
@@ -209,7 +222,10 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
     }
     si.hStdOutput = hStdout;
     si.hStdError = hStderr;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    // Always redirect stdin from NUL so the child process is never interactive,
+    // regardless of whether the parent is running in a terminal.
+    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     BOOL ok = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
                              &si, &pi);
@@ -248,6 +264,14 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
         close(pipe_fds[0]);
         std::string fd_str = std::to_string(pipe_fds[1]);
         setenv("PLH_TEST_READY_FD", fd_str.c_str(), 1);
+
+        // Always redirect stdin to /dev/null (same reason as in the simple spawn path).
+        int devnull_fd = open("/dev/null", O_RDONLY);
+        if (devnull_fd != -1)
+        {
+            dup2(devnull_fd, 0);
+            close(devnull_fd);
+        }
 
         int stdout_fd = open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (stdout_fd != -1)

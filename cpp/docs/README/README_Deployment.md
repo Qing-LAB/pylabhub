@@ -1,14 +1,17 @@
 # pyLabHub Deployment Guide
 
 **Purpose:** End-to-end reference for deploying pyLabHub from a fresh build to a running
-hub-and-actor system. Covers the install tree, hub and actor instance directories, every
-configuration field, Python script authoring, connection policy, and operational patterns.
+pipeline. Covers install tree, hub and role instance directories, every configuration field,
+Python script authoring, connection policy, and operational patterns.
+
+**Last Updated:** 2026-03-10 (rewritten for producer/consumer/processor model)
 
 **Related:**
 - `docs/README/README_DirectoryLayout.md` — architectural directory model reference
-- `docs/tech_draft/ACTOR_DESIGN.md` — full actor design spec (§2 config, §3 Python API)
-- `docs/todo/SECURITY_TODO.md` — connection policy and vault design
-- `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` — broker protocol
+- `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` — full producer/consumer spec
+- `docs/HEP/HEP-CORE-0015-Processor-Binary.md` — full processor spec
+- `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` — broker control plane protocol
+- `docs/todo/SECURITY_TODO.md` — vault and CurveZMQ key management
 
 ---
 
@@ -16,1401 +19,944 @@ configuration field, Python script authoring, connection policy, and operational
 
 1. [Overview](#1-overview)
 2. [Quick Start](#2-quick-start)
-3. [Install Tree](#3-install-tree)
+3. [Build and Install Tree](#3-build-and-install-tree)
 4. [Hub Setup](#4-hub-setup)
-   - 4.1 [Hub directory model](#41-hub-directory-model)
-   - 4.2 [Initialising a hub](#42-initialising-a-hub)
-   - 4.3 [hub.json — complete field reference](#43-hubjson--complete-field-reference)
-   - 4.4 [Running the hub](#44-running-the-hub)
-   - 4.5 [Hub script package](#45-hub-script-package)
-   - 4.6 [Connection policy](#46-connection-policy)
-5. [Actor Setup](#5-actor-setup)
-   - 5.1 [Actor directory model](#51-actor-directory-model)
-   - 5.2 [Initialising an actor](#52-initialising-an-actor)
-   - 5.3 [actor.json — complete field reference](#53-actorjson--complete-field-reference)
-   - 5.4 [Running an actor](#54-running-an-actor)
-6. [Writing Actor Scripts](#6-writing-actor-scripts)
-   - 6.1 [Script package structure](#61-script-package-structure)
-   - 6.2 [Callback reference](#62-callback-reference)
-   - 6.3 [Slot types — ctypes field mapping](#63-slot-types--ctypes-field-mapping)
-   - 6.4 [ActorRoleAPI methods](#64-actorroleapi-methods)
-   - 6.5 [Flexzone — persistent shared data](#65-flexzone--persistent-shared-data)
-   - 6.6 [ZMQ messaging between actors](#66-zmq-messaging-between-actors)
-   - 6.7 [Error handling patterns](#67-error-handling-patterns)
-7. [Connection Policy — Securing the Hub](#7-connection-policy--securing-the-hub)
-8. [Common Topologies](#8-common-topologies)
-9. [Operational Patterns](#9-operational-patterns)
-10. [Troubleshooting](#10-troubleshooting)
+   - 4.1 [Hub directory layout](#41-hub-directory-layout)
+   - 4.2 [hub.json — field reference](#42-hubjson--field-reference)
+   - 4.3 [Running the hub](#43-running-the-hub)
+   - 4.4 [Hub Python script (optional)](#44-hub-python-script-optional)
+5. [Producer Setup](#5-producer-setup)
+   - 5.1 [producer.json — field reference](#51-producerjson--field-reference)
+   - 5.2 [Producer Python script](#52-producer-python-script)
+6. [Consumer Setup](#6-consumer-setup)
+   - 6.1 [consumer.json — field reference](#61-consumerjson--field-reference)
+   - 6.2 [Consumer Python script](#62-consumer-python-script)
+7. [Processor Setup](#7-processor-setup)
+   - 7.1 [processor.json — field reference](#71-processorjson--field-reference)
+   - 7.2 [Processor Python script](#72-processor-python-script)
+8. [Python Script Reference](#8-python-script-reference)
+   - 8.1 [Script package structure](#81-script-package-structure)
+   - 8.2 [Slot types — ctypes field mapping](#82-slot-types--ctypes-field-mapping)
+   - 8.3 [API methods — all roles](#83-api-methods--all-roles)
+   - 8.4 [Flexzone — persistent shared data](#84-flexzone--persistent-shared-data)
+   - 8.5 [ZMQ messaging between roles](#85-zmq-messaging-between-roles)
+   - 8.6 [Inbox — typed peer-to-peer messages](#86-inbox--typed-peer-to-peer-messages)
+   - 8.7 [Error handling patterns](#87-error-handling-patterns)
+9. [Connection Policy — Securing the Hub](#9-connection-policy--securing-the-hub)
+10. [Multi-Hub Pipelines](#10-multi-hub-pipelines)
+11. [Operational Reference](#11-operational-reference)
 
 ---
 
 ## 1. Overview
 
-pyLabHub is an IPC framework for scientific data acquisition. The deployment model has three
-independent components:
+pyLabHub is a high-performance IPC framework for scientific data acquisition. It uses four
+standalone binaries connected by a central broker (hub):
 
 ```
-[Install tree]          shared binaries, library, Python runtime, scripts
-     |
-     ├── pylabhub-hubshell ──→ [Hub instance dir]   identity, vault, config, logs
-     |                         hub.json / hub.vault / hub.pubkey
-     |
-     └── pylabhub-actor ────→ [Actor instance dir]  identity, config, scripts, logs
-                               actor.json / roles/<role>/script/__init__.py
+pylabhub-hubshell   — Broker process. Manages channel registry, SHM coordination,
+                      control plane. One per independent data domain.
+
+pylabhub-producer   — Data source. Writes slots into a named channel (SHM or ZMQ).
+                      Runs user Python on_produce() callback per write cycle.
+
+pylabhub-consumer   — Data sink. Reads slots from a named channel.
+                      Runs user Python on_consume() callback per slot.
+
+pylabhub-processor  — Data transformer. Reads from one channel, writes to another.
+                      Runs user Python on_process(in_slot, out_slot) per input slot.
 ```
 
-**Install tree** — the binary/library/runtime output of `cmake --build`. Read-only at
-runtime. Shared across all hubs and actors on the same machine.
+Data flow in a typical SHM pipeline:
 
-**Hub instance directory** — one per running hub. Contains the hub's identity (UUID4),
-encrypted secrets (CurveZMQ keypair), public config (broker endpoint, policy), and logs.
-Created once with `--init`; reused across restarts.
+```
+Producer ─[SHM ring]─► Processor ─[SHM ring]─► Consumer
+    │                       │                       │
+    └──────── Broker (control plane) ───────────────┘
+```
 
-**Actor instance directory** — one per running actor. Contains the actor's identity, role
-configs, and Python script packages. Created once with `--init`; reused across restarts.
+Each role connects to the broker for registration, heartbeat, and shutdown. Data itself
+flows directly through shared memory (SHM) without touching the broker.
 
 ---
 
 ## 2. Quick Start
 
-From a fresh build to a running hub + producer actor:
-
 ```bash
-# Step 1 — Build and stage
-cmake -S . -B build
-cmake --build build --target stage_all
+# 1. Build
+cmake -S . -B build && cmake --build build -j2
 
-# Step 2 — Init hub (prompts for name + password)
-./build/stage-debug/bin/pylabhub-hubshell --init ./my-hub
-# → Hub name: lab.physics.daq1
-# → Master password: ****  (saved in hub.vault; derives the broker keypair)
+# 2. Run the bundled single-hub demo (starts all 4 processes)
+bash share/demo/run_demo.sh
 
-# Step 3 — Init actor (prompts for actor name)
-./build/stage-debug/bin/pylabhub-actor --init ./my-actor
-# → Actor name: lab.daq.sensor1
-# → Edit actor.json: set "hub_dir" to the hub path
-
-# Step 4 — Start hub (in one terminal)
-./build/stage-debug/bin/pylabhub-hubshell ./my-hub
-# → prompts for master password, starts broker on tcp://0.0.0.0:5570
-
-# Step 5 — Start actor (in another terminal)
-./build/stage-debug/bin/pylabhub-actor ./my-actor
-# → connects to hub, starts writing data
+# 3. Press Ctrl-C to stop all processes
 ```
 
-For development without a vault (no password):
-
-```bash
-./build/stage-debug/bin/pylabhub-hubshell ./my-hub --dev
-# → ephemeral keypair; hub.pubkey still written for actor use
+The demo starts a hub, producer (10 Hz, 1 k float32 samples), processor (doubles payload),
+and consumer (prints throughput). Expected output:
 ```
-
-Environment variable alternative to interactive password prompt:
-
-```bash
-export PYLABHUB_MASTER_PASSWORD=my-secret-password
-./build/stage-debug/bin/pylabhub-hubshell ./my-hub
+[demo] hub running (pid=12345)
+[demo] producer running (pid=12346)
+[demo] processor running (pid=12347)
+[demo] Starting consumer ... (Ctrl-C to stop)
+slots/s=10  MiB/s=0.04  drops=0  errors=0
 ```
 
 ---
 
-## 3. Install Tree
+## 3. Build and Install Tree
 
-`cmake --build build --target stage_all` produces the staged tree under
-`build/stage-<buildtype>/`. In production, `cmake --install build` installs to
-`CMAKE_INSTALL_PREFIX` (default `/usr/local`).
-
-```
-<install-root>/
-  bin/
-    pylabhub-hubshell          ← hub process
-    pylabhub-actor             ← actor process
-  lib/
-    libpylabhub-utils-stable.so.M.m.p   ← shared library (POSIX)
-    libpylabhub-utils-stable.so.M       ← soname symlink
-  include/
-    utils/                     ← public C/C++ headers
-    plh_platform.hpp / plh_base.hpp / plh_service.hpp / plh_datahub.hpp
-    pylabhub_utils_export.h    ← DLL export macros
-    pylabhub_version.h         ← version constants
-  share/
-    scripts/python/
-      examples/                ← example actor scripts
-      pylabhub_sdk/            ← pybind11 Python module (imported as pylabhub_actor)
-      requirements.txt         ← Python package dependencies
-  opt/
-    python/                    ← Python 3.14 standalone runtime
-  data/                        ← default data output directory
+```bash
+cmake -S . -B build                              # Debug (default)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # Release
+cmake --build build --target stage_all           # Stage all artifacts
 ```
 
-**`hub_dir` is required** unless `--dev` is passed. Running `pylabhub-hubshell`
-without a `<hub_dir>` is an error. Use `--dev` for quick local testing without
-a vault (ephemeral keypair, built-in defaults).
+After `stage_all`, the build output at `build/stage-<buildtype>/` contains:
 
-**RPATH:** all binaries in `bin/` embed `$ORIGIN/../lib` (Linux) or `@loader_path/../lib`
-(macOS) so they find the shared library without `LD_LIBRARY_PATH`.
+```
+bin/
+  pylabhub-hubshell     ← hub broker
+  pylabhub-producer     ← producer role binary
+  pylabhub-consumer     ← consumer role binary
+  pylabhub-processor    ← processor role binary
+
+lib/
+  libpylabhub-utils.so  ← shared runtime library
+
+tests/                  ← test binaries
+include/                ← development headers
+```
 
 ---
 
 ## 4. Hub Setup
 
-### 4.1 Hub directory model
+### 4.1 Hub directory layout
 
-Each hub is a **directory**. The directory is the identity — its contents persist across
-restarts and define the hub uniquely. Moving the directory moves the hub. `--init` on a
-new directory creates a fresh hub.
+Each hub instance is a self-contained directory. `--init` creates the full layout.
 
 ```
-<hub_dir>/
-  hub.json                ← public config (broker endpoint, connection policy, etc.)
-  hub.vault               ← encrypted secrets (binary; 0600 permissions)
-  hub.pubkey              ← broker CurveZMQ public key, Z85 40-char (0644; world-readable)
-  script/
+hub-dir/
+  hub.json         ← hub configuration (0644 — world-readable; no secrets)
+  hub.vault        ← encrypted vault: broker CurveZMQ private key + admin token (0600)
+  hub.pubkey       ← broker CurveZMQ public key (written at startup; share with roles)
+  schemas/         ← (optional) named schema registry root
+    <ns>/<name>.v<N>.json
+  script/          ← (optional) hub Python script package
     python/
-      __init__.py         ← hub script package (callbacks: on_start, on_tick, on_stop)
-  logs/                   ← rotating log files (created at startup if absent)
-  run/
-    hub.pid               ← PID of the running hub process
+      __init__.py  ← hub script callbacks (on_start, on_tick, on_stop, ...)
+  logs/            ← log files written by the hub process
 ```
 
-Files created by `--init`: `hub.json`, `hub.vault`, `logs/`, `run/`, `script/python/__init__.py` (template).
-Files created at every startup: `hub.pubkey` (overwritten from vault on each start).
+**File permissions**:
+- `hub.json` — 0644 (world-readable). Contains only non-secret configuration.
+- `hub.vault` — 0600 (owner-only). Encrypted with Argon2id + XSalsa20-Poly1305. Contains the CurveZMQ private key and admin token. Never readable without the vault password.
+- `hub.pubkey` — 0644. The broker's CurveZMQ public key; copy to each role's config directory or set `broker_pubkey` in their JSON.
 
-### 4.2 Initialising a hub
+### 4.2 hub.json — field reference
 
-```bash
-pylabhub-hubshell --init <hub_dir>
-```
-
-If `<hub_dir>` is omitted, the current directory is used.
-
-The init flow:
-1. Creates `<hub_dir>/logs/`, `<hub_dir>/run/`, `<hub_dir>/script/python/`
-2. Prompts for **hub name** (reverse-domain format, e.g. `lab.physics.daq1`)
-3. Prompts for **master password** (twice, for confirmation)
-   - Or reads `PYLABHUB_MASTER_PASSWORD` env var (no prompt)
-4. Generates a UUID4 for the hub identity (`hub_uid`)
-5. Creates an encrypted vault: `hub.vault` (0600)
-   - Generates a stable CurveZMQ broker keypair (written to vault)
-   - Generates a random 64-hex admin token (written to vault)
-6. Writes `hub.json` with hub_name, hub_uid, and defaults
-7. Writes `script/python/__init__.py` with a starter template (callbacks: on_start, on_tick, on_stop)
-
-Re-initialising is refused if `hub.json` already exists. To reset: remove `hub.json`
-and `hub.vault` manually.
-
-**Hub UID format:** `HUB-{NAME}-{8HEX}` (e.g. `HUB-LABDAQ1-3A7F2B1C`)
-Auto-generated from `hub_name` at init time; stored in `hub.json["hub"]["uid"]`.
-
-**Vault security:** the vault uses Argon2id key derivation
-(`key = Argon2id(password, salt=BLAKE2b-128(hub_uid), OPSLIMIT_INTERACTIVE,
-MEMLIMIT_INTERACTIVE)`) with XSalsa20-Poly1305 encryption. A wrong password
-produces an authentication failure, not decryption of garbage.
-
-### 4.3 hub.json — complete field reference
-
-`hub.json` contains **no secrets** — only public config. The master password is never
-stored here. Edit this file directly to change configuration.
+`hub.json` is **world-readable (0644)**. It must never contain secrets. The admin token and
+CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
 
 ```json
 {
   "hub": {
-    "name":            "lab.physics.daq1",
-    "uid":             "HUB-LABDAQ1-3A7F2B1C",
-    "description":     "Main data-acquisition hub for physics lab",
+    "name":            "main",
+    "uid":             "HUB-MAIN-3A7F2B1C",
+    "description":     "pyLabHub instance",
     "broker_endpoint": "tcp://0.0.0.0:5570",
     "admin_endpoint":  "tcp://127.0.0.1:5600",
-    "connection_policy": "open",
-    "known_actors": [],
-    "channel_policies": []
+    "connection_policy": "open"
   },
-  "admin": {
-    "token": ""
-  },
+
   "broker": {
-    "channel_timeout_s":         10,
-    "consumer_liveness_check_s":  5
+    "channel_timeout_s":          10,
+    "consumer_liveness_check_s":   5,
+    "channel_shutdown_grace_s":    5
   },
-  "paths": {
-    "scripts_python": "../share/scripts/python",
-    "scripts_lua":    "../share/scripts/lua",
-    "data_dir":       "../data"
-  },
+
   "script": {
     "type":                   "python",
     "path":                   "./script",
     "tick_interval_ms":       1000,
     "health_log_interval_ms": 60000
   },
-  "python": {
-    "requirements": "../share/scripts/python/requirements.txt"
-  }
+
+  "peers": []
 }
 ```
 
-#### `hub` block
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `hub.name` | no | `"local.hub.default"` | Human name; also used to auto-generate `hub.uid` |
+| `hub.uid` | no | auto | Stable UID in `HUB-NAME-HEXSUFFIX` format; auto-generated from `hub.name` if absent |
+| `hub.description` | no | `"pyLabHub instance"` | Human-readable description |
+| `hub.broker_endpoint` | no | `"tcp://0.0.0.0:5570"` | ZMQ ROUTER bind address for the data broker |
+| `hub.admin_endpoint` | no | `"tcp://127.0.0.1:5600"` | ZMQ ROUTER bind address for the admin shell |
+| `hub.connection_policy` | no | `"open"` | Channel registration policy: `open`/`tracked`/`required`/`verified` |
+| `broker.channel_timeout_s` | no | `10` | Seconds without heartbeat before channel is closed |
+| `broker.consumer_liveness_check_s` | no | `5` | Consumer liveness check interval (0 = disabled) |
+| `broker.channel_shutdown_grace_s` | no | `5` | Grace period between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN |
+| `script.type` | no | — | Script language; `"python"` is the only supported value |
+| `script.path` | no | — | Base directory; hub script is at `<path>/<type>/__init__.py` |
+| `script.tick_interval_ms` | no | `1000` | Callback interval for `on_tick()` |
+| `script.health_log_interval_ms` | no | `60000` | Interval for periodic channel health log |
+| `peers[]` | no | `[]` | Federation peer list (HEP-CORE-0022); see §4.5 |
 
-| Field | Default | Description |
-|---|---|---|
-| `name` | `"local.hub.default"` | Reverse-domain hub name. Used as base for auto-generated UID and for display. |
-| `uid` | auto-generated | `HUB-{NAME}-{8HEX}` identifier. Stable across restarts. Do not change after `--init` — vault uses it as KDF salt. |
-| `description` | `"pyLabHub instance"` | Free-text human description. Not parsed by any runtime code. |
-| `broker_endpoint` | `"tcp://0.0.0.0:5570"` | ZMQ endpoint for the BrokerService. Actors connect here to register channels. Must be reachable from all actor machines. |
-| `admin_endpoint` | `"tcp://127.0.0.1:5600"` | ZMQ REP endpoint for the AdminShell. Local only; bound to loopback. |
-| `connection_policy` | `"open"` | Hub-wide channel access policy. Values: `"open"`, `"tracked"`, `"required"`, `"verified"`. See §7. |
-| `known_actors` | `[]` | Allowlist for `"verified"` policy. Array of `{"name":…, "uid":…, "role":…}` entries. |
-| `channel_policies` | `[]` | Per-channel policy overrides (first matching glob wins). Array of `{"channel": "glob*", "connection_policy": "…"}`. |
+**Security note**: `hub.json` must not contain `admin.token`. The admin token is stored in
+`hub.vault` and injected at runtime by `pylabhub-hubshell` after vault unlock. Any
+`admin.token` field found in `hub.json` is ignored with an error log.
 
-#### `admin` block
-
-| Field | Default | Description |
-|---|---|---|
-| `token` | `""` | Admin shell authentication token (hex string). Empty = no auth. In production, set from vault via hubshell startup. |
-
-#### `broker` block
-
-| Field | Default | Description |
-|---|---|---|
-| `channel_timeout_s` | `10` | Seconds without a heartbeat before the broker marks a channel as lost. Increase for slow producers. |
-| `consumer_liveness_check_s` | `5` | How often the broker checks consumer heartbeats. `0` = disabled. |
-
-#### `paths` block
-
-All paths may be absolute or relative to `hub.json`'s parent directory.
-
-| Field | Default | Description |
-|---|---|---|
-| `scripts_python` | `"../share/scripts/python"` | Directory where Python scripts and the built-in `pylabhub_sdk/` module live. |
-| `scripts_lua` | `"../share/scripts/lua"` | Lua scripts directory (future). |
-| `data_dir` | `"../data"` | Default run-data output directory. |
-
-#### `script` block (language-neutral hub script configuration)
-
-| Field | Default | Description |
-|---|---|---|
-| `type` | `"python"` | Script host type. `"python"` selects the Python HubScript host (only type currently supported). |
-| `path` | `"./script"` | Base directory for script packages. The actual package is at `<path>/<type>/`, e.g. `./script/python/`. Relative to `hub.json` directory. See §4.5. |
-| `tick_interval_ms` | `1000` | Tick period in milliseconds. The C++ tick thread calls `on_tick(api, tick)` at this interval. |
-| `health_log_interval_ms` | `60000` | How often the C++ tick runner logs a channel health summary (milliseconds). |
-
-#### `python` block (Python-specific settings)
-
-| Field | Default | Description |
-|---|---|---|
-| `requirements` | `"../share/scripts/python/requirements.txt"` | `pip install -r` requirements file used when `prepare_python_env` runs. |
-
-### 4.4 Running the hub
+### 4.3 Running the hub
 
 ```bash
-# Production: vault unlocks stable broker keypair
-pylabhub-hubshell <hub_dir>
-# → reads hub_uid from hub.json
-# → prompts for master password (or reads PYLABHUB_MASTER_PASSWORD)
-# → decrypts hub.vault → writes hub.pubkey → starts broker
+# First-time setup — creates hub.json, hub.vault, script/python/__init__.py
+pylabhub-hubshell --init <hub-dir>/ --name "my-lab-hub"
 
-# Development: ephemeral keypair, no vault
-pylabhub-hubshell <hub_dir> --dev
+# Production mode — prompts for vault password, reads CurveZMQ key + admin token from vault
+pylabhub-hubshell <hub-dir>/
 
-# Error: hub_dir is required without --dev
-# pylabhub-hubshell  ← returns error; use --dev for ephemeral testing
+# Development mode — ephemeral key pair, no password prompt, no vault needed
+pylabhub-hubshell <hub-dir>/ --dev
 ```
 
-**Shutdown:** send `SIGINT` (Ctrl-C) once to request graceful shutdown. A second
-`SIGINT` while shutdown is in progress forces immediate exit (`std::_Exit(1)`).
+The hub listens at `hub.broker_endpoint`. Producers, consumers, and processors connect to
+this address. In dev mode, a fresh ephemeral CurveZMQ key pair is generated each run; roles
+must either omit `broker_pubkey` or re-read `hub.pubkey` after each start.
 
-**Environment overrides** (applied after config file):
+### 4.4 Hub Python script (optional)
 
-| Variable | Overrides |
-|---|---|
-| `PYLABHUB_MASTER_PASSWORD` | Master password (skips interactive prompt) |
-| `PYLABHUB_HUB_NAME` | `hub.name` |
-| `PYLABHUB_BROKER_ENDPOINT` | `hub.broker_endpoint` |
-| `PYLABHUB_ADMIN_ENDPOINT` | `hub.admin_endpoint` |
-| `PYLABHUB_CONFIG_FILE` | Full path to a single config JSON (bypasses all layering) |
-
-### 4.5 Hub script package
-
-The hub loads a Python **package** from `hub.json["script"]["path"]/<type>/` (default
-`./script/python/`). `type` selects the script host (`"python"` is the only supported value).
-The package must contain `__init__.py` with up to three optional callbacks:
-
-```
-<hub_dir>/script/python/__init__.py   ← loaded by HubScript on startup
-```
-
-`--init` writes the default template automatically. The default template renders a
-**live in-place channel dashboard** using `rich` (updated every tick):
-
-```
-MyHub  │  uptime 00:01:23  │  tick #83  │  2 ready  0 pending  0 closing
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- Channel               Status    Consumers  PID     Actor          Actor UID
- sensors.temperature   Ready     3          12045   lab-actor-01   ACTOR-LAB-ACTOR-01-A1B2C3D4
- events.triggers       Ready     1          12045   lab-actor-01   ACTOR-LAB-ACTOR-01-A1B2C3D4
-```
-
-`rich>=13.0` is included in the default `requirements.txt` and is installed by
-`cmake --build build --target prepare_python_env`.
-
-When running with a hub directory, the hub automatically switches from console
-logging to a **rotating log file** at `<hub_dir>/logs/hub.log` (10 MB × 3 files)
-as early as possible in startup.  The default script reads the tail of this file
-each tick and displays it in the log panel — giving a self-contained terminal
-dashboard with no interleaved console output.
-
-#### Callback signatures
+Place `<hub-dir>/script/python/__init__.py`. Callbacks:
 
 ```python
-def on_start(api):
-    """Called once after the hub lifecycle is fully started."""
-
-def on_tick(api, tick):
-    """Called every tick_interval_ms (default: 1 s)."""
-
-def on_stop(api):
-    """Called once before the hub shuts down (after tick thread stops)."""
-```
-
-All callbacks are **optional** — missing callbacks are silently skipped.
-
-#### Thread model
-
-```
-main thread      → startup → wait(shutdown) → teardown
-broker_thread_   → BrokerService ZMQ poll loop
-admin_shell_wt   → AdminShell REP socket poll
-tick_thread_     → periodic tick loop: health log + on_tick callback
-```
-
-The tick thread acquires the GIL only for Python calls; the rest of each tick
-(broker query, health logging) runs without the GIL and does not block the admin shell.
-
-#### `HubScriptAPI` methods (`api` argument)
-
-| Method | Returns | Description |
-|---|---|---|
-| `hub_name()` | `str` | Hub name in reverse-domain format |
-| `hub_uid()` | `str` | Stable hub UID (`HUB-NAME-HEXSUFFIX`) |
-| `log(level, msg)` | — | Log at `"debug"` / `"info"` / `"warn"` / `"error"` |
-| `shutdown()` | — | Request graceful hub shutdown |
-| `channels()` | `list[ChannelInfo]` | All channels |
-| `ready_channels()` | `list[ChannelInfo]` | Ready channels only |
-| `pending_channels()` | `list[ChannelInfo]` | PendingReady channels only |
-| `channel(name)` | `ChannelInfo` | Look up by name (raises `RuntimeError` if not found) |
-
-#### `ChannelInfo` attributes
-
-| Method | Returns | Description |
-|---|---|---|
-| `name()` | `str` | Channel name |
-| `status()` | `str` | `"Ready"` \| `"PendingReady"` \| `"Closing"` |
-| `consumer_count()` | `int` | Number of registered consumers |
-| `producer_pid()` | `int` | PID of the producer (0 if not set) |
-| `schema_hash()` | `str` | 64-char hex hash, or `""` if no schema |
-| `producer_actor_name()` | `str` | Actor name (empty if not set) |
-| `producer_actor_uid()` | `str` | Actor UID (empty if not set) |
-| `request_close()` | — | Mark channel for close; C++ dispatches after `on_tick` returns |
-
-#### `HubTickInfo` attributes (`tick` argument)
-
-| Method | Returns | Description |
-|---|---|---|
-| `tick_count()` | `int` | Ticks since hub start |
-| `elapsed_ms()` | `int` | Actual wall-clock ms since last tick |
-| `uptime_ms()` | `int` | Hub uptime in ms |
-| `channels_ready()` | `int` | Count of Ready channels |
-| `channels_pending()` | `int` | Count of PendingReady channels |
-| `channels_closing()` | `int` | Count of Closing channels |
-
-#### Example — stale channel cleanup
-
-```python
-def on_tick(api, tick):
-    for ch in api.ready_channels():
-        if ch.consumer_count() == 0 and tick.tick_count() > 60:
-            api.log("warn", f"Closing idle channel '{ch.name()}' (no consumers)")
-            ch.request_close()
-```
-
-### 4.6 Admin shell — hub management interface
-
-The hub exposes a **ZMQ REP admin shell** on `admin_endpoint` (default
-`tcp://127.0.0.1:5600`, loopback-only). It executes arbitrary Python code in
-the hub's persistent interpreter and returns captured output. The `pylabhub`
-module is always available.
-
-#### hubshell_client.py — interactive client
-
-`share/scripts/python/hubshell_client.py` is the standard client. It requires
-`pyzmq` (`pip install pyzmq`).
-
-**Interactive REPL** (most common usage):
-```bash
-python3 hubshell_client.py
-# Optional flags:
-#   --endpoint tcp://127.0.0.1:5600   (default)
-#   --token    <hex-token>             (if hub configured with admin token)
-```
-
-At the `>>> ` prompt, type Python expressions or use built-in shortcuts:
-
-| Shortcut | Action |
-|---|---|
-| `:channels` | Print formatted channel table (name, consumers, producer PID, status) |
-| `:config` | Pretty-print hub config as JSON |
-| `:help` | Show help |
-| `:quit` / `:q` / Ctrl-D | Exit client (hub keeps running) |
-
-Multi-line code: indent continuation lines; a blank line or un-indented line
-sends the block.
-
-**CLI one-liners** (scripting and automation):
-```bash
-# Print hub name
-python3 hubshell_client.py --exec "print(pylabhub.config()['name'])"
-
-# List channels with consumer counts
-python3 hubshell_client.py --exec "
-for ch in pylabhub.channels('all'):
-    print(f\"{ch['name']:40s} consumers={ch['consumer_count']} status={ch['status']}\")
-"
-
-# Dump full config as JSON
-python3 hubshell_client.py --exec "import json; print(json.dumps(pylabhub.config(), indent=2))"
-
-# Execute a script file inside the hub
-python3 hubshell_client.py --file my_admin_task.py
-
-# Graceful hub shutdown
-python3 hubshell_client.py --exec "pylabhub.shutdown()"
-```
-
-Exit code: 0 on success, 1 if the code raised an exception.
-
-#### pylabhub module API
-
-All functions are callable from the admin shell.
-
-| Function | Returns | Description |
-|---|---|---|
-| `hub_name()` | `str` | Hub name in reverse-domain format |
-| `hub_uid()` | `str` | Stable hub UID (`HUB-NAME-HEXSUFFIX`) |
-| `hub_description()` | `str` | Human-readable description |
-| `broker_endpoint()` | `str` | ZMQ broker endpoint (e.g. `tcp://0.0.0.0:5570`) |
-| `admin_endpoint()` | `str` | Admin shell endpoint (e.g. `tcp://127.0.0.1:5600`) |
-| `config()` | `dict` | Active config: `hub.{name, description, broker_endpoint, admin_endpoint, channel_timeout_s, consumer_liveness_check_s}` |
-| `paths()` | `dict` | Resolved paths: `root_dir`, `config_dir`, `scripts_python`, `scripts_lua`, `data_dir`, `python_requirements`, `hub_script_dir`, `log_file` |
-| `channels()` | `list[dict]` | Active channels (see below) |
-| `reset()` | `None` | Clear user variables from interpreter namespace (preserves `pylabhub`) |
-| `shutdown()` | `None` | Request graceful hub shutdown |
-| `__version__` | `str` | Library version string |
-
-**`channels()` dict keys** (per channel):
-
-| Key | Type | Description |
-|---|---|---|
-| `name` | `str` | Channel name |
-| `schema_hash` | `str` | 64-char hex schema identifier |
-| `consumer_count` | `int` | Number of connected consumers |
-| `producer_pid` | `int` | Producer process ID |
-| `status` | `str` | `"PendingReady"` / `"Ready"` / `"Closing"` |
-
-Channel status lifecycle: `PendingReady` (registered, awaiting first heartbeat)
-→ `Ready` (operational) → `Closing` (heartbeat timeout or producer exited).
-
-#### Wire protocol (for custom clients)
-
-Any ZMQ REQ socket can speak to the admin shell:
-
-**Request** (JSON):
-```json
-{ "token": "<hex-token-or-empty>", "code": "<python source>" }
-```
-
-**Response** (JSON):
-```json
-{ "success": true, "output": "<captured stdout/stderr>", "error": "" }
-{ "success": false, "output": "<captured output>",       "error": "<traceback or reason>" }
-```
-
-Error cases and their `"error"` values:
-
-| Condition | `"error"` value |
-|---|---|
-| Request > 1 MB | `"request too large"` |
-| Invalid JSON | `"invalid JSON request"` |
-| Missing `code` field | `"missing or invalid 'code' field"` |
-| Wrong token | `"unauthorized"` |
-| Python exception | Full traceback string |
-
-Size check → JSON parse → token auth → code execution (in that order).
-
-#### Authentication
-
-Set `admin.token` in `hub.json` (written automatically by `--init`):
-```json
-{ "admin": { "token": "<64-char hex>" } }
-```
-
-Pass the token via `--token` flag to `hubshell_client.py`, or include it in
-the `"token"` field of a raw ZMQ request. Empty string = no auth required
-(any local connection is accepted; socket is loopback-only by default).
-
-### 4.7 Connection policy
-
-See §7 for full policy reference. Quick setup (all policy fields are nested under `"hub"` in `hub.json`):
-
-```json
-{
-  "hub": {
-    "connection_policy": "required",
-    "channel_policies": [
-      { "channel": "lab.daq.*",     "connection_policy": "verified" },
-      { "channel": "lab.monitor.*", "connection_policy": "open" }
-    ],
-    "known_actors": [
-      { "name": "lab.daq.sensor1",     "uid": "ACTOR-SENSOR1-A1B2C3D4", "role": "producer" },
-      { "name": "lab.analysis.logger", "uid": "ACTOR-LOGGER-9E1D4C2A",  "role": "consumer" }
-    ]
-  }
-}
-```
-
-To add actors to `known_actors` without manual editing:
-```bash
-pylabhub-actor --register-with <hub_dir> <actor_dir>
+def on_start(api):              pass  # hub started
+def on_channel_registered(api, channel_name, producer_uid): pass
+def on_channel_deregistered(api, channel_name): pass
+def on_hub_connected(api, peer_hub_name):    pass  # federation
+def on_hub_disconnected(api, peer_hub_name): pass
+def on_hub_message(api, peer_hub_name, topic, data): pass
+def on_stop(api):               pass
 ```
 
 ---
 
-## 5. Actor Setup
+## 5. Producer Setup
 
-### 5.1 Actor directory model
+### 5.1 producer.json — field reference
 
-Each actor is a **directory**. The directory holds the actor's identity, role configs,
-and per-role Python script packages. An actor may have multiple roles (e.g. one producer
-and one consumer).
+A minimal producer directory:
 
 ```
-<actor_dir>/
-  actor.json                    ← identity + all role configs
-  roles/
-    <role_name>/                ← one subdirectory per role (user-named: "data_out", "cfg_in", …)
-      script/                   ← Python package (always module name "script")
-        __init__.py             ← callbacks: on_init / on_iteration / on_stop
-        helpers.py              ← optional helpers (from . import helpers)
-        data/                   ← optional non-Python assets next to __init__.py
-  logs/                         ← rotating log files (created at startup)
-  run/
-    actor.pid                   ← PID of the running process
+producer-dir/
+  producer.json
+  script/
+    python/
+      __init__.py
 ```
 
-**Per-role isolation:** each role's `script/` package is loaded under a unique
-`sys.modules` alias (`_plh_{uid_hex}_{role_name}`). Two roles can share the module
-name `"script"` without conflict — each gets its own module object with independent
-module-level state.
-
-### 5.2 Initialising an actor
-
-```bash
-pylabhub-actor --init <actor_dir>
-```
-
-If `<actor_dir>` is omitted, the current directory is used.
-
-The init flow:
-1. Creates `<actor_dir>/logs/` and `<actor_dir>/run/`
-2. Prompts for **actor name** (e.g. `lab.daq.sensor1`)
-3. Generates `actor_uid` in `ACTOR-{NAME}-{8HEX}` format
-4. Writes `actor.json` with one example `data_out` producer role
-5. Creates `roles/data_out/script/__init__.py` with template callbacks
-
-After `--init`, edit `actor.json`:
-1. Set `"hub_dir"` to the absolute path to your hub instance directory
-2. Configure each role's `channel`, `slot_schema`, `flexzone_schema`, etc.
-3. Write your callbacks in `roles/<role>/script/__init__.py`
-
-**Actor UID format:** `ACTOR-{NAME}-{8HEX}` (e.g. `ACTOR-SENSOR1-A1B2C3D4`)
-Auto-generated from `actor_name` at init time; stored in `actor.json["actor"]["uid"]`.
-
-**Registering with a hub** (for `"verified"` connection policy only):
-```bash
-pylabhub-actor --register-with <hub_dir> <actor_dir>
-# → reads actor_name + actor_uid from actor.json
-# → appends to hub.json known_actors (requires write access to hub_dir)
-```
-
-### 5.3 actor.json — complete field reference
+Example `producer.json`:
 
 ```json
 {
-  "hub_dir": "/opt/pylabhub/hubs/daq1",
-
-  "actor": {
-    "uid":       "ACTOR-SENSOR1-A1B2C3D4",
-    "name":      "lab.daq.sensor1",
+  "producer": {
+    "name":      "MySensor",
     "log_level": "info"
   },
 
-  "roles": {
-    "data_out": {
-      "kind":        "producer",
-      "channel":     "lab.daq.sensor1.raw",
-      "interval_ms": 100,
-      "loop_timing": "fixed_pace",
-      "loop_trigger": "shm",
-      "script":      { "module": "script", "path": "./roles/data_out" },
-      "shm": {
-        "enabled":    true,
-        "slot_count": 8,
-        "secret":     0
-      },
-      "slot_schema": {
-        "packing": "natural",
-        "fields": [
-          { "name": "ts",    "type": "float64" },
-          { "name": "value", "type": "float32" },
-          { "name": "flags", "type": "uint8" }
-        ]
-      },
-      "flexzone_schema": {
-        "fields": [
-          { "name": "device_id",   "type": "uint16" },
-          { "name": "sample_rate", "type": "uint32" },
-          { "name": "label",       "type": "string", "length": 32 }
-        ]
-      },
-      "validation": {
-        "slot_checksum":     "update",
-        "flexzone_checksum": "update",
-        "on_checksum_fail":  "skip",
-        "on_python_error":   "continue"
-      }
-    },
-    "cfg_in": {
-      "kind":       "consumer",
-      "channel":    "lab.daq.sensor1.config",
-      "timeout_ms": 5000,
-      "script":     { "module": "script", "path": "./roles/cfg_in" },
-      "shm": { "enabled": true, "secret": 0 },
-      "slot_schema": {
-        "fields": [{ "name": "setpoint", "type": "float32" }]
-      }
-    }
-  }
+  "hub_dir":  "../hub",
+  "channel":  "lab.sensors.temperature",
+
+  "target_period_ms": 100,
+  "transport":        "shm",
+
+  "slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+
+  "shm": {
+    "enabled":    true,
+    "slot_count": 8,
+    "secret":     0
+  },
+
+  "script": {"type": "python", "path": "."}
 }
 ```
 
-#### Top-level `actor` block
-
 | Field | Required | Default | Description |
-|---|---|---|---|
-| `uid` | no | auto-generated | Stable `ACTOR-{NAME}-{8HEX}` identifier. Generated from `name` if absent. Keep stable across restarts — changing it changes the actor's identity. |
-| `name` | no | `""` | Human name used as input for UID generation. Convention: reverse-domain format matching channel names. |
-| `log_level` | no | `"info"` | `"debug"` / `"info"` / `"warn"` / `"error"` |
-| `auth.keyfile` | no | `""` | Path to the encrypted actor vault file (created by `--keygen`). When set, the actor decrypts this vault at startup to load its CurveZMQ client keypair. Password via `PYLABHUB_ACTOR_PASSWORD` env var or interactive prompt. Empty = ephemeral keypair (dev/test only). |
+|-------|----------|---------|-------------|
+| `producer.name` | yes | — | Human name; used in UID (`PROD-{NAME}-{HEX}`) |
+| `producer.uid` | no | generated | Override auto-generated UID |
+| `producer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
+| `producer.auth.keyfile` | no | `""` | Vault file; empty = ephemeral CURVE identity |
+| `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
+| `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint (alternative to `hub_dir`) |
+| `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
+| `channel` | yes | — | Channel name to publish on |
+| `target_period_ms` | no | `0` | Write loop period in ms; `0` = free-run |
+| `loop_timing` | no | `"max_rate"` | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
+| `timeout_ms` | no | `-1` | `write_acquire()` timeout; `-1` = infinite, `0` = non-blocking |
+| `transport` | no | `"shm"` | `"shm"` or `"zmq"` |
+| `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `transport=zmq`) |
+| `zmq_out_bind` | no | `true` | Bind (true) or connect (false) for ZMQ PUSH socket |
+| `zmq_buffer_depth` | no | `64` | ZMQ send ring buffer depth (must be > 0) |
+| `zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
+| `slot_schema` | yes‡ | — | Output slot layout |
+| `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 (overrides inline `slot_schema`) |
+| `flexzone_schema` | no | absent | Persistent flexzone layout; ignored for ZMQ transport |
+| `shm.enabled` | no | `true` | Allocate SHM segment |
+| `shm.slot_count` | yes§ | — | Ring buffer depth (number of slots) |
+| `shm.secret` | no | `0` | Shared secret for SHM name derivation |
+| `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
+| `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
+| `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
+| `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
+| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
+| `script.type` | no | `"python"` | Script type |
+| `script.path` | no | `"."` | Script directory; resolves `<path>/script/<type>/__init__.py` |
 
-**Actor vault setup (for production CurveZMQ identity):**
-```bash
-# 1. Set auth.keyfile in actor.json (e.g. "actor.key"), then generate the vault:
-pylabhub-actor --config ./actor.json --keygen
-# → prompts for vault password (or reads PYLABHUB_ACTOR_PASSWORD)
-# → creates encrypted vault at the keyfile path
-# → prints the 40-char Z85 public key
+† Exactly one of `hub_dir` or `broker` is required.
+‡ Exactly one of `slot_schema` or `schema_id` is required.
+§ Required when `shm.enabled=true`.
 
-# 2. Run the actor — prompts for vault password at startup:
-pylabhub-actor ./my-actor
-# → or: PYLABHUB_ACTOR_PASSWORD=<password> pylabhub-actor ./my-actor
+### 5.2 Producer Python script
+
+```python
+# script/python/__init__.py
+
+def on_init(api):
+    api.log('info', f"Producer {api.uid()} starting on channel {api.channel()}")
+
+def on_produce(out_slot, fz, msgs, api) -> bool:
+    # out_slot  — ctypes struct, writable. Fill fields and return True to publish.
+    # fz        — flexzone ctypes struct (None if no flexzone configured)
+    # msgs      — list of (sender: str, data: bytes) from ZMQ messaging
+    # api       — ProducerAPI proxy (see §8.3)
+    import time
+    out_slot.ts    = time.time()
+    out_slot.value = 42.0
+    return True    # True/None = commit (publish); False = discard (loop continues)
+
+def on_stop(api):
+    api.log('info', "Producer stopping")
 ```
-
-#### Top-level fields
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `hub_dir` | yes* | absent | Path to hub instance directory. `broker_endpoint` and `broker_pubkey` are resolved from `<hub_dir>/hub.json` and `<hub_dir>/hub.pubkey`. May be omitted for `--config` invocation in tests where `broker` is set explicitly. |
-| `broker` | no | `tcp://127.0.0.1:5570` | Explicit broker endpoint (overridden by `hub_dir` resolution). |
-| `broker_pubkey` | no | `""` (plain TCP) | CurveZMQ server public key for the broker, Z85 40 chars (overridden by `hub_dir`). |
-| `script` | no | absent | Actor-level script fallback: `{"module": "…", "path": "…"}`. Used for any role that has no per-role `"script"` key. |
-
-#### Per-role fields (common to producer and consumer)
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `kind` | yes | — | `"producer"` or `"consumer"` |
-| `channel` | yes | — | Channel name to create (producer) or subscribe to (consumer). Reverse-domain format: `"lab.daq.sensor1.raw"` |
-| `script` | no* | falls back to top-level | Per-role script package: `{"module": "script", "path": "./roles/<role_name>"}`. **Must be an object** — bare string throws at config load. |
-| `loop_timing` | no | `"fixed_pace"` | Deadline scheduling: `"fixed_pace"` (reset deadline from wakeup; no catch-up burst) or `"compensating"` (advance tick regardless; catches up after overrun). |
-| `loop_trigger` | no | `"shm"` | Loop trigger: `"shm"` (block on SHM slot; requires `shm.enabled=true`) or `"messenger"` (block on ZMQ message; slot is always `None`). |
-| `messenger_poll_ms` | no | `5` | Poll timeout when `loop_trigger="messenger"`. Values ≥ 10 log a warning at config load. |
-| `broker` | no | resolved from `hub_dir` | Per-role broker endpoint override. Rarely needed. |
-| `broker_pubkey` | no | resolved from `hub_dir` | Per-role broker pubkey override. |
-| `slot_schema` | no* | absent | ctypes field list for the slot type. Required if `shm.enabled=true`. Omit for Messenger-only roles. |
-| `flexzone_schema` | no | absent | ctypes field list for the flexzone (persistent producer-to-consumer data, parallel to the slot ring). |
-| `shm.enabled` | no | `false` | Whether to create (producer) or attach to (consumer) a DataBlock SHM segment. |
-| `shm.secret` | no | `0` | 32-bit shared secret used during SHM segment discovery. Must match between producer and consumer. |
-| `validation.slot_checksum` | no | `"update"` | `"none"` (no checksum), `"update"` (write checksum on produce, check on consume), `"enforce"` (reject slot on checksum mismatch). |
-| `validation.flexzone_checksum` | no | `"update"` | Same options as `slot_checksum`, applied to the flexzone. |
-| `validation.on_checksum_fail` | no | `"skip"` | `"skip"` (don't call `on_iteration`); `"pass"` (call `on_iteration` with `api.slot_valid()==False`). |
-| `validation.on_python_error` | no | `"continue"` | `"continue"` (log traceback, keep running); `"stop"` (stop this role). |
-
-#### Producer-only role fields
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `interval_ms` | no | `0` | Write interval in milliseconds. `0` = full throughput (acquire next slot immediately). `N > 0` = deadline-scheduled at `N` ms intervals. |
-| `shm.slot_count` | no | `4` | SHM ring buffer capacity in slots. More slots absorb bursts at the cost of memory. Minimum 2. |
-| `heartbeat_interval_ms` | no | `0` | Heartbeat interval override. `0` = `10 × interval_ms`. Rarely needs changing. |
-
-#### Consumer-only role fields
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `timeout_ms` | no | `-1` | `-1` = block indefinitely. `N > 0` = fire `on_iteration(slot=None, …)` after `N` ms of silence (useful for watchdog or periodic fallback). |
-
-### 5.4 Running an actor
-
-```bash
-# Standard: directory-based startup
-pylabhub-actor <actor_dir>
-
-# Explicit config file path (useful for tests and CI)
-pylabhub-actor --config <path_to_actor.json>
-```
-
-**Shutdown:** send `SIGINT` or `SIGTERM`. The actor finishes the current iteration,
-calls `on_stop()` on all roles, and exits cleanly.
 
 ---
 
-## 6. Writing Actor Scripts
+## 6. Consumer Setup
 
-### 6.1 Script package structure
+### 6.1 consumer.json — field reference
 
-Each role's script is a Python **package** — a directory named `script/` containing
-`__init__.py`. The package lives at `roles/<role_name>/script/`:
+Example `consumer.json`:
 
+```json
+{
+  "consumer": {
+    "name":      "Logger",
+    "log_level": "info"
+  },
+
+  "hub_dir":     "../hub",
+  "channel":     "lab.sensors.temperature",
+
+  "queue_type":  "shm",
+  "timeout_ms":  5000,
+
+  "slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+
+  "shm": {
+    "enabled": true,
+    "secret":  0
+  },
+
+  "script": {"type": "python", "path": "."}
+}
 ```
-roles/
-  data_out/                 ← role directory (role-name is user-defined)
-    script/                 ← Python package (module name is always "script")
-      __init__.py           ← main entry point (on_init, on_iteration, on_stop)
-      helpers.py            ← optional helpers — use relative import: from . import helpers
-      models.py             ← another submodule
-      calibration/          ← optional sub-package
-        __init__.py
-        coefficients.py
-```
 
-The `pylabhub-actor --init` command generates a starter `__init__.py` in
-`roles/data_out/script/`. Copy this structure for each additional role.
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `consumer.name` | yes | — | Human name; used in UID (`CONS-{NAME}-{HEX}`) |
+| `consumer.uid` | no | generated | Override auto-generated UID |
+| `consumer.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
+| `consumer.auth.keyfile` | no | `""` | Vault file; empty = ephemeral CURVE identity |
+| `hub_dir` | no† | — | Hub directory; reads `hub.json` + `hub.pubkey` |
+| `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint |
+| `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
+| `channel` | yes | — | Channel name to subscribe to |
+| `queue_type` | no | `"shm"` | `"shm"` (reads SHM ring) or `"zmq"` (ZMQ PULL from broker) |
+| `timeout_ms` | no | `5000` | Fires `on_consume(in_slot=None, ...)` after N ms of silence |
+| `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema) |
+| `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 |
+| `validation.verify_checksum` | no | `false` | Enable BLAKE2b slot verification on `read_acquire()` (SHM only) |
+| `validation.stop_on_script_error` | no | `false` | Halt consumer if `on_consume` raises an exception |
+| `flexzone_schema` | no | absent | Input flexzone layout (SHM only; zero-copy read) |
+| `zmq_buffer_depth` | no | `64` | Internal recv-ring buffer depth for ZMQ transport (must be > 0) |
+| `zmq_packing` | no | `"aligned"` | ZMQ frame packing: `"aligned"` or `"packed"` |
+| `shm.enabled` | no | `true` | Attach to producer's SHM segment (`queue_type=shm`) |
+| `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
+| `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
+| `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
+| `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
+| `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
+| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
+| `script.type` | no | `"python"` | Script type |
+| `script.path` | no | `"."` | Script directory |
 
-**Module isolation:** each role's package is imported under a role-unique alias in
-`sys.modules`. Two roles can both name their package `"script"` without collision —
-each gets its own module object with independent global state.
+† Exactly one of `hub_dir` or `broker` is required.
+‡ Exactly one of `slot_schema` or `schema_id` is required.
 
-**Standard imports in `__init__.py`:**
+### 6.2 Consumer Python script
 
 ```python
-import pylabhub_actor as actor   # always available (C++ embedded module)
-import numpy as np               # installed via requirements.txt
-from . import helpers            # relative import within script/ package
-from .calibration import load    # import from sub-package
+def on_init(api):
+    api.log('info', f"Consumer {api.uid()} starting on channel {api.channel()}")
+
+def on_consume(in_slot, fz, msgs, api):
+    # in_slot  — ctypes struct (read-only view). None on timeout.
+    # fz       — flexzone ctypes struct (None if no flexzone configured or ZMQ transport)
+    # msgs     — list of (sender: str, data: bytes)
+    # api      — ConsumerAPI proxy
+    if in_slot is None:
+        return  # timeout
+    print(f"ts={in_slot.ts:.3f}  value={in_slot.value}")
+
+def on_stop(api):
+    api.log('info', "Consumer stopping")
 ```
 
-### 6.2 Callback reference
+---
+
+## 7. Processor Setup
+
+### 7.1 processor.json — field reference
+
+A processor reads from one channel and writes to another. It can span two independent
+hubs (`in_hub_dir` / `out_hub_dir`) for cross-hub bridging.
+
+Example `processor.json`:
+
+```json
+{
+  "processor": {
+    "name":      "Normaliser",
+    "log_level": "info"
+  },
+
+  "hub_dir":     "../hub",
+  "in_channel":  "lab.sensors.temperature",
+  "out_channel": "lab.processed.temperature",
+
+  "in_transport":  "shm",
+  "out_transport": "shm",
+  "timeout_ms":    5000,
+
+  "in_slot_schema": {
+    "fields": [
+      {"name": "ts",    "type": "float64"},
+      {"name": "value", "type": "float32"}
+    ]
+  },
+  "out_slot_schema": {
+    "fields": [
+      {"name": "ts",         "type": "float64"},
+      {"name": "value_norm", "type": "float64"}
+    ]
+  },
+
+  "shm": {
+    "in":  {"enabled": true,  "secret": 0},
+    "out": {"enabled": true,  "slot_count": 8, "secret": 0}
+  },
+
+  "script": {"type": "python", "path": "."}
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `processor.name` | yes | — | Human name; used in UID (`PROC-{NAME}-{HEX}`) |
+| `processor.uid` | no | generated | Override auto-generated UID |
+| `processor.log_level` | no | `"info"` | `debug`/`info`/`warn`/`error` |
+| `hub_dir` | no† | — | Hub directory for both input and output directions |
+| `in_hub_dir` | no† | — | Per-direction override for input broker |
+| `out_hub_dir` | no† | — | Per-direction override for output broker |
+| `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint |
+| `in_broker` | no† | — | Per-direction input broker endpoint |
+| `out_broker` | no† | — | Per-direction output broker endpoint |
+| `in_channel` | yes | — | Input channel name |
+| `out_channel` | yes | — | Output channel name |
+| `in_transport` | no | `"shm"` | `"shm"` or `"zmq"` (direct ZMQ PULL; endpoint from broker) |
+| `out_transport` | no | `"shm"` | `"shm"` or `"zmq"` (direct ZMQ PUSH) |
+| `zmq_in_endpoint` | no† | — | ZMQ PULL endpoint (required when `in_transport=zmq` + direct mode) |
+| `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `out_transport=zmq`) |
+| `zmq_in_bind` | no | `false` | Connect (false) or bind (true) the PULL socket |
+| `zmq_out_bind` | no | `true` | Bind (true) or connect (false) the PUSH socket |
+| `in_zmq_buffer_depth` | no | `64` | PULL recv ring buffer depth |
+| `out_zmq_buffer_depth` | no | `64` | PUSH send ring buffer depth |
+| `in_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
+| `out_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
+| `timeout_ms` | no | `-1` | Input timeout; `-1`=infinite (5 s default), `0`=non-blocking, `>0`=ms |
+| `overflow_policy` | no | `"block"` | Output overflow policy: `"block"` or `"drop"` |
+| `validation.verify_checksum` | no | `false` | Enable BLAKE2b verification on SHM input |
+| `validation.update_checksum` | no | `true` | Write BLAKE2b checksum on SHM output |
+| `validation.stop_on_script_error` | no | `false` | Halt processor if `on_process` raises an exception |
+| `in_slot_schema` | yes‡ | — | Input slot layout |
+| `out_slot_schema` | yes‡ | — | Output slot layout |
+| `in_schema_id` | no‡ | — | Named schema for input (HEP-CORE-0016) |
+| `out_schema_id` | no‡ | — | Named schema for output (HEP-CORE-0016) |
+| `flexzone_schema` | no | absent | Output flexzone layout (SHM only) |
+| `shm.in.enabled` | no | `true` | Attach to producer's SHM segment |
+| `shm.in.secret` | no | `0` | Shared secret matching the input producer |
+| `shm.out.enabled` | no | `true` | Allocate output SHM segment |
+| `shm.out.slot_count` | yes§ | — | Output ring buffer depth |
+| `shm.out.secret` | no | `0` | Shared secret for output SHM |
+| `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
+| `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
+| `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
+| `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
+| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
+| `script.type` | no | `"python"` | Script type |
+| `script.path` | no | `"."` | Script directory |
+
+† Exactly one of `hub_dir`, `in_hub_dir`/`out_hub_dir`, `broker`, or `in_broker`/`out_broker`
+  combination is required per direction.
+‡ Exactly one of the inline `_schema` block or `_schema_id` string is required per side.
+§ Required when `shm.out.enabled=true`.
+
+### 7.2 Processor Python script
 
 ```python
-# roles/data_out/script/__init__.py
-import pylabhub_actor as actor
-import time
+def on_init(api):
+    api.log('info', f"Processor {api.uid()} ready")
 
-# Module-level state is private to this role
-_count = 0
+def on_process(in_slot, out_slot, fz, msgs, api) -> bool:
+    # in_slot   — ctypes struct, read-only view of input slot (None on timeout)
+    # out_slot  — ctypes struct, writable view of output slot (None on timeout)
+    # fz        — output flexzone ctypes struct (None if not configured or ZMQ out)
+    # msgs      — list of (sender: str, data: bytes) inbox/ZMQ messages
+    # api       — ProcessorAPI proxy
+    if in_slot is None:
+        return False   # timeout — discard output slot
+    out_slot.ts         = in_slot.ts
+    out_slot.value_norm = in_slot.value / 100.0
+    return True        # True/None = commit; False = discard
 
-def on_init(api: actor.ActorRoleAPI) -> None:
-    """
-    Called once before the loop starts.
-    Use to initialise hardware, open files, set flexzone metadata.
-    api.flexzone() is valid here for producers.
-    """
-    api.log("info", f"[{api.role_name()}] starting on channel {api.channel()}")
-
-    fz = api.flexzone()
-    if fz is not None:
-        fz.device_id   = 42
-        fz.sample_rate = 1000
-        fz.label       = b"lab.sensor.temperature"
-        api.update_flexzone_checksum()
-
-
-def on_iteration(slot, flexzone, messages, api: actor.ActorRoleAPI):
-    """
-    Called every loop iteration.
-
-    Parameters
-    ----------
-    slot      : ctypes.LittleEndianStructure  — writable (producer) or read-only (consumer).
-                None when triggered by Messenger timeout or loop_trigger="messenger".
-    flexzone  : ctypes.LittleEndianStructure  — persistent; writable for producer, read-only
-                for consumer. None if no flexzone_schema configured.
-    messages  : list of (sender: str, data: bytes)  — ZMQ messages received since last call.
-                May be empty even when slot is available.
-    api       : ActorRoleAPI  — proxy for this role.
-
-    Returns
-    -------
-    Producer: True/None = commit slot; False = discard slot.
-    Consumer: return value is ignored.
-    """
-    global _count
-
-    # Handle any ZMQ messages that arrived since the last iteration
-    for sender, data in messages:
-        api.log("debug", f"msg from {sender}: {data!r}")
-
-    # slot is None when triggered by timeout or loop_trigger="messenger"
-    if slot is None:
-        return None
-
-    if api.kind() == "producer":
-        _count += 1
-        slot.ts    = time.time()
-        slot.value = float(_count) * 0.01
-        slot.flags = 0x01
-        return True                     # commit this slot to consumers
-
-    else:  # consumer
-        if not api.slot_valid():
-            api.log("warn", "checksum failed — discarding slot")
-            return None
-        api.log("debug", f"received: value={slot.value:.4f}")
-        return None
-
-
-def on_stop(api: actor.ActorRoleAPI) -> None:
-    """
-    Called once after the loop exits (shutdown or api.stop()).
-    Use to flush buffers, close files, release hardware.
-    """
-    api.log("info", f"[{api.role_name()}] stopped after {_count} iterations")
+def on_stop(api):
+    api.log('info', "Processor stopping")
 ```
 
-#### Callback summary
+---
 
-| Callback | Signature | When called | If absent |
-|---|---|---|---|
-| `on_init` | `(api)` | Once, before loop starts | Silently skipped |
-| `on_iteration` | `(slot, flexzone, messages, api) → bool` | Every loop iteration | Role is disabled (warning logged) |
-| `on_stop` | `(api)` | Once, after loop exits | Silently skipped |
+## 8. Python Script Reference
 
-### 6.3 Slot types — ctypes field mapping
+### 8.1 Script package structure
 
-The `slot_schema.fields` array defines the ctypes struct that maps directly to SHM memory.
-No serialisation/deserialisation; reading or writing a field is a pointer dereference.
+All roles use the same resolution rule:
 
-| JSON `"type"` | ctypes equivalent | Notes |
-|---|---|---|
-| `"bool"` | `ctypes.c_bool` | 1 byte |
-| `"int8"` / `"uint8"` | `c_int8` / `c_uint8` | 1 byte |
-| `"int16"` / `"uint16"` | `c_int16` / `c_uint16` | 2 bytes |
-| `"int32"` / `"uint32"` | `c_int32` / `c_uint32` | 4 bytes |
-| `"int64"` / `"uint64"` | `c_int64` / `c_uint64` | 8 bytes |
-| `"float32"` | `c_float` | 4 bytes, IEEE 754 |
-| `"float64"` | `c_double` | 8 bytes, IEEE 754 |
-| `"string"` + `"length": N` | `c_char * N` | Fixed-size byte buffer; assign with `b"text"` |
-| `"bytes"` + `"count": N` | `c_uint8 * N` | Raw byte array |
-| any type + `"count": N` | `ctypes_type * N` | Scalar array |
-
-**Packing:**
-- `"packing": "natural"` (default) — C struct alignment rules (padding between fields)
-- `"packing": "packed"` — `_pack_ = 1` (no padding; dense layout)
-
-**String fields:** assign `bytes`, not `str`:
-```python
-slot.label = b"sensor-01"      # correct
-slot.label = "sensor-01"       # TypeError
+```
+<script.path>/script/<script.type>/__init__.py
 ```
 
-**Array fields:** index-access or slice:
-```python
-for i, v in enumerate(samples):
-    slot.raw_data[i] = v
-```
+With default `"path": "."`, the script is at `./script/python/__init__.py` relative to
+the role directory. The directory `./script/python/` is added to `sys.path` before the
+module is imported.
 
-**Do not store `slot` beyond `on_iteration`:** the ctypes view is backed by SHM memory
-that the runtime will reuse. Storing and accessing `slot` after return is undefined behaviour.
-`flexzone` is safe to store and access across iterations.
+### 8.2 Slot types — ctypes field mapping
 
-### 6.4 ActorRoleAPI methods
+Slot fields are mapped to Python `ctypes` types in `__init__.py`:
 
-One `ActorRoleAPI` instance per active role, passed to every callback.
+| schema type | ctypes field |
+|-------------|-------------|
+| `int8` / `uint8` | `c_int8` / `c_uint8` |
+| `int16` / `uint16` | `c_int16` / `c_uint16` |
+| `int32` / `uint32` | `c_int32` / `c_uint32` |
+| `int64` / `uint64` | `c_int64` / `c_uint64` |
+| `float32` | `c_float` |
+| `float64` | `c_double` |
+| `float32 × N` (count > 1) | `c_float * N` (array) |
+
+Access array fields:
 
 ```python
-# ── Common (all roles) ──────────────────────────────────────────────────────
-api.log(level: str, msg: str)           # log via hub logger; levels: debug/info/warn/error
-api.uid() -> str                        # actor uid: "ACTOR-SENSOR1-A1B2C3D4"
-api.role_name() -> str                  # role name: "data_out", "cfg_in", etc.
-api.actor_name() -> str                 # human actor name from config
-api.channel() -> str                    # channel name for this role
-api.broker() -> str                     # resolved broker endpoint
-api.kind() -> str                       # "producer" or "consumer"
-api.log_level() -> str                  # configured log level
-api.script_dir() -> str                 # path of the script package parent directory
-api.stop()                              # request graceful shutdown of all roles
-api.set_critical_error()                # latch error + stop; use for unrecoverable failures
-api.critical_error() -> bool            # True if set_critical_error() has been called
-api.flexzone() -> ctypes.Structure|None # persistent flexzone object (or None if no schema)
-
-# ── Producer roles ──────────────────────────────────────────────────────────
-api.broadcast(data: bytes) -> bool      # send ZMQ message to all connected consumers
-api.send(identity: str, data: bytes)    # unicast ZMQ to one consumer (identity string)
-api.consumers() -> list                 # list of ZMQ identity strings of live consumers
-api.update_flexzone_checksum() -> bool  # recompute and store BLAKE2b on the SHM flexzone
-
-# ── Consumer roles ──────────────────────────────────────────────────────────
-api.send_ctrl(data: bytes) -> bool      # send ZMQ ctrl frame to the producer
-api.slot_valid() -> bool                # False when checksum failed and on_checksum_fail="pass"
-api.verify_flexzone_checksum() -> bool  # verify the producer's flexzone BLAKE2b
-api.accept_flexzone_state() -> bool     # accept current flexzone as a valid baseline
-
-# ── Spinlocks (requires shm.enabled=true) ───────────────────────────────────
-api.spinlock(index: int)                # returns SharedSpinLockPy context manager (0–7)
-api.spinlock_count() -> int             # always 8; 0 if SHM not configured
-
-# Usage: mutual exclusion between producer and consumer on a shared flexzone field
-with api.spinlock(0):
-    flexzone.counter += 1
-
-# ── Diagnostics ─────────────────────────────────────────────────────────────
-api.script_error_count() -> int   # Python exceptions in callbacks since role start
-api.loop_overrun_count()  -> int  # write cycles that exceeded interval_ms deadline
-api.last_cycle_work_us()  -> int  # µs of active work in the last write cycle (producer)
-api.metrics() -> dict             # all timing metrics (see HEP-CORE-0008 for keys)
+samples = in_slot.samples          # ctypes array
+values  = list(in_slot.samples)    # Python list (copy)
+import ctypes, numpy as np
+arr = np.frombuffer((ctypes.c_float * 1024).from_buffer_copy(in_slot.samples),
+                    dtype=np.float32)  # zero-copy numpy view of copy
 ```
 
-### 6.5 Flexzone — persistent shared data
+For the output slot, write directly:
 
-The **flexzone** is a fixed-size region in SHM that lives alongside the slot ring buffer.
-Unlike slots (which are ring-buffered and can be overwritten), the flexzone is **written
-once** (or rarely updated) and read by all consumers at any time.
+```python
+out_slot.samples[:] = [x * 2 for x in in_slot.samples]
+# or with numpy:
+np.frombuffer(out_slot.samples, dtype=np.float32)[:] = source_array
+```
 
-**Use cases:**
-- Device metadata that consumers need before processing slots (device ID, sample rate, calibration)
-- Producer-to-consumer configuration channel
-- Shared state that changes slowly (mode flags, scale factors)
+### 8.3 API methods — all roles
 
-**Schema:** define `flexzone_schema` in the role config:
+```python
+# Identity
+api.uid()            # → str: e.g. "PROD-MYSENSOR-A1B2C3D4"
+api.name()           # → str: human name from config
+api.log_level()      # → str: "debug"/"info"/"warn"/"error"
+api.script_dir()     # → str: absolute path to the script directory
+api.log(level, msg)  # write to hub logger
+
+# Shutdown control
+api.stop()                   # request clean shutdown from inside callback
+api.set_critical_error()     # mark as failed and trigger shutdown (no argument)
+api.critical_error()         # → bool: True if set_critical_error() was called
+
+# Broker messaging
+api.notify_channel(target_channel, event, data="")  # send event to channel producer
+api.broadcast_channel(target_channel, message, data="")  # broadcast to all channel members
+api.list_channels()          # → list of dicts [{name, status, schema_id, ...}]
+api.shm_blocks(channel="")   # → dict with SHM block topology from broker
+
+# Counters (all roles)
+api.script_error_count()     # → int: number of Python exceptions in callbacks
+api.loop_overrun_count()     # → int: producer: cycles past deadline; consumer/processor: always 0
+api.last_cycle_work_us()     # → int: µs of active work in last callback invocation
+api.metrics()                # → dict: full metrics snapshot (DataBlock + D4 counters + custom)
+
+# Custom metrics (HEP-CORE-0019)
+api.report_metric(key, value)     # report single {key: number}
+api.report_metrics(dict)          # batch report {key: number} pairs
+api.clear_custom_metrics()        # clear all custom metrics
+
+# Queue metadata — producer
+api.out_slots_written()      # → int
+api.out_drop_count()         # → int
+api.out_capacity()           # → int: ring buffer slot count (SHM) or send buffer depth (ZMQ)
+api.out_policy()             # → str: overflow policy description
+
+# Queue metadata — consumer
+api.in_slots_received()      # → int
+api.last_seq()               # → int: monotonic slot sequence number of last read_acquire()
+api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
+api.in_policy()              # → str: overflow policy info
+api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only)
+
+# Queue metadata — processor (both input and output sides)
+api.in_slots_received()      # → int
+api.out_slots_written()      # → int
+api.out_drop_count()         # → int
+api.last_seq()               # → int: last consumed input slot sequence number
+api.in_capacity()  / api.in_policy()
+api.out_capacity() / api.out_policy()
+api.set_verify_checksum(enable)
+
+# Spinlocks (SHM transport only)
+api.spinlock(idx)            # → context manager; GIL released during lock wait
+api.spinlock_count()         # → int: 0 for ZMQ transport
+
+# Inbox — receive typed messages from another role
+api.open_inbox(target_uid)   # → InboxHandle or None if target not online (cached)
+api.wait_for_role(uid, timeout_ms=5000)  # → bool; polls broker with GIL released
+
+# Flexzone (producer and processor only)
+api.flexzone()               # → ctypes struct or None
+api.update_flexzone_checksum()  # update BLAKE2b checksum after writing flexzone fields
+
+# ZMQ peer messaging (producer and processor only)
+api.broadcast(data)          # send bytes to all connected consumers
+api.send(identity, data)     # send bytes to specific consumer ZMQ identity
+api.consumers()              # → list of connected consumer identities
+```
+
+### 8.4 Flexzone — persistent shared data
+
+The flexzone is a persistent region of the SHM segment alongside the ring buffer.
+It stores configuration or calibration data visible to all consumers. Define it in
+`producer.json`:
+
 ```json
 "flexzone_schema": {
   "fields": [
-    { "name": "device_id",   "type": "uint16" },
-    { "name": "sample_rate", "type": "uint32" },
-    { "name": "label",       "type": "string", "length": 32 }
+    {"name": "scale",  "type": "float64"},
+    {"name": "offset", "type": "float64"}
   ]
 }
 ```
 
-**Producer** — writes flexzone in `on_init` (and optionally in `on_iteration`):
+In the script:
+
 ```python
 def on_init(api):
-    fz = api.flexzone()
-    fz.device_id   = 42
-    fz.sample_rate = 1000
-    fz.label       = b"ADC channel 0"
-    api.update_flexzone_checksum()   # BLAKE2b over flexzone bytes
-```
-
-**Consumer** — reads flexzone at any time:
-```python
-def on_init(api):
-    fz = api.flexzone()
-    if api.verify_flexzone_checksum():
-        print(f"device_id={fz.device_id} sample_rate={fz.sample_rate}")
-        api.accept_flexzone_state()
-    else:
-        api.log("warn", "flexzone checksum mismatch — producer not ready yet")
-```
-
-**Spinlock protection** — if producer updates flexzone during iterations (rare), use a
-spinlock to prevent consumer from reading a partially-written value:
-```python
-# Producer
-with api.spinlock(0):
-    fz.scale_factor = new_calibration
+    fz = api.flexzone()   # persistent ctypes struct
+    fz.scale  = 1.0
+    fz.offset = 0.0
     api.update_flexzone_checksum()
 
-# Consumer
-with api.spinlock(0):
-    if api.verify_flexzone_checksum():
-        apply(fz.scale_factor)
-```
-
-### 6.6 ZMQ messaging between actors
-
-In addition to SHM slots, actors can send arbitrary ZMQ messages peer-to-peer. Messages
-are queued via `incoming_queue_` and passed to `on_iteration` as the `messages` list.
-
-**Producer broadcasts to all consumers:**
-```python
-api.broadcast(b"sync")
-api.broadcast(json.dumps({"cmd": "recalibrate"}).encode())
-```
-
-**Producer unicasts to one consumer:**
-```python
-consumers = api.consumers()   # list of identity strings
-if consumers:
-    api.send(consumers[0], b"special-data")
-```
-
-**Consumer sends back to producer:**
-```python
-api.send_ctrl(b"ack")
-api.send_ctrl(json.dumps({"status": "ready"}).encode())
-```
-
-**Receiving messages** — in `on_iteration`, the `messages` parameter carries all ZMQ
-messages received since the previous call:
-```python
-def on_iteration(slot, flexzone, messages, api):
-    for sender, data in messages:
-        cmd = json.loads(data)
-        if cmd.get("cmd") == "recalibrate":
-            reload_calibration()
-    ...
-```
-
-The ZMQ channel is always available even when `loop_trigger="shm"` — messages and slot
-data are both delivered in the same `on_iteration` call.
-
-### 6.7 Error handling patterns
-
-**Non-fatal recoverable error** — log and continue:
-```python
-def on_iteration(slot, flexzone, messages, api):
-    try:
-        slot.value = read_sensor()
-    except IOError as e:
-        api.log("warn", f"sensor read failed: {e}")
-        return False    # discard this slot
+def on_produce(out_slot, fz, msgs, api):
+    out_slot.value = raw * fz.scale + fz.offset
     return True
 ```
 
-**Fatal unrecoverable error** — call `api.set_critical_error()`:
+Consumers see the flexzone as the `fz` callback argument (zero-copy read-only view).
+
+### 8.5 ZMQ messaging between roles
+
+Producers and processors can send arbitrary bytes to connected consumers via the
+broker's P2C ZMQ ctrl socket (control plane relay):
+
 ```python
+def on_produce(out_slot, fz, msgs, api):
+    # Broadcast to all connected consumers
+    api.broadcast(b"heartbeat")
+
+    # Send to one specific consumer
+    for cid in api.consumers():
+        api.send(cid, b"hello")
+
+    # Receive messages sent by consumers
+    for sender, data in msgs:
+        print(f"from {sender}: {data}")
+    return True
+```
+
+### 8.6 Inbox — typed peer-to-peer messages
+
+Any role can declare an inbox to receive structured typed messages from peers. Configure
+with flat `inbox_schema` / `inbox_endpoint` fields in the JSON. A peer sends to your inbox:
+
+```python
+# In a producer/processor script, open an inbox connection to the processor
 def on_init(api):
-    if not hardware.connect():
-        api.log("error", "hardware not found — shutting down actor")
-        api.set_critical_error()   # latches error + triggers graceful stop
+    # Wait until the target processor is registered
+    api.wait_for_role("PROC-NORMALISER-A1B2C3D4", timeout_ms=10000)
+    handle = api.open_inbox("PROC-NORMALISER-A1B2C3D4")
+    if handle is None:
+        api.log("error", "Processor inbox not available")
+        api.set_critical_error()
         return
+    slot = handle.acquire()   # → writable ctypes struct
+    slot.cmd = 1
+    rc = handle.send(timeout_ms=5000)  # 0 = OK
+    handle.discard()          # or just let GC handle it
 ```
 
-**`on_python_error`** controls what happens when an unhandled exception escapes
-`on_iteration`:
-- `"continue"` (default): traceback is logged; `script_error_count` incremented; loop continues
-- `"stop"`: role stops on the first unhandled exception
+On the receiving side (`on_inbox` callback, optional):
 
-**Monitoring via diagnostics:**
 ```python
-def on_iteration(slot, flexzone, messages, api):
+def on_inbox(inbox_slot, sender, api):
+    api.log('info', f"Inbox from {sender}: cmd={inbox_slot.cmd}")
+```
+
+### 8.7 Error handling patterns
+
+```python
+# Graceful shutdown on unrecoverable error
+def on_produce(out_slot, fz, msgs, api):
+    try:
+        result = do_measurement()
+    except DeviceError as e:
+        api.log('error', f"Device failed: {e}")
+        api.set_critical_error()   # triggers shutdown
+        return False
+
+# Timeout handling
+def on_consume(in_slot, fz, msgs, api):
+    if in_slot is None:
+        api.log('warn', "No data for 5 seconds")
+        return   # no-op on timeout
+
+# Tracking gaps in sequence (consumer only)
+_prev_seq = None
+def on_consume(in_slot, fz, msgs, api):
+    global _prev_seq
+    if in_slot is None: return
+    seq = api.last_seq()
+    if _prev_seq is not None and seq != _prev_seq + 1:
+        api.log('warn', f"Gap: expected {_prev_seq+1}, got {seq}")
+    _prev_seq = seq
+```
+
+---
+
+## 9. Security and Connection Policy
+
+### 9.1 File permission model
+
+| File | Permissions | Contents |
+|------|-------------|----------|
+| `hub.json` | 0644 (world-readable) | Non-secret config only |
+| `hub.vault` | 0600 (owner only) | Encrypted: CurveZMQ private key + admin token |
+| `hub.pubkey` | 0644 | Broker CurveZMQ public key (share with roles) |
+| `<role>.vault` | 0600 (owner only) | Encrypted: role CurveZMQ private key |
+
+The admin token is generated by `--init`, stored in `hub.vault`, and injected at runtime
+after vault unlock. It is never written to `hub.json`.
+
+### 9.2 Production setup
+
+```bash
+# 1. Create hub (generates hub.json + hub.vault)
+pylabhub-hubshell --init <hub-dir>/ --name "my-lab"
+
+# 2. Copy hub.pubkey to each role directory (or reference it in broker_pubkey)
+cp <hub-dir>/hub.pubkey <producer-dir>/
+
+# 3. Create each role (generates role.json + role.vault)
+pylabhub-producer  --init <producer-dir>/  --name "MySensor"
+pylabhub-consumer  --init <consumer-dir>/  --name "MyLogger"
+pylabhub-processor --init <processor-dir>/ --name "MyFilter"
+
+# 4. Set broker_pubkey in each role's JSON, or place hub.pubkey in the role dir
+# 5. Run the hub (prompts for vault password)
+pylabhub-hubshell <hub-dir>/
+```
+
+### 9.3 Development mode
+
+In dev mode all roles use ephemeral CurveZMQ key pairs; no vault or password is required:
+
+```bash
+pylabhub-hubshell <hub-dir>/ --dev
+```
+
+Roles without a vault still connect if `broker_pubkey` is set (ephemeral key, broker
+authenticated). For mutual authentication (both sides verified), set `auth.keyfile` on
+both the hub and each role.
+
+### 9.4 Connection policy
+
+Controls which roles the broker accepts channel registrations from (set in `hub.json`
+under `hub.connection_policy`):
+
+| Value | Behaviour |
+|-------|-----------|
+| `"open"` | Any role connecting with a valid CurveZMQ identity is accepted (default) |
+| `"tracked"` | All roles are logged; no enforcement |
+| `"required"` | Roles must present a known UID |
+| `"verified"` | Roles must be in `hub.known_actors[]` with matching UID and public key |
+
+### 9.5 ZMQ socket lifecycle policy
+
+**All ZMQ sockets in pyLabHub set `ZMQ_LINGER = 0` at creation.**
+
+The default ZMQ linger is -1 (infinite): `zmq_close()` blocks until all queued
+sends are delivered. In pyLabHub, this would cause hangs on shutdown — particularly
+in Release builds where the ZMQ I/O thread has not yet processed a peer disconnect
+before the socket is closed.
+
+pyLabHub does not rely on socket linger for delivery guarantees. Shutdown is always
+coordinated through explicit protocol messages (`CHANNEL_CLOSING_NOTIFY`,
+`FORCE_SHUTDOWN`). By the time any socket is closed, the counterpart has already
+received a shutdown notification through the control path.
+
+LINGER=0 is set at socket **creation** (not deferred to close time) so it takes
+effect before any sends are queued. See §15 in `docs/HEP/HEP-CORE-0021` for the
+full policy, rationale, and list of all socket creation sites.
+
+---
+
+## 10. Multi-Hub Pipelines
+
+A processor can bridge two independent hubs using ZMQ transport on one side:
+
+```
+Hub A (port 5570)                             Hub B (port 5571)
+Producer ─[SHM]─► Processor-A ─[ZMQ PUSH]──►
+                               tcp://localhost:5580
+                  Processor-B ─[ZMQ PULL]──► [SHM] ─► Consumer
+```
+
+**processor-a/processor.json** (SHM in, ZMQ out):
+```json
+{
+  "in_hub_dir":     "../hub-a",
+  "out_hub_dir":    "../hub-a",
+  "in_channel":     "lab.a.raw",
+  "out_channel":    "lab.a.bridge",
+  "in_transport":   "shm",
+  "out_transport":  "zmq",
+  "zmq_out_endpoint": "tcp://127.0.0.1:5580",
+  "shm": { "in": {"enabled": true, "secret": 3333333333},
+            "out": {"enabled": false} }
+}
+```
+
+**processor-b/processor.json** (ZMQ in, SHM out):
+```json
+{
+  "in_hub_dir":    "../hub-b",
+  "out_hub_dir":   "../hub-b",
+  "in_channel":    "lab.b.incoming",
+  "out_channel":   "lab.b.processed",
+  "in_transport":  "zmq",
+  "out_transport": "shm",
+  "zmq_in_endpoint": "tcp://127.0.0.1:5580",
+  "shm": { "in": {"enabled": false},
+            "out": {"enabled": true, "secret": 4444444444, "slot_count": 8} }
+}
+```
+
+See `share/demo-dual-hub/` for a complete working example.
+
+---
+
+## 11. Operational Reference
+
+### Starting order
+
+```bash
+# 1. Hub(s) first
+pylabhub-hubshell hub/ --dev &
+
+# 2. Producer next (creates SHM)
+pylabhub-producer producer/ &
+sleep 0.6   # wait for SHM creation + broker registration
+
+# 3. Processor after producer (attaches to SHM)
+pylabhub-processor processor/ &
+sleep 0.6
+
+# 4. Consumer last (or any order after producer)
+pylabhub-consumer consumer/
+```
+
+### Shutdown
+
+Send `SIGTERM` or `SIGINT` to any role. The role sends `DISC_REQ` to the broker, waits
+for `CHANNEL_CLOSING_NOTIFY` to drain consumers, then exits.
+
+### Monitoring
+
+```python
+# In any callback, inspect live metrics
+def on_produce(out_slot, fz, msgs, api):
     m = api.metrics()
-    if api.loop_overrun_count() > 100:
-        api.log("warn", f"overruns={api.loop_overrun_count()} last_work={api.last_cycle_work_us()}µs")
-    ...
+    if m.get('loop_overrun_count', 0) > 0:
+        api.log('warn', f"Loop overruns: {m['loop_overrun_count']}")
+    if m.get('drops', 0) > 0:
+        api.log('warn', f"Drops: {m['drops']}")
+    return True
 ```
 
----
-
-## 7. Connection Policy — Securing the Hub
-
-The hub's connection policy controls who is allowed to create channels or subscribe to them.
-Configured in `hub.json["hub"]["connection_policy"]` (hub-wide default) and optionally
-overridden per channel via `hub.json["hub"]["channel_policies"]`.
-
-### Policy levels
-
-| Policy | Enforcement | Use case |
-|---|---|---|
-| `"open"` | No identity required. Any client connects. | Development, local lab networks. |
-| `"tracked"` | Actor name + UID accepted if provided; not required. Full provenance logged without enforcement. | Audit trail; no access control. |
-| `"required"` | `actor_name` + `actor_uid` must be present in every REG_REQ / CONSUMER_REG_REQ. Rejected if absent. Not checked against an allowlist. | Enforces identity without maintaining a registry. |
-| `"verified"` | `actor_name` + `actor_uid` must match an entry in `known_actors`. Unknown actors are rejected. | Maximum security; requires actor pre-registration. |
-
-### Setting up `"verified"` policy
-
-1. Run `pylabhub-actor --init <actor_dir>` for each actor (generates stable UID).
-2. Register each actor with the hub:
-   ```bash
-   pylabhub-actor --register-with /opt/pylabhub/hubs/daq1 /opt/pylabhub/actors/sensor1
-   ```
-   This appends to `hub.json["known_actors"]` — idempotent (won't add duplicates).
-3. Set policy in `hub.json`:
-   ```json
-   { "connection_policy": "verified" }
-   ```
-4. Restart the hub.
-
-### Per-channel overrides
-
-First matching glob pattern wins. Hub-wide policy is the fallback.
-
-```json
-{
-  "hub": {
-    "connection_policy": "tracked",
-    "channel_policies": [
-      { "channel": "lab.daq.*",      "connection_policy": "verified" },
-      { "channel": "lab.monitor.*",  "connection_policy": "open" },
-      { "channel": "lab.control.*",  "connection_policy": "required" }
-    ]
-  }
-}
-```
-
-Glob matching: `*` matches any sequence of characters within a channel name segment.
-`lab.daq.*` matches `lab.daq.sensor1.raw`, `lab.daq.temp`, etc.
-
-### `known_actors` format
-
-All policy fields (`connection_policy`, `known_actors`, `channel_policies`) are nested
-inside the `"hub"` block in `hub.json`:
-
-```json
-{
-  "hub": {
-    "known_actors": [
-      { "name": "lab.daq.sensor1",     "uid": "ACTOR-SENSOR1-A1B2C3D4", "role": "producer" },
-      { "name": "lab.analysis.logger", "uid": "ACTOR-LOGGER-9E1D4C2A",  "role": "consumer" },
-      { "name": "lab.control.main",    "uid": "ACTOR-CONTROL-4F8E1B5A", "role": "any" }
-    ]
-  }
-}
-```
-
-`"role"` is informational only (not enforced by the policy engine). Use `"any"` when the
-same actor has both producer and consumer roles.
-
----
-
-## 8. Common Topologies
-
-### Single producer → multiple consumers
-
-```
-sensor-actor (producer: lab.daq.sensor1.raw)
-    ↓ SHM slot ring
-    ├── logger-actor  (consumer: lab.daq.sensor1.raw)
-    └── display-actor (consumer: lab.daq.sensor1.raw)
-```
-
-Each consumer gets every committed slot in sequence. The ring buffer absorbs bursts —
-consumers that fall behind read stale slots but never block the producer.
-
-### Multi-role actor (producer + consumer)
-
-A single actor can hold multiple roles connecting to different channels:
-
-```json
-{
-  "roles": {
-    "raw_out":  { "kind": "producer", "channel": "lab.daq.sensor1.raw",    ... },
-    "status_in": { "kind": "consumer", "channel": "lab.control.status", ... }
-  }
-}
-```
-
-Both roles run concurrently. The `raw_out` role writes sensor data; `status_in` receives
-commands from a control actor and can update shared state via the flexzone or `api.stop()`.
-
-### Message-driven actor (no SHM)
-
-When an actor only needs ZMQ messaging (no shared memory), set `loop_trigger="messenger"`
-and omit `shm`:
-
-```json
-{
-  "roles": {
-    "alert_out": {
-      "kind":            "producer",
-      "channel":         "lab.alerts",
-      "loop_trigger":    "messenger",
-      "messenger_poll_ms": 5
-    }
-  }
-}
-```
-
-`on_iteration` fires on each incoming ZMQ message or after `messenger_poll_ms` timeout.
-`slot` is always `None`.
-
-### Hub-to-hub bridge
-
-An actor acts as a consumer on Hub A and a producer on Hub B, forwarding data.
-Each role connects to a different `broker` endpoint:
-
-```json
-{
-  "roles": {
-    "bridge_in":  { "kind": "consumer", "channel": "lab.a.sensor", "broker": "tcp://192.168.1.10:5570", ... },
-    "bridge_out": { "kind": "producer", "channel": "lab.b.sensor", "broker": "tcp://192.168.1.20:5570", ... }
-  }
-}
-```
-
----
-
-## 9. Operational Patterns
-
-### Development workflow
-
-```bash
-# Terminal 1: hub in dev mode (ephemeral keypair, no vault prompt)
-./build/stage-debug/bin/pylabhub-hubshell ./my-hub --dev
-
-# Terminal 2: actor with verbose logging
-./build/stage-debug/bin/pylabhub-actor ./my-actor
-```
-
-### systemd service — hub
-
-```ini
-# /etc/systemd/system/pylabhub-hub-daq1.service
-[Unit]
-Description=pyLabHub Hub (daq1)
-After=network.target
-
-[Service]
-Type=simple
-User=pylabhub
-Environment=PYLABHUB_MASTER_PASSWORD=<vault-password>
-ExecStart=/usr/local/bin/pylabhub-hubshell /opt/pylabhub/hubs/daq1
-Restart=on-failure
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### systemd service — actor
-
-```ini
-# /etc/systemd/system/pylabhub-actor-sensor1.service
-[Unit]
-Description=pyLabHub Actor (sensor1)
-After=pylabhub-hub-daq1.service
-Requires=pylabhub-hub-daq1.service
-
-[Service]
-Type=simple
-User=pylabhub
-ExecStart=/usr/local/bin/pylabhub-actor /opt/pylabhub/actors/sensor1
-Restart=on-failure
-RestartSec=3s
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Log files
-
-Hub and actor rotate logs under `<instance_dir>/logs/`. Log level is set in:
-- Hub: `PYLABHUB_HUB_NAME` env (no log-level env; use `hub.json` via startup script)
-- Actor: `actor.json["actor"]["log_level"]` = `"debug"` / `"info"` / `"warn"` / `"error"`
-
-### Recommended directory layout for production
-
-```
-/opt/pylabhub/
-  bin/                       ← install tree (symlink to /usr/local/bin/pylabhub*)
-  lib/                       ← shared library
-  hubs/
-    daq1/                    ← hub instance (hub.json, hub.vault, hub.pubkey, logs/)
-    daq2/
-  actors/
-    sensor1/                 ← actor instance (actor.json, roles/, logs/)
-    logger/
-    display/
-```
-
-No paths are hardwired in the binaries. Pass `<hub_dir>` and `<actor_dir>` on the command
-line (or as ExecStart arguments in systemd units).
-
----
-
-## 10. Troubleshooting
-
-### Actor cannot connect to hub
-
-1. Check `hub.pubkey` exists in `<hub_dir>/`: `ls -la <hub_dir>/hub.pubkey`
-   - If missing: restart the hub so it re-runs `HubVault::publish_public_key()`
-2. Check `hub_dir` in `actor.json` points to the correct hub directory
-3. Check `broker_endpoint` in `hub.json` is reachable from the actor machine:
-   ```bash
-   nc -zv <hub-ip> 5570
-   ```
-4. Check connection policy: if `"required"` or `"verified"`, ensure the actor has a UID
-   and (for verified) is in `known_actors`. Run:
-   ```bash
-   pylabhub-actor --register-with <hub_dir> <actor_dir>
-   ```
-
-### `hub.vault` decrypt failure
-
-- Wrong password: try `PYLABHUB_MASTER_PASSWORD` env var
-- Corrupted vault: no recovery — re-run `--init` with a new directory (or restore from backup)
-- Changed `hub_uid` in `hub.json`: the UID is used as the Argon2id salt; changing it
-  makes the vault unreadable. Do not edit `hub["uid"]` after `--init`.
-
-### Actor script import error
-
-```
-ModuleNotFoundError: No module named 'numpy'
-```
-
-Ensure the Python packages listed in `requirements.txt` are installed in the embedded
-Python runtime. Run the build with `prepare_python_env` target:
-```bash
-cmake --build build --target prepare_python_env
-```
-
-Or install manually into the embedded Python:
-```bash
-./build/stage-debug/opt/python/bin/pip install numpy
-```
-
-### SHM segment not found
-
-Consumer attaches before producer creates the segment. The consumer polls automatically
-during `connect()`. If the producer never appears, check:
-1. Producer and consumer use the same `channel` name (case-sensitive)
-2. Producer and consumer use the same `shm.secret` value
-3. Both are registered with the same broker
-
-### Slot checksum failures
-
-```
-warn: checksum failed — discarding slot
-```
-
-Likely cause: producer writes `slot.field` and returns `True` without the C++ runtime
-having any integrity issue — a genuine BLAKE2b mismatch. Check:
-1. Producer and consumer use the same `slot_schema` (types, names, order, packing)
-2. `validation.slot_checksum` is `"update"` on the producer side (not `"none"`)
-3. No external process writing to the SHM segment
-
-### Loop overruns (producer)
-
-`api.loop_overrun_count()` keeps growing? The producer's `on_iteration` body takes
-longer than `interval_ms`. Options:
-1. Increase `interval_ms`
-2. Move slow work off the iteration path (use a background thread)
-3. Switch `loop_timing` to `"fixed_pace"` to prevent burst catch-up
-4. Profile with `api.last_cycle_work_us()`
-
----
-
-*This document covers pyLabHub as of 2026-02-27. For design rationale and protocol
-details, see the HEP documents in `docs/HEP/`.*
+### Log level at runtime
+
+Set `producer.log_level` (or equivalent for other roles) to `"debug"` for verbose output.
+All log output goes to stderr via the async logger.
+
+### Common errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `[producer] REG_ACK: channel already registered` | Another producer already owns the channel | Use a unique channel name or stop the existing producer |
+| `[consumer] CONSUMER_REG_ACK: schema mismatch` | Consumer schema doesn't match producer | Align `slot_schema` (or use shared `schema_id`) |
+| `[consumer] CONSUMER_REG_ACK: transport mismatch` | Consumer queue_type≠producer transport | Set matching `queue_type`/`transport` on both sides |
+| `[proc] Failed to create hub::Processor` | Could not attach to input or output SHM | Check SHM secrets and that producer started first |
+| `Segmentation fault at SHM attach` | Mismatched schema sizes | Ensure identical `slot_schema` on producer and consumer/processor sides |

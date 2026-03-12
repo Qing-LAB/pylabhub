@@ -254,3 +254,603 @@ TEST_F(ConsumerConfigTest, Validation_BadTimeoutThrows)
                  std::runtime_error);
     fs::remove_all(tmp);
 }
+
+// ── Loop driver / timing tests ────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, QueueType_DefaultsToShm)
+{
+    const auto tmp      = unique_temp_dir("ld_default");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-LD-00000001", "name": "LdDefault" },
+        "channel":   "lab.ld.default"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.queue_type,     pylabhub::consumer::QueueType::Shm);
+    EXPECT_EQ(cfg.target_period_ms, 0);
+    EXPECT_EQ(cfg.loop_timing,     pylabhub::LoopTimingPolicy::MaxRate);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, QueueType_ParsesZmq)
+{
+    const auto tmp      = unique_temp_dir("ld_zmq");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":   { "uid": "CONS-LD-00000002", "name": "LdZmq" },
+        "channel":    "lab.ld.zmq",
+        "queue_type": "zmq"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.queue_type, pylabhub::consumer::QueueType::Zmq);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, QueueType_InvalidThrows)
+{
+    const auto tmp      = unique_temp_dir("ld_inv");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":    { "uid": "CONS-LD-00000003", "name": "LdInv" },
+        "channel":     "lab.ld.inv",
+        "queue_type": "timer"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, TargetPeriodMs_Parsed)
+{
+    const auto tmp      = unique_temp_dir("tp_ms");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-TP-00000001", "name": "TpMs" },
+        "channel":          "lab.tp.ms",
+        "target_period_ms": 50,
+        "loop_timing":      "fixed_rate_with_compensation"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 50);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::FixedRateWithCompensation);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, TargetPeriodMs_ZeroIsValidFreeRun)
+{
+    const auto tmp      = unique_temp_dir("tp_zero");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-TP-00000002", "name": "TpZero" },
+        "channel":          "lab.tp.zero",
+        "target_period_ms": 0
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 0);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, TargetPeriodMs_NegativeThrows)
+{
+    const auto tmp      = unique_temp_dir("tp_neg");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-TP-00000003", "name": "TpNeg" },
+        "channel":          "lab.tp.neg",
+        "target_period_ms": -1
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, LoopTiming_InvalidThrows)
+{
+    const auto tmp      = unique_temp_dir("lt_inv");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":    { "uid": "CONS-LT-00000001", "name": "LtInv" },
+        "channel":     "lab.lt.inv",
+        "loop_timing": "periodic"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, LoopTiming_MaxRate_Explicit)
+{
+    const auto tmp      = unique_temp_dir("lt_max");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-LT-00000002", "name": "LtMax" },
+        "channel":          "lab.lt.max",
+        "target_period_ms": 0,
+        "loop_timing":      "max_rate"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 0);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::MaxRate);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, LoopTiming_FixedRate_Explicit)
+{
+    const auto tmp      = unique_temp_dir("lt_fr");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-LT-00000003", "name": "LtFr" },
+        "channel":          "lab.lt.fr",
+        "target_period_ms": 100,
+        "loop_timing":      "fixed_rate"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 100);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::FixedRate);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, LoopTiming_MaxRate_WithPeriod_Throws)
+{
+    const auto tmp      = unique_temp_dir("lt_max_inv");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-LT-00000004", "name": "LtMaxInv" },
+        "channel":          "lab.lt.maxinv",
+        "target_period_ms": 50,
+        "loop_timing":      "max_rate"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, LoopTiming_FixedRate_ZeroPeriod_Throws)
+{
+    const auto tmp      = unique_temp_dir("lt_fr_inv");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":         { "uid": "CONS-LT-00000005", "name": "LtFrInv" },
+        "channel":          "lab.lt.frinv",
+        "target_period_ms": 0,
+        "loop_timing":      "fixed_rate"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── Inbox facility tests ──────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_NoInbox_DefaultFields)
+{
+    const auto tmp      = unique_temp_dir("noinbox");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-NOINBOX-00000001", "name": "NoInbox" },
+        "channel":  "lab.noinbox.test"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_FALSE(cfg.has_inbox());
+    EXPECT_TRUE(cfg.inbox_schema_json.is_null());
+    EXPECT_EQ(cfg.inbox_endpoint,     "");
+    EXPECT_EQ(cfg.inbox_buffer_depth, size_t{64});
+    EXPECT_EQ(cfg.zmq_packing,        "aligned");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InboxSchema_ParsedCorrectly)
+{
+    const auto tmp      = unique_temp_dir("ibschema");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":     { "uid": "CONS-IBSCH-00000001", "name": "IbSch" },
+        "channel":      "lab.ibsch.test",
+        "inbox_schema": { "fields": [{"name": "value", "type": "float32"}] }
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.has_inbox());
+    ASSERT_FALSE(cfg.inbox_schema_json.is_null());
+    const auto &fields = cfg.inbox_schema_json["fields"];
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_EQ(fields[0]["name"].get<std::string>(), "value");
+    EXPECT_EQ(fields[0]["type"].get<std::string>(), "float32");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InboxEndpoint_Custom)
+{
+    const auto tmp      = unique_temp_dir("ibep");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":       { "uid": "CONS-IBEP-00000001", "name": "IbEp" },
+        "channel":        "lab.ibep.test",
+        "inbox_schema":   { "fields": [{"name": "x", "type": "int32"}] },
+        "inbox_endpoint": "tcp://127.0.0.1:9900"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.has_inbox());
+    EXPECT_EQ(cfg.inbox_endpoint, "tcp://127.0.0.1:9900");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_ZmqPacking_Parsed)
+{
+    const auto tmp      = unique_temp_dir("zmqpack");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":    { "uid": "CONS-ZMQPK-00000001", "name": "ZmqPk" },
+        "channel":     "lab.zmqpk.test",
+        "zmq_packing": "packed"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_packing, "packed");
+    fs::remove_all(tmp);
+}
+
+// ── FS-02: ConsumerConfig validation ─────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InvalidZmqPacking_Throws)
+{
+    const auto tmp      = unique_temp_dir("badzmqpk");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":    { "uid": "CONS-BADPK-00000001", "name": "BadPk" },
+        "channel":     "lab.badpk.test",
+        "zmq_packing": "natural"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_ZeroInboxBufferDepth_Throws)
+{
+    const auto tmp      = unique_temp_dir("ibdepth0");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":          { "uid": "CONS-IBDEPTH0-00000001", "name": "IbDepth0" },
+        "channel":           "lab.ibdepth0.test",
+        "inbox_schema":      { "fields": [{"name": "v", "type": "uint8"}] },
+        "inbox_buffer_depth": 0
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InvalidInboxSchemaType_Integer_Throws)
+{
+    const auto tmp      = unique_temp_dir("ibschint");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":       { "uid": "CONS-IBSCHINT-00000001", "name": "IbSchInt" },
+        "channel":        "lab.ibschint.test",
+        "inbox_schema":   42,
+        "inbox_endpoint": "tcp://127.0.0.1:9904"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InvalidInboxSchemaType_Array_Throws)
+{
+    const auto tmp      = unique_temp_dir("ibscharr");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":       { "uid": "CONS-IBSCHARR-00000001", "name": "IbSchArr" },
+        "channel":        "lab.ibscharr.test",
+        "inbox_schema":   [{"name": "v", "type": "uint8"}],
+        "inbox_endpoint": "tcp://127.0.0.1:9905"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ConsumerConfig_InboxSchemaAsString_Accepted)
+{
+    const auto tmp      = unique_temp_dir("ibschstrcons");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":       { "uid": "CONS-IBSCHSTR-00000001", "name": "IbSchStr" },
+        "channel":        "lab.ibschstr.test",
+        "inbox_schema":   "lab/demo/counter.v1",
+        "inbox_endpoint": "tcp://127.0.0.1:9906"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.has_inbox());
+    EXPECT_TRUE(cfg.inbox_schema_json.is_string());
+    fs::remove_all(tmp);
+}
+
+// ── verify_checksum ───────────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, VerifyChecksum_DefaultFalse)
+{
+    const auto tmp      = unique_temp_dir("vchkdef");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-VCHKDEF-00000001", "name": "VChkDef" },
+        "channel":  "lab.vchk.test"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_FALSE(cfg.verify_checksum);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, VerifyChecksum_ParsedTrue)
+{
+    const auto tmp      = unique_temp_dir("vchkon");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":    { "uid": "CONS-VCHKON-00000001", "name": "VChkOn" },
+        "channel":     "lab.vchk.test",
+        "validation":  { "verify_checksum": true }
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.verify_checksum);
+    fs::remove_all(tmp);
+}
+
+// ── heartbeat_interval_ms ─────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, HeartbeatIntervalMs_DefaultZero)
+{
+    const auto tmp      = unique_temp_dir("hbdef");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-HBDEF-00000001", "name": "HbDef" },
+        "channel":  "lab.hb.test"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.heartbeat_interval_ms, 0);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, HeartbeatIntervalMs_Parsed)
+{
+    const auto tmp      = unique_temp_dir("hbparsed");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":              { "uid": "CONS-HBPARSED-00000001", "name": "HbParsed" },
+        "channel":               "lab.hb.test",
+        "heartbeat_interval_ms": 2500
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.heartbeat_interval_ms, 2500);
+    fs::remove_all(tmp);
+}
+
+// ── zmq_buffer_depth ─────────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, ZmqBufferDepth_DefaultIs64)
+{
+    const auto tmp      = unique_temp_dir("zmqbddef");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-ZMQBDDEF-00000001", "name": "ZmqBdDef" },
+        "channel":  "lab.zmqbd.test"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_buffer_depth, size_t{64});
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ZmqBufferDepth_Parsed)
+{
+    const auto tmp      = unique_temp_dir("zmqbdparsed");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":        { "uid": "CONS-ZMQBDPARSED-00000001", "name": "ZmqBdParsed" },
+        "channel":         "lab.zmqbd.test",
+        "zmq_buffer_depth": 128
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_buffer_depth, size_t{128});
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, ZmqBufferDepth_ZeroThrows)
+{
+    const auto tmp      = unique_temp_dir("zmqbdzero");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":        { "uid": "CONS-ZMQBDZERO-00000001", "name": "ZmqBdZero" },
+        "channel":         "lab.zmqbd.test",
+        "zmq_buffer_depth": 0
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── inbox_overflow_policy ─────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, InboxOverflowPolicy_DefaultDrop)
+{
+    const auto tmp      = unique_temp_dir("ovfldef");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-OVFLDEF-00000001", "name": "OvflDef" },
+        "channel":  "lab.ovfl.test"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.inbox_overflow_policy, "drop");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, InboxOverflowPolicy_ParsesBlock)
+{
+    const auto tmp      = unique_temp_dir("ovflblock");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":              { "uid": "CONS-OVFLBLOCK-00000001", "name": "OvflBlock" },
+        "channel":               "lab.ovfl.test",
+        "inbox_overflow_policy": "block"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.inbox_overflow_policy, "block");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, InboxOverflowPolicy_InvalidThrows)
+{
+    const auto tmp      = unique_temp_dir("ovflinvalid");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":              { "uid": "CONS-OVFLINV-00000001", "name": "OvflInv" },
+        "channel":               "lab.ovfl.test",
+        "inbox_overflow_policy": "skip"
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── Monitoring config fields ──────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, MonitoringFields_Defaults)
+{
+    const auto tmp      = unique_temp_dir("mon_def");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-MON-00000001", "name": "MonDef" },
+        "channel":  "lab.mon.def"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.ctrl_queue_max_depth, size_t{256});
+    EXPECT_EQ(cfg.peer_dead_timeout_ms, 30000);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, MonitoringFields_Explicit)
+{
+    const auto tmp      = unique_temp_dir("mon_exp");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":            { "uid": "CONS-MON-00000002", "name": "MonExp" },
+        "channel":             "lab.mon.exp",
+        "ctrl_queue_max_depth": 64,
+        "peer_dead_timeout_ms": 5000
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.ctrl_queue_max_depth, size_t{64});
+    EXPECT_EQ(cfg.peer_dead_timeout_ms, 5000);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, MonitoringFields_Disabled)
+{
+    const auto tmp      = unique_temp_dir("mon_dis");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer":            { "uid": "CONS-MON-00000003", "name": "MonDis" },
+        "channel":             "lab.mon.dis",
+        "peer_dead_timeout_ms": 0
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.peer_dead_timeout_ms, 0);
+    fs::remove_all(tmp);
+}
+
+// ── startup.wait_for_roles ─────────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, Startup_DefaultsToEmpty)
+{
+    const auto tmp      = unique_temp_dir("su_def");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUDEF-00000001", "name": "SuDef" },
+        "channel":  "lab.su.def"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.wait_for_roles.empty());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, Startup_ParsesSingleRole)
+{
+    const auto tmp      = unique_temp_dir("su_one");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUONE-00000001", "name": "SuOne" },
+        "channel":  "lab.su.one",
+        "startup": {
+            "wait_for_roles": [
+                { "uid": "PROD-SENSOR-AABBCCDD", "timeout_ms": 8000 }
+            ]
+        }
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    ASSERT_EQ(cfg.wait_for_roles.size(), size_t{1});
+    EXPECT_EQ(cfg.wait_for_roles[0].uid,        "PROD-SENSOR-AABBCCDD");
+    EXPECT_EQ(cfg.wait_for_roles[0].timeout_ms, 8000);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, Startup_DefaultTimeout)
+{
+    const auto tmp      = unique_temp_dir("su_deftmo");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUDEFTMO-00000001", "name": "SuDefTmo" },
+        "channel":  "lab.su.deftmo",
+        "startup": {
+            "wait_for_roles": [ { "uid": "PROD-SENSOR-AABBCCDD" } ]
+        }
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    ASSERT_EQ(cfg.wait_for_roles.size(), size_t{1});
+    EXPECT_EQ(cfg.wait_for_roles[0].timeout_ms, pylabhub::kDefaultStartupWaitTimeoutMs);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, Startup_EmptyUid_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_emptyuid");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUEUID-00000001", "name": "SuEuid" },
+        "channel":  "lab.su.euid",
+        "startup": {
+            "wait_for_roles": [ { "uid": "", "timeout_ms": 5000 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+
+TEST_F(ConsumerConfigTest, Startup_MaxTimeout_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_maxtmo");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUMXTMO-00000001", "name": "SuMxtmo" },
+        "channel":  "lab.su.mxtmo",
+        "startup": {
+            "wait_for_roles": [ { "uid": "CONS-LOGGER-AABBCCDD", "timeout_ms": 3600001 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+TEST_F(ConsumerConfigTest, Startup_ZeroTimeout_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_zerotmo");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-SUZTMO-00000001", "name": "SuZtmo" },
+        "channel":  "lab.su.ztmo",
+        "startup": {
+            "wait_for_roles": [ { "uid": "PROD-SENSOR-AABBCCDD", "timeout_ms": 0 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}

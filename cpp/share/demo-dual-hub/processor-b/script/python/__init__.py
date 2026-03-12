@@ -1,5 +1,7 @@
 """
 Bridge B: transform — reads ZMQ input, doubles value, writes SHM output.
+Stops when upstream channel_closing arrives; this closes the SHM output,
+triggering channel_closing in the Consumer.
 
 Pipeline: Producer [SHM] -> Bridge A [ZMQ PUSH] -> Bridge B [ZMQ PULL] -> [SHM] -> Consumer
 """
@@ -14,11 +16,16 @@ def on_init(api: proc.ProcessorAPI) -> None:
 
 
 def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) -> bool:
+    # Propagate shutdown downstream.
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("event") == "channel_closing":
+            api.log('info', "BridgeB: upstream channel closed — stopping")
+            api.stop()
+            return False
+
     if in_slot is None:
-        api.log('debug', "BridgeB: timeout")
         return False
 
-    # Copy + transform: add doubled field.
     out_slot.count   = in_slot.count
     out_slot.ts      = in_slot.ts
     out_slot.value   = in_slot.value

@@ -59,7 +59,7 @@ extern "C"
     } SlotDiagnostic;
 
     /**
-     * @brief Result codes for recovery operations.
+     * @brief Result codes for recovery operations (datablock_force_reset_slot et al.).
      */
     typedef enum
     {
@@ -70,6 +70,23 @@ extern "C"
         RECOVERY_INVALID_SLOT = 4 ///< The specified slot index was out of bounds.
     } RecoveryResult;
 
+    /**
+     * @brief Error codes for diagnostic operations (datablock_diagnose_slot et al.).
+     *
+     * These are returned as plain `int` (not RecoveryResult) because the diagnostic
+     * functions fill an output struct; the codes use negative values to distinguish
+     * them from the RecoveryResult codes used by recovery operations.
+     */
+    typedef enum
+    {
+        DIAGNOSE_OK            =  0, ///< Success — output struct was filled.
+        DIAGNOSE_INVALID_ARGS  = -1, ///< Null pointer or other invalid argument.
+        DIAGNOSE_INTERNAL_ERR  = -2, ///< Internal error (e.g., failed to access SHM).
+        DIAGNOSE_INVALID_INDEX = -3, ///< slot_index is out of range for this DataBlock.
+        DIAGNOSE_RUNTIME_ERR   = -4, ///< std::runtime_error during SHM access.
+        DIAGNOSE_UNEXPECTED    = -5  ///< Any other unexpected exception.
+    } DiagnoseError;
+
     // --- Diagnostics ---
 
     /**
@@ -77,7 +94,7 @@ extern "C"
      * @param shm_name The name of the shared memory DataBlock.
      * @param slot_index The physical index of the slot to diagnose.
      * @param out Pointer to a SlotDiagnostic struct to be filled.
-     * @return 0 on success, non-zero on error.
+     * @return DIAGNOSE_OK (0) on success; a negative DiagnoseError code on failure.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name,
                                                                           uint32_t slot_index,
@@ -89,7 +106,7 @@ extern "C"
      * @param out_array Pointer to an array of SlotDiagnostic structs to fill.
      * @param array_capacity The maximum number of structs `out_array` can hold.
      * @param out_count Pointer to a size_t that will store the number of slots written.
-     * @return 0 on success, non-zero on error.
+     * @return DIAGNOSE_OK (0) on success; a negative DiagnoseError code on failure.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_all_slots(const char *shm_name,
                                                                                SlotDiagnostic *out_array,
