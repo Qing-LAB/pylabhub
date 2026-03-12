@@ -120,6 +120,47 @@ std::string RoleDirectory::hub_broker_pubkey(const std::filesystem::path &hub_di
     return key;
 }
 
+// ── Security diagnostics ──────────────────────────────────────────────────────
+
+void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
+                                                  const std::string           &keyfile)
+{
+    if (keyfile.empty())
+        return;
+
+    namespace fs = std::filesystem;
+
+    // Resolve keyfile: relative paths are resolved relative to role_base so that
+    // the comparison is meaningful regardless of the process CWD.
+    const fs::path kf_raw(keyfile);
+    const fs::path kf = fs::weakly_canonical(
+        kf_raw.is_absolute() ? kf_raw : (role_base / kf_raw));
+
+    const fs::path base = fs::weakly_canonical(role_base);
+
+    // Check whether kf is a sub-path of base by comparing path component-by-component.
+    auto [base_end, kf_it] = std::mismatch(base.begin(), base.end(), kf.begin(), kf.end());
+    if (base_end != base.end())
+        return; // keyfile is NOT inside role_base — no warning
+
+    std::fprintf(stderr,
+                 "\n"
+                 "  *** PYLABHUB SECURITY WARNING ***\n"
+                 "  auth.keyfile '%s'\n"
+                 "  is located inside the role directory '%s'.\n"
+                 "\n"
+                 "  Scripts running in this process have full filesystem access\n"
+                 "  as the process owner and can read this file.  A leaked vault\n"
+                 "  file enables offline brute-force of the Argon2id password.\n"
+                 "\n"
+                 "  RECOMMENDED: move the vault file outside the role directory\n"
+                 "  and update 'auth.keyfile' to its absolute path, e.g.:\n"
+                 "    /etc/pylabhub/vault/<uid>.vault   (system-managed service)\n"
+                 "    ~/.pylabhub/vault/<uid>.vault      (single-user deployment)\n"
+                 "\n",
+                 keyfile.c_str(), role_base.string().c_str());
+}
+
 // ── Layout inspection ──────────────────────────────────────────────────────────
 
 bool RoleDirectory::has_standard_layout() const

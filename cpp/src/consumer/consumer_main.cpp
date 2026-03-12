@@ -275,8 +275,7 @@ int main(int argc, char *argv[])
         ? args.role_dir
         : std::filesystem::path(args.config_path).parent_path().string();
 
-    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
-    scripting::apply_log_file(args.log_file, "[cons-main]");
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
 
     if (!config.auth.keyfile.empty())
