@@ -4,7 +4,7 @@
 |----------------|--------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0024`                                                                |
 | **Title**      | Role Directory Service — Canonical Layout, Path Resolution, and CLI Helpers    |
-| **Status**     | Design — 2026-03-12                                                            |
+| **Status**     | Implemented (Phases 1–3, 5, 6, 8) — 2026-03-12; Phases 4, 7 deferred         |
 | **Created**    | 2026-03-12                                                                     |
 | **Area**       | Public API (`pylabhub::utils`), All Role Binaries, Custom Role Development     |
 | **Depends on** | HEP-CORE-0018 (Producer/Consumer Binaries), HEP-CORE-0015 (Processor Binary)  |
@@ -129,7 +129,7 @@ Hub resources are then found at canonical locations within the resolved hub dire
 The default vault file path for a role is:
 
 ```
-<role_dir>/vault/<role_uid>.key
+<role_dir>/vault/<role_uid>.vault
 ```
 
 When `auth.keyfile` is empty in the config, `RoleDirectory::default_keyfile(uid)` returns
@@ -170,7 +170,7 @@ public:
 
     // ── Standard paths ────────────────────────────────────────────────────────
 
-    std::filesystem::path base()   const;  ///< Role directory root
+    const std::filesystem::path &base() const noexcept;  ///< Role directory root (absolute)
     std::filesystem::path logs()   const;  ///< <base>/logs/
     std::filesystem::path run()    const;  ///< <base>/run/
     std::filesystem::path vault()  const;  ///< <base>/vault/   (always 0700 on POSIX)
@@ -199,7 +199,7 @@ public:
 
     // ── Vault helpers ─────────────────────────────────────────────────────────
 
-    /// Default vault file: <vault()>/<uid>.key
+    /// Default vault file: <vault()>/<uid>.vault
     /// Used when auth.keyfile is empty in config — ensures vault always lives
     /// inside the protected vault/ subdirectory.
     std::filesystem::path default_keyfile(std::string_view uid) const;
@@ -217,9 +217,24 @@ public:
     hub_pubkey_path(const std::filesystem::path &hub_dir);
 
     /// Given a resolved hub directory, read the broker endpoint from hub.json.
-    /// Returns empty string if hub.json is absent or has no broker_endpoint field.
+    /// Throws std::runtime_error if hub.json is absent or malformed.
     static std::string
     hub_broker_endpoint(const std::filesystem::path &hub_dir);
+
+    /// Given a resolved hub directory, read the first line of hub.pubkey.
+    /// Returns empty string if the file does not exist.
+    static std::string
+    hub_broker_pubkey(const std::filesystem::path &hub_dir);
+
+    // ── Security diagnostics ─────────────────────────────────────────────────
+
+    /// Emit a hardcoded security warning to stderr when `keyfile` resolves to
+    /// a path inside `role_base`.  Relative `keyfile` paths are resolved relative
+    /// to `role_base`.  No-op when `keyfile` is empty or outside the role dir.
+    ///
+    /// Call from Config::from_directory() immediately after loading auth.keyfile.
+    static void warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
+                                             const std::string           &keyfile);
 
     // ── Validation ───────────────────────────────────────────────────────────
 
@@ -542,6 +557,7 @@ places the vault file in `vault/<uid>.key` — the security-correct location —
 | Password never in command-line args | API has no password parameter — only env var or TTY |
 | New vault requires confirmation | `get_new_role_password()` always prompts twice (unless env var) |
 | Hub pubkey path has one resolver | `RoleDirectory::hub_pubkey_path()` — one audit point |
+| Vault outside role dir warning | `warn_if_keyfile_in_role_dir()` emits a hardcoded `stderr` warning when vault path resolves inside role dir (enables offline brute-force if role scripts exfiltrate it) |
 | Relative path traversal | `resolve_hub_dir()` resolves relative to `base()` — can be validated for escaping if needed (future) |
 
 ---
@@ -566,16 +582,16 @@ places the vault file in `vault/<uid>.key` — the security-correct location —
 
 ## 10. Implementation Plan
 
-| Phase | Scope | Files |
-|-------|-------|-------|
-| 1 | `RoleDirectory` class — layout, path resolution, hub resolution | `src/include/utils/role_directory.hpp`, `src/utils/config/role_directory.cpp` |
-| 2 | `role_cli.hpp` — `RoleArgs`, `parse_role_args`, `resolve_init_name`, password helpers | `src/include/utils/role_cli.hpp` (header-only) |
-| 3 | Migrate `Config::from_directory()` in all 3 role configs to use `RoleDirectory` | `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` |
-| 4 | Migrate script-path resolution in all 3 script hosts | `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` |
-| 5 | Migrate `do_init()` and `main()` in all 3 binaries to use `RoleDirectory` + `role_cli` | `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` |
-| 6 | Move password helpers from `role_main_helpers.hpp` to `role_cli.hpp`; remove duplicates | `src/scripting/role_main_helpers.hpp` |
-| 7 | Update `README_EmbeddedAPI.md` + `README_Deployment.md` with new public API | `docs/README/` |
-| 8 | Tests: `RoleDirectoryTest` (L2), CLI helper tests (L4) | `tests/test_layer2_service/`, `tests/test_layer4_*/` |
+| Phase | Scope | Files | Status |
+|-------|-------|-------|--------|
+| 1 | `RoleDirectory` class — layout, path resolution, hub resolution, `warn_if_keyfile_in_role_dir` | `src/include/utils/role_directory.hpp`, `src/utils/config/role_directory.cpp` | ✅ 2026-03-12 |
+| 2 | `role_cli.hpp` — `RoleArgs`, `parse_role_args`, `resolve_init_name`, password helpers | `src/include/utils/role_cli.hpp` (header-only) | ✅ 2026-03-12 |
+| 3 | Migrate `Config::from_directory()` in all 3 role configs + `warn_if_keyfile_in_role_dir` call | `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` | ✅ 2026-03-12 |
+| 4 | Migrate script-path resolution in all 3 script hosts | `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` | ⚪ deferred |
+| 5 | Migrate `do_init()` and `main()` in all 3 binaries to use `RoleDirectory` + `role_cli` | `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` | ✅ 2026-03-12 |
+| 6 | Move password helpers from `role_main_helpers.hpp` to `role_cli.hpp`; remove duplicates | `src/scripting/role_main_helpers.hpp` | ✅ 2026-03-12 |
+| 7 | Update `README_EmbeddedAPI.md` + `README_Deployment.md` with new public API | `docs/README/` | ⚪ deferred |
+| 8 | Tests: `RoleDirectoryTest` (22 L2 tests) + `RoleCliTest` (8 L2 tests) | `tests/test_layer2_service/test_role_directory.cpp` | ✅ 2026-03-12 |
 
 ---
 

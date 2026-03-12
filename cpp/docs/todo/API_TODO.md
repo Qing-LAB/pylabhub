@@ -31,6 +31,7 @@ triplication of path/hub-resolution logic across the three role config classes.
 **Phases 3+4** — Migrate `Config::from_directory()` + hub-reference resolution ✅ DONE 2026-03-12
 - [x] `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` — use `RoleDirectory::open()`, `config_file()`, `resolve_hub_dir()`, `hub_broker_endpoint()`, `hub_broker_pubkey()`
 - [x] `load_broker_from_hub_dir()` in `processor_config.cpp` refactored to use `RoleDirectory`
+- [x] `warn_if_keyfile_in_role_dir()` called from all three `from_directory()` — security warning when vault is inside role dir ✅ DONE 2026-03-12 (+4 L2 tests; 22 total)
 
 **Phase 5** — Migrate script-path resolution in script hosts ⚪ DEFERRED
 - [ ] `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` — use `role_dir_.script_entry(config_.script_path, config_.script_type)` (requires storing `RoleDirectory` in script host)

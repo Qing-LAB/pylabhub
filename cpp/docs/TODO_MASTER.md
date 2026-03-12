@@ -22,7 +22,19 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 0 (CLOSED — 2026-03-12): Hub-Dead ZMQ Monitor + StopReason Fix
+### Priority 0 (CLOSED — 2026-03-12): HEP-0024 Role Directory Service
+📍 **Status**: ✅ CLOSED — Phases 1–3, 5, 6, 8 implemented; Phases 4, 7 deferred; **1107/1108 tests**
+📋 **Details**: `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md`, `docs/todo/API_TODO.md`
+
+Completed 2026-03-12:
+- [x] `RoleDirectory` class: `open/create/from_config_file`, path accessors, `resolve_hub_dir`, `hub_broker_endpoint/pubkey`, `warn_if_keyfile_in_role_dir` (0700 vault, security warning) ✅
+- [x] `role_cli.hpp` header-only: `RoleArgs`, `parse_role_args`, `resolve_init_name`, `get_role_password`, `get_new_role_password` ✅
+- [x] All 3 `Config::from_directory()` migrated to use `RoleDirectory`; hub triplication eliminated ✅
+- [x] All 3 `main.cpp` migrated to `role_cli::parse_role_args()` + `RoleDirectory::create()` in `do_init()` ✅
+- [x] `role_main_helpers.hpp` password helpers delegated to `role_cli.hpp`; duplicates removed ✅
+- [x] 22 L2 tests: `RoleDirectoryTest` (18) + `RoleCliTest` (8) + security warning (4) → 1107/1108 ✅
+
+### Priority -1 (CLOSED — 2026-03-12): Hub-Dead ZMQ Monitor + StopReason Fix
 📍 **Status**: ✅ CLOSED — ZMQ socket monitor path implemented; StopReason ordering restored; **1084/1085 tests** (1 pre-existing timing flake)
 
 **Completed 2026-03-12:**
