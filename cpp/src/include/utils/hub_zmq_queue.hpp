@@ -205,7 +205,7 @@ public:
      * ZMQ has its own frame-level validation (magic, schema_tag, field types).
      * BLAKE2b slot verification is not applicable to ZMQ transport.
      */
-    void set_verify_checksum(bool, bool) noexcept override {}
+    void set_verify_checksum(bool, bool) const noexcept override {}
 
     /** ZMQ recv buffer depth (max_buffer_depth configured at construction). */
     size_t      capacity()    const override;

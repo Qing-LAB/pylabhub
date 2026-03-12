@@ -470,7 +470,7 @@ std::string ProcessorAPI::out_policy() const
 
 void ProcessorAPI::set_verify_checksum(bool enable)
 {
-    auto *q = in_queue_.load(std::memory_order_acquire);
+    const auto *q = in_queue_.load(std::memory_order_acquire);
     if (q)
         q->set_verify_checksum(enable, false);
 }
@@ -502,6 +502,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("out_channel",   &ProcessorAPI::out_channel)
         .def("log_level",     &ProcessorAPI::log_level)
         .def("script_dir",    &ProcessorAPI::script_dir)
+        .def("role_dir",      &ProcessorAPI::role_dir)
+        .def("logs_dir",      &ProcessorAPI::logs_dir)
+        .def("run_dir",       &ProcessorAPI::run_dir)
         .def("stop",          &ProcessorAPI::stop)
         .def("set_critical_error",   &ProcessorAPI::set_critical_error)
         .def("critical_error",       &ProcessorAPI::critical_error)
@@ -541,7 +544,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("wait_for_role", &ProcessorAPI::wait_for_role,
              py::arg("uid"), py::arg("timeout_ms") = 5000)
         .def("last_seq",      &ProcessorAPI::last_seq,
-             "Ring-buffer slot index of the last consumed input slot (0-based).")
+             "Sequence number of the last consumed input slot (0 until first slot). "
+             "IC-04: SHM=ring-buffer slot index (wraps at capacity); ZMQ=monotone wire seq.")
         .def("in_capacity",   &ProcessorAPI::in_capacity,
              "Input ring-buffer capacity (slot count), or 0 if not connected.")
         .def("in_policy",     &ProcessorAPI::in_policy,

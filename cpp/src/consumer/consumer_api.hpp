@@ -66,6 +66,7 @@ class ConsumerAPI
     void set_channel(std::string c)  { channel_    = std::move(c); }
     void set_log_level(std::string l){ log_level_  = std::move(l); }
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
+    void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
 
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
@@ -89,6 +90,9 @@ class ConsumerAPI
     [[nodiscard]] const std::string &channel()    const noexcept { return channel_; }
     [[nodiscard]] const std::string &log_level()  const noexcept { return log_level_; }
     [[nodiscard]] const std::string &script_dir() const noexcept { return script_dir_; }
+    [[nodiscard]] const std::string &role_dir()   const noexcept { return role_dir_; }
+    [[nodiscard]] std::string        logs_dir()   const { return role_dir_.empty() ? "" : role_dir_ + "/logs"; }
+    [[nodiscard]] std::string        run_dir()    const { return role_dir_.empty() ? "" : role_dir_ + "/run";  }
 
     void log(const std::string &level, const std::string &msg);
     void stop();
@@ -137,7 +141,11 @@ class ConsumerAPI
     /// Microseconds of active work (GIL acquire + on_consume callback + slot release) last iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
         { return last_cycle_work_us_.load(std::memory_order_relaxed); }
-    /// Monotonic sequence number of the last slot returned by read_acquire(). 0 until first slot.
+    /// Sequence number of the last slot returned by read_acquire(). 0 until first slot.
+    /// IC-04: semantics are transport-specific.
+    ///   SHM  — ring-buffer slot index (0-based, wraps at capacity); NOT a global monotone counter.
+    ///   ZMQ  — monotone wire sequence number (never wraps in practice).
+    ///   Cross-transport comparison is meaningless; use only for detecting stalls within one session.
     [[nodiscard]] uint64_t last_seq() const noexcept
         { return last_seq_snapshot_.load(std::memory_order_relaxed); }
     /// Ring/recv buffer slot count for the input transport queue. 0 if not connected.
@@ -184,6 +192,7 @@ class ConsumerAPI
     std::string channel_;
     std::string log_level_;
     std::string script_dir_;
+    std::string role_dir_;
 
     std::atomic<uint64_t> script_errors_{0};
     std::atomic<uint64_t> in_slots_received_{0};

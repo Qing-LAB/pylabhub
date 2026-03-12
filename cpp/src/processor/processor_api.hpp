@@ -70,6 +70,7 @@ class ProcessorAPI
     void set_out_channel(std::string c) { out_channel_ = std::move(c); }
     void set_log_level(std::string l)   { log_level_   = std::move(l); }
     void set_script_dir(std::string d)  { script_dir_  = std::move(d); }
+    void set_role_dir(std::string d)    { role_dir_    = std::move(d); }
 
     /// Global shutdown flag pointer — set by api_.stop().
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
@@ -84,7 +85,7 @@ class ProcessorAPI
 
     /// Input/output queue pointers — set by ProcessorScriptHost after queue creation.
     /// Raw pointers (non-owning); valid between start_role() and stop_role().
-    void set_in_queue(hub::QueueReader *q) noexcept  { in_queue_.store(q, std::memory_order_release); }
+    void set_in_queue(const hub::QueueReader *q) noexcept { in_queue_.store(q, std::memory_order_release); }
     void set_out_queue(hub::QueueWriter *q) noexcept { out_queue_.store(q, std::memory_order_release); }
 
     /// Increment Python-exception counter (called in every callback catch block).
@@ -113,6 +114,9 @@ class ProcessorAPI
     [[nodiscard]] const std::string &log_level()   const noexcept { return log_level_; }
     /// Absolute path to the script directory.
     [[nodiscard]] const std::string &script_dir()  const noexcept { return script_dir_; }
+    [[nodiscard]] const std::string &role_dir()    const noexcept { return role_dir_; }
+    [[nodiscard]] std::string        logs_dir()    const { return role_dir_.empty() ? "" : role_dir_ + "/logs"; }
+    [[nodiscard]] std::string        run_dir()     const { return role_dir_.empty() ? "" : role_dir_ + "/run";  }
 
     /// Log through the hub logger. level: "debug"|"info"|"warn"|"error".
     void log(const std::string &level, const std::string &msg);
@@ -193,7 +197,11 @@ class ProcessorAPI
 
     // ── Python-accessible — queue state ───────────────────────────────────────
 
-    /// Slot index of the last consumed input slot (ring-buffer index, 0-based).
+    /// Sequence number of the last consumed input slot. 0 until first slot.
+    /// IC-04: semantics are transport-specific.
+    ///   SHM  — ring-buffer slot index (0-based, wraps at capacity); NOT a global monotone counter.
+    ///   ZMQ  — monotone wire sequence number (never wraps in practice).
+    ///   Cross-transport comparison is meaningless; use only for detecting stalls within one session.
     [[nodiscard]] uint64_t last_seq() const noexcept;
     /// Input ring-buffer capacity (slot count), or 0 if not connected.
     [[nodiscard]] uint64_t in_capacity() const noexcept;
@@ -246,7 +254,7 @@ class ProcessorAPI
     py::object       *flexzone_obj_{nullptr};
 
     std::atomic<bool>              critical_error_{false};
-    std::atomic<hub::QueueReader*> in_queue_{nullptr};
+    std::atomic<const hub::QueueReader*> in_queue_{nullptr}; ///< Non-owning read side; set by ProcessorScriptHost
     std::atomic<hub::QueueWriter*> out_queue_{nullptr};
 
     std::string uid_;
@@ -255,6 +263,7 @@ class ProcessorAPI
     std::string out_channel_;
     std::string log_level_;
     std::string script_dir_;
+    std::string role_dir_;
 
     std::atomic<uint64_t> script_errors_{0};
     std::atomic<uint64_t> in_slots_received_{0};

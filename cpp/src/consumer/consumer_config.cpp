@@ -223,6 +223,8 @@ ConsumerConfig ConsumerConfig::from_directory(const std::string &cons_dir)
     const RoleDirectory rd  = RoleDirectory::open(cons_dir);
     auto                cfg = from_json_file(rd.config_file("consumer.json").string());
 
+    cfg.role_dir = rd.base().string();
+
     // Warn if the vault keyfile is stored inside the role directory.
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), cfg.auth.keyfile);
 

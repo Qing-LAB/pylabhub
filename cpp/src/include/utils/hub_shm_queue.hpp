@@ -119,7 +119,7 @@ public:
      * When @p fz is true: verify_checksum_flexible_zone() is also checked.
      * Call once before the first read_acquire().
      */
-    void set_verify_checksum(bool slot, bool fz) noexcept override;
+    void set_verify_checksum(bool slot, bool fz) const noexcept override;
 
     // ── QueueWriter interface — writing ────────────────────────────────────────
 

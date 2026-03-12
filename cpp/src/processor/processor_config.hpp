@@ -239,6 +239,7 @@ struct ProcessorConfig
     // Script
     std::string script_type{"python"};   ///< Language selector: `"python"` or `"lua"`.
     std::string script_path{"."}; ///< Parent dir of the script/ package.
+    std::string role_dir;         ///< Absolute base of the role directory (set by from_directory(); empty from from_json_file()).
     bool script_type_explicit{false}; ///< True when "type" was present in JSON; false = defaulted.
 
     // Auth
