@@ -89,6 +89,27 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
 }
 
 /**
+ * @brief Redirect the Logger to a file sink if --log-file was specified.
+ *
+ * Call this immediately after creating the LifecycleGuard (which initialises
+ * the Logger with the default console sink).  If @p log_file is empty this
+ * is a no-op.
+ *
+ * @param log_file   Path from RoleArgs::log_file (may be empty).
+ * @param log_tag    Tag for error messages, e.g. "[prod-main]".
+ */
+inline void apply_log_file(const std::string &log_file, const char *log_tag)
+{
+    if (log_file.empty())
+        return;
+    if (!pylabhub::utils::Logger::instance().set_logfile(log_file))
+    {
+        std::fprintf(stderr, "%s WARNING: failed to open log file '%s', "
+                     "falling back to console\n", log_tag, log_file.c_str());
+    }
+}
+
+/**
  * @brief Register the signal handler as a dynamic persistent lifecycle module.
  *
  * When successful, the handler is automatically uninstalled during lifecycle finalize()

@@ -330,6 +330,7 @@ int main(int argc, char *argv[])
 
     // ── Lifecycle guard ───────────────────────────────────────────────────────
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
+    scripting::apply_log_file(args.log_file, "[proc-main]");
     scripting::register_signal_handler_lifecycle(signal_handler, "[proc-main]");
 
     // ── Load processor keypair (if keyfile configured) ────────────────────────
