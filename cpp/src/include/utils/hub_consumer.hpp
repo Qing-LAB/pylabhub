@@ -210,7 +210,7 @@ struct ConsumerOptions
     /// Must match the producer's packing.
     std::string zmq_packing{"aligned"};
     /// Internal receive-buffer depth for ZmqQueue PULL.
-    size_t zmq_buffer_depth{64};
+    size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
 
     /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};

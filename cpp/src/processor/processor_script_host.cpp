@@ -294,28 +294,13 @@ bool ProcessorScriptHost::start_role()
         out_opts.shm_config.shared_secret        = config_.out_shm_secret;
         out_opts.shm_config.ring_buffer_capacity = config_.out_shm_slot_count;
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        out_opts.shm_config.consumer_sync_policy = hub::ConsumerSyncPolicy::Latest_only;
+        out_opts.shm_config.consumer_sync_policy = config_.out_shm_consumer_sync_policy;
         out_opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
         out_opts.shm_config.flex_zone_size       = core_.schema_fz_size;
 
-        if (out_schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4K))
-        {
-            out_opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size4K;
-            out_opts.shm_config.logical_unit_size  =
-                (out_schema_slot_size_ == 0) ? 1 : out_schema_slot_size_;
-        }
-        else if (out_schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4M))
-        {
-            out_opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size4M;
-            out_opts.shm_config.logical_unit_size  =
-                static_cast<size_t>(hub::DataBlockPageSize::Size4M);
-        }
-        else
-        {
-            out_opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size16M;
-            out_opts.shm_config.logical_unit_size  =
-                static_cast<size_t>(hub::DataBlockPageSize::Size16M);
-        }
+        out_opts.shm_config.physical_page_size = hub::system_page_size();
+        out_opts.shm_config.logical_unit_size  =
+            (out_schema_slot_size_ == 0) ? 1 : out_schema_slot_size_;
     }
 
     out_opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
@@ -329,8 +314,16 @@ bool ProcessorScriptHost::start_role()
         out_opts.zmq_node_endpoint = config_.zmq_out_endpoint;
         out_opts.zmq_bind          = config_.zmq_out_bind;
         out_opts.zmq_schema        = schema_spec_to_zmq_fields(out_slot_spec_, out_schema_slot_size_);
-        out_opts.zmq_packing       = config_.out_zmq_packing;
-        out_opts.zmq_buffer_depth  = config_.out_zmq_buffer_depth;
+        out_opts.zmq_packing          = config_.out_zmq_packing;
+        out_opts.zmq_buffer_depth     = config_.out_zmq_buffer_depth;
+        // zmq_out_overflow_policy: explicit JSON field takes precedence;
+        // falls back to general overflow_policy when absent (empty string).
+        const bool zmq_drop = config_.zmq_out_overflow_policy.empty()
+            ? (config_.overflow_policy == OverflowPolicy::Drop)
+            : (config_.zmq_out_overflow_policy == "drop");
+        out_opts.zmq_overflow_policy  = zmq_drop
+                                            ? hub::OverflowPolicy::Drop
+                                            : hub::OverflowPolicy::Block;
     }
 
     // ── Inbox facility (optional) — must be set up before Producer::create() ──
@@ -645,12 +638,9 @@ bool ProcessorScriptHost::start_role()
     proc_opts.overflow_policy = (config_.overflow_policy == OverflowPolicy::Drop)
                                     ? hub::OverflowPolicy::Drop
                                     : hub::OverflowPolicy::Block;
-    // timeout_ms: -1=infinite (5s default), 0=non-blocking (0ms), >0=explicit ms.
-    proc_opts.input_timeout   = (config_.timeout_ms == 0)
-                                    ? std::chrono::milliseconds{0}
-                                    : (config_.timeout_ms > 0)
-                                        ? std::chrono::milliseconds{config_.timeout_ms}
-                                        : std::chrono::milliseconds{5000};
+    proc_opts.input_timeout = std::chrono::milliseconds{
+        pylabhub::compute_slot_acquire_timeout(
+            config_.slot_acquire_timeout_ms, config_.target_period_ms)};
     proc_opts.zero_fill_output = true;
 
     auto maybe_proc = hub::Processor::create(*in_q_, *out_q_, proc_opts);
@@ -663,79 +653,140 @@ bool ProcessorScriptHost::start_role()
     api_.set_in_queue(in_q_);
     api_.set_out_queue(out_q_);
 
-    // ── Install type-erased handler ─────────────────────────────────────────
+    // ── Shared deadline state for both handler + timeout handler ────────────
+    //
+    // Both lambdas run on the same thread (hub::Processor::process_thread_),
+    // so no synchronization is needed.  Deadline tracking ensures:
+    //   - MaxRate:   on_process fires every iteration (no gating).
+    //   - FixedRate: on_process fires at most once per period.
+    //   - FixedRateWithCompensation: deadline advances by period (catch-up).
+    const bool proc_is_fixed_rate =
+        (config_.loop_timing != LoopTimingPolicy::MaxRate);
+    const auto proc_period =
+        std::chrono::milliseconds{config_.target_period_ms};
+
+    // Shared mutable deadline — both lambdas capture by value (same pointer).
+    auto next_dl = std::make_shared<std::chrono::steady_clock::time_point>(
+        std::chrono::steady_clock::now() + proc_period);
+
+    // Helper: advance deadline after a successful on_process call.
+    auto advance_deadline = [this, proc_is_fixed_rate, proc_period, next_dl]()
+    {
+        if (!proc_is_fixed_rate)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= *next_dl)
+        {
+            if (config_.loop_timing ==
+                LoopTimingPolicy::FixedRateWithCompensation)
+                *next_dl += proc_period;
+            else
+                *next_dl = now + proc_period;
+        }
+    };
+
+    // ── Install type-erased handler (input data available) ───────────────
+    //
+    // Input data is ALWAYS processed — never dropped.  FixedRate pacing is
+    // achieved by sleeping to the deadline AFTER processing (same pattern as
+    // producer/consumer run_loop_), not by discarding input.
     processor_->set_raw_handler(
-        [this](const void* in_data, const void* /*in_fz*/,
-               void* out_data, void* /*out_fz*/) -> bool
+        [this, proc_is_fixed_rate, next_dl, advance_deadline](
+            const void* in_data, const void* /*in_fz*/,
+            void* out_data, void* /*out_fz*/) -> bool
         {
             auto msgs = core_.drain_messages();
+
             const size_t in_sz  = in_q_->item_size();
             const size_t out_sz = out_q_->item_size();
+
+            bool commit = false;
+            {
+                py::gil_scoped_acquire g;
+                try
+                {
+                    py::object in_sv  = make_in_slot_view_(in_data, in_sz);
+                    py::object out_sv = make_out_slot_view_(out_data, out_sz);
+                    py::list   mlst   = build_messages_list_(msgs);
+
+                    commit = call_on_process_(in_sv, out_sv, fz_inst_, mlst);
+                    if (commit)
+                        api_.increment_out_written();
+                    else
+                        api_.increment_drops();
+
+                    api_.increment_in_received();
+                }
+                catch (py::error_already_set &e)
+                {
+                    api_.increment_script_errors();
+                    LOGGER_ERROR("[proc] Python error in process handler: {}", e.what());
+                    if (config_.stop_on_script_error)
+                        core_.shutdown_requested.store(true, std::memory_order_release);
+                    api_.increment_drops();
+                    api_.increment_in_received();
+                }
+            }
+            // GIL released — sleep outside GIL for FixedRate pacing.
+
+            if (proc_is_fixed_rate)
+            {
+                const auto now = std::chrono::steady_clock::now();
+                if (now < *next_dl)
+                    std::this_thread::sleep_for(*next_dl - now);
+                advance_deadline();
+            }
+
+            return commit;
+        });
+
+    // ── Install timeout handler (always — messages must drain during input starvation)
+    //
+    // When not yet due AND no messages pending, returns false immediately
+    // (output slot discarded, no script call).
+    processor_->set_timeout_handler(
+        [this, proc_is_fixed_rate, next_dl, advance_deadline](
+            void* out_data, void* /*out_fz*/) -> bool
+        {
+            auto msgs = core_.drain_messages();
+
+            const auto now = std::chrono::steady_clock::now();
+            const bool due = !proc_is_fixed_rate || now >= *next_dl;
+
+            if (msgs.empty() && !due)
+                return false; // not yet time — discard output slot silently
+
+            const size_t out_sz = out_data ? out_q_->item_size() : 0;
 
             py::gil_scoped_acquire g;
             try
             {
-                py::object in_sv  = make_in_slot_view_(in_data, in_sz);
-                py::object out_sv = make_out_slot_view_(out_data, out_sz);
-                py::list   mlst   = build_messages_list_(msgs);
+                py::object none_in = py::none();
+                py::object out_sv  = out_data
+                    ? make_out_slot_view_(out_data, out_sz)
+                    : py::none();
+                py::list mlst = build_messages_list_(msgs);
 
-                bool commit = call_on_process_(in_sv, out_sv, fz_inst_, mlst);
+                bool commit = call_on_process_(none_in, out_sv, fz_inst_, mlst);
                 if (commit)
                     api_.increment_out_written();
-                else
+                else if (out_data)
                     api_.increment_drops();
 
-                api_.increment_in_received();
+                advance_deadline();
                 return commit;
             }
             catch (py::error_already_set &e)
             {
                 api_.increment_script_errors();
-                LOGGER_ERROR("[proc] Python error in process handler: {}", e.what());
+                LOGGER_ERROR("[proc] Python error in timeout handler: {}", e.what());
                 if (config_.stop_on_script_error)
                     core_.shutdown_requested.store(true, std::memory_order_release);
-                api_.increment_drops();
-                api_.increment_in_received();
+                if (out_data) api_.increment_drops();
+                advance_deadline();
                 return false;
             }
         });
-
-    // ── Install timeout handler ─────────────────────────────────────────────
-    if (config_.timeout_ms > 0)
-    {
-        processor_->set_timeout_handler(
-            [this](void* out_data, void* /*out_fz*/) -> bool
-            {
-                auto msgs = core_.drain_messages();
-                const size_t out_sz = out_data ? out_q_->item_size() : 0;
-
-                py::gil_scoped_acquire g;
-                try
-                {
-                    py::object none_in = py::none();
-                    py::object out_sv  = out_data
-                        ? make_out_slot_view_(out_data, out_sz)
-                        : py::none();
-                    py::list mlst = build_messages_list_(msgs);
-
-                    bool commit = call_on_process_(none_in, out_sv, fz_inst_, mlst);
-                    if (commit)
-                        api_.increment_out_written();
-                    else if (out_data)
-                        api_.increment_drops();
-                    return commit;
-                }
-                catch (py::error_already_set &e)
-                {
-                    api_.increment_script_errors();
-                    LOGGER_ERROR("[proc] Python error in timeout handler: {}", e.what());
-                    if (config_.stop_on_script_error)
-                        core_.shutdown_requested.store(true, std::memory_order_release);
-                    if (out_data) api_.increment_drops();
-                    return false;
-                }
-            });
-    }
 
     // Startup coordination (HEP-0023): wait for required peer roles before on_init.
     for (const auto &wr : config_.wait_for_roles)

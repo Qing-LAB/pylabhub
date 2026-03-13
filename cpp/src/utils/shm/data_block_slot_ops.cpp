@@ -52,7 +52,7 @@ using namespace internal; // brings spin_elapsed_ms_exceeded, backoff, etc. into
 //   For future multi-writer support, two prerequisites must be resolved first:
 //     1. update_commit_index() uses a plain store; it must become a max-CAS to
 //        handle out-of-order commits from concurrent writers.
-//     2. Consumer read sequencing (latest slot_id tracking, Single_reader ordering)
+//     2. Consumer read sequencing (latest slot_id tracking, Sequential ordering)
 //        must be redesigned for the out-of-order commit ordering that results.
 //   Do not extend to multi-writer without fully resolving both protocols.
 //

@@ -49,17 +49,19 @@ Stored in `SharedMemoryHeader`.
 | Value | Consumers | Read order | Writer block |
 |-------|-----------|------------|--------------|
 | `Latest_only` | Any number | Latest slot only; older slots silently skipped | Never — writer always advances freely |
-| `Single_reader` | Exactly 1 | Strict FIFO; read_index = tail | Yes — blocks when ring full |
-| `Sync_reader` | Multiple | Per-consumer position; slowest determines ring space | Yes — blocks until slowest consumer catches up |
+| `Sequential` | Exactly 1 | Strict FIFO; read_index = tail | Yes — blocks when ring full |
+| `Sequential_sync` | Multiple | Per-consumer position; slowest determines ring space | Yes — blocks until slowest consumer catches up |
 | `Unset` | — | Sentinel | — |
 
 **Configuration**: `DataBlockConfig::consumer_sync_policy`.
 **Immutable** once SHM is created (stored in header).
+**JSON key**: `"shm.reader_sync_policy"` (producer), `"shm.out.reader_sync_policy"` (processor).
+**JSON values**: `"sequential"` (default, maps to `Sequential`) or `"latest_only"` (maps to `Latest_only`).
 
 **Interaction with DataBlockPolicy**:
 - `Latest_only` is only meaningful with `RingBuffer`.
-- `Single_reader` works with any policy but is most useful with `RingBuffer`.
-- `Sync_reader` requires `RingBuffer` with capacity ≥ 2.
+- `Sequential` works with any policy but is most useful with `RingBuffer`.
+- `Sequential_sync` requires `RingBuffer` with capacity ≥ 2.
 
 ---
 
@@ -284,12 +286,12 @@ JSON wire values: `"PubSub"` | `"Pipeline"` | `"Bidir"`.
 │  hub::Producer / hub::Consumer (ProducerOptions / ConsumerOptions)          │
 │    shm_config.checksum_policy = Manual   ← always Manual in binaries        │
 │    shm_config.policy = RingBuffer        ← from JSON "shm.slot_count"       │
-│    shm_config.consumer_sync_policy = Latest_only                            │
+│    shm_config.consumer_sync_policy = from JSON "reader_sync_policy"         │
 │                                                                             │
 │  DataBlockProducer (SHM write path)                                        │
 │    ChecksumPolicy::Manual → script host drives update_checksum_*()          │
 │    DataBlockPolicy::RingBuffer → ring buffer slot management                │
-│    ConsumerSyncPolicy::Latest_only → consumer always gets newest slot       │
+│    ConsumerSyncPolicy per config → Sequential (default) or Latest_only      │
 │                                                                             │
 │  BrokerService                                                              │
 │    ChecksumRepairPolicy → what to do with CHECKSUM_ERROR_REPORT msgs        │
@@ -305,7 +307,7 @@ When a user creates a producer/consumer/processor with default JSON config:
 | Layer | Policy | Value |
 |-------|--------|-------|
 | SHM buffer | `DataBlockPolicy` | `RingBuffer` |
-| SHM consumer sync | `ConsumerSyncPolicy` | `Latest_only` |
+| SHM consumer sync | `ConsumerSyncPolicy` | `Sequential` (`Sequential`) |
 | SHM checksum mechanism | `ChecksumPolicy` | `Manual` |
 | Script slot checksum | `ValidationPolicy::Checksum` | `Update` (producer updates; consumer does not verify) |
 | Script flexzone checksum | `ValidationPolicy::Checksum` | `Update` |

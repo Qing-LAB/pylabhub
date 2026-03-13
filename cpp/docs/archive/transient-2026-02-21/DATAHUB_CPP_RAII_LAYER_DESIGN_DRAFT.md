@@ -98,7 +98,7 @@ consumer.with_transaction<FlexZoneT, DataBlockT>(timeout, [](auto& ctx) { ... })
 
 - **Producer** – `ctx.slots()` yields write slots.
 - **Consumer** – `ctx.slots()` yields read slots.
-- Same name; policy (Latest_only, Single_reader, Sync_reader) governs behavior.
+- Same name; policy (Latest_only, Sequential, Sequential_sync) governs behavior.
 
 ---
 
@@ -290,7 +290,7 @@ Heartbeat uses a **hybrid** model: automatic on slot operations, explicit for id
 
 - When the consumer acquires and releases slots (including via iterator `operator++`), the underlying release path already updates read position and heartbeat.
 - No user action required during normal iteration.
-- Applies to Sync_reader and other policies where consumer position is tracked.
+- Applies to Sequential_sync and other policies where consumer position is tracked.
 
 ### 9.3 Explicit Interface for Idle Keep-Alive (Consumer)
 

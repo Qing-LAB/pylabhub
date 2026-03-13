@@ -164,9 +164,13 @@ public:
      */
     std::string policy_info() const override;
 
-    // start()/stop()/is_running() — inherited no-op implementations from QueueReader/QueueWriter.
-    // Both base classes share the same override. Only QueueReader version is needed
-    // since ShmQueue declares it once and both vtables point to the same impl.
+    // start()/stop() — no-op (no background thread; queue is always operational once
+    // constructed from a valid DataBlock ref).
+    //
+    // is_running() — overrides base to return false on a moved-from (null-pImpl) instance.
+    // A freshly constructed ShmQueue is always "running" (the underlying DataBlock is live);
+    // after a move, pImpl is null and is_running() correctly returns false.
+    bool is_running() const noexcept override;
 
     /**
      * @brief Unified metrics snapshot (implements QueueReader::metrics() and QueueWriter::metrics()).

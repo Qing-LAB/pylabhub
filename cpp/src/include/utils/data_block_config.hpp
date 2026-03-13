@@ -16,6 +16,8 @@
  */
 #include "utils/data_block_policy.hpp"
 
+#include "pylabhub_utils_export.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -51,6 +53,14 @@ inline size_t to_bytes(DataBlockPageSize u)
 {
     return static_cast<size_t>(u);
 }
+
+/**
+ * @brief Query the OS page size and return the smallest DataBlockPageSize >= that value.
+ *
+ * Uses sysconf(_SC_PAGESIZE) on POSIX, GetSystemInfo on Windows.
+ * Falls back to Size4K if the query fails.
+ */
+PYLABHUB_UTILS_EXPORT DataBlockPageSize system_page_size();
 
 // ============================================================================
 // Slot Acquire Timeout Sentinels

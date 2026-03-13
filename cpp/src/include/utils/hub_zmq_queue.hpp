@@ -82,6 +82,11 @@ namespace pylabhub::hub
 
 struct ZmqQueueImpl;
 
+/// Default depth for ZmqQueue internal ring buffers (PULL recv ring and PUSH send ring).
+/// Used as the default argument in pull_from() / push_to() and in ProducerOptions /
+/// ConsumerOptions so all callers share the same default without embedding a magic 64.
+inline constexpr size_t kZmqDefaultBufferDepth = 64;
+
 /**
  * @struct ZmqSchemaField
  * @brief Describes one typed field for schema-mode ZmqQueue encode/decode.
@@ -134,7 +139,7 @@ public:
     [[nodiscard]] static std::unique_ptr<QueueReader>
     pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
               std::string packing,
-              bool bind = false, size_t max_buffer_depth = 64,
+              bool bind = false, size_t max_buffer_depth = kZmqDefaultBufferDepth,
               std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
 
     /**
@@ -169,7 +174,7 @@ public:
             bool bind = true,
             std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
             int sndhwm = 0,
-            size_t send_buffer_depth = 64,
+            size_t send_buffer_depth = kZmqDefaultBufferDepth,
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
             int send_retry_interval_ms = 10);
 

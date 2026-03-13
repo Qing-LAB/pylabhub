@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Demo producer — publishes 1024 float32 samples per slot on 'lab.demo.counter'.",
+    "Run with: pylabhub-producer <path-to-this-dir>",
+    "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
+  ],
+  "hub_dir": "../hub",
+  "producer": {
+    "uid":       "PROD-COUNTER-00000001",
+    "name":      "DemoProducer",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":     "lab.demo.counter",
+  "broker":      "tcp://127.0.0.1:5570",
+  "target_period_ms":    0,
+  "loop_timing":         "max_rate",
+
+  "shm": {
+    "enabled":    true,
+    "secret":     1111111111,
+    "slot_count": 1000,
+    "reader_sync_policy": "sequential"
+  },
+
+  "slot_schema": "lab.demo.counter@1",
+  "flexzone_schema": null,
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

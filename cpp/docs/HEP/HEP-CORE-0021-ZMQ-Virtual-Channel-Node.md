@@ -547,7 +547,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | 3 | `hub::Consumer` ZMQ discovery: read transport from ACK, create ZmqQueue PULL, `consumer.queue()` | Done | `hub_consumer.hpp/cpp` |
 | 4 | `ProcessorScriptHost` simplification: remove manual ZmqQueue creation; use `producer/consumer.queue()` | Done | `processor_script_host.hpp/cpp` |
 | 5 | `ProcessorConfig` cleanup: remove `in_transport`/`zmq_in_endpoint`; keep `out_transport`/`zmq_out_endpoint` | Done | `processor_config.hpp/cpp` |
-| 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/demo-dual-hub/` |
+| 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/py-demo-dual-processor-bridge/` |
 | Tests | 12 L3 protocol tests (ZmqVirtualChannelTest) | Done | `test_datahub_zmq_virtual_channel.cpp` |
 
 ---
@@ -602,7 +602,7 @@ Full ZmqQueue implementation detail was drafted in `docs/tech_draft/zmq_queue_de
 | ProcessorScriptHost (simplified) | `src/processor/processor_script_host.cpp` |
 | ProcessorConfig (transport fields) | `src/processor/processor_config.hpp/cpp` |
 | L3 protocol tests | `tests/test_layer3_datahub/test_datahub_zmq_virtual_channel.cpp` |
-| Demo bridge config | `share/demo-dual-hub/processor-{a,b}/processor.json` |
+| Demo bridge config | `share/py-demo-dual-processor-bridge/processor-{a,b}/processor.json` |
 
 ---
 

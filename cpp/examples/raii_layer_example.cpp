@@ -80,7 +80,7 @@ void run_producer(const std::string& channel_name)
 {
     DataBlockConfig cfg{};
     cfg.policy               = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
     cfg.shared_secret        = kSharedSecret;
     cfg.ring_buffer_capacity = kSlotCount;
     cfg.physical_page_size   = DataBlockPageSize::Size4K;
@@ -140,7 +140,7 @@ void run_consumer(const std::string& channel_name)
 
     DataBlockConfig expected{};
     expected.policy               = DataBlockPolicy::RingBuffer;
-    expected.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    expected.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
     expected.shared_secret        = kSharedSecret;
     expected.ring_buffer_capacity = kSlotCount;
     expected.physical_page_size   = DataBlockPageSize::Size4K;

@@ -47,6 +47,8 @@
 #include "plh_base.hpp"
 #include "lifecycle.hpp"
 
+#include <optional>
+
 // The default initial reserve size for the fmt::memory_buffer used for formatting
 #ifndef LOGGER_FMT_BUFFER_RESERVE
 #define LOGGER_FMT_BUFFER_RESERVE (1024u)
@@ -98,6 +100,50 @@ class PYLABHUB_UTILS_EXPORT Logger
      * @brief Checks if the Logger module has been initialized by the LifecycleManager.
      */
     static bool lifecycle_initialized() noexcept;
+
+    /**
+     * @brief Optional rotation configuration for GetStartupLogFileSinkModule().
+     *
+     * When passed with non-zero @c max_file_size_bytes, the startup sink uses a
+     * size-based rotating file instead of a plain append file.
+     */
+    struct RotatingLogConfig
+    {
+        size_t max_file_size_bytes = 10ULL * 1024 * 1024; ///< 10 MiB default
+        size_t max_backup_files   = 3;
+    };
+
+    /**
+     * @brief Returns a `"StartupLogFileSink"` ModuleDef that switches the log
+     *        sink immediately after Logger initialises — before any other
+     *        module emits log messages.
+     *
+     * The returned module depends on `"pylabhub::utils::Logger"` and is named
+     * `"StartupLogFileSink"`.  Other modules that emit log messages during
+     * startup (e.g. ZMQContext, DataExchangeHub) can declare a dependency on
+     * `"StartupLogFileSink"` so the topo sort places them after the sink switch.
+     *
+     * @param log_file_path  UTF-8 path to the log file.
+     * @param rotating       If provided, enables size-based rotation with the
+     *                       given limits.  If omitted (default), a plain
+     *                       append-mode file is used.
+     * @return A ModuleDef ready for insertion into a module list.
+     *
+     * @code
+     *   // Plain log file (role binaries):
+     *   auto zmq_mod = pylabhub::hub::GetZMQContextModule();
+     *   zmq_mod.add_dependency("StartupLogFileSink");
+     *   auto mods = MakeModDefList(Logger::GetLifecycleModule(), std::move(zmq_mod));
+     *   mods.push_back(Logger::GetStartupLogFileSinkModule("/tmp/my.log"));
+     *
+     *   // Rotating log file (hub):
+     *   mods.push_back(Logger::GetStartupLogFileSinkModule(
+     *       "/var/log/hub.log", Logger::RotatingLogConfig{10*1024*1024, 3}));
+     * @endcode
+     */
+    static ModuleDef GetStartupLogFileSinkModule(
+        const std::string &log_file_path,
+        std::optional<RotatingLogConfig> rotating = std::nullopt);
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.

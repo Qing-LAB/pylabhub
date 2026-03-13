@@ -48,7 +48,7 @@ static constexpr int kNumSlots = 500;
 /// Ring buffer capacity for the full-capacity scenario.
 static constexpr int kRingCapacity = 32; // 32 × 4KB = 128 KB ring; ≈15 wraparounds
 
-/// Number of slots written by the back-pressure producer (Single_reader scenario).
+/// Number of slots written by the back-pressure producer (Sequential scenario).
 static constexpr int kNumSlotsBP = 100;
 
 /// Ring buffer capacity for the back-pressure scenario (forces frequent blocking).
@@ -136,7 +136,7 @@ DataBlockConfig make_latest_only_config()
     return cfg;
 }
 
-/// Returns a DataBlockConfig for the Single_reader (back-pressure) scenario.
+/// Returns a DataBlockConfig for the Sequential (back-pressure) scenario.
 DataBlockConfig make_backpressure_config()
 {
     DataBlockConfig cfg{};
@@ -144,7 +144,7 @@ DataBlockConfig make_backpressure_config()
     cfg.logical_unit_size      = 4096;
     cfg.ring_buffer_capacity   = static_cast<uint32_t>(kRingCapacityBP);
     cfg.policy                 = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy   = ConsumerSyncPolicy::Single_reader;
+    cfg.consumer_sync_policy   = ConsumerSyncPolicy::Sequential;
     cfg.checksum_policy        = ChecksumPolicy::Enforced;
     cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
     cfg.shared_secret          = kStressSecret;
@@ -458,7 +458,7 @@ int multi_process_stress_orchestrator(int argc, char **argv)
 }
 
 // ============================================================================
-// backpressure_producer — Single_reader scenario
+// backpressure_producer — Sequential scenario
 // ============================================================================
 
 int backpressure_producer(int argc, char **argv)
@@ -480,7 +480,7 @@ int backpressure_producer(int argc, char **argv)
                 << "backpressure_producer: failed to create DataBlock";
 
             // Signal ready before writing so the consumer can attach and start reading;
-            // with Single_reader the consumer MUST be ready before we fill the ring.
+            // with Sequential the consumer MUST be ready before we fill the ring.
             signal_test_ready();
 
             for (int seq = 0; seq < kNumSlotsBP; ++seq)
@@ -534,7 +534,7 @@ int backpressure_producer(int argc, char **argv)
 }
 
 // ============================================================================
-// backpressure_consumer — Single_reader scenario
+// backpressure_consumer — Sequential scenario
 // ============================================================================
 
 int backpressure_consumer(int argc, char **argv)
@@ -566,7 +566,7 @@ int backpressure_consumer(int argc, char **argv)
             uint64_t pattern_errors = 0;
             int      timeouts      = 0;
 
-            // With Single_reader, every slot is delivered; we expect exactly kNumSlotsBP
+            // With Sequential, every slot is delivered; we expect exactly kNumSlotsBP
             // slots in ascending order with no gaps.
             while (expected_seq < static_cast<uint64_t>(kNumSlotsBP) && timeouts < 500)
             {
@@ -586,7 +586,7 @@ int backpressure_consumer(int argc, char **argv)
 
                             const auto &data = result.content().get();
 
-                            // With Single_reader, slots arrive in exact order.
+                            // With Sequential, slots arrive in exact order.
                             EXPECT_EQ(data.sequence, expected_seq)
                                 << "backpressure_consumer: unexpected sequence"
                                 << " (expected=" << expected_seq
@@ -650,7 +650,7 @@ int backpressure_consumer(int argc, char **argv)
 }
 
 // ============================================================================
-// backpressure_orchestrator — Single_reader scenario
+// backpressure_orchestrator — Sequential scenario
 // ============================================================================
 
 int backpressure_orchestrator(int argc, char **argv)

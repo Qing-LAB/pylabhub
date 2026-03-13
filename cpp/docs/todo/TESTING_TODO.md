@@ -48,7 +48,7 @@
 
 ### Phase C: Integration (Multi-Process)
 - [x] Basic producer/consumer IPC
-- [x] ConsumerSyncPolicy variants (Latest_only, Single_reader, Sync_reader)
+- [x] ConsumerSyncPolicy variants (Latest_only, Sequential, Sequential_sync)
 - [x] High-load single reader integrity test
 - [x] MessageHub broker integration ✅ complete (2026-02-18)
 - [x] Consumer registration to broker ✅ complete (2026-02-18)
@@ -199,6 +199,13 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 ---
 
 ## Recent Completions
+
+### 2026-03-12 (MR-01 wire dedup + MR-09 is_running + LOW-2 deprecated remap stubs)
+- ✅ **MR-01**: `zmq_wire_helpers.hpp` internal header; `hub_zmq_queue.cpp` + `hub_inbox_queue.cpp` deduped (~260 lines removed)
+- ✅ **MR-09**: `ShmQueue::is_running()` override — returns false on moved-from (null pImpl) instance; `DatahubShmQueueTest.ShmQueueIsRunning` added
+- ✅ **LOW-2**: `[[deprecated("Not implemented — always throws std::runtime_error")]]` on 4 DataBlock remap stubs; `DatahubShmQueueTest.DataBlockProducerRemapStubsThrow` + `DatahubShmQueueTest.DataBlockConsumerRemapStubsThrow` added
+- ✅ **MR-08**: stale `run_loop_shm_` reference removed from `consumer_script_host.hpp` comment
+- **Total: 1120/1120 tests passing** (3 new)
 
 ### 2026-03-10 (ProcessorConfig/ScriptHost Phase 3 + InboxQueue + ShmQueue + API parity)
 - ✅ **ProcessorConfig Phase 3 tests** (+24 tests): `target_period_ms`/`loop_timing`, `in_transport`/`zmq_in_endpoint`, `in_zmq_buffer_depth`/`out_zmq_buffer_depth`, inbox fields, `verify_checksum`, `script_path` default, timing-policy cross-field validation → **1045/1045 tests**
@@ -529,10 +536,10 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 ### 2026-02-17
 - ✅ `DatahubSlotDrainingTest` (7 tests): DRAINING state machine tests — entered on wraparound,
   rejects new readers, resolves after reader release, timeout restores COMMITTED, no reader races
-  on clean wraparound; plus ring-full barrier proof tests for Single_reader and Sync_reader
+  on clean wraparound; plus ring-full barrier proof tests for Sequential and Sequential_sync
   — `tests/test_layer3_datahub/test_datahub_c_api_slot_protocol.cpp`,
     `tests/test_layer3_datahub/workers/datahub_c_api_draining_workers.cpp`
-- ✅ Proved DRAINING structurally unreachable for Single_reader / Sync_reader
+- ✅ Proved DRAINING structurally unreachable for Sequential / Sequential_sync
   (ring-full check before fetch_add creates arithmetic barrier) — documented in
   `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` § 11, `docs/IMPLEMENTATION_GUIDANCE.md` Pitfall 11
 

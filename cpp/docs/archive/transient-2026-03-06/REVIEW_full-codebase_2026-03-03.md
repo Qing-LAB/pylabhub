@@ -64,7 +64,7 @@ std::memset(header->consumer_heartbeats[i].consumer_name, 0, ...);
 **File**: `data_block.cpp:1481-1497`
 **Severity**: CRITICAL — **potential consumer deadlock**
 
-The writer atomically increments `write_index` (line 1481) to claim a slot ID, then attempts `acquire_write` on the resulting slot. If `acquire_write` times out (line 1493), the function returns nullptr without decrementing `write_index`. This burns a slot ID permanently. For `Single_reader` and `Sync_reader` policies, the unconsumed slot creates a gap that consumers will spin on forever (they wait for slot N to be committed, but it never will be). With enough timeouts, `write_index` can advance past `read_index` by more than `slot_count`, creating deadlock.
+The writer atomically increments `write_index` (line 1481) to claim a slot ID, then attempts `acquire_write` on the resulting slot. If `acquire_write` times out (line 1493), the function returns nullptr without decrementing `write_index`. This burns a slot ID permanently. For `Sequential` and `Sequential_sync` policies, the unconsumed slot creates a gap that consumers will spin on forever (they wait for slot N to be committed, but it never will be). With enough timeouts, `write_index` can advance past `read_index` by more than `slot_count`, creating deadlock.
 
 **Fix**: Either (a) mark the timed-out slot as skipped so consumers can advance past it, or (b) do not increment `write_index` until after the lock is acquired (use a separate CAS loop). At minimum, store a sentinel generation or state so consumers do not spin forever.
 

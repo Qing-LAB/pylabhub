@@ -70,6 +70,7 @@
  * @endcode
  */
 
+#include "utils/data_block_policy.hpp"
 #include "utils/loop_timing_policy.hpp"
 #include "utils/startup_wait.hpp"
 
@@ -91,7 +92,7 @@ using ::pylabhub::WaitForRole;
 
 enum class OverflowPolicy
 {
-    Block, ///< Wait (up to 5 s) for a free output slot before calling on_process.
+    Block, ///< Wait for a free output slot (up to slot_acquire_timeout) before calling on_process.
     Drop   ///< Skip the input slot immediately; increment out_drop_count().
 };
 
@@ -179,8 +180,9 @@ struct ProcessorConfig
     /// Loop timing policy. Default: MaxRate (since target_period_ms defaults to 0).
     LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
 
-    /// Input slot acquire timeout (ms). -1 = block up to 5 s (default).
-    int timeout_ms{-1};
+    /// Slot acquire timeout (ms). -1 = derive from target_period_ms (see
+    /// compute_slot_acquire_timeout), 0 = non-blocking, >0 = explicit ms.
+    int slot_acquire_timeout_ms{-1};
     int heartbeat_interval_ms{0};
 
     // SHM — input side
@@ -194,6 +196,11 @@ struct ProcessorConfig
     /// Default 4: processor output is demand-driven (consumer pulls at its own rate),
     /// so a smaller buffer is sufficient. Producers use 8 to absorb burst writes.
     uint32_t out_shm_slot_count{4};
+    /// Output SHM reader synchronization policy. Controls how the downstream reader
+    /// (consumer) advances through the ring buffer. SHM only.
+    /// JSON key: "shm.out.reader_sync_policy"
+    /// Values: "sequential" (default), "latest_only".
+    hub::ConsumerSyncPolicy out_shm_consumer_sync_policy{hub::ConsumerSyncPolicy::Sequential};
 
     // ── Transport — input side ─────────────────────────────────────────────────
     /// Input data path. Shm = auto-discovered via broker DISC_ACK (HEP-CORE-0021).
@@ -216,6 +223,11 @@ struct ProcessorConfig
     size_t      out_zmq_buffer_depth{64};
     /// Output ZMQ struct packing: "aligned" (C-struct default) or "packed" (no padding).
     std::string out_zmq_packing{"aligned"};
+    /// Overflow policy for the ZMQ PUSH send ring (output side only).
+    /// "drop" (default when out_transport=Zmq): write_acquire() returns nullptr immediately when ring is full.
+    /// "block": write_acquire() waits up to slot_acquire_timeout for a free slot.
+    /// If absent, inherits from the general "overflow_policy" field.
+    std::string zmq_out_overflow_policy{""}; // empty = inherit from overflow_policy
 
     // ── Schemas ────────────────────────────────────────────────────────────────
     nlohmann::json in_slot_schema_json{};

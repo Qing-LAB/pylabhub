@@ -224,7 +224,7 @@ Tests should be layered so that protocol and correctness are assured before addi
 | **Phase D – Concurrency / multi-process** | No | Not implemented. |
 | **Recovery scenario** | No | **Deferred.** Recovery policy (what to recover vs fail, protocol) needs definition first; see DATAHUB_TODO “Recovery (deferred)”. Zombie reclaim, corrupted block, stuck slot left for later. |
 
-**Config / schema / policy API:** All Layer 3 tests set the required config fields explicitly (policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity). Schema validation is covered by SchemaValidationTest (match and mismatch). Policy behavior is covered by SlotProtocolTest (Latest_only, Single_reader, Sync_reader, physical/logical unit size). **Optional gap:** Add a test that creating a producer with unset config (e.g. policy=Unset or ring_buffer_capacity=0) throws `std::invalid_argument` before any memory is created — confirms single-point validation.
+**Config / schema / policy API:** All Layer 3 tests set the required config fields explicitly (policy, consumer_sync_policy, physical_page_size, ring_buffer_capacity). Schema validation is covered by SchemaValidationTest (match and mismatch). Policy behavior is covered by SlotProtocolTest (Latest_only, Sequential, Sequential_sync, physical/logical unit size). **Optional gap:** Add a test that creating a producer with unset config (e.g. policy=Unset or ring_buffer_capacity=0) throws `std::invalid_argument` before any memory is created — confirms single-point validation.
 
 **Gaps:** Phase C (MessageHub + broker; reevaluate existing messagehub_workers), Phase D (concurrency/multi-process), recovery scenario tests (deferred). Optional: explicit config-failure test (see above), DataBlockConfig ordering, header layout hash ABI mismatch (P2).
 
@@ -239,15 +239,15 @@ Ensure tests cover all combinations of reader type, producer/buffer type, ring c
 | Policy         | Covered | Tests / notes |
 |----------------|---------|---------------|
 | Latest_only    | Yes     | Most tests; policy_latest_only, write_read, layout_smoke, transaction_api (most), phase_a, error_handling, recovery. |
-| Single_reader  | Yes     | policy_single_reader, high_load_single_reader, with_write_transaction_timeout, with_next_slot_iterator. |
-| Sync_reader    | Yes     | policy_sync_reader. |
+| Sequential  | Yes     | policy_single_reader, high_load_single_reader, with_write_transaction_timeout, with_next_slot_iterator. |
+| Sequential_sync    | Yes     | policy_sync_reader. |
 
 ### 2. DataBlockPolicy (producer/buffer type)
 
 | Policy       | Covered | Tests / notes |
 |--------------|---------|---------------|
 | Single       | Yes     | policy_single_buffer_smoke: write, read, overwrite, read latest. |
-| DoubleBuffer | Yes     | policy_double_buffer_smoke: write two frames, read in order (Single_reader). |
+| DoubleBuffer | Yes     | policy_double_buffer_smoke: write two frames, read in order (Sequential). |
 | RingBuffer   | Yes     | All other Layer 3 tests use RingBuffer. |
 
 ### 3. Ring buffer capacity

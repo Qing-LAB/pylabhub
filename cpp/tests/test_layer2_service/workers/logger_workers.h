@@ -199,6 +199,18 @@ int test_queue_full_and_message_dropping(const std::string &log_path);
  */
 int use_without_lifecycle_aborts();
 
+/**
+ * @brief Tests StartupLogFileSink module with plain file mode.
+ * Verifies log output goes to the specified file via lifecycle module.
+ */
+int test_startup_log_file_sink_plain(const std::string &log_path_str);
+
+/**
+ * @brief Tests StartupLogFileSink module with rotating file mode.
+ * Verifies log output goes to the specified rotating file via lifecycle module.
+ */
+int test_startup_log_file_sink_rotating(const std::string &log_path_str);
+
 } // namespace logger
 
 } // namespace pylabhub::tests::worker

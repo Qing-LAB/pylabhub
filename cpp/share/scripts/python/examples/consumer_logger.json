@@ -9,8 +9,7 @@
   },
   "channel":    "lab.examples.counter",
   "broker":     "tcp://127.0.0.1:5570",
-  "timeout_ms": 5000,
-  "_comment_timeout": "Call on_consume(in_slot=None) after 5 s without a slot.",
+  "slot_acquire_timeout_ms": -1,
 
   "shm": {
     "enabled": true,

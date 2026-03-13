@@ -192,6 +192,53 @@ Each binary constructs a `LifecycleGuard` with its required `ModuleDef` set.
 The topological sort ensures Logger starts before FileLock and SchemaStore (which depend on it).
 Crypto has no dependencies and can start in any position.
 
+### StartupLogFileSink — early log sink switching
+
+`Logger::GetStartupLogFileSinkModule()` returns a `ModuleDef` named `"StartupLogFileSink"`
+that depends on `"pylabhub::utils::Logger"` and switches the log sink to a file immediately
+after Logger initialises — before any other module emits log messages.
+
+Modules that produce startup log output (e.g. ZMQContext, DataExchangeHub) can declare
+`add_dependency("StartupLogFileSink")` so the topological sort places them after the sink
+switch, ensuring all their output goes to the file rather than the console.
+
+**Factory method** (in `Logger`):
+
+```cpp
+// Plain append-mode log file:
+static ModuleDef GetStartupLogFileSinkModule(
+    const std::string &log_file_path,
+    std::optional<RotatingLogConfig> rotating = std::nullopt);
+
+// Rotating log file:
+mods.push_back(Logger::GetStartupLogFileSinkModule(
+    "/var/log/hub.log", Logger::RotatingLogConfig{10*1024*1024, 3}));
+```
+
+**RotatingLogConfig** fields: `max_file_size_bytes` (default 10 MiB), `max_backup_files` (default 3).
+
+**Usage in role binaries** (`role_main_helpers.hpp`):
+
+```cpp
+auto zmq_mod = pylabhub::hub::GetZMQContextModule();
+auto hub_mod = pylabhub::hub::GetLifecycleModule();
+if (!log_file.empty())
+{
+    zmq_mod.add_dependency("StartupLogFileSink");
+    hub_mod.add_dependency("StartupLogFileSink");
+}
+auto mods = MakeModDefList(Logger::GetLifecycleModule(), ..., std::move(zmq_mod), std::move(hub_mod));
+if (!log_file.empty())
+    mods.push_back(Logger::GetStartupLogFileSinkModule(log_file));
+```
+
+**Usage in hubshell** (rotating):
+
+```cpp
+mods.push_back(Logger::GetStartupLogFileSinkModule(
+    hub_log_path, Logger::RotatingLogConfig{}));
+```
+
 ---
 
 ## Public API reference

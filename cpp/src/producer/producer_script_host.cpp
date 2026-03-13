@@ -231,28 +231,13 @@ bool ProducerScriptHost::start_role()
         opts.shm_config.shared_secret        = config_.shm_secret;
         opts.shm_config.ring_buffer_capacity = config_.shm_slot_count;
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        opts.shm_config.consumer_sync_policy = hub::ConsumerSyncPolicy::Latest_only;
+        opts.shm_config.consumer_sync_policy = config_.shm_consumer_sync_policy;
         opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
         opts.shm_config.flex_zone_size       = core_.schema_fz_size;
 
-        if (schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4K))
-        {
-            opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size4K;
-            opts.shm_config.logical_unit_size  =
-                (schema_slot_size_ == 0) ? 1 : schema_slot_size_;
-        }
-        else if (schema_slot_size_ <= static_cast<size_t>(hub::DataBlockPageSize::Size4M))
-        {
-            opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size4M;
-            opts.shm_config.logical_unit_size  =
-                static_cast<size_t>(hub::DataBlockPageSize::Size4M);
-        }
-        else
-        {
-            opts.shm_config.physical_page_size = hub::DataBlockPageSize::Size16M;
-            opts.shm_config.logical_unit_size  =
-                static_cast<size_t>(hub::DataBlockPageSize::Size16M);
-        }
+        opts.shm_config.physical_page_size = hub::system_page_size();
+        opts.shm_config.logical_unit_size  =
+            (schema_slot_size_ == 0) ? 1 : schema_slot_size_;
     }
 
     if (!config_.broker.empty())
@@ -402,9 +387,12 @@ bool ProducerScriptHost::start_role()
     else // Transport::Zmq
     {
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
+        const auto zmq_policy = (config_.zmq_overflow_policy == "block")
+                                     ? hub::OverflowPolicy::Block
+                                     : hub::OverflowPolicy::Drop;
         queue_ = hub::ZmqQueue::push_to(
             config_.zmq_out_endpoint, std::move(zmq_fields), config_.zmq_packing,
-            config_.zmq_out_bind, std::nullopt, 0, config_.zmq_buffer_depth);
+            config_.zmq_out_bind, std::nullopt, 0, config_.zmq_buffer_depth, zmq_policy);
         if (!queue_)
         {
             LOGGER_ERROR("[prod] Failed to create ZmqQueue for endpoint '{}'",
@@ -665,7 +653,7 @@ bool ProducerScriptHost::call_on_produce_(py::object &out_sv, py::object &fz,
 // Uses the hub::QueueWriter interface for both SHM and ZMQ transports:
 //   - ShmQueue (transport=shm): write_acquire blocks up to acquire_timeout;
 //     write_commit() applies checksum if configured via set_checksum_options().
-//   - ZmqQueue (transport=zmq): write_acquire returns immediately (Drop policy);
+//   - ZmqQueue (transport=zmq): write_acquire honours zmq_overflow_policy (Drop or Block);
 //     write_commit() enqueues to the internal send ring; send_thread_ delivers async.
 // ============================================================================
 
@@ -678,11 +666,9 @@ void ProducerScriptHost::run_loop_()
         return;
     }
 
-    // Acquire timeout: positive config value, or fallback to 5 s for SHM blocking.
-    // ZmqQueue with Drop policy ignores the timeout (returns immediately).
-    static constexpr int kDefaultBlockMs = 5000;
     const auto acquire_timeout = std::chrono::milliseconds{
-        config_.timeout_ms > 0 ? config_.timeout_ms : kDefaultBlockMs};
+        pylabhub::compute_slot_acquire_timeout(
+            config_.slot_acquire_timeout_ms, config_.target_period_ms)};
 
     // Deadline tracking: each iteration targets a start-to-start period of target_period_ms.
     // When target_period_ms == 0, free-run mode: no sleep, no deadline.
@@ -690,21 +676,64 @@ void ProducerScriptHost::run_loop_()
     auto next_deadline = std::chrono::steady_clock::now() +
                          std::chrono::milliseconds{config_.target_period_ms};
 
+    const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
+    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !api_.critical_error())
     {
         const auto iter_start = std::chrono::steady_clock::now();
 
+        void *buf = queue_->write_acquire(acquire_timeout);
+
+        // Drain control messages AFTER acquire so they are never lost on acquire
+        // failure.  The script callback is always invoked — even without a write
+        // slot — so that on_produce can process broadcast, channel_closing, and
+        // other control events.
         auto msgs = core_.drain_messages();
 
-        void *buf = queue_->write_acquire(acquire_timeout);
         if (!buf)
         {
+            // No write slot available.  Decide whether to call on_produce(None):
+            //   - Messages pending → always call (control events are time-critical).
+            //   - MaxRate          → always call (script expects every iteration).
+            //   - FixedRate*       → call only when the deadline has been reached.
+            const bool due = !is_fixed_rate || iter_start >= next_deadline;
+
+            if (!msgs.empty() || due)
+            {
+                py::gil_scoped_acquire g;
+                try
+                {
+                    py::object none_sv = py::none();
+                    py::list   mlst    = build_messages_list_(msgs);
+                    (void)call_on_produce_(none_sv, fz_inst_, mlst);
+                }
+                catch (py::error_already_set &e)
+                {
+                    api_.increment_script_errors();
+                    LOGGER_ERROR("[prod] Python error in produce loop (no slot): {}",
+                                 e.what());
+                    if (config_.stop_on_script_error)
+                        core_.running_threads.store(false);
+                }
+
+                // Advance deadline (same logic as normal path).
+                if (is_fixed_rate)
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_deadline)
+                    {
+                        if (config_.loop_timing ==
+                            LoopTimingPolicy::FixedRateWithCompensation)
+                            next_deadline += period;
+                        else
+                            next_deadline = now + period;
+                    }
+                }
+            }
             api_.increment_drops();
-            LOGGER_WARN("[prod] write_acquire() returned nullptr — skipped iteration "
-                        "(transport={}, channel='{}')",
-                        (config_.transport == Transport::Shm ? "shm" : "zmq"),
-                        config_.channel);
+            iteration_count_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
@@ -749,20 +778,20 @@ void ProducerScriptHost::run_loop_()
                 std::chrono::duration_cast<std::chrono::microseconds>(now - iter_start).count());
             api_.set_last_cycle_work_us(work_us);
 
-            if (config_.loop_timing != LoopTimingPolicy::MaxRate)
+            if (is_fixed_rate)
             {
                 if (now < next_deadline)
                 {
                     std::this_thread::sleep_for(next_deadline - now);
-                    next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                    next_deadline += period;
                 }
                 else
                 {
                     // Overrun: start-to-start exceeded target_period_ms.
                     if (config_.loop_timing == LoopTimingPolicy::FixedRateWithCompensation) {
-                        next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                        next_deadline += period;
                     } else { // FixedRate: reset from now — no catch-up
-                        next_deadline = now + std::chrono::milliseconds{config_.target_period_ms};
+                        next_deadline = now + period;
                     }
                 }
             }

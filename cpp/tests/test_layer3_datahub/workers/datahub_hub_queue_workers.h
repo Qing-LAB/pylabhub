@@ -45,4 +45,11 @@ int shm_queue_capacity_policy();
 /** set_verify_checksum: slot written WITHOUT checksum update → read_acquire returns nullptr. */
 int shm_queue_verify_checksum_mismatch();
 
+/** is_running(): true after construction, false after move, true on move target. */
+int shm_queue_is_running();
+/** request_structure_remap() and commit_structure_remap() both throw std::runtime_error. */
+int datablock_producer_remap_stubs_throw();
+/** release_for_remap() and reattach_after_remap() both throw std::runtime_error. */
+int datablock_consumer_remap_stubs_throw();
+
 } // namespace pylabhub::tests::worker::hub_queue

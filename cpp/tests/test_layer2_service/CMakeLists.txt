@@ -577,6 +577,35 @@ gtest_discover_tests(test_layer2_role_directory
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: LoopTimingPolicy + compute_slot_acquire_timeout (pure header-only API)
+# ============================================================================
+
+add_executable(test_layer2_loop_timing_policy
+    test_loop_timing_policy.cpp
+)
+
+target_link_libraries(test_layer2_loop_timing_policy
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_loop_timing_policy)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_loop_timing_policy
+    SUITE_NAME "Layer2_LoopTimingPolicy"
+)
+layer2_require_staged_utils(test_layer2_loop_timing_policy)
+
+gtest_discover_tests(test_layer2_loop_timing_policy
+    PROPERTIES
+        LABELS "layer2;service;loop_timing"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")

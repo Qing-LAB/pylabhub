@@ -563,37 +563,46 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     //                      → ZMQContext → HubConfig → JsonConfig
     //                      → CryptoUtils → FileLock → Logger
     // -----------------------------------------------------------------------
-    LifecycleGuard app_lifecycle(MakeModDefList(
+    // When a hub_dir is available, inject a StartupLogFileSink module that switches
+    // the log sink to a rotating file immediately after Logger starts — before
+    // ZMQContext and DataExchangeHub emit their startup INFO messages.
+    const std::string hub_log_path = hub_dir.empty()
+        ? std::string{}
+        : (hub_dir / "logs" / "hub.log").string();
+
+    auto zmq_mod = pylabhub::hub::GetZMQContextModule();
+    auto hub_mod = pylabhub::hub::GetLifecycleModule();          // Messenger (DataExchangeHub)
+
+    if (!hub_log_path.empty())
+    {
+        // Ensure logs directory exists before lifecycle starts.
+        std::error_code mkdir_ec;
+        fs::create_directories(hub_dir / "logs", mkdir_ec);
+
+        zmq_mod.add_dependency("StartupLogFileSink");
+        hub_mod.add_dependency("StartupLogFileSink");
+    }
+
+    auto mods = MakeModDefList(
         pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         pylabhub::HubConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule(),
-        pylabhub::hub::GetLifecycleModule(),          // Messenger (DataExchangeHub)
+        std::move(zmq_mod),
+        std::move(hub_mod),
         pylabhub::PythonInterpreter::GetLifecycleModule(),
         pylabhub::AdminShell::GetLifecycleModule()
-    ));
+    );
 
-    // -----------------------------------------------------------------------
-    // Switch to rotating log file as early as possible so console output is
-    // replaced by the rich UI dashboard rendered by the hub script.
-    // Skipped in pure --dev mode (no persistent hub directory).
-    // -----------------------------------------------------------------------
-    if (!hub_dir.empty())
+    if (!hub_log_path.empty())
     {
-        const auto logs_dir = hub_dir / "logs";
-        std::error_code mkdir_ec;
-        fs::create_directories(logs_dir, mkdir_ec);
-        const auto log_path = logs_dir / "hub.log";
-        std::error_code log_ec;
-        if (!pylabhub::utils::Logger::instance().set_rotating_logfile(
-                log_path, 10ULL * 1024 * 1024, 3, log_ec))
-        {
-            fmt::print(stderr, "hubshell: warning: could not open log file '{}': {}\n",
-                       log_path.string(), log_ec.message());
-        }
+        mods.push_back(
+            Logger::GetStartupLogFileSinkModule(
+                hub_log_path, Logger::RotatingLogConfig{}));
     }
+
+    LifecycleGuard app_lifecycle(std::move(mods));
 
     // -----------------------------------------------------------------------
     // BrokerService — built from HubConfig, runs in its own thread.

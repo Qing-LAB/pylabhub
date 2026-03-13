@@ -88,15 +88,16 @@ All phases done. Highlights:
 **MEDIUM:**
 - [x] **MR-02** — ✅ FIXED 2026-03-10: `InboxQueueImpl` now uses `unordered_map<string, uint64_t> expected_seq_per_sender_` keyed by sender_id. Same fix as A11/A18 in REVIEW_FullStack2_2026-03-10.md.
 - [x] **MR-05** — FALSE POSITIVE: `ConsumerAPI::in_capacity()` already wraps `r->capacity()` in try/catch (consumer_api.cpp:268-269). No fix needed. (Confirmed 2026-03-10)
-- [ ] **MR-09** — `QueueReader::is_running()` defaults to `return true` in the base; `ShmQueue` never overrides it. ShmQueue always appears "running" even before connection. (`hub_queue.hpp:197`)
+- [x] **MR-09** — ✅ FIXED 2026-03-12: `ShmQueue::is_running()` override added; returns false when `pImpl==nullptr` (moved-from). Test `DatahubShmQueueTest.ShmQueueIsRunning` added.
 - [x] **MR-10** — FALSE POSITIVE: `send_stop_` guard already present at `hub_zmq_queue.cpp:847-848` (comment "MR-10"). No fix needed. (Confirmed 2026-03-10)
-- [ ] **IC-04** — `QueueReader::last_seq()` has different semantics: ShmQueue = ring slot index (0-indexed, wraps at ring_capacity); ZmqQueue = sender-local wire seq (monotone). Add API docstring. (Confirmed 2026-03-10: first ShmQueue read returns slot_id=0, not 1.)
-- [ ] **MR-01** — All wire-format helpers duplicated between `hub_inbox_queue.cpp` and `hub_zmq_queue.cpp` (field layout, pack/unpack, frame-size). Extract to a shared internal header. (Deferred per §7.6 comment — track here.)
+- [x] **IC-04** — ✅ FIXED 2026-03-12: `QueueReader::last_seq()` docstring in `hub_queue.hpp` clarified: ShmQueue returns ring slot index (0-indexed); ZmqQueue returns monotone wire seq. Cross-references confirmed in `hub_shm_queue.hpp` and `hub_zmq_queue.hpp`.
+- [x] **MR-01** — ✅ FIXED 2026-03-12: Wire-format helpers extracted to `src/utils/hub/zmq_wire_helpers.hpp` (internal, `wire_detail` namespace). Both `hub_zmq_queue.cpp` and `hub_inbox_queue.cpp` now use shared `kFrameMagic`, `WireFieldDesc`, `compute_field_layout`, `max_frame_size`, `pack_field`, `unpack_field`; ~260 lines of duplication removed.
 
 **LOW:**
 - [x] **LR-04** — CLOSED: `ProducerAPI::stop()` already uses `memory_order_release` (`producer_api.cpp:46`). Fix was applied in REVIEW_DataHubInbox_2026-03-09.md (LR-04 ✅). Confirmed 2026-03-10 by REVIEW_DeepStack audit.
 - [x] **LR-05** — ✅ FIXED (pre-existing): `parse_on_produce_return()` returns `is_err=true` on wrong type; caller at `producer_script_host.cpp:616` calls `api_.increment_script_errors()` when `is_err`. Confirmed by code read 2026-03-10.
-- [ ] **MR-08** — Stale `run_loop_shm_` reference in `consumer_script_host.hpp` file header comment. (`consumer_script_host.hpp:9`)
+- [x] **MR-08** — ✅ FIXED 2026-03-12: stale `run_loop_shm_` reference removed from `consumer_script_host.hpp` file header comment.
+- [ ] **LOW-2 (gemini)** — `DataBlockProducer`/`DataBlockConsumer` lack a `flexzone_size()` accessor. `DataBlockConfig::flexible_zone_size` exists but is not exposed via the C++ API objects directly. Low priority — `get_metrics()` provides indirect access via `DataBlockMetrics`. Add `size_t flexzone_size() const noexcept` to both classes when a diagnostics round is done.
 
 ### Code Review + Bug Fixes (2026-03-08)
 
@@ -800,7 +801,7 @@ Mark clearly as experimental, subject to change:
 ### 2026-02-17 (DRAINING policy reachability documented and tested)
 
 - ✅ **DRAINING unreachability for ordered policies** — Proved (and verified in code) that
-  `SlotState::DRAINING` is structurally unreachable for `Single_reader` and `Sync_reader`:
+  `SlotState::DRAINING` is structurally unreachable for `Sequential` and `Sequential_sync`:
   ring-full check (`write_index - read_index < capacity`) fires **before** `write_index.fetch_add(1)`;
   if reader holds slot K then `read_index ≤ K`, making the ring-full condition impossible to
   pass. DRAINING is a `Latest_only`-only live mechanism.

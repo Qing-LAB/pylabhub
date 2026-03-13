@@ -249,8 +249,12 @@ struct ProducerOptions
     /// "aligned" (ctypes.LittleEndianStructure default) or "packed" (no padding).
     /// Must match the receiver's packing.
     std::string zmq_packing{"aligned"};
-    /// Internal receive-buffer depth for ZmqQueue PULL (read side).
-    size_t zmq_buffer_depth{64};
+    /// Internal send-buffer depth for the ZmqQueue PUSH ring (write side).
+    size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
+    /// Overflow policy for the ZmqQueue PUSH send ring.
+    /// Drop (default): write_acquire() returns nullptr immediately when ring is full.
+    /// Block: write_acquire() waits up to the caller's timeout for a free slot.
+    OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
     /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};

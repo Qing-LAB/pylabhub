@@ -201,7 +201,7 @@ Created by `pylabhub-consumer --init <dir>`:
   "broker":     "tcp://127.0.0.1:5570",
   "channel":    "lab.sensors.temperature",
 
-  "timeout_ms": 5000,
+  "slot_acquire_timeout_ms": -1,
   "queue_type": "shm",
 
   "slot_schema": {
@@ -244,11 +244,12 @@ Created by `pylabhub-consumer --init <dir>`:
 | `zmq_buffer_depth` | no | `64` | Internal send buffer depth (>0); for `transport=zmq` |
 | `target_period_ms` | no | `0` | Write loop period; 0 = free-run |
 | `loop_timing` | no | implicit (0→`"max_rate"`, >0→`"fixed_rate"`) | `"max_rate"`, `"fixed_rate"`, or `"fixed_rate_with_compensation"` |
-| `timeout_ms` | no | `-1` | `write_acquire()` timeout; -1 = infinite, 0 = non-blocking |
+| `slot_acquire_timeout_ms` | no | `-1` | `write_acquire()` timeout; -1 = derive from `target_period_ms` (see `compute_slot_acquire_timeout`), 0 = non-blocking, >0 = explicit ms |
 | `slot_schema` | yes‡ | — | Output slot layout (or use `schema_id` from HEP-CORE-0016) |
 | `flexzone_schema` | no | absent | Writable flexzone layout; ignored (LOGGER_WARN) when `transport=zmq` |
 | `shm.enabled` | no | `true` | Allocate SHM segment (must be true for `transport=shm`) |
 | `shm.slot_count` | yes§ | — | Ring buffer depth (number of slots) |
+| `shm.reader_sync_policy` | no | `"sequential"` | `"sequential"` (FIFO, no data loss) or `"latest_only"` (skip to newest) |
 | `shm.secret` | no | `0` | Shared secret for SHM name derivation |
 | `inbox_schema` | no | absent | Inbox field list for `inbox_thread_` (enables inbox facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
@@ -272,7 +273,7 @@ Created by `pylabhub-consumer --init <dir>`:
 | `hub_dir` | no | — | Hub directory; derives `broker`/`broker_pubkey` from `hub.json` |
 | `channel` | yes | — | Channel name to subscribe to |
 | `queue_type` | no | `"shm"` | `"shm"` (SHM read via DataBlockConsumer) or `"zmq"` (ZMQ PULL; endpoint from broker) |
-| `timeout_ms` | no | `5000` | `on_consume(in_slot=None,…)` fires after this many ms of silence |
+| `slot_acquire_timeout_ms` | no | `-1` | `read_acquire()` timeout; -1 = derive from `target_period_ms` (see `compute_slot_acquire_timeout`), 0 = non-blocking, >0 = explicit ms |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer's schema) |
 | `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W); SHM only |
 | `verify_checksum` | no | `false` | Enable framework-level BLAKE2b slot verification on `read_acquire()` (SHM only; no-op for ZMQ) |
@@ -349,7 +350,7 @@ def on_consume(in_slot, flexzone, messages, api) -> None:
     Called for each slot received, or on timeout.
 
     in_slot:   zero-copy read-only ctypes struct (slot_schema layout).
-               None on timeout (timeout_ms elapsed without a new slot).
+               None on timeout (slot_acquire_timeout elapsed without a new slot).
                Write-guarded via __setattr__: writing a field raises AttributeError.
                The slot is valid only for the duration of this callback — do not store it.
                See §6.4 for field access and numpy conversion.
@@ -582,15 +583,21 @@ zmq_thread_:
   heartbeat loop (sends HEARTBEAT_REQ when iteration_count_ advances)
   handles BYE from consumers
 
-loop_thread_:
+loop_thread_:                                          ← updated 2026-03-13
+  acquire_timeout = derived from target_period_ms (period/2, min 1; 50ms for MaxRate)
   while !stop_:
-    drain incoming_queue_ (ZMQ callbacks → no GIL race)
+    out_slot = write_acquire(acquire_timeout)          ← may return None
+    messages = drain incoming_queue_                    ← AFTER acquire (never lost on failure)
+    if out_slot is None:
+      if messages pending OR deadline due (FixedRate) OR MaxRate:
+        acquire GIL → on_produce(None, fz, messages, api) → release GIL
+        advance deadline
+      increment drops; continue
     acquire GIL
-    out_slot = acquire_write_slot(timeout)
     on_produce(out_slot, fz, messages, api)
-    if True: commit slot; if False: abort slot
+    if True: commit slot; if False: discard slot
     release GIL
-    update LoopPolicy
+    sleep to deadline (FixedRate) / advance deadline
 
 on_stop(api) → GIL re-acquired → Py_Finalize
 ```
@@ -611,14 +618,21 @@ ctrl_thread_:   ← renamed from zmq_thread_ (2026-03-09)
   attach SHM or connect ZmqQueue PULL (depending on queue_type)
   heartbeat loop; handles producer BYE, CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN
 
-loop_thread_:   ← unified via hub::QueueReader* (2026-03-09)
+loop_thread_:   ← unified via hub::QueueReader* (2026-03-09); updated 2026-03-13
+  acquire_timeout = derived from target_period_ms (period/2, min 1; 50ms for MaxRate)
   while !stop_:
-    drain incoming_queue_
-    in_slot = reader_->read_acquire(timeout_ms)   ← None on timeout
+    in_slot = reader_->read_acquire(acquire_timeout)   ← None on timeout
+    messages = drain incoming_queue_                    ← AFTER acquire (never lost on failure)
+    if in_slot is None:
+      if messages pending OR deadline due (FixedRate) OR MaxRate:
+        acquire GIL → on_consume(None, fz, messages, api) → release GIL
+        advance deadline
+      continue
     acquire GIL
     on_consume(in_slot, fz, messages, api)
     release GIL
-    reader_->read_release()   ← releases slot back to ring or ZMQ recv buffer
+    reader_->read_release()
+    sleep to deadline (FixedRate) / advance deadline
 
 inbox_thread_:  ← optional; active when inbox_schema is configured (2026-03-10)
   ZMQ ROUTER socket (binds inbox_endpoint)
@@ -770,7 +784,7 @@ struct ConsumerConfig {
 
     std::string  channel;
 
-    int          timeout_ms{5000};
+    int          slot_acquire_timeout_ms{-1};
     std::string  queue_type{"shm"};  // "shm" or "zmq"; sets queue_type in CONSUMER_REG_REQ
 
     nlohmann::json slot_schema_json;

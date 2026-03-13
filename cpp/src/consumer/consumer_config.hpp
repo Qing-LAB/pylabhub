@@ -34,7 +34,7 @@
  *   },
  *
  *   "channel":          "lab.sensors.temperature",
- *   "timeout_ms":       5000,
+ *   "slot_acquire_timeout_ms": -1,
  *   "queue_type":       "shm",
  *   "target_period_ms": 0,
  *   "loop_timing":      "fixed_pace",
@@ -54,6 +54,7 @@
  * @endcode
  */
 
+#include "utils/hub_zmq_queue.hpp"   // kZmqDefaultBufferDepth
 #include "utils/loop_timing_policy.hpp"
 #include "utils/startup_wait.hpp"
 
@@ -138,8 +139,9 @@ struct ConsumerConfig
     /// See loop_timing_policy.hpp for cross-field constraints.
     LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
 
-    /// SHM acquire-consume timeout (ms). -1 = block up to 5 s (default).
-    int timeout_ms{-1};
+    /// Slot acquire timeout (ms). -1 = derive from target_period_ms (see
+    /// compute_slot_acquire_timeout), 0 = non-blocking, >0 = explicit ms.
+    int slot_acquire_timeout_ms{-1};
     int heartbeat_interval_ms{0};
 
     // SHM — input side
@@ -156,11 +158,11 @@ struct ConsumerConfig
     // ── Inbox facility (optional — active when inbox_schema_json is non-null and non-empty) ─
     nlohmann::json inbox_schema_json{};             ///< Schema for inbox messages. Null/empty = no inbox.
     std::string    inbox_endpoint;                  ///< ROUTER bind endpoint. Empty = auto-assign (port 0).
-    size_t         inbox_buffer_depth{64};          ///< ZMQ RCVHWM for the inbox socket.
+    size_t         inbox_buffer_depth{hub::kZmqDefaultBufferDepth}; ///< ZMQ RCVHWM for the inbox socket.
     std::string    inbox_overflow_policy{"drop"};   ///< "drop" (finite RCVHWM) or "block" (unlimited queue).
 
     // ZMQ buffer depth for ZMQ-transport data plane (PULL ring depth).
-    size_t zmq_buffer_depth{64}; ///< Internal recv-ring buffer depth for ZMQ transport. Must be > 0.
+    size_t zmq_buffer_depth{hub::kZmqDefaultBufferDepth}; ///< Internal recv-ring buffer depth for ZMQ transport. Must be > 0.
 
     /// Returns true when an inbox is configured (inbox_schema_json is non-null and non-empty).
     [[nodiscard]] bool has_inbox() const noexcept

@@ -338,6 +338,28 @@ TEST_F(LoggerTest, UseWithoutLifecycleAborts)
                 ::testing::HasSubstr("before the Logger module was"));
 }
 
+/// Tests StartupLogFileSink module with plain file mode.
+TEST_F(LoggerTest, StartupLogFileSinkPlain)
+{
+    auto log_path = GetUniqueLogPath("startup_sink_plain");
+    WorkerProcess proc(g_self_exe_path, "logger.test_startup_log_file_sink_plain",
+                       {log_path.string()});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
+/// Tests StartupLogFileSink module with rotating file mode.
+TEST_F(LoggerTest, StartupLogFileSinkRotating)
+{
+    auto log_path = GetUniqueLogPath("startup_sink_rotating");
+    WorkerProcess proc(g_self_exe_path, "logger.test_startup_log_file_sink_rotating",
+                       {log_path.string()});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
 /// Delegates the QueueFullAndMessageDropping test logic to a worker process.
 TEST_F(LoggerTest, QueueFullAndMessageDropping)
 {

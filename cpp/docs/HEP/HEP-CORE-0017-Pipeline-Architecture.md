@@ -341,7 +341,7 @@ Each bridge Processor:
 SHM-local and expose the full set of SHM-specific facilities to their callers.
 
 A runnable 6-process dual-hub bridge demo (2 hubs, 1 producer, 2 processors, 1 consumer)
-is provided at `share/demo-dual-hub/`. Run with `bash share/demo-dual-hub/run_demo.sh`.
+is provided at `share/py-demo-dual-processor-bridge/`. Run with `bash share/py-demo-dual-processor-bridge/run_demo.sh`.
 
 ### 4.4 Chained Transform Pipeline
 

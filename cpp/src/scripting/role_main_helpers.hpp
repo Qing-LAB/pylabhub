@@ -68,7 +68,7 @@ inline std::optional<std::string> get_role_password(const char *role_name, const
  *   utils::LifecycleGuard lifecycle(scripting::role_lifecycle_modules());
  * @endcode
  *
- * When @p log_file is non-empty, a lightweight "LogFileSink" module is injected
+ * When @p log_file is non-empty, a lightweight "StartupLogFileSink" module is injected
  * that depends on "Logger" and switches the log sink to the specified file
  * before any other module initialises — eliminating early console log spew.
  *
@@ -85,14 +85,14 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
 {
     // Hub/role-related modules that emit LOGGER_INFO during startup.
     // When a log file is requested, these get an extra dependency on
-    // "LogFileSink" so the topo sort places them after the sink switch.
+    // "StartupLogFileSink" so the topo sort places them after the sink switch.
     auto zmq_mod = pylabhub::hub::GetZMQContextModule();
     auto hub_mod = pylabhub::hub::GetLifecycleModule();
 
     if (!log_file.empty())
     {
-        zmq_mod.add_dependency("LogFileSink");
-        hub_mod.add_dependency("LogFileSink");
+        zmq_mod.add_dependency("StartupLogFileSink");
+        hub_mod.add_dependency("StartupLogFileSink");
     }
 
     auto mods = pylabhub::utils::MakeModDefList(
@@ -106,24 +106,8 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
 
     if (!log_file.empty())
     {
-        // Inject a "LogFileSink" module that depends on Logger and switches
-        // the log sink to a file immediately after Logger initialises.
-        pylabhub::utils::ModuleDef sink_mod("LogFileSink");
-        sink_mod.add_dependency("pylabhub::utils::Logger");
-        sink_mod.set_startup(
-            [](const char *path)
-            {
-                if (path && path[0] != '\0')
-                {
-                    if (!pylabhub::utils::Logger::instance().set_logfile(path))
-                    {
-                        std::fprintf(stderr, "WARNING: failed to open log file '%s', "
-                                     "falling back to console\n", path);
-                    }
-                }
-            },
-            log_file);
-        mods.push_back(std::move(sink_mod));
+        mods.push_back(
+            pylabhub::utils::Logger::GetStartupLogFileSinkModule(log_file));
     }
 
     return mods;

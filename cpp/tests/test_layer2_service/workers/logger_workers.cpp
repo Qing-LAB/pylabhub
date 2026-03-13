@@ -595,6 +595,54 @@ int use_without_lifecycle_aborts()
     return 0;  // Should not reach here; if we do, implementation changed
 }
 
+// Worker to test StartupLogFileSink with plain file mode.
+// Lifecycle init creates Logger + StartupLogFileSink; we verify output goes to file.
+int test_startup_log_file_sink_plain(const std::string &log_path_str)
+{
+    return run_worker_bare(
+        [&]()
+        {
+            auto mods = MakeModDefList(Logger::GetLifecycleModule());
+            mods.push_back(Logger::GetStartupLogFileSinkModule(log_path_str));
+            LifecycleGuard guard(std::move(mods));
+
+            Logger::instance().set_log_sink_messages_enabled(false);
+
+            LOGGER_INFO("startup_sink_plain_test_message");
+            Logger::instance().flush();
+
+            std::string contents;
+            ASSERT_TRUE(read_file_contents(log_path_str, contents));
+            ASSERT_NE(contents.find("startup_sink_plain_test_message"), std::string::npos)
+                << "Expected log message not found in file. Contents:\n" << contents;
+        },
+        "logger::test_startup_log_file_sink_plain");
+}
+
+// Worker to test StartupLogFileSink with rotating file mode.
+int test_startup_log_file_sink_rotating(const std::string &log_path_str)
+{
+    return run_worker_bare(
+        [&]()
+        {
+            auto mods = MakeModDefList(Logger::GetLifecycleModule());
+            mods.push_back(Logger::GetStartupLogFileSinkModule(
+                log_path_str, Logger::RotatingLogConfig{1024 * 1024, 2}));
+            LifecycleGuard guard(std::move(mods));
+
+            Logger::instance().set_log_sink_messages_enabled(false);
+
+            LOGGER_INFO("startup_sink_rotating_test_message");
+            Logger::instance().flush();
+
+            std::string contents;
+            ASSERT_TRUE(read_file_contents(log_path_str, contents));
+            ASSERT_NE(contents.find("startup_sink_rotating_test_message"), std::string::npos)
+                << "Expected log message not found in file. Contents:\n" << contents;
+        },
+        "logger::test_startup_log_file_sink_rotating");
+}
+
 } // namespace logger
 } // namespace pylabhub::tests::worker
 
@@ -651,6 +699,10 @@ struct LoggerWorkerRegistrar
                                                    static_cast<size_t>(std::stoul(argv[4])));
                 if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
                     return test_queue_full_and_message_dropping(argv[2]);
+                if (scenario == "test_startup_log_file_sink_plain" && argc > 2)
+                    return test_startup_log_file_sink_plain(argv[2]);
+                if (scenario == "test_startup_log_file_sink_rotating" && argc > 2)
+                    return test_startup_log_file_sink_rotating(argv[2]);
                 if (scenario == "use_without_lifecycle_aborts")
                     return use_without_lifecycle_aborts();
                 fmt::print(stderr, "ERROR: Unknown logger scenario '{}'\n", scenario);

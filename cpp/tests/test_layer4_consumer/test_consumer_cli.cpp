@@ -13,6 +13,8 @@
 #include "test_process_utils.h"
 #include "test_entrypoint.h"
 
+#include "utils/role_directory.hpp"
+
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -231,6 +233,48 @@ TEST_F(ConsumerCliTest, Init_NonInteractiveNoName_ExitsWithError)
         << "Expected non-zero exit when --name not provided in non-interactive mode";
     EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
         << "Expected '--name' in error message, got:\n" << proc.get_stderr();
+
+    fs::remove_all(tmp);
+}
+
+/// After --init, RoleDirectory::has_standard_layout() returns true.
+TEST_F(ConsumerCliTest, Init_HasStandardLayout)
+{
+    const auto tmp = unique_temp_dir("layout");
+
+    WorkerProcess proc(consumer_binary(), "--init",
+                       {tmp.string(), "--name", "LayoutTest"});
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "stderr:\n" << proc.get_stderr();
+
+    const auto role_dir = pylabhub::utils::RoleDirectory::open(tmp);
+    EXPECT_TRUE(role_dir.has_standard_layout())
+        << "has_standard_layout() returned false after --init";
+
+    fs::remove_all(tmp);
+}
+
+/// After --init, default_keyfile(uid) resolves to vault/<uid>.vault inside the role dir.
+TEST_F(ConsumerCliTest, Init_DefaultKeyfileInsideVault)
+{
+    const auto tmp = unique_temp_dir("keyfile");
+
+    WorkerProcess proc(consumer_binary(), "--init",
+                       {tmp.string(), "--name", "KeyfileTest"});
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "stderr:\n" << proc.get_stderr();
+
+    std::ifstream f(tmp / "consumer.json");
+    ASSERT_TRUE(f.is_open()) << "consumer.json not created";
+    const auto j   = nlohmann::json::parse(f);
+    const auto uid = j["consumer"]["uid"].get<std::string>();
+    ASSERT_FALSE(uid.empty()) << "uid is empty in generated consumer.json";
+
+    const auto role_dir     = pylabhub::utils::RoleDirectory::open(tmp);
+    const auto keyfile_path = role_dir.default_keyfile(uid);
+
+    EXPECT_EQ(keyfile_path.parent_path(), role_dir.vault())
+        << "default_keyfile() is not inside vault/: " << keyfile_path;
+    EXPECT_EQ(keyfile_path.filename().string(), uid + ".vault")
+        << "Unexpected default_keyfile filename: " << keyfile_path.filename();
 
     fs::remove_all(tmp);
 }

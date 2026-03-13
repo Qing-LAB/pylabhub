@@ -580,7 +580,8 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
             schema_tag = tag;
         }
         impl->zmq_queue_ = ZmqQueue::push_to(
-            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing, opts.zmq_bind, schema_tag);
+            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing, opts.zmq_bind, schema_tag,
+            /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy);
         if (!impl->zmq_queue_)
         {
             return std::nullopt; // Error already logged by factory (empty/invalid schema, etc.)

@@ -75,7 +75,7 @@ TEST_F(DatahubPolicyEnforcementTest, AllPolicyConsumersHaveHeartbeat)
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
-// ─── Sync_reader: Backpressure ────────────────────────────────────────────────
+// ─── Sequential_sync: Backpressure ────────────────────────────────────────────────
 
 TEST_F(DatahubPolicyEnforcementTest, SyncReaderProducerRespectsConsumerPosition)
 {

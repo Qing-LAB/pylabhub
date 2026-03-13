@@ -5,6 +5,7 @@
 #include "consumer_config.hpp"
 
 #include "utils/actor_vault.hpp"
+#include "utils/hub_zmq_queue.hpp"  // kZmqDefaultBufferDepth
 #include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
 
@@ -118,11 +119,11 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
         cfg.loop_timing = ::pylabhub::default_loop_timing_policy(cfg.target_period_ms);
     }
 
-    cfg.timeout_ms            = j.value("timeout_ms",            -1);
+    cfg.slot_acquire_timeout_ms = j.value("slot_acquire_timeout_ms", -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
-    if (cfg.timeout_ms < -1)
-        throw std::runtime_error("Consumer config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
+    if (cfg.slot_acquire_timeout_ms < -1)
+        throw std::runtime_error("Consumer config: 'slot_acquire_timeout_ms' must be >= -1 (-1=derive, 0=non-blocking, >0=ms)");
 
     if (j.contains("shm") && j["shm"].is_object())
     {
@@ -140,9 +141,9 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
     if (j.contains("inbox_schema") && !j["inbox_schema"].is_null())
         cfg.inbox_schema_json = j["inbox_schema"];
     cfg.inbox_endpoint          = j.value("inbox_endpoint",          std::string{});
-    cfg.inbox_buffer_depth      = j.value("inbox_buffer_depth",      size_t{64});
+    cfg.inbox_buffer_depth      = j.value("inbox_buffer_depth",      hub::kZmqDefaultBufferDepth);
     cfg.inbox_overflow_policy   = j.value("inbox_overflow_policy",   std::string{"drop"});
-    cfg.zmq_buffer_depth        = j.value("zmq_buffer_depth",        size_t{64});
+    cfg.zmq_buffer_depth        = j.value("zmq_buffer_depth",        hub::kZmqDefaultBufferDepth);
     cfg.zmq_packing             = j.value("zmq_packing",             std::string{"aligned"});
     if (cfg.zmq_packing != "aligned" && cfg.zmq_packing != "packed")
         throw std::runtime_error(

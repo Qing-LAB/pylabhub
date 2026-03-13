@@ -606,18 +606,22 @@ void ConsumerScriptHost::run_loop_()
         return;
     }
 
-    static constexpr int kDefaultBlockMs = 5000;
     const auto timeout = std::chrono::milliseconds{
-        config_.timeout_ms > 0 ? config_.timeout_ms : kDefaultBlockMs};
+        pylabhub::compute_slot_acquire_timeout(
+            config_.slot_acquire_timeout_ms, config_.target_period_ms)};
     const size_t item_sz = queue_reader_->item_size();
 
+    const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
+    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+
     // Deadline tracking (applies when loop_timing != MaxRate).
-    auto next_deadline = std::chrono::steady_clock::now() +
-                         std::chrono::milliseconds{config_.target_period_ms};
+    auto next_deadline = std::chrono::steady_clock::now() + period;
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !api_.critical_error())
     {
+        const auto iter_start = std::chrono::steady_clock::now();
+
         // 1. Block until a slot arrives (or timeout).
         const void *data = queue_reader_->read_acquire(timeout);
         api_.update_last_seq(queue_reader_->last_seq());
@@ -627,8 +631,13 @@ void ConsumerScriptHost::run_loop_()
 
         if (!data)
         {
-            // Timeout — call on_consume with None if configured or messages are pending.
-            if (config_.timeout_ms > 0 || !msgs.empty())
+            // No data.  Decide whether to call on_consume(None):
+            //   - Messages pending → always call (control events are time-critical).
+            //   - MaxRate          → always call (script expects every iteration).
+            //   - FixedRate*       → call only when the deadline has been reached.
+            const bool due = !is_fixed_rate || iter_start >= next_deadline;
+
+            if (!msgs.empty() || due)
             {
                 py::gil_scoped_acquire g;
                 try
@@ -644,6 +653,20 @@ void ConsumerScriptHost::run_loop_()
                     if (config_.stop_on_script_error)
                         core_.running_threads.store(false);
                 }
+
+                // Advance deadline (same logic as normal path).
+                if (is_fixed_rate)
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_deadline)
+                    {
+                        if (config_.loop_timing ==
+                            LoopTimingPolicy::FixedRateWithCompensation)
+                            next_deadline += period;
+                        else
+                            next_deadline = now + period;
+                    }
+                }
             }
             iteration_count_.fetch_add(1, std::memory_order_relaxed);
             continue;
@@ -656,8 +679,6 @@ void ConsumerScriptHost::run_loop_()
             queue_reader_->read_release();
             break;
         }
-
-        const auto work_start = std::chrono::steady_clock::now();
 
         {
             py::gil_scoped_acquire g;
@@ -678,32 +699,33 @@ void ConsumerScriptHost::run_loop_()
 
         queue_reader_->read_release();
 
-        // Track active work time and apply target_period_ms deadline (when set).
+        iteration_count_.fetch_add(1, std::memory_order_relaxed);
+
+        // Deadline tracking: sleep to hit target_period_ms (when FixedRate).
         {
             const auto now     = std::chrono::steady_clock::now();
             const auto work_us = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(now - work_start).count());
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    now - iter_start).count());
             api_.set_last_cycle_work_us(work_us);
 
-            if (config_.loop_timing != LoopTimingPolicy::MaxRate)
+            if (is_fixed_rate)
             {
                 if (now < next_deadline)
                 {
                     std::this_thread::sleep_for(next_deadline - now);
-                    next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                    next_deadline += period;
                 }
                 else
                 {
                     if (config_.loop_timing == LoopTimingPolicy::FixedRateWithCompensation) {
-                        next_deadline += std::chrono::milliseconds{config_.target_period_ms};
+                        next_deadline += period;
                     } else { // FixedRate: reset from now — no catch-up
-                        next_deadline = now + std::chrono::milliseconds{config_.target_period_ms};
+                        next_deadline = now + period;
                     }
                 }
             }
         }
-
-        iteration_count_.fetch_add(1, std::memory_order_relaxed);
     }
 
     LOGGER_INFO("[cons] run_loop_ exiting: running_threads={} shutdown_requested={} "

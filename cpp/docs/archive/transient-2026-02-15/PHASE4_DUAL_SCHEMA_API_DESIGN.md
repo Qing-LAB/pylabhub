@@ -374,7 +374,7 @@ config.physical_page_size = DataBlockPageSize::Size_4K;
 config.ring_buffer_capacity = 16;
 config.flex_zone_size = 4096;  // Must fit FlexZoneMetadata
 config.policy = DataBlockPolicy::RingBuffer;
-config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
 config.checksum_type = ChecksumType::BLAKE2b;
 
 // Create with BOTH types

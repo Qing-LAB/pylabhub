@@ -7,6 +7,9 @@
  * accessed, synchronized, and checksummed. These are pure enum definitions
  * with no dependencies beyond <cstdint>.
  *
+ * Also provides parse_consumer_sync_policy() — a shared inline parser used by
+ * ProducerConfig, ProcessorConfig, and ConsumerConfig to avoid duplication.
+ *
  * Included automatically by data_block_config.hpp and data_block.hpp.
  * Use data_block_policy.hpp directly only when policy types are needed
  * without the full DataBlockConfig or DataBlock implementation.
@@ -15,6 +18,8 @@
  *     docs/HEP/HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md.
  */
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace pylabhub::hub
 {
@@ -36,12 +41,12 @@ namespace pylabhub::hub
  * |--------------|------------|----------------------------------------------------|
  * | Single       | exactly 1  | Writer blocks until the reader finishes; simplest  |
  * |              |            | synchronisation contract. Matches ConsumerSyncPolicy|
- * |              |            | Single_reader.                                     |
+ * |              |            | Sequential.                                     |
  * | DoubleBuffer | exactly 2  | Front/back swap; writer alternates freely; reader  |
  * |              |            | always receives the latest committed slot.         |
  * | RingBuffer   | N ≥ 3      | FIFO ring; overwrite policy determined by          |
  * |              |            | ConsumerSyncPolicy (Latest_only = lossy streaming; |
- * |              |            | Single_reader / Sync_reader = ordered, blocking).  |
+ * |              |            | Sequential / Sequential_sync = ordered, blocking).  |
  * | Unset        | —          | Sentinel — must never be stored in the SHM header. |
  *
  * **Design doc:** HEP-CORE-0002-DataHub-FINAL.md §3.1
@@ -72,9 +77,9 @@ enum class DataBlockPolicy : uint32_t
  * |---------------|-----------|------------|-------------------------------|
  * | Latest_only   | Any       | Skip-ahead | Never — writer overwrites     |
  * |               |           | (newest)   | freely; reader may miss slots |
- * | Single_reader | Exactly 1 | Sequential | Ring is full: write_index −   |
+ * | Sequential      | Exactly 1 | Sequential | Ring is full: write_index −   |
  * |               |           |            | read_index ≥ capacity         |
- * | Sync_reader   | Multiple  | Sequential | Slowest consumer has not yet  |
+ * | Sequential_sync | Multiple  | Sequential | Slowest consumer has not yet  |
  * |               |           | (per-cons) | consumed the oldest slot      |
  * | Unset         | —         | —          | Sentinel: must not be stored  |
  *
@@ -83,8 +88,8 @@ enum class DataBlockPolicy : uint32_t
 enum class ConsumerSyncPolicy : uint32_t
 {
     Latest_only   = 0, ///< Writer overwrites freely; reader jumps to newest committed slot
-    Single_reader = 1, ///< Ordered, exactly one consumer; writer blocks when ring is full
-    Sync_reader   = 2, ///< Ordered, multiple consumers; writer blocks on the slowest reader
+    Sequential        = 1, ///< Ordered, single consumer; writer blocks when ring is full
+    Sequential_sync   = 2, ///< Ordered, multiple consumers; writer blocks on the slowest reader
     Unset         = 255 ///< Sentinel: must not be stored in header
 };
 
@@ -220,3 +225,33 @@ enum class LoopPolicy : uint8_t
 };
 
 } // namespace pylabhub::hub
+
+// ============================================================================
+// Shared config parsers — used by ProducerConfig, ProcessorConfig, ConsumerConfig
+// ============================================================================
+
+namespace pylabhub
+{
+
+/**
+ * @brief Parse a JSON string value into a ConsumerSyncPolicy enum.
+ *
+ * Shared by all three role config parsers (producer, processor, consumer) to
+ * avoid duplicating the same string → enum logic in each .cpp file.
+ *
+ * @param s        JSON string value (e.g. "sequential", "latest_only").
+ * @param context  Caller context for error message (e.g. "Producer config").
+ * @return Parsed ConsumerSyncPolicy.
+ * @throws std::runtime_error on unknown value.
+ */
+inline hub::ConsumerSyncPolicy parse_consumer_sync_policy(
+    const std::string &s, const char *context = "config")
+{
+    if (s == "latest_only") return hub::ConsumerSyncPolicy::Latest_only;
+    if (s == "sequential")  return hub::ConsumerSyncPolicy::Sequential;
+    throw std::runtime_error(
+        std::string(context) + ": invalid 'reader_sync_policy' = '" + s +
+        "' (expected 'latest_only' or 'sequential')");
+}
+
+} // namespace pylabhub

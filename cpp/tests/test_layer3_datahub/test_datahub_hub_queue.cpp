@@ -150,3 +150,24 @@ TEST_F(DatahubShmQueueTest, ShmQueueVerifyChecksumMismatch)
     auto proc = SpawnWorker("hub_queue.shm_queue_verify_checksum_mismatch", {});
     ExpectWorkerOk(proc, {}, {"slot checksum mismatch"});
 }
+
+TEST_F(DatahubShmQueueTest, ShmQueueIsRunning)
+{
+    // is_running() returns true after construction and false on the moved-from instance.
+    auto proc = SpawnWorker("hub_queue.shm_queue_is_running", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, DataBlockProducerRemapStubsThrow)
+{
+    // request_structure_remap() and commit_structure_remap() always throw std::runtime_error.
+    auto proc = SpawnWorker("hub_queue.datablock_producer_remap_stubs_throw", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, DataBlockConsumerRemapStubsThrow)
+{
+    // release_for_remap() and reattach_after_remap() always throw std::runtime_error.
+    auto proc = SpawnWorker("hub_queue.datablock_consumer_remap_stubs_throw", {});
+    ExpectWorkerOk(proc);
+}

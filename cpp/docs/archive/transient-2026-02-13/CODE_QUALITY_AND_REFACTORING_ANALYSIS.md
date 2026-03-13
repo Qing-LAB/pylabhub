@@ -145,7 +145,7 @@ No redundant duplicate layer was found; the two “typed” APIs (SlotRWAccess v
 | **validate_read_impl / generation** | Note that generation wrap-around invalidates in-flight reads; this is intentional. |
 | **release_write_handle (checksum enforced)** | Note that on checksum failure the slot is already committed; document behavior (e.g. “slot visible but checksum not stored”). |
 | **DataBlock constructor (creator path)** | Already has “single point” in IMPLEMENTATION_GUIDANCE; add a one-line comment in code: “Single point of config validation and memory creation; do not add alternate creation paths without updating this.” |
-| **Sync_reader consumer_next_read_slot_ptr** | Brief comment that this is an offset into `reserved_header` and must match CONSUMER_READ_POSITIONS_OFFSET. |
+| **Sequential_sync consumer_next_read_slot_ptr** | Brief comment that this is an offset into `reserved_header` and must match CONSUMER_READ_POSITIONS_OFFSET. |
 
 ### 5.2 Things that need attention
 
@@ -250,7 +250,7 @@ See **CODE_REVIEW_GUIDANCE.md** §2.6 and §2.7 for review checklist items.
 | P2 | Refactor | ✅ Slot-buffer-pointer: `slot_buffer_ptr`; used in all handle construction paths. |
 | P2 | Refactor | ✅ Validation helper: `get_header_and_slot_count`; used in acquire_write_slot, acquire_consume_slot (both), try_next. |
 | P2 | Docs | ✅ Doxygen: DataBlockPageSize (@enum), to_bytes (@brief/@return), SharedMemoryHeader (ABI note), with_write_transaction/with_read_transaction (@param/@return/@throws). SlotRWState already had @struct. |
-| P2 | Comments | ✅ High-risk comments: TOCTTOU (reader path), zombie reclaim, single-point DataBlock ctor, Sync_reader consumer_next_read_slot_ptr, validate_read_impl generation, release_write_handle checksum. |
+| P2 | Comments | ✅ High-risk comments: TOCTTOU (reader path), zombie reclaim, single-point DataBlock ctor, Sequential_sync consumer_next_read_slot_ptr, validate_read_impl generation, release_write_handle checksum. |
 | P3 | Cleanup | ✅ TODOs tracked in DATAHUB_TODO and in-code "Not yet implemented" comments. |
 | P3 | Docs | Optional: “Lifetime” and “Thread safety” subsections in file or IMPLEMENTATION_GUIDANCE. |
 

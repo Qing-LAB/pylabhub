@@ -189,7 +189,7 @@ TEST_CASE("ConfigValidation_FlexZoneSize_NotMultipleOf4K_Throws") {
     config.physical_page_size = DataBlockPageSize::Size4K;
     config.ring_buffer_capacity = 10;
     config.policy = DataBlockPolicy::RingBuffer;
-    config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
     
     // Invalid: not multiple of 4096
     config.flex_zone_size = 4097;

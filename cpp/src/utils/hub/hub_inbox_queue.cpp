@@ -4,7 +4,7 @@
  * @brief InboxQueue (ROUTER receiver) and InboxClient (DEALER sender) implementations.
  *
  * Wire format: msgpack fixarray[4] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N)]
- * Same wire format as ZmqQueue (deduplication deferred per design §7.6).
+ * Same wire format as ZmqQueue; shared helpers in zmq_wire_helpers.hpp.
  *
  * ZMQ framing (ROUTER-DEALER):
  *   DEALER → ROUTER (wire): ["", payload]   ZMQ prepends identity on ROUTER side
@@ -14,8 +14,8 @@
  */
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
+#include "zmq_wire_helpers.hpp"
 
-#include <msgpack.hpp>
 #include <zmq.h>
 
 #include <atomic>
@@ -32,157 +32,6 @@ namespace pylabhub::hub
 {
 
 // ============================================================================
-// Constants
-// ============================================================================
-
-/// Frame magic: 'P','L','H','Q' — identical to kFrameMagic in hub_zmq_queue.cpp.
-/// Both must remain equal (same wire format). Deduplication deferred per design §7.6.
-static constexpr uint32_t kInboxMagic = 0x51484C50u;
-
-// ============================================================================
-// Type-string helpers (mirrors ZmqQueue; deduplication deferred)
-// ============================================================================
-
-static bool is_valid_inbox_type_str(const std::string& t) noexcept
-{
-    return t == "bool"    || t == "int8"   || t == "uint8"  ||
-           t == "int16"   || t == "uint16" || t == "int32"  ||
-           t == "uint32"  || t == "int64"  || t == "uint64" ||
-           t == "float32" || t == "float64"||
-           t == "string"  || t == "bytes";
-}
-
-static size_t inbox_field_elem_size(const std::string& t) noexcept
-{
-    if (t == "bool" || t == "int8"  || t == "uint8")             return 1;
-    if (t == "int16" || t == "uint16")                            return 2;
-    if (t == "int32" || t == "uint32" || t == "float32")         return 4;
-    if (t == "int64" || t == "uint64" || t == "float64")         return 8;
-    return 1; // string/bytes: caller uses length directly
-}
-
-static size_t inbox_field_align(const std::string& t) noexcept
-{
-    if (t == "string" || t == "bytes") return 1;
-    return inbox_field_elem_size(t);
-}
-
-// ============================================================================
-// Field layout helpers (shared between InboxQueue and InboxClient)
-// ============================================================================
-
-struct InboxFieldDesc
-{
-    size_t      offset;
-    size_t      byte_size;
-    std::string type_str;
-    bool        is_bin;
-};
-
-/// Compute per-field offsets using ctypes.LittleEndianStructure alignment rules.
-/// Returns {field_layouts, total_struct_size}.
-static std::pair<std::vector<InboxFieldDesc>, size_t>
-compute_inbox_field_layout(const std::vector<ZmqSchemaField>& fields,
-                           const std::string& packing)
-{
-    const bool packed = (packing == "packed");
-    std::vector<InboxFieldDesc> result;
-    size_t offset    = 0;
-    size_t max_align = 1;
-
-    for (const auto& f : fields)
-    {
-        const bool is_blob = (f.type_str == "string" || f.type_str == "bytes");
-        const bool is_bin  = is_blob || (f.count > 1);
-
-        size_t esz   = is_blob ? static_cast<size_t>(f.length)
-                               : inbox_field_elem_size(f.type_str);
-        size_t align = (packed || is_blob) ? size_t{1} : inbox_field_align(f.type_str);
-        size_t total = is_blob ? static_cast<size_t>(f.length)
-                               : esz * static_cast<size_t>(f.count);
-
-        if (align > 1)
-            offset = (offset + align - 1) & ~(align - 1);
-        max_align = std::max(max_align, align);
-
-        result.push_back({offset, total, f.type_str, is_bin});
-        offset += total;
-    }
-
-    // Pad struct total to max field alignment (aligned packing only).
-    if (!packed && max_align > 1)
-        offset = (offset + max_align - 1) & ~(max_align - 1);
-
-    return {result, offset};
-}
-
-/// Compute recv frame buffer size for schema mode.
-static size_t inbox_max_frame_size(const std::vector<InboxFieldDesc>& defs)
-{
-    size_t sz = 25 + 3 + 4; // outer envelope + inner array header + slack
-    for (const auto& d : defs)
-        sz += d.is_bin ? (5 + d.byte_size) : 9;
-    return sz;
-}
-
-// ============================================================================
-// Pack / unpack field helpers (mirrors ZmqQueue)
-// ============================================================================
-
-static void inbox_pack_field(msgpack::packer<msgpack::sbuffer>& pk,
-                             const InboxFieldDesc& fd, const char* src)
-{
-    const char* p = src + fd.offset;
-    if (fd.is_bin)
-    {
-        pk.pack_bin(static_cast<uint32_t>(fd.byte_size));
-        pk.pack_bin_body(p, fd.byte_size);
-        return;
-    }
-    if      (fd.type_str == "bool")    pk.pack(*reinterpret_cast<const bool*>(p));
-    else if (fd.type_str == "int8")    pk.pack(*reinterpret_cast<const int8_t*>(p));
-    else if (fd.type_str == "uint8")   pk.pack(*reinterpret_cast<const uint8_t*>(p));
-    else if (fd.type_str == "int16")   pk.pack(*reinterpret_cast<const int16_t*>(p));
-    else if (fd.type_str == "uint16")  pk.pack(*reinterpret_cast<const uint16_t*>(p));
-    else if (fd.type_str == "int32")   pk.pack(*reinterpret_cast<const int32_t*>(p));
-    else if (fd.type_str == "uint32")  pk.pack(*reinterpret_cast<const uint32_t*>(p));
-    else if (fd.type_str == "int64")   pk.pack(*reinterpret_cast<const int64_t*>(p));
-    else if (fd.type_str == "uint64")  pk.pack(*reinterpret_cast<const uint64_t*>(p));
-    else if (fd.type_str == "float32") pk.pack(*reinterpret_cast<const float*>(p));
-    else if (fd.type_str == "float64") pk.pack(*reinterpret_cast<const double*>(p));
-}
-
-static bool inbox_unpack_field(const msgpack::object& obj,
-                               const InboxFieldDesc& fd, char* dst) noexcept
-{
-    char* p = dst + fd.offset;
-    try
-    {
-        if (fd.is_bin)
-        {
-            if (obj.type != msgpack::type::BIN || obj.via.bin.size != fd.byte_size)
-                return false;
-            std::memcpy(p, obj.via.bin.ptr, fd.byte_size);
-            return true;
-        }
-        if      (fd.type_str == "bool")    { bool     v; obj.convert(v); *reinterpret_cast<bool*>(p)     = v; }
-        else if (fd.type_str == "int8")    { int8_t   v; obj.convert(v); *reinterpret_cast<int8_t*>(p)   = v; }
-        else if (fd.type_str == "uint8")   { uint8_t  v; obj.convert(v); *reinterpret_cast<uint8_t*>(p)  = v; }
-        else if (fd.type_str == "int16")   { int16_t  v; obj.convert(v); *reinterpret_cast<int16_t*>(p)  = v; }
-        else if (fd.type_str == "uint16")  { uint16_t v; obj.convert(v); *reinterpret_cast<uint16_t*>(p) = v; }
-        else if (fd.type_str == "int32")   { int32_t  v; obj.convert(v); *reinterpret_cast<int32_t*>(p)  = v; }
-        else if (fd.type_str == "uint32")  { uint32_t v; obj.convert(v); *reinterpret_cast<uint32_t*>(p) = v; }
-        else if (fd.type_str == "int64")   { int64_t  v; obj.convert(v); *reinterpret_cast<int64_t*>(p)  = v; }
-        else if (fd.type_str == "uint64")  { uint64_t v; obj.convert(v); *reinterpret_cast<uint64_t*>(p) = v; }
-        else if (fd.type_str == "float32") { float    v; obj.convert(v); *reinterpret_cast<float*>(p)    = v; }
-        else if (fd.type_str == "float64") { double   v; obj.convert(v); *reinterpret_cast<double*>(p)   = v; }
-        else return false;
-    }
-    catch (...) { return false; }
-    return true;
-}
-
-// ============================================================================
 // InboxQueueImpl
 // ============================================================================
 
@@ -196,7 +45,7 @@ struct InboxQueueImpl
     int         last_rcvtimeo{-2}; ///< Cached ZMQ_RCVTIMEO. -2 = not yet set.
 
     std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 (unused/zero for inbox)
-    std::vector<InboxFieldDesc> schema_defs_;
+    std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
     void* zmq_ctx{nullptr};
     void* socket{nullptr};
@@ -233,7 +82,7 @@ struct InboxClientImpl
     std::string sender_uid;
     size_t      item_sz{0};
 
-    std::vector<InboxFieldDesc> schema_defs_;
+    std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
     void* zmq_ctx{nullptr};
     void* socket{nullptr};
@@ -263,7 +112,7 @@ static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
     }
     for (const auto& f : schema)
     {
-        if (!is_valid_inbox_type_str(f.type_str))
+        if (!wire_detail::is_valid_type_str(f.type_str))
         {
             LOGGER_ERROR("[hub::InboxQueue] '{}': invalid type_str '{}'", endpoint, f.type_str);
             return false;
@@ -304,14 +153,14 @@ InboxQueue::bind_at(const std::string& endpoint, std::vector<ZmqSchemaField> sch
     if (!validate_inbox_schema(schema, endpoint)) return nullptr;
     if (!validate_inbox_packing(packing, endpoint)) return nullptr;
 
-    auto [layouts, item_sz] = compute_inbox_field_layout(schema, packing);
+    auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
     auto impl            = std::make_unique<InboxQueueImpl>();
     impl->endpoint       = endpoint;
     impl->item_sz        = item_sz;
-    impl->max_frame_sz   = inbox_max_frame_size(layouts);
+    impl->max_frame_sz   = wire_detail::max_frame_size(layouts);
     impl->rcvhwm         = rcvhwm;
-    impl->schema_defs_    = std::move(layouts);
+    impl->schema_defs_   = std::move(layouts);
     impl->decode_buf_.resize(item_sz, std::byte{0});
     impl->frame_recv_buf_.resize(impl->max_frame_sz, '\0');
 
@@ -510,7 +359,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         // [0] magic
         uint32_t magic = 0;
         elems[0].convert(magic);
-        if (magic != kInboxMagic) { ++pImpl->recv_frame_error_count_; return nullptr; }
+        if (magic != wire_detail::kFrameMagic) { ++pImpl->recv_frame_error_count_; return nullptr; }
 
         // [1] schema_tag (bin, 8 bytes) — not validated for inbox (accept any tag)
         if (elems[1].type != msgpack::type::BIN || elems[1].via.bin.size != 8)
@@ -546,7 +395,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         char* dst = reinterpret_cast<char*>(pImpl->decode_buf_.data());
         for (size_t i = 0; i < pImpl->schema_defs_.size(); ++i)
         {
-            if (!inbox_unpack_field(arr.via.array.ptr[i], pImpl->schema_defs_[i], dst))
+            if (!wire_detail::unpack_field(arr.via.array.ptr[i], pImpl->schema_defs_[i], dst))
             {
                 ++pImpl->recv_frame_error_count_;
                 return nullptr;
@@ -617,7 +466,7 @@ InboxClient::connect_to(const std::string& endpoint, const std::string& sender_u
     if (!validate_inbox_schema(schema, endpoint)) return nullptr;
     if (!validate_inbox_packing(packing, endpoint)) return nullptr;
 
-    auto [layouts, item_sz] = compute_inbox_field_layout(schema, packing);
+    auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
     auto impl            = std::make_unique<InboxClientImpl>();
     impl->endpoint       = endpoint;
@@ -745,7 +594,7 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     pImpl->sbuf_.clear();
     msgpack::packer<msgpack::sbuffer> pk(pImpl->sbuf_);
     pk.pack_array(4);
-    pk.pack(kInboxMagic);
+    pk.pack(wire_detail::kFrameMagic);
     // schema_tag: 8 zero bytes (inbox doesn't use schema tag guard)
     pk.pack_bin(8);
     pk.pack_bin_body(reinterpret_cast<const char*>(pImpl->schema_tag_.data()), 8);
@@ -755,7 +604,7 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     pk.pack_array(static_cast<uint32_t>(pImpl->schema_defs_.size()));
     const char* src = reinterpret_cast<const char*>(pImpl->write_buf_.data());
     for (const auto& fd : pImpl->schema_defs_)
-        inbox_pack_field(pk, fd, src);
+        wire_detail::pack_field(pk, fd, src);
 
     // DEALER sends: [empty_delimiter, payload]
     // ROUTER receives: [identity, empty_delimiter, payload]

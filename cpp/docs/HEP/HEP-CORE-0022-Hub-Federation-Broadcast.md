@@ -587,4 +587,4 @@ Hub B crashes (no BYE):
 | `HubScriptAPI::notify_hub()` + hub event queue | `src/hub_python/hub_script_api.hpp/cpp` |
 | Wiring in hubshell (broker_cfg ← hub_cfg.peers) | `src/hubshell.cpp` |
 | L3 federation protocol tests | `tests/test_layer3_datahub/test_datahub_hub_federation.cpp` |
-| Demo: dual-hub with broadcast relay | `share/demo-dual-hub/` |
+| Demo: dual-hub with broadcast relay | `share/py-demo-dual-processor-bridge/` |

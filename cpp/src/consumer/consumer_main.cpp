@@ -16,7 +16,7 @@
  *       "consumer": { "uid": "CONS-LOGGER-12345678", "name": "Logger" },
  *       "hub_dir": "/var/pylabhub/my_hub",
  *       "channel":    "lab.sensors.temperature",
- *       "timeout_ms": 5000,
+ *       "slot_acquire_timeout_ms": -1,
  *       "shm": { "enabled": true, "secret": 0 },
  *       "slot_schema": { "fields": [{"name": "value", "type": "float32"}] },
  *       "script": { "path": "." }
@@ -116,7 +116,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     j["consumer"]["auth"]["keyfile"] = "";
 
     j["channel"]    = "lab.my.channel";
-    j["timeout_ms"] = 5000;
+    j["slot_acquire_timeout_ms"] = -1;
 
     j["shm"]["enabled"] = true;
     j["shm"]["secret"]  = 0;
@@ -170,7 +170,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
         "\n"
         "def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:\n"
         "    \"\"\"\n"
-        "    Called on each incoming slot (or timeout if timeout_ms > 0).\n"
+        "    Called on each incoming slot (or timeout if slot_acquire_timeout_ms > 0).\n"
         "\n"
         "    in_slot:  ctypes/numpy read-only copy of the input SHM slot,\n"
         "              or None on timeout.\n"
