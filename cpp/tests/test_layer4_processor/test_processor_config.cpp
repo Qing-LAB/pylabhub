@@ -62,7 +62,7 @@ TEST_F(ProcessorConfigTest, FromJsonFile_Basic)
         "in_channel":  "lab.input.channel",
         "out_channel": "lab.output.channel",
         "overflow_policy": "drop",
-        "timeout_ms":  3000,
+        "slot_acquire_timeout_ms":  3000,
         "heartbeat_interval_ms": 500,
         "shm": {
             "in":  { "enabled": true,  "secret": 11111 },
@@ -80,7 +80,7 @@ TEST_F(ProcessorConfigTest, FromJsonFile_Basic)
     EXPECT_EQ(cfg.in_channel,       "lab.input.channel");
     EXPECT_EQ(cfg.out_channel,      "lab.output.channel");
     EXPECT_EQ(cfg.overflow_policy,  pylabhub::processor::OverflowPolicy::Drop);
-    EXPECT_EQ(cfg.timeout_ms,       3000);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms, 3000);
     EXPECT_EQ(cfg.heartbeat_interval_ms, 500);
     EXPECT_TRUE(cfg.in_shm_enabled);
     EXPECT_EQ(cfg.in_shm_secret,    uint64_t{11111});
@@ -268,7 +268,7 @@ TEST_F(ProcessorConfigTest, OverflowPolicy_DefaultBlock)
     const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
 
     EXPECT_EQ(cfg.overflow_policy, pylabhub::processor::OverflowPolicy::Block);
-    EXPECT_EQ(cfg.timeout_ms, -1);               // default
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms, -1);  // default
     EXPECT_FALSE(cfg.stop_on_script_error);       // default false
     EXPECT_TRUE(cfg.update_checksum);             // default true
 
@@ -672,7 +672,7 @@ TEST_F(ProcessorConfigTest, Validation_BadTimeoutThrows)
         "processor": { "uid": "PROC-VALTMO-00000001", "name": "ValTmo" },
         "in_channel":  "lab.val.in",
         "out_channel": "lab.val.out",
-        "timeout_ms":  -5
+        "slot_acquire_timeout_ms":  -5
     })");
     EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
                  std::runtime_error);
@@ -977,6 +977,67 @@ TEST_F(ProcessorConfigTest, ZmqPacking_InvalidOutThrows)
     fs::remove_all(tmp);
 }
 
+// ── zmq_out_overflow_policy tests ────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_DefaultsEmpty)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":   { "uid": "PROC-ZMQOVDEF-00000001", "name": "ZmqOvDef" },
+        "in_channel":  "lab.zmqov.in",
+        "out_channel": "lab.zmqov.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.zmq_out_overflow_policy.empty()); // absent = inherit from overflow_policy
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_ParsesDrop)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_drop");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVDRP-00000001", "name": "ZmqOvDrop" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "drop"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_out_overflow_policy, "drop");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_ParsesBlock)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_block");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVBLK-00000001", "name": "ZmqOvBlk" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "block"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_out_overflow_policy, "block");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_bad");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVBAD-00000001", "name": "ZmqOvBad" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "maybe"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
 // ── Inbox facility tests ──────────────────────────────────────────────────────
 
 TEST_F(ProcessorConfigTest, Inbox_DefaultsToDisabled)
@@ -1199,5 +1260,93 @@ TEST_F(ProcessorConfigTest, Startup_ZeroTimeout_Throws)
     })");
     EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
                  std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── reader_sync_policy tests ─────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPDEF-00000001", "name": "RspDef" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8 }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_ExplicitSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_seq");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPSEQ-00000001", "name": "RspSeq" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "sequential" }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_LatestOnly)
+{
+    const auto tmp      = unique_temp_dir("rsp_lo");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPLO-00000001", "name": "RspLo" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "latest_only" }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Latest_only);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("rsp_inv");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPINV-00000001", "name": "RspInv" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "fifo" }
+        }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_NoShmBlock_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_noshm");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPNOSHM-00000001", "name": "RspNoShm" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
     fs::remove_all(tmp);
 }

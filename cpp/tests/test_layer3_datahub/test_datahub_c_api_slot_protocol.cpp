@@ -49,7 +49,7 @@ TEST_F(DatahubCApiSlotProtocolTest, LatestOnlyReadsLatest)
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-// ─── ConsumerSyncPolicy: Single_reader ───────────────────────────────────────
+// ─── ConsumerSyncPolicy: Sequential ───────────────────────────────────────
 
 TEST_F(DatahubCApiSlotProtocolTest, SingleReaderReadsSequentially)
 {
@@ -116,14 +116,14 @@ TEST_F(DatahubSlotDrainingTest, NoReaderRacesOnCleanWraparound)
 }
 
 // Ring-full check (before fetch_add) structurally prevents DRAINING for ordered policies.
-// Single_reader: writer cannot advance past the slowest reader — ring-full fires first.
+// Sequential: writer cannot advance past the slowest reader — ring-full fires first.
 TEST_F(DatahubSlotDrainingTest, SingleReaderRingFullBlocksNotDraining)
 {
     auto proc = SpawnWorker("c_api_draining.single_reader_ring_full_blocks_not_draining", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
 
-// Sync_reader: read_index = min(all consumer positions) — same ring-full barrier applies.
+// Sequential_sync: read_index = min(all consumer positions) — same ring-full barrier applies.
 TEST_F(DatahubSlotDrainingTest, SyncReaderRingFullBlocksNotDraining)
 {
     auto proc = SpawnWorker("c_api_draining.sync_reader_ring_full_blocks_not_draining", {});

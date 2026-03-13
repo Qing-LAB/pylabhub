@@ -206,16 +206,16 @@ sequenceDiagram
 
     Note over TX,SHM: At construction
     TX->>SHM: register_heartbeat() → consumer_heartbeats[i]
-    Note over TX,SHM: [Sync_reader] set per-consumer read position = commit_index
+    Note over TX,SHM: [Sequential_sync] set per-consumer read position = commit_index
 
     loop SlotIterator (for each slot)
         TX->>SHM: update_heartbeat() [before each acquire]
         TX->>Slot: acquire_consume_slot(timeout_ms)
         alt Latest_only
             Slot->>SHM: read commit_index % capacity
-        else Single_reader
+        else Sequential
             Slot->>SHM: read read_index (shared tail)
-        else Sync_reader
+        else Sequential_sync
             Slot->>SHM: read per-consumer next position
         end
         Slot->>SHM: reader_count++ (spin-acquire)
@@ -232,9 +232,9 @@ sequenceDiagram
         Slot->>SHM: reader_count--
         alt Latest_only
             Note over Slot,SHM: no index advance
-        else Single_reader
+        else Sequential
             Slot->>SHM: read_index = slot_id + 1
-        else Sync_reader
+        else Sequential_sync
             Slot->>SHM: per-consumer position = slot_id + 1
             Slot->>SHM: read_index = min(all positions)
         end
@@ -254,15 +254,15 @@ sequenceDiagram
      → auto-updated by SlotIterator::operator++() on every iteration
      → auto-unregistered in DataBlockConsumerImpl destructor
 
-2. [Sync_reader only] Read position initialized at join time (join-at-latest).
+2. [Sequential_sync only] Read position initialized at join time (join-at-latest).
      → consumer_next_read_slot_ptr(header, heartbeat_slot) set to current commit_index
      → done once at construction, not repeated per acquire
 
 3. acquire_consume_slot(timeout_ms)
      → determine next slot via get_next_slot_to_read()
      → Latest_only:    latest committed slot (commit_index % capacity)
-     → Single_reader:  read_index (shared tail)
-     → Sync_reader:    consumer_next_read_slot_ptr(header, heartbeat_slot) (per-consumer)
+     → Sequential:  read_index (shared tail)
+     → Sequential_sync:    consumer_next_read_slot_ptr(header, heartbeat_slot) (per-consumer)
      → spin-acquire read_lock (increment reader_count)
      → capture write_generation for TOCTTOU validation
      → returns SlotConsumeHandle (or nullptr on timeout/no-slot)
@@ -276,8 +276,8 @@ sequenceDiagram
      → [ChecksumPolicy::Enforced] verify_checksum_slot() + verify_checksum_flexible_zone()
      → decrement reader_count (release read_lock)
      → Latest_only:    no index advance
-     → Single_reader:  read_index = slot_id + 1 (shared advance)
-     → Sync_reader:    consumer_next_read_slot_ptr = slot_id + 1 (per-consumer advance)
+     → Sequential:  read_index = slot_id + 1 (shared advance)
+     → Sequential_sync:    consumer_next_read_slot_ptr = slot_id + 1 (per-consumer advance)
                        read_index = min(all registered per-consumer positions)
 ```
 
@@ -299,7 +299,7 @@ flowchart TD
     subgraph Consumer["Consumer Heartbeat Pool (max 8)"]
         CH["consumer_heartbeats[MAX=8]\n{consumer_id=PID, last_heartbeat_ns}"]
         CU["Updated on:\n• SlotIterator::operator++()\n• ctx.update_heartbeat()"]
-        SR["Sync_reader only:\nheartbeat slot index\n= per-consumer read-position cursor"]
+        SR["Sequential_sync only:\nheartbeat slot index\n= per-consumer read-position cursor"]
         CH --- CU
         CH -.- SR
     end
@@ -325,8 +325,8 @@ flowchart TD
 
 - Stored in `consumer_heartbeats[MAX_CONSUMER_HEARTBEATS]` as `{consumer_id (PID), last_heartbeat_ns}`.
 - Pool of `MAX_CONSUMER_HEARTBEATS = 8` slots (V1.0 ABI limit).
-- **Enforced for all consumer sync policies** (Latest_only, Single_reader, Sync_reader).
-  All consumers are registered for liveness; Sync_reader additionally uses the slot index
+- **Enforced for all consumer sync policies** (Latest_only, Sequential, Sequential_sync).
+  All consumers are registered for liveness; Sequential_sync additionally uses the slot index
   as the read-position cursor index in `reserved_header`.
 - Updated on: every `SlotIterator::operator++()` call, explicit `ctx.update_heartbeat()`.
 - Auto-registered at consumer construction (`find_datablock_consumer_impl`).
@@ -368,8 +368,8 @@ graph TD
 
     subgraph Sync["ConsumerSyncPolicy"]
         SL["Latest_only\n• writer never blocked\n• old slots may be overwritten\n• DRAINING reachable"]
-        SS["Single_reader\n• one consumer, FIFO\n• ring-full blocks writer\n• DRAINING unreachable"]
-        SR["Sync_reader\n• N consumers, lockstep\n• ring-full blocks writer\n• DRAINING unreachable\n• heartbeat = read cursor"]
+        SS["Sequential\n• one consumer, FIFO\n• ring-full blocks writer\n• DRAINING unreachable"]
+        SR["Sequential_sync\n• N consumers, lockstep\n• ring-full blocks writer\n• DRAINING unreachable\n• heartbeat = read cursor"]
     end
 
     CE -. "applies to both slot\nand flexzone" .-> SL
@@ -383,11 +383,11 @@ graph TD
 | `ChecksumPolicy::Enforced` | Slot + flexzone checksum updated on `release_write_slot()` | Slot + flexzone checksum verified on `release_consume_slot()` | Yes — fully transparent |
 | `ChecksumPolicy::Manual` | User calls `slot.update_checksum_slot()` and `producer.update_checksum_flexible_zone()` | User calls `slot.verify_checksum_slot()` and `consumer.verify_checksum_flexible_zone()` | No — user responsible |
 | `ConsumerSyncPolicy::Latest_only` | Never blocked on readers; old slots may be overwritten | Always reads latest committed slot | No heartbeat needed for read-position tracking; heartbeat still registered for liveness |
-| `ConsumerSyncPolicy::Single_reader` | Blocked when ring full and consumer has not advanced | Reads sequentially; shared `read_index` tracked | Same as above |
-| `ConsumerSyncPolicy::Sync_reader` | Blocked when slowest consumer is behind | Per-consumer read position tracked via heartbeat slot index | Heartbeat slot doubles as read-position cursor; always auto-registered at construction |
+| `ConsumerSyncPolicy::Sequential` | Blocked when ring full and consumer has not advanced | Reads sequentially; shared `read_index` tracked | Same as above |
+| `ConsumerSyncPolicy::Sequential_sync` | Blocked when slowest consumer is behind | Per-consumer read position tracked via heartbeat slot index | Heartbeat slot doubles as read-position cursor; always auto-registered at construction |
 | `DataBlockPolicy::RingBuffer` | N-slot circular; wraps | Reads in policy-defined order | Managed by C API |
 
-**Note — DRAINING reachability by policy.** `SlotState::DRAINING` is only ever entered by `Latest_only` producers. For `Single_reader` and `Sync_reader`, the ring-full check (`write_index - read_index < capacity`, evaluated *before* `write_index.fetch_add`) creates a structural barrier that makes DRAINING unreachable. See § 11 for the formal analysis.
+**Note — DRAINING reachability by policy.** `SlotState::DRAINING` is only ever entered by `Latest_only` producers. For `Sequential` and `Sequential_sync`, the ring-full check (`write_index - read_index < capacity`, evaluated *before* `write_index.fetch_add`) creates a structural barrier that makes DRAINING unreachable. See § 11 for the formal analysis.
 
 ---
 
@@ -580,7 +580,7 @@ a bug in the protocol implementation, not user code.
 - `consumer_heartbeats[i].consumer_id` is 0 (unregistered) or a valid PID.
 - `active_consumer_count` equals the number of entries in `consumer_heartbeats[]` with `consumer_id != 0`.
 - The stored flexzone checksum reflects the last `update_checksum_flexible_zone()` call, not necessarily the current flexzone content (checksum is a snapshot).
-- For `Single_reader` and `Sync_reader`: `write_index - read_index < capacity` at the moment of the ring-full check (before `fetch_add`) guarantees the writer never reaches a slot held by the slowest active reader. DRAINING is therefore structurally unreachable for those policies.
+- For `Sequential` and `Sequential_sync`: `write_index - read_index < capacity` at the moment of the ring-full check (before `fetch_add`) guarantees the writer never reaches a slot held by the slowest active reader. DRAINING is therefore structurally unreachable for those policies.
 
 ---
 
@@ -589,7 +589,7 @@ a bug in the protocol implementation, not user code.
 ### Claim
 
 `SlotState::DRAINING` is only reachable for `ConsumerSyncPolicy::Latest_only`.
-For `Single_reader` and `Sync_reader` it is structurally unreachable; the ring-full
+For `Sequential` and `Sequential_sync` it is structurally unreachable; the ring-full
 check creates a hard arithmetic barrier before any drain attempt can occur.
 
 ```mermaid
@@ -597,7 +597,7 @@ check creates a hard arithmetic barrier before any drain attempt can occur.
 flowchart TD
     W["Writer: acquire_write_slot()\nslot K at wrap-around"]
 
-    subgraph QueuePolicies["Single_reader / Sync_reader"]
+    subgraph QueuePolicies["Sequential / Sequential_sync"]
         RC["Ring-full check\nwrite_index − read_index < capacity?"]
         OK["YES → write_index.fetch_add\n→ WRITING\n(DRAINING unreachable)"]
         SPIN["NO → spin / TIMEOUT\nwrite_index NOT incremented\n(DRAINING unreachable)"]
@@ -627,7 +627,7 @@ flowchart TD
    - `read_index` has NOT yet advanced past K — it advances only inside
      `release_consume_slot()`, not at acquire time.
    - Therefore: `read_index ≤ K`.
-   - For `Sync_reader`, `read_index = min(all registered per-consumer positions)`; still `≤ K`.
+   - For `Sequential_sync`, `read_index = min(all registered per-consumer positions)`; still `≤ K`.
 
 2. Writer **W** tries to overwrite the same physical slot (ring wrap).
    - Physical slot `K % capacity` is reused when `write_index = K + capacity`.
@@ -672,8 +672,8 @@ actively reading the slot being overwritten — the writer pauses until `reader_
 | Policy | Expected on reader stall |
 |---|---|
 | `Latest_only` | `writer_reader_timeout_count > 0` — drain spin timed out |
-| `Single_reader` | `writer_reader_timeout_count == 0` — ring-full blocked; no drain ever attempted |
-| `Sync_reader` | `writer_reader_timeout_count == 0` — same ring-full barrier |
+| `Sequential` | `writer_reader_timeout_count == 0` — ring-full blocked; no drain ever attempted |
+| `Sequential_sync` | `writer_reader_timeout_count == 0` — same ring-full barrier |
 
 This is verified by tests `DatahubSlotDrainingTest.SingleReaderRingFullBlocksNotDraining`
 and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.

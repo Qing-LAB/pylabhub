@@ -67,8 +67,10 @@ struct ProcessorImpl
 void ProcessorImpl::run_process_thread_()
 {
     const bool   drop_mode  = (opts.overflow_policy == OverflowPolicy::Drop);
+    // Output timeout: Drop = non-blocking; Block = same as input_timeout so the
+    // loop stays responsive to shutdown / control messages.
     const auto   out_timeout = drop_mode ? std::chrono::milliseconds{0}
-                                         : std::chrono::milliseconds{5000};
+                                         : opts.input_timeout;
     const size_t out_item_sz = out_queue->item_size();
 
     while (!stop_.load(std::memory_order_relaxed) &&

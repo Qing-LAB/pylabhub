@@ -17,7 +17,7 @@
 //   2. commit_advances_metrics              — commit increments total_slots_written
 //   3. abort_does_not_commit               — release without commit: slot not visible, metric=0
 //   4. latest_only_reads_latest            — Latest_only skips to newest committed slot
-//   5. single_reader_reads_sequentially    — Single_reader yields slots in commit order
+//   5. single_reader_reads_sequentially    — Sequential yields slots in commit order
 //   6. write_returns_null_when_ring_full   — acquire_write_slot(0) → null when ring saturated
 //   7. read_returns_null_on_empty_ring     — acquire_consume_slot(0) → null when no data
 //   8. metrics_accumulate_across_writes    — N commits → total_slots_written==N; consumer read counted
@@ -260,7 +260,7 @@ int latest_only_reads_latest()
 
 // ============================================================================
 // 5. single_reader_reads_sequentially
-// A Single_reader consumer reads slots in commit order (FIFO).
+// A Sequential consumer reads slots in commit order (FIFO).
 // Each acquire_consume_slot yields the next unread slot in sequence.
 // ============================================================================
 
@@ -271,7 +271,7 @@ int single_reader_reads_sequentially()
         {
             std::string channel = make_test_channel_name("CApiSingleReader");
             // capacity=4 to hold all 3 writes without blocking
-            auto cfg = make_config(ConsumerSyncPolicy::Single_reader, 4, 71005);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 4, 71005);
 
             auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
@@ -290,14 +290,14 @@ int single_reader_reads_sequentially()
                 (void)producer->release_write_slot(*h);
             }
 
-            // Read them back: Single_reader must yield them in order (1, 2, 3)
+            // Read them back: Sequential must yield them in order (1, 2, 3)
             for (uint64_t expected = 1; expected <= 3; ++expected)
             {
                 auto rh = consumer->acquire_consume_slot(1000);
                 ASSERT_NE(rh, nullptr) << "Slot " << expected << " must be available";
                 uint64_t value = 0;
                 std::memcpy(&value, rh->buffer_span().data(), sizeof(value));
-                EXPECT_EQ(value, expected) << "Single_reader must yield slot " << expected << " in order";
+                EXPECT_EQ(value, expected) << "Sequential must yield slot " << expected << " in order";
                 (void)consumer->release_consume_slot(*rh);
             }
 
@@ -315,7 +315,7 @@ int single_reader_reads_sequentially()
 
 // ============================================================================
 // 6. write_returns_null_when_ring_full
-// With Single_reader and an unconsumed ring, acquire_write_slot(timeout=0)
+// With Sequential and an unconsumed ring, acquire_write_slot(timeout=0)
 // returns nullptr. The writer_timeout_count metric increments to reflect the blocked attempt.
 // ============================================================================
 
@@ -326,7 +326,7 @@ int write_returns_null_when_ring_full()
         {
             std::string channel = make_test_channel_name("CApiRingFull");
             // capacity=2: fill both slots without consuming → 3rd acquire must fail
-            auto cfg = make_config(ConsumerSyncPolicy::Single_reader, 2, 71006);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 2, 71006);
 
             auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);

@@ -96,7 +96,7 @@ inline constexpr size_t HEADER_LAYOUT_HASH_SIZE = 32;
 inline constexpr size_t LAYOUT_CHECKSUM_OFFSET = 32;
 /** Size in bytes of the layout checksum (BLAKE2b-256). */
 inline constexpr size_t LAYOUT_CHECKSUM_SIZE = 32;
-/** Offset in reserved_header[] for Sync_reader per-consumer next-read slot ids (8 * uint64_t). */
+/** Offset in reserved_header[] for Sequential_sync per-consumer next-read slot ids (8 * uint64_t). */
 inline constexpr size_t CONSUMER_READ_POSITIONS_OFFSET = 64;
 /** Offset in reserved_header[] for producer heartbeat: producer_id (uint64_t), producer_last_heartbeat_ns (uint64_t). */
 inline constexpr size_t PRODUCER_HEARTBEAT_OFFSET = 128;
@@ -220,7 +220,7 @@ struct alignas(4096) SharedMemoryHeader
 
     // === Ring Buffer Configuration ===
     DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
-    ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
+    ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Sequential / Sequential_sync
     uint32_t physical_page_size;          // Physical page size (bytes); allocation granularity
     uint32_t logical_unit_size;           // Effective per-slot stride (bytes); rounded to 64-byte cache-line boundary at creation; never 0 in header
     uint32_t ring_buffer_capacity;        // Number of slots
@@ -702,7 +702,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      *
      * See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
-    [[nodiscard]] uint64_t request_structure_remap(
+    [[nodiscard, deprecated("Not implemented — always throws std::runtime_error")]]
+    uint64_t request_structure_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema
     ); ///< NOT IMPLEMENTED — always throws std::runtime_error
@@ -718,6 +719,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      *
      * See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
+    [[deprecated("Not implemented — always throws std::runtime_error")]]
     void commit_structure_remap(
         uint64_t request_id,
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
@@ -990,6 +992,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      *
      * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
+    [[deprecated("Not implemented — always throws std::runtime_error")]]
     void release_for_remap(); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     /**
@@ -1006,6 +1009,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      *
      * See docs/tech_draft/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
      */
+    [[deprecated("Not implemented — always throws std::runtime_error")]]
     void reattach_after_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
         const std::optional<schema::SchemaInfo> &new_datablock_schema

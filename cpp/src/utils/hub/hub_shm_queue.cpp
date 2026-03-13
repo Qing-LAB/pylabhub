@@ -152,6 +152,14 @@ void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
 // Constructor / destructor / move
 // ============================================================================
 
+bool ShmQueue::is_running() const noexcept
+{
+    // Returns false on a moved-from (null-pImpl) instance.
+    // A live ShmQueue always has a valid DataBlock; the "running" state is
+    // implicit (no start() / stop() lifecycle, no background thread).
+    return pImpl && (pImpl->consumer() != nullptr || pImpl->producer() != nullptr);
+}
+
 ShmQueue::ShmQueue(std::unique_ptr<ShmQueueImpl> impl) : pImpl(std::move(impl)) {}
 
 ShmQueue::~ShmQueue()

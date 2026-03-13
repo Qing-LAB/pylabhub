@@ -6,6 +6,32 @@
 
 ## Archive batches
 
+### 2026-03-12 (code review clearance — 8 closed reviews)
+
+All code reviews that reached ✅ CLOSED status archived. Gemini review triaged (never previously used).
+
+**Archived to `docs/archive/transient-2026-03-12/`:**
+
+| Archived | Status | Key content |
+|---|---|---|
+| `REVIEW_FullSource_2026-03-06.md` | CLOSED | 47 items: 28 fixed, 10 FP, 9 accepted |
+| `REVIEW_DesignAndCode_2026-03-09.md` | CLOSED | DC-01 (METRICS_REQ SHM merge); DC-04/06 deferred |
+| `REVIEW_FullStack_2026-03-10.md` | CLOSED | FS-01/MR-05/MR-10 FP; FS-02 fixed |
+| `REVIEW_FullStack2_2026-03-10.md` | CLOSED | A1/A5/A6/A11/A12/A18/A20 fixed |
+| `REVIEW_Processor_2026-03-10.md` | CLOSED | All 20 items fixed or false positive |
+| `REVIEW_DeepStack_2026-03-10.md` | CLOSED | 16 findings; 13 fixed, 3 deferred |
+| `review_high_level.md` | CLOSED | 9 findings (HIGH×3, MEDIUM×3, LOW×3); all resolved |
+| `gemini_review.md` | TRIAGED | 9 findings; 5 stale/FP, 2 fixed, 1 accepted, 1 open (flexible_zone_size→API_TODO) |
+| `gemini_review_triage_2026-03-12.md` | (new) | Triage notes for gemini_review.md |
+
+Also completed this session:
+- MR-01: Wire format deduplication — `zmq_wire_helpers.hpp` shared by `hub_zmq_queue.cpp` + `hub_inbox_queue.cpp`
+- MR-09: `ShmQueue::is_running()` override — returns false on moved-from (null pImpl) instance
+- LOW-2: `[[deprecated]]` added to 4 DataBlock remap stubs in `data_block.hpp`
+- 3 new tests: ShmQueueIsRunning, DataBlockProducerRemapStubsThrow, DataBlockConsumerRemapStubsThrow → 1120/1120
+
+---
+
 ### 2026-03-10 (tech_draft merge + archive — all 4 working docs)
 
 All four tech_draft working documents finalized and merged into HEP docs:

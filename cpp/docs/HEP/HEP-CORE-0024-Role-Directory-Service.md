@@ -281,6 +281,7 @@ struct RoleArgs
     std::string config_path;    ///< --config <path>
     std::string role_dir;       ///< positional <dir> or --init target
     std::string init_name;      ///< --name <name>  (for --init)
+    std::string log_file;       ///< --log-file <path>
     bool        validate_only{false}; ///< --validate
     bool        keygen_only{false};   ///< --keygen
     bool        init_only{false};     ///< --init
@@ -292,7 +293,8 @@ struct RoleArgs
 /// Abbreviates to first 4 chars in usage strings (prod/cons/proc).
 ///
 /// Handled flags: --init [dir], --config <path>, --name <n>, --validate,
-///                --keygen, --run (no-op), --help/-h, <positional role_dir>.
+///                --keygen, --log-file <path>, --run (no-op), --help/-h,
+///                <positional role_dir>.
 ///
 /// Prints usage and calls std::exit(0) on --help.
 /// Prints error and calls std::exit(1) on unknown flags or missing required args.

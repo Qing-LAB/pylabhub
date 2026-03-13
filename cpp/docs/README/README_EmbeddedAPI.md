@@ -584,7 +584,7 @@ When building a custom role, work through these decisions in order:
 2. **Data transport?**
    - SHM: same host, typed slots, low latency, spinlock-based.
    - ZMQ: cross-machine or cross-hub, schema-encoded, TCP.
-   - Mixed: SHM input → ZMQ output (bridge pattern; see `share/demo-dual-hub/`).
+   - Mixed: SHM input → ZMQ output (bridge pattern; see `share/py-demo-dual-processor-bridge/`).
 
 3. **SHM data-plane mode?**
    - Real-time: hardware-paced write loop, or subscription that must not miss slots.
@@ -622,4 +622,4 @@ When building a custom role, work through these decisions in order:
 | `src/scripting/python_role_host_base.cpp` | Reference implementation of embedded-mode pattern |
 | `src/producer/producer_script_host.cpp` | Reference: producer embedded mode with ZMQ poll loop |
 | `src/consumer/consumer_script_host.cpp` | Reference: consumer embedded mode with ZMQ poll loop |
-| `share/demo-dual-hub/` | End-to-end demo: cross-hub bridge using mixed SHM+ZMQ transport |
+| `share/py-demo-dual-processor-bridge/` | End-to-end demo: cross-hub bridge using mixed SHM+ZMQ transport |

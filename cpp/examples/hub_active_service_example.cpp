@@ -130,7 +130,7 @@ int main()
 
     DataBlockConfig shm_cfg{};
     shm_cfg.policy               = DataBlockPolicy::RingBuffer;
-    shm_cfg.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+    shm_cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
     shm_cfg.shared_secret        = kShmSecret;
     shm_cfg.ring_buffer_capacity = 4;
     shm_cfg.physical_page_size   = DataBlockPageSize::Size4K;

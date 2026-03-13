@@ -432,7 +432,7 @@ int no_reader_races_on_clean_wraparound()
 
 // ============================================================================
 // 6. single_reader_ring_full_blocks_not_draining
-// For Single_reader, the ring-full check (write_index - read_index < capacity)
+// For Sequential, the ring-full check (write_index - read_index < capacity)
 // fires BEFORE write_index is advanced, so the writer is blocked by ring-full
 // and never reaches the slot a reader is holding. DRAINING is never triggered.
 //
@@ -441,7 +441,7 @@ int no_reader_races_on_clean_wraparound()
 //   → write_index.fetch_add(1) only after check passes
 //   → acquire_write() only called after fetch_add
 //   → DRAINING only entered inside acquire_write() if slot_state==COMMITTED
-//   With Single_reader: fetch_add cannot reach the held slot while read_index
+//   With Sequential: fetch_add cannot reach the held slot while read_index
 //   hasn't advanced (reader's release is what advances read_index).
 // ============================================================================
 
@@ -454,7 +454,7 @@ int single_reader_ring_full_blocks_not_draining()
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
-            cfg.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+            cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
             cfg.shared_secret = 72006;
             cfg.ring_buffer_capacity = 2;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
@@ -530,7 +530,7 @@ int single_reader_ring_full_blocks_not_draining()
 
 // ============================================================================
 // 7. sync_reader_ring_full_blocks_not_draining
-// For Sync_reader, read_index = min(all consumer positions). Even with multiple
+// For Sequential_sync, read_index = min(all consumer positions). Even with multiple
 // consumers at different positions, the ring-full check blocks the writer before
 // it can reach any slot currently held by any consumer. DRAINING is never triggered.
 // ============================================================================
@@ -544,7 +544,7 @@ int sync_reader_ring_full_blocks_not_draining()
 
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
-            cfg.consumer_sync_policy = ConsumerSyncPolicy::Sync_reader;
+            cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential_sync;
             cfg.shared_secret = 72007;
             cfg.ring_buffer_capacity = 3;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
@@ -581,7 +581,7 @@ int sync_reader_ring_full_blocks_not_draining()
             auto rh1 = consumer1->acquire_consume_slot(1000);
             ASSERT_NE(rh1, nullptr);
 
-            // Consumer 2 acquires slot 0 (same slot — Sync_reader each consumer is independent)
+            // Consumer 2 acquires slot 0 (same slot — Sequential_sync each consumer is independent)
             auto rh2 = consumer2->acquire_consume_slot(1000);
             ASSERT_NE(rh2, nullptr);
 

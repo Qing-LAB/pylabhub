@@ -105,4 +105,48 @@ inline LoopTimingPolicy default_loop_timing_policy(int period_ms) noexcept
     return period_ms == 0 ? LoopTimingPolicy::MaxRate : LoopTimingPolicy::FixedRate;
 }
 
+// ============================================================================
+// compute_slot_acquire_timeout — shared derivation for all roles
+// ============================================================================
+
+/**
+ * @brief Compute the effective slot acquire timeout from config fields.
+ *
+ * All three role binaries (producer, consumer, processor) use this function
+ * to derive the actual timeout passed to write_acquire() / read_acquire().
+ *
+ * Derivation rules:
+ *   - @p explicit_ms == 0   → 0 ms  (non-blocking try)
+ *   - @p explicit_ms >  0   → use that value directly (user override)
+ *   - @p explicit_ms == -1  → derive from @p period_ms:
+ *       - period_ms > 0     → max(period_ms / 2, 1)  (half the period,
+ *                              leaving headroom for callback + deadline sleep)
+ *       - period_ms == 0    → kMaxRateDefaultMs (50 ms; keeps loop responsive
+ *                              to control messages without busy-spinning)
+ *
+ * @param explicit_ms   Value of `slot_acquire_timeout_ms` from role config.
+ *                      -1 = derive, 0 = non-blocking, >0 = explicit ms.
+ * @param period_ms     Value of `target_period_ms` from role config (≥ 0).
+ * @return Effective timeout in milliseconds (always ≥ 0).
+ */
+inline int compute_slot_acquire_timeout(int explicit_ms, int period_ms) noexcept
+{
+    static constexpr int kMaxRateDefaultMs = 50;
+
+    if (explicit_ms == 0)
+    {
+        return 0;
+    }
+    if (explicit_ms > 0)
+    {
+        return explicit_ms;
+    }
+    // explicit_ms == -1 (or any negative): derive from period.
+    if (period_ms > 0)
+    {
+        return period_ms / 2 > 0 ? period_ms / 2 : 1;
+    }
+    return kMaxRateDefaultMs;
+}
+
 } // namespace pylabhub

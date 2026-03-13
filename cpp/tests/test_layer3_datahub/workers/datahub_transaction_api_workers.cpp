@@ -234,7 +234,7 @@ int with_write_transaction_timeout()
             std::string channel = make_test_channel_name("TxTimeoutv1");
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
-            config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
             config.shared_secret = 70002;
             config.ring_buffer_capacity = 1; // Only one slot
             config.physical_page_size = DataBlockPageSize::Size4K;
@@ -641,7 +641,7 @@ int raii_slot_iterator_roundtrip()
             std::string channel = make_test_channel_name("TxIterv1");
             DataBlockConfig config{};
             config.policy = DataBlockPolicy::RingBuffer;
-            config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+            config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
             config.shared_secret = 70006;
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;

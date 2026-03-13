@@ -35,7 +35,7 @@
  *
  *   "channel":          "lab.sensors.temperature",
  *   "target_period_ms": 100,
- *   "timeout_ms":       5000,
+ *   "slot_acquire_timeout_ms": -1,
  *
  *   "slot_schema":     { "fields": [{"name": "value", "type": "float32"}] },
  *   "flexzone_schema": null,
@@ -47,6 +47,8 @@
  * @endcode
  */
 
+#include "utils/data_block_policy.hpp"
+#include "utils/hub_zmq_queue.hpp"   // kZmqDefaultBufferDepth, OverflowPolicy
 #include "utils/loop_timing_policy.hpp"
 #include "utils/startup_wait.hpp"
 
@@ -139,8 +141,9 @@ struct ProducerConfig
     /// See loop_timing_policy.hpp for cross-field constraints.
     LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedRate};
 
-    /// SHM acquire-write timeout (ms). -1 = block up to 5 s.
-    int timeout_ms{-1};
+    /// Slot acquire timeout (ms). -1 = derive from target_period_ms (see
+    /// compute_slot_acquire_timeout), 0 = non-blocking, >0 = explicit ms.
+    int slot_acquire_timeout_ms{-1};
     int heartbeat_interval_ms{0};
 
     // ── Transport ──────────────────────────────────────────────────────────────
@@ -155,9 +158,14 @@ struct ProducerConfig
     /// Default true: producer owns the endpoint and consumers connect to it.
     bool zmq_out_bind{true};
 
-    /// Internal send-ring buffer depth (items) for the ZMQ PUSH path.
-    /// write_acquire() is non-blocking when space is available; OverflowPolicy::Drop applies.
-    size_t zmq_buffer_depth{64};
+    /// Internal send-ring buffer depth (items) for the ZMQ PUSH path. Must be > 0.
+    size_t zmq_buffer_depth{hub::kZmqDefaultBufferDepth};
+
+    /// Overflow policy for the ZMQ PUSH send ring.
+    /// "drop" (default): write_acquire() returns nullptr immediately when ring is full.
+    /// "block": write_acquire() waits up to the loop's acquire timeout for a free slot,
+    ///          propagating backpressure to the produce loop (same as SHM behaviour).
+    std::string zmq_overflow_policy{"drop"};
 
     /// Struct alignment for ZMQ-transport schema buffers.
     /// "aligned" (C-struct natural alignment, default) or "packed" (no padding, _pack_=1).
@@ -172,6 +180,11 @@ struct ProducerConfig
     /// absorbs bursts without dropping frames. Processors use 4 (smaller pipeline buffer)
     /// because the processor loop is tightly coupled to input availability.
     uint32_t shm_slot_count{8};
+    /// SHM reader synchronization policy. Controls how the downstream reader
+    /// (consumer or processor) advances through the ring buffer. SHM only.
+    /// JSON key: "shm.reader_sync_policy"
+    /// Values: "sequential" (default), "latest_only".
+    hub::ConsumerSyncPolicy shm_consumer_sync_policy{hub::ConsumerSyncPolicy::Sequential};
 
     // Schemas
     nlohmann::json slot_schema_json{};
@@ -180,7 +193,7 @@ struct ProducerConfig
     // Inbox — optional typed message receiver (Phase 3)
     nlohmann::json inbox_schema_json{};             ///< Schema for inbox messages. Null/empty = no inbox.
     std::string    inbox_endpoint;                  ///< ROUTER bind endpoint. Empty = auto-assign (port 0).
-    size_t         inbox_buffer_depth{64};          ///< ZMQ RCVHWM for the inbox socket.
+    size_t         inbox_buffer_depth{hub::kZmqDefaultBufferDepth}; ///< ZMQ RCVHWM for the inbox socket.
     std::string    inbox_overflow_policy{"drop"};   ///< "drop" (finite RCVHWM) or "block" (unlimited queue).
 
     /// Returns true when an inbox is configured (inbox_schema_json is non-null and non-empty).

@@ -87,7 +87,7 @@ flows directly through shared memory (SHM) without touching the broker.
 cmake -S . -B build && cmake --build build -j2
 
 # 2. Run the bundled single-hub demo (starts all 4 processes)
-bash share/demo/run_demo.sh
+bash share/py-demo-single-processor-shm/run_demo.sh
 
 # 3. Press Ctrl-C to stop all processes
 ```
@@ -311,6 +311,7 @@ Example `producer.json`:
 | `flexzone_schema` | no | absent | Persistent flexzone layout; ignored for ZMQ transport |
 | `shm.enabled` | no | `true` | Allocate SHM segment |
 | `shm.slot_count` | yes§ | — | Ring buffer depth (number of slots) |
+| `shm.reader_sync_policy` | no | `"sequential"` | `"sequential"` (FIFO, no data loss) or `"latest_only"` (skip to newest) |
 | `shm.secret` | no | `0` | Shared secret for SHM name derivation |
 | `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
@@ -365,7 +366,7 @@ Example `consumer.json`:
   "channel":     "lab.sensors.temperature",
 
   "queue_type":  "shm",
-  "timeout_ms":  5000,
+  "slot_acquire_timeout_ms":  -1,
 
   "slot_schema": {
     "packing": "aligned",
@@ -459,7 +460,7 @@ Example `processor.json`:
 
   "in_transport":  "shm",
   "out_transport": "shm",
-  "timeout_ms":    5000,
+  "slot_acquire_timeout_ms":    -1,
 
   "in_slot_schema": {
     "fields": [
@@ -520,6 +521,7 @@ Example `processor.json`:
 | `shm.in.secret` | no | `0` | Shared secret matching the input producer |
 | `shm.out.enabled` | no | `true` | Allocate output SHM segment |
 | `shm.out.slot_count` | yes§ | — | Output ring buffer depth |
+| `shm.out.reader_sync_policy` | no | `"sequential"` | `"sequential"` (FIFO, no data loss) or `"latest_only"` (skip to newest) |
 | `shm.out.secret` | no | `0` | Shared secret for output SHM |
 | `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
@@ -907,7 +909,7 @@ Producer ─[SHM]─► Processor-A ─[ZMQ PUSH]──►
 }
 ```
 
-See `share/demo-dual-hub/` for a complete working example.
+See `share/py-demo-dual-processor-bridge/` for a complete working example.
 
 ---
 
@@ -920,15 +922,15 @@ See `share/demo-dual-hub/` for a complete working example.
 pylabhub-hubshell hub/ --dev &
 
 # 2. Producer next (creates SHM)
-pylabhub-producer producer/ &
-sleep 0.6   # wait for SHM creation + broker registration
+pylabhub-producer producer/ --log-file logs/producer.log &
+sleep 2.0   # wait for CurveZMQ handshake + SHM creation + broker registration
 
 # 3. Processor after producer (attaches to SHM)
-pylabhub-processor processor/ &
-sleep 0.6
+pylabhub-processor processor/ --log-file logs/processor.log &
+sleep 2.0
 
 # 4. Consumer last (or any order after producer)
-pylabhub-consumer consumer/
+pylabhub-consumer consumer/ --log-file logs/consumer.log
 ```
 
 ### Shutdown
@@ -949,10 +951,27 @@ def on_produce(out_slot, fz, msgs, api):
     return True
 ```
 
+### Log file redirection
+
+All three role binaries accept `--log-file <path>` to redirect log output from the
+console to a file. The sink switch happens early in the lifecycle — before ZMQContext
+and DataExchangeHub emit their startup messages — via the `StartupLogFileSink` lifecycle
+module (see HEP-CORE-0001 §StartupLogFileSink).
+
+```bash
+pylabhub-producer  producer/  --log-file logs/producer.log
+pylabhub-consumer  consumer/  --log-file logs/consumer.log
+pylabhub-processor processor/ --log-file logs/processor.log
+```
+
+The hub uses a rotating log file automatically when a hub directory is provided
+(`<hub_dir>/logs/hub.log`, 10 MiB per file, 3 backups).
+
 ### Log level at runtime
 
 Set `producer.log_level` (or equivalent for other roles) to `"debug"` for verbose output.
-All log output goes to stderr via the async logger.
+All log output goes to stderr via the async logger (or to the log file when `--log-file`
+is specified).
 
 ### Common errors
 

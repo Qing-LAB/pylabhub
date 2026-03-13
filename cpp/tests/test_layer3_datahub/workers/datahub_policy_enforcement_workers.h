@@ -16,7 +16,7 @@ int consumer_auto_registers_heartbeat_on_construction();
 int consumer_auto_unregisters_heartbeat_on_destroy();
 int all_policy_consumers_have_heartbeat();
 
-// --- Sync_reader backpressure ---
+// --- Sequential_sync backpressure ---
 int sync_reader_producer_respects_consumer_position();
 
 // --- Auto-heartbeat in iterator ---

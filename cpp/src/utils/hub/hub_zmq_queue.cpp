@@ -8,8 +8,8 @@
  */
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/logger.hpp"
+#include "zmq_wire_helpers.hpp"
 
-#include <msgpack.hpp>
 #include <zmq.h>
 
 #include <atomic>
@@ -31,43 +31,8 @@ namespace pylabhub::hub
 // Constants
 // ============================================================================
 
-/// Frame magic: 'P','L','H','Q'
-static constexpr uint32_t kFrameMagic = 0x51484C50u;
-
 /// Rate-limit interval for schema tag mismatch warnings.
 static constexpr std::chrono::seconds kMismatchWarnInterval{1};
-
-// ============================================================================
-// Type-string validation  [ZQ1]
-// ============================================================================
-
-static bool is_valid_type_str(const std::string& t) noexcept
-{
-    return t == "bool"    || t == "int8"   || t == "uint8"  ||
-           t == "int16"   || t == "uint16" || t == "int32"  ||
-           t == "uint32"  || t == "int64"  || t == "uint64" ||
-           t == "float32" || t == "float64"||
-           t == "string"  || t == "bytes";
-}
-
-// ============================================================================
-// Field layout helpers
-// ============================================================================
-
-static size_t field_elem_size(const std::string& t) noexcept
-{
-    if (t == "bool" || t == "int8"  || t == "uint8")             return 1;
-    if (t == "int16" || t == "uint16")                            return 2;
-    if (t == "int32" || t == "uint32" || t == "float32")         return 4;
-    if (t == "int64" || t == "uint64" || t == "float64")         return 8;
-    return 1; // string/bytes: caller uses length directly
-}
-
-static size_t field_align(const std::string& t) noexcept
-{
-    if (t == "string" || t == "bytes") return 1;
-    return field_elem_size(t);
-}
 
 // ============================================================================
 // ZmqQueueImpl — internal state
@@ -90,14 +55,7 @@ struct ZmqQueueImpl
     bool                   has_schema_tag_{false};
 
     // ── Schema-based field encoding ───────────────────────────────────────────
-    struct FieldDesc
-    {
-        size_t      offset;     ///< byte offset in struct buffer
-        size_t      byte_size;  ///< total bytes (count*elem_size, or length for str/bytes)
-        std::string type_str;
-        bool        is_bin;     ///< encode/decode as msgpack bin (arrays, string, bytes)
-    };
-    std::vector<FieldDesc> schema_defs_;
+    std::vector<wire_detail::WireFieldDesc> schema_defs_;
     size_t                 max_frame_sz_{0}; ///< recv frame buffer size
 
     void* zmq_ctx{nullptr};
@@ -161,66 +119,6 @@ struct ZmqQueueImpl
     std::atomic<bool> running_{false};
 
     // ────────────────────────────────────────────────────────────────────────
-    // pack_field — encode one FieldDesc from src buffer into msgpack packer.
-    static void pack_field(msgpack::packer<msgpack::sbuffer>& pk,
-                           const FieldDesc& fd, const char* src)
-    {
-        const char* p = src + fd.offset;
-        if (fd.is_bin)
-        {
-            pk.pack_bin(static_cast<uint32_t>(fd.byte_size));
-            pk.pack_bin_body(p, fd.byte_size);
-            return;
-        }
-        // Scalar — native msgpack type preserves wire type tag for validation.
-        if      (fd.type_str == "bool")    pk.pack(*reinterpret_cast<const bool*>(p));
-        else if (fd.type_str == "int8")    pk.pack(*reinterpret_cast<const int8_t*>(p));
-        else if (fd.type_str == "uint8")   pk.pack(*reinterpret_cast<const uint8_t*>(p));
-        else if (fd.type_str == "int16")   pk.pack(*reinterpret_cast<const int16_t*>(p));
-        else if (fd.type_str == "uint16")  pk.pack(*reinterpret_cast<const uint16_t*>(p));
-        else if (fd.type_str == "int32")   pk.pack(*reinterpret_cast<const int32_t*>(p));
-        else if (fd.type_str == "uint32")  pk.pack(*reinterpret_cast<const uint32_t*>(p));
-        else if (fd.type_str == "int64")   pk.pack(*reinterpret_cast<const int64_t*>(p));
-        else if (fd.type_str == "uint64")  pk.pack(*reinterpret_cast<const uint64_t*>(p));
-        else if (fd.type_str == "float32") pk.pack(*reinterpret_cast<const float*>(p));
-        else if (fd.type_str == "float64") pk.pack(*reinterpret_cast<const double*>(p));
-        // No else: factory validated all type strings at construction time [ZQ1].
-    }
-
-    // unpack_field — decode one msgpack object into dst buffer at fd.offset.
-    // Returns false on type mismatch or bin size mismatch.
-    static bool unpack_field(const msgpack::object& obj,
-                             const FieldDesc& fd, char* dst) noexcept
-    {
-        char* p = dst + fd.offset;
-        try
-        {
-            if (fd.is_bin)
-            {
-                if (obj.type != msgpack::type::BIN || obj.via.bin.size != fd.byte_size)
-                    return false;
-                std::memcpy(p, obj.via.bin.ptr, fd.byte_size);
-                return true;
-            }
-            // Scalar: msgpack::convert() checks type compatibility and throws on mismatch.
-            if      (fd.type_str == "bool")    { bool     v; obj.convert(v); *reinterpret_cast<bool*>(p)     = v; }
-            else if (fd.type_str == "int8")    { int8_t   v; obj.convert(v); *reinterpret_cast<int8_t*>(p)   = v; }
-            else if (fd.type_str == "uint8")   { uint8_t  v; obj.convert(v); *reinterpret_cast<uint8_t*>(p)  = v; }
-            else if (fd.type_str == "int16")   { int16_t  v; obj.convert(v); *reinterpret_cast<int16_t*>(p)  = v; }
-            else if (fd.type_str == "uint16")  { uint16_t v; obj.convert(v); *reinterpret_cast<uint16_t*>(p) = v; }
-            else if (fd.type_str == "int32")   { int32_t  v; obj.convert(v); *reinterpret_cast<int32_t*>(p)  = v; }
-            else if (fd.type_str == "uint32")  { uint32_t v; obj.convert(v); *reinterpret_cast<uint32_t*>(p) = v; }
-            else if (fd.type_str == "int64")   { int64_t  v; obj.convert(v); *reinterpret_cast<int64_t*>(p)  = v; }
-            else if (fd.type_str == "uint64")  { uint64_t v; obj.convert(v); *reinterpret_cast<uint64_t*>(p) = v; }
-            else if (fd.type_str == "float32") { float    v; obj.convert(v); *reinterpret_cast<float*>(p)    = v; }
-            else if (fd.type_str == "float64") { double   v; obj.convert(v); *reinterpret_cast<double*>(p)   = v; }
-            else return false;
-        }
-        catch (...) { return false; }
-        return true;
-    }
-
-    // ────────────────────────────────────────────────────────────────────────
     // recv thread body — all decoding uses pre-allocated buffers (no per-frame heap alloc).
     void run_recv_thread_()
     {
@@ -271,7 +169,7 @@ struct ZmqQueueImpl
                 // [0] magic
                 uint32_t magic = 0;
                 elems[0].convert(magic);
-                if (magic != kFrameMagic)
+                if (magic != wire_detail::kFrameMagic)
                     { ++recv_frame_error_count_; continue; }
 
                 // [1] schema_tag (bin, 8 bytes)
@@ -325,7 +223,7 @@ struct ZmqQueueImpl
                 char* dst = reinterpret_cast<char*>(decode_tmp_.data());
                 for (size_t i = 0; i < schema_defs_.size() && ok; ++i)
                 {
-                    if (!unpack_field(arr.via.array.ptr[i], schema_defs_[i], dst))
+                    if (!wire_detail::unpack_field(arr.via.array.ptr[i], schema_defs_[i], dst))
                     {
                         ++recv_frame_error_count_;
                         ok = false;
@@ -387,14 +285,14 @@ struct ZmqQueueImpl
                 msgpack::packer<msgpack::sbuffer> pk(send_sbuf_);
 
                 pk.pack_array(4);
-                pk.pack(kFrameMagic);
+                pk.pack(wire_detail::kFrameMagic);
                 pk.pack_bin(8);
                 pk.pack_bin_body(reinterpret_cast<const char*>(schema_tag_.data()), 8);
                 pk.pack(send_seq_.fetch_add(1, std::memory_order_relaxed));
                 pk.pack_array(static_cast<uint32_t>(schema_defs_.size()));
                 const char* src = reinterpret_cast<const char*>(send_local_buf_.data());
                 for (const auto& fd : schema_defs_)
-                    pack_field(pk, fd, src);
+                    wire_detail::pack_field(pk, fd, src);
             }
 
             // ── Send with retry on EAGAIN ─────────────────────────────────
@@ -442,70 +340,13 @@ struct ZmqQueueImpl
 // Schema layout computation (file-scope helpers)
 // ============================================================================
 
-/// Computed layout for one field (includes offset derived from alignment rules).
-struct FieldLayout
-{
-    size_t      offset;
-    size_t      byte_size;
-    std::string type_str;
-    bool        is_bin;
-};
-
-/// Compute per-field offsets using ctypes.LittleEndianStructure alignment rules.
-/// Returns {field_layouts, total_struct_size}.
-static std::pair<std::vector<FieldLayout>, size_t>
-compute_field_layout(const std::vector<ZmqSchemaField>& fields,
-                     const std::string& packing)
-{
-    const bool packed = (packing == "packed");
-    std::vector<FieldLayout> result;
-    size_t offset    = 0;
-    size_t max_align = 1;
-
-    for (const auto& f : fields)
-    {
-        const bool is_blob = (f.type_str == "string" || f.type_str == "bytes");
-        const bool is_bin  = is_blob || (f.count > 1);
-
-        size_t esz   = is_blob ? static_cast<size_t>(f.length)
-                               : field_elem_size(f.type_str);
-        size_t align = (packed || is_blob) ? size_t{1} : field_align(f.type_str);
-        size_t total = is_blob ? static_cast<size_t>(f.length)
-                               : esz * static_cast<size_t>(f.count);
-
-        if (align > 1)
-            offset = (offset + align - 1) & ~(align - 1);
-        max_align = std::max(max_align, align);
-
-        result.push_back({offset, total, f.type_str, is_bin});
-        offset += total;
-    }
-
-    // Pad struct total to max field alignment (aligned packing only).
-    if (!packed && max_align > 1)
-        offset = (offset + max_align - 1) & ~(max_align - 1);
-
-    return {result, offset};
-}
-
-/// Compute recv frame buffer size for schema mode.
-/// Outer envelope: fixarray(1)+uint32(5)+bin8(10)+uint64(9) = 25 bytes.
-/// Payload array header: 3 bytes.  Per scalar: 9 bytes max.  Per bin: 5+byte_size.
-static size_t schema_max_frame_size(const std::vector<FieldLayout>& defs)
-{
-    size_t sz = 25 + 3 + 4; // outer + inner array header + slack
-    for (const auto& d : defs)
-        sz += d.is_bin ? (5 + d.byte_size) : 9;
-    return sz;
-}
-
 /// Validate all type_str values in a schema.  Returns the first invalid type_str,
 /// or an empty string if all are valid.  [ZQ1]
 static std::string find_invalid_type(const std::vector<ZmqSchemaField>& schema)
 {
     for (const auto& f : schema)
     {
-        if (!is_valid_type_str(f.type_str))
+        if (!wire_detail::is_valid_type_str(f.type_str))
             return f.type_str;
     }
     return {};
@@ -557,7 +398,7 @@ ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> sch
             return nullptr;
         }
     }
-    auto [layouts, item_sz] = compute_field_layout(schema, packing);
+    auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
     auto impl               = std::make_unique<ZmqQueueImpl>();
     impl->mode              = ZmqQueueImpl::Mode::Read;
@@ -566,9 +407,8 @@ ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> sch
     impl->item_sz           = item_sz;
     impl->max_depth         = max_buffer_depth;
     impl->queue_name        = endpoint;
-    impl->max_frame_sz_     = schema_max_frame_size(layouts);
-    for (auto& l : layouts)
-        impl->schema_defs_.push_back({l.offset, l.byte_size, l.type_str, l.is_bin});
+    impl->max_frame_sz_     = wire_detail::max_frame_size(layouts);
+    impl->schema_defs_      = std::move(layouts);
     if (schema_tag) { impl->schema_tag_ = *schema_tag; impl->has_schema_tag_ = true; }
 
     // Pre-allocate ring buffer (max_depth slots) and decode staging buffer. [ZQ9]
@@ -625,7 +465,7 @@ ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schem
             return nullptr;
         }
     }
-    auto [layouts, item_sz] = compute_field_layout(schema, packing);
+    auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
     auto impl                       = std::make_unique<ZmqQueueImpl>();
     impl->mode                      = ZmqQueueImpl::Mode::Write;
@@ -637,9 +477,8 @@ ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schem
     impl->send_depth_               = send_buffer_depth;
     impl->overflow_policy_          = overflow_policy;
     impl->send_retry_interval_ms_   = send_retry_interval_ms;
-    impl->max_frame_sz_             = schema_max_frame_size(layouts);
-    for (auto& l : layouts)
-        impl->schema_defs_.push_back({l.offset, l.byte_size, l.type_str, l.is_bin});
+    impl->max_frame_sz_             = wire_detail::max_frame_size(layouts);
+    impl->schema_defs_              = std::move(layouts);
     if (schema_tag) { impl->schema_tag_ = *schema_tag; impl->has_schema_tag_ = true; }
 
     // Pre-allocate caller write buffer, send ring, and send_thread_-private buffer.

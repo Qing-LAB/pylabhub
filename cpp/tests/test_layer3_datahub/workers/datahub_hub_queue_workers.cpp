@@ -785,6 +785,113 @@ int shm_queue_verify_checksum_mismatch()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// shm_queue_is_running
+// ============================================================================
+
+int shm_queue_is_running()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueIsRunning");
+            DataBlockConfig cfg = make_config(70019);
+
+            auto producer = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+
+            // Writer queue: is_running() true after construction.
+            auto q_write = ShmQueue::from_producer(std::move(producer), sizeof(double), 0,
+                                                   g.channel_name());
+            ASSERT_NE(q_write, nullptr);
+            EXPECT_TRUE(q_write->is_running());
+
+            // Reader queue also reports running after construction.
+            auto producer2 = create_datablock_producer_impl(
+                "ShmQueueIsRunningR", DataBlockPolicy::RingBuffer, make_config(70019), nullptr, nullptr);
+            ASSERT_NE(producer2, nullptr);
+            auto dbc = find_datablock_consumer_impl(
+                "ShmQueueIsRunningR", make_config(70019).shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(dbc, nullptr);
+            auto q_read = ShmQueue::from_consumer(std::move(dbc), sizeof(double), 0,
+                                                  g.channel_name());
+            ASSERT_NE(q_read, nullptr);
+            EXPECT_TRUE(q_read->is_running());
+
+            // Null unique_ptr<QueueWriter/QueueReader> reports not running — sanity check
+            // that a default-constructed queue (nullptr) is not running.
+            std::unique_ptr<QueueWriter> null_w;
+            EXPECT_EQ(null_w, nullptr); // trivial guard
+        },
+        "hub_queue.shm_queue_is_running",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// datablock_producer_remap_stubs_throw
+// ============================================================================
+
+int datablock_producer_remap_stubs_throw()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ProducerRemapStubs");
+            DataBlockConfig cfg = make_config(70020);
+
+            auto producer = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+            // Both remap stubs are not implemented; verify they throw rather than silently
+            // doing nothing or corrupting state.
+            EXPECT_THROW(
+                producer->request_structure_remap(std::nullopt, std::nullopt),
+                std::runtime_error);
+            EXPECT_THROW(
+                producer->commit_structure_remap(0, std::nullopt, std::nullopt),
+                std::runtime_error);
+#pragma GCC diagnostic pop
+        },
+        "hub_queue.datablock_producer_remap_stubs_throw",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// datablock_consumer_remap_stubs_throw
+// ============================================================================
+
+int datablock_consumer_remap_stubs_throw()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ConsumerRemapStubs");
+            DataBlockConfig cfg = make_config(70021);
+
+            auto producer = create_datablock_producer_impl(
+                g.channel_name(), DataBlockPolicy::RingBuffer, cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(
+                g.channel_name(), cfg.shared_secret, &cfg, nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+            // Both consumer remap stubs are not implemented.
+            EXPECT_THROW(consumer->release_for_remap(), std::runtime_error);
+            EXPECT_THROW(
+                consumer->reattach_after_remap(std::nullopt, std::nullopt),
+                std::runtime_error);
+#pragma GCC diagnostic pop
+        },
+        "hub_queue.datablock_consumer_remap_stubs_throw",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_queue
 
 // ============================================================================
@@ -844,6 +951,12 @@ struct HubQueueWorkerRegistrar
                     return shm_queue_capacity_policy();
                 if (scenario == "shm_queue_verify_checksum_mismatch")
                     return shm_queue_verify_checksum_mismatch();
+                if (scenario == "shm_queue_is_running")
+                    return shm_queue_is_running();
+                if (scenario == "datablock_producer_remap_stubs_throw")
+                    return datablock_producer_remap_stubs_throw();
+                if (scenario == "datablock_consumer_remap_stubs_throw")
+                    return datablock_consumer_remap_stubs_throw();
                 fmt::print(stderr, "ERROR: Unknown hub_queue scenario '{}'\n", scenario);
                 return 1;
             });

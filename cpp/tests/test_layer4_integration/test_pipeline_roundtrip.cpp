@@ -251,7 +251,7 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
         {"in_channel",  "test.pipe.raw"},
         {"out_channel", "test.pipe.out"},
         {"hub_dir",     hub_dir.string()},
-        {"timeout_ms",  2000},
+        {"slot_acquire_timeout_ms",  2000},
         {"overflow_policy", "drop"},
         {"shm", {
             {"in",  {{"enabled", true}, {"secret", kShmSecretA}}},
@@ -328,7 +328,7 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
             {"auth",      {{"keyfile", ""}}}
         }},
         {"channel",    "test.pipe.out"},
-        {"timeout_ms", 2000},
+        {"slot_acquire_timeout_ms", 2000},
         {"shm", {
             {"enabled", true},
             {"secret",  kShmSecretB}

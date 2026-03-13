@@ -67,7 +67,7 @@ int main()
     // ─── Create producer ───────────────────────────────────────────────────
     DataBlockConfig config{};
     config.policy                = DataBlockPolicy::RingBuffer;
-    config.consumer_sync_policy  = ConsumerSyncPolicy::Single_reader;
+    config.consumer_sync_policy  = ConsumerSyncPolicy::Sequential;
     config.shared_secret         = 0xBAD5EC;
     config.ring_buffer_capacity  = 4;
     config.physical_page_size    = DataBlockPageSize::Size4K;

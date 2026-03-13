@@ -218,6 +218,7 @@ remains active).
 |-------|----------|---------|-------------|
 | `target_period_ms` | no | `0` | Target loop period in ms; 0 = free-run (max rate) |
 | `loop_timing` | no | implicit (0→`"max_rate"`, >0→`"fixed_rate"`) | `"max_rate"`, `"fixed_rate"`, or `"fixed_rate_with_compensation"` |
+| `slot_acquire_timeout_ms` | no | `-1` | Queue slot acquire timeout; -1 = derive from `target_period_ms` (`max(period/2, 1)` or 50ms for MaxRate), 0 = non-blocking, >0 = explicit ms |
 | `overflow_policy` | no | `"block"` | Output overflow handling: `"block"` or `"drop"` |
 | `verify_checksum` | no | `false` | Verify input slot BLAKE2b checksum before processing |
 
@@ -244,9 +245,11 @@ remains active).
 ```json
 "shm": {
   "in":  {"enabled": true, "secret": 0},
-  "out": {"enabled": true, "slot_count": 8, "secret": 0}
+  "out": {"enabled": true, "slot_count": 8, "secret": 0, "reader_sync_policy": "sequential"}
 }
 ```
+
+`reader_sync_policy` (output side only): `"sequential"` (default, FIFO no data loss) or `"latest_only"` (skip to newest).
 
 When `in_transport="zmq"`, `shm.in.enabled` may be set false (no SHM attachment).
 The broker connection for control plane remains active regardless.
@@ -514,6 +517,7 @@ struct ProcessorConfig {
     // Loop policy
     int         target_period_ms{0};          // 0 = free-run
     pylabhub::LoopTimingPolicy loop_timing{pylabhub::LoopTimingPolicy::MaxRate};
+    int         slot_acquire_timeout_ms{-1};  // -1 = derive from target_period_ms
     OverflowPolicy overflow_policy{OverflowPolicy::Block};  // output side
     bool        verify_checksum{false};
 
@@ -546,7 +550,7 @@ struct ProcessorConfig {
 ```
 
 **Removed fields** (clean break — no backward compat):
-- `timeout_ms` — removed; internal poll timeout derived from `target_period_ms`
+- `timeout_ms` — renamed to `slot_acquire_timeout_ms`; -1 (default) derives timeout from `target_period_ms` via `compute_slot_acquire_timeout()`
 
 ### 8.2 ProcessorScriptHost Thread Model
 
@@ -681,4 +685,4 @@ graph LR
 | 2026-03-03 | hub::Processor delegation: timeout handler, pre-hook, zero-fill |
 | 2026-03-05 | Metrics API (HEP-0019), `--name` CLI argument, 828 tests |
 | 2026-03-10 | Phase 3 design: timing policy, inbox, dual-hub API (in_hub/out_hub), startup coordination, role_type in REG_REQ, source_hub_uid in messages, flexzone both sides mutable, hub failure = quit, `timeout_ms` removed |
-| 2026-03-11 | HEP-0023 Phase 1 implemented: `startup.wait_for_roles` parsed + enforced; `zmq_to_zmq` L3 test added; `share/demo-dual-hub/` dual-hub bridge demo complete; startup coordination section rewritten |
+| 2026-03-11 | HEP-0023 Phase 1 implemented: `startup.wait_for_roles` parsed + enforced; `zmq_to_zmq` L3 test added; `share/py-demo-dual-processor-bridge/` dual-hub bridge demo complete; startup coordination section rewritten |

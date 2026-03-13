@@ -345,7 +345,7 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 | Parameter | Sentinel / invalid | Stored in header |
 |-----------|--------------------|------------------|
 | `policy` | `DataBlockPolicy::Unset` | 0/1/2 (Single/DoubleBuffer/RingBuffer) |
-| `consumer_sync_policy` | `ConsumerSyncPolicy::Unset` | 0/1/2 (Latest_only/Single_reader/Sync_reader) |
+| `consumer_sync_policy` | `ConsumerSyncPolicy::Unset` | 0/1/2 (Latest_only/Sequential/Sequential_sync) |
 | `physical_page_size` | `DataBlockPageSize::Unset` | 4096 / 4M / 16M |
 | `ring_buffer_capacity` | `0` (unset) | ≥ 1 |
 | `checksum_type` | `ChecksumType::Unset` | BLAKE2b (0); mandatory |
@@ -367,7 +367,7 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 | Parameter | Single aspect it controls | Must NOT affect |
 |-----------|---------------------------|-----------------|
 | **DataBlockPolicy** (Single/DoubleBuffer/RingBuffer) | Buffer structure (layout, slot count derived from `ring_buffer_capacity`). Validation only in creation. | Checksum, consumer sync, index advancement |
-| **ConsumerSyncPolicy** (Latest_only/Single_reader/Sync_reader) | How readers advance: `get_next_slot_to_read`, writer backpressure, `read_index` advancement on release | Checksum, buffer layout, commit_index advancement |
+| **ConsumerSyncPolicy** (Latest_only/Sequential/Sequential_sync) | How readers advance: `get_next_slot_to_read`, writer backpressure, `read_index` advancement on release | Checksum, buffer layout, commit_index advancement |
 | **ChecksumPolicy** (None/Manual/Enforced) | Who runs update/verify and when. Manual = caller calls explicitly; Enforced = system does in release | Index advancement (`commit_index`, slot visibility), buffer layout, consumer sync |
 | **checksum_type** (ChecksumType) | Algorithm (BLAKE2b). Always present; no opt-out. | Index/buffer logic, ChecksumPolicy |
 | **FlexibleZoneConfig** | Flexible zone layout (size, spinlock index) | Slot buffer, checksum, sync |
@@ -376,7 +376,7 @@ If in doubt, do **not** add `noexcept`; adding it incorrectly causes `std::termi
 **Code locations (policy usage):**
 
 - **Buffer/index management:** `commit_write()`, `acquire_write()`, `acquire_read()`, `release_write_handle()`, `release_consume_handle()` steps 3–4 — no `ChecksumPolicy` branching. `commit_index` is advanced only in `commit_write()` during release.
-- **ConsumerSyncPolicy:** `get_next_slot_to_read()`, producer backpressure (Single/Sync), read_index advancement in `release_consume_handle()` step 4, Sync_reader heartbeat registration.
+- **ConsumerSyncPolicy:** `get_next_slot_to_read()`, producer backpressure (Single/Sync), read_index advancement in `release_consume_handle()` step 4, Sequential_sync heartbeat registration.
 - **ChecksumPolicy:** Only in `release_write_handle()` (update_checksum_*) and `release_consume_handle()` (verify_checksum_*). Condition: `checksum_policy != None` (checksum storage is always present).
 - **DataBlockPolicy:** Config validation; layout uses `ring_buffer_capacity` for slot_count. No hot-path branching on policy value.
 
@@ -465,7 +465,7 @@ On **release_write_slot**, the implementation: (1) commits the write (`commit_wr
 
 ### Read Path and Consumer Heartbeat
 
-Consumer acquire/release and iterator advance are protected by the same (recursive) mutex. For Sync_reader, slot release updates `consumer_heartbeats[i].last_heartbeat_ns`. Call `consumer->update_heartbeat(slot)` when idle.
+Consumer acquire/release and iterator advance are protected by the same (recursive) mutex. For Sequential_sync, slot release updates `consumer_heartbeats[i].last_heartbeat_ns`. Call `consumer->update_heartbeat(slot)` when idle.
 
 ### Liveness: Heartbeat-First vs PID Check
 
@@ -1148,7 +1148,7 @@ See `SlotConsumeHandle` and `SlotWriteHandle` in `data_block.hpp` for the full l
 
 **Problem**: `SlotState::DRAINING` exists in the enum and is visible to diagnostics, so it
 might be assumed to be reachable for any ring buffer configuration. In reality, for
-`Single_reader` and `Sync_reader`, DRAINING is **structurally unreachable** — the ring-full
+`Sequential` and `Sequential_sync`, DRAINING is **structurally unreachable** — the ring-full
 check prevents the writer from ever reaching a slot a reader is currently holding.
 
 **Why DRAINING is Latest_only-only:**
@@ -1168,8 +1168,8 @@ to safely drain any reader before overwriting a COMMITTED slot.
 | ConsumerSyncPolicy | DRAINING reachable? | Writer blocked by |
 |---|---|---|
 | `Latest_only` | **Yes** — only policy where DRAINING can be entered | Drain spin (readers must clear) |
-| `Single_reader` | **No** — ring-full blocks before writer reaches held slot | Ring-full check |
-| `Sync_reader` | **No** — read_index = min(all positions); same barrier applies | Ring-full check |
+| `Sequential` | **No** — ring-full blocks before writer reaches held slot | Ring-full check |
+| `Sequential_sync` | **No** — read_index = min(all positions); same barrier applies | Ring-full check |
 
 **Diagnostic discriminator:** `writer_reader_timeout_count > 0` means a drain spin timed out
 (DRAINING entered, Latest_only path). `writer_reader_timeout_count == 0` with `writer_timeout_count > 0`

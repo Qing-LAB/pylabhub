@@ -58,7 +58,7 @@ TEST_F(ConsumerConfigTest, FromJsonFile_Basic)
             "log_level": "debug"
         },
         "channel":    "lab.test.channel",
-        "timeout_ms": 3000,
+        "slot_acquire_timeout_ms": 3000,
         "shm": { "enabled": true, "secret": 99999 },
         "script": { "path": "./script", "type": "python" },
         "validation": { "stop_on_script_error": true }
@@ -70,7 +70,7 @@ TEST_F(ConsumerConfigTest, FromJsonFile_Basic)
     EXPECT_EQ(cfg.consumer_name, "Logger");
     EXPECT_EQ(cfg.log_level,     "debug");
     EXPECT_EQ(cfg.channel,       "lab.test.channel");
-    EXPECT_EQ(cfg.timeout_ms,    3000);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms,    3000);
     EXPECT_TRUE(cfg.shm_enabled);
     EXPECT_EQ(cfg.shm_secret,    uint64_t{99999});
     EXPECT_EQ(cfg.script_path,   "./script");
@@ -224,7 +224,7 @@ TEST_F(ConsumerConfigTest, FromDirectory_Basic)
     write_file(cfg_path, R"({
         "consumer": { "uid": "CONS-DIRTEST-00000001", "name": "DirTest" },
         "channel":    "lab.dir.test",
-        "timeout_ms": 1000,
+        "slot_acquire_timeout_ms": 1000,
         "script": { "path": "./script", "type": "python" }
     })");
 
@@ -232,7 +232,7 @@ TEST_F(ConsumerConfigTest, FromDirectory_Basic)
 
     EXPECT_EQ(cfg.consumer_uid,  "CONS-DIRTEST-00000001");
     EXPECT_EQ(cfg.channel,       "lab.dir.test");
-    EXPECT_EQ(cfg.timeout_ms,    1000);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms,    1000);
 
     // from_directory() resolves relative script_path to absolute
     EXPECT_TRUE(fs::path(cfg.script_path).is_absolute())
@@ -248,7 +248,7 @@ TEST_F(ConsumerConfigTest, Validation_BadTimeoutThrows)
     write_file(cfg_path, R"({
         "consumer": { "uid": "CONS-VALTMO-00000001", "name": "ValTmo" },
         "channel":    "lab.val.tmo",
-        "timeout_ms": -5
+        "slot_acquire_timeout_ms": -5
     })");
     EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
                  std::runtime_error);

@@ -5,6 +5,7 @@
 #include "processor_config.hpp"
 
 #include "utils/actor_vault.hpp"    // ActorVault::open (reused for processor vault)
+#include "utils/hub_zmq_queue.hpp"  // kZmqDefaultBufferDepth
 #include "utils/logger.hpp"
 #include "utils/role_directory.hpp" // RoleDirectory — canonical directory layout
 #include "utils/uid_utils.hpp"      // has_processor_prefix, generate_processor_uid
@@ -89,7 +90,7 @@ bool load_broker_from_hub_dir(const std::string &hub_dir,
     return true;
 }
 
-} // anonymous namespace
+} // namespace
 
 // ============================================================================
 // Resolver methods
@@ -196,11 +197,11 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
 
     // ── Timing / policy ───────────────────────────────────────────────────────
     cfg.overflow_policy  = parse_overflow_policy(j.value("overflow_policy", "block"));
-    cfg.timeout_ms       = j.value("timeout_ms",       -1);
+    cfg.slot_acquire_timeout_ms = j.value("slot_acquire_timeout_ms", -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
-    if (cfg.timeout_ms < -1)
-        throw std::runtime_error("Processor config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
+    if (cfg.slot_acquire_timeout_ms < -1)
+        throw std::runtime_error("Processor config: 'slot_acquire_timeout_ms' must be >= -1 (-1=derive, 0=non-blocking, >0=ms)");
 
     cfg.target_period_ms = j.value("target_period_ms", 0);
     if (cfg.target_period_ms < 0)
@@ -229,6 +230,9 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
             cfg.out_shm_slot_count = shm["out"].value("slot_count", uint32_t{4});
             if (cfg.out_shm_enabled && cfg.out_shm_slot_count == 0)
                 throw std::runtime_error("Processor config: 'shm.out.slot_count' must be > 0");
+            cfg.out_shm_consumer_sync_policy = ::pylabhub::parse_consumer_sync_policy(
+                shm["out"].value("reader_sync_policy", std::string{"sequential"}),
+                "Processor config");
         }
     }
 
@@ -236,7 +240,7 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     cfg.in_transport        = parse_transport(j.value("in_transport", "shm"));
     cfg.zmq_in_endpoint     = j.value("zmq_in_endpoint", "");
     cfg.zmq_in_bind         = j.value("zmq_in_bind", false);
-    cfg.in_zmq_buffer_depth = j.value("in_zmq_buffer_depth", size_t{64});
+    cfg.in_zmq_buffer_depth = j.value("in_zmq_buffer_depth", hub::kZmqDefaultBufferDepth);
     cfg.in_zmq_packing      = j.value("in_zmq_packing", std::string{"aligned"});
 
     if (cfg.in_transport == Transport::Zmq && cfg.zmq_in_endpoint.empty())
@@ -253,8 +257,9 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     cfg.out_transport        = parse_transport(j.value("out_transport", "shm"));
     cfg.zmq_out_endpoint     = j.value("zmq_out_endpoint", "");
     cfg.zmq_out_bind         = j.value("zmq_out_bind", true);
-    cfg.out_zmq_buffer_depth = j.value("out_zmq_buffer_depth", size_t{64});
-    cfg.out_zmq_packing      = j.value("out_zmq_packing", std::string{"aligned"});
+    cfg.out_zmq_buffer_depth = j.value("out_zmq_buffer_depth", hub::kZmqDefaultBufferDepth);
+    cfg.out_zmq_packing          = j.value("out_zmq_packing",          std::string{"aligned"});
+    cfg.zmq_out_overflow_policy  = j.value("zmq_out_overflow_policy",  std::string{""});
 
     if (cfg.out_transport == Transport::Zmq && cfg.zmq_out_endpoint.empty())
         throw std::runtime_error(
@@ -265,6 +270,11 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
         throw std::runtime_error(
             "Processor config: invalid 'out_zmq_packing': '" + cfg.out_zmq_packing +
             "' (expected 'aligned' or 'packed')");
+    if (!cfg.zmq_out_overflow_policy.empty() &&
+        cfg.zmq_out_overflow_policy != "drop" && cfg.zmq_out_overflow_policy != "block")
+        throw std::runtime_error(
+            "Processor config: invalid 'zmq_out_overflow_policy': '" +
+            cfg.zmq_out_overflow_policy + "' (expected 'drop', 'block', or absent)");
 
     // ── Schemas ───────────────────────────────────────────────────────────────
     if (j.contains("in_slot_schema") && !j["in_slot_schema"].is_null())
@@ -278,7 +288,7 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
     if (j.contains("inbox_schema") && !j["inbox_schema"].is_null())
         cfg.inbox_schema_json = j["inbox_schema"];
     cfg.inbox_endpoint        = j.value("inbox_endpoint",        std::string{});
-    cfg.inbox_buffer_depth    = j.value("inbox_buffer_depth",    size_t{64});
+    cfg.inbox_buffer_depth    = j.value("inbox_buffer_depth",    hub::kZmqDefaultBufferDepth);
     cfg.inbox_overflow_policy = j.value("inbox_overflow_policy", std::string{"drop"});
     if (cfg.inbox_buffer_depth == 0)
         throw std::runtime_error("Processor config: 'inbox_buffer_depth' must be > 0");

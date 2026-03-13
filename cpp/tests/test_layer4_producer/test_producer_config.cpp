@@ -61,7 +61,7 @@ TEST_F(ProducerConfigTest, FromJsonFile_Basic)
         },
         "channel":     "lab.test.channel",
         "target_period_ms": 200,
-        "timeout_ms":  3000,
+        "slot_acquire_timeout_ms":  3000,
         "shm": { "enabled": true, "secret": 12345, "slot_count": 16 },
         "script": { "path": "./script", "type": "python" },
         "validation": { "update_checksum": true, "stop_on_script_error": true }
@@ -74,7 +74,7 @@ TEST_F(ProducerConfigTest, FromJsonFile_Basic)
     EXPECT_EQ(cfg.log_level,       "debug");
     EXPECT_EQ(cfg.channel,         "lab.test.channel");
     EXPECT_EQ(cfg.target_period_ms, 200);
-    EXPECT_EQ(cfg.timeout_ms,      3000);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms,      3000);
     EXPECT_TRUE(cfg.shm_enabled);
     EXPECT_EQ(cfg.shm_secret,      uint64_t{12345});
     EXPECT_EQ(cfg.shm_slot_count,  uint32_t{16});
@@ -290,7 +290,7 @@ TEST_F(ProducerConfigTest, Validation_BadTimeoutThrows)
     write_file(cfg_path, R"({
         "producer": { "uid": "PROD-VALTMO-00000001", "name": "ValTmo" },
         "channel": "lab.val.tmo",
-        "timeout_ms": -5
+        "slot_acquire_timeout_ms": -5
     })");
     EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
                  std::runtime_error);
@@ -580,6 +580,51 @@ TEST_F(ProducerConfigTest, ZmqPacking_InvalidValue_Throws)
         "producer": { "uid": "PROD-ZMQPKBAD-00000001", "name": "PkBad" },
         "channel":     "lab.pk.bad",
         "zmq_packing": "natural"
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── zmq_overflow_policy tests ────────────────────────────────────────────────
+
+TEST_F(ProducerConfigTest, ZmqOverflowPolicy_DefaultsDrop)
+{
+    const auto tmp      = unique_temp_dir("zmqovfl_def");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-ZMQOVDEF-00000001", "name": "OvDef" },
+        "channel": "lab.ov.default"
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_overflow_policy, "drop");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ZmqOverflowPolicy_ParsesBlock)
+{
+    const auto tmp      = unique_temp_dir("zmqovfl_block");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer":           { "uid": "PROD-ZMQOVBLK-00000001", "name": "OvBlock" },
+        "channel":            "lab.ov.block",
+        "transport":          "zmq",
+        "zmq_out_endpoint":   "tcp://127.0.0.1:5593",
+        "zmq_overflow_policy": "block"
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_overflow_policy, "block");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ZmqOverflowPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("zmqovfl_bad");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer":            { "uid": "PROD-ZMQOVBAD-00000001", "name": "OvBad" },
+        "channel":             "lab.ov.bad",
+        "zmq_overflow_policy": "neither"
     })");
     EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
                  std::runtime_error);
@@ -967,5 +1012,76 @@ TEST_F(ProducerConfigTest, Startup_ZeroTimeout_Throws)
     })");
     EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
                  std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── reader_sync_policy tests ─────────────────────────────────────────────────
+
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_def");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPDEF-00000001", "name": "RspDef" },
+        "channel":  "lab.rsp.def",
+        "shm": { "enabled": true, "slot_count": 8 }
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_ExplicitSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_seq");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPSEQ-00000001", "name": "RspSeq" },
+        "channel":  "lab.rsp.seq",
+        "shm": { "enabled": true, "slot_count": 8, "reader_sync_policy": "sequential" }
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_LatestOnly)
+{
+    const auto tmp      = unique_temp_dir("rsp_lo");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPLO-00000001", "name": "RspLo" },
+        "channel":  "lab.rsp.lo",
+        "shm": { "enabled": true, "slot_count": 8, "reader_sync_policy": "latest_only" }
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Latest_only);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("rsp_inv");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPINV-00000001", "name": "RspInv" },
+        "channel":  "lab.rsp.inv",
+        "shm": { "enabled": true, "slot_count": 8, "reader_sync_policy": "round_robin" }
+    })");
+    EXPECT_THROW(pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_NoShmBlock_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_noshm");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPNOSHM-00000001", "name": "RspNoShm" },
+        "channel":  "lab.rsp.noshm"
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
     fs::remove_all(tmp);
 }
