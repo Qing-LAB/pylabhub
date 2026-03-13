@@ -202,7 +202,7 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
             {"auth",      {{"keyfile", ""}}}
         }},
         {"channel",    channel},
-        {"timeout_ms", timeout_ms},
+        {"slot_acquire_timeout_ms", timeout_ms},
         {"shm", {
             {"enabled", true},
             {"secret",  kShmSecret}

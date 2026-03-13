@@ -655,7 +655,7 @@ DataBlock depends on these; their correctness must be covered before relying on 
 
 ### Scenario coverage matrix (summary)
 
-Coverage exists for: **ConsumerSyncPolicy** (Latest_only, Single_reader, Sync_reader); **DataBlockPolicy** (Single, DoubleBuffer, RingBuffer); ring capacity 1–4; **Physical page size** (Size4K, Size4M); logical unit size 0 and custom; **Flexible zone** (no zones, single zone, zone with spinlock); **ChecksumPolicy** (None, Manual, Enforced). Optional gaps: ring capacity >4, Size16M.
+Coverage exists for: **ConsumerSyncPolicy** (Latest_only, Sequential, Sequential_sync); **DataBlockPolicy** (Single, DoubleBuffer, RingBuffer); ring capacity 1–4; **Physical page size** (Size4K, Size4M); logical unit size 0 and custom; **Flexible zone** (no zones, single zone, zone with spinlock); **ChecksumPolicy** (None, Manual, Enforced). Optional gaps: ring capacity >4, Size16M.
 
 ### Summary
 

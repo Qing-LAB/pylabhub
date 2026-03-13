@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 namespace pylabhub::hub
@@ -37,6 +38,26 @@ enum class OverflowPolicy
     Block, ///< Back-pressure: block until output becomes available
     Drop,  ///< Best-effort: drop input slot when output is full
 };
+
+/**
+ * @brief Parse a JSON string value into an OverflowPolicy enum.
+ *
+ * Shared by all three role config parsers (producer, processor, consumer) to
+ * avoid duplicating the same string → enum logic in each .cpp file.
+ *
+ * @param s        JSON string value ("drop" or "block").
+ * @param context  Caller context for error messages (e.g. "Producer config").
+ * @return Parsed OverflowPolicy.
+ * @throws std::runtime_error on unknown value.
+ */
+inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *context = "config")
+{
+    if (s == "drop")  return OverflowPolicy::Drop;
+    if (s == "block") return OverflowPolicy::Block;
+    throw std::runtime_error(
+        std::string(context) + ": invalid overflow policy = '" + s +
+        "' (expected 'drop' or 'block')");
+}
 
 /**
  * @struct QueueMetrics

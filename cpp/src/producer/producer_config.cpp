@@ -5,6 +5,7 @@
 #include "producer_config.hpp"
 
 #include "utils/actor_vault.hpp"    // ActorVault::open (reused for producer vault)
+#include "utils/hub_zmq_queue.hpp"  // kZmqDefaultBufferDepth
 #include "utils/role_directory.hpp" // RoleDirectory — canonical directory layout
 #include "utils/uid_utils.hpp"      // has_producer_prefix, generate_producer_uid
 
@@ -15,6 +16,7 @@
 
 namespace pylabhub::producer
 {
+
 
 // ============================================================================
 // ProducerAuthConfig::load_keypair
@@ -107,15 +109,15 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
 
     // ── Timing ────────────────────────────────────────────────────────────────
     cfg.target_period_ms      = j.value("target_period_ms",      100);
-    cfg.timeout_ms            = j.value("timeout_ms",            -1);
+    cfg.slot_acquire_timeout_ms = j.value("slot_acquire_timeout_ms", -1);
     cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
 
     if (cfg.target_period_ms < 0) {
         throw std::runtime_error("Producer config: 'target_period_ms' must be >= 0");
     }
-    if (cfg.timeout_ms < -1) {
+    if (cfg.slot_acquire_timeout_ms < -1) {
         throw std::runtime_error(
-            "Producer config: 'timeout_ms' must be >= -1 (-1=infinite, 0=non-blocking, >0=ms)");
+            "Producer config: 'slot_acquire_timeout_ms' must be >= -1 (-1=derive, 0=non-blocking, >0=ms)");
     }
 
     if (j.contains("loop_timing")) {
@@ -141,8 +143,9 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
 
     cfg.zmq_out_endpoint = j.value("zmq_out_endpoint", "");
     cfg.zmq_out_bind     = j.value("zmq_out_bind",     true);
-    cfg.zmq_buffer_depth = j.value("zmq_buffer_depth", size_t{64});
-    cfg.zmq_packing      = j.value("zmq_packing",      std::string{"aligned"});
+    cfg.zmq_buffer_depth    = j.value("zmq_buffer_depth",    hub::kZmqDefaultBufferDepth);
+    cfg.zmq_packing         = j.value("zmq_packing",         std::string{"aligned"});
+    cfg.zmq_overflow_policy = j.value("zmq_overflow_policy", std::string{"drop"});
 
     if (cfg.zmq_packing != "aligned" && cfg.zmq_packing != "packed")
         throw std::runtime_error(
@@ -154,6 +157,10 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
             "Producer config: 'transport' is 'zmq' but 'zmq_out_endpoint' is missing or empty");
     if (cfg.zmq_buffer_depth == 0)
         throw std::runtime_error("Producer config: 'zmq_buffer_depth' must be > 0");
+    if (cfg.zmq_overflow_policy != "drop" && cfg.zmq_overflow_policy != "block")
+        throw std::runtime_error(
+            "Producer config: invalid 'zmq_overflow_policy': '" + cfg.zmq_overflow_policy +
+            "' (expected 'drop' or 'block')");
 
     // ── SHM ───────────────────────────────────────────────────────────────────
     if (j.contains("shm") && j["shm"].is_object())
@@ -164,6 +171,9 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
         cfg.shm_slot_count = shm.value("slot_count", uint32_t{8});
         if (cfg.shm_enabled && cfg.shm_slot_count == 0)
             throw std::runtime_error("Producer config: 'shm.slot_count' must be > 0");
+        cfg.shm_consumer_sync_policy = ::pylabhub::parse_consumer_sync_policy(
+            shm.value("reader_sync_policy", std::string{"sequential"}),
+            "Producer config");
     }
 
     // ── Schemas ───────────────────────────────────────────────────────────────
@@ -176,7 +186,7 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
     if (j.contains("inbox_schema") && !j["inbox_schema"].is_null())
         cfg.inbox_schema_json = j["inbox_schema"];
     cfg.inbox_endpoint          = j.value("inbox_endpoint",          std::string{});
-    cfg.inbox_buffer_depth      = j.value("inbox_buffer_depth",      size_t{64});
+    cfg.inbox_buffer_depth      = j.value("inbox_buffer_depth",      hub::kZmqDefaultBufferDepth);
     cfg.inbox_overflow_policy   = j.value("inbox_overflow_policy",   std::string{"drop"});
     if (cfg.inbox_buffer_depth == 0)
         throw std::runtime_error("Producer config: 'inbox_buffer_depth' must be > 0");

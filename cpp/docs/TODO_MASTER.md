@@ -35,7 +35,7 @@ Completed 2026-03-12:
 - [x] 22 L2 tests: `RoleDirectoryTest` (18) + `RoleCliTest` (8) + security warning (4) → 1107/1108 ✅
 
 ### Priority -1 (CLOSED — 2026-03-12): Hub-Dead ZMQ Monitor + StopReason Fix
-📍 **Status**: ✅ CLOSED — ZMQ socket monitor path implemented; StopReason ordering restored; **1084/1085 tests** (1 pre-existing timing flake)
+📍 **Status**: ✅ CLOSED — ZMQ socket monitor path implemented; StopReason ordering restored; **1120/1120 tests** (2026-03-12: +3 tests for MR-09/LOW-2/MR-08)
 
 **Completed 2026-03-12:**
 - [x] Restored `handle_command(ConnectCmd&, ...)` in `messenger.cpp` (accidentally deleted by prior agent) ✅
@@ -176,7 +176,7 @@ Completed:
 
 Completed:
 - [x] Application-oriented README update: API layers, four binaries, CLI flags, config model, C++ vs Python paths,
-  getting started guide, five communication planes — root `README.md` + `share/demo/README.md` (2026-03-05)
+  getting started guide, five communication planes — root `README.md` + `share/py-demo-single-processor-shm/README.md` (2026-03-05)
 
 ---
 
@@ -207,13 +207,15 @@ Completed:
 | ZMQ Virtual Channel Node | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Virtual-Channel-Node.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, ChannelHandle, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
-**Active code reviews:**
-- `docs/code_review/REVIEW_FullSource_2026-03-06.md` — ✅ CLOSED 2026-03-12. All 47 items resolved: 28 fixed, 10 false positives, 9 accepted/by-design. Last batch: #33 (seq_cst fences correct+necessary), #42 (abort pre-existing), #44 (FIXED by HEP-0024), #12 (accepted — no in-process repair strategy for interconnected roles; graceful coordinated shutdown is the only sound model).
-- `docs/code_review/review_high_level.md` — HIGH-1 ✅ FIXED 2026-03-11 (admin token security: removed from hub.json, vault-only via set_admin_token()); HIGH-2 ✅ FIXED 2026-03-11 (interval_ms→target_period_ms, script.type added to all --init templates, CLI tests extended, README hub.json corrected); HIGH-3 ✅ FIXED 2026-03-11 (misleading WARN removed — processor loop is correctly demand-driven). MEDIUM/LOW items remain open.
-- `docs/code_review/review_design_and_code.md` — ❌ NEEDS FORMAL TRIAGE. 6 P1/P2 findings (see Priority 0 above). Must be promoted to REVIEW_DesignAndCode_2026-03-09.md with proper status table.
-- `docs/code_review/REVIEW_DataHubInbox_2026-03-09.md` — ✅ CLOSED 2026-03-09, archived to `docs/archive/transient-2026-03-09/`.
-- `docs/code_review/REVIEW_Processor_2026-03-10.md` — ✅ CLOSED 2026-03-10 (all 20 items; PR-17 false positive).
-- `docs/code_review/REVIEW_DeepStack_2026-03-10.md` — ✅ CLOSED 2026-03-10 (16 findings; 13 fixed, 3 deferred to API_TODO.md).
+**Active code reviews:** None — all closed and archived to `docs/archive/transient-2026-03-12/` (2026-03-12).
+
+Previously closed (archived):
+- `REVIEW_FullSource_2026-03-06.md` — ✅ CLOSED 2026-03-12 (archived)
+- `review_high_level.md` — ✅ CLOSED 2026-03-12 (all HIGH/MEDIUM/LOW resolved; archived)
+- `REVIEW_DesignAndCode_2026-03-09.md` — ✅ CLOSED 2026-03-10 (archived 2026-03-12)
+- `REVIEW_DataHubInbox_2026-03-09.md` — ✅ CLOSED 2026-03-09, archived `transient-2026-03-09/`
+- `REVIEW_FullStack_2026-03-10.md`, `REVIEW_FullStack2_2026-03-10.md`, `REVIEW_Processor_2026-03-10.md`, `REVIEW_DeepStack_2026-03-10.md` — all ✅ CLOSED 2026-03-10 (archived 2026-03-12)
+- `gemini_review.md` — triaged 2026-03-12 (5 stale/FP, 2 fixed, 1 accepted, 1 open→API_TODO; archived)
 
 **Security fixes applied (2026-03-06):** SHM-C1 (heartbeat CAS uid/name write-before-CAS → data corruption), IPC-C3 (thread lambda `this`-capture → use-after-move), SVC-C1 (vault_crypto key not zeroed), SVC-C2/C3 (hub_vault sec+admin token buffers not zeroed), HDR-C1 (namespace outside `#ifdef __cplusplus`). See `REVIEW_codebase_2026-03-06.md` for full triage.
 
@@ -223,7 +225,7 @@ Completed:
 - #22 (zmq_context.cpp): Use-after-free — swapped `delete ctx` / `g_context.store(nullptr)` order. Now stores nullptr FIRST so no thread can observe a valid pointer to freed memory.
 - #2 (python_interpreter.cpp): TOCTOU in `exec()` — added second `ready_` check after acquiring exec_mu AND GIL. Since `release_namespace()` needs the GIL, the check after GIL acquisition is authoritative and race-free.
 
-**Closed non-issues (2026-03-06, session 2):** SHM-C2 (write_index burned on timeout) — analyzed and documented in `data_block.cpp`. For `Latest_only`: fully immune (reads commit_index). For `Single_reader`: stale-data read is possible only with `acquire_timeout_ms==0` (non-blocking) + slow reader — NOT a supported production configuration. Documented per-policy impact in source.
+**Closed non-issues (2026-03-06, session 2):** SHM-C2 (write_index burned on timeout) — analyzed and documented in `data_block.cpp`. For `Latest_only`: fully immune (reads commit_index). For `Sequential`: stale-data read is possible only with `acquire_timeout_ms==0` (non-blocking) + slow reader — NOT a supported production configuration. Documented per-policy impact in source.
 
 **Remaining deferred items:** IPC-C2/H5 (zmq_context check-then-store — ✅ now fixed as #22); IPC-H3 (callback data race — documented design contract). Full backlog of 38 open review items in REVIEW_FullSource_2026-03-06.md.
 
@@ -252,7 +254,7 @@ See `docs/todo/README.md` for full list and archiving history.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Dual-hub bridge demo (`share/demo-dual-hub/`) | ✅ Complete | ProcessorConfig transport fields + ProcessorScriptHost ZMQ path + L3 ShmInZmqOut/ZmqInShmOut tests + 6-process demo configs/scripts/run_demo.sh — 2026-03-11. |
+| Dual-hub bridge demo (`share/py-demo-dual-processor-bridge/`) | ✅ Complete | ProcessorConfig transport fields + ProcessorScriptHost ZMQ path + L3 ShmInZmqOut/ZmqInShmOut tests + 6-process demo configs/scripts/run_demo.sh — 2026-03-11. |
 | HEP-0022 Phase 5+6: HubScript federation callbacks | ✅ Complete | `on_hub_connected`, `on_hub_disconnected`, `on_hub_message`, `api.notify_hub()` fully wired in `hub_script.cpp` + `hub_script_api.cpp` + `hubshell.cpp`. Confirmed 2026-03-06. |
 | Security: IPC-H2 BrokerService key zeroing | ✅ Fixed (2026-03-06) | `~BrokerServiceImpl()` zeros `server_secret_z85` + `cfg.server_secret_key` via `sodium_memzero`. |
 

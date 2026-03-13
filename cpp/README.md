@@ -30,7 +30,7 @@ ctest --test-dir build -j2
 ### Run the demo pipeline
 
 ```bash
-bash share/demo/run_demo.sh     # hub + producer + processor + consumer
+bash share/py-demo-single-processor-shm/run_demo.sh     # hub + producer + processor + consumer
                                 # Ctrl-C to stop all four
 ```
 
@@ -268,7 +268,7 @@ pylabhub-consumer --init my_consumer --name TempMonitor
 pylabhub-consumer my_consumer
 ```
 
-For a working example with all configs pre-filled, see `share/demo/`.
+For a working example with all configs pre-filled, see `share/py-demo-single-processor-shm/`.
 
 ## Five Communication Planes
 
@@ -288,6 +288,6 @@ For a working example with all configs pre-filled, see `share/demo/`.
 | `docs/HEP/` | Authoritative design specifications (HEP-CORE-0001 through 0020) |
 | `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md` | SHM layout, protocol, architecture layers |
 | `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md` | Pipeline topologies and communication planes |
-| `share/demo/` | Working four-process demo with pre-filled configs |
+| `share/py-demo-single-processor-shm/` | Working four-process demo with pre-filled configs |
 | `examples/` | C++ RAII API examples (opt-in: `-DPYLABHUB_BUILD_EXAMPLES=ON`) |
 | `CLAUDE.md` | Build commands, project rules, architecture reference |

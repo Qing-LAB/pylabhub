@@ -1132,4 +1132,71 @@ ModuleDef Logger::GetLifecycleModule()
     return module;
 }
 
+ModuleDef Logger::GetStartupLogFileSinkModule(
+    const std::string &log_file_path,
+    std::optional<RotatingLogConfig> rotating)
+{
+    ModuleDef sink_mod("StartupLogFileSink");
+    sink_mod.add_dependency("pylabhub::utils::Logger");
+
+    if (rotating)
+    {
+        // Encode rotation parameters into the callback arg string as
+        // "path|max_size|max_backups" since LifecycleCallback only accepts
+        // a single const char* argument.
+        const std::string encoded_arg = log_file_path + '|' +
+                                        std::to_string(rotating->max_file_size_bytes) + '|' +
+                                        std::to_string(rotating->max_backup_files);
+        sink_mod.set_startup(
+            [](const char *arg)
+            {
+                if (!arg || arg[0] == '\0')
+                    return;
+
+                // Parse "path|max_size|max_backups".
+                const std::string encoded(arg);
+                const auto sep1 = encoded.find('|');
+                const auto sep2 = encoded.find('|', sep1 + 1);
+                if (sep1 == std::string::npos || sep2 == std::string::npos)
+                {
+                    std::fprintf(stderr, "WARNING: StartupLogFileSink: malformed rotating "
+                                 "logfile arg '%s'\n", arg);
+                    return;
+                }
+
+                const std::string path        = encoded.substr(0, sep1);
+                const size_t      max_size    = std::stoull(
+                    encoded.substr(sep1 + 1, sep2 - sep1 - 1));
+                const size_t      max_backups = std::stoull(encoded.substr(sep2 + 1));
+
+                std::error_code ec;
+                if (!Logger::instance().set_rotating_logfile(path, max_size, max_backups, ec))
+                {
+                    std::fprintf(stderr, "WARNING: failed to open rotating log file '%s': %s, "
+                                 "falling back to console\n", path.c_str(), ec.message().c_str());
+                }
+            },
+            encoded_arg);
+    }
+    else
+    {
+        // Plain append-mode log file.
+        sink_mod.set_startup(
+            [](const char *path)
+            {
+                if (path && path[0] != '\0')
+                {
+                    if (!Logger::instance().set_logfile(path))
+                    {
+                        std::fprintf(stderr, "WARNING: failed to open log file '%s', "
+                                     "falling back to console\n", path);
+                    }
+                }
+            },
+            log_file_path);
+    }
+
+    return sink_mod;
+}
+
 } // namespace pylabhub::utils

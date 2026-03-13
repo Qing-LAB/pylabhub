@@ -178,7 +178,7 @@ config.flex_zone_size = 4096;  // 1 page (4K)
 
 // Other required fields
 config.policy = DataBlockPolicy::RingBuffer;
-config.consumer_sync_policy = ConsumerSyncPolicy::Single_reader;
+config.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
 config.checksum_type = ChecksumType::BLAKE2b;
 config.checksum_policy = ChecksumPolicy::Enforced;
 ```

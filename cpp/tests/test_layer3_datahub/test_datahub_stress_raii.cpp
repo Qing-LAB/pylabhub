@@ -16,10 +16,10 @@
  *     runs under realistic scheduling jitter rather than tight-loop conditions.
  *
  * **Test 2: SingleReaderBackpressure**
- *   - 1 producer + 1 consumer, Single_reader policy; ring capacity = 8.
+ *   - 1 producer + 1 consumer, Sequential policy; ring capacity = 8.
  *   - Consumer adds 0–20 ms delays to force producer to block when ring is full.
  *   - All 100 slots must be delivered in exact sequence order (no loss guaranteed
- *     by Single_reader). Every slot's payload and checksum is verified.
+ *     by Sequential). Every slot's payload and checksum is verified.
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"

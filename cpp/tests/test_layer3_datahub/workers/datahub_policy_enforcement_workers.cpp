@@ -412,7 +412,7 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
 }
 
 // ============================================================================
-// Heartbeat: both Latest_only and Sync_reader register heartbeat
+// Heartbeat: both Latest_only and Sequential_sync register heartbeat
 // ============================================================================
 
 int all_policy_consumers_have_heartbeat()
@@ -421,7 +421,7 @@ int all_policy_consumers_have_heartbeat()
         []()
         {
             std::string ch = make_test_channel_name("PolicyHb3");
-            auto cfg = make_config(ConsumerSyncPolicy::Sync_reader, ChecksumPolicy::Enforced, 80012);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential_sync, ChecksumPolicy::Enforced, 80012);
 
             auto producer = create_datablock_producer<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
@@ -438,7 +438,7 @@ int all_policy_consumers_have_heartbeat()
             uint32_t after_first = diag->header()->active_consumer_count.load(std::memory_order_acquire);
             EXPECT_EQ(after_first, 1u) << "First consumer registered";
 
-            // Second consumer (still Sync_reader — same config)
+            // Second consumer (still Sequential_sync — same config)
             auto consumer_b = find_datablock_consumer<PolicyFlexZone, PolicyData>(
                 ch, cfg.shared_secret, cfg);
             ASSERT_NE(consumer_b, nullptr);
@@ -460,7 +460,7 @@ int all_policy_consumers_have_heartbeat()
 }
 
 // ============================================================================
-// Sync_reader: producer blocks when consumer is behind
+// Sequential_sync: producer blocks when consumer is behind
 // ============================================================================
 
 int sync_reader_producer_respects_consumer_position()
@@ -472,7 +472,7 @@ int sync_reader_producer_respects_consumer_position()
             // 1-slot ring to make backpressure immediate
             DataBlockConfig cfg{};
             cfg.policy = DataBlockPolicy::RingBuffer;
-            cfg.consumer_sync_policy = ConsumerSyncPolicy::Sync_reader;
+            cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential_sync;
             cfg.shared_secret = 80020;
             cfg.ring_buffer_capacity = 1;
             cfg.physical_page_size = DataBlockPageSize::Size4K;
@@ -512,7 +512,7 @@ int sync_reader_producer_respects_consumer_position()
                         break;
                     }
                 });
-            EXPECT_TRUE(timed_out) << "Producer should time out when Sync_reader consumer is behind";
+            EXPECT_TRUE(timed_out) << "Producer should time out when Sequential_sync consumer is behind";
 
             // Consumer reads — unblocks producer
             bool read_ok = false;

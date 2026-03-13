@@ -225,7 +225,7 @@ inline uint64_t get_write_index(const SharedMemoryHeader* header) noexcept {
 }
 
 /**
- * Get the current read index (for Single_reader policy).
+ * Get the current read index (for Sequential policy).
  */
 inline uint64_t get_read_index(const SharedMemoryHeader* header) noexcept {
     return (header != nullptr) ? header->read_index.load(std::memory_order_acquire) : 0;
@@ -316,7 +316,7 @@ using pylabhub::hub::detail::PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 
 constexpr uint64_t INVALID_SLOT_ID = std::numeric_limits<uint64_t>::max();
 
-/// Sync_reader: pointer to the slot_index-th consumer's next-read slot id in reserved_header.
+/// Sequential_sync: pointer to the slot_index-th consumer's next-read slot id in reserved_header.
 inline std::atomic<uint64_t> *consumer_next_read_slot_ptr(SharedMemoryHeader *header,
                                                           size_t slot_index)
 {
@@ -394,7 +394,7 @@ inline const char *slot_buffer_ptr(const char *base, size_t slot_index, size_t s
 }
 
 /**
- * Policy-based next slot to read. Single place for Latest_only / Single_reader / Sync_reader.
+ * Policy-based next slot to read. Single place for Latest_only / Sequential / Sequential_sync.
  * Used by DataBlockConsumer::acquire_consume_slot.
  * @return Next slot_id to try, or INVALID_SLOT_ID if none available yet.
  */
@@ -412,7 +412,7 @@ inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLIN
         }
         return next;
     }
-    if (policy == ConsumerSyncPolicy::Single_reader)
+    if (policy == ConsumerSyncPolicy::Sequential)
     {
         uint64_t const commit = header->commit_index.load(std::memory_order_acquire);
         if (commit == INVALID_SLOT_ID)
@@ -426,7 +426,7 @@ inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLIN
         }
         return next;
     }
-    // Sync_reader
+    // Sequential_sync
     if (heartbeat_slot < 0 || heartbeat_slot >= static_cast<int>(MAX_CONSUMER_HEARTBEATS))
     {
         return INVALID_SLOT_ID;

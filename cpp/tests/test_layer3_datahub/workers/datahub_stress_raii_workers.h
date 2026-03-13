@@ -13,7 +13,7 @@
 //      Ring capacity = 32 slots ⇒ ≈15 full wraparounds.
 //      Verifies: BLAKE2b (enforced), app-level byte-pattern, monotone sequence.
 //
-//   2. SingleReaderBackpressure (Single_reader):
+//   2. SingleReaderBackpressure (Sequential):
 //      Producer writes kNumSlotsBP slots; ring capacity = 8.
 //      Consumer adds 0–20 ms random delays, forcing producer to block.
 //      Verifies: ALL slots delivered in exact order, zero checksum failures.
@@ -45,20 +45,20 @@ int stress_consumer(int argc, char **argv);
 
 /**
  * Single-reader back-pressure orchestrator.
- * Spawns one producer + one consumer (Single_reader); waits for both; checks results.
+ * Spawns one producer + one consumer (Sequential); waits for both; checks results.
  * argv[2] = channel_name
  */
 int backpressure_orchestrator(int argc, char **argv);
 
 /**
- * Back-pressure producer sub-worker (Single_reader): writes kNumSlotsBP slots;
+ * Back-pressure producer sub-worker (Sequential): writes kNumSlotsBP slots;
  * blocks when ring is full; random 0–5 ms delays.
  * argv[2] = channel_name
  */
 int backpressure_producer(int argc, char **argv);
 
 /**
- * Back-pressure consumer sub-worker (Single_reader): reads exactly kNumSlotsBP slots
+ * Back-pressure consumer sub-worker (Sequential): reads exactly kNumSlotsBP slots
  * in strict order with random 0–20 ms delays, verifying every byte and checksum.
  * argv[2] = channel_name
  */

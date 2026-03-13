@@ -1,8 +1,38 @@
 #include "data_block_internal.hpp"
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace pylabhub::hub
 {
 using namespace internal;
+
+// ============================================================================
+// system_page_size — runtime OS page size query
+// ============================================================================
+
+DataBlockPageSize system_page_size()
+{
+    long page_bytes = 4096; // fallback
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    page_bytes = static_cast<long>(si.dwPageSize);
+#else
+    const long sc = sysconf(_SC_PAGESIZE);
+    if (sc > 0)
+        page_bytes = sc;
+#endif
+    const auto ps = static_cast<size_t>(page_bytes);
+    if (ps <= to_bytes(DataBlockPageSize::Size4K))
+        return DataBlockPageSize::Size4K;
+    if (ps <= to_bytes(DataBlockPageSize::Size4M))
+        return DataBlockPageSize::Size4M;
+    return DataBlockPageSize::Size16M;
+}
 
 // ============================================================================
 // DataBlockLayout – single control surface for memory model
@@ -363,7 +393,7 @@ class DataBlock
         }
         if (config.consumer_sync_policy == ConsumerSyncPolicy::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly (Latest_only, Single_reader, or Sync_reader).", name);
+            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly (Latest_only, Sequential, or Sequential_sync).", name);
             throw std::invalid_argument("DataBlockConfig::consumer_sync_policy must be set explicitly");
         }
         if (config.physical_page_size == DataBlockPageSize::Unset)
@@ -494,7 +524,7 @@ class DataBlock
 
         // Phase 2 refactoring: Single flex zone, no need to populate flexible_zone_info map
 
-        // Sync_reader: initialize per-consumer read positions in reserved_header
+        // Sequential_sync: initialize per-consumer read positions in reserved_header
         for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
         {
             consumer_next_read_slot_ptr(m_header, i)->store(0, std::memory_order_release);
@@ -969,7 +999,7 @@ struct SlotConsumeHandleImpl
     bool mark_as_consumed = false;    // Set by release_consume_slot(); guards last_consumed_slot_id update
     SlotRWState *rw_state = nullptr;  // Pointer to the SlotRWState for this slot
     uint64_t captured_generation = 0; // Captured generation for validation
-    int consumer_heartbeat_slot = -1; // For Sync_reader: which consumer slot to update on release
+    int consumer_heartbeat_slot = -1; // For Sequential_sync: which consumer slot to update on release
     /// Per-handle acquire timestamp for last_slot_work_us (symmetric with SlotWriteHandleImpl).
     ContextMetrics::Clock::time_point t_slot_acquired_{};
 };
@@ -1061,7 +1091,7 @@ struct DataBlockConsumerImpl
     // Single flexible zone (Phase 2 refactoring)
     size_t flex_zone_offset = 0;
     size_t flex_zone_size = 0;
-    int heartbeat_slot = -1; // For Sync_reader: index into consumer_heartbeats / read positions
+    int heartbeat_slot = -1; // For Sequential_sync: index into consumer_heartbeats / read positions
     // Consumer identity written to the heartbeat slot during register_heartbeat().
     // Must be populated BEFORE register_heartbeat() is called (set in find_datablock_consumer_impl).
     char consumer_uid_buf[40]{};   // Null-terminated hex string; empty = not set
@@ -1463,7 +1493,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     const auto t_entry = ContextMetrics::Clock::now();
 
     const ConsumerSyncPolicy policy = header->consumer_sync_policy;
-    if (policy == ConsumerSyncPolicy::Single_reader || policy == ConsumerSyncPolicy::Sync_reader)
+    if (policy == ConsumerSyncPolicy::Sequential || policy == ConsumerSyncPolicy::Sequential_sync)
     {
         auto start_time = pylabhub::platform::monotonic_time_ns();
         int iteration = 0;
@@ -1502,7 +1532,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     // multi-writer support, two changes are required before touching this code:
     //   1. update_commit_index() must be a max-CAS (not plain store) to handle out-of-order
     //      commits from concurrent writers.
-    //   2. Consumer read sequencing (latest slot_id tracking, Single_reader ordering) must
+    //   2. Consumer read sequencing (latest slot_id tracking, Sequential ordering) must
     //      be redesigned for the multi-writer commit ordering that results.
     // Do not extend to multi-writer without fully resolving both protocols first.
     uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel); // claim unique slot_id
@@ -1796,17 +1826,17 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         success = false; // Cannot release if state is invalid
     }
 
-    // 4. Advance read position for Single_reader / Sync_reader
+    // 4. Advance read position for Sequential / Sequential_sync
     if (success && impl.header != nullptr)
     {
         SharedMemoryHeader *header = impl.header;
         const ConsumerSyncPolicy policy = header->consumer_sync_policy;
         const uint64_t next = impl.slot_id + 1;
-        if (policy == ConsumerSyncPolicy::Single_reader)
+        if (policy == ConsumerSyncPolicy::Sequential)
         {
             header->read_index.store(next, std::memory_order_release);
         }
-        else if (policy == ConsumerSyncPolicy::Sync_reader && impl.consumer_heartbeat_slot >= 0 &&
+        else if (policy == ConsumerSyncPolicy::Sequential_sync && impl.consumer_heartbeat_slot >= 0 &&
                  impl.consumer_heartbeat_slot < static_cast<int>(MAX_CONSUMER_HEARTBEATS))
         {
             consumer_next_read_slot_ptr(header, static_cast<size_t>(impl.consumer_heartbeat_slot))
@@ -2096,11 +2126,11 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     uint64_t captured_generation = 0;
     SlotAcquireResult acquire_res{};
 
-    // Sync_reader: heartbeat is registered at construction time (find_datablock_consumer_impl).
+    // Sequential_sync: heartbeat is registered at construction time (find_datablock_consumer_impl).
     // Read position is initialized there too. If heartbeat registration failed (pool exhausted),
     // the warning was already logged once at construction — only increment metric here to avoid
     // flooding the log on every acquire call.
-    if (policy == ConsumerSyncPolicy::Sync_reader && pImpl->heartbeat_slot < 0)
+    if (policy == ConsumerSyncPolicy::Sequential_sync && pImpl->heartbeat_slot < 0)
     {
         detail::increment_metric_slot_acquire_errors(header);
         return nullptr;
@@ -2183,7 +2213,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     auto handle_impl = make_slot_consume_handle_impl(
         pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
         buf, slot_stride_bytes, rw_state, captured_generation,
-        (policy == ConsumerSyncPolicy::Sync_reader) ? pImpl->heartbeat_slot : -1);
+        (policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
     handle_impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_work_us
 
     // Note: last_consumed_slot_id is NOT updated here. It is updated only when the slot is
@@ -2243,7 +2273,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     auto handle_impl = make_slot_consume_handle_impl(
         pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
         buf, slot_stride_bytes, rw_state, captured_generation,
-        (header->consumer_sync_policy == ConsumerSyncPolicy::Sync_reader) ? pImpl->heartbeat_slot : -1);
+        (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
     handle_impl->t_slot_acquired_ = ContextMetrics::Clock::now(); // per-handle anchor for last_slot_work_us
 
     // Note: last_consumed_slot_id updated only on explicit release_consume_slot() call.
@@ -2761,7 +2791,7 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
     
     // Register consumer heartbeat — enforced for all consumer sync policies.
     // Heartbeat slot provides liveness signal for all consumers (broker visibility).
-    // For Sync_reader: also serves as read-position cursor index in reserved_header.
+    // For Sequential_sync: also serves as read-position cursor index in reserved_header.
     int heartbeat_slot = consumer->register_heartbeat();
 
     if (heartbeat_slot < 0)
@@ -2774,16 +2804,16 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
     {
         LOGGER_DEBUG("[DataBlock:{}] Consumer registered heartbeat slot {}", name, heartbeat_slot);
 
-        // Sync_reader: initialize per-consumer read position at join time (join-at-latest).
+        // Sequential_sync: initialize per-consumer read position at join time (join-at-latest).
         // Read position is stored in reserved_header at the heartbeat slot index.
         // Previously done lazily in acquire_consume_slot; moved here so position is valid
         // from the moment the consumer is created, before the first acquire call.
-        if (header->consumer_sync_policy == ConsumerSyncPolicy::Sync_reader)
+        if (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync)
         {
             uint64_t join_at = header->commit_index.load(std::memory_order_acquire);
             consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
                 ->store((join_at != INVALID_SLOT_ID) ? join_at : 0, std::memory_order_release);
-            LOGGER_DEBUG("[DataBlock:{}] Sync_reader consumer join-at position: {}", name,
+            LOGGER_DEBUG("[DataBlock:{}] Sequential_sync consumer join-at position: {}", name,
                          (join_at != INVALID_SLOT_ID) ? join_at : 0ULL);
         }
     }

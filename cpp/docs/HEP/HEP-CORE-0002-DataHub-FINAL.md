@@ -473,7 +473,7 @@ sequenceDiagram
 │ │   [  0.. 31] Header layout hash (BLAKE2b-256)  │ │
 │ │   [ 32.. 63] Layout checksum (BLAKE2b-256)     │ │
 │ │   [ 64..127] Consumer read positions (8×u64,   │ │
-│ │              Sync_reader next-read slot ids)   │ │
+│ │              Sequential_sync next-read slot ids)   │ │
 │ │   [128..143] Producer heartbeat:               │ │
 │ │              producer_pid (u64) +              │ │
 │ │              producer_last_heartbeat_ns (u64)  │ │
@@ -542,7 +542,7 @@ inline constexpr size_t   CHECKSUM_BYTES                    = 32;
 // reserved_header sub-field offsets (byte offsets within reserved_header[]):
 inline constexpr size_t   HEADER_LAYOUT_HASH_OFFSET         = 0;   // BLAKE2b-256 (32 bytes)
 inline constexpr size_t   LAYOUT_CHECKSUM_OFFSET            = 32;  // BLAKE2b-256 (32 bytes)
-inline constexpr size_t   CONSUMER_READ_POSITIONS_OFFSET    = 64;  // 8 x u64 (Sync_reader)
+inline constexpr size_t   CONSUMER_READ_POSITIONS_OFFSET    = 64;  // 8 x u64 (Sequential_sync)
 inline constexpr size_t   PRODUCER_HEARTBEAT_OFFSET         = 128; // pid(u64) + ts_ns(u64)
 inline constexpr uint64_t PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS = 5'000'000'000ULL; // 5 s
 
@@ -564,7 +564,7 @@ struct alignas(4096) SharedMemoryHeader {
 
     // === Ring Buffer Configuration ===
     DataBlockPolicy         policy;               // Single / DoubleBuffer / RingBuffer
-    ConsumerSyncPolicy      consumer_sync_policy; // Latest_only / Single_reader / Sync_reader
+    ConsumerSyncPolicy      consumer_sync_policy; // Latest_only / Sequential / Sequential_sync
     uint32_t physical_page_size;   // Physical page size (bytes); allocation granularity
     uint32_t logical_unit_size;    // Effective per-slot user data stride (bytes); always a non-zero multiple
                                    // of 64 (cache-line size). Any requested value is rounded up to the next
@@ -579,7 +579,7 @@ struct alignas(4096) SharedMemoryHeader {
     // === Ring Buffer State (Hot Path) ===
     std::atomic<uint64_t> write_index;          // Next slot to write (producer)
     std::atomic<uint64_t> commit_index;         // Last committed slot (producer)
-    std::atomic<uint64_t> read_index;           // Oldest unread slot (Sync/Single_reader)
+    std::atomic<uint64_t> read_index;           // Oldest unread slot (Sequential/Sequential_sync)
     std::atomic<uint32_t> active_consumer_count;
 
     // === Metrics Section ===
@@ -663,7 +663,7 @@ struct alignas(4096) SharedMemoryHeader {
     // Fixed-offset sub-fields within reserved_header[]:
     //   [  0.. 31] Header layout hash  (BLAKE2b-256; protocol version check)
     //   [ 32.. 63] Layout checksum     (BLAKE2b-256; covers layout-defining scalars)
-    //   [ 64..127] Consumer read positions (8 x uint64_t; Sync_reader per-consumer offsets)
+    //   [ 64..127] Consumer read positions (8 x uint64_t; Sequential_sync per-consumer offsets)
     //   [128..143] Producer heartbeat: producer_pid (u64) + producer_last_heartbeat_ns (u64)
     //              Stale if (now - last_heartbeat_ns) > PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS
     uint8_t reserved_header[1600];
@@ -789,7 +789,7 @@ stateDiagram-v2
 > zero. This makes Phase 2 a blocking operation that cannot burn a slot_id.
 > ⚠ **Dead reader risk (Latest_only only):** if a reader crashes while holding
 > `reader_count > 0`, Phase 2 blocks indefinitely. Reader-heartbeat detection is not
-> currently implemented. `Single_reader` and `Sync_reader` are immune: `DRAINING` is
+> currently implemented. `Sequential` and `Sequential_sync` are immune: `DRAINING` is
 > structurally unreachable for those policies (ring-full gate fires first).
 >
 > **Authoritative protocol detail:** For the exact step-by-step producer and consumer flows,
@@ -803,11 +803,11 @@ How readers advance and when the writer may overwrite slots is determined by **C
 | Policy | Readers | read_index / positions | Writer backpressure |
 |--------|---------|------------------------|----------------------|
 | **Latest_only** | Any number | No shared read_index; each reader follows `commit_index` only (latest committed slot). | Writer never blocks on readers; older slots may be overwritten. DRAINING reachable. |
-| **Single_reader** | One consumer only | One shared `read_index` (tail); consumer reads in order. | Writer blocks when `(write_index - read_index) >= capacity`. DRAINING structurally unreachable. |
-| **Sync_reader** | Multiple consumers | Per-consumer next-read position in `reserved_header`; `read_index = min(positions)`. | Writer blocks when ring full; iterator blocks until slowest reader has consumed. DRAINING structurally unreachable. |
+| **Sequential** | One consumer only | One shared `read_index` (tail); consumer reads in order. | Writer blocks when `(write_index - read_index) >= capacity`. DRAINING structurally unreachable. |
+| **Sequential_sync** | Multiple consumers | Per-consumer next-read position in `reserved_header`; `read_index = min(positions)`. | Writer blocks when ring full; iterator blocks until slowest reader has consumed. DRAINING structurally unreachable. |
 
 ```
-                    Latest_only              Single_reader              Sync_reader
+                    Latest_only              Sequential              Sequential_sync
   Writer     commit_index (latest)     write_index, read_index    write_index, min(positions)
   Readers    read commit_index only    one read_index, in order   per-consumer positions
   Backpressure  none                   (write-read)>=cap → block   ring full → block
@@ -815,8 +815,8 @@ How readers advance and when the writer may overwrite slots is determined by **C
 ```
 
 - **Latest_only:** Best for “latest value” semantics; no ordering guarantee across consumers.
-- **Single_reader:** One consumer, FIFO; writer blocks when ring is full.
-- **Sync_reader:** Multiple consumers; all advance in lockstep; writer blocks when ring full; new consumers “join at latest”.
+- **Sequential:** One consumer, FIFO; writer blocks when ring is full.
+- **Sequential_sync:** Multiple consumers; all advance in lockstep; writer blocks when ring full; new consumers “join at latest”.
 
 > **Policy interaction with checksum and RAII:** See **HEP-CORE-0007 §5** for the full
 > policy integration table (ChecksumPolicy × ConsumerSyncPolicy matrix and RAII auto-handling).
@@ -1402,8 +1402,8 @@ Correct use of the following **helper modules** is required for consistent layou
 
 **ConsumerSyncPolicy (reader advancement and backpressure):**
 - **Latest_only:** No shared read_index; each consumer follows commit_index (latest committed). Writer never blocks on readers; older slots may be overwritten.
-- **Single_reader:** One consumer; one shared read_index; consumer reads in order; writer blocks when `(write_index - read_index) >= capacity`.
-- **Sync_reader:** Multiple consumers; per-consumer next-read positions; read_index = min(positions); iterator blocks until slowest reader has consumed; writer blocks when ring full.
+- **Sequential:** One consumer; one shared read_index; consumer reads in order; writer blocks when `(write_index - read_index) >= capacity`.
+- **Sequential_sync:** Multiple consumers; per-consumer next-read positions; read_index = min(positions); iterator blocks until slowest reader has consumed; writer blocks when ring full.
 - **Unset (sentinel):** Must not be stored in the header. If config has Unset at create time, creation fails.
 
 **Correct use:**

@@ -42,7 +42,7 @@ config.shared_secret = 0;
 config.physical_page_size = pylabhub::hub::DataBlockPageSize::Size4K;
 config.ring_buffer_capacity = 4;
 config.policy = pylabhub::hub::DataBlockPolicy::RingBuffer;
-config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Single_reader;
+config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Sequential;
 config.checksum_type = ChecksumType::BLAKE2b;  // default; always present
 config.checksum_policy = pylabhub::hub::ChecksumPolicy::Enforced;
 
@@ -74,7 +74,7 @@ if (consumer) {
 
 **Flexible zone:** One flex zone per block via `DataBlockConfig::flex_zone_size` (N×4096). Use `flexible_zone_span(0)` or `flexible_zone<T>(0)`; attach with `expected_config` to agree on layout. **Shared Spinlock API:** Use `get_spinlock(index)` for coordination; `spinlock_count()` returns the number (typically 8). See **`cpp/examples/RAII_LAYER_USAGE_EXAMPLE.md`** §2 and **HEP-CORE-0002** §3.
 
-**Policies:** `DataBlockPolicy` (Single, DoubleBuffer, RingBuffer); `ConsumerSyncPolicy` (Latest_only, Single_reader, Sync_reader); `ChecksumPolicy` (Manual, Enforced). See **HEP-CORE-0002** for layout, protocol, and recovery.
+**Policies:** `DataBlockPolicy` (Single, DoubleBuffer, RingBuffer); `ConsumerSyncPolicy` (Latest_only, Sequential, Sequential_sync); `ChecksumPolicy` (Manual, Enforced). See **HEP-CORE-0002** for layout, protocol, and recovery.
 
 **Thread safety:** **DataBlockProducer** and **DataBlockConsumer** are **thread-safe** (internal mutex; consumer uses a recursive mutex). The **C API** (`slot_rw_coordinator.h`, recovery API) does **not** provide internal locking; callers must serialize or otherwise coordinate multithread access. See **IMPLEMENTATION_GUIDANCE.md** § "DataBlock API, Concurrency, and Protocol" and **HEP-CORE-0002** implementation status.
 

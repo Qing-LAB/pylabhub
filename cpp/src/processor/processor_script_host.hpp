@@ -56,7 +56,13 @@ class ProcessorScriptHost : public scripting::PythonRoleHostBase
     const char *role_tag()  const override { return "proc"; }
     const char *role_name() const override { return "processor"; }
     std::string role_uid()  const override { return config_.processor_uid; }
-    std::string script_base_dir() const override { return config_.script_path; }
+    std::string script_base_dir() const override
+    {
+        if (config_.role_dir.empty()) return config_.script_path;
+        const std::filesystem::path sp(config_.script_path);
+        return sp.is_absolute() ? config_.script_path
+                                : (std::filesystem::path(config_.role_dir) / sp).string();
+    }
     std::string script_type_str() const override { return config_.script_type; }
     std::string required_callback_name() const override { return "on_process"; }
 

@@ -21,7 +21,7 @@
  *       "hub_dir": "/var/pylabhub/my_hub",
  *       "in_channel":  "lab.sensor.raw",
  *       "out_channel": "lab.sensor.processed",
- *       "timeout_ms":  5000,
+ *       "slot_acquire_timeout_ms": -1,
  *       "overflow_policy": "drop",
  *       "shm": {
  *         "in":  { "enabled": true, "secret": 0 },
@@ -137,7 +137,7 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 
     j["in_channel"]  = "lab.source.channel";
     j["out_channel"] = "lab.output.channel";
-    j["timeout_ms"]  = 5000;
+    j["slot_acquire_timeout_ms"] = -1;
     j["overflow_policy"] = "drop";
 
     j["shm"]["in"]["enabled"]  = true;
