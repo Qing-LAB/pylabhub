@@ -15,6 +15,22 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 # Include all user-facing options first, so they are available for the logic below.
 include(ToplevelOptions)
 
+# --- scikit-build-core wheel mode ---
+# When driven by scikit-build-core (pip install / pip wheel), SKBUILD is set.
+# Force options appropriate for binary wheel packaging: no tests, no XOP,
+# no pip install into bundled Python, strip binaries.
+if(SKBUILD)
+  message(STATUS "scikit-build-core detected — configuring for wheel packaging")
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_XOP OFF CACHE BOOL "" FORCE)
+  set(PYLABHUB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(PYLABHUB_STAGE_ON_BUILD ON CACHE BOOL "" FORCE)
+  set(PYLABHUB_CREATE_INSTALL_TARGET ON CACHE BOOL "" FORCE)
+  set(PYLABHUB_PREPARE_PYTHON_ENV OFF CACHE BOOL "" FORCE)
+  set(PYLABHUB_ENABLE_CLANG_TIDY OFF CACHE BOOL "" FORCE)
+  set(PYLABHUB_ENABLE_DEBUG_MESSAGES OFF CACHE BOOL "" FORCE)
+endif()
+
 include(ProjectToolChainSetup)
 
 # ===========================================================================
@@ -393,11 +409,25 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
   # This is the core installation command. It takes the entire contents of the
   # fully populated staging directory and copies it to the installation prefix.
   # This ensures the installed layout perfectly mirrors the development layout.
-  install(
-    DIRECTORY "${PYLABHUB_STAGING_DIR}/"
-    DESTINATION .
-    COMPONENT Runtime
-  )
+  if(SKBUILD)
+    # In wheel mode, exclude static archives (.a/.la), test binaries,
+    # pkgconfig, and cmake config files — only ship runtime artifacts.
+    install(
+      DIRECTORY "${PYLABHUB_STAGING_DIR}/"
+      DESTINATION .
+      COMPONENT Runtime
+      PATTERN "*.a" EXCLUDE
+      PATTERN "*.la" EXCLUDE
+      PATTERN "tests" EXCLUDE
+      PATTERN "pkgconfig" EXCLUDE
+    )
+  else()
+    install(
+      DIRECTORY "${PYLABHUB_STAGING_DIR}/"
+      DESTINATION .
+      COMPONENT Runtime
+    )
+  endif()
 
   message(STATUS "Installation target enabled. Run 'cmake --install' to create a package.")
 else()

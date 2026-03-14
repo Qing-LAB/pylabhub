@@ -62,6 +62,10 @@ cmake_log.txt
 *.log
 .gemini_commit_message.txt
 
+# scikit-build-core / wheel build artifacts
+_skbuild/
+*.whl
+
 # Packaged source code archives
 *.tar.gz
 *.tgz
