@@ -4,20 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pylabhub"
-version = "0.0.1a0"
-description = "Modular hub for lab data acquisition, control, and reproducible persistence"
+version = "0.1.0a0"
+description = "High-performance IPC framework for scientific data acquisition — C++ core with Python scripting"
 readme = "README.md"
 authors = [{name = "Quan Qing"}]
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
-dependencies = ["pyyaml>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/Qing-LAB/pylabhub"
 
-[project.scripts]
-pylabhub-manifest = "pylabhub.hub.manifest:main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["pylabhub*"]
+# NOTE: Python packaging is a placeholder for future pybind11-based bindings.
+# The core framework is C++ (CMake build). This pyproject.toml reserves the
+# "pylabhub" name on PyPI and will eventually distribute:
+#   - pylabhub_producer / pylabhub_consumer / pylabhub_processor pybind11 modules
+#   - pylabhub Python client library (hub discovery, admin shell client)
+#   - pylabhub-manifest CLI tool
+#
+# For now, build and install via CMake:
+#   cmake -S . -B build && cmake --build build
