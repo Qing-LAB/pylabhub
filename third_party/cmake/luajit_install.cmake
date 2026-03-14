@@ -146,6 +146,7 @@ endif()
 # Headers (guarded)
 set(_header_names
   "lua.h"
+  "luaconf.h"
   "luajit.h"
   "lauxlib.h"
   "lualib.h"
