@@ -88,14 +88,10 @@ For more details, see the [Test Suite Architecture Guide](docs/README_testing.md
 
 This project has a few core design principles. Understanding them is key to contributing effectively.
 
-### 1. Dual Library Architecture
+### 1. Library Architecture
 
-The codebase is split into two primary libraries:
-
-*   `pylabhub-basic` (`pylabhub::basic`): A **static library** containing foundational, low-level code (e.g., `RecursionGuard`, `platform` helpers). It has minimal dependencies and its code is compiled directly into the modules that use it.
-*   `pylabhub-utils` (`pylabhub::utils`): A **shared library** for high-level, application-aware utilities (e.g., `Logger`, `FileLock`, `LifecycleManager`).
-
-**Key Takeaway:** Code in `pylabhub-basic` cannot depend on `pylabhub-utils`.
+*   `pylabhub-utils` (`pylabhub::utils`): The main **shared library** containing all utilities — low-level primitives (SpinGuard, recursion_guard, scope_guard, platform detection) and high-level services (Logger, FileLock, LifecycleManager, DataBlock, MessageHub).
+*   `pylabhub-scripting` (static): Python embedding layer via pybind11. Linked only by executables that embed Python (hubshell, producer, consumer, processor). Pure C++ consumers link only against `pylabhub-utils`.
 
 ### 2. Unified Staging Directory
 
@@ -186,15 +182,15 @@ When adding a new feature, follow the "Developer's Cookbook" recipes in the [CMa
 *   [Adding a New Shared Library](docs/README_CMake_Design.md#recipe-2-how-to-add-a-new-internal-shared-library)
 *   [Adding a New Static Library](docs/README_CMake_Design.md#recipe-3-how-to-add-a-new-internal-static-library)
 
-Remember to respect the distinction between the `pylabhub-basic` and `pylabhub-utils` libraries when deciding where to place your new code.
-
 ### Adding a New Test
 
 New features should always be accompanied by tests.
 
-1.  **Identify the right test executable:**
-    *   For code in `pylabhub-basic`, add your test to `tests/test_pylabhub_corelib/`.
-    *   For code in `pylabhub-utils`, add your test to `tests/test_pylabhub_utils/`.
+1.  **Identify the right test layer:**
+    *   Layer 0–1 (platform, base primitives): `tests/test_layer0_platform/` or `tests/test_layer1_base/`
+    *   Layer 2 (services — Logger, FileLock, etc.): `tests/test_layer2_service/`
+    *   Layer 3 (DataBlock, queues, hub): `tests/test_layer3_datahub/`
+    *   Layer 4 (integration, binary CLI): `tests/test_layer4_*/`
 2.  **Create your `test_my_feature.cpp` file.**
 3.  **Add your file** to the `add_executable()` command in the appropriate `CMakeLists.txt`.
 4.  **Write your test** using the GoogleTest framework.

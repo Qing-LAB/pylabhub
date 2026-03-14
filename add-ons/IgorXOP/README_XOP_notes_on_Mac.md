@@ -20,7 +20,7 @@ The recommended way to build the XOP on macOS is to use CMake to generate an Xco
 
 #### Step 1: Clean and Generate the Xcode Project
 
-From the `cpp` directory, create a clean build directory and run CMake with the `Xcode` generator.
+From the repository root, create a clean build directory and run CMake with the `Xcode` generator.
 
 ```bash
 rm -rf build_xcode
