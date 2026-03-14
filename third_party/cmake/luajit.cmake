@@ -26,10 +26,9 @@ set(_install_dir "${PREREQ_INSTALL_DIR}")
 pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
 pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
-# Choose make program
-if(NOT CMAKE_MAKE_PROGRAM)
-  find_program(CMAKE_MAKE_PROGRAM NAMES gmake make REQUIRED)
-endif()
+# LuaJIT uses Makefiles, not CMake — we need a POSIX make program regardless
+# of CMAKE_MAKE_PROGRAM (which is 'ninja' when using -G Ninja).
+find_program(_LUAJIT_MAKE_PROGRAM NAMES gmake make REQUIRED)
 
 # Parallel build args
 if(DEFINED CMAKE_BUILD_PARALLEL_LEVEL AND CMAKE_BUILD_PARALLEL_LEVEL)
@@ -159,8 +158,8 @@ else() # POSIX (Linux, macOS)
     # COMMAND ${CMAKE_COMMAND} -E echo "Debug: CFLAGS = ${_clean_c_flags}"
     # COMMAND ${CMAKE_COMMAND} -E echo "Debug: Make program = ${CMAKE_MAKE_PROGRAM}"
 
-    COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${_clean_c_flags}" 
-      -- ${CMAKE_MAKE_PROGRAM} -C "${_build_dir}/src" GIT_RELVER=: ${_par_args}
+    COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${_clean_c_flags}"
+      -- ${_LUAJIT_MAKE_PROGRAM} -C "${_build_dir}/src" GIT_RELVER=: ${_par_args}
   )
 
   # Call the install script at build time, passing build and install directories.
