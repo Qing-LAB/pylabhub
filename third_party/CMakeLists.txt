@@ -84,6 +84,12 @@ add_dependencies(${_internal_imported_target} libsodium_external)
 # 2. Create the canonical INTERFACE wrapper target (pylabhub_libsodium).
 add_library(pylabhub_${_pkg} INTERFACE)
 target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
+# Propagate build-order dependency through the INTERFACE wrapper.
+# add_dependencies on IMPORTED targets does NOT propagate transitively to
+# consuming targets via target_link_libraries. Adding the dependency on the
+# INTERFACE wrapper ensures any target linking pylabhub_libsodium (or its
+# alias) will wait for the ExternalProject to finish.
+add_dependencies(pylabhub_${_pkg} libsodium_external)
 
 # 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
@@ -105,6 +111,7 @@ add_dependencies(${_internal_imported_target} luajit_external)
 # 2. Create the canonical INTERFACE wrapper target (pylabhub_luajit).
 add_library(pylabhub_${_pkg} INTERFACE)
 target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
+add_dependencies(pylabhub_${_pkg} luajit_external)
 
 # 3. Create the public-facing ALIAS (pylabhub::third_party::luajit).
 add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
