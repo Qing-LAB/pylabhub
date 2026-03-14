@@ -1,6 +1,10 @@
-# src/IgorXOP/CMakeLists.txt
+# add-ons/IgorXOP/CMakeLists.txt
 # ------------------------------------------------------------------------------
 # Igor XOP subproject (macOS x64 and Windows x64)
+#
+# This is currently a build-infrastructure demo — it proves that the XOP
+# toolchain compiles and bundles correctly, but the WaveAccess code is the
+# stock WaveMetrics sample (no pylabhub-specific functionality yet).
 #
 # Responsibilities:
 #   - build the XOP module (MODULE on macOS, MODULE on Windows)
@@ -10,8 +14,7 @@
 #
 # Expected top-level behavior (caller / parent CMake):
 #   - Define platform macros before including this subdir: PLATFORM_APPLE or PLATFORM_WIN64
-#   - Preferably define&create `pylabhub::basic` and `XOP::XOPSupport` targets before adding this subdir,
-#     so this subproject can link to them at configure time and acquire include dirs.
+#   - `pylabhub::third_party::XOPToolKit` and `pylabhub::utils` targets must exist.
 
 #
 # Exports to parent:
@@ -138,9 +141,7 @@ endif()
 
 
 # -------------------------
-# Consume top-level provided helper/core targets if available
-# Parent is expected to create pylabhub::basic and XOP::XOPSupport (recommended).
-# If present, link to them so include dirs and other interface properties propagate.
+# Link to project targets (XOPToolKit required, pylabhub::utils optional)
 # -------------------------
 if(NOT TARGET pylabhub::third_party::XOPToolKit)
   message(FATAL_ERROR "IgorXOP: The pylabhub::third_party::XOPToolKit target was not created. Ensure the third_party directory is configured first.")

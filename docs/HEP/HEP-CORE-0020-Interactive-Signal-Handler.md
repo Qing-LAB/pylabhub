@@ -6,7 +6,7 @@
 | **Title**      | Interactive Signal Handler — Jupyter-style Ctrl-C with Status, Confirmation, and Resume |
 | **Status**     | Implemented (2026-03-02)                                                        |
 | **Created**    | 2026-03-02                                                                      |
-| **Area**       | Framework Infrastructure (`pylabhub-basic` or `pylabhub-utils`, all binaries)   |
+| **Area**       | Framework Infrastructure (`pylabhub-utils`, all binaries)                       |
 | **Depends on** | HEP-CORE-0001 (Lifecycle), HEP-CORE-0017 (Pipeline Architecture)               |
 
 ---
@@ -568,9 +568,8 @@ is eliminated — the signal handler no longer needs to know about script hosts.
 
 The handler uses `fmt` for formatting and `PYLABHUB_UTILS_EXPORT` for shared library
 visibility, so it belongs in **`pylabhub-utils`**. The platform helpers (TTY detection,
-self-pipe) are candidates for `pylabhub-basic` if they have no external dependencies,
-but since `InteractiveSignalHandler` itself needs `fmt`, the entire feature lives in
-`pylabhub-utils`.
+self-pipe) have no external dependencies and live alongside other platform primitives
+in `pylabhub-utils`.
 
 Files:
 - `src/include/utils/interactive_signal_handler.hpp` — public header

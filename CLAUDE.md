@@ -47,12 +47,12 @@ Build outputs go to `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `i
 
 ## Architecture
 
-**pyLabHub C++** is a cross-platform IPC framework for scientific data acquisition. C++20, CMake 3.29+.
+**pyLabHub C++** is a cross-platform IPC framework for scientific data acquisition. C++20, CMake 3.28+.
 
-### Dual Library Structure
+### Library Structure
 
-- **`pylabhub-basic`** (static, `pylabhub::basic`): Low-level, header-mostly utilities (in-process spinlock/SpinGuard, recursion_guard, scope_guard, platform detection). No external dependencies. Code here **cannot** depend on `pylabhub-utils`.
-- **`pylabhub-utils`** (shared, `pylabhub::utils`): High-level utilities (Logger, FileLock, Lifecycle, JsonConfig, MessageHub, DataBlock). Depends on fmt, nlohmann_json, libzmq, libsodium, luajit.
+- **`pylabhub-utils`** (shared, `pylabhub::utils`): The main library. Contains all utilities — low-level (spinlock/SpinGuard, recursion_guard, scope_guard, platform detection) and high-level (Logger, FileLock, Lifecycle, JsonConfig, MessageHub, DataBlock). Depends on fmt, nlohmann_json, libzmq, libsodium, luajit.
+- **`pylabhub-scripting`** (static): Python embedding layer (PythonScriptHost via pybind11). Linked only by executables that embed Python (hubshell, producer, consumer, processor). Pure C++ consumers link only against `pylabhub-utils`.
 
 Always link against alias targets: `pylabhub::utils`, not `pylabhub-utils`.
 
@@ -77,8 +77,11 @@ Include one header per abstraction level — they handle all transitive includes
 
 ### Test Organization
 
-- `tests/test_pylabhub_corelib/` — Tests for `pylabhub-basic`
-- `tests/test_pylabhub_utils/` — Tests for `pylabhub-utils`
+- `tests/test_layer0_platform/` — Platform detection, version API
+- `tests/test_layer1_base/` — SpinGuard, scope_guard, format tools, recursion_guard
+- `tests/test_layer2_service/` — Logger, FileLock, Lifecycle, JsonConfig, BackoffStrategy
+- `tests/test_layer3_datahub/` — DataBlock, ShmQueue, ZmqQueue, InboxQueue, Processor, MessageHub
+- `tests/test_layer4_*/` — Integration tests (admin shell, pipeline, config, CLI for each binary)
 - `tests/test_framework/` — Shared infrastructure (worker dispatchers for multi-process tests)
 
 Uses GoogleTest. Multi-process IPC tests spawn child worker processes coordinated by parent.

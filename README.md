@@ -95,12 +95,12 @@ def on_stop(api):      pass
 
 ## Architecture
 
-### Dual library structure
+### Library structure
 
 | Library | CMake target | Type | Purpose |
 |---------|-------------|------|---------|
-| **pylabhub-basic** | `pylabhub::basic` | static | In-process primitives (SpinGuard, scope_guard, format tools). Zero dependencies. |
-| **pylabhub-utils** | `pylabhub::utils` | shared | High-level IPC (DataBlock, Messenger, BrokerService, Logger, Lifecycle). Pimpl ABI. |
+| **pylabhub-utils** | `pylabhub::utils` | shared | All utilities — low-level primitives (SpinGuard, scope_guard) and high-level IPC (DataBlock, Messenger, BrokerService, Logger, Lifecycle). Pimpl ABI. |
+| **pylabhub-scripting** | (static) | static | Python embedding (pybind11). Linked only by executables that embed Python. |
 
 ### API layers
 
