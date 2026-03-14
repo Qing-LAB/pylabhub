@@ -41,17 +41,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   set(WITH_LIBSODIUM ON CACHE BOOL "pylab: required for CurveZMQ" FORCE)
   set(WITH_LIBSODIUM_STATIC ON CACHE BOOL "pylab: required for CurveZMQ" FORCE)
   
-  # --- 3. Add the subdirectory ---
-  # `find_package(Sodium)` inside this call will now search the `CMAKE_PREFIX_PATH`
-  # which was set in the parent CMakeLists.txt to point to our `prereqs` dir.
+  # --- 3. Pre-populate Sodium variables for libzmq ---
+  # libzmq's add_subdirectory calls find_package(sodium) at configure time, but our
+  # libsodium is built via ExternalProject_Add at build time. On a fresh build the
+  # prereqs dir is empty, so find_package would fail. We pre-set the SODIUM_* cache
+  # variables to point to the prereq install directory, bypassing the search.
+  # Build ordering is guaranteed by add_dependencies(libzmq-static libsodium_external).
+  set(SODIUM_FOUND TRUE)
+  set(SODIUM_INCLUDE_DIRS "${PREREQ_INSTALL_DIR}/include")
+  set(SODIUM_LIBRARIES "${PREREQ_INSTALL_DIR}/lib/libsodium${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(SODIUM_LIBRARY_DIRS "${PREREQ_INSTALL_DIR}/lib")
+
+  # --- 4. Add the subdirectory ---
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libzmq EXCLUDE_FROM_ALL)
 
-  # --- 4. Create the explicit dependency ---
-  # This is the crucial step to fix the build order. It tells make that
+  # --- 5. Create the explicit dependency ---
+  # This is the crucial step to fix the build order. It tells make/ninja that
   # libzmq-static cannot be built until libsodium_external is finished.
   add_dependencies(libzmq-static libsodium_external)
 
-  # --- 5. Create canonical targets ---
+  # --- 6. Create canonical targets ---
   # Create the canonical INTERFACE wrapper target.
   add_library(pylabhub_libzmq INTERFACE)
   # Link the wrapper to the concrete implementation target provided by add_subdirectory.
@@ -69,7 +78,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
     pylabhub_register_library_for_staging(TARGET libzmq-static STABLE_NAME libzmq-stable)
   endif()
 
-  # --- 7. Restore cache variables ---
+  # --- 8. Restore cache variables ---
   restore_cache_var(BUILD_STATIC BOOL)
   restore_cache_var(BUILD_SHARED BOOL)
   restore_cache_var(ZMQ_BUILD_TESTS BOOL)
