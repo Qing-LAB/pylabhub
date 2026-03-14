@@ -82,7 +82,10 @@ if(MSVC)
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${_build_dir}/lib" "${_install_dir}/lib"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${_source_dir}/src/libsodium/include" "${_install_dir}/include"
   )
-  set(_byproducts "${_install_dir}/lib/libsodium.lib")
+  # The detect script renames libsodium.lib → libsodium-stable.lib after install.
+  # BUILD_BYPRODUCTS must declare the final (stable) name so Ninja knows what this
+  # ExternalProject produces.
+  set(_byproducts "${_install_dir}/lib/libsodium-stable.lib")
 
 else()
   # --- POSIX (Autotools) Build Definition ---
@@ -109,7 +112,8 @@ else()
   )
   set(_build_command ${_make_prog} ${_par_args})
   set(_install_command ${_make_prog} install)
-  set(_byproducts "${_install_dir}/lib/libsodium.a")
+  # The detect script renames libsodium.a → libsodium-stable.a after install.
+  set(_byproducts "${_install_dir}/lib/libsodium-stable.a")
 endif()
 
 # --- 3. Call the generic helper function ---
