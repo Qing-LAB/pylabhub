@@ -41,7 +41,7 @@
 #include "utils/module_def.hpp"
 #include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <cstddef>
 #include <functional>

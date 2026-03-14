@@ -69,7 +69,7 @@
 #include "utils/timeout_constants.hpp"
 #include "role_main_helpers.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <atomic>
 #include <chrono>

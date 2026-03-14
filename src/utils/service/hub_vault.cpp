@@ -9,7 +9,7 @@
 
 #include "vault_crypto.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <sodium.h>
 #include <zmq.h>
 

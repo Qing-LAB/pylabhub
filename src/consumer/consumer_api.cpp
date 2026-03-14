@@ -7,7 +7,7 @@
 #include "utils/logger.hpp"
 
 #include <chrono>
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 

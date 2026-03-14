@@ -21,7 +21,7 @@
 
 #include "utils/script_host_schema.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <atomic>
 #include <condition_variable>

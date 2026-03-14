@@ -32,7 +32,7 @@
 #include "utils/script_host_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
-#include <nlohmann/json_fwd.hpp>
+#include "utils/json_fwd.hpp"
 #include <pybind11/pybind11.h>
 
 #include <atomic>

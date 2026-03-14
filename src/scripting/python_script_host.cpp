@@ -14,7 +14,7 @@
 
 #include "utils/logger.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <pybind11/embed.h>
 
 #include <cstdlib>

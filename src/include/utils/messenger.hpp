@@ -26,7 +26,7 @@
 #include "utils/channel_pattern.hpp"
 #include "utils/module_def.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <cstdint>
 #include <functional>

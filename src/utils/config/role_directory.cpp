@@ -7,7 +7,7 @@
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
 
 #include <fstream>
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <stdexcept>
 #include <system_error>
 
