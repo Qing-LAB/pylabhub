@@ -106,7 +106,6 @@ else()
       --prefix=${_install_dir}
       --disable-shared
       --enable-static
-      --disable-tests
       --disable-dependency-tracking
       --with-pic
   )
