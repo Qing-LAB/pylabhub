@@ -1350,3 +1350,34 @@ TEST_F(ProcessorConfigTest, ReaderSyncPolicy_NoShmBlock_DefaultSequential)
     EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
     fs::remove_all(tmp);
 }
+
+// ── Python venv field tests ──────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, PythonVenv_DefaultEmpty)
+{
+    const auto tmp      = unique_temp_dir("venv_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-VENVDEF-00000001", "name": "VenvDef" },
+        "in_channel":  "lab.venv.in",
+        "out_channel": "lab.venv.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.python_venv.empty());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, PythonVenv_ParsesName)
+{
+    const auto tmp      = unique_temp_dir("venv_name");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-VENVNAME-00000001", "name": "VenvName" },
+        "in_channel":  "lab.venv.in",
+        "out_channel": "lab.venv.out",
+        "python_venv": "transform-env"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.python_venv, "transform-env");
+    fs::remove_all(tmp);
+}

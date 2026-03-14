@@ -80,15 +80,11 @@ public:
      * The function is idempotent: if subdirectories already exist it succeeds
      * silently (does not reset vault/ permissions on an existing directory).
      *
-     * @param base             Directory to create / populate.
-     * @param config_filename  Name of the config file the caller will write
-     *                         (e.g. "producer.json").  Not created by this method;
-     *                         only informs the returned RoleDirectory instance.
+     * @param base  Directory to create / populate.
      * @return RoleDirectory pointing to @p base (weakly-canonical).
      * @throws std::runtime_error if any required subdirectory cannot be created.
      */
-    static RoleDirectory create(const std::filesystem::path &base,
-                                std::string_view             config_filename);
+    static RoleDirectory create(const std::filesystem::path &base);
 
     // ── Path accessors ─────────────────────────────────────────────────────────
 

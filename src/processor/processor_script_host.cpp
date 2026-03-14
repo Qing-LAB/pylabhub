@@ -64,6 +64,7 @@ ProcessorScriptHost::~ProcessorScriptHost()
 void ProcessorScriptHost::set_config(ProcessorConfig config)
 {
     config_ = std::move(config);
+    python_venv_ = config_.python_venv;
 }
 
 // ============================================================================

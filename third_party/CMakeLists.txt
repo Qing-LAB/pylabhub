@@ -65,56 +65,40 @@ include(luajit)
 # Hint to subsequent find_package calls where to find the prerequisites we just built.
 list(APPEND CMAKE_PREFIX_PATH "${PREREQ_INSTALL_DIR}")
 
-# Manually create the pylabhub::third_party targets for ExternalProject dependencies.
-# This explicitly defines the stable interface that our project will link against.
+# Create pylabhub::third_party targets for ExternalProject dependencies.
+#
+# Each ExternalProject prereq gets two targets:
+#   pylabhub_<name>                    — IMPORTED GLOBAL (location + includes + build-order dep)
+#   pylabhub::third_party::<name>      — ALIAS (namespaced, for consumers)
+#
+# The old design had a hidden _impl_ IMPORTED + INTERFACE wrapper + ALIAS (3 layers).
+# Since CMake 3.18 you can alias IMPORTED GLOBAL targets directly, so the INTERFACE
+# wrapper is unnecessary. The build-order dependency (add_dependencies) is set on the
+# IMPORTED target, which Ninja/Make honors when any consumer links it.
 
 # --- libsodium ---
-set(_pkg "libsodium")
-
-# 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
-set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
-add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
-set_target_properties(${_internal_imported_target} PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
+add_library(pylabhub_libsodium INTERFACE)
+target_link_libraries(pylabhub_libsodium INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
 )
-# This target relies on the external project completing its build.
-add_dependencies(${_internal_imported_target} libsodium_external)
-
-# 2. Create the canonical INTERFACE wrapper target (pylabhub_libsodium).
-add_library(pylabhub_${_pkg} INTERFACE)
-target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
-# Propagate build-order dependency through the INTERFACE wrapper.
-# add_dependencies on IMPORTED targets does NOT propagate transitively to
-# consuming targets via target_link_libraries. Adding the dependency on the
-# INTERFACE wrapper ensures any target linking pylabhub_libsodium (or its
-# alias) will wait for the ExternalProject to finish.
-add_dependencies(pylabhub_${_pkg} libsodium_external)
-
-# 3. Create the public-facing ALIAS (pylabhub::third_party::libsodium).
-add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
-
+target_include_directories(pylabhub_libsodium INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+add_dependencies(pylabhub_libsodium libsodium_external)
+add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
 
 # --- luajit ---
-set(_pkg "luajit")
-
-# 1. Create a hidden, internal UNKNOWN IMPORTED target for the raw built artifact.
-set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
-add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
-set_target_properties(${_internal_imported_target} PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
+add_library(pylabhub_luajit INTERFACE)
+target_link_libraries(pylabhub_luajit INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/luajit-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
 )
-# This target relies on the external project completing its build.
-add_dependencies(${_internal_imported_target} luajit_external)
-
-# 2. Create the canonical INTERFACE wrapper target (pylabhub_luajit).
-add_library(pylabhub_${_pkg} INTERFACE)
-target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
-add_dependencies(pylabhub_${_pkg} luajit_external)
-
-# 3. Create the public-facing ALIAS (pylabhub::third_party::luajit).
-add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
+target_include_directories(pylabhub_luajit INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+add_dependencies(pylabhub_luajit luajit_external)
+add_library(pylabhub::third_party::luajit ALIAS pylabhub_luajit)
 
 
 

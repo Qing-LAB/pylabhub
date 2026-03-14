@@ -854,3 +854,32 @@ TEST_F(ConsumerConfigTest, Startup_ZeroTimeout_Throws)
                  std::runtime_error);
     fs::remove_all(tmp);
 }
+
+// ── Python venv field tests ──────────────────────────────────────────────────
+
+TEST_F(ConsumerConfigTest, PythonVenv_DefaultEmpty)
+{
+    const auto tmp      = unique_temp_dir("venv_def");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-VENVDEF-00000001", "name": "VenvDef" },
+        "channel": "lab.venv.def"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.python_venv.empty());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ConsumerConfigTest, PythonVenv_ParsesName)
+{
+    const auto tmp      = unique_temp_dir("venv_name");
+    const auto cfg_path = tmp / "consumer.json";
+    write_file(cfg_path, R"({
+        "consumer": { "uid": "CONS-VENVNAME-00000001", "name": "VenvName" },
+        "channel": "lab.venv.name",
+        "python_venv": "analysis-env"
+    })");
+    const auto cfg = pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.python_venv, "analysis-env");
+    fs::remove_all(tmp);
+}
