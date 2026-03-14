@@ -41,7 +41,7 @@
 #include "utils/file_lock.hpp"
 #include "utils/lifecycle.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <list>
 #include <mutex>
 #include <unordered_map>

@@ -53,7 +53,7 @@
 #include "utils/startup_wait.hpp"
 
 #include <cstdint>
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 #include <string>
 #include <vector>
 

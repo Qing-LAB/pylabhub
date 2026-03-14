@@ -15,7 +15,7 @@
  *   - Server (hub admin):  utils/broker_service.hpp + utils/hub_config.hpp
  *
  * @note `nlohmann/json.hpp` is not included here directly — it arrives transitively
- *       via messenger.hpp. Add your own #include <nlohmann/json.hpp> if you need it
+ *       via messenger.hpp. Add your own #include "utils/json_fwd.hpp" if you need it
  *       explicitly in a TU that does not include any Messenger/hub headers.
  */
 #include "plh_service.hpp"

@@ -23,7 +23,7 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <algorithm>
 #include <cstdlib>  // std::getenv

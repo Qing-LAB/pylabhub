@@ -27,7 +27,7 @@
  */
 #include "utils/channel_pattern.hpp"
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <chrono>
 #include <cstdint>

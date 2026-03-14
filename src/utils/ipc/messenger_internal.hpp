@@ -34,7 +34,7 @@
 #include "sodium.h"
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <algorithm>
 #include <array>
