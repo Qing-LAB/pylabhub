@@ -1,6 +1,26 @@
+# =============================================================================
+# pyLabHub — Python packaging via scikit-build-core
+#
+# This pyproject.toml drives two things:
+#   1. CMake build (via scikit-build-core) → platform wheel with prebuilt C++
+#      binaries, shared libraries, headers, bundled Python runtime, and tools.
+#   2. A thin Python package (src/pylabhub/) providing version info and path
+#      accessors so users can find the installed binaries programmatically.
+#
+# The wheel is NOT a Python extension module — it is a C++ application suite
+# that embeds its own Python 3.14 runtime for scripting.
+#
+# Build locally:
+#   pip install .                          # builds via CMake, installs wheel
+#   pip wheel . --no-build-isolation       # produces .whl in current dir
+#
+# For development (CMake only, no wheel):
+#   cmake -S . -B build && cmake --build build
+# =============================================================================
+
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "pylabhub"
@@ -43,12 +63,64 @@ Homepage = "https://github.com/Qing-LAB/pylabhub"
 Repository = "https://github.com/Qing-LAB/pylabhub"
 Issues = "https://github.com/Qing-LAB/pylabhub/issues"
 
-# NOTE: Python packaging is a placeholder for future pybind11-based bindings.
-# The core framework is C++ (CMake build). This pyproject.toml reserves the
-# "pylabhub" name on PyPI and will eventually distribute:
-#   - pylabhub_producer / pylabhub_consumer / pylabhub_processor pybind11 modules
-#   - pylabhub Python client library (hub discovery, admin shell client)
-#   - pylabhub-manifest CLI tool
-#
-# For now, build and install via CMake:
-#   cmake -S . -B build && cmake --build build
+# Console entry-point wrappers — these delegate to the real C++ binaries
+# located in the installed data directory (pylabhub/data/bin/).
+[project.scripts]
+pylabhub-hubshell  = "pylabhub._cli:hubshell"
+pylabhub-producer  = "pylabhub._cli:producer"
+pylabhub-consumer  = "pylabhub._cli:consumer"
+pylabhub-processor = "pylabhub._cli:processor"
+pylabhub-pyenv     = "pylabhub._cli:pyenv"
+
+# ---------------------------------------------------------------------------
+# scikit-build-core configuration
+# ---------------------------------------------------------------------------
+[tool.scikit-build]
+cmake.source-dir = "."
+cmake.build-type = "Release"
+
+# CMake install() places the staged tree at CMAKE_INSTALL_PREFIX.
+# scikit-build-core maps that into the wheel at this location.
+wheel.install-dir = "pylabhub/data"
+
+# The thin Python shim lives under src/.
+wheel.packages = ["src/pylabhub"]
+
+# Force settings appropriate for wheel packaging.
+cmake.args = [
+    "-DBUILD_TESTS=OFF",
+    "-DBUILD_XOP=OFF",
+    "-DPYLABHUB_PREPARE_PYTHON_ENV=OFF",
+    "-DPYLABHUB_CREATE_INSTALL_TARGET=ON",
+    "-DPYLABHUB_STAGE_ON_BUILD=ON",
+    "-DPYLABHUB_ENABLE_CLANG_TIDY=OFF",
+    "-DPYLABHUB_BUILD_EXAMPLES=OFF",
+    "-DPYLABHUB_ENABLE_DEBUG_MESSAGES=OFF",
+]
+
+# sdist: include everything needed to build from source.
+# NOTE: third_party/ contains git submodules — sdist requires
+# `git submodule update --init --recursive` before building.
+sdist.include = [
+    "CMakeLists.txt",
+    "cmake/**",
+    "src/**",
+    "third_party/**",
+    "tools/**",
+    "share/**",
+    "LICENSE",
+    "README.md",
+]
+sdist.exclude = [
+    "build*/**",
+    "dist/**",
+    "tests/**",
+    ".github/**",
+    "docs/archive/**",
+    "docs/todo/**",
+    "docs/tech_draft/**",
+    "docs/code_review/**",
+]
+
+# Strip binaries in wheel to reduce size.
+install.strip = true

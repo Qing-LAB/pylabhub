@@ -37,8 +37,10 @@ set(PYLABHUB_PYTHON_WHEELS_DIR "" CACHE PATH
 # Whether to automatically run 'pip install -r requirements.txt' as part of the build.
 # The prepare_python_env target installs packages into the staged Python's site-packages.
 # Uses a stamp file for idempotency: only re-runs when requirements.txt changes.
+# Default OFF — Python packages are installed post-build via pylabhub-pyenv.
+# The bundled Python runtime (libpython, interpreter) is always staged regardless.
 option(PYLABHUB_PREPARE_PYTHON_ENV
-    "Run pip install -r requirements.txt into the staged Python as part of build (requires THIRD_PARTY_INSTALL=ON)." ON)
+    "Run pip install -r requirements.txt into the staged Python as part of build (requires THIRD_PARTY_INSTALL=ON)." OFF)
 
 # Path to the requirements file used by the prepare_python_env target.
 # Defaults to the project's built-in share/scripts/python/requirements.txt.
