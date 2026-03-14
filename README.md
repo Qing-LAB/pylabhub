@@ -1,264 +1,239 @@
 # pyLabHub
 
-**pyLabHub** is a cross-platform framework for high-performance scientific data acquisition, instrument control, and experiment management. It connects data-producing instruments — sensors, DAQs, actuators — to consuming applications — storage, analysis, visualization — at sub-millisecond latency, across process and language boundaries.
+**pyLabHub** is a cross-platform framework for high-performance scientific data acquisition, instrument control, and experiment management. It connects data-producing instruments -- sensors, DAQs, actuators -- to consuming applications -- storage, analysis, visualization -- at sub-millisecond latency, across process and language boundaries.
 
-Its design revolves around three layers: a **high-performance IPC core** built on shared memory and ZeroMQ for zero-copy data exchange; a **broker** that manages channel registration, schema integrity, and process liveness across the system; and **active services** (`hub::Producer` / `hub::Consumer`) that wrap both transports behind a clean, callback-driven API so application code focuses on science, not IPC bookkeeping. Hardware **adapters** bridge instruments into hub channels; language **connectors** (Python first) expose the same channel API to scripts, notebooks, and GUIs.
+The framework is built on a **C++ core** (C++20, CMake 3.29+) with **Python scripting** for application logic. Data flows through shared memory at zero-copy speed; a lightweight ZeroMQ broker handles discovery, authentication, and liveness without touching the data path. User code lives in Python callbacks -- no C++ compilation needed for typical use.
 
-The design philosophy: **the platform guarantees delivery and invariant validation — protocol correctness is the responsibility of the application**. Errors fall into two categories: structural violations (schema mismatch, heartbeat timeout, SHM corruption) trigger log + notify + shutdown with no silent repair; application-level issues (dead consumer, data checksum anomalies) are reported to the user with a configurable response policy.
+**Design philosophy**: the platform guarantees delivery and invariant validation; protocol correctness is the responsibility of the application. Structural violations (schema mismatch, heartbeat timeout, SHM corruption) trigger log + notify + shutdown with no silent repair. Application-level issues (dead consumer, data checksum anomalies) are reported with a configurable response policy.
 
-The core principle of pyLabHub is **data integrity and reproducibility**. It isolates raw experiment data from downstream analysis, ensuring the original record remains uncompromised while providing flexible tools for real-time visualization, control, and scripted automation.
+**Core principle**: data integrity and reproducibility. Raw experiment data is isolated from downstream analysis, ensuring the original record remains uncompromised while providing flexible tools for real-time visualization, control, and scripted automation.
 
----
+## Target Use Cases
 
-## 🎯 Target Use Cases
+- **Lab automation** -- coordinate instruments and sensors in real-time experiments
+- **Real-time sensing and control** -- stream measurements while dynamically adjusting hardware
+- **Data pipelines** -- chain producers, processors, and consumers into transform pipelines
+- **Cross-host bridging** -- relay data between machines via ZMQ with automatic endpoint discovery
+- **Custom interfaces** -- integrate with Python notebooks, GUIs, or existing scientific software
 
-- **Lab automation**: coordinate instruments and sensors in real‑time experiments
-- **Real‑time sensing & control**: stream measurements while dynamically adjusting hardware
-- **Data archiving**: capture raw experiment data in open, long‑term formats
-- **Collaborative research**: share data and analyses without compromising original records
-- **Custom interfaces**: integrate with Igor Pro, Jupyter notebooks, or new GUIs tailored to specific experiments
+## Quick Start
 
----
+### Prerequisites
 
-## ✨ Features
+- GCC 12+ or Clang 15+ (C++20)
+- CMake 3.29+
+- System libraries: libzmq, libsodium
 
-- **Central Data Hub**: low-latency pub/sub bus with persistence
-- **Adapters**: unified drivers for sensors, actuators, DAQs, and instruments
-- **Connectors**: bridges to existing software (Igor Pro, Python, Jupyter, GUIs)
-- **Persistence**: save experiments in scientific formats (HDF5, Parquet, Zarr, CSV)
-- **Extensible**: add new hardware or software integrations with minimal effort
-- **Data Integrity**: isolate raw data from analysis to ensure experiments remain uncompromised
-- **Reproducibility**: keep data open and shareable while preserving the original experimental record
+Third-party dependencies (fmt, nlohmann_json, googletest, cppzmq, luajit, pybind11) are bundled under `third_party/`.
 
----
+### Build and test
 
-## 📦 Data Persistence Strategy
-
-pyLabHub will use a hybrid approach to balance efficiency, openness, and reproducibility:
-
-- **Zarr** for multidimensional array streams (e.g., waveforms, images). Data is chunked by time and channel, compressed (e.g., Blosc + Zstd), and stored in a directory layout that works locally and in cloud object stores.
-- **Parquet** for event logs, metadata, and control records. Appended in time-sliced files that are easy to query with pandas/Arrow/DuckDB.
-- **HDF5 export** provided for compatibility with existing scientific tools, while keeping Zarr/Parquet as the native formats.
-
-This layout ensures raw data is stored separately from analysis, remains uncompromised, and is shareable in open, well‑supported formats.
-
-### Example directory layout
-```
-runs/
-  run-2025-09-18-001/
-    arrays/
-      raw_adc.zarr/
-      camera_frames.zarr/
-    events/
-      control-20250918-120000.parquet
-      telemetry-20250918-120000.parquet
-    manifest.yaml   # metadata, checksums, provenance
+```bash
+git clone https://github.com/Qing-LAB/pylabhub.git
+cd pylabhub
+cmake -S . -B build
+cmake --build build -j2
+ctest --test-dir build -j2
 ```
 
-### Run manifest (`manifest.yaml`) — Draft schema
-```yaml
-schema_version: 0.1
-run:
-  id: run-2025-09-18-001
-  created_at: "2025-09-18T12:00:00Z"
-  investigator: "Alex Researcher"
-  organization: "Example University"
-  award_number: null  # e.g., NSF-XXXXXX
-  description: "NI-DAQ step response test"
-identifiers:
-  dataset_pid: null     # DOI/ARK assigned on publish
-  orcids: []            # contributor ORCIDs
-  ror: null             # institution ROR
-acquisition:
-  timebase:
-    source_clock_hz: 1e9
-    hub_clock_offset_s: 0.000123
-  instruments:
-    - adapter_id: "hm-ni6321-01"
-      driver: "ni6321"
-      version: "0.1.0"
-      calibration: "cal/ni6321-2025-09-01.yaml"
-  streams:
-    - name: raw_adc
-      kind: array
-      format: zarr
-      path: arrays/raw_adc.zarr
-      dtype: int16
-      dims: [time, channel]
-      sample_rate_hz: 200000
-      channels: 4
-      units: V
-      chunking: {time: 2000000, channel: 4}
-      compression: blosc-zstd
-      t_start: "2025-09-18T12:00:00.000000Z"
-      t_end:   "2025-09-18T12:10:00.000000Z"
-      sha256: "<tree-hash-of-zarr>"
-    - name: control
-      kind: events
-      format: parquet
-      path: events/control-20250918-120000.parquet
-      rows: 15234
-      sha256: "<file-hash>"
-provenance:
-  software:
-    pylabhub: "0.1.0"
-    python: "3.13.0"
-    git_commit: "abcdef1"
-    container_digest: "sha256:..."
-    conda_lock: "sha256:..."
-  recipe:
-    name: "laser_scan_v1"
-    parameters:
-      rate_hz: 200000
-      gain_db: 20
-integrity:
-  manifest_sha256: "<self-hash>"
-  size_bytes_total: 123456789
-  checks:
-    last_verified_at: "2025-09-18T12:15:00Z"
-    ok: true
-sharing:
-  access: open           # open|embargoed|controlled
-  embargo_until: null
-  license: CC-BY-4.0
-  notes: null
+### Run the demo pipeline
+
+```bash
+bash share/py-demo-single-processor-shm/run_demo.sh   # hub + producer + processor + consumer
+                                                        # Ctrl-C to stop all four
 ```
 
-**Field notes**
-- `schema_version` lets the manifest evolve without breaking readers.
-- `streams` includes both array and event stores with paths, shapes, rates, and fixity (`sha256`).
-- `identifiers` & `sharing` hold PIDs/access when published; they can be `null` during acquisition.
-- Timestamps (`t_start`, `t_end`) and `timebase` make time alignment explicit across devices.
-- `provenance.software` and `recipe` capture the environment and parameters for reproducibility.
+## The Four Binaries
 
----
+pyLabHub ships four standalone executables. Each loads a Python script at startup and calls user-defined callbacks in a tight loop.
 
-## 🛠 Roadmap
+| Binary | Config | Purpose |
+|--------|--------|---------|
+| `pylabhub-hubshell` | `hub.json` | Broker service + Python admin shell |
+| `pylabhub-producer` | `producer.json` | Writes slots to one channel on a timer |
+| `pylabhub-consumer` | `consumer.json` | Reads slots from one channel on demand |
+| `pylabhub-processor` | `processor.json` | Reads from channel A, transforms, writes to channel B |
 
-- **MVP Hub**: establish the central data hub with pub/sub and basic persistence
-- **First Adapter**: implement a mock hardware adapter and one real device driver (e.g., DAQ)
-- **First Connector**: create a connector for Igor Pro or a simple Python GUI
-- **Persistence v1**: add support for saving runs in open formats (Parquet/Zarr)
-- **Safety & Control**: introduce scheduling, interlocks, and safe‑stop routines
-- **Cluster Ready**: enable multi‑host operation with secure connections
+### CLI (shared across producer, consumer, processor)
 
----
-
-## 🔏 Additional Features to Integrate/Consider (NSF/NIH‑aligned)
-
-*These are post‑MVP enhancements. The current design (raw/analysis separation, Zarr/Parquet layout, run manifests) is intended to make these easy to add later.*
-
-- **Persistent Identifiers & Rich Metadata**: extend `manifest.yaml` to include dataset DOI/ARK, award/grant numbers, ORCID for contributors, ROR for institution, data license (e.g., CC‑BY/CC0), instrument calibration, software versions, git commit, environment hash, and units/sampling info.
-- **Repository Export Tooling**: CLI to package a run (Zarr/Parquet + manifest) for deposit to discipline‑specific or generalist repositories; include mappings to common schemas (e.g., DataCite/schema.org) and generate checksums/fixity.
-- **Access Tiers & Privacy Controls**: per‑run flags for `open | embargoed | controlled`, embargo dates, and optional de‑identification workflow with consent/use‑restriction notes (for human/regulated data).
-- **Provenance Capture**: record analysis lineage (inputs → transforms → outputs) using a lightweight model (e.g., W3C PROV/RO‑Crate); store pipeline configs, container/image digests, and exact Python environment (lockfile) alongside outputs.
-- **Data Integrity & Retention**: periodic fixity checks (hash manifests), retention schedules, and optional replication to secondary storage/object store.
-- **DMP Boilerplate Generator**: render a Data Management & Sharing Plan from project settings (formats, repositories, timelines, access level, license) for use in NSF/NIH submissions.
-- **CITATION & Codemeta**: include `CITATION.cff` for software citation and optional `codemeta.json` for machine‑readable project metadata.
-
----
-
-## ⚙️ Configuration Preview (post‑MVP)
-
-A small, human‑readable **`config.yaml`** will hold settings that enable NSF/NIH‑aligned exports without changing the storage core. Example:
-
-```yaml
-project:
-  name: pylabhub-demo
-  organization: Example University
-  ror: ""              # Research Organization Registry ID (optional)
-  award_number: "NSF-XXXXXXX"  # or NIH grant
-  contacts:
-    - name: Alex Researcher
-      orcid: "0000-0000-0000-0000"
-
-storage:
-  base_dir: ./runs
-  formats:
-    arrays: zarr
-    events: parquet
-  compression:
-    zarr_codec: blosc-zstd
-    zarr_level: 5
-
-identifiers:
-  dataset_pid_scheme: doi   # doi | ark | none
-  dataset_pid: null         # filled on publish
-
-sharing:
-  repository:
-    target: zenodo          # or domain-specific repo
-    community: example          # optional
-    access: open            # open | embargoed | controlled
-    embargo_until: null     # e.g., 2026-01-01
-    license: CC-BY-4.0
-
-provenance:
-  record_git_commit: true
-  record_conda_lock: true
-  record_container_digest: true
-  analysis_lineage: prov    # enable PROV/RO-Crate style tracking
-
-export:
-  hdf5: true                # provide HDF5 export package alongside native store
-  include_checksums: true
+```
+pylabhub-producer --init [<dir>] [--name <name>]   # Scaffold config + vault + script
+pylabhub-producer <dir>                            # Run from directory
+pylabhub-producer --config <path.json> --validate  # Validate config + script; exit 0/1
+pylabhub-producer --version                        # Print version
 ```
 
-This keeps **raw/analysis separation** intact while making it straightforward to: assign PIDs, export to repositories, control access tiers/embargo, and capture provenance.
+### Python callbacks
 
----
+**Producer** (`import pylabhub_producer as prod`)
+```python
+def on_init(api):      pass             # Called once at startup
+def on_produce(out_slot, flexzone, messages, api) -> bool:
+    out_slot.value = 42.0               # Fill typed slot fields
+    return True                          # True = commit, False = discard
+def on_stop(api):      pass             # Called on shutdown
+```
 
-## 📂 Project Structure
+**Consumer** (`import pylabhub_consumer as cons`)
+```python
+def on_init(api):      pass
+def on_consume(in_slot, flexzone, messages, api):
+    if in_slot is None: return           # Timeout -- no data
+    print(in_slot.value)                 # Read-only typed fields
+def on_stop(api):      pass
+```
+
+**Processor** (`import pylabhub_processor as proc`)
+```python
+def on_init(api):      pass
+def on_process(in_slot, out_slot, flexzone, messages, api) -> bool:
+    if in_slot is None: return False     # Timeout
+    out_slot.result = in_slot.value * 2  # Transform
+    return True
+def on_stop(api):      pass
+```
+
+## Architecture
+
+### Dual library structure
+
+| Library | CMake target | Type | Purpose |
+|---------|-------------|------|---------|
+| **pylabhub-basic** | `pylabhub::basic` | static | In-process primitives (SpinGuard, scope_guard, format tools). Zero dependencies. |
+| **pylabhub-utils** | `pylabhub::utils` | shared | High-level IPC (DataBlock, Messenger, BrokerService, Logger, Lifecycle). Pimpl ABI. |
+
+### API layers
+
+| Layer | Header | What it provides |
+|-------|--------|------------------|
+| L0 | `plh_platform.hpp` | Platform detection macros, version API |
+| L1 | `plh_base.hpp` | C++ primitives -- SpinGuard, format_tools, scope_guard |
+| L2 | `plh_service.hpp` | RAII utilities -- Lifecycle, Logger, FileLock, DataBlock |
+| L3a | `plh_datahub_client.hpp` | Client API -- hub::Producer, hub::Consumer, Messenger |
+| L3b | `plh_datahub.hpp` | Full stack -- BrokerService, JsonConfig, HubConfig, SchemaLibrary |
+
+### Five communication planes
+
+| Plane | What flows | Mechanism |
+|-------|-----------|-----------|
+| **Data** | Slot payloads (raw bytes) | SHM ring buffer or ZMQ PUSH/PULL |
+| **Control** | HELLO, BYE, REG, HEARTBEAT | ZMQ ROUTER-DEALER via Broker |
+| **Message** | Arbitrary typed messages | ZMQ via Messenger (bidirectional) |
+| **Timing** | Loop pacing | LoopPolicy on Producer/Consumer/Processor |
+| **Metrics** | Counter snapshots, custom KV | Piggyback on HEARTBEAT + METRICS_REPORT_REQ |
+
+## Pipeline Topologies
+
+### Linear
+```
+Producer --[SHM]--> Consumer
+```
+
+### Transform
+```
+Producer --[SHM]--> Processor --[SHM]--> Consumer
+```
+
+### Cross-machine bridge
+```
+Host A: Producer --> Processor(bridge-out) --[ZMQ]-->
+Host B: --[ZMQ]--> Processor(bridge-in) --> Consumer
+```
+
+### Chained transform
+```
+Producer --> P1(normalize) --> P2(filter) --> P3(compress) --> Consumer
+```
+
+### Fan-out
+```
+              +---> Consumer (monitor)
+Producer --[SHM]---> Processor (archive)
+              +---> Processor (analysis)
+```
+
+## Configuration Model
+
+Each binary reads a flat JSON config. Schemas use the **BLDS** (Binary Layout Description Schema) format to define typed slot fields.
+
+```json
+{
+  "hub_dir": "/path/to/hub",
+  "producer": { "name": "TempSensor", "log_level": "info" },
+  "channel": "lab.sensors.temperature",
+  "target_period_ms": 100,
+  "loop_timing": "fixed_rate",
+  "slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      { "name": "ts",    "type": "float64" },
+      { "name": "value", "type": "float32" }
+    ]
+  },
+  "shm": { "enabled": true, "slot_count": 8 },
+  "script": { "type": "python", "path": "." }
+}
+```
+
+## Two Development Paths
+
+### Python scripting (recommended)
+
+Use `--init` to scaffold a directory, edit `script/python/__init__.py`, run. No C++ compilation needed. Hot-reload by restarting the binary.
+
+### C++ RAII API
+
+For embedding in custom applications, use the L2/L3 headers directly. See `examples/` for complete C++ examples (`cmake -DPYLABHUB_BUILD_EXAMPLES=ON`).
+
+## Project Structure
 
 ```
 pylabhub/
-├── hub/          # central data hub
-├── adapters/     # hardware I/O interfaces
-├── connectors/   # integration with external software
-├── examples/     # sample scripts and configs
-├── docs/         # documentation
-├── tests/        # unit + integration tests
+  src/                    # C++ source (libraries + 4 binaries)
+  tests/                  # GoogleTest suite (1120+ tests)
+  examples/               # C++ embedded API examples
+  share/
+    py-demo-single-processor-shm/   # SHM pipeline demo (4 processes)
+    py-demo-dual-processor-bridge/  # Cross-hub SHM+ZMQ bridge demo (6 processes)
+    py-examples/                    # Standalone Python script examples
+    scripts/python/                 # Admin tools (hubshell_client.py)
+  docs/
+    HEP/                  # Design specifications (HEP-CORE-0001 through 0024)
+    README/               # Detailed library and deployment docs
+    tech_draft/           # Active design drafts
+    todo/                 # Open work items by area
+  third_party/            # Bundled dependencies (git submodules)
+  cmake/                  # CMake helpers
+  tools/                  # Developer tools (format.sh)
+  CMakeLists.txt          # Top-level CMake build
+  CLAUDE.md               # Build commands, project rules, architecture reference
+  LICENSE                 # BSD 3-Clause
 ```
 
----
+## Future Directions
 
-## 🚀 Getting Started
+The long-term vision extends beyond the current IPC core:
 
-Clone the repository:
+- **Data persistence** -- A dedicated archiver role (`pylabhub-archiver`) that writes channel data to Zarr (array streams) and Parquet (events/metadata) for long-term storage. Run manifests with SHA-256 integrity, provenance tracking, and DOI assignment. See `docs/tech_draft/future-persistence-and-discovery/` for early prototypes.
+- **Hardware adapters** -- Unified drivers for sensors, actuators, and DAQs that bridge instruments into hub channels.
+- **Hub discovery** -- A domain service that maintains a registry of available hubs, channels, and roles for dynamic routing.
+- **Language connectors** -- Python client library (via pybind11), Igor Pro bridge, Jupyter integration.
+- **Multi-host operation** -- Secure cross-network pipelines with CurveZMQ authentication and federation.
 
-```bash
-git clone https://github.com/YOUR-USERNAME/pylabhub.git
-cd pylabhub
-```
+## Further Reading
 
-Install in development mode:
+| Document | Description |
+|----------|-------------|
+| `docs/README/` | Detailed library and build documentation |
+| `docs/HEP/` | Authoritative design specifications |
+| `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md` | SHM layout, protocol, architecture layers |
+| `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md` | Pipeline topologies and communication planes |
+| `share/py-demo-single-processor-shm/` | Working four-process SHM demo |
+| `share/py-demo-dual-processor-bridge/` | Working six-process cross-hub bridge demo |
+| `examples/` | C++ RAII API examples |
+| `CLAUDE.md` | Build commands, project rules, architecture reference |
 
-```bash
-pip install -e .
-```
+## License
 
-Run the simple loopback example:
-
-```bash
-python examples/simple_loopback.py
-```
-
----
-
-## 🤝 Contributing
-
-At this stage, the focus is on building a working framework. Once the core hub, a first adapter, and a connector are stable, contribution guidelines will be added here. Until then, feedback and suggestions are welcome through issues.
-
----
-
-## 📖 Documentation
-
-Work in progress — see the [`docs/`](docs/) folder for drafts.  
-Future docs will cover APIs, schema design, and hardware integration guides.
-
----
-
-## 📜 License
-
-This project is licensed under the [BSD 3-Clause License](LICENSE).  
-© 2025 Quan Qing, Arizona State University
+This project is licensed under the [BSD 3-Clause License](LICENSE).
+(c) 2025 Quan Qing, Arizona State University
