@@ -9,7 +9,7 @@
 #include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
 
 #include <atomic>
 #include <fstream>
