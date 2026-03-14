@@ -143,7 +143,24 @@ else()
   endif()
 endif()
 
-# Headers (guarded)
+# --- Headers ---
+# These headers are the public LuaJIT C API and must all be installed for
+# downstream consumers (lua_script_host.cpp links against them).
+#
+# Dependency chain:
+#   lua.h       — core Lua C API; #include "luaconf.h" on line 16
+#   luaconf.h   — configuration header; GENERATED during 'make' from luaconf.h.in
+#                  (does not exist in the source tree — only in the build dir)
+#   luajit.h    — LuaJIT version macros
+#   lauxlib.h   — auxiliary library (luaL_* functions); #include "lua.h"
+#   lualib.h    — standard library open functions; #include "lua.h"
+#
+# Build order: the LuaJIT Makefile generates luaconf.h before compiling any
+# object files, so by the time this install script runs (INSTALL_COMMAND,
+# after BUILD_COMMAND completes), all headers exist in _src_dir.
+#
+# IMPORTANT: luaconf.h must be listed here — without it, any #include "lua.h"
+# will fail with "luaconf.h: No such file or directory".
 set(_header_names
   "lua.h"
   "luaconf.h"
