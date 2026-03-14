@@ -1,10 +1,15 @@
 # pyLabHub Python environment requirements
 #
-# Install into the staged standalone Python:
-#   cmake --build build --target prepare_python_env
+# These packages are NOT installed during the build. After building or
+# installing pylabhub, use the pylabhub-pyenv tool to install them into
+# the bundled Python runtime:
+#
+#   pylabhub-pyenv install                           # base environment
+#   pylabhub-pyenv install --venv my-env             # named venv
+#   pylabhub-pyenv install -r custom-requirements.txt
 #
 # For offline builds, pre-download wheels and set:
-#   cmake -DPYLABHUB_PYTHON_WHEELS_DIR=/path/to/wheels ...
+#   pylabhub-pyenv install --wheels-dir /path/to/wheels
 #
 # --- Data structures and arrays ---
 numpy>=2.0
